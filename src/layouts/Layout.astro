@@ -151,15 +151,14 @@ const { seo } = Astro.props;
             }
             <li class="ml-1 relative">
               <a
-                href=`mailto:${identity.email}`
+                href="/contact"
                 class="peer p-2.5 min-h-[var(--touch-target)] min-w-[var(--touch-target)] flex items-center justify-center rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100"
-                aria-label="Email"
-                data-obfuscation="0"
+                aria-label="Contact"
               >
-                <Icon name="mdi:email" width={20} height={20} />
+                <Icon name="mdi:message-outline" width={20} height={20} />
               </a>
               <span class="absolute top-full right-0 mt-2 px-3 py-1.5 text-[length:var(--text-sm)] text-[var(--color-text)]/60 bg-[var(--color-bg)]/90 border border-[var(--color-border)] rounded-md opacity-0 translate-y-1 peer-hover:opacity-100 peer-hover:translate-y-0 peer-focus-visible:opacity-100 peer-focus-visible:translate-y-0 pointer-events-none whitespace-nowrap transition-all [transition-duration:var(--duration-slow)] [transition-timing-function:var(--ease-spring)] [transition-delay:var(--duration-normal)]">
-                Send me an email
+                Contact me
               </span>
             </li>
           </ul>
@@ -410,7 +409,7 @@ const { seo } = Astro.props;
           if (typeTimer) clearInterval(typeTimer);
           window.removeEventListener('scroll', updateBreadcrumb);
           document.removeEventListener('astro:before-swap', cleanup);
-        });
+        }, { once: true });
       })();
     </script>
   </body>

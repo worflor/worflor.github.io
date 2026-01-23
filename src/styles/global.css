@@ -201,3 +201,15 @@ body.pride {
   *:nth-child(11n) { animation-delay: -3.6s !important; }
   *:nth-child(13n) { animation-delay: -4.2s !important; }
 }
+
+/* Reduced motion: disable continuous decorative animations */
+@media (prefers-reduced-motion: reduce) {
+  .logo-hint::before,
+  .logo-hint::after {
+    animation: none !important;
+  }
+
+  body.pride * {
+    animation: none !important;
+  }
+}
