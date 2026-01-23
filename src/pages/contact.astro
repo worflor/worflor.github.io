@@ -221,19 +221,20 @@ import { contactPageContent } from "../config";
     font-size: var(--text-base);
     color: var(--color-text);
     min-height: var(--touch-target);
+    box-shadow: var(--depth-inset);
     transition: box-shadow var(--duration-normal) var(--ease-out),
                 border-color var(--duration-normal) var(--ease-out);
   }
 
   .form-input:hover, .form-submit:hover {
     border-color: rgb(var(--color-text-rgb) / 0.2);
-    box-shadow: var(--chromatic-shadow);
+    box-shadow: var(--depth-inset), var(--chromatic-shadow);
   }
 
   .form-input:focus, .form-submit:focus-visible {
     outline: none;
     border-color: rgb(var(--color-text-rgb) / 0.3);
-    box-shadow: var(--chromatic-shadow-lg);
+    box-shadow: var(--depth-inset), var(--glow-soft), var(--chromatic-shadow-lg);
   }
 
   /* Input-specific */
