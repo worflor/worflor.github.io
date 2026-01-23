@@ -2402,6 +2402,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
     die(reason: string): void {
       this.isDead = true;
 
+      // Release any claimed food so other creatures can claim it
+      if (this._claimedFood) {
+        if (this._claimedFood.claimedBy === this) {
+          this._claimedFood.claimedBy = null;
+        }
+        this._claimedFood = null;
+      }
+
       for (let i = 0; i < 20 && particles.length < CONFIG.MAX_PARTICLES; i++) {
         particles.push(new Particle(this.x, this.y, "death", this.hue));
       }
@@ -2410,6 +2418,18 @@ export function initVoidGame(options: GameInitOptions): () => void {
         if (other.friends.has(this.id)) {
           other.happiness = Math.max(0, other.happiness - 15);
           other.stress = Math.min(1, other.stress + 0.2);
+        }
+        // Clean up social memory references to dead creature
+        if (other.socialMemory.has(this.id)) {
+          other.socialMemory.delete(this.id);
+        }
+        // Clean up bond references
+        if (other.bonds.has(this.id)) {
+          other.bonds.delete(this.id);
+        }
+        // Clean up friend references
+        if (other.friends.has(this.id)) {
+          other.friends.delete(this.id);
         }
       }
     }
@@ -4351,7 +4371,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       if (touchCreature && !heldCreature && mouse.rightDown) {
         const d = Math.hypot(mouse.x - touchStartPos.x, mouse.y - touchStartPos.y);
-        if (d > 40) {
+        // Use larger threshold (60px) to allow some finger drift during pickup hold
+        if (d > 60) {
           pickupProgress = 0;
           mouse.rightHoldTime = 0;
           mouse.rightDown = false;

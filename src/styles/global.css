@@ -179,6 +179,12 @@ body.invert {
 
   &:hover::before { opacity: 0; }
   &:hover::after { opacity: 1; }
+
+  /* Instant state change during navigation - no transition flicker */
+  &.no-transition::before,
+  &.no-transition::after {
+    transition: none !important;
+  }
 }
 
 @keyframes pride-cycle {
