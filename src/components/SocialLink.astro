@@ -2,18 +2,33 @@
 import Icon from "./Icon.astro";
 import type { SocialLink } from "../types/config";
 
-type Props = SocialLink;
+type Props = SocialLink & { variant?: "default" | "box" };
 
-const { title, url, icon, external } = Astro.props;
+const { title, url, icon, external, variant = "default" } = Astro.props;
+
+const isBox = variant === "box";
+const rel = external
+  ? `noopener noreferrer${url.includes("github.com") ? " me" : ""}`
+  : url.includes("github.com") ? "me" : undefined;
 ---
 
 <a
   href={url}
-  class="flex items-center gap-3 py-1.5 opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 min-h-[var(--touch-target)]"
+  class:list={[
+    "flex items-center gap-3 opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 min-h-[var(--touch-target)]",
+    isBox ? "p-3 @xs:p-4 rounded-lg border border-[var(--color-border)]" : "py-1.5"
+  ]}
   target={external ? "_blank" : "_self"}
-  rel={external ? `noopener noreferrer${url.includes("github.com") ? " me" : ""}` : url.includes("github.com") ? "me" : undefined}
+  rel={rel}
   aria-label={title}
 >
   <Icon name={icon} width={24} height={24} class="shrink-0" aria-hidden="true" />
-  <p>{title}</p>
+  {isBox ? (
+    <div class="flex items-center justify-between w-full min-w-0 gap-2">
+      <p class="truncate">{title}</p>
+      <Icon name="mdi:arrow-up" class="rotate-45 shrink-0" width={16} height={16} aria-hidden="true" />
+    </div>
+  ) : (
+    <p>{title}</p>
+  )}
 </a>

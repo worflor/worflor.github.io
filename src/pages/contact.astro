@@ -15,15 +15,22 @@ import { identity, contactPageContent } from "../config";
     </div>
 
     <form
-      action="https://formsubmit.co/841f620dfbfbfdae899508762dca523e"
       method="POST"
       class="flex flex-col gap-[var(--space-md)]"
       data-astro-reload
     >
-      <!-- Honeypot: realistic field name, bots fill all fields -->
+      <!-- Honeypots: realistic names bots love to fill -->
       <input
         type="text"
         name="website"
+        autocomplete="off"
+        tabindex="-1"
+        class="form-field-helper"
+        aria-hidden="true"
+      />
+      <input
+        type="text"
+        name="phone"
         autocomplete="off"
         tabindex="-1"
         class="form-field-helper"
@@ -81,6 +88,12 @@ import { identity, contactPageContent } from "../config";
       <button type="submit" class="form-submit mt-[var(--space-sm)]">
         Send Message
       </button>
+
+      <noscript>
+        <p class="text-[var(--text-sm)] opacity-50 mt-[var(--space-sm)]">
+          JavaScript is required to send messages.
+        </p>
+      </noscript>
     </form>
   </section>
 </Layout>
@@ -116,11 +129,15 @@ import { identity, contactPageContent } from "../config";
     document.addEventListener(e, onInteract, { signal: ctrl.signal })
   );
 
-  document.querySelector('form')?.addEventListener('submit', (e) => {
-    const hp = document.querySelector('input[name="website"]') as HTMLInputElement;
+  const form = document.querySelector('form');
+  if (form) form.action = 'https://formsubmit.co/841f620dfbfbfdae899508762dca523e';
+
+  form?.addEventListener('submit', (e) => {
+    const hp1 = (document.querySelector('input[name="website"]') as HTMLInputElement)?.value;
+    const hp2 = (document.querySelector('input[name="phone"]') as HTMLInputElement)?.value;
     const t = Date.now() - pageLoadTime;
 
-    if (hp?.value || t < 3000 || !hasInteracted || navigator.webdriver) e.preventDefault();
+    if (hp1 || hp2 || t < 5000 || !hasInteracted || navigator.webdriver) e.preventDefault();
   });
 </script>
 
