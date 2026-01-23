@@ -1,0 +1,40 @@
+---
+import { Image } from "astro:assets";
+import type { Project } from "../types/config";
+import { parseMarkdown } from "../utils/helpers";
+
+type Props = Project & { loading?: "eager" | "lazy" };
+
+const { title, description, image, year, url, loading = "lazy" } = Astro.props;
+
+const htmlDescription = parseMarkdown(description);
+---
+
+<a
+  href={url}
+  target="_blank"
+  rel="noopener noreferrer"
+  aria-label={`View project: ${title}`}
+  class="py-[var(--space-lg)] @xs:py-[var(--space-md)] flex flex-col @xs:flex-row gap-[var(--space-md)] opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 card-hover stagger-in min-h-[var(--touch-target)]"
+>
+  <div class="bg-[var(--color-border)] rounded-[var(--radius-lg)] w-full @xs:w-[var(--size-thumbnail-md)] shrink-0 self-start">
+    <Image
+      width={1920}
+      height={1080}
+      src={image}
+      alt={title}
+      loading={loading}
+      decoding="async"
+      class="w-full h-auto rounded-[var(--radius-lg)]"
+    />
+  </div>
+  <div class="flex flex-col justify-start">
+    <div class="flex items-center gap-1 mb-2">
+      <p class="font-medium">{title}</p>
+      <span class="opacity-60 tabular-nums">· {year}</span>
+    </div>
+    <div class="opacity-60 text-[length:var(--text-sm)]">
+      <Fragment set:html={htmlDescription} />
+    </div>
+  </div>
+</a>

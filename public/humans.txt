@@ -1,0 +1,8 @@
+/* TEAM */
+Name: Michael Bickford
+Site: https://woflo.dev
+Location: Canada
+
+/* SITE */
+Built with: Astro, Tailwind
+Last updated: 2026-01

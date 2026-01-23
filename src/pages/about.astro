@@ -1,0 +1,57 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { aboutPageContent } from "../config";
+import ResumeItem from "../components/ResumeItem.astro";
+import SocialLinkBox from "../components/SocialLinkBox.astro";
+import ImageGallery from "../components/ImageGallery.astro";
+import { parseMarkdown } from "../utils/helpers";
+
+const pageDescription = parseMarkdown(aboutPageContent.about.description);
+const workDescription = parseMarkdown(aboutPageContent.work.description);
+const connectDescription = parseMarkdown(aboutPageContent.connect.description);
+---
+
+<Layout seo={aboutPageContent.seo}>
+  <section class="mt-8 content-section">
+    <h1 class="page-title">About</h1>
+    <p class="opacity-60 mb-10"><Fragment set:html={aboutPageContent.subtitle.replace('hey', '<a href="/contact?hey" class="underline hover:opacity-100">hey</a>')} /></p>
+    <div class="mb-[var(--space-xl)]">
+      <Fragment set:html={pageDescription} />
+    </div>
+    <ImageGallery
+      images={aboutPageContent.about.images}
+      variant="overlap"
+      showIndicators={true}
+    />
+  </section>
+  <section
+    class="my-[var(--space-xl)] mt-[calc(var(--space-xl)*1.5)] content-section @xs:flex @xs:gap-[var(--space-lg)]"
+  >
+    <h2 class="mb-8 @xs:mb-0 opacity-60 shrink-0 min-w-[5rem]">Work</h2>
+    <div class="flex-1 min-w-0">
+      <div class="mb-[var(--space-md)]">
+        <Fragment set:html={workDescription} />
+      </div>
+      <div class="grid grid-cols-1 group">
+        {aboutPageContent.work.items.map((item) => <ResumeItem {...item} />)}
+      </div>
+    </div>
+  </section>
+  <section
+    class="mt-[calc(var(--space-xl)*1.5)] content-section @xs:flex @xs:gap-[var(--space-lg)]"
+  >
+    <h2 class="mb-8 @xs:mb-0 opacity-60 shrink-0 min-w-[5rem]">Mandatory Self Promotion</h2>
+    <div class="flex-1 min-w-0">
+      <div class="mb-[var(--space-md)]">
+        <Fragment set:html={connectDescription} />
+      </div>
+      <div class="grid grid-cols-2 gap-[var(--space-xs)] group">
+        {
+          aboutPageContent.connect.links.map((item) => (
+            <SocialLinkBox {...item} />
+          ))
+        }
+      </div>
+    </div>
+  </section>
+</Layout>

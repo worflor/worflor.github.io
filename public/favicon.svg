@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <radialGradient id="eyeGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#4fffff"/>
+      <stop offset="50%" stop-color="#00d4d4"/>
+      <stop offset="100%" stop-color="#00aaaa" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="eyeCore" cx="60%" cy="40%" r="50%">
+      <stop offset="0%" stop-color="#aaffff"/>
+      <stop offset="100%" stop-color="#00dddd"/>
+    </radialGradient>
+    <radialGradient id="socketDepth" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#0d0d0d"/>
+      <stop offset="100%" stop-color="#050505"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Cat head -->
+  <path d="
+    M20 75
+    C20 100, 40 120, 64 120
+    C88 120, 108 100, 108 75
+    C108 55, 98 40, 88 35
+    L98 8
+    L75 30
+    C72 28, 68 27, 64 27
+    C60 27, 56 28, 53 30
+    L30 8
+    L40 35
+    C30 40, 20 55, 20 75
+    Z
+  " fill="#0f0f0f"/>
+
+  <!-- Inner ear hints -->
+  <path d="M34 38 L42 32 L44 42 Z" fill="#1a1a1a"/>
+  <path d="M94 38 L86 32 L84 42 Z" fill="#1a1a1a"/>
+
+  <!-- Left eye - empty with depth -->
+  <ellipse cx="49" cy="65" rx="8" ry="9" fill="url(#socketDepth)"/>
+
+  <!-- Right eye - soft glow -->
+  <ellipse cx="79" cy="65" rx="14" ry="15" fill="url(#eyeGlow)" opacity="0.6"/>
+  <ellipse cx="79" cy="65" rx="8" ry="9" fill="url(#eyeCore)"/>
+
+  <!-- Subtle nose -->
+  <path d="M64 82 L60 88 L68 88 Z" fill="#1a1a1a"/>
+</svg>

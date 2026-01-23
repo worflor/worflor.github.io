@@ -1,0 +1,11 @@
+services:
+  minimal-portfolio-template:
+    container_name: minimal-portfolio-template
+    image: minimal-portfolio-template
+    build:
+      context: ./
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "4321:4321"
+    restart: always

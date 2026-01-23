@@ -1,0 +1,5 @@
+# hi
+User-agent: *
+Allow: /
+
+Sitemap: https://worflor.github.io/sitemap-index.xml

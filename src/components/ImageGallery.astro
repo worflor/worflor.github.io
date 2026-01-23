@@ -1,0 +1,704 @@
+---
+/**
+ * ImageGallery - Responsive image gallery component
+ * Mobile: Scroll-snap carousel with swipe
+ * Desktop: Variant-based layout (overlap/grid/scroll)
+ *
+ * States: default → featured → expanded (overlap only)
+ */
+import { Image } from "astro:assets";
+import type { GalleryImage } from "../types/config";
+
+export type { GalleryImage };
+
+interface Props {
+  images: GalleryImage[];
+  variant?: 'overlap' | 'grid' | 'scroll';
+  showIndicators?: boolean;
+  class?: string;
+}
+
+const {
+  images,
+  variant = 'overlap',
+  showIndicators = true,
+  class: className = ''
+} = Astro.props;
+---
+
+<div
+  class:list={['image-gallery', `image-gallery--${variant}`, className]}
+  data-count={images.length}
+  data-state="default"
+>
+  <div class="gallery-scroll" role="region" aria-label="Image gallery" tabindex="0">
+    {images.map((image, i) => (
+      <div
+        class:list={['gallery-item', { 'gallery-item--featured': i === 0 }]}
+        style={`--i: ${i};`}
+        data-index={i}
+        role="button"
+        tabindex="0"
+        aria-label={`View ${image.alt}`}
+      >
+        <Image
+          src={image.src}
+          alt={image.alt}
+          width={800}
+          height={600}
+          loading={i === 0 ? "eager" : "lazy"}
+          decoding="async"
+          class="gallery-image"
+        />
+      </div>
+    ))}
+  </div>
+
+  {showIndicators && images.length > 1 && (
+    <div class="gallery-dots" role="tablist" aria-label="Gallery navigation">
+      {images.map((_, i) => (
+        <button
+          type="button"
+          class="gallery-dot"
+          role="tab"
+          aria-selected={i === 0 ? "true" : "false"}
+          aria-label={`Image ${i + 1}`}
+          data-i={i}
+        />
+      ))}
+    </div>
+  )}
+</div>
+
+<style>
+  .image-gallery {
+    --gap: var(--space-md, 1rem);
+
+    /* Shadow scale - 3 layers: contact (sharp), key (medium), ambient (soft) */
+    --shadow-resting:
+      0 1px 2px rgba(0, 0, 0, 0.12),
+      0 4px 8px rgba(0, 0, 0, 0.08),
+      0 8px 16px rgba(0, 0, 0, 0.04);
+    --shadow-lifted:
+      0 2px 4px rgba(0, 0, 0, 0.12),
+      0 8px 16px rgba(0, 0, 0, 0.10),
+      0 16px 32px rgba(0, 0, 0, 0.06);
+    --shadow-expanded:
+      0 4px 8px rgba(0, 0, 0, 0.14),
+      0 16px 32px rgba(0, 0, 0, 0.12),
+      0 32px 64px rgba(0, 0, 0, 0.08);
+
+    /* Sizing based on golden ratio (1.618) */
+    --golden-ratio: 1.618;
+    --featured-size: 18rem;
+    --secondary-size: calc(var(--featured-size) / var(--golden-ratio));
+    --standard-aspect-ratio: calc(4 / 3);  /* Common landscape ratio for consistent height */
+
+    /* Expanded state sizing - derived from featured size */
+    --expanded-size: calc(var(--featured-size) * var(--golden-ratio));
+    --thumbnail-max-width: calc(var(--secondary-size) / 2);
+    --thumbnail-peek: calc(var(--thumbnail-max-width) * -0.33);
+
+    position: relative;
+    width: 100%;
+    container-type: inline-size;
+    overflow: visible;
+  }
+
+  /* ========== MOBILE CAROUSEL ========== */
+  .gallery-scroll {
+    display: flex;
+    gap: var(--gap);
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    padding-block: var(--space-xs);
+  }
+
+  .gallery-scroll::-webkit-scrollbar { display: none; }
+
+  .gallery-scroll:focus-visible {
+    outline: 2px solid rgba(245, 245, 245, var(--opacity-focus));
+    outline-offset: 4px;
+    border-radius: var(--radius-lg);
+  }
+
+  .gallery-item {
+    flex: 0 0 85%;
+    scroll-snap-align: center;
+    scroll-snap-stop: always;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    background: rgba(255, 255, 255, var(--opacity-faint));
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .gallery-image {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 70vh;
+    border-radius: var(--radius-lg);
+    transition: filter var(--duration-slow) var(--ease-out);
+  }
+
+  /* ========== DOT INDICATORS ========== */
+  .gallery-dots {
+    display: flex;
+    justify-content: center;
+    gap: var(--space-xs);
+    margin-top: var(--space-sm);
+  }
+
+  .gallery-dot {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-full);
+    border: none;
+    padding: 0;
+    background: transparent;
+    cursor: pointer;
+    position: relative;
+    transition: transform var(--duration-slow) var(--ease-spring);
+  }
+
+  .gallery-dot::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full);
+    background: rgba(245, 245, 245, var(--opacity-subtle));
+    transition: background var(--duration-normal) var(--ease-out);
+  }
+
+  .gallery-dot:hover::after {
+    background: rgba(245, 245, 245, var(--opacity-hover-dim));
+  }
+
+  .gallery-dot[aria-selected="true"]::after {
+    background: rgba(245, 245, 245, var(--opacity-muted));
+    transform: translate(-50%, -50%) scale(var(--scale-indicator));
+  }
+
+  .gallery-dot:focus-visible {
+    outline: 2px solid rgba(245, 245, 245, var(--opacity-focus));
+    outline-offset: 2px;
+  }
+
+  /* ========== MOBILE EXPANDED STATE ========== */
+  .image-gallery[data-state="expanded"] .gallery-scroll {
+    scroll-snap-type: none;
+    overflow-x: hidden;
+    justify-content: center;
+  }
+
+  .image-gallery[data-state="expanded"] .gallery-item--expanded {
+    flex: 0 0 100%;
+    max-width: none;
+    scroll-snap-align: unset;
+    cursor: zoom-out;
+    transform: scale(var(--scale-hover));
+    z-index: 10;
+  }
+
+  .image-gallery[data-state="expanded"] .gallery-item--expanded .gallery-image {
+    box-shadow: var(--shadow-expanded);
+  }
+
+  .image-gallery[data-state="expanded"] .gallery-item:not(.gallery-item--expanded) {
+    flex: 0 0 0;
+    min-width: 0;
+    opacity: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .image-gallery[data-state="expanded"] .gallery-dots {
+    opacity: var(--opacity-subtle);
+    pointer-events: none;
+  }
+
+  /* ========== OVERLAP VARIANT (DESKTOP) ========== */
+  @container (min-width: 420px) {
+    .image-gallery--overlap .gallery-scroll {
+      overflow: visible;
+      scroll-snap-type: none;
+      padding-block: var(--space-md);
+      padding-inline: var(--space-xs);
+      align-items: flex-end;
+      justify-content: center;
+    }
+
+    .image-gallery--overlap .gallery-item {
+      flex: 0 0 auto;
+      scroll-snap-align: unset;
+      overflow: visible;
+      background: none;
+      cursor: pointer;
+      transform-origin: bottom center;
+      transform: rotate(var(--rotation, 0deg)) translateY(0);
+      transition:
+        transform var(--duration-slow) var(--ease-spring),
+        opacity var(--duration-slow) var(--ease-out),
+        width var(--duration-slow) var(--ease-spring),
+        max-width var(--duration-slow) var(--ease-spring),
+        margin var(--duration-slow) var(--ease-spring);
+    }
+
+    /* Rotation variety - subtle angles (max 3°) for premium feel */
+    .image-gallery--overlap .gallery-item:nth-child(4n+1):not(.gallery-item--featured):not(.gallery-item--expanded) { --rotation: 2.5deg; }
+    .image-gallery--overlap .gallery-item:nth-child(4n+2):not(.gallery-item--featured):not(.gallery-item--expanded) { --rotation: -2deg; }
+    .image-gallery--overlap .gallery-item:nth-child(4n+3):not(.gallery-item--featured):not(.gallery-item--expanded) { --rotation: 3deg; }
+    .image-gallery--overlap .gallery-item:nth-child(4n):not(.gallery-item--featured):not(.gallery-item--expanded) { --rotation: -2.5deg; }
+
+    .image-gallery--overlap .gallery-image {
+      width: auto;
+      height: auto;
+      max-height: var(--image-max-height, 70vh);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-resting);
+      transition: box-shadow var(--duration-slow) var(--ease-out);
+    }
+
+    /* Featured state - always straight for clear focal point */
+    .image-gallery--overlap .gallery-item--featured {
+      --image-max-height: calc(var(--featured-size) / var(--standard-aspect-ratio));
+      width: fit-content;
+      --rotation: 0deg;
+      transform: rotate(0deg) translateY(-4px);
+      z-index: 5;
+      margin-left: 0;
+    }
+
+    .image-gallery--overlap .gallery-item--featured .gallery-image {
+      box-shadow: var(--shadow-lifted);
+    }
+
+    /* Non-featured items - sized using golden ratio (1:1.618) relative to featured */
+    .image-gallery--overlap .gallery-item:not(.gallery-item--featured):not(.gallery-item--expanded) {
+      width: 32%;
+      max-width: var(--secondary-size);
+      margin-left: -0.75rem;
+      z-index: calc(4 - var(--i));
+      opacity: var(--opacity-muted);
+    }
+
+    .image-gallery--overlap .gallery-item--featured + .gallery-item:not(.gallery-item--expanded) {
+      width: 35%;
+      max-width: calc(var(--secondary-size) * 1.1);
+    }
+
+    /* Hover states (default mode only, disabled when focus is active) */
+    .image-gallery--overlap[data-state="default"]:not([data-has-focus]) .gallery-item:hover {
+      z-index: 10;
+      transform: rotate(var(--rotation)) translateY(-6px) scale(var(--scale-hover-lg));
+      opacity: 1;
+    }
+
+    .image-gallery--overlap[data-state="default"]:not([data-has-focus]) .gallery-item:hover .gallery-image {
+      box-shadow: var(--shadow-lifted);
+    }
+
+    .image-gallery--overlap[data-state="default"]:not([data-has-focus]) .gallery-item--featured:hover {
+      transform: rotate(var(--rotation)) translateY(-8px) scale(var(--scale-hover));
+    }
+
+    .image-gallery--overlap[data-state="default"]:not([data-has-focus]):has(.gallery-item:hover) .gallery-item:not(:hover) {
+      opacity: var(--opacity-hover-dim);
+    }
+
+    /* Focus states (from scroll selection) - no rotation for clear focal point */
+    .image-gallery--overlap[data-state="default"] .gallery-item--focused {
+      z-index: 10;
+      transform: rotate(0deg) translateY(-6px) scale(var(--scale-hover-lg));
+      opacity: 1;
+    }
+
+    .image-gallery--overlap[data-state="default"] .gallery-item--focused .gallery-image {
+      box-shadow: var(--shadow-lifted);
+    }
+
+    .image-gallery--overlap[data-state="default"] .gallery-item--featured.gallery-item--focused {
+      transform: rotate(0deg) translateY(-8px) scale(var(--scale-hover));
+    }
+
+    .image-gallery--overlap[data-state="default"][data-has-focus] .gallery-item:not(.gallery-item--focused):not(.gallery-item--expanded) {
+      opacity: var(--opacity-hover-dim) !important;
+    }
+
+    /* Active/pressed */
+    .image-gallery--overlap .gallery-item:active {
+      transform: rotate(var(--rotation)) translateY(-2px) scale(var(--scale-active));
+      transition-duration: var(--duration-fast);
+    }
+
+    .image-gallery--overlap .gallery-item:focus-visible {
+      outline: 2px solid rgba(245, 245, 245, var(--opacity-focus));
+      outline-offset: 6px;
+      border-radius: var(--radius-lg);
+      z-index: 10;
+    }
+
+    /* Single image */
+    .image-gallery[data-count="1"] .gallery-item--featured {
+      width: 100%;
+      max-width: var(--expanded-size);
+      --rotation: 0deg;
+      transform: translateY(-4px);
+    }
+
+    /* Two images - golden ratio sizing (1.618:1) */
+    .image-gallery[data-count="2"].image-gallery--overlap .gallery-item--featured:not(.gallery-item--expanded) {
+      width: 52%;
+      max-width: var(--featured-size);
+      --rotation: 0deg;
+    }
+
+    .image-gallery[data-count="2"].image-gallery--overlap .gallery-item:not(.gallery-item--featured):not(.gallery-item--expanded) {
+      width: 38%;
+      max-width: calc(var(--secondary-size) * 1.15);
+      --rotation: 2.5deg;
+      margin-left: -1.5rem;
+      margin-bottom: -0.25rem;
+      opacity: var(--opacity-high);
+    }
+
+    .image-gallery[data-count="2"].image-gallery--overlap[data-state="default"]:not([data-has-focus]):has(.gallery-item:hover) .gallery-item:not(:hover) {
+      opacity: var(--opacity-hover-dim);
+    }
+
+    .image-gallery--overlap .gallery-dots { display: none; }
+
+    /* ========== EXPANDED STATE ========== */
+    .image-gallery--overlap[data-state="expanded"] .gallery-scroll {
+      position: relative;
+      min-height: 60cqw;
+    }
+
+    .image-gallery--overlap[data-state="expanded"] .gallery-item--expanded {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 85%;
+      z-index: 20;
+      opacity: 1;
+      cursor: zoom-out;
+    }
+
+    .image-gallery--overlap[data-state="expanded"] .gallery-item--expanded .gallery-image {
+      box-shadow: var(--shadow-expanded);
+      width: 100%;
+      height: auto;
+      max-height: none;
+    }
+
+    .image-gallery--overlap[data-state="expanded"] .gallery-item--expanded:hover {
+      transform: translate(-50%, -50%) scale(var(--scale-hover-sm));
+    }
+
+    /* Fade out other images - no layout changes */
+    .image-gallery--overlap[data-state="expanded"] .gallery-item:not(.gallery-item--expanded) {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Hover to reveal other images slightly */
+    .image-gallery--overlap[data-state="expanded"] .gallery-item:not(.gallery-item--expanded):hover {
+      opacity: var(--opacity-dim);
+      transform: scale(var(--scale-hover-xl));
+      z-index: 2;
+    }
+
+    /* Two images expanded: single thumbnail can be slightly larger */
+    .image-gallery[data-count="2"][data-state="expanded"] .gallery-item:not(.gallery-item--expanded) {
+      width: 20%;
+      max-width: calc(var(--thumbnail-max-width) * 1.1);
+      opacity: var(--opacity-hover-dim);
+    }
+
+    /* Many images (4+): tighter stacking */
+    .image-gallery[data-count]:not([data-count="1"]):not([data-count="2"]):not([data-count="3"])[data-state="expanded"] .gallery-item:not(.gallery-item--expanded) {
+      width: 12%;
+      max-width: calc(var(--thumbnail-max-width) * 0.67);
+    }
+
+    .image-gallery[data-count]:not([data-count="1"]):not([data-count="2"]):not([data-count="3"])[data-state="expanded"] .gallery-item:not(.gallery-item--expanded):has(~ .gallery-item--expanded) {
+      margin-right: calc(var(--thumbnail-peek) * 1.15);
+    }
+
+    .image-gallery[data-count]:not([data-count="1"]):not([data-count="2"]):not([data-count="3"])[data-state="expanded"] .gallery-item--expanded ~ .gallery-item {
+      margin-left: calc(var(--thumbnail-peek) * 1.15);
+    }
+  }
+
+  /* ========== GRID VARIANT ========== */
+  @container (min-width: 420px) {
+    .image-gallery--grid .gallery-scroll {
+      overflow: visible;
+      scroll-snap-type: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: var(--gap);
+    }
+
+    .image-gallery--grid .gallery-item {
+      flex: unset;
+      width: 100%;
+      scroll-snap-align: unset;
+      cursor: pointer;
+      transition: opacity var(--duration-slow) var(--ease-out);
+    }
+
+    .image-gallery--grid .gallery-image {
+      box-shadow: var(--shadow-resting);
+      transition:
+        box-shadow var(--duration-slow) var(--ease-out),
+        transform var(--duration-slow) var(--ease-spring);
+    }
+
+    .image-gallery--grid .gallery-item:hover {
+      z-index: 2;
+    }
+
+    .image-gallery--grid .gallery-item:hover .gallery-image {
+      transform: scale(var(--scale-hover));
+      box-shadow: var(--shadow-lifted);
+    }
+
+    .image-gallery--grid .gallery-item:active .gallery-image {
+      transform: scale(var(--scale-active));
+      transition-duration: var(--duration-fast);
+    }
+
+    .image-gallery--grid:has(.gallery-item:hover) .gallery-item:not(:hover) {
+      opacity: var(--opacity-hover-dim);
+    }
+
+    .image-gallery--grid .gallery-dots { display: none; }
+  }
+
+  /* ========== SCROLL VARIANT ========== */
+  .image-gallery--scroll .gallery-item {
+    flex: 0 0 90%;
+    transition: opacity var(--duration-slow) var(--ease-out);
+  }
+  @container (min-width: 420px) { .image-gallery--scroll .gallery-item { flex: 0 0 70%; } }
+  @container (min-width: 640px) { .image-gallery--scroll .gallery-item { flex: 0 0 50%; } }
+
+  .image-gallery--scroll:has(.gallery-item:hover) .gallery-item:not(:hover) {
+    opacity: var(--opacity-hover-dim);
+  }
+
+  /* ========== REDUCED MOTION ========== */
+  @media (prefers-reduced-motion: reduce) {
+    .gallery-scroll { scroll-behavior: auto; }
+    .gallery-item,
+    .gallery-image,
+    .gallery-dot {
+      transition: none;
+    }
+  }
+</style>
+
+<script>
+  function initGallery(gallery: HTMLElement, signal: AbortSignal) {
+    const scroll = gallery.querySelector('.gallery-scroll') as HTMLElement;
+    const dots = gallery.querySelectorAll('.gallery-dot');
+    const items = gallery.querySelectorAll('.gallery-item');
+
+    if (!scroll || items.length === 0) return;
+
+    const canCycle = items.length > 1;
+
+    // Timing state
+    let focusLocked = false;
+    let wheelCooldown = false;
+    let manualSelection = false;
+
+    const setState = (state: 'default' | 'expanded') => {
+      gallery.dataset.state = state;
+    };
+
+    const setFeatured = (index: number) => {
+      items.forEach((item, i) => {
+        item.classList.toggle('gallery-item--featured', i === index);
+      });
+      dots.forEach((dot, i) => dot.setAttribute('aria-selected', String(i === index)));
+    };
+
+    const setExpanded = (item: Element | null) => {
+      items.forEach(it => it.classList.remove('gallery-item--expanded'));
+      if (item) {
+        item.classList.add('gallery-item--expanded');
+        setState('expanded');
+      } else {
+        setState('default');
+      }
+    };
+
+    const setFocused = (item: Element | null) => {
+      items.forEach(it => it.classList.remove('gallery-item--focused'));
+      if (item) {
+        item.classList.add('gallery-item--focused');
+        gallery.dataset.hasFocus = 'true';
+        // Lock briefly so mousemove doesn't immediately clear
+        focusLocked = true;
+        setTimeout(() => { focusLocked = false; }, 300);
+      } else {
+        delete gallery.dataset.hasFocus;
+      }
+    };
+
+    // Clear focus on mouse move (real hover takes over)
+    gallery.addEventListener('mousemove', () => {
+      if (!focusLocked) setFocused(null);
+    }, { signal });
+
+    const scrollToItem = (index: number) => {
+      const item = items[index] as HTMLElement;
+      manualSelection = true;
+      setTimeout(() => { manualSelection = false; }, 500);
+      scroll.scrollTo({
+        left: item.offsetLeft - (scroll.clientWidth - item.offsetWidth) / 2,
+        behavior: 'smooth'
+      });
+    };
+
+    // Click/tap handler
+    items.forEach((item, i) => {
+      const handler = () => {
+        setFocused(null); // Clear scroll-focus on any click
+
+        const isFeatured = item.classList.contains('gallery-item--featured');
+        const isExpanded = item.classList.contains('gallery-item--expanded');
+
+        if (isExpanded) {
+          setExpanded(null);
+          scrollToItem(i);
+        } else if (isFeatured && canCycle) {
+          setExpanded(item);
+        } else if (!isFeatured) {
+          setExpanded(null);
+          setFeatured(i);
+          scrollToItem(i);
+        }
+      };
+
+      item.addEventListener('click', handler, { signal });
+      item.addEventListener('keydown', (e) => {
+        if ((e as KeyboardEvent).key === 'Enter' || (e as KeyboardEvent).key === ' ') {
+          e.preventDefault();
+          handler();
+        }
+      }, { signal });
+    });
+
+    // Escape to collapse
+    gallery.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Escape') {
+        setExpanded(null);
+        setFocused(null);
+      }
+    }, { signal });
+
+    // Horizontal scroll to cycle images (trackpad swipe or shift+wheel)
+    if (canCycle) {
+      scroll.addEventListener('wheel', (e) => {
+        const delta = e.deltaX || (e.shiftKey ? e.deltaY : 0);
+        if (Math.abs(delta) < 10) return;
+
+        e.preventDefault();
+        if (wheelCooldown) return;
+
+        const isExpanded = gallery.dataset.state === 'expanded';
+        const currentIndex = Array.from(items).findIndex(item =>
+          item.classList.contains(isExpanded ? 'gallery-item--expanded' : 'gallery-item--featured')
+        );
+
+        // Defensive fallback (shouldn't happen)
+        if (currentIndex === -1) return;
+
+        const nextIndex = delta > 0
+          ? (currentIndex + 1) % items.length
+          : (currentIndex - 1 + items.length) % items.length;
+
+        setFeatured(nextIndex);
+        if (isExpanded) {
+          setExpanded(items[nextIndex]);
+        } else {
+          setFocused(items[nextIndex]);
+          scrollToItem(nextIndex);
+        }
+
+        wheelCooldown = true;
+        setTimeout(() => { wheelCooldown = false; }, 200);
+      }, { passive: false, signal });
+    }
+
+    // Dot indicators
+    dots.forEach((dot, i) => {
+      dot.addEventListener('click', () => {
+        setFocused(null);
+        setExpanded(null);
+        setFeatured(i);
+        scrollToItem(i);
+      }, { signal });
+    });
+
+    // Sync featured state with scroll position (mobile carousel)
+    let scrollDebounce: ReturnType<typeof setTimeout>;
+    scroll.addEventListener('scroll', () => {
+      clearTimeout(scrollDebounce);
+      scrollDebounce = setTimeout(() => {
+        if (manualSelection) return;
+
+        let closestIndex = 0;
+        let closestDist = Infinity;
+
+        items.forEach((item, i) => {
+          const el = item as HTMLElement;
+          const center = el.offsetLeft + el.offsetWidth / 2;
+          const scrollCenter = scroll.scrollLeft + scroll.clientWidth / 2;
+          const dist = Math.abs(center - scrollCenter);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestIndex = i;
+          }
+        });
+
+        setFeatured(closestIndex);
+      }, 50);
+    }, { passive: true, signal });
+  }
+
+  // Track cleanup controllers per gallery
+  const controllers = new WeakMap<Element, AbortController>();
+
+  function init() {
+    document.querySelectorAll('.image-gallery').forEach(el => {
+      // Cleanup previous listeners
+      controllers.get(el)?.abort();
+
+      // Setup new listeners with cleanup signal
+      const controller = new AbortController();
+      controllers.set(el, controller);
+      initGallery(el as HTMLElement, controller.signal);
+    });
+  }
+
+  // Prevent duplicate astro:after-swap listener registration
+  if (!(window as any).__gallerySwapInit) {
+    (window as any).__gallerySwapInit = true;
+    document.addEventListener('astro:after-swap', init);
+  }
+
+  init();
+</script>

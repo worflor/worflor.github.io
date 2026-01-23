@@ -1,0 +1,714 @@
+---
+import "../styles/global.css";
+import { Image } from "astro:assets";
+import Icon from "../components/Icon.astro";
+import { ClientRouter } from "astro:transitions";
+import { navBarLinks, identity } from "../config";
+import type { SEOInfo } from "../types/config";
+
+interface Props {
+  seo: SEOInfo;
+}
+
+const { seo } = Astro.props;
+---
+
+<script>
+  (function() {
+    // Prevent duplicate listener registration across navigations
+    if ((window as any).__layoutListenersInit) return;
+    (window as any).__layoutListenersInit = true;
+
+    function updateLogoHint() {
+      var logo = document.getElementById('logo-link');
+      if (logo) logo.classList.toggle('logo-hint', location.pathname !== '/');
+    }
+
+    function closeMenuOnNav() {
+      var menu = document.querySelector('.mobile-menu') as HTMLDetailsElement;
+      if (menu) menu.open = false;
+    }
+
+    // Track logo click handler via AbortController for proper cleanup
+    var logoController: AbortController | null = null;
+
+    function setupLogoScroll() {
+      var logo = document.getElementById('logo-link');
+      if (!logo) return;
+
+      // Abort previous listener if exists
+      if (logoController) logoController.abort();
+      logoController = new AbortController();
+
+      logo.addEventListener('click', function(e) {
+        if (location.pathname === '/') {
+          e.preventDefault();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }, { signal: logoController.signal });
+    }
+
+    updateLogoHint();
+    setupLogoScroll();
+    document.addEventListener("astro:after-swap", updateLogoHint);
+    document.addEventListener("astro:after-swap", setupLogoScroll);
+    document.addEventListener("astro:before-swap", closeMenuOnNav);
+  })();
+</script>
+
+<script is:inline>
+  (function() {
+    if (window.__c) return;
+    window.__c = true;
+    function init() {
+      var s = 'color:#0ff;font-family:monospace;', b = document.body, cl = b.classList;
+      console.log('%c╔════════════════════╗\n║ Why hello there :) ║\n║ try help()         ║\n╚════════════════════╝', s);
+      window.help = function() { console.log('%c╔════════════════════╗\n║ glitch() chromatic ║\n║ pride()  rainbow   ║\n║ invert() colors    ║\n║ hi()     hey       ║\n╚════════════════════╝', s); };
+      window.glitch = function(loop) {
+        if (loop === 0) { var on = cl.toggle('glitch-loop'); cl.toggle('glitch-active', on); return 'loop ' + (on ? 'on' : 'off'); }
+        cl.remove('glitch-active', 'glitch-loop');
+        requestAnimationFrame(function() { requestAnimationFrame(function() { cl.add('glitch-active'); }); });
+        return 'glitching...';
+      };
+      window.invert = function() { return cl.toggle('invert') ? 'on' : 'off'; };
+      window.pride = window.prideful = function() { return cl.toggle('pride') ? 'on' : 'off'; };
+      window.hi = function() { return 'hey :)'; };
+    }
+    if (document.body) init();
+    else document.addEventListener('DOMContentLoaded', init, { once: true });
+  })();
+</script>
+
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="author" content="woflo" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0A0A0A" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{seo.title}</title>
+    <meta name="description" content={seo.description} />
+    <link rel="canonical" href={Astro.url.href} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={seo.title} />
+    <meta property="og:description" content={seo.description} />
+    <meta property="og:image" content={`${Astro.url.origin}${seo.image}`} />
+    <meta property="og:url" content={Astro.url.href} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={seo.title} />
+    <meta name="twitter:description" content={seo.description} />
+    <meta name="twitter:image" content={`${Astro.url.origin}${seo.image}`} />
+    <ClientRouter />
+  </head>
+  <body>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <header class="site-header sticky top-0 z-50 @container bg-[var(--color-bg)]/95 backdrop-blur">
+      <div
+        class="py-2 content-section flex items-center justify-between"
+      >
+        <a href="/" transition:persist="logo" id="logo-link">
+          <Image
+            src={identity.logo}
+            alt={`${identity.name} - Home`}
+            width={50}
+            height={50}
+            loading="eager"
+            decoding="async"
+            class="size-(--size-avatar-md) object-cover"
+            transition:name="site-logo"
+          />
+        </a>
+        <span id="header-breadcrumb" class="flex items-center gap-[5px] ml-[10px] text-[length:var(--text-sm)] opacity-0 transition-opacity duration-300 overflow-hidden"></span>
+        <nav class="ml-auto mr-4 @sm:mr-0">
+          {/* Desktop/Tablet nav - visible at @sm (480px+) for better tablet support */}
+          <ul class="absolute right-[clamp(1rem,4vw,1.5rem)] top-1/2 -translate-y-1/2 flex items-center gap-1 group opacity-0 pointer-events-none @sm:opacity-100 @sm:pointer-events-auto transition-opacity duration-300">
+            {
+              navBarLinks.map((link) => (
+                <li>
+                  <a
+                    class="px-3 py-2.5 min-h-[var(--touch-target)] flex items-center rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100"
+                    href={link.url}
+                    target={link.external ? "_blank" : "_self"}
+                    rel={link.external ? "noopener noreferrer" : undefined}
+                  >
+                    {link.title}
+                  </a>
+                </li>
+              ))
+            }
+            <li class="ml-1 relative">
+              <a
+                href=`mailto:${identity.email}`
+                class="peer p-2.5 min-h-[var(--touch-target)] min-w-[var(--touch-target)] flex items-center justify-center rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100"
+                aria-label="Email"
+                data-obfuscation="0"
+              >
+                <Icon name="mdi:email" width={20} height={20} />
+              </a>
+              <span class="absolute top-full right-0 mt-2 px-3 py-1.5 text-[length:var(--text-sm)] text-[var(--color-text)]/60 bg-[var(--color-bg)]/90 border border-[var(--color-border)] rounded-md opacity-0 translate-y-1 peer-hover:opacity-100 peer-hover:translate-y-0 peer-focus-visible:opacity-100 peer-focus-visible:translate-y-0 pointer-events-none whitespace-nowrap transition-all [transition-duration:var(--duration-slow)] [transition-timing-function:var(--ease-spring)] [transition-delay:var(--duration-normal)]">
+                Send me an email
+              </span>
+            </li>
+          </ul>
+          {/* Mobile menu - only on small screens (below @sm/480px) */}
+          <details class="mobile-menu relative @sm:opacity-0 @sm:pointer-events-none transition-opacity duration-300">
+            <summary class="mobile-menu-toggle relative p-3 min-h-[var(--touch-target)] min-w-[var(--touch-target)] flex items-center justify-center opacity-70 hover:opacity-100 cursor-pointer list-none [&::-webkit-details-marker]:hidden" aria-label="Toggle navigation menu">
+              <span class="menu-indicator"></span>
+            </summary>
+            <ul class="mobile-menu-content group absolute p-2 right-0 rounded-lg w-48 z-[100] bg-[var(--color-bg)] border border-[var(--color-border)]">
+              {
+                navBarLinks.map((link) => (
+                  <li>
+                    <a
+                      class="block px-4 py-3 min-h-[var(--touch-target)] rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 hover:bg-white/5 transition-all duration-200"
+                      href={link.url}
+                      target={link.external ? "_blank" : "_self"}
+                      rel={link.external ? "noopener noreferrer" : undefined}
+                    >
+                      {link.title}
+                    </a>
+                  </li>
+                ))
+              }
+            </ul>
+          </details>
+        </nav>
+      </div>
+    </header>
+    <main id="main" class="mb-32" transition:animate="fade">
+      <slot />
+    </main>
+    <script is:inline data-astro-rerun>
+      (function() {
+        var header = document.querySelector('.site-header');
+        var breadcrumb = document.getElementById('header-breadcrumb');
+        var headerH = header.offsetHeight;
+        var hideThreshold = headerH * 1.25;
+        var lastScroll = window.scrollY;
+        var hidePoint = 0;
+
+        // Breadcrumb sizing: measure space between logo and nav
+        var logo = document.getElementById('logo-link');
+        var navUl = header.querySelector('nav > ul');
+        var mobileMenu = header.querySelector('.mobile-menu');
+        function getAvailableSpace() {
+          if (!logo) return { space: 300, compact: false };
+          var logoRect = logo.getBoundingClientRect();
+
+          // Check if desktop nav is visible (opacity > 0 at @sm/480px container width)
+          var navVisible = navUl && getComputedStyle(navUl).opacity !== '0';
+
+          if (navVisible) {
+            var navRect = navUl.getBoundingClientRect();
+            var space = navRect.left - logoRect.right - 10;
+            return { space: Math.max(0, space), compact: space < 200 };
+          }
+
+          // Mobile: measure to hamburger menu instead
+          if (mobileMenu) {
+            var menuRect = mobileMenu.getBoundingClientRect();
+            var space = menuRect.left - logoRect.right - 16;
+            return { space: Math.max(0, space), compact: true };
+          }
+
+          return { space: window.innerWidth * 0.7, compact: false };
+        }
+
+        function applyBreadcrumbSize() {
+          if (!breadcrumb) return;
+          var info = getAvailableSpace();
+          breadcrumb.style.maxWidth = info.space + 'px';
+        }
+        applyBreadcrumbSize();
+        window.addEventListener('resize', applyBreadcrumbSize);
+
+        function onScroll() {
+          var scroll = window.scrollY;
+          if (scroll < hideThreshold) {
+            header.style.transform = 'translateY(0)';
+          } else if (scroll > lastScroll) {
+            header.style.transform = 'translateY(-100%)';
+            hidePoint = scroll;
+            if (mobileMenu) mobileMenu.open = false;
+          } else if (hidePoint - scroll > hideThreshold) {
+            header.style.transform = 'translateY(0)';
+          }
+          lastScroll = scroll;
+        }
+
+        window.addEventListener('scroll', onScroll, { passive: true });
+
+        document.addEventListener('astro:before-swap', function cleanup() {
+          window.removeEventListener('scroll', onScroll);
+          window.removeEventListener('resize', applyBreadcrumbSize);
+          document.removeEventListener('astro:before-swap', cleanup);
+        }, { once: true });
+        var headings = Array.from(document.querySelectorAll('main h1, main h2, main h3'));
+        if (!headings.length || !breadcrumb) return;
+
+        var currentCrumbs = [];
+        var typeTimer = null;
+
+        function scrollToHeading(el) {
+          var y = el.getBoundingClientRect().top + window.scrollY - header.offsetHeight - 16;
+          window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+        }
+
+        function buildCrumbDOM(crumbs, compact) {
+          breadcrumb.innerHTML = '';
+          var visible = (compact && crumbs.length > 1) ? crumbs.slice(-1) : crumbs;
+          breadcrumb.classList.toggle('single-crumb', visible.length === 1);
+          if (!visible.length) return;
+
+          visible.forEach(function(c, i) {
+            var hideOnMobile = i === 0 && visible.length > 1;
+
+            var dot = document.createElement('span');
+            dot.textContent = '·';
+            dot.className = 'crumb-sep' + (hideOnMobile ? ' mobile-hidden' : '');
+            dot.setAttribute('aria-hidden', 'true');
+
+            var crumb = document.createElement('span');
+            crumb.className = 'crumb' + (hideOnMobile ? ' mobile-hidden' : '');
+            crumb.setAttribute('role', 'button');
+            crumb.setAttribute('tabindex', '0');
+
+            var inner = document.createElement('span');
+            inner.className = 'crumb-inner';
+            inner.textContent = c.text;
+            crumb.appendChild(inner);
+
+            breadcrumb.appendChild(dot);
+            breadcrumb.appendChild(crumb);
+
+            crumb.onclick = function() { scrollToHeading(c.el); };
+            crumb.onkeydown = function(e) {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                scrollToHeading(c.el);
+              }
+            };
+          });
+        }
+
+        function checkOverflow() {
+          breadcrumb.querySelectorAll('.crumb').forEach(function(crumb) {
+            var inner = crumb.querySelector('.crumb-inner');
+            if (!inner) return;
+
+            var overflow = inner.scrollWidth - crumb.offsetWidth;
+            crumb.classList.remove('overflow', 'truncated');
+
+            if (overflow > 0) {
+              crumb.classList.add('truncated');
+              if (overflow > 10) {
+                crumb.style.setProperty('--scroll-dist', '-' + overflow + 'px');
+                crumb.style.setProperty('--scroll-duration', Math.max(6, overflow / 10) + 's');
+                requestAnimationFrame(function() {
+                  requestAnimationFrame(function() { crumb.classList.add('overflow'); });
+                });
+              }
+            }
+          });
+        }
+
+        function typeOut(crumbs) {
+          if (typeTimer) clearInterval(typeTimer);
+          var info = getAvailableSpace();
+          buildCrumbDOM(crumbs, info.compact);
+          breadcrumb.style.maxWidth = info.space + 'px';
+          breadcrumb.style.opacity = 'var(--opacity-dim)';
+
+          var inners = Array.from(breadcrumb.querySelectorAll('.crumb-inner'));
+          var texts = inners.map(function(el) { var t = el.textContent; el.textContent = ''; return t; });
+          var total = texts.reduce(function(a, t) { return a + t.length; }, 0);
+          var i = 0;
+
+          typeTimer = setInterval(function() {
+            if (i > total) { clearInterval(typeTimer); typeTimer = null; checkOverflow(); return; }
+            var rem = i++;
+            inners.forEach(function(el, idx) {
+              var len = Math.min(rem, texts[idx].length);
+              el.textContent = texts[idx].slice(0, len);
+              rem -= len;
+            });
+          }, 35);
+        }
+
+        function clearThenType(crumbs) {
+          if (typeTimer) clearInterval(typeTimer);
+          var inners = Array.from(breadcrumb.querySelectorAll('.crumb-inner'));
+          var total = inners.reduce(function(a, el) { return a + el.textContent.length; }, 0);
+          var i = total;
+
+          typeTimer = setInterval(function() {
+            if (i <= 0) {
+              clearInterval(typeTimer);
+              if (crumbs.length) typeOut(crumbs);
+              else { breadcrumb.style.opacity = '0'; breadcrumb.innerHTML = ''; }
+              return;
+            }
+            var rem = --i;
+            for (var j = inners.length - 1; j >= 0; j--) {
+              var text = inners[j].textContent;
+              if (rem >= text.length) { rem -= text.length; }
+              else {
+                inners[j].textContent = text.slice(0, rem);
+                for (var k = j + 1; k < inners.length; k++) inners[k].textContent = '';
+                break;
+              }
+            }
+          }, 20);
+        }
+
+        function setCrumbs(crumbs) {
+          var key = crumbs.map(function(c) { return c.text; }).join('|');
+          if (key === currentCrumbs.map(function(c) { return c.text; }).join('|')) return;
+          currentCrumbs = crumbs;
+          !breadcrumb.querySelector('.crumb-inner') && crumbs.length ? typeOut(crumbs) : clearThenType(crumbs);
+        }
+
+        var crumbThreshold = headerH + 100;
+
+        function updateBreadcrumb() {
+          if (window.scrollY <= headerH) { setCrumbs([]); return; }
+
+          var stack = [];
+          headings.forEach(function(h) {
+            var top = h.getBoundingClientRect().top;
+            if (top > crumbThreshold) return;
+            var level = +h.tagName[1];
+            while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+            stack.push({ el: h, level: level });
+          });
+
+          if (!stack.length) { setCrumbs([]); return; }
+
+          setCrumbs(stack.slice(-2).map(function(item) {
+            var t = item.el.textContent.trim();
+            return { text: t.length > 60 ? t.slice(0, 57) + '...' : t, el: item.el };
+          }));
+        }
+
+        window.addEventListener('scroll', updateBreadcrumb, { passive: true });
+        updateBreadcrumb();
+
+        document.addEventListener('astro:before-swap', function cleanup() {
+          if (typeTimer) clearInterval(typeTimer);
+          window.removeEventListener('scroll', updateBreadcrumb);
+          document.removeEventListener('astro:before-swap', cleanup);
+        });
+      })();
+    </script>
+  </body>
+</html>
+
+<style is:global>
+  html {
+    font-family: var(--font-body);
+    background: var(--color-bg);
+    scroll-behavior: smooth;
+    color-scheme: dark;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  * {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color: var(--color-text);
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border) transparent;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  p, li {
+    text-wrap: pretty;
+  }
+
+  .tabular-nums, time, [datetime] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: rgb(var(--color-text-rgb) / var(--opacity-faint));
+    color: var(--color-text);
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--color-text-rgb) / var(--opacity-faint));
+    border-radius: 3px;
+    transition: background var(--duration-normal) var(--ease-out);
+    &:hover { background: rgb(var(--color-text-rgb) / var(--opacity-subtle)); }
+  }
+
+  code {
+    font-family: Menlo, Monaco, Lucida Console, Liberation Mono, DejaVu Sans Mono, Courier New, monospace;
+  }
+
+  a, button {
+    text-shadow: none;
+    transition: text-shadow var(--duration-normal) var(--ease-out), transform var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
+
+    &:active {
+      transform: scale(var(--scale-active));
+      opacity: var(--opacity-muted);
+      transition-duration: var(--duration-instant);
+    }
+
+    &:hover {
+      text-shadow:
+        calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
+        var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
+    }
+
+    &:has(svg) {
+      text-shadow: none !important;
+
+      svg {
+        transition: filter var(--duration-normal) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+      }
+
+      &:active svg {
+        transform: scale(var(--scale-active));
+      }
+
+      &:hover svg {
+        filter:
+          drop-shadow(calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)))
+          drop-shadow(var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity)));
+      }
+    }
+  }
+
+  img {
+    transition: filter var(--duration-normal) var(--ease-out), transform var(--duration-normal) var(--ease-out);
+    a:hover & { filter: brightness(1.08); }
+    a:active & { transform: scale(var(--scale-active)); filter: brightness(0.95); }
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
+    outline-offset: 3px;
+    border-radius: var(--radius-lg);
+    transition: outline-color var(--duration-normal) var(--ease-out), outline-offset var(--duration-normal) var(--ease-out);
+  }
+
+  :focus:not(:focus-visible) {
+    outline: transparent;
+  }
+
+  .skip-link {
+    position: absolute;
+    top: -100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 0.5rem 1rem;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    z-index: 100;
+    transition: top var(--duration-normal) var(--ease-out);
+
+    &:focus {
+      top: 1rem;
+    }
+  }
+
+  .link-underline {
+    position: relative;
+    text-decoration: none;
+
+    &::after {
+      content: '';
+      position: absolute;
+      bottom: -2px;
+      left: 0;
+      width: 0;
+      height: 1px;
+      background: var(--color-text);
+      transition: width var(--duration-normal) var(--ease-out);
+    }
+
+    &:hover::after {
+      width: 100%;
+    }
+
+    &:active::after {
+      opacity: var(--opacity-dim);
+    }
+  }
+
+  .hover-underline {
+    text-decoration: underline 1px rgba(0, 0, 0, 0);
+    text-underline-offset: 4px;
+    transition: text-decoration-color var(--duration-slow) var(--ease-out), text-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  .post:hover .hover-underline {
+    text-decoration-color: var(--color-text);
+  }
+
+  .card-hover {
+    transition: transform var(--duration-normal) var(--ease-out), opacity var(--duration-normal) var(--ease-out), text-shadow var(--duration-normal) var(--ease-out);
+    will-change: transform;
+
+    &:hover {
+      transform: scale(var(--scale-hover));
+    }
+
+    &:active {
+      transform: scale(var(--scale-active));
+      transition-duration: var(--duration-fast);
+    }
+  }
+
+  .stagger-in {
+    animation: fadeUp var(--duration-slow) var(--ease-spring) backwards;
+    animation-delay: calc(sibling-index() * var(--duration-instant));
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .mobile-menu {
+    .menu-indicator {
+      display: block;
+      width: 18px;
+      height: 2px;
+      background: currentColor;
+      position: relative;
+      transition: background var(--duration-normal) var(--ease-out);
+    }
+
+    .menu-indicator::before,
+    .menu-indicator::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: currentColor;
+      transition: transform var(--duration-normal) var(--ease-out);
+    }
+
+    .menu-indicator::before {
+      top: -6px;
+    }
+
+    .menu-indicator::after {
+      bottom: -6px;
+    }
+
+    &[open] .menu-indicator {
+      background: transparent;
+    }
+
+    &[open] .menu-indicator::before {
+      transform: translateY(6px) rotate(45deg);
+    }
+
+    &[open] .menu-indicator::after {
+      transform: translateY(-6px) rotate(-45deg);
+    }
+
+    .mobile-menu-content {
+      opacity: 0;
+      scale: 0.96;
+      transform-origin: top right;
+      transition: opacity var(--duration-normal) var(--ease-out), scale var(--duration-normal) var(--ease-out), display var(--duration-normal) ease allow-discrete;
+      display: none;
+    }
+
+    &[open] .mobile-menu-content {
+      opacity: 1;
+      scale: 1;
+      display: block;
+
+      @starting-style {
+        opacity: 0;
+        scale: 0.96;
+      }
+    }
+  }
+
+  .site-header {
+    border-bottom: 1px solid transparent;
+    transition: transform var(--duration-slow) var(--ease-spring);
+  }
+
+  #header-breadcrumb {
+    transition: opacity var(--duration-slow) var(--ease-spring);
+
+    .mobile-hidden { display: none; }
+    @container (min-width: 480px) { .mobile-hidden { display: inline; } }
+
+    .crumb-sep { flex-shrink: 0; opacity: var(--opacity-subtle); user-select: none; }
+
+    .crumb {
+      flex: 0 0 auto;
+      min-width: 2rem;
+      overflow: hidden;
+      cursor: pointer;
+      &:last-of-type { flex-shrink: 1; }
+      &.truncated { mask-image: linear-gradient(to right, black calc(100% - 1rem), transparent); }
+      &:hover { opacity: var(--opacity-high); }
+      &:focus-visible { opacity: var(--opacity-high); outline: 1px solid rgb(var(--color-text-rgb) / var(--opacity-subtle)); outline-offset: 2px; border-radius: 2px; }
+      &:active { opacity: 1; }
+      @media (prefers-reduced-motion: reduce) { text-overflow: ellipsis; &.overflow .crumb-inner { animation: none !important; } }
+    }
+
+    .crumb-inner { display: inline-block; white-space: nowrap; }
+    .crumb.overflow .crumb-inner { animation: crumb-scroll var(--scroll-duration, 6s) linear infinite !important; animation-delay: 2s; }
+  }
+
+  @keyframes crumb-scroll {
+    0%, 40% { transform: translateX(0); }
+    60%, 75% { transform: translateX(var(--scroll-dist)); }
+    95%, 100% { transform: translateX(0); }
+  }
+
+  @supports (animation-timeline: scroll()) {
+    .site-header::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      border-bottom: 1px solid transparent;
+      animation: header-scroll-effects linear both;
+      animation-timeline: scroll();
+      animation-range: 0 100px;
+    }
+
+    @keyframes header-scroll-effects {
+      to {
+        border-bottom-color: var(--color-border);
+        -webkit-backdrop-filter: blur(8px);
+        backdrop-filter: blur(8px);
+      }
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  }
+
+  @media print {
+    header, nav, button, details { display: none; }
+    body { background: white; }
+    * { color: black !important; text-shadow: none !important; }
+    a { text-decoration: underline; }
+    main { margin: 0; }
+  }
+</style>

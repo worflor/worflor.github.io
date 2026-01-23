@@ -1,0 +1,19 @@
+---
+import Icon from "./Icon.astro";
+import type { SocialLink } from "../types/config";
+
+type Props = SocialLink;
+
+const { title, url, icon, external } = Astro.props;
+---
+
+<a
+  href={url}
+  class="flex items-center gap-3 py-1.5 opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 min-h-[var(--touch-target)]"
+  target={external ? "_blank" : "_self"}
+  rel={external ? `noopener noreferrer${url.includes("github.com") ? " me" : ""}` : url.includes("github.com") ? "me" : undefined}
+  aria-label={title}
+>
+  <Icon name={icon} width={24} height={24} class="shrink-0" aria-hidden="true" />
+  <p>{title}</p>
+</a>

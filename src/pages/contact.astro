@@ -1,0 +1,293 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { identity, contactPageContent } from "../config";
+---
+
+<Layout seo={contactPageContent.seo}>
+  <section class="mt-8 content-section">
+    <h1 class="page-title">Contact</h1>
+    <p class="opacity-60 mb-10">
+      {contactPageContent.subtitle}
+    </p>
+
+    <div class="sent-message">
+      <p>{contactPageContent.sentMessage}</p>
+    </div>
+
+    <form
+      action="https://formsubmit.co/841f620dfbfbfdae899508762dca523e"
+      method="POST"
+      class="flex flex-col gap-[var(--space-md)]"
+      data-astro-reload
+    >
+      <!-- Honeypot: realistic field name, bots fill all fields -->
+      <input
+        type="text"
+        name="website"
+        autocomplete="off"
+        tabindex="-1"
+        class="form-field-helper"
+        aria-hidden="true"
+      />
+
+      <!-- Disable captcha for minimal friction -->
+      <input type="hidden" name="_captcha" value="false" />
+
+      <!-- Email subject for filtering -->
+      <input type="hidden" name="_subject" value="New message from portfolio" />
+
+      <!-- Redirect after submission -->
+      <input type="hidden" name="_next" value={`${Astro.url.origin}/contact?sent`} />
+
+      <div class="flex flex-col gap-[var(--space-xs)]">
+        <label for="name" class="text-[var(--text-sm)] opacity-70">Name</label>
+        <input
+          type="text"
+          id="name"
+          name="name"
+          placeholder={contactPageContent.placeholders.name}
+          data-hey-placeholder={contactPageContent.heyPlaceholders.name}
+          class="form-input"
+        />
+      </div>
+
+      <div class="flex flex-col gap-[var(--space-xs)]">
+        <label for="email" class="text-[var(--text-sm)] opacity-70">Email</label
+        >
+        <input
+          type="email"
+          id="email"
+          name="email"
+          placeholder={contactPageContent.placeholders.email}
+          data-hey-placeholder={contactPageContent.heyPlaceholders.email}
+          class="form-input"
+        />
+      </div>
+
+      <div class="flex flex-col gap-[var(--space-xs)]">
+        <label for="message" class="text-[var(--text-sm)] opacity-70"
+          >Message<span class="text-red-400">*</span></label
+        >
+        <textarea
+          id="message"
+          name="message"
+          rows="5"
+          placeholder={contactPageContent.placeholders.message}
+          data-hey-placeholder={contactPageContent.heyPlaceholders.message}
+          required
+          class="form-input resize-y min-h-[8rem]"></textarea>
+      </div>
+
+      <button type="submit" class="form-submit mt-[var(--space-sm)]">
+        Send Message
+      </button>
+    </form>
+  </section>
+</Layout>
+
+<script is:inline data-astro-rerun>
+  // Blocking: set data attrs before render
+  (function() {
+    var p = new URLSearchParams(location.search);
+    if (p.has('hey')) document.documentElement.dataset.hey = '';
+    if (p.has('sent')) {
+      document.documentElement.dataset.sent = '';
+      history.replaceState({}, '', location.pathname);
+    }
+  })();
+</script>
+
+<script>
+  // Swap placeholders for ?hey
+  if (document.documentElement.dataset.hey !== undefined) {
+    document.querySelectorAll('[data-hey-placeholder]').forEach(el => {
+      (el as HTMLInputElement).placeholder = (el as HTMLElement).dataset.heyPlaceholder || '';
+    });
+  }
+  document.documentElement.dataset.ready = '';
+
+  // Anti-spam
+  const pageLoadTime = Date.now();
+  let hasInteracted = false;
+  const ctrl = new AbortController();
+
+  const onInteract = () => { hasInteracted = true; ctrl.abort(); };
+  ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e =>
+    document.addEventListener(e, onInteract, { signal: ctrl.signal })
+  );
+
+  document.querySelector('form')?.addEventListener('submit', (e) => {
+    const hp = document.querySelector('input[name="website"]') as HTMLInputElement;
+    const t = Date.now() - pageLoadTime;
+
+    if (hp?.value || t < 3000 || !hasInteracted || navigator.webdriver) e.preventDefault();
+  });
+</script>
+
+<style>
+  /* Hidden field: offscreen instead of display:none (bots detect that) */
+  .form-field-helper {
+    position: absolute;
+    left: -9999px;
+    top: -9999px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Sent confirmation - hidden until ?sent */
+  .sent-message {
+    display: none;
+    margin-bottom: var(--space-xl);
+    padding-left: var(--space-md);
+    position: relative;
+  }
+
+  :global(html[data-sent]) .sent-message {
+    display: block;
+  }
+
+  /* Chromatic line - single element with box-shadow for both colors */
+  .sent-message::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 2px;
+    height: 100%;
+    background: rgb(var(--chromatic-cyan) / 0.7);
+    box-shadow: -1px 0 0 rgb(var(--chromatic-red) / 0.7);
+    transform-origin: top;
+    will-change: transform;
+    animation: lineDown 0.6s cubic-bezier(0.22, 0.61, 0.36, 1) both !important;
+  }
+
+  .sent-message p {
+    will-change: transform, opacity;
+    animation: textReveal 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) 0.5s both !important;
+  }
+
+  @keyframes lineDown {
+    from {
+      transform: scaleY(0);
+    }
+    to {
+      transform: scaleY(1);
+    }
+  }
+
+  @keyframes textReveal {
+    from {
+      opacity: 0;
+      transform: translateX(-8px);
+    }
+    to {
+      opacity: 0.7;
+      transform: translateX(0);
+    }
+  }
+
+  .form-input {
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--text-base);
+    color: var(--color-text);
+    min-height: var(--touch-target);
+    transition:
+      box-shadow var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
+  }
+
+  .form-input::placeholder {
+    color: var(--color-text);
+    opacity: 0.35;
+    transition:
+      opacity var(--duration-normal) var(--ease-out),
+      text-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  /* Hide placeholders during ?hey swap to prevent flash */
+  :global(html[data-hey]:not([data-ready])) .form-input::placeholder {
+    opacity: 0;
+  }
+
+  .form-input:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+    box-shadow:
+      calc(-1 * var(--chromatic-offset)) 0 0
+        rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
+      var(--chromatic-offset) 0 0
+        rgb(var(--chromatic-red) / var(--chromatic-opacity));
+  }
+
+  .form-input:hover::placeholder {
+    opacity: 0.45;
+  }
+
+  .form-input:focus {
+    outline: none;
+    border-color: rgb(var(--color-text-rgb) / 0.3);
+    box-shadow:
+      calc(-2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.7),
+      calc(2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.7);
+  }
+
+  .form-input:focus::placeholder {
+    opacity: 0.5;
+    text-shadow:
+      calc(-0.5 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.3),
+      calc(0.5 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.3);
+  }
+
+  .form-submit {
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--text-base);
+    color: var(--color-text);
+    cursor: pointer;
+    min-height: var(--touch-target);
+    transition:
+      text-shadow var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      transform var(--duration-fast) var(--ease-out),
+      opacity var(--duration-fast) var(--ease-out);
+  }
+
+  .form-submit:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.25);
+    background: rgb(var(--color-text-rgb) / 0.03);
+    box-shadow:
+      calc(-1 * var(--chromatic-offset)) 0 0
+        rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
+      var(--chromatic-offset) 0 0
+        rgb(var(--chromatic-red) / var(--chromatic-opacity));
+    text-shadow:
+      calc(-1 * var(--chromatic-offset)) 0 0
+        rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
+      var(--chromatic-offset) 0 0
+        rgb(var(--chromatic-red) / var(--chromatic-opacity));
+  }
+
+  .form-submit:focus-visible {
+    outline: none;
+    border-color: rgb(var(--color-text-rgb) / 0.35);
+    background: rgb(var(--color-text-rgb) / 0.05);
+    box-shadow:
+      calc(-2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.7),
+      calc(2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.7);
+    text-shadow:
+      calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.6),
+      var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / 0.6);
+  }
+
+  .form-submit:active {
+    transform: scale(var(--scale-active));
+    opacity: var(--opacity-muted);
+    transition-duration: var(--duration-instant);
+  }
+</style>
