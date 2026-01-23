@@ -209,7 +209,7 @@ const { seo } = Astro.props;
             </li>
           </ul>
           {/* Mobile menu - only on small screens (below @sm/480px) */}
-          <details class="mobile-menu relative @sm:opacity-0 @sm:pointer-events-none">
+          <details class="mobile-menu relative opacity-0 pointer-events-none @max-sm:opacity-100 @max-sm:pointer-events-auto">
             <summary class="mobile-menu-toggle relative p-3 min-h-[var(--touch-target)] min-w-[var(--touch-target)] flex items-center justify-center opacity-70 hover:opacity-100 cursor-pointer list-none [&::-webkit-details-marker]:hidden" aria-label="Toggle navigation menu">
               <span class="menu-indicator"></span>
             </summary>
