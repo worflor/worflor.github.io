@@ -5,8 +5,10 @@
  * Desktop: Variant-based layout (overlap/grid/scroll)
  *
  * States: default → featured → expanded (overlap only)
+ *
+ * Uses native <img> for animated WebP/GIF support.
+ * Images from public/ don't benefit from Astro's Image optimization anyway.
  */
-import { Image } from "astro:assets";
 import type { GalleryImage } from "../types/config";
 
 export type { GalleryImage };
@@ -41,11 +43,11 @@ const {
         tabindex="0"
         aria-label={`View ${image.alt}`}
       >
-        <Image
+        <img
           src={image.src}
           alt={image.alt}
-          width={800}
-          height={600}
+          width="800"
+          height="600"
           loading={i === 0 ? "eager" : "lazy"}
           decoding={i === 0 ? "sync" : "async"}
           fetchpriority={i === 0 ? "high" : undefined}
