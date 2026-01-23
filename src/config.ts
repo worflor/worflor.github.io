@@ -54,7 +54,7 @@ export const socialLinks: SocialLink[] = [
 // home
 export const homePageContent: HomePageContent = {
   seo: {
-    title: "Michael Bickford",
+    title: "woflo",
     description:
       "Canadian Game and Technology Enthusiast who likes building cool things.",
     image: identity.logo,
@@ -78,7 +78,7 @@ export const homePageContent: HomePageContent = {
 // about
 export const aboutPageContent: AboutPageContent = {
   seo: {
-    title: "About | Michael Bickford",
+    title: "About | woflo",
     description:
       "Lifetime gamer and professional picky person from Canada.",
     image: identity.logo,
@@ -171,7 +171,7 @@ Oh, *knowledge*. <3`,
 // projects
 export const projectsPageContent: ProjectPageContent = {
   seo: {
-    title: "Projects | Michael Bickford",
+    title: "Projects | woflo",
     description: "Endeavours.",
     image: identity.logo,
   },
@@ -213,7 +213,7 @@ export const projectsPageContent: ProjectPageContent = {
 // blog
 export const blogPageContent: BlogPageContent = {
   seo: {
-    title: "Blog | Michael Bickford",
+    title: "Blog | woflo",
     description: "Thoughts, stories, and moments.",
     image: identity.logo,
   },
@@ -223,7 +223,7 @@ export const blogPageContent: BlogPageContent = {
 // contact
 export const contactPageContent: ContactPageContent = {
   seo: {
-    title: "Contact | " + identity.name,
+    title: "Contact | woflo",
     description: "Get in touch with me.",
     image: identity.logo,
   },
