@@ -5702,12 +5702,16 @@
         if (!revealMap) return;
 
         // Initialize fog canvas on first call or resize
-        if (!fogCanvas || fogCanvas.width !== W || fogCanvas.height !== H) {
+        if (
+          !fogCanvas ||
+          fogCanvas.width !== revealW ||
+          fogCanvas.height !== revealH
+        ) {
           fogCanvas = document.createElement("canvas");
-          fogCanvas.width = W;
-          fogCanvas.height = H;
+          fogCanvas.width = revealW;
+          fogCanvas.height = revealH;
           fogCtx = fogCanvas.getContext("2d");
-          fogImageData = fogCtx.createImageData(W, H);
+          fogImageData = fogCtx.createImageData(revealW, revealH);
           fogDirty = true;
         }
 
@@ -5719,12 +5723,9 @@
           // Clear to transparent first
           data.fill(0);
 
-          // Fill fog based on reveal map - single pass through pixels
-          // With ordered dithering at edges for retro aesthetic
+          // Fill fog based on reveal map - one pixel per reveal cell
+          // Scale up when drawing for the final effect.
           for (let gy = 0; gy < revealH; gy++) {
-            const py = gy * revealRes;
-            const pyEnd = Math.min(py + revealRes, H);
-
             for (let gx = 0; gx < revealW; gx++) {
               const revealed = revealMap[gy * revealW + gx];
               if (revealed >= 0.98) continue; // Fully revealed, skip
@@ -5732,32 +5733,20 @@
               const darkness = (1 - revealed) * 0.95;
               if (darkness < 0.01) continue; // Nearly transparent, skip
 
-              const px = gx * revealRes;
-              const pxEnd = Math.min(px + revealRes, W);
-
               // Check if this is an edge cell (partial darkness = transition zone)
               const isEdge = darkness > 0.05 && darkness < 0.85;
 
-              // Fill this cell's pixels
-              for (let y = py; y < pyEnd; y++) {
-                const rowOffset = y * W * 4;
-                for (let x = px; x < pxEnd; x++) {
-                  // Apply ordered dithering at edges
-                  if (isEdge) {
-                    const bx = x & 3; // x % 4
-                    const by = y & 3; // y % 4
-                    const threshold = BAYER_4X4[by * 4 + bx];
-                    // Skip this pixel if darkness doesn't pass threshold
-                    if (darkness < threshold) continue;
-                  }
-
-                  const i = rowOffset + x * 4;
-                  data[i] = fogColor.r;
-                  data[i + 1] = fogColor.g;
-                  data[i + 2] = fogColor.b;
-                  data[i + 3] = isEdge ? 242 : Math.floor(darkness * 255); // Solid alpha for dithered pixels
-                }
+              const i = (gy * revealW + gx) * 4;
+              if (isEdge) {
+                const threshold = BAYER_4X4[(gy & 3) * 4 + (gx & 3)];
+                if (darkness < threshold) continue;
+                data[i + 3] = 242;
+              } else {
+                data[i + 3] = Math.floor(darkness * 255);
               }
+              data[i] = fogColor.r;
+              data[i + 1] = fogColor.g;
+              data[i + 2] = fogColor.b;
             }
           }
 
@@ -5766,7 +5755,10 @@
         }
 
         // Draw pre-rendered fog in single call
-        ctx.drawImage(fogCanvas, 0, 0);
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(fogCanvas, 0, 0, W, H);
+        ctx.restore();
 
         // Slow decay of reveal (world slowly fades if creatures leave)
         // Optimized: only run every 3 frames, skip zero cells, pre-compute creature zones
