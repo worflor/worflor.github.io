@@ -135,11 +135,20 @@ import { contactPageContent } from "../config";
   if (form) form.action = 'https://formsubmit.co/841f620dfbfbfdae899508762dca523e';
 
   form?.addEventListener('submit', (e) => {
-    const hp1 = (document.querySelector('input[name="website"]') as HTMLInputElement)?.value;
-    const hp2 = (document.querySelector('input[name="phone"]') as HTMLInputElement)?.value;
+    const hpWebsite = document.querySelector('input[name="website"]') as HTMLInputElement | null;
+    const hpPhone = document.querySelector('input[name="phone"]') as HTMLInputElement | null;
+    const hp1 = hpWebsite?.value ?? '';
+    const hp2 = hpPhone?.value ?? '';
     const t = Date.now() - pageLoadTime;
+    const isSpam = Boolean(hp1 || hp2 || t < 5000 || !hasInteracted || navigator.webdriver);
 
-    if (hp1 || hp2 || t < 5000 || !hasInteracted || navigator.webdriver) e.preventDefault();
+    if (isSpam) {
+      e.preventDefault();
+      return;
+    }
+
+    hpWebsite?.removeAttribute('name');
+    hpPhone?.removeAttribute('name');
   });
 </script>
 
