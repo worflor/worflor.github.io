@@ -24,9 +24,30 @@ const { seo } = Astro.props;
       if (logo) logo.classList.toggle('logo-hint', location.pathname !== '/');
     }
 
-    function closeMenuOnNav() {
+    // Close mobile menu instantly without triggering CSS transitions
+    function closeMenuInstantly() {
       var menu = document.querySelector('.mobile-menu') as HTMLDetailsElement;
-      if (menu) menu.open = false;
+      if (!menu || !menu.open) return;
+
+      // Disable transitions temporarily to prevent flicker
+      var content = menu.querySelector('.mobile-menu-content') as HTMLElement;
+      var indicator = menu.querySelector('.menu-indicator') as HTMLElement;
+
+      if (content) content.style.transition = 'none';
+      if (indicator) indicator.style.transition = 'none';
+      menu.style.setProperty('--menu-transition', 'none');
+
+      // Close the menu
+      menu.open = false;
+
+      // Re-enable transitions after a frame
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+          if (content) content.style.transition = '';
+          if (indicator) indicator.style.transition = '';
+          menu.style.removeProperty('--menu-transition');
+        });
+      });
     }
 
     // Track logo click handler via AbortController for proper cleanup
@@ -48,11 +69,44 @@ const { seo } = Astro.props;
       }, { signal: logoController.signal });
     }
 
+    // Prepare for navigation - close menu and update logo hint BEFORE transition starts
+    function prepareForNavigation(e: any) {
+      closeMenuInstantly();
+
+      // Pre-update logo hint based on the destination URL to avoid post-swap flash
+      var logo = document.getElementById('logo-link');
+      if (logo && e.to) {
+        try {
+          var destPath = new URL(e.to, location.origin).pathname;
+          var shouldHint = destPath !== '/';
+          var hasHint = logo.classList.contains('logo-hint');
+
+          // Only update if state is changing, and do it instantly
+          if (shouldHint !== hasHint) {
+            // Disable transitions, update class, then re-enable
+            logo.classList.add('no-transition');
+            logo.classList.toggle('logo-hint', shouldHint);
+
+            // Re-enable transitions after paint (capture reference for closure)
+            var logoRef = logo;
+            requestAnimationFrame(function() {
+              requestAnimationFrame(function() {
+                logoRef.classList.remove('no-transition');
+              });
+            });
+          }
+        } catch (_) {}
+      }
+    }
+
     updateLogoHint();
     setupLogoScroll();
+
+    // Use astro:before-preparation (earliest hook) to prepare state before any transition visuals
+    document.addEventListener("astro:before-preparation", prepareForNavigation);
+    // Safety fallback: ensure logo hint is correct after swap (e.g., browser back/forward edge cases)
     document.addEventListener("astro:after-swap", updateLogoHint);
     document.addEventListener("astro:after-swap", setupLogoScroll);
-    document.addEventListener("astro:before-swap", closeMenuOnNav);
   })();
 </script>
 
@@ -658,6 +712,7 @@ const { seo } = Astro.props;
 
   #header-breadcrumb {
     transition: opacity var(--duration-slow) var(--ease-spring);
+    view-transition-name: none; /* Prevent flicker - content is page-specific */
 
     .mobile-hidden { display: none; }
     @container (min-width: 480px) { .mobile-hidden { display: inline; } }
@@ -726,6 +781,40 @@ const { seo } = Astro.props;
   ::view-transition-new(root) {
     animation-duration: 150ms;
     animation-timing-function: var(--ease-spring);
+  }
+
+  /* Exclude persisted header from root transition to prevent double-animation */
+  .site-header {
+    view-transition-name: site-header;
+
+    /* Header pseudo-element (scroll border/blur) should not cause flicker */
+    &::before {
+      view-transition-name: none;
+    }
+  }
+
+  /* Header should not animate during view transitions - it persists */
+  ::view-transition-old(site-header),
+  ::view-transition-new(site-header) {
+    animation: none;
+  }
+
+  /* Ensure logo ring pseudo-elements don't cause flicker during transitions */
+  .logo-hint::before,
+  .logo-hint::after {
+    view-transition-name: none;
+  }
+
+  /* Navigation elements should not participate in view transitions - they persist with header */
+  .site-header nav,
+  .site-header nav > ul,
+  .mobile-menu,
+  .mobile-menu-toggle,
+  .mobile-menu-content,
+  .menu-indicator,
+  .menu-indicator::before,
+  .menu-indicator::after {
+    view-transition-name: none;
   }
 
   @media (prefers-reduced-motion: reduce) {
