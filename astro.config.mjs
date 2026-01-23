@@ -1,7 +1,7 @@
 import { defineConfig } from "astro/config";
 import sitemap from "@astrojs/sitemap";
-import { remarkReadingTime } from "./src/plugins/remark-reading-time.mjs";
-import { remarkResonance } from "./src/plugins/remark-resonance.mjs";
+import { remarkReadingTime } from "./src/plugins/remark-reading-time.ts";
+import { remarkResonance } from "./src/plugins/remark-resonance.ts";
 import tailwindcss from "@tailwindcss/vite";
 
 import mailObfuscation from "astro-mail-obfuscation";
