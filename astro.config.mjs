@@ -14,6 +14,7 @@ export default defineConfig({
   site: "https://worflor.github.io",
   integrations: [sitemap(), mailObfuscation()],
   output: "static",
+  trailingSlash: "never",
   prefetch: true,
   compressHTML: true,
 
