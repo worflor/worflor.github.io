@@ -233,7 +233,7 @@ const { seo } = Astro.props;
         </nav>
       </div>
     </header>
-    <main id="main" class="mb-32" transition:animate="fade">
+    <main id="main" class="mb-32">
       <slot />
     </main>
     <script is:inline data-astro-rerun>
@@ -468,6 +468,7 @@ const { seo } = Astro.props;
     scroll-behavior: smooth;
     color-scheme: dark;
     -webkit-tap-highlight-color: transparent;
+    overflow-y: scroll;
   }
 
   * {
@@ -773,11 +774,10 @@ const { seo } = Astro.props;
     main { margin: 0; }
   }
 
-  /* Snappy transitions */
   ::view-transition-old(root),
   ::view-transition-new(root) {
-    animation-duration: 150ms;
-    animation-timing-function: var(--ease-spring);
+    animation-duration: 120ms;
+    animation-timing-function: ease-out;
   }
 
   /* Exclude persisted header from root transition to prevent double-animation */
