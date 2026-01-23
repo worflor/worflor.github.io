@@ -93,6 +93,25 @@
   --radius-lg: 0.5rem;
   --radius-full: 50%;
 
+  /* ambient depth - subtle environmental lighting */
+  --ambient-vignette: radial-gradient(
+    ellipse 80% 60% at 50% 30%,
+    transparent 0%,
+    transparent 50%,
+    rgba(0, 0, 0, 0.4) 100%
+  );
+  --surface-sheen: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.025) 0%,
+    transparent 40%
+  );
+  --edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --depth-inset: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+  --glow-soft: 0 0 20px rgba(0, 255, 255, 0.04);
+
+  /* noise texture - adds tactile quality to flat surfaces */
+  --noise-texture: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
   /* chromatic shadows - reusable across components */
   --chromatic-shadow:
     calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
@@ -127,6 +146,23 @@
   font-weight: bold;
   font-size: var(--text-3xl);
   margin-bottom: 0.25rem;
+}
+
+/* Ambient depth - vignette baked into background */
+.ambient-depth {
+  background:
+    var(--ambient-vignette),
+    var(--color-bg);
+}
+
+/* Surface utilities - add tactile depth to containers */
+.surface-raised {
+  background-image: var(--surface-sheen);
+  box-shadow: var(--edge-highlight);
+}
+
+.surface-inset {
+  box-shadow: var(--depth-inset);
 }
 
 @keyframes glitch {
