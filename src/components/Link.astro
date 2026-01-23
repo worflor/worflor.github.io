@@ -13,7 +13,7 @@ const { text, href, external } = Astro.props;
   href={href}
   target={external ? "_blank" : "_self"}
   rel={external ? "noopener noreferrer" : undefined}
-  class="flex items-center gap-3 py-1.5 opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 min-h-[var(--touch-target)]"
+  class="interactive flex items-center gap-3 py-1.5"
 >
   <Icon name="mdi:arrow-up" class="rotate-45 shrink-0" width={18} height={18} aria-hidden="true" />
   <span>{text}</span>

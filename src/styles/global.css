@@ -92,6 +92,17 @@
   /* border radius */
   --radius-lg: 0.5rem;
   --radius-full: 50%;
+
+  /* chromatic shadows - reusable across components */
+  --chromatic-shadow:
+    calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
+    var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
+  --chromatic-shadow-lg:
+    calc(-2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.7),
+    calc(2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.7);
+  --chromatic-text-shadow:
+    calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
+    var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
 }
 
 .content-section {
@@ -101,6 +112,15 @@
   padding-inline: max(clamp(1rem, 4vw, 1.5rem), env(safe-area-inset-left), env(safe-area-inset-right));
   container-type: inline-size;
 }
+
+/* Interactive elements - dims siblings on hover, pops on own hover */
+.interactive {
+  opacity: var(--opacity-muted);
+  min-height: var(--touch-target);
+  transition: opacity var(--duration-normal) var(--ease-out);
+}
+.group:has(a:hover, button:hover) .interactive { opacity: var(--opacity-hover-dim); }
+.interactive:hover { opacity: 1 !important; }
 
 /* Typography utilities */
 .page-title {

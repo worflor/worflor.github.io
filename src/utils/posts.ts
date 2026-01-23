@@ -52,36 +52,15 @@ export async function buildResonanceIndex(posts: Post[]): Promise<ResonanceIndex
 }
 
 /** Find posts related by shared resonance patterns */
-export function getRelatedPosts(
-  currentId: string,
-  all: Post[],
-  index: ResonanceIndex,
-  limit = 3
-): Post[] {
-  const currentPatterns = new Set(index.get(currentId) || []);
-  if (currentPatterns.size === 0) return [];
+export function getRelatedPosts(currentId: string, all: Post[], index: ResonanceIndex, limit = 3): Post[] {
+  const current = new Set(index.get(currentId) || []);
+  if (!current.size) return [];
 
-  const scored: { post: Post; score: number }[] = [];
-
-  for (const post of all) {
-    if (post.id === currentId) continue;
-
-    const otherPatterns = index.get(post.id) || [];
-
-    let score = 0;
-    for (const pattern of otherPatterns) {
-      if (currentPatterns.has(pattern)) {
-        score++;
-      }
-    }
-
-    if (score > 0) {
-      scored.push({ post, score });
-    }
-  }
-
-  return scored
+  return all
+    .filter(p => p.id !== currentId)
+    .map(p => ({ p, score: (index.get(p.id) || []).filter(k => current.has(k)).length }))
+    .filter(x => x.score)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map((s) => s.post);
+    .map(x => x.p);
 }

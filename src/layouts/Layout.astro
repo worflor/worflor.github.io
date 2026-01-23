@@ -37,7 +37,6 @@ const { seo } = Astro.props;
       if (indicator) indicator.style.transition = 'none';
       menu.style.setProperty('--menu-transition', 'none');
 
-      // Close the menu
       menu.open = false;
 
       // Re-enable transitions after a frame
@@ -50,14 +49,12 @@ const { seo } = Astro.props;
       });
     }
 
-    // Track logo click handler via AbortController for proper cleanup
     var logoController: AbortController | null = null;
 
     function setupLogoScroll() {
       var logo = document.getElementById('logo-link');
       if (!logo) return;
 
-      // Abort previous listener if exists
       if (logoController) logoController.abort();
       logoController = new AbortController();
 
@@ -81,13 +78,10 @@ const { seo } = Astro.props;
           var shouldHint = destPath !== '/';
           var hasHint = logo.classList.contains('logo-hint');
 
-          // Only update if state is changing, and do it instantly
           if (shouldHint !== hasHint) {
-            // Disable transitions, update class, then re-enable
             logo.classList.add('no-transition');
             logo.classList.toggle('logo-hint', shouldHint);
 
-            // Re-enable transitions after paint (capture reference for closure)
             var logoRef = logo;
             requestAnimationFrame(function() {
               requestAnimationFrame(function() {
@@ -102,9 +96,7 @@ const { seo } = Astro.props;
     updateLogoHint();
     setupLogoScroll();
 
-    // Use astro:before-preparation (earliest hook) to prepare state before any transition visuals
     document.addEventListener("astro:before-preparation", prepareForNavigation);
-    // Safety fallback: ensure logo hint is correct after swap (e.g., browser back/forward edge cases)
     document.addEventListener("astro:after-swap", updateLogoHint);
     document.addEventListener("astro:after-swap", setupLogoScroll);
   })();
@@ -188,7 +180,7 @@ const { seo } = Astro.props;
         <span id="header-breadcrumb" class="flex items-center gap-[5px] ml-[10px] text-[length:var(--text-sm)] opacity-0 transition-opacity duration-300 overflow-hidden"></span>
         <nav class="ml-auto mr-4 @sm:mr-0">
           {/* Desktop/Tablet nav - visible at @sm (480px+) for better tablet support */}
-          <ul class="absolute right-[clamp(1rem,4vw,1.5rem)] top-1/2 -translate-y-1/2 flex items-center gap-1 group opacity-0 pointer-events-none @sm:opacity-100 @sm:pointer-events-auto transition-opacity duration-300">
+          <ul class="absolute right-[clamp(1rem,4vw,1.5rem)] top-1/2 -translate-y-1/2 flex items-center gap-1 group opacity-0 pointer-events-none @sm:opacity-100 @sm:pointer-events-auto">
             {
               navBarLinks.map((link) => (
                 <li>
@@ -217,7 +209,7 @@ const { seo } = Astro.props;
             </li>
           </ul>
           {/* Mobile menu - only on small screens (below @sm/480px) */}
-          <details class="mobile-menu relative @sm:opacity-0 @sm:pointer-events-none transition-opacity duration-300">
+          <details class="mobile-menu relative @sm:opacity-0 @sm:pointer-events-none">
             <summary class="mobile-menu-toggle relative p-3 min-h-[var(--touch-target)] min-w-[var(--touch-target)] flex items-center justify-center opacity-70 hover:opacity-100 cursor-pointer list-none [&::-webkit-details-marker]:hidden" aria-label="Toggle navigation menu">
               <span class="menu-indicator"></span>
             </summary>

@@ -6,11 +6,7 @@ import tailwindcss from "@tailwindcss/vite";
 
 import mailObfuscation from "astro-mail-obfuscation";
 
-// https://astro.build/config
 export default defineConfig({
-  // Update this when you have your GitHub Pages URL or custom domain
-  // For repo: https://username.github.io/repo-name/
-  // For user site: https://username.github.io/
   site: "https://woflo.dev",
   integrations: [sitemap(), mailObfuscation()],
   output: "static",
