@@ -202,7 +202,50 @@ type Expression =
   | "loved";
 type LifeStage = "baby" | "child" | "adult" | "elder";
 
-// NearbyCreature interface - not used in the current implementation
+// ============================================================================
+// FOG WORKER TYPES
+// ============================================================================
+
+interface FogWorkerConfig {
+  readonly revealRes: number;
+  readonly revealDecay: number;
+}
+
+interface FogCreatureData {
+  readonly x: number;
+  readonly y: number;
+  readonly revealRadius: number;
+  readonly glow: number;
+}
+
+interface FogMonolithData {
+  readonly x: number;
+  readonly y: number;
+  readonly presence: number;
+}
+
+interface FogRevealPoint {
+  readonly x: number;
+  readonly y: number;
+  readonly radius: number;
+  readonly intensity: number;
+}
+
+type FogWorkerInMessage =
+  | { readonly type: "init"; readonly width: number; readonly height: number; readonly config: FogWorkerConfig }
+  | { readonly type: "resize"; readonly width: number; readonly height: number }
+  | { readonly type: "updateEntities"; readonly creatures: readonly FogCreatureData[]; readonly monoliths: readonly FogMonolithData[] }
+  | { readonly type: "reveal"; readonly points: readonly FogRevealPoint[] }
+  | { readonly type: "decay" }
+  | { readonly type: "render" }
+  | { readonly type: "getRevealMap" }
+  | { readonly type: "setRevealMap"; readonly data: Float32Array };
+
+type FogWorkerOutMessage =
+  | { readonly type: "ready" }
+  | { readonly type: "rendered"; readonly bitmap: ImageBitmap; readonly changed: boolean }
+  | { readonly type: "revealMap"; readonly data: Float32Array }
+  | { readonly type: "fogDirty"; readonly dirty: boolean };
 
 // ============================================================================
 // GAME CONSTANTS
@@ -342,13 +385,6 @@ for (let i = 0; i < 8; i++) {
   DIRS_8.push({ x: Math.cos(angle), y: Math.sin(angle) });
 }
 
-// Precomputed 6-direction unit vectors
-const DIRS_6: Array<{ x: number; y: number }> = [];
-for (let i = 0; i < 6; i++) {
-  const angle = (i / 6) * Math.PI * 2;
-  DIRS_6.push({ x: Math.cos(angle), y: Math.sin(angle) });
-}
-
 // Precomputed cos/sin for body segment drawing
 const BODY_COS: number[] = [];
 const BODY_SIN: number[] = [];
@@ -367,6 +403,117 @@ const PARTICLE_COLORS: Record<string, (h: number, a: number) => string> = {
   ripple: (h, a) => `rgba(180, 180, 200, ${a * 0.4})`,
   void: (h, a) => `hsla(${h}, 50%, 35%, ${a * 0.7})`,
 };
+
+// ============================================================================
+// FOG WORKER - Offloads fog computation to a worker thread
+// ============================================================================
+
+class FogWorker {
+  private worker: Worker | null = null;
+  private bitmap: ImageBitmap | null = null;
+  private ready = false;
+  private pendingRender = false;
+
+  constructor() {
+    // Only init if browser supports required APIs
+    if (typeof Worker === "undefined" || typeof OffscreenCanvas === "undefined") {
+      return;
+    }
+
+    try {
+      this.worker = new Worker(
+        new URL("./fog-worker.ts", import.meta.url),
+        { type: "module" }
+      );
+
+      this.worker.onmessage = (e: MessageEvent<FogWorkerOutMessage>) => {
+        const msg = e.data;
+        if (msg.type === "ready") {
+          this.ready = true;
+        } else if (msg.type === "rendered") {
+          if (this.bitmap) this.bitmap.close();
+          this.bitmap = msg.bitmap;
+          this.pendingRender = false;
+        }
+      };
+
+      this.worker.onerror = () => {
+        this.ready = false;
+        if (this.worker) {
+          this.worker.onmessage = null;
+          this.worker.onerror = null;
+          this.worker.terminate();
+          this.worker = null;
+        }
+      };
+    } catch {
+      this.worker = null;
+    }
+  }
+
+  get isActive(): boolean {
+    return this.worker !== null && this.ready;
+  }
+
+  init(width: number, height: number, config: FogWorkerConfig): void {
+    this.worker?.postMessage({ type: "init", width, height, config } satisfies FogWorkerInMessage);
+  }
+
+  resize(width: number, height: number): void {
+    this.worker?.postMessage({ type: "resize", width, height } satisfies FogWorkerInMessage);
+  }
+
+  updateEntities(creatures: readonly FogCreatureData[], monoliths: readonly FogMonolithData[]): void {
+    this.worker?.postMessage({ type: "updateEntities", creatures, monoliths } satisfies FogWorkerInMessage);
+  }
+
+  addRevealPoints(points: readonly FogRevealPoint[]): void {
+    if (points.length > 0) {
+      this.worker?.postMessage({ type: "reveal", points } satisfies FogWorkerInMessage);
+    }
+  }
+
+  decay(): void {
+    this.worker?.postMessage({ type: "decay" } satisfies FogWorkerInMessage);
+  }
+
+  requestRender(): void {
+    if (!this.pendingRender && this.worker) {
+      this.pendingRender = true;
+      this.worker.postMessage({ type: "render" } satisfies FogWorkerInMessage);
+    }
+  }
+
+  get hasBitmap(): boolean {
+    return this.bitmap !== null;
+  }
+
+  draw(ctx: CanvasRenderingContext2D): void {
+    if (this.bitmap) {
+      ctx.drawImage(this.bitmap, 0, 0);
+    }
+  }
+
+  setRevealMap(data: Float32Array): void {
+    const copy = new Float32Array(data);
+    this.worker?.postMessage({ type: "setRevealMap", data: copy } satisfies FogWorkerInMessage, [copy.buffer]);
+  }
+
+  destroy(): void {
+    if (this.worker) {
+      this.worker.onmessage = null;
+      this.worker.onerror = null;
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.ready = false;
+    this.pendingRender = false;
+    if (this.bitmap) {
+      this.bitmap.close();
+      this.bitmap = null;
+    }
+  }
+}
 
 // ============================================================================
 // MAIN GAME FUNCTION
@@ -430,10 +577,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
   const PICKUP_HOLD_TIME = CONFIG.PICKUP_HOLD_TIME;
   let respawnPending = false;
 
-  // Fog Rendering
+  // Fog Rendering - uses worker thread when available
+  const fogWorker = new FogWorker();
   let fogCanvas: HTMLCanvasElement | null = null;
   let fogCtx: CanvasRenderingContext2D | null = null;
   let fogImageData: ImageData | null = null;
+
+  // AbortController for clean event listener removal
+  const eventAbortController = new AbortController();
   let fogDirty = true;
 
   // Pre-allocated collections
@@ -570,34 +721,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       Math.round(hue2rgb(p, q, h) * 255),
       Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
     ];
-  }
-
-  function applyWarmth(
-    r: number,
-    g: number,
-    b: number,
-    warmth: number
-  ): [number, number, number] {
-    const cold = 1 - warmth;
-    let outR = r * (1 - cold * 0.3) + warmth * 20;
-    let outG = g * (1 - cold * 0.15) + warmth * 10;
-    let outB = b * (1 + cold * 0.4) - warmth * 10;
-
-    return [
-      Math.max(0, Math.min(255, outR)),
-      Math.max(0, Math.min(255, outG)),
-      Math.max(0, Math.min(255, outB)),
-    ];
-  }
-
-  function emissionBrighten(
-    r: number,
-    g: number,
-    b: number,
-    intensity: number
-  ): [number, number, number] {
-    const boost = intensity * 80;
-    return [Math.min(255, r + boost), Math.min(255, g + boost), Math.min(255, b + boost)];
   }
 
   function distSq(x1: number, y1: number, x2: number, y2: number): number {
@@ -930,25 +1053,31 @@ export function initVoidGame(options: GameInitOptions): () => void {
             c.comforted = Math.min(1, c.comforted + 0.2);
           } else if (this.type === "cyan") {
             const waveRadius = 120;
-            const cx = Math.floor(this.x / revealRes);
-            const cy = Math.floor(this.y / revealRes);
-            const gridRadius = Math.ceil(waveRadius / revealRes);
-            const maxDistSq = gridRadius * gridRadius;
-            const invMaxDistSq = 1 / maxDistSq;
-            for (let dy = -gridRadius; dy <= gridRadius; dy++) {
-              for (let dx = -gridRadius; dx <= gridRadius; dx++) {
-                const gx = cx + dx;
-                const gy = cy + dy;
-                if (gx < 0 || gx >= revealW || gy < 0 || gy >= revealH) continue;
-                const distSq = dx * dx + dy * dy;
-                if (distSq <= maxDistSq && revealMap) {
-                  const falloff = 1 - Math.sqrt(distSq * invMaxDistSq);
-                  const idx = gy * revealW + gx;
-                  revealMap[idx] = Math.min(1, revealMap[idx] + falloff * 0.8);
+            // Use worker for reveal if active
+            if (fogWorker.isActive) {
+              fogWorker.addRevealPoints([{ x: this.x, y: this.y, radius: waveRadius, intensity: 0.8 }]);
+            } else if (revealMap) {
+              // Fallback: direct reveal map manipulation
+              const cx = Math.floor(this.x / revealRes);
+              const cy = Math.floor(this.y / revealRes);
+              const gridRadius = Math.ceil(waveRadius / revealRes);
+              const maxDistSq = gridRadius * gridRadius;
+              const invMaxDistSq = 1 / maxDistSq;
+              for (let dy = -gridRadius; dy <= gridRadius; dy++) {
+                for (let dx = -gridRadius; dx <= gridRadius; dx++) {
+                  const gx = cx + dx;
+                  const gy = cy + dy;
+                  if (gx < 0 || gx >= revealW || gy < 0 || gy >= revealH) continue;
+                  const distSq = dx * dx + dy * dy;
+                  if (distSq <= maxDistSq) {
+                    const falloff = 1 - Math.sqrt(distSq * invMaxDistSq);
+                    const idx = gy * revealW + gx;
+                    revealMap[idx] = Math.min(1, revealMap[idx] + falloff * 0.8);
+                  }
                 }
               }
+              fogDirty = true;
             }
-            fogDirty = true;
             for (let i = 0; i < 8 && particles.length < CONFIG.MAX_PARTICLES; i++) {
               const angle = (i / 8) * Math.PI * 2;
               particles.push(
@@ -1572,7 +1701,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const transitionRate = targetPresence > this.presence ? 0.08 : 0.03;
       this.presence += (targetPresence - this.presence) * transitionRate;
 
-      if (revealMap && this.presence > 0.05 && this.age > 20) {
+      // Worker handles monolith reveal in updateEntities
+      if (!fogWorker.isActive && revealMap && this.presence > 0.05 && this.age > 20) {
         const cx = Math.floor(this.x / revealRes);
         const cy = Math.floor(this.y / revealRes);
         const effectiveRadius = 30 + this.presence * 70;
@@ -2519,6 +2649,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     updateReveal(): void {
+      // Worker handles reveal in updateEntities
+      if (fogWorker.isActive) return;
+
       if (!revealMap) return;
 
       const cx = Math.floor(this.x / revealRes);
@@ -3049,27 +3182,43 @@ export function initVoidGame(options: GameInitOptions): () => void {
       });
     }
 
-    if (revealMap) {
-      for (const feature of terrainFeatures) {
-        if (feature.type === "safeZone") {
-          const cx = Math.floor(feature.x / revealRes);
-          const cy = Math.floor(feature.y / revealRes);
-          const r = Math.ceil(feature.radius / revealRes);
-          for (let dy = -r; dy <= r; dy++) {
-            for (let dx = -r; dx <= r; dx++) {
-              const gx = cx + dx;
-              const gy = cy + dy;
-              if (gx < 0 || gx >= revealW || gy < 0 || gy >= revealH) continue;
-              const d = Math.sqrt(dx * dx + dy * dy) * revealRes;
-              if (d < feature.radius) {
-                const idx = gy * revealW + gx;
-                const intensity = (1 - d / feature.radius) * feature.intensity * 0.5;
-                revealMap[idx] = Math.max(revealMap[idx], intensity);
-              }
+    // Reveal safe zones in fog
+    const safeZoneRevealPoints: Array<{ x: number; y: number; radius: number; intensity: number }> = [];
+    for (const feature of terrainFeatures) {
+      if (feature.type === "safeZone") {
+        safeZoneRevealPoints.push({
+          x: feature.x,
+          y: feature.y,
+          radius: feature.radius,
+          intensity: feature.intensity * 0.5,
+        });
+      }
+    }
+
+    if (fogWorker.isActive) {
+      // Use worker for reveal
+      fogWorker.addRevealPoints(safeZoneRevealPoints);
+    } else if (revealMap) {
+      // Fallback: direct reveal map manipulation
+      for (const point of safeZoneRevealPoints) {
+        const cx = Math.floor(point.x / revealRes);
+        const cy = Math.floor(point.y / revealRes);
+        const r = Math.ceil(point.radius / revealRes);
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            const gx = cx + dx;
+            const gy = cy + dy;
+            if (gx < 0 || gx >= revealW || gy < 0 || gy >= revealH) continue;
+            const d = Math.sqrt(dx * dx + dy * dy) * revealRes;
+            if (d < point.radius) {
+              const idx = gy * revealW + gx;
+              const intensity = (1 - d / point.radius) * point.intensity;
+              revealMap[idx] = Math.max(revealMap[idx], intensity);
             }
           }
         }
       }
+      fogDirty = true;
     }
 
     return { baseLight, safeZoneCount };
@@ -3365,9 +3514,42 @@ export function initVoidGame(options: GameInitOptions): () => void {
     revealW = Math.ceil(W / revealRes);
     revealH = Math.ceil(H / revealRes);
     revealMap = new Float32Array(revealW * revealH);
+
+    // Initialize fog worker
+    fogWorker.init(W, H, {
+      revealRes: CONFIG.REVEAL_RES,
+      revealDecay: CONFIG.REVEAL_DECAY,
+    });
   }
 
   function drawFog(): void {
+    // Worker-based rendering (preferred)
+    if (fogWorker.isActive) {
+      // Send entity data to worker
+      const creatureData: FogCreatureData[] = creatures.map((c) => ({
+        x: c.x,
+        y: c.y,
+        revealRadius: c.revealRadius,
+        glow: c.glow,
+      }));
+      const monolithData: FogMonolithData[] = monoliths.map((m) => ({
+        x: m.x,
+        y: m.y,
+        presence: m.presence,
+      }));
+
+      fogWorker.updateEntities(creatureData, monolithData);
+      fogWorker.requestRender();
+
+      // If worker has a bitmap ready, use it; otherwise fall through to canvas fallback
+      if (fogWorker.hasBitmap) {
+        fogWorker.draw(ctx);
+        return;
+      }
+      // First frame before worker renders - fall through to canvas fallback
+    }
+
+    // Canvas fallback (when worker unavailable)
     if (!revealMap) return;
 
     if (!fogCanvas || fogCanvas.width !== W || fogCanvas.height !== H) {
@@ -3430,56 +3612,65 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (fogCanvas) {
       ctx.drawImage(fogCanvas, 0, 0);
     }
+  }
 
-    if (time % 3 === 0) {
-      _protectedCells.clear();
-      for (const c of creatures) {
-        const cx = Math.floor(c.x / revealRes);
-        const cy = Math.floor(c.y / revealRes);
-        const r = Math.ceil(c.revealRadius / revealRes);
-        for (let dy = -r; dy <= r; dy++) {
-          for (let dx = -r; dx <= r; dx++) {
-            const gx = cx + dx;
-            const gy = cy + dy;
-            if (gx >= 0 && gx < revealW && gy >= 0 && gy < revealH) {
-              _protectedCells.add(gy * revealW + gx);
-            }
+  function updateFogDecay(): void {
+    // Worker handles decay internally
+    if (fogWorker.isActive) {
+      fogWorker.decay();
+      return;
+    }
+
+    // Canvas fallback decay
+    if (!revealMap) return;
+
+    _protectedCells.clear();
+    for (const c of creatures) {
+      const cx = Math.floor(c.x / revealRes);
+      const cy = Math.floor(c.y / revealRes);
+      const r = Math.ceil(c.revealRadius / revealRes);
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const gx = cx + dx;
+          const gy = cy + dy;
+          if (gx >= 0 && gx < revealW && gy >= 0 && gy < revealH) {
+            _protectedCells.add(gy * revealW + gx);
           }
         }
       }
+    }
 
-      const revealResSq = revealRes * revealRes;
-      for (const m of monoliths) {
-        if (m.presence > 0.05) {
-          const mx = Math.floor(m.x / revealRes);
-          const my = Math.floor(m.y / revealRes);
-          const protectRadius = 30 + m.presence * 70;
-          const protectRadiusSq = protectRadius * protectRadius;
-          const r = Math.ceil(protectRadius / revealRes);
-          for (let dy = -r; dy <= r; dy++) {
-            for (let dx = -r; dx <= r; dx++) {
-              const gx = mx + dx;
-              const gy = my + dy;
-              if (gx >= 0 && gx < revealW && gy >= 0 && gy < revealH) {
-                const dSq = (dx * dx + dy * dy) * revealResSq;
-                if (dSq < protectRadiusSq) {
-                  _protectedCells.add(gy * revealW + gx);
-                }
+    const revealResSq = revealRes * revealRes;
+    for (const m of monoliths) {
+      if (m.presence > 0.05) {
+        const mx = Math.floor(m.x / revealRes);
+        const my = Math.floor(m.y / revealRes);
+        const protectRadius = 30 + m.presence * 70;
+        const protectRadiusSq = protectRadius * protectRadius;
+        const r = Math.ceil(protectRadius / revealRes);
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            const gx = mx + dx;
+            const gy = my + dy;
+            if (gx >= 0 && gx < revealW && gy >= 0 && gy < revealH) {
+              const dSq = (dx * dx + dy * dy) * revealResSq;
+              if (dSq < protectRadiusSq) {
+                _protectedCells.add(gy * revealW + gx);
               }
             }
           }
         }
       }
-
-      let anyChanged = false;
-      for (let i = 0; i < revealMap.length; i++) {
-        if (revealMap[i] > 0 && !_protectedCells.has(i)) {
-          revealMap[i] = Math.max(0, revealMap[i] - CONFIG.REVEAL_DECAY * 3);
-          anyChanged = true;
-        }
-      }
-      if (anyChanged) fogDirty = true;
     }
+
+    let anyChanged = false;
+    for (let i = 0; i < revealMap.length; i++) {
+      if (revealMap[i] > 0 && !_protectedCells.has(i)) {
+        revealMap[i] = Math.max(0, revealMap[i] - CONFIG.REVEAL_DECAY * 3);
+        anyChanged = true;
+      }
+    }
+    if (anyChanged) fogDirty = true;
   }
 
   function compressRevealMap(map: Float32Array): number[] {
@@ -3569,6 +3760,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
         } else if (Array.isArray(data.revealMap) && data.revealMap.length === revealW * revealH) {
           revealMap = new Float32Array(data.revealMap);
         }
+        // Sync loaded reveal map to worker
+        if (revealMap && fogWorker.isActive) {
+          fogWorker.setRevealMap(revealMap);
+        }
         fogCanvas = null;
         fogDirty = true;
       }
@@ -3609,8 +3804,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   function createRipple(x: number, y: number): void {
-    if (!revealMap) return;
-
     for (let i = 0; i < 8 && particles.length < CONFIG.MAX_PARTICLES; i++) {
       const p = new Particle(x, y, "ripple", 200);
       p.vx = DIRS_8[i].x * 1.5;
@@ -3618,30 +3811,37 @@ export function initVoidGame(options: GameInitOptions): () => void {
       particles.push(p);
     }
 
-    const cx = Math.floor(x / revealRes);
-    const cy = Math.floor(y / revealRes);
     const radius = 60;
-    const r = Math.ceil(radius / revealRes);
-    const radiusSq = radius * radius;
-    const revealResSq = revealRes * revealRes;
-    const invRadius = 1 / radius;
 
-    for (let dy = -r; dy <= r; dy++) {
-      for (let dx = -r; dx <= r; dx++) {
-        const gx = cx + dx;
-        const gy = cy + dy;
-        if (gx < 0 || gx >= revealW || gy < 0 || gy >= revealH) continue;
+    // Use worker for reveal if active
+    if (fogWorker.isActive) {
+      fogWorker.addRevealPoints([{ x, y, radius, intensity: 0.15 }]);
+    } else if (revealMap) {
+      // Fallback: direct reveal map manipulation
+      const cx = Math.floor(x / revealRes);
+      const cy = Math.floor(y / revealRes);
+      const r = Math.ceil(radius / revealRes);
+      const radiusSq = radius * radius;
+      const revealResSq = revealRes * revealRes;
+      const invRadius = 1 / radius;
 
-        const distSq = (dx * dx + dy * dy) * revealResSq;
-        if (distSq < radiusSq) {
-          const d = Math.sqrt(distSq);
-          const idx = gy * revealW + gx;
-          const intensity = (1 - d * invRadius) * 0.15;
-          revealMap[idx] = Math.min(1, revealMap[idx] + intensity);
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const gx = cx + dx;
+          const gy = cy + dy;
+          if (gx < 0 || gx >= revealW || gy < 0 || gy >= revealH) continue;
+
+          const distSq = (dx * dx + dy * dy) * revealResSq;
+          if (distSq < radiusSq) {
+            const d = Math.sqrt(distSq);
+            const idx = gy * revealW + gx;
+            const intensity = (1 - d * invRadius) * 0.15;
+            revealMap[idx] = Math.min(1, revealMap[idx] + intensity);
+          }
         }
       }
+      fogDirty = true;
     }
-    fogDirty = true;
 
     for (const c of creatures) {
       const d = Math.hypot(c.x - x, c.y - y);
@@ -3818,6 +4018,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }, CONFIG.RESPAWN_DELAY);
     }
 
+    // Fog decay - every 3 frames
+    if (time % 3 === 0) {
+      updateFogDecay();
+    }
+
     if (time % CONFIG.SAVE_INTERVAL === 0) save();
 
     updateUI();
@@ -3975,7 +4180,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     initRevealMap();
 
-    if (oldReveal && oldW && oldH && revealMap) {
+    if (oldReveal && oldW && oldH && revealW && revealH && revealMap) {
       const scaleX = oldW / revealW;
       const scaleY = oldH / revealH;
       for (let gy = 0; gy < revealH; gy++) {
@@ -3987,25 +4192,31 @@ export function initVoidGame(options: GameInitOptions): () => void {
           }
         }
       }
+      // Sync scaled reveal map to worker
+      if (fogWorker.isActive) {
+        fogWorker.setRevealMap(revealMap);
+      }
     }
     fogDirty = true;
     fogCanvas = null;
   }
 
-  // Register event handlers
-  window.addEventListener("resize", resize);
+  // Register event handlers (use signal for cleanup)
+  const signal = eventAbortController.signal;
+
+  window.addEventListener("resize", resize, { signal });
 
   window.addEventListener("popstate", () => {
     const newDepth = parseDepthFromPath();
     if (newDepth !== currentDepth) {
       navigateToDepth(newDepth);
     }
-  });
+  }, { signal });
 
   document.addEventListener("mousemove", (e) => {
     mouse.x = e.clientX;
     mouse.y = e.clientY;
-  });
+  }, { signal });
 
   document.addEventListener("mousedown", (e) => {
     if ((e.target as HTMLElement).tagName === "BUTTON" || (e.target as HTMLElement).tagName === "A") return;
@@ -4053,7 +4264,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (foods.length < CONFIG.MAX_FOODS) {
       foods.push(new Food(mouse.x, mouse.y));
     }
-  });
+  }, { signal });
 
   document.addEventListener("mouseup", (e) => {
     if (e.button === 0) {
@@ -4076,7 +4287,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       rightClickTarget = null;
       pickupProgress = 0;
     }
-  });
+  }, { signal });
 
   // Touch handlers
   let touchStartTime = 0;
@@ -4121,7 +4332,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         }
       }
     },
-    { passive: false }
+    { passive: false, signal }
   );
 
   document.addEventListener(
@@ -4150,7 +4361,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         }
       }
     },
-    { passive: false }
+    { passive: false, signal }
   );
 
   document.addEventListener("touchend", () => {
@@ -4187,7 +4398,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     rightClickTarget = null;
     touchCreature = null;
     mouse.tappedHole = null;
-  });
+  }, { signal });
 
   document.addEventListener("touchcancel", () => {
     if (heldCreature) {
@@ -4202,32 +4413,32 @@ export function initVoidGame(options: GameInitOptions): () => void {
     rightClickTarget = null;
     touchCreature = null;
     mouse.tappedHole = null;
-  });
+  }, { signal });
 
   homeBtn.addEventListener("click", () => {
     window.location.href = "/";
-  });
+  }, { signal });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       window.location.href = "/";
     }
-  });
+  }, { signal });
 
   resetBtn.addEventListener("click", () => {
     if (confirm("Start over? All your little guys will be gone.")) {
       reset();
     }
-  });
+  }, { signal });
 
-  document.addEventListener("contextmenu", (e) => e.preventDefault());
+  document.addEventListener("contextmenu", (e) => e.preventDefault(), { signal });
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       fogCanvas = null;
       fogDirty = true;
     }
-  });
+  }, { signal });
 
   // ============================================================================
   // INITIALIZATION
@@ -4264,12 +4475,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
   // Cleanup function
   function cleanup(): void {
+    eventAbortController.abort();
     if (gameLoopId) {
       cancelAnimationFrame(gameLoopId);
       gameLoopId = null;
     }
+    fogWorker.destroy();
   }
 
+  // Note: These listeners intentionally don't use { signal } because they trigger cleanup
+  // which calls abort(). If they used the signal, they'd be removed before cleanup runs.
   window.addEventListener("beforeunload", cleanup);
   window.addEventListener("pagehide", cleanup);
 

@@ -25,10 +25,12 @@ export async function preparePosts(
   const sorted = sortPostsByDate(posts);
   const targetPosts = limit !== undefined ? sorted.slice(0, limit) : sorted;
 
-  for (const post of targetPosts) {
-    const { remarkPluginFrontmatter } = await render(post);
-    post.data.readingTime = remarkPluginFrontmatter?.minutesRead;
-  }
+  const results = await Promise.all(
+    targetPosts.map(post => render(post))
+  );
+  results.forEach((result, i) => {
+    targetPosts[i].data.readingTime = result.remarkPluginFrontmatter?.minutesRead;
+  });
 
   return targetPosts;
 }
@@ -38,11 +40,14 @@ type ResonanceIndex = Map<string, string[]>;
 
 /** Build resonance index once - call this in getStaticPaths */
 export async function buildResonanceIndex(posts: Post[]): Promise<ResonanceIndex> {
+  const results = await Promise.all(
+    posts.map(async post => ({
+      id: post.id,
+      resonance: (await render(post)).remarkPluginFrontmatter?.resonance || [],
+    }))
+  );
   const index: ResonanceIndex = new Map();
-  for (const post of posts) {
-    const { remarkPluginFrontmatter } = await render(post);
-    index.set(post.id, remarkPluginFrontmatter?.resonance || []);
-  }
+  results.forEach(({ id, resonance }) => index.set(id, resonance));
   return index;
 }
 

@@ -126,7 +126,7 @@ const {
   .gallery-scroll::-webkit-scrollbar { display: none; }
 
   .gallery-scroll:focus-visible {
-    outline: 2px solid rgba(245, 245, 245, var(--opacity-focus));
+    outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
     outline-offset: 4px;
     border-radius: var(--radius-lg);
   }
@@ -180,21 +180,21 @@ const {
     width: 8px;
     height: 8px;
     border-radius: var(--radius-full);
-    background: rgba(245, 245, 245, var(--opacity-subtle));
+    background: rgb(var(--color-text-rgb) / var(--opacity-subtle));
     transition: background var(--duration-normal) var(--ease-out);
   }
 
   .gallery-dot:hover::after {
-    background: rgba(245, 245, 245, var(--opacity-hover-dim));
+    background: rgb(var(--color-text-rgb) / var(--opacity-hover-dim));
   }
 
   .gallery-dot[aria-selected="true"]::after {
-    background: rgba(245, 245, 245, var(--opacity-muted));
+    background: rgb(var(--color-text-rgb) / var(--opacity-muted));
     transform: translate(-50%, -50%) scale(var(--scale-indicator));
   }
 
   .gallery-dot:focus-visible {
-    outline: 2px solid rgba(245, 245, 245, var(--opacity-focus));
+    outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
     outline-offset: 2px;
   }
 
@@ -346,7 +346,7 @@ const {
     }
 
     .image-gallery--overlap .gallery-item:focus-visible {
-      outline: 2px solid rgba(245, 245, 245, var(--opacity-focus));
+      outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
       outline-offset: 6px;
       border-radius: var(--radius-lg);
       z-index: 10;
