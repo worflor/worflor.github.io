@@ -1,20 +1,22 @@
 # worflor.github.io
 
-Personal portfolio site built with [Astro](https://astro.build/) and [Tailwind CSS](https://tailwindcss.com/).
+My personal site. Built with [Astro](https://astro.build/) and [Tailwind CSS](https://tailwindcss.com/).
 
-## Development
+---
+
+### Running locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Build
+### Building for production
 
 ```bash
 npm run build
 ```
 
-## Deployment
+---
 
-Automatically deployed to GitHub Pages on push to `main`.
+Deploys automatically to GitHub Pages when you push to `main`.

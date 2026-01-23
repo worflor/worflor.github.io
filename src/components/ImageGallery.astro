@@ -567,8 +567,7 @@ const {
       manualSelection = true;
       setTimeout(() => { manualSelection = false; }, 500);
       scroll.scrollTo({
-        left: item.offsetLeft - (scroll.clientWidth - item.offsetWidth) / 2,
-        behavior: 'smooth'
+        left: item.offsetLeft - (scroll.clientWidth - item.offsetWidth) / 2
       });
     };
 

@@ -43,7 +43,7 @@ const { seo } = Astro.props;
       logo.addEventListener('click', function(e) {
         if (location.pathname === '/') {
           e.preventDefault();
-          window.scrollTo({ top: 0, behavior: 'smooth' });
+          window.scrollTo({ top: 0 });
         }
       }, { signal: logoController.signal });
     }
@@ -254,7 +254,7 @@ const { seo } = Astro.props;
 
         function scrollToHeading(el) {
           var y = el.getBoundingClientRect().top + window.scrollY - header.offsetHeight - 16;
-          window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+          window.scrollTo({ top: Math.max(0, y) });
         }
 
         function buildCrumbDOM(crumbs, compact) {
