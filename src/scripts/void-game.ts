@@ -3561,15 +3561,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
       fogWorker.updateEntities(creatureData, monolithData);
       fogWorker.requestRender();
 
-      // If worker has a bitmap ready, use it; otherwise fall through to canvas fallback
       if (fogWorker.hasBitmap) {
         fogWorker.draw(ctx);
         return;
       }
-      // First frame before worker renders - fall through to canvas fallback
     }
 
-    // Canvas fallback (when worker unavailable)
+    // Canvas fallback
     if (!revealMap) return;
 
     if (!fogCanvas || fogCanvas.width !== W || fogCanvas.height !== H) {
@@ -4504,8 +4502,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     fogWorker.destroy();
   }
 
-  // Note: These listeners intentionally don't use { signal } because they trigger cleanup
-  // which calls abort(). If they used the signal, they'd be removed before cleanup runs.
+  // No signal - these trigger cleanup which calls abort()
   window.addEventListener("beforeunload", cleanup);
   window.addEventListener("pagehide", cleanup);
 

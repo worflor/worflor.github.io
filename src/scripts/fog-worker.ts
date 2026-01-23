@@ -421,11 +421,10 @@ self.onmessage = (e: MessageEvent<WorkerInMessage>) => {
         break;
 
       default:
-        // Unknown message type - ignore silently
         break;
     }
   } catch {
-    // Error caught - worker continues operating
+    // Worker continues
   }
 };
 

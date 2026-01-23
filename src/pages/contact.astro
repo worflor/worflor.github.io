@@ -19,7 +19,7 @@ import { contactPageContent } from "../config";
       class="flex flex-col gap-[var(--space-md)]"
       data-astro-reload
     >
-      <!-- Honeypots: realistic names bots love to fill -->
+      <!-- Honeypot fields -->
       <input
         type="text"
         name="website"
@@ -101,32 +101,32 @@ import { contactPageContent } from "../config";
 </Layout>
 
 <script is:inline data-astro-rerun>
-  // Blocking: set data attrs before render
+  // Set data attrs before render
   (function() {
     var p = new URLSearchParams(location.search);
-    if (p.has('hey')) document.documentElement.dataset.hey = '';
+    if (p.has('hey')) {
+      document.documentElement.dataset.hey = '';
+      document.querySelectorAll('[data-hey-placeholder]').forEach(function(el) {
+        el.placeholder = el.dataset.heyPlaceholder || '';
+      });
+    }
     if (p.has('sent')) {
       document.documentElement.dataset.sent = '';
       history.replaceState({}, '', location.pathname);
     }
+    document.documentElement.dataset.ready = '';
   })();
 </script>
 
 <script>
-  // Swap placeholders for ?hey
-  if (document.documentElement.dataset.hey !== undefined) {
-    document.querySelectorAll('[data-hey-placeholder]').forEach(el => {
-      (el as HTMLInputElement).placeholder = (el as HTMLElement).dataset.heyPlaceholder || '';
-    });
-  }
-  document.documentElement.dataset.ready = '';
 
   // Anti-spam
-  const pageLoadTime = Date.now();
-  let hasInteracted = false;
+  const MIN_TIME_MS = 5000;
+  const loadTime = Date.now();
+  let interacted = false;
   const ctrl = new AbortController();
 
-  const onInteract = () => { hasInteracted = true; ctrl.abort(); };
+  const onInteract = () => { interacted = true; ctrl.abort(); };
   ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e =>
     document.addEventListener(e, onInteract, { signal: ctrl.signal })
   );
@@ -135,25 +135,23 @@ import { contactPageContent } from "../config";
   if (form) form.action = 'https://formsubmit.co/841f620dfbfbfdae899508762dca523e';
 
   form?.addEventListener('submit', (e) => {
-    const honeypots = [
-      document.querySelector('input[name="website"]') as HTMLInputElement | null,
-      document.querySelector('input[name="phone"]') as HTMLInputElement | null
-    ];
-    const hp1 = honeypots[0]?.value;
-    const hp2 = honeypots[1]?.value;
-    const t = Date.now() - pageLoadTime;
+    const hp1 = (document.querySelector('input[name="website"]') as HTMLInputElement)?.value;
+    const hp2 = (document.querySelector('input[name="phone"]') as HTMLInputElement)?.value;
+    const elapsed = Date.now() - loadTime;
 
-    if (hp1 || hp2 || t < 5000 || !hasInteracted || navigator.webdriver) {
+    // Block spam
+    if (hp1 || hp2 || elapsed < MIN_TIME_MS || !interacted || navigator.webdriver) {
       e.preventDefault();
       return;
     }
 
-    honeypots.forEach(input => input?.remove());
+    // Remove honeypots before submit
+    document.querySelectorAll('input[name="website"], input[name="phone"]').forEach(el => el.remove());
   });
 </script>
 
 <style>
-  /* Hidden field: offscreen instead of display:none (bots detect that) */
+  /* Hidden: offscreen (bots detect display:none) */
   .form-field-helper {
     position: absolute;
     left: -9999px;
@@ -214,7 +212,8 @@ import { contactPageContent } from "../config";
     }
   }
 
-  .form-input {
+  /* Shared form control base */
+  .form-input, .form-submit {
     background: transparent;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
@@ -222,100 +221,45 @@ import { contactPageContent } from "../config";
     font-size: var(--text-base);
     color: var(--color-text);
     min-height: var(--touch-target);
-    transition:
-      box-shadow var(--duration-normal) var(--ease-out),
-      border-color var(--duration-normal) var(--ease-out);
+    transition: box-shadow var(--duration-normal) var(--ease-out),
+                border-color var(--duration-normal) var(--ease-out);
   }
 
+  .form-input:hover, .form-submit:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+    box-shadow: var(--chromatic-shadow);
+  }
+
+  .form-input:focus, .form-submit:focus-visible {
+    outline: none;
+    border-color: rgb(var(--color-text-rgb) / 0.3);
+    box-shadow: var(--chromatic-shadow-lg);
+  }
+
+  /* Input-specific */
   .form-input::placeholder {
     color: var(--color-text);
     opacity: 0.5;
-    transition:
-      opacity var(--duration-normal) var(--ease-out),
-      text-shadow var(--duration-normal) var(--ease-out);
+    transition: opacity var(--duration-normal) var(--ease-out);
   }
+  .form-input:hover::placeholder { opacity: 0.6; }
+  :global(html[data-hey]:not([data-ready])) .form-input::placeholder { opacity: 0; }
 
-  /* Hide placeholders during ?hey swap to prevent flash */
-  :global(html[data-hey]:not([data-ready])) .form-input::placeholder {
-    opacity: 0;
-  }
-
-  .form-input:hover {
-    border-color: rgb(var(--color-text-rgb) / 0.2);
-    box-shadow:
-      calc(-1 * var(--chromatic-offset)) 0 0
-        rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
-      var(--chromatic-offset) 0 0
-        rgb(var(--chromatic-red) / var(--chromatic-opacity));
-  }
-
-  .form-input:hover::placeholder {
-    opacity: 0.6;
-  }
-
-  .form-input:focus {
-    outline: none;
-    border-color: rgb(var(--color-text-rgb) / 0.3);
-    box-shadow:
-      calc(-2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.7),
-      calc(2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.7);
-  }
-
-  .form-input:focus::placeholder {
-    opacity: 0.5;
-    text-shadow:
-      calc(-0.5 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.3),
-      calc(0.5 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.3);
-  }
-
+  /* Button-specific */
   .form-submit {
-    background: transparent;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-sm) var(--space-md);
-    font-size: var(--text-base);
-    color: var(--color-text);
     cursor: pointer;
-    min-height: var(--touch-target);
-    transition:
-      text-shadow var(--duration-normal) var(--ease-out),
-      box-shadow var(--duration-normal) var(--ease-out),
-      border-color var(--duration-normal) var(--ease-out),
-      background var(--duration-normal) var(--ease-out),
-      transform var(--duration-fast) var(--ease-out),
-      opacity var(--duration-fast) var(--ease-out);
+    transition: box-shadow var(--duration-normal) var(--ease-out),
+                border-color var(--duration-normal) var(--ease-out),
+                background var(--duration-normal) var(--ease-out),
+                text-shadow var(--duration-normal) var(--ease-out),
+                transform var(--duration-fast) var(--ease-out);
   }
-
   .form-submit:hover {
-    border-color: rgb(var(--color-text-rgb) / 0.25);
     background: rgb(var(--color-text-rgb) / 0.03);
-    box-shadow:
-      calc(-1 * var(--chromatic-offset)) 0 0
-        rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
-      var(--chromatic-offset) 0 0
-        rgb(var(--chromatic-red) / var(--chromatic-opacity));
-    text-shadow:
-      calc(-1 * var(--chromatic-offset)) 0 0
-        rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
-      var(--chromatic-offset) 0 0
-        rgb(var(--chromatic-red) / var(--chromatic-opacity));
+    text-shadow: var(--chromatic-text-shadow);
   }
-
-  .form-submit:focus-visible {
-    outline: none;
-    border-color: rgb(var(--color-text-rgb) / 0.35);
-    background: rgb(var(--color-text-rgb) / 0.05);
-    box-shadow:
-      calc(-2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.7),
-      calc(2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.7);
-    text-shadow:
-      calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.6),
-      var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / 0.6);
-  }
-
   .form-submit:active {
     transform: scale(var(--scale-active));
     opacity: var(--opacity-muted);
-    transition-duration: var(--duration-instant);
   }
 </style>
