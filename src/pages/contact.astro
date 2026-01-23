@@ -135,11 +135,20 @@ import { contactPageContent } from "../config";
   if (form) form.action = 'https://formsubmit.co/841f620dfbfbfdae899508762dca523e';
 
   form?.addEventListener('submit', (e) => {
-    const hp1 = (document.querySelector('input[name="website"]') as HTMLInputElement)?.value;
-    const hp2 = (document.querySelector('input[name="phone"]') as HTMLInputElement)?.value;
+    const honeypots = [
+      document.querySelector('input[name="website"]') as HTMLInputElement | null,
+      document.querySelector('input[name="phone"]') as HTMLInputElement | null
+    ];
+    const hp1 = honeypots[0]?.value;
+    const hp2 = honeypots[1]?.value;
     const t = Date.now() - pageLoadTime;
 
-    if (hp1 || hp2 || t < 5000 || !hasInteracted || navigator.webdriver) e.preventDefault();
+    if (hp1 || hp2 || t < 5000 || !hasInteracted || navigator.webdriver) {
+      e.preventDefault();
+      return;
+    }
+
+    honeypots.forEach(input => input?.remove());
   });
 </script>
 
