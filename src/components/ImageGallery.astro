@@ -18,13 +18,15 @@ interface Props {
   variant?: 'overlap' | 'grid' | 'scroll';
   showIndicators?: boolean;
   class?: string;
+  transitionName?: string;
 }
 
 const {
   images,
   variant = 'overlap',
   showIndicators = true,
-  class: className = ''
+  class: className = '',
+  transitionName
 } = Astro.props;
 ---
 
@@ -52,6 +54,7 @@ const {
           decoding={i === 0 ? "sync" : "async"}
           fetchpriority={i === 0 ? "high" : undefined}
           class="gallery-image"
+          transition:name={i === 0 ? transitionName : undefined}
         />
       </div>
     ))}
