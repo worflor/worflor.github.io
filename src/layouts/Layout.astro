@@ -89,6 +89,7 @@ const { seo } = Astro.props;
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/site.webmanifest" />
     <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preconnect" href="https://formsubmit.co" crossorigin />
     <meta name="generator" content={Astro.generator} />
     <title>{seo.title}</title>
     <meta name="description" content={seo.description} />
@@ -124,7 +125,8 @@ const { seo } = Astro.props;
             width={50}
             height={50}
             loading="eager"
-            decoding="async"
+            decoding="sync"
+            fetchpriority="high"
             class="size-(--size-avatar-md) object-cover"
             transition:name="site-logo"
           />
@@ -718,5 +720,20 @@ const { seo } = Astro.props;
     * { color: black !important; text-shadow: none !important; }
     a { text-decoration: underline; }
     main { margin: 0; }
+  }
+
+  /* Snappy transitions */
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 150ms;
+    animation-timing-function: var(--ease-spring);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) {
+      animation: none !important;
+    }
   }
 </style>

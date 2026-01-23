@@ -15,7 +15,13 @@ export default defineConfig({
   integrations: [sitemap(), mailObfuscation()],
   output: "static",
   trailingSlash: "never",
-  prefetch: true,
+  prefetch: {
+    prefetchAll: true,
+    defaultStrategy: "hover",
+  },
+  experimental: {
+    clientPrerender: true,
+  },
   compressHTML: true,
 
   markdown: {

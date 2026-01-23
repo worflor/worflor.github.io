@@ -47,7 +47,8 @@ const {
           width={800}
           height={600}
           loading={i === 0 ? "eager" : "lazy"}
-          decoding="async"
+          decoding={i === 0 ? "sync" : "async"}
+          fetchpriority={i === 0 ? "high" : undefined}
           class="gallery-image"
         />
       </div>

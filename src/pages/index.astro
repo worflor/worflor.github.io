@@ -24,7 +24,8 @@ const recentPosts = await preparePosts(posts, 2);
         width={100}
         height={100}
         loading="eager"
-        decoding="async"
+        decoding="sync"
+        fetchpriority="high"
         class="size-(--size-avatar-lg) rounded-full shrink-0"
         transition:name="profile-image"
       />
