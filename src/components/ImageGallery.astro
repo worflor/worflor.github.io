@@ -515,11 +515,11 @@ const {
 </style>
 
 <script>
-  function initGallery(gallery, signal) {
+  function initGallery(gallery: HTMLElement, signal: AbortSignal) {
     if (!(gallery instanceof HTMLElement)) return;
-    const scroll = gallery.querySelector('.gallery-scroll');
-    const dots = gallery.querySelectorAll('.gallery-dot');
-    const itemsArray = Array.from(gallery.querySelectorAll('.gallery-item'));
+    const scroll = gallery.querySelector<HTMLElement>('.gallery-scroll');
+    const dots = gallery.querySelectorAll<HTMLElement>('.gallery-dot');
+    const itemsArray = Array.from(gallery.querySelectorAll<HTMLElement>('.gallery-item'));
 
     if (!(scroll instanceof HTMLElement) || itemsArray.length === 0) return;
 
@@ -530,18 +530,18 @@ const {
     let wheelCooldown = false;
     let manualSelection = false;
 
-    const setState = (state) => {
+    const setState = (state: string) => {
       gallery.dataset.state = state;
     };
 
-    const setFeatured = (index) => {
+    const setFeatured = (index: number) => {
       itemsArray.forEach((item, i) => {
         item.classList.toggle('gallery-item--featured', i === index);
       });
       dots.forEach((dot, i) => dot.setAttribute('aria-selected', String(i === index)));
     };
 
-    const setExpanded = (item) => {
+    const setExpanded = (item: HTMLElement | null) => {
       itemsArray.forEach(it => it.classList.remove('gallery-item--expanded'));
       if (item) {
         item.classList.add('gallery-item--expanded');
@@ -551,7 +551,7 @@ const {
       }
     };
 
-    const setFocused = (item) => {
+    const setFocused = (item: HTMLElement | null) => {
       itemsArray.forEach(it => it.classList.remove('gallery-item--focused'));
       if (item) {
         item.classList.add('gallery-item--focused');
@@ -569,7 +569,7 @@ const {
       if (!focusLocked) setFocused(null);
     }, { signal });
 
-    const scrollToItem = (index) => {
+    const scrollToItem = (index: number) => {
       const item = itemsArray[index];
       if (!(item instanceof HTMLElement)) return;
       manualSelection = true;
@@ -600,7 +600,7 @@ const {
       };
 
       item.addEventListener('click', handler, { signal });
-      item.addEventListener('keydown', (e) => {
+      item.addEventListener('keydown', (e: KeyboardEvent) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           handler();
@@ -609,7 +609,7 @@ const {
     });
 
     // Escape to collapse
-    gallery.addEventListener('keydown', (e) => {
+    gallery.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setExpanded(null);
         setFocused(null);
@@ -618,7 +618,7 @@ const {
 
     // Horizontal scroll to cycle images (trackpad swipe or shift+wheel)
     if (canCycle) {
-      scroll.addEventListener('wheel', (e) => {
+      scroll.addEventListener('wheel', (e: WheelEvent) => {
         const delta = e.deltaX || (e.shiftKey ? e.deltaY : 0);
         if (Math.abs(delta) < 10) return;
 
@@ -661,9 +661,11 @@ const {
     });
 
     // Sync featured state with scroll position (mobile carousel)
-    let scrollDebounce;
+    let scrollDebounce: ReturnType<typeof setTimeout> | null = null;
     scroll.addEventListener('scroll', () => {
-      clearTimeout(scrollDebounce);
+      if (scrollDebounce) {
+        clearTimeout(scrollDebounce);
+      }
       scrollDebounce = setTimeout(() => {
         if (manualSelection) return;
 
@@ -691,7 +693,7 @@ const {
   const controllers = new WeakMap();
 
   function init() {
-    document.querySelectorAll('.image-gallery').forEach(el => {
+    document.querySelectorAll<HTMLElement>('.image-gallery').forEach(el => {
       // Cleanup previous listeners
       controllers.get(el)?.abort();
 
