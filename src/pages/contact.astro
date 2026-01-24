@@ -132,22 +132,26 @@ import { contactPageContent } from "../config";
   );
 
   const form = document.querySelector('form');
-  if (form) form.action = 'https://formsubmit.co/841f620dfbfbfdae899508762dca523e';
+  if (form instanceof HTMLFormElement) {
+    form.action = 'https://formsubmit.co/841f620dfbfbfdae899508762dca523e';
 
-  form?.addEventListener('submit', (e) => {
-    const hp1 = (document.querySelector('input[name="website"]') as HTMLInputElement)?.value;
-    const hp2 = (document.querySelector('input[name="phone"]') as HTMLInputElement)?.value;
-    const elapsed = Date.now() - loadTime;
+    form.addEventListener('submit', (e) => {
+      const hp1 = document.querySelector('input[name="website"]');
+      const hp2 = document.querySelector('input[name="phone"]');
+      const hp1Value = hp1 instanceof HTMLInputElement ? hp1.value : '';
+      const hp2Value = hp2 instanceof HTMLInputElement ? hp2.value : '';
+      const elapsed = Date.now() - loadTime;
 
-    // Block spam
-    if (hp1 || hp2 || elapsed < MIN_TIME_MS || !interacted || navigator.webdriver) {
-      e.preventDefault();
-      return;
-    }
+      // Block spam
+      if (hp1Value || hp2Value || elapsed < MIN_TIME_MS || !interacted || navigator.webdriver) {
+        e.preventDefault();
+        return;
+      }
 
-    // Remove honeypots before submit
-    document.querySelectorAll('input[name="website"], input[name="phone"]').forEach(el => el.remove());
-  });
+      // Remove honeypots before submit
+      document.querySelectorAll('input[name="website"], input[name="phone"]').forEach(el => el.remove());
+    });
+  }
 </script>
 
 <style>
