@@ -16,8 +16,8 @@ const { seo } = Astro.props;
 <script>
   (function() {
     // Prevent duplicate listener registration across navigations
-    if ((window as any).__layoutListenersInit) return;
-    (window as any).__layoutListenersInit = true;
+    if (window.__layoutListenersInit) return;
+    window.__layoutListenersInit = true;
 
     function updateLogoHint() {
       var logo = document.getElementById('logo-link');
@@ -26,15 +26,15 @@ const { seo } = Astro.props;
 
     // Close mobile menu instantly without triggering CSS transitions
     function closeMenuInstantly() {
-      var menu = document.querySelector('.mobile-menu') as HTMLDetailsElement;
-      if (!menu || !menu.open) return;
+      var menu = document.querySelector('.mobile-menu');
+      if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
 
       // Disable transitions temporarily to prevent flicker
-      var content = menu.querySelector('.mobile-menu-content') as HTMLElement;
-      var indicator = menu.querySelector('.menu-indicator') as HTMLElement;
+      var content = menu.querySelector('.mobile-menu-content');
+      var indicator = menu.querySelector('.menu-indicator');
 
-      if (content) content.style.transition = 'none';
-      if (indicator) indicator.style.transition = 'none';
+      if (content instanceof HTMLElement) content.style.transition = 'none';
+      if (indicator instanceof HTMLElement) indicator.style.transition = 'none';
       menu.style.setProperty('--menu-transition', 'none');
 
       menu.open = false;
@@ -42,14 +42,14 @@ const { seo } = Astro.props;
       // Re-enable transitions after a frame
       requestAnimationFrame(function() {
         requestAnimationFrame(function() {
-          if (content) content.style.transition = '';
-          if (indicator) indicator.style.transition = '';
+          if (content instanceof HTMLElement) content.style.transition = '';
+          if (indicator instanceof HTMLElement) indicator.style.transition = '';
           menu.style.removeProperty('--menu-transition');
         });
       });
     }
 
-    var logoController: AbortController | null = null;
+    var logoController = null;
 
     function setupLogoScroll() {
       var logo = document.getElementById('logo-link');
@@ -67,7 +67,7 @@ const { seo } = Astro.props;
     }
 
     // Prepare for navigation - close menu and update logo hint BEFORE transition starts
-    function prepareForNavigation(e: any) {
+    function prepareForNavigation(e) {
       closeMenuInstantly();
 
       // Pre-update logo hint based on the destination URL to avoid post-swap flash
@@ -240,6 +240,7 @@ const { seo } = Astro.props;
       (function() {
         var header = document.querySelector('.site-header');
         var breadcrumb = document.getElementById('header-breadcrumb');
+        if (!(header instanceof HTMLElement)) return;
         var headerH = header.offsetHeight;
         var hideThreshold = headerH * 1.25;
         var lastScroll = window.scrollY;
@@ -256,14 +257,14 @@ const { seo } = Astro.props;
           // Check if desktop nav is visible (opacity > 0 at @sm/480px container width)
           var navVisible = navUl && getComputedStyle(navUl).opacity !== '0';
 
-          if (navVisible) {
+          if (navVisible && navUl instanceof HTMLElement) {
             var navRect = navUl.getBoundingClientRect();
             var space = navRect.left - logoRect.right - 10;
             return { space: Math.max(0, space), compact: space < 200 };
           }
 
           // Mobile: measure to hamburger menu instead
-          if (mobileMenu) {
+          if (mobileMenu instanceof HTMLElement) {
             var menuRect = mobileMenu.getBoundingClientRect();
             var space = menuRect.left - logoRect.right - 16;
             return { space: Math.max(0, space), compact: true };
@@ -287,7 +288,7 @@ const { seo } = Astro.props;
           } else if (scroll > lastScroll) {
             header.style.transform = 'translateY(-100%)';
             hidePoint = scroll;
-            if (mobileMenu) mobileMenu.open = false;
+            if (mobileMenu instanceof HTMLDetailsElement) mobileMenu.open = false;
           } else if (hidePoint - scroll > hideThreshold) {
             header.style.transform = 'translateY(0)';
           }
