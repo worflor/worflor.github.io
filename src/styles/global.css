@@ -134,6 +134,16 @@
   font-weight: bold;
   font-size: var(--text-3xl);
   margin-bottom: 0.25rem;
+  text-wrap: balance;
+}
+
+/* Modern text wrapping for better typography */
+h1, h2, h3, h4, h5, h6 {
+  text-wrap: balance;
+}
+
+p, li {
+  text-wrap: pretty;
 }
 
 .ambient-depth {
