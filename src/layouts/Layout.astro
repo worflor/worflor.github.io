@@ -26,12 +26,13 @@ const { seo } = Astro.props;
 
     // Close mobile menu instantly without triggering CSS transitions
     function closeMenuInstantly() {
-      var menu = document.querySelector('.mobile-menu');
+      var menu = document.querySelector<HTMLDetailsElement>('.mobile-menu');
       if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
 
       // Disable transitions temporarily to prevent flicker
-      var content = menu.querySelector('.mobile-menu-content');
-      var indicator = menu.querySelector('.menu-indicator');
+      var content = menu.querySelector<HTMLElement>('.mobile-menu-content');
+      var indicator = menu.querySelector<HTMLElement>('.menu-indicator');
+      var menuEl = menu;
 
       if (content instanceof HTMLElement) content.style.transition = 'none';
       if (indicator instanceof HTMLElement) indicator.style.transition = 'none';
@@ -44,20 +45,20 @@ const { seo } = Astro.props;
         requestAnimationFrame(function() {
           if (content instanceof HTMLElement) content.style.transition = '';
           if (indicator instanceof HTMLElement) indicator.style.transition = '';
-          menu.style.removeProperty('--menu-transition');
+          menuEl.style.removeProperty('--menu-transition');
         });
       });
     }
 
-    function handleOutsideMenuTap(event) {
-      var menu = document.querySelector('.mobile-menu');
+    function handleOutsideMenuTap(event: PointerEvent) {
+      var menu = document.querySelector<HTMLDetailsElement>('.mobile-menu');
       if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
       if (!(event.target instanceof Node)) return;
       if (menu.contains(event.target)) return;
       closeMenuInstantly();
     }
 
-    var logoController = null;
+    var logoController: AbortController | null = null;
 
     function setupLogoScroll() {
       var logo = document.getElementById('logo-link');
@@ -66,7 +67,7 @@ const { seo } = Astro.props;
       if (logoController) logoController.abort();
       logoController = new AbortController();
 
-      logo.addEventListener('click', function(e) {
+      logo.addEventListener('click', function(e: MouseEvent) {
         if (location.pathname === '/') {
           e.preventDefault();
           window.scrollTo({ top: 0 });
@@ -75,14 +76,15 @@ const { seo } = Astro.props;
     }
 
     // Prepare for navigation - close menu and update logo hint BEFORE transition starts
-    function prepareForNavigation(e) {
+    function prepareForNavigation(e: Event) {
       closeMenuInstantly();
 
       // Pre-update logo hint based on the destination URL to avoid post-swap flash
       var logo = document.getElementById('logo-link');
-      if (logo && e.to) {
+      var destination = (e as { to?: string }).to;
+      if (logo && destination) {
         try {
-          var destPath = new URL(e.to, location.origin).pathname;
+          var destPath = new URL(destination, location.origin).pathname;
           var shouldHint = destPath !== '/';
           var hasHint = logo.classList.contains('logo-hint');
 
