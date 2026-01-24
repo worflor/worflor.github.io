@@ -15,9 +15,9 @@ const htmlDescription = parseMarkdown(description);
   target="_blank"
   rel="noopener noreferrer"
   aria-label={`View project: ${title}`}
-  class="interactive py-[var(--space-lg)] @xs:py-[var(--space-md)] flex flex-col @xs:flex-row gap-[var(--space-md)] card-hover stagger-in"
+  class="interactive py-[var(--space-md)] flex flex-wrap gap-[var(--space-md)] card-hover stagger-in"
 >
-  <div class="bg-[var(--color-border)] rounded-[var(--radius-lg)] w-full @xs:w-[var(--size-thumbnail-md)] shrink-0 self-start">
+  <div class="bg-[var(--color-border)] rounded-[var(--radius-lg)] w-[var(--size-thumbnail-md)] min-w-0 shrink-0 self-start">
     <Image
       width={1920}
       height={1080}
@@ -28,7 +28,7 @@ const htmlDescription = parseMarkdown(description);
       class="w-full h-auto rounded-[var(--radius-lg)]"
     />
   </div>
-  <div class="flex flex-col justify-start">
+  <div class="flex flex-col justify-start flex-1 min-w-[14rem]">
     <div class="flex items-center gap-1 mb-2">
       <p class="font-medium">{title}</p>
       <span class="opacity-60 tabular-nums">· {year}</span>

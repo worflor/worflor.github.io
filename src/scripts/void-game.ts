@@ -1919,6 +1919,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
           const tiredEnough = c.fatigue > 0.4 || c.restedness < 0.3 || c.energy < 30;
           if (tiredEnough && isStill && heldCreature !== c && !c.sleeping) {
             c.sleeping = true;
+            // Release any claimed food when falling asleep
+            if (c._claimedFood) {
+              if (c._claimedFood.claimedBy === c) {
+                c._claimedFood.claimedBy = null;
+              }
+              c._claimedFood = null;
+            }
           }
 
           if (c.sleeping) {
@@ -2337,6 +2344,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     pickup(): void {
+      this.sleeping = false;
       this.expression = "surprised";
       this.expressionTimer = 30;
       this.targetSquash = 1.15;
@@ -2560,6 +2568,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
         }
       } else {
         this.seekingFood = false;
+        // Clear any claimed food when no longer hungry
+        if (this._claimedFood) {
+          if (this._claimedFood.claimedBy === this) {
+            this._claimedFood.claimedBy = null;
+          }
+          this._claimedFood = null;
+        }
       }
 
       // Wander if no target
@@ -2782,13 +2797,18 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       // Blinking
       this.blinkTimer--;
-      if (this.blinkTimer <= 0) {
-        this.blinking = true;
-        this.blinkTimer = 4 + Math.random() * 4;
-      }
-      if (this.blinking && this.blinkTimer <= 0) {
-        this.blinking = false;
-        this.blinkTimer = 60 + Math.random() * 180;
+      if (this.blinking) {
+        // Already blinking, check if blink duration is over
+        if (this.blinkTimer <= 0) {
+          this.blinking = false;
+          this.blinkTimer = 60 + Math.random() * 180;
+        }
+      } else {
+        // Not blinking, check if it's time to start a blink
+        if (this.blinkTimer <= 0) {
+          this.blinking = true;
+          this.blinkTimer = 4 + Math.random() * 4;
+        }
       }
 
       // Gaze
@@ -3337,6 +3357,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       heldCreature.putdown();
       heldCreature = null;
     }
+    respawnPending = false;
 
     const creatureData = creatures.map((c) => ({
       ...serializeCreature(c),
@@ -3382,9 +3403,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
   function navigateToDepth(targetDepth: number): void {
     if (heldCreature) {
+      heldCreature.putdown();
       heldCreature = null;
     }
     tooltipCreature = null;
+    respawnPending = false;
     rightClickTarget = null;
     pickupProgress = 0;
 
@@ -3941,6 +3964,23 @@ export function initVoidGame(options: GameInitOptions): () => void {
     for (let i = creatures.length - 1; i >= 0; i--) {
       const result = creatures[i].update();
       if (result === "die") {
+        const deadCreature = creatures[i];
+        // Release held creature if it died
+        if (deadCreature === heldCreature) {
+          heldCreature = null;
+          tooltipCreature = null;
+          pickupProgress = 0;
+        }
+        // Clear other references to dead creature
+        if (deadCreature === rightClickTarget) {
+          rightClickTarget = null;
+        }
+        if (deadCreature === touchCreature) {
+          touchCreature = null;
+        }
+        if (deadCreature === tooltipCreature) {
+          tooltipCreature = null;
+        }
         creatures.splice(i, 1);
       } else if (result instanceof Creature) {
         _newCreatures.push(result);
@@ -4028,7 +4068,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       respawnPending = true;
       setTimeout(() => {
         if (creatures.length === 0) {
-          initRevealMap();
           creatures.push(new Creature(W / 2, H * 0.28));
           showToast("another wanders in");
         }
@@ -4058,7 +4097,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     const showCreature = tooltipCreature || heldCreature;
 
-    if (showCreature) {
+    if (showCreature && !showCreature.isDead) {
       const c = showCreature;
       tooltip.classList.add("visible");
       const nameEl = tooltip.querySelector(".name");
@@ -4094,7 +4133,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   function updatePickupRing(): void {
-    if (rightClickTarget && pickupProgress > 0 && !heldCreature) {
+    if (rightClickTarget && !rightClickTarget.isDead && pickupProgress > 0 && !heldCreature) {
       pickupRing.style.opacity = "1";
       pickupRing.style.left = rightClickTarget.x - 30 + "px";
       pickupRing.style.top = rightClickTarget.y - 30 + "px";
@@ -4386,7 +4425,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   document.addEventListener("touchend", () => {
     const holdDuration = Date.now() - touchStartTime;
 
-    if (touchCreature && !heldCreature) {
+    if (touchCreature && !touchCreature.isDead && !heldCreature) {
       if (holdDuration < 200) {
         touchCreature.pet(touchStartPos.x, touchStartPos.y);
         tooltipCreature = null;
