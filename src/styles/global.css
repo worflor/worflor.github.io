@@ -61,6 +61,8 @@
   /* logo ring accent (uses chromatic-cyan by default, easy to change) */
   --ring-accent: var(--chromatic-cyan);
   --ring-accent-opacity: 0.6;
+  --ring-accent-soft: rgb(var(--ring-accent) / calc(var(--ring-accent-opacity) * 0.55));
+  --ring-accent-strong: rgb(var(--ring-accent) / var(--ring-accent-opacity));
   --ring-base: 80 80 80;
   --ring-base-opacity: 0.3;
 
@@ -80,6 +82,8 @@
   --opacity-hover-dim: 0.4;
   --opacity-subtle: 0.25;
   --opacity-faint: 0.12;
+  --color-text-muted: rgb(var(--color-text-rgb) / var(--opacity-muted));
+  --color-text-dim: rgb(var(--color-text-rgb) / var(--opacity-dim));
 
   /* standard scale transforms */
   --scale-hover-sm: 1.01;
@@ -110,6 +114,23 @@
   --chromatic-text-shadow:
     calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
     var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
+}
+
+@supports (color: color-mix(in srgb, white, black)) {
+  :root {
+    --color-text-muted: rgb(from var(--color-text) r g b / var(--opacity-muted));
+    --color-text-dim: rgb(from var(--color-text) r g b / var(--opacity-dim));
+    --surface-sheen: linear-gradient(135deg, rgb(from var(--color-text) r g b / 0.025) 0%, transparent 40%);
+    --edge-highlight: inset 0 1px 0 rgb(from var(--color-text) r g b / 0.03);
+    --glow-soft: 0 0 20px color-mix(in srgb, rgb(var(--chromatic-cyan)) 12%, transparent);
+  }
+}
+
+@supports (color: color-mix(in oklab, white, black)) {
+  :root {
+    --ring-accent-soft: color-mix(in oklab, rgb(var(--ring-accent)) 45%, transparent);
+    --ring-accent-strong: color-mix(in oklab, rgb(var(--ring-accent)) 70%, transparent);
+  }
 }
 
 .content-section {
@@ -213,7 +234,7 @@ body.invert {
   }
 
   &::after {
-    background: conic-gradient(transparent 0deg 40deg, rgb(var(--ring-accent) / var(--ring-accent-opacity)) 55deg, rgb(var(--ring-base) / var(--ring-base-opacity)) 90deg 310deg, rgb(var(--ring-accent) / var(--ring-accent-opacity)) 345deg, transparent 360deg);
+    background: conic-gradient(transparent 0deg 40deg, var(--ring-accent-soft) 55deg, rgb(var(--ring-base) / var(--ring-base-opacity)) 90deg 310deg, var(--ring-accent-strong) 345deg, transparent 360deg);
     opacity: 0;
   }
 
