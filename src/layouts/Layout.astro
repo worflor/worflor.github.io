@@ -49,6 +49,14 @@ const { seo } = Astro.props;
       });
     }
 
+    function handleOutsideMenuTap(event) {
+      var menu = document.querySelector('.mobile-menu');
+      if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
+      if (!(event.target instanceof Node)) return;
+      if (menu.contains(event.target)) return;
+      closeMenuInstantly();
+    }
+
     var logoController = null;
 
     function setupLogoScroll() {
@@ -99,6 +107,7 @@ const { seo } = Astro.props;
     document.addEventListener("astro:before-preparation", prepareForNavigation);
     document.addEventListener("astro:after-swap", updateLogoHint);
     document.addEventListener("astro:after-swap", setupLogoScroll);
+    document.addEventListener("pointerdown", handleOutsideMenuTap);
   })();
 </script>
 
@@ -228,6 +237,14 @@ const { seo } = Astro.props;
                   </li>
                 ))
               }
+              <li>
+                <a
+                  class="block px-4 py-3 min-h-[var(--touch-target)] rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 hover:bg-white/5 transition-all duration-200"
+                  href="/contact"
+                >
+                  Contact me
+                </a>
+              </li>
             </ul>
           </details>
         </nav>
