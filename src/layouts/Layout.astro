@@ -482,11 +482,19 @@ const { seo } = Astro.props;
 
   h1, h2, h3, h4, h5, h6 {
     letter-spacing: -0.02em;
-    text-wrap: balance;
+    text-wrap: pretty;
   }
 
-  p, li {
+  p, li, blockquote, figcaption, dd {
     text-wrap: pretty;
+    overflow-wrap: break-word;
+    hyphens: auto;
+  }
+
+  @supports (text-wrap: balance) {
+    h1, h2, h3, h4, h5, h6 {
+      text-wrap: balance;
+    }
   }
 
   .tabular-nums, time, [datetime] {
