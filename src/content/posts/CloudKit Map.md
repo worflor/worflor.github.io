@@ -20,7 +20,7 @@ We'll see about that.
 
 ## The Maze
 
-What I thought would be "just find the magic API endpoint" turned into a journey through nine unofficial layers of Apple's web authentication stack:
+What I thought would be "just find the magic API endpoint" turned into a journey through these nine layers of Apple's web authentication stack:
 
 ```
 Layer 1: Apple ID (idmsa.apple.com)
