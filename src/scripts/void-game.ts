@@ -216,6 +216,7 @@ interface FogCreatureData {
   readonly y: number;
   readonly revealRadius: number;
   readonly glow: number;
+  readonly warmth: number;
 }
 
 interface FogMonolithData {
@@ -596,6 +597,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   const LINGER_DURATION = 180; // Frames to keep fog revealed after creature leaves (~3s at 60fps)
   const PICKUP_HOLD_TIME = CONFIG.PICKUP_HOLD_TIME;
   let respawnPending = false;
+  let fadingToBlack = false;
 
   // Fog Rendering - uses worker thread when available
   const fogWorker = new FogWorker();
@@ -2709,12 +2711,19 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       if (!revealMap || !lastRevealTime) return;
 
+      // Warmth-based reveal (matches original JS version)
+      // Warm creatures illuminate more, cold creatures barely reveal
+      const warmthMultiplier = 0.4 + this.warmth * 0.9;
+      const radius = this.revealRadius * warmthMultiplier;
+      const revealIntensity = 0.014 + this.warmth * 0.016;
+      const emissionIntensity = this.glow * (0.5 + this.warmth * 0.5);
+
       const cx = Math.floor(this.x / revealRes);
       const cy = Math.floor(this.y / revealRes);
-      const r = Math.ceil(this.revealRadius / revealRes);
-      const radiusSq = this.revealRadius * this.revealRadius;
+      const r = Math.ceil(radius / revealRes);
+      const radiusSq = radius * radius;
       const revealResSq = revealRes * revealRes;
-      const invRadius = 1 / this.revealRadius;
+      const invRadius = 1 / radius;
 
       for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
@@ -2726,10 +2735,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
           if (distSq < radiusSq) {
             const d = Math.sqrt(distSq);
             const idx = gy * revealW + gx;
-            const intensity = (1 - d * invRadius) * (0.5 + this.glow * 0.5);
-            revealMap[idx] = Math.max(revealMap[idx], intensity);
+            const falloff = 1 - d * invRadius;
+            const intensity = falloff * revealIntensity * emissionIntensity;
+            revealMap[idx] = Math.min(1, revealMap[idx] + intensity);
             // Track when this cell was revealed (for lingering)
-            if (intensity > 0.1) {
+            if (intensity > 0.05) {
               lastRevealTime[idx] = time;
             }
           }
@@ -2941,21 +2951,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       ctx.translate(this.x, this.y);
       ctx.rotate(this.idleTilt);
       ctx.scale(currentSquashX, currentSquashY);
-
-      // Glow aura
-      const glowIntensity = this.glow * (0.5 + this._energyNorm * 0.5) * (1 - this.fear * 0.3);
-      if (glowIntensity > 0.1) {
-        const glowSize = size * (2 + glowIntensity);
-        const [gr, gg, gb] = hslToRgb(this.hue, 30, 70);
-        const glow = ctx.createRadialGradient(0, 0, size * 0.5, 0, 0, glowSize);
-        glow.addColorStop(0, `rgba(${gr}, ${gg}, ${gb}, ${glowIntensity * 0.15 * energyAlpha})`);
-        glow.addColorStop(0.5, `rgba(${gr}, ${gg}, ${gb}, ${glowIntensity * 0.05 * energyAlpha})`);
-        glow.addColorStop(1, "transparent");
-        ctx.beginPath();
-        ctx.arc(0, 0, glowSize, 0, Math.PI * 2);
-        ctx.fillStyle = glow;
-        ctx.fill();
-      }
 
       // Body outline
       ctx.beginPath();
@@ -3597,6 +3592,22 @@ export function initVoidGame(options: GameInitOptions): () => void {
     };
   }
 
+  function resetFog(): void {
+    // Clear main thread fog state
+    if (revealMap) {
+      revealMap.fill(0);
+    }
+    if (lastRevealTime) {
+      lastRevealTime.fill(0);
+    }
+    fogDirty = true;
+
+    // Clear worker fog state
+    if (fogWorker.isActive && revealMap) {
+      fogWorker.setRevealMap(new Float32Array(revealMap.length));
+    }
+  }
+
   function drawFog(): void {
     // Worker-based rendering (preferred)
     if (fogWorker.isActive) {
@@ -3606,6 +3617,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         y: c.y,
         revealRadius: c.revealRadius,
         glow: c.glow,
+        warmth: c.warmth,
       }));
       const monolithData: FogMonolithData[] = monoliths.map((m) => ({
         x: m.x,
@@ -3688,6 +3700,28 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   function updateFogDecay(): void {
+    if (!revealMap || !lastRevealTime) return;
+
+    // Rapid fade to black when all creatures died (ignores worker, protection, linger)
+    if (fadingToBlack) {
+      const fadeRate = 0.025; // Fade to black over ~2 seconds (40 frames at decay every 3 frames)
+      let anyChanged = false;
+      for (let i = 0; i < revealMap.length; i++) {
+        if (revealMap[i] > 0) {
+          revealMap[i] = Math.max(0, revealMap[i] - fadeRate);
+          anyChanged = true;
+        }
+      }
+      if (anyChanged) {
+        fogDirty = true;
+        // Sync to worker so it renders the fade
+        if (fogWorker.isActive) {
+          fogWorker.setRevealMap(revealMap);
+        }
+      }
+      return;
+    }
+
     // Worker handles decay internally
     if (fogWorker.isActive) {
       fogWorker.decay();
@@ -3695,8 +3729,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     // Canvas fallback decay
-    if (!revealMap || !lastRevealTime) return;
-
     _protectedCells.clear();
     for (const c of creatures) {
       const cx = Math.floor(c.x / revealRes);
@@ -4103,8 +4135,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     if (creatures.length === 0 && !respawnPending) {
       respawnPending = true;
+      fadingToBlack = true;
       setTimeout(() => {
         if (creatures.length === 0) {
+          resetFog();
+          fadingToBlack = false;
           creatures.push(new Creature(W / 2, H * 0.28));
           showToast("another wanders in");
         }

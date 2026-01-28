@@ -276,39 +276,17 @@
     <script>
       import { initVoidGame } from "../scripts/void-game";
 
-      const canvas = document.getElementById("game");
-      const pickupRing = document.getElementById("pickup-ring");
-      const homeBtn = document.getElementById("home");
-      const resetBtn = document.getElementById("btn-reset");
-      const lostPath = document.getElementById("lost-path");
-      const titleSub = document.getElementById("title-sub");
-      const title = document.getElementById("title");
-      const toast = document.getElementById("toast");
-      const tooltip = document.getElementById("creature-tooltip");
-
-      if (
-        canvas instanceof HTMLCanvasElement &&
-        pickupRing instanceof HTMLCanvasElement &&
-        homeBtn instanceof HTMLButtonElement &&
-        resetBtn instanceof HTMLButtonElement &&
-        lostPath &&
-        titleSub &&
-        title &&
-        toast &&
-        tooltip
-      ) {
-        initVoidGame({
-          canvas,
-          lostPath,
-          titleSub,
-          title,
-          toast,
-          tooltip,
-          pickupRing,
-          homeBtn,
-          resetBtn,
-        });
-      }
+      const _cleanup = initVoidGame({
+        canvas: document.getElementById("game") as HTMLCanvasElement,
+        lostPath: document.getElementById("lost-path")!,
+        titleSub: document.getElementById("title-sub")!,
+        title: document.getElementById("title")!,
+        toast: document.getElementById("toast")!,
+        tooltip: document.getElementById("creature-tooltip")!,
+        pickupRing: document.getElementById("pickup-ring") as HTMLCanvasElement,
+        homeBtn: document.getElementById("home") as HTMLButtonElement,
+        resetBtn: document.getElementById("btn-reset") as HTMLButtonElement,
+      });
     </script>
   </body>
 </html>
