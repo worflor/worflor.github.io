@@ -21,6 +21,7 @@ interface CreatureData {
   readonly y: number;
   readonly revealRadius: number;
   readonly glow: number;
+  readonly warmth: number;
 }
 
 interface MonolithData {
@@ -161,13 +162,19 @@ function updateEntities(creatures: readonly CreatureData[], monoliths: readonly 
   const { revealRes } = config;
   const revealResSq = revealRes * revealRes;
 
-  // Update reveal from creatures
+  // Update reveal from creatures (warmth-based additive system)
   for (const c of creatures) {
+    // Warmth-based reveal - warm creatures illuminate more
+    const warmthMultiplier = 0.4 + c.warmth * 0.9;
+    const radius = c.revealRadius * warmthMultiplier;
+    const revealIntensity = 0.014 + c.warmth * 0.016;
+    const emissionIntensity = c.glow * (0.5 + c.warmth * 0.5);
+
     const cx = Math.floor(c.x / revealRes);
     const cy = Math.floor(c.y / revealRes);
-    const r = Math.ceil(c.revealRadius / revealRes);
-    const radiusSq = c.revealRadius * c.revealRadius;
-    const invRadius = 1 / c.revealRadius;
+    const r = Math.ceil(radius / revealRes);
+    const radiusSq = radius * radius;
+    const invRadius = 1 / radius;
 
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
@@ -179,13 +186,15 @@ function updateEntities(creatures: readonly CreatureData[], monoliths: readonly 
         if (distSq < radiusSq) {
           const d = Math.sqrt(distSq);
           const idx = gy * revealW + gx;
-          const intensity = (1 - d * invRadius) * (0.5 + c.glow * 0.5);
-          if (intensity > revealMap[idx]) {
-            revealMap[idx] = intensity;
+          const falloff = 1 - d * invRadius;
+          const intensity = falloff * revealIntensity * emissionIntensity;
+          const newVal = Math.min(1, revealMap[idx] + intensity);
+          if (newVal > revealMap[idx]) {
+            revealMap[idx] = newVal;
             fogDirty = true;
           }
           // Track when this cell was revealed (for lingering)
-          if (intensity > 0.1) {
+          if (intensity > 0.05) {
             lastRevealTime[idx] = frameCounter;
           }
         }
