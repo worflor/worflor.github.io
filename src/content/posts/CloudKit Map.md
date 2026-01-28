@@ -10,7 +10,7 @@ images:
 
 ## The Itch
 
-It started with a simple frustration: I wanted to access my own Reminders programmatically.
+It started with a simple frustration: I wanted to access my own Reminders programmatically... and maybe my clipboard.
 
 Apple's Reminders app is great and I use it. But if you want to interact with your reminders from, say, a home server or an automation script? Apple says no. There's no public API. The old CalDAV approach broke with iOS 13. Your data, their rules.
 
