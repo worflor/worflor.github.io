@@ -48,12 +48,12 @@ Apple's iCloud isn't one service. It's dozens, running on different subdomains, 
 
 | Service | What It Does | Accessible? |
 |---------|--------------|-------------|
-| `setup.icloud.com` | Account config, device list | ✅ Yes |
-| `ckdatabasews.icloud.com` | CloudKit (modern data sync) | ✅ Partially |
-| `caldav.icloud.com` | Calendar (old standard) | ✅ Yes |
-| `gateway.icloud.com` | Real-time relay | ❌ Blocked |
+| `setup.icloud.com` | Account config, device list | ✅ Yes (200) |
+| `ckdatabasews.icloud.com` | CloudKit (modern data sync) | ✅ Partially (200/400) |
+| `caldav.icloud.com` | Calendar (old standard) | ✅ Yes (200) |
+| `gateway.icloud.com` | Real-time relay | ❌ Blocked (403) |
 | `mccgateway.icloud.com` | Continuity controller | ❌ 503 ;-; |
-| `keyvalueservice.icloud.com` | Key-value sync | ❌ Wrong format |
+| `keyvalueservice.icloud.com` | Key-value sync | ❌ Wrong format (400) |
 
 The pattern: **400 means it exists but wants something specific. 404 means it doesn't exist. 401 means wrong auth. 503 means it's not for you.**
 
