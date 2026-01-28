@@ -473,6 +473,8 @@ const { seo } = Astro.props;
 
         document.addEventListener('astro:before-swap', function cleanup() {
           if (typeTimer) clearInterval(typeTimer);
+          breadcrumb.style.opacity = '0';
+          breadcrumb.innerHTML = '';
           window.removeEventListener('scroll', updateBreadcrumb);
           document.removeEventListener('astro:before-swap', cleanup);
         }, { once: true });

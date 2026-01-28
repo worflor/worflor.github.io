@@ -3,18 +3,49 @@ import { render } from "astro:content";
 
 type Post = CollectionEntry<"posts">;
 
+/** Normalize pubDate to YYYY-MM-DD string */
+function normalizePubDate(pubDate: string | Date): string {
+  if (pubDate instanceof Date) {
+    return pubDate.toISOString().split("T")[0];
+  }
+  // If it's already a YYYY-MM-DD string, return as-is
+  if (/^\d{4}-\d{2}-\d{2}$/.test(pubDate)) {
+    return pubDate;
+  }
+  // Otherwise try to parse and format
+  const d = new Date(pubDate);
+  if (!isNaN(d.getTime())) {
+    return d.toISOString().split("T")[0];
+  }
+  return pubDate;
+}
+
+/** Check if a post is "coming soon" (day is 00) */
+export function isComingSoon(pubDate: string | Date): boolean {
+  const normalized = normalizePubDate(pubDate);
+  return normalized.endsWith("-00");
+}
+
 /** Sort posts by date, newest first. Returns new array. */
 export function sortPostsByDate(posts: CollectionEntry<"posts">[]) {
   return [...posts].sort((a, b) => {
-    const dateA = new Date(a.data.pubDate).getTime();
-    const dateB = new Date(b.data.pubDate).getTime();
+    const dateStrA = normalizePubDate(a.data.pubDate);
+    const dateStrB = normalizePubDate(b.data.pubDate);
+    // Treat -00 dates as the start of that month for sorting
+    const dateA = new Date(dateStrA.replace(/-00$/, "-01")).getTime();
+    const dateB = new Date(dateStrB.replace(/-00$/, "-01")).getTime();
     return dateB - dateA;
   });
 }
 
-/** Format date as YYYY-MM-DD (UTC) */
-export function formatPostDate(date: Date): string {
-  return date.toLocaleDateString("en-CA", { timeZone: "UTC" });
+/** Format date as YYYY-MM-DD */
+export function formatPostDate(pubDate: string | Date): string {
+  return normalizePubDate(pubDate);
+}
+
+/** Get "in the works" label */
+export function getComingSoonLabel(pubDate: string | Date): string {
+  return "in the works...";
 }
 
 /** Sort posts and populate reading time. Returns new array. */

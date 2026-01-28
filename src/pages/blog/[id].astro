@@ -4,7 +4,7 @@ import { getCollection, getEntry, render } from "astro:content";
 import { Image } from "astro:assets";
 import ImageGallery from "../../components/ImageGallery.astro";
 import { identity } from "../../config";
-import { formatPostDate, getRelatedPosts, buildResonanceIndex } from "../../utils/posts";
+import { formatPostDate, getRelatedPosts, buildResonanceIndex, isComingSoon, getComingSoonLabel } from "../../utils/posts";
 import BlogPostCard from "../../components/BlogPostCard.astro";
 
 export async function getStaticPaths() {
@@ -56,7 +56,7 @@ const relatedPosts = getRelatedPosts(id as string, allPosts, resonanceIndex);
       <div class="min-w-0">
         <p class="font-medium">{entry.data.author || identity.name}</p>
         <p class="opacity-60 tabular-nums text-[length:var(--text-sm)]">
-          {formatPostDate(entry.data.pubDate)}{remarkPluginFrontmatter?.minutesRead && <> · {remarkPluginFrontmatter.minutesRead}</>}
+          {isComingSoon(entry.data.pubDate) ? getComingSoonLabel(entry.data.pubDate) : formatPostDate(entry.data.pubDate)}{!isComingSoon(entry.data.pubDate) && remarkPluginFrontmatter?.minutesRead && <> · {remarkPluginFrontmatter.minutesRead}</>}
         </p>
       </div>
     </div>

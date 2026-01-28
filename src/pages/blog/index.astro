@@ -2,17 +2,30 @@
 import Layout from "../../layouts/Layout.astro";
 import { getCollection } from "astro:content";
 import { blogPageContent } from "../../config";
-import { preparePosts } from "../../utils/posts";
+import { preparePosts, isComingSoon, sortPostsByDate } from "../../utils/posts";
 import BlogPostCard from "../../components/BlogPostCard.astro";
 import { getLoadingPriority } from "../../utils/helpers";
 
-const posts = await preparePosts(await getCollection("posts"));
+const allPosts = await getCollection("posts");
+const comingSoon = sortPostsByDate(allPosts.filter(p => isComingSoon(p.data.pubDate)));
+const published = allPosts.filter(p => !isComingSoon(p.data.pubDate));
+const posts = await preparePosts(published);
 ---
 
 <Layout seo={blogPageContent.seo}>
   <section class="mt-8 content-section">
     <h1 class="page-title">Blog</h1>
     <p class="opacity-60 mb-[var(--space-xl)]">{blogPageContent.subtitle}</p>
+
+    {comingSoon.length > 0 && (
+      <div class="mb-[var(--space-xl)] pb-[var(--space-lg)] border-b border-[var(--color-border)]">
+        <div class="grid grid-cols-1 gap-[var(--space-md)] opacity-50">
+          {comingSoon.map((post) => (
+            <BlogPostCard post={post} comingSoon />
+          ))}
+        </div>
+      </div>
+    )}
 
     <div class="grid grid-cols-1 gap-[var(--space-lg)] @xs:gap-[var(--space-md)] mb-10">
       {
