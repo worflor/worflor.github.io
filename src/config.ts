@@ -184,6 +184,8 @@ export const projectsPageContent: ProjectPageContent = {
       year: "2026",
       url: "/blog/wdym",
     },
+    /*
+
     {
       title: "Interwoven",
       description: "Fabric 1.21 Mod <br>Building upon underdeveloped systems, then interweaving those back into the existing game. <br>*Peaceful mode enhancements, Bedrock Parity, Animation Tweaks, and more.*",
@@ -191,7 +193,6 @@ export const projectsPageContent: ProjectPageContent = {
       year: "2025",
       url: identity.github,
     },
-    /*
     {
       title: "Blood Moons",
       description: "Fabric 1.21 Mod <br>Blood Moons have been done before, but this one is unique.*...he claims..* <br>*From Weeping Angels, to Zeus' Wrath, each moon offers a unique experience.*",
