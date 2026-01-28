@@ -111,7 +111,7 @@ Oh, *knowledge*. <3`,
   work: {
     description: `To me, programming languages are tools, and I'm always picking up new ones for random purposes. Started with **C++** and Shader Languages like **GLSL**, and have since picked up **Java (21+)** and miniscule amounts of *Python (3.12)*.
     <br/>
-    Why? Check out my Projects page!`,
+    Why? Check out my Projects and/or Blog page!`,
     items: [
       {
         title: "Game Developer",
