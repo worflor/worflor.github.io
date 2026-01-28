@@ -413,6 +413,8 @@ class FogWorker {
   private bitmap: ImageBitmap | null = null;
   private ready = false;
   private pendingRender = false;
+  private pendingRevealMapRequest = false;
+  private _onRevealMapReceived: ((data: Float32Array) => void) | null = null;
 
   constructor() {
     // Only init if browser supports required APIs
@@ -434,6 +436,11 @@ class FogWorker {
           if (this.bitmap) this.bitmap.close();
           this.bitmap = msg.bitmap;
           this.pendingRender = false;
+        } else if (msg.type === "revealMap") {
+          this.pendingRevealMapRequest = false;
+          if (this._onRevealMapReceived) {
+            this._onRevealMapReceived(msg.data);
+          }
         }
       };
 
@@ -449,6 +456,10 @@ class FogWorker {
     } catch {
       this.worker = null;
     }
+  }
+
+  set onRevealMapReceived(callback: ((data: Float32Array) => void) | null) {
+    this._onRevealMapReceived = callback;
   }
 
   get isActive(): boolean {
@@ -497,6 +508,13 @@ class FogWorker {
   setRevealMap(data: Float32Array): void {
     const copy = new Float32Array(data);
     this.worker?.postMessage({ type: "setRevealMap", data: copy } satisfies FogWorkerInMessage, [copy.buffer]);
+  }
+
+  requestRevealMap(): void {
+    if (!this.pendingRevealMapRequest && this.worker) {
+      this.pendingRevealMapRequest = true;
+      this.worker.postMessage({ type: "getRevealMap" } satisfies FogWorkerInMessage);
+    }
   }
 
   destroy(): void {
@@ -571,9 +589,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
   // World State
   let revealMap: Float32Array | null = null;
+  let lastRevealTime: Float32Array | null = null; // For linger mechanism in fallback mode
   let revealW: number;
   let revealH: number;
   const revealRes = CONFIG.REVEAL_RES;
+  const LINGER_DURATION = 180; // Frames to keep fog revealed after creature leaves (~3s at 60fps)
   const PICKUP_HOLD_TIME = CONFIG.PICKUP_HOLD_TIME;
   let respawnPending = false;
 
@@ -2687,7 +2707,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // Worker handles reveal in updateEntities
       if (fogWorker.isActive) return;
 
-      if (!revealMap) return;
+      if (!revealMap || !lastRevealTime) return;
 
       const cx = Math.floor(this.x / revealRes);
       const cy = Math.floor(this.y / revealRes);
@@ -2708,6 +2728,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
             const idx = gy * revealW + gx;
             const intensity = (1 - d * invRadius) * (0.5 + this.glow * 0.5);
             revealMap[idx] = Math.max(revealMap[idx], intensity);
+            // Track when this cell was revealed (for lingering)
+            if (intensity > 0.1) {
+              lastRevealTime[idx] = time;
+            }
           }
         }
       }
@@ -3557,12 +3581,20 @@ export function initVoidGame(options: GameInitOptions): () => void {
     revealW = Math.ceil(W / revealRes);
     revealH = Math.ceil(H / revealRes);
     revealMap = new Float32Array(revealW * revealH);
+    lastRevealTime = new Float32Array(revealW * revealH);
 
     // Initialize fog worker
     fogWorker.init(W, H, {
       revealRes: CONFIG.REVEAL_RES,
       revealDecay: CONFIG.REVEAL_DECAY,
     });
+
+    // Set up callback to sync worker's revealMap to main thread
+    fogWorker.onRevealMapReceived = (data: Float32Array) => {
+      if (revealMap && data.length === revealMap.length) {
+        revealMap.set(data);
+      }
+    };
   }
 
   function drawFog(): void {
@@ -3624,7 +3656,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
           const px = gx * revealRes;
           const pxEnd = Math.min(px + revealRes, W);
 
-          const isEdge = darkness > 0.05 && darkness < 0.85;
+          const isEdge = darkness <= 0.05 || darkness >= 0.85;
 
           for (let y = py; y < pyEnd; y++) {
             const rowOffset = y * W * 4;
@@ -3663,7 +3695,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     // Canvas fallback decay
-    if (!revealMap) return;
+    if (!revealMap || !lastRevealTime) return;
 
     _protectedCells.clear();
     for (const c of creatures) {
@@ -3704,11 +3736,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
     }
 
+    // Apply decay to cells not near entities AND not recently revealed
+    const lingerThreshold = time - LINGER_DURATION;
     let anyChanged = false;
     for (let i = 0; i < revealMap.length; i++) {
       if (revealMap[i] > 0 && !_protectedCells.has(i)) {
-        revealMap[i] = Math.max(0, revealMap[i] - CONFIG.REVEAL_DECAY * 3);
-        anyChanged = true;
+        // Only decay if not recently revealed (outside linger duration)
+        if (lastRevealTime[i] < lingerThreshold) {
+          revealMap[i] = Math.max(0, revealMap[i] - CONFIG.REVEAL_DECAY * 3);
+          anyChanged = true;
+        }
       }
     }
     if (anyChanged) fogDirty = true;
@@ -4080,6 +4117,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       updateFogDecay();
     }
 
+    // Sync worker's revealMap to main thread for getLightAt() - every 6 frames
+    if (time % 6 === 0 && fogWorker.isActive) {
+      fogWorker.requestRevealMap();
+    }
+
     if (time % CONFIG.SAVE_INTERVAL === 0) save();
 
     updateUI();
@@ -4232,12 +4274,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
     canvas.height = H;
 
     const oldReveal = revealMap;
+    const oldLastRevealTime = lastRevealTime;
     const oldW = revealW;
     const oldH = revealH;
 
     initRevealMap();
 
-    if (oldReveal && oldW && oldH && revealW && revealH && revealMap) {
+    if (oldReveal && oldW && oldH && revealW && revealH && revealMap && lastRevealTime) {
       const scaleX = oldW / revealW;
       const scaleY = oldH / revealH;
       for (let gy = 0; gy < revealH; gy++) {
@@ -4245,7 +4288,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
           const ox = Math.floor(gx * scaleX);
           const oy = Math.floor(gy * scaleY);
           if (ox < oldW && oy < oldH) {
-            revealMap[gy * revealW + gx] = oldReveal[oy * oldW + ox];
+            const oldIdx = oy * oldW + ox;
+            const newIdx = gy * revealW + gx;
+            revealMap[newIdx] = oldReveal[oldIdx];
+            if (oldLastRevealTime) {
+              lastRevealTime[newIdx] = oldLastRevealTime[oldIdx];
+            }
           }
         }
       }
