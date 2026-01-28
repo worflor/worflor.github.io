@@ -116,7 +116,7 @@ Oh, *knowledge*. <3`,
       {
         title: "Game Developer",
         company: {
-          name: "Freelance",
+          name: "Student",
           image: identity.logo,
           url: identity.github,
         },
