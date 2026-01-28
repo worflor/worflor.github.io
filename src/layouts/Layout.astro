@@ -252,7 +252,7 @@ const { seo } = Astro.props;
         </nav>
       </div>
     </header>
-    <main id="main" class="mb-32">
+    <main id="main" class="pb-16">
       <slot />
     </main>
     <script is:inline data-astro-rerun>
@@ -507,11 +507,10 @@ const { seo } = Astro.props;
   p, li, blockquote, figcaption, dd {
     text-wrap: pretty;
     overflow-wrap: break-word;
-    hyphens: auto;
   }
 
   @supports (text-wrap: balance) {
-    h1, h2, h3, h4, h5, h6 {
+    h3, h4, h5, h6 {
       text-wrap: balance;
     }
   }
@@ -650,7 +649,7 @@ const { seo } = Astro.props;
 
     &:hover {
       transform: scale(var(--scale-hover));
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), var(--glow-soft);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
     }
 
     &:active {

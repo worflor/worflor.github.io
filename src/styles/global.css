@@ -158,7 +158,7 @@
 }
 
 .ambient-depth {
-  background: var(--ambient-vignette), var(--color-bg);
+  background: var(--color-bg);
 }
 
 .surface-raised {
