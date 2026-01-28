@@ -190,7 +190,7 @@ I looked at the door. I understood what was behind it, and chose not to pick tha
 
 ## Continuity Revelations
 
-My original goal was Universal Clipboard. Imagine this: copy on my phone, paste on my laptop, but across the internet.
+My original goal was Universal Clipboard. Imagine this: copy on your phone, paste on your laptop, but across the internet :O
 
 After mapping the entire architecture, I learned something important:
 
