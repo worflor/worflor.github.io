@@ -8,10 +8,6 @@ images:
     alt: "The Mappings of a Walled Garden"
 ---
 
-*How one weekend of curiosity turned into a deep dive through Apple's authentication labyrinth...*
-
----
-
 ## The Itch
 
 It started with a simple frustration: I wanted to access my own Reminders programmatically.
