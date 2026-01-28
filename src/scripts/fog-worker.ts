@@ -78,7 +78,12 @@ let height = 0;
 let revealW = 0;
 let revealH = 0;
 let revealMap: Float32Array | null = null;
+let lastRevealTime: Float32Array | null = null; // Track when each cell was last revealed
+let frameCounter = 0;
 let fogDirty = true;
+
+// How long revealed cells stay protected after creature leaves (in frames, ~3 seconds at 60fps)
+const LINGER_DURATION = 180;
 
 let offscreen: OffscreenCanvas | null = null;
 let offscreenCtx: OffscreenCanvasRenderingContext2D | null = null;
@@ -103,6 +108,7 @@ function init(w: number, h: number, cfg: FogConfig): void {
 
 function resize(w: number, h: number): void {
   const oldRevealMap = revealMap;
+  const oldLastRevealTime = lastRevealTime;
   const oldRevealW = revealW;
   const oldRevealH = revealH;
 
@@ -111,6 +117,7 @@ function resize(w: number, h: number): void {
   revealW = Math.ceil(w / config.revealRes);
   revealH = Math.ceil(h / config.revealRes);
   revealMap = new Float32Array(revealW * revealH);
+  lastRevealTime = new Float32Array(revealW * revealH);
 
   // Preserve old reveal data if possible
   if (oldRevealMap && oldRevealW > 0 && oldRevealH > 0) {
@@ -121,7 +128,12 @@ function resize(w: number, h: number): void {
         const ox = Math.floor(gx * scaleX);
         const oy = Math.floor(gy * scaleY);
         if (ox < oldRevealW && oy < oldRevealH) {
-          revealMap[gy * revealW + gx] = oldRevealMap[oy * oldRevealW + ox];
+          const oldIdx = oy * oldRevealW + ox;
+          const newIdx = gy * revealW + gx;
+          revealMap[newIdx] = oldRevealMap[oldIdx];
+          if (oldLastRevealTime) {
+            lastRevealTime[newIdx] = oldLastRevealTime[oldIdx];
+          }
         }
       }
     }
@@ -142,8 +154,9 @@ function resize(w: number, h: number): void {
 function updateEntities(creatures: readonly CreatureData[], monoliths: readonly MonolithData[]): void {
   cachedCreatures = creatures;
   cachedMonoliths = monoliths;
+  frameCounter++;
 
-  if (!revealMap) return;
+  if (!revealMap || !lastRevealTime) return;
 
   const { revealRes } = config;
   const revealResSq = revealRes * revealRes;
@@ -170,6 +183,10 @@ function updateEntities(creatures: readonly CreatureData[], monoliths: readonly 
           if (intensity > revealMap[idx]) {
             revealMap[idx] = intensity;
             fogDirty = true;
+          }
+          // Track when this cell was revealed (for lingering)
+          if (intensity > 0.1) {
+            lastRevealTime[idx] = frameCounter;
           }
         }
       }
@@ -203,6 +220,10 @@ function updateEntities(creatures: readonly CreatureData[], monoliths: readonly 
             revealMap[idx] = intensity;
             fogDirty = true;
           }
+          // Track when this cell was revealed (for lingering)
+          if (intensity > 0.1) {
+            lastRevealTime[idx] = frameCounter;
+          }
         }
       }
     }
@@ -210,7 +231,7 @@ function updateEntities(creatures: readonly CreatureData[], monoliths: readonly 
 }
 
 function addRevealPoints(points: readonly RevealPoint[]): void {
-  if (!revealMap) return;
+  if (!revealMap || !lastRevealTime) return;
 
   const { revealRes } = config;
   const revealResSq = revealRes * revealRes;
@@ -238,6 +259,10 @@ function addRevealPoints(points: readonly RevealPoint[]): void {
             revealMap[idx] = newVal;
             fogDirty = true;
           }
+          // Track when this cell was revealed (for lingering)
+          if (falloff * point.intensity > 0.1) {
+            lastRevealTime[idx] = frameCounter;
+          }
         }
       }
     }
@@ -249,12 +274,12 @@ function addRevealPoints(points: readonly RevealPoint[]): void {
 // ============================================================================
 
 function computeDecay(): void {
-  if (!revealMap) return;
+  if (!revealMap || !lastRevealTime) return;
 
   const { revealRes, revealDecay } = config;
   const revealResSq = revealRes * revealRes;
 
-  // Build protected cells set
+  // Build protected cells set (cells currently near entities)
   protectedCells.clear();
 
   // Protect cells near creatures
@@ -297,12 +322,19 @@ function computeDecay(): void {
     }
   }
 
-  // Apply decay to unprotected cells
+  // Apply decay to cells that are:
+  // 1. Not currently near an entity (not in protectedCells)
+  // 2. Not recently revealed (outside linger duration)
   const decayAmount = revealDecay * 3;
+  const lingerThreshold = frameCounter - LINGER_DURATION;
+
   for (let i = 0; i < revealMap.length; i++) {
     if (revealMap[i] > 0 && !protectedCells.has(i)) {
-      revealMap[i] = Math.max(0, revealMap[i] - decayAmount);
-      fogDirty = true;
+      // Check if this cell was revealed recently (within linger duration)
+      if (lastRevealTime[i] < lingerThreshold) {
+        revealMap[i] = Math.max(0, revealMap[i] - decayAmount);
+        fogDirty = true;
+      }
     }
   }
 }
@@ -336,7 +368,7 @@ function render(): void {
 
         const px = gx * revealRes;
         const pxEnd = Math.min(px + revealRes, width);
-        const isEdge = darkness > 0.05 && darkness < 0.85;
+        const isEdge = darkness <= 0.05 || darkness >= 0.85;
 
         for (let y = py; y < pyEnd; y++) {
           const rowOffset = y * width * 4;

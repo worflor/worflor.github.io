@@ -4,7 +4,7 @@ pubDate: 2026-01-28
 description: "how one weekend of curiosity turned into a deep dive through Apple's CloudKit authentication labyrinth..."
 author: "woflo"
 images:
-  - url: "/images/walled-garden-cover-2.webp"
+  - url: "/images/walled-garden-cover.webp"
     alt: "The Mappings of a Walled Garden"
 ---
 
