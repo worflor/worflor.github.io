@@ -1,7 +1,7 @@
 ---
 title: "The Mappings of a Walled Garden"
 pubDate: 2026-01-28
-description: "how one weekend of curiosity turned into a deep dive through Apple's authentication labyrinth..."
+description: "how one weekend of curiosity turned into a deep dive through Apple's CloudKit authentication labyrinth..."
 author: "woflo"
 images:
   - url: "/images/walled-garden-cover-2.webp"
