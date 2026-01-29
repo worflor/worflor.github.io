@@ -1,5 +1,5 @@
 ---
-title: "'Marco', Polo!"
+title: "Marco, Polo!"
 pubDate: "2026-01-00"
 description: "you can't lockdown an orchard"
 author: "woflo"
