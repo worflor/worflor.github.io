@@ -7,5 +7,3 @@ images:
   - url: "/images/marco-polo-cover.webp"
     alt: "Marco Polo"
 ---
-
-what if everybody was overthinking everything the entire time?
