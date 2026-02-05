@@ -178,8 +178,16 @@ export const projectsPageContent: ProjectPageContent = {
   subtitle: "some endeavours.",
   projects: [
     {
+      title: "Minecraft Server Maintainer",
+      description: "<1MB, written in Java 21<br>Handles Vanilla, Plugins, Datapacks, and Mods<br>Running, restarting, updating, validating, backing up, and on top of that it's reliable.",
+      image: "/images/mc-server-maintainer.webp",
+      year: "2026",
+      url: "https://github.com/worflor/minecraft-server-maintainer",
+      github: "worflor/minecraft-server-maintainer",
+    },
+    {
       title: "What Do You Mean? - Mod/Tool",
-      description: "College Capstone 2026 <br>Enable real time patching in Minecraft, without breaking any existing code/systems (vanilla, datapack, or modded)",
+      description: "College Capstone 2026<br>Enable real time patching in Minecraft, without breaking any existing code/systems (vanilla, datapack, or modded)",
       image: "/images/wdym-cover.webp",
       year: "2026",
       url: "/blog/wdym",

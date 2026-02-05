@@ -5,7 +5,7 @@ import { parseMarkdown } from "../utils/helpers";
 
 type Props = Project & { loading?: "eager" | "lazy" };
 
-const { title, description, image, year, url, loading = "lazy" } = Astro.props;
+const { title, description, image, year, url, github, loading = "lazy" } = Astro.props;
 
 const htmlDescription = parseMarkdown(description);
 ---
@@ -32,9 +32,38 @@ const htmlDescription = parseMarkdown(description);
     <div class="flex items-center gap-1 mb-2">
       <p class="font-medium">{title}</p>
       <span class="opacity-60 tabular-nums">· {year}</span>
+      {github && (
+        <span
+          class="github-stars opacity-60 tabular-nums items-center gap-0.5 hidden"
+          data-repo={github}
+        >
+          · <svg class="w-3.5 h-3.5 inline" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> <span class="star-count"></span>
+        </span>
+      )}
     </div>
     <div class="opacity-60 text-[length:var(--text-sm)]">
       <Fragment set:html={htmlDescription} />
     </div>
   </div>
 </a>
+
+<script>
+  document.querySelectorAll('.github-stars').forEach(async (el) => {
+    const repo = el.getAttribute('data-repo');
+    if (!repo) return;
+
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}`);
+      if (res.ok) {
+        const data = await res.json();
+        const countEl = el.querySelector('.star-count');
+        if (countEl) {
+          countEl.textContent = data.stargazers_count;
+          (el as HTMLElement).style.display = 'flex';
+        }
+      }
+    } catch {
+      // Silently fail
+    }
+  });
+</script>

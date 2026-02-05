@@ -8,6 +8,20 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "Comic Neue";
+  src: url("/fonts/ComicNeue-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Comic Neue";
+  src: url("/fonts/ComicNeue-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+
 @theme {
   /* core colors */
   --color-bg: #0A0A0A;
@@ -17,6 +31,7 @@
 
   /* typography */
   --font-body: "Inter", "Trebuchet MS", "Lucida Grande", "Lucida Sans Unicode", "Lucida Sans", Tahoma, sans-serif;
+  --font-casual: "Comic Neue", "Comic Sans MS", cursive;
 
   /* fluid sizes - scales smoothly without hardcoded breakpoints */
   --size-avatar-sm: clamp(2.25rem, 2rem + 1vw, 2.75rem);
@@ -155,6 +170,16 @@
   font-weight: bold;
   font-size: var(--text-3xl);
   margin-bottom: 0.25rem;
+}
+
+/* Casual font for personal moments */
+.casual {
+  font-family: var(--font-casual);
+}
+
+/* Hover state that swaps to casual font */
+.hover-casual:hover {
+  font-family: var(--font-casual);
 }
 
 .ambient-depth {
