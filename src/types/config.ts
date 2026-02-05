@@ -70,6 +70,7 @@ export type Project = {
   image: string;
   year: string;
   url: string;
+  github?: string;
 };
 
 export type ProjectPageContent = {
