@@ -244,7 +244,7 @@ type FogWorkerInMessage =
 
 type FogWorkerOutMessage =
   | { readonly type: "ready" }
-  | { readonly type: "rendered"; readonly bitmap: ImageBitmap; readonly changed: boolean }
+  | { readonly type: "rendered"; readonly changed: boolean; readonly bitmap?: ImageBitmap }
   | { readonly type: "revealMap"; readonly data: Float32Array }
   | { readonly type: "fogDirty"; readonly dirty: boolean };
 
@@ -434,9 +434,11 @@ class FogWorker {
         if (msg.type === "ready") {
           this.ready = true;
         } else if (msg.type === "rendered") {
-          if (this.bitmap) this.bitmap.close();
-          this.bitmap = msg.bitmap;
           this.pendingRender = false;
+          if (msg.changed && msg.bitmap) {
+            if (this.bitmap) this.bitmap.close();
+            this.bitmap = msg.bitmap;
+          }
         } else if (msg.type === "revealMap") {
           this.pendingRevealMapRequest = false;
           if (this._onRevealMapReceived) {
