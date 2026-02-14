@@ -4565,6 +4565,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       // Ignore multi-touch gestures to keep interactions deterministic.
       if (e.touches.length > 1) {
+        e.preventDefault();
         mouse.down = false;
         mouse.rightDown = false;
         mouse.holdTime = 0;
