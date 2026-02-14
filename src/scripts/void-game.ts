@@ -3917,14 +3917,21 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   function getCreatureAt(x: number, y: number, extraPadding = 0): Creature | null {
-    for (let i = creatures.length - 1; i >= 0; i--) {
+    let hit: Creature | null = null;
+    let hitIndex = -1;
+
+    for (let i = 0; i < creatures.length; i++) {
       const c = creatures[i];
       const d = Math.hypot(c.x - x, c.y - y);
-      if (d < c.displaySize + 8 + extraPadding) {
-        return c;
+      if (d >= c.displaySize + 8 + extraPadding) continue;
+
+      if (!hit || c.y > hit.y || (c.y === hit.y && i > hitIndex)) {
+        hit = c;
+        hitIndex = i;
       }
     }
-    return null;
+
+    return hit;
   }
 
   function createRipple(x: number, y: number): void {
