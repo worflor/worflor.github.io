@@ -540,7 +540,13 @@ class FogWorker {
 // MAIN GAME FUNCTION
 // ============================================================================
 
+let activeVoidGameCleanup: (() => void) | null = null;
+
 export function initVoidGame(options: GameInitOptions): () => void {
+  if (activeVoidGameCleanup) {
+    activeVoidGameCleanup();
+  }
+
   const { canvas, lostPath, titleSub, title, toast, tooltip, pickupRing, homeBtn, resetBtn } =
     options;
 
@@ -611,6 +617,40 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // AbortController for clean event listener removal
   const eventAbortController = new AbortController();
   let fogDirty = true;
+  let destroyed = false;
+
+  // Async task tracking
+  const pendingTimeouts = new Set<number>();
+  let pendingIdleSave: number | null = null;
+
+  function scheduleTimeout(callback: () => void, delay: number): number {
+    const id = window.setTimeout(() => {
+      pendingTimeouts.delete(id);
+      if (destroyed) return;
+      callback();
+    }, delay);
+    pendingTimeouts.add(id);
+    return id;
+  }
+
+  function clearPendingAsyncTasks(): void {
+    for (const timeoutId of pendingTimeouts) {
+      window.clearTimeout(timeoutId);
+    }
+    pendingTimeouts.clear();
+
+    if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
+      cancelIdleCallback(pendingIdleSave);
+    }
+    pendingIdleSave = null;
+  }
+
+  // Cache static UI references used each frame
+  const tooltipNameEl = tooltip.querySelector(".name") as HTMLElement | null;
+  const tooltipDetailsEl = tooltip.querySelector(".details") as HTMLElement | null;
+  const tooltipStatsEl = tooltip.querySelector(".stats") as HTMLElement | null;
+  const tooltipPersonalityEl = tooltip.querySelector(".personality") as HTMLElement | null;
+  const pickupRingCtx = pickupRing.getContext("2d");
 
   // Pre-allocated collections
   const _protectedCells = new Set<number>();
@@ -3590,6 +3630,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     // Set up callback to sync worker's revealMap to main thread
     fogWorker.onRevealMapReceived = (data: Float32Array) => {
+      if (destroyed) return;
       if (revealMap && data.length === revealMap.length) {
         revealMap.set(data);
       }
@@ -3845,9 +3886,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
     };
 
     if (typeof requestIdleCallback !== "undefined") {
-      requestIdleCallback(doSave, { timeout: 1000 });
+      pendingIdleSave = requestIdleCallback(() => {
+        pendingIdleSave = null;
+        if (destroyed) return;
+        doSave();
+      }, { timeout: 1000 });
     } else {
-      setTimeout(doSave, 0);
+      scheduleTimeout(doSave, 0);
     }
   }
 
@@ -3911,9 +3956,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // ============================================================================
 
   function showToast(text: string): void {
+    if (destroyed) return;
     toast.textContent = text;
     toast.classList.add("show");
-    setTimeout(() => toast.classList.remove("show"), 2000);
+    scheduleTimeout(() => {
+      toast.classList.remove("show");
+    }, 2000);
   }
 
   function getCreatureAt(x: number, y: number, extraPadding = 0): Creature | null {
@@ -4003,6 +4051,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // ============================================================================
 
   function update(): void {
+    if (destroyed) return;
     time++;
 
     if (mouse.down && !heldCreature) {
@@ -4158,7 +4207,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (creatures.length === 0 && !respawnPending) {
       respawnPending = true;
       fadingToBlack = true;
-      setTimeout(() => {
+      scheduleTimeout(() => {
         if (creatures.length === 0) {
           resetFog();
           fadingToBlack = false;
@@ -4185,6 +4234,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   function updateUI(): void {
+    if (destroyed) return;
+
     const pop = creatures.length;
 
     document.title = pop === 0 ? "404 - Lost" : `404 - ${pop} Lost too`;
@@ -4199,13 +4250,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (showCreature && !showCreature.isDead) {
       const c = showCreature;
       tooltip.classList.add("visible");
-      const nameEl = tooltip.querySelector(".name");
-      const detailsEl = tooltip.querySelector(".details");
-      const statsEl = tooltip.querySelector(".stats");
-      const personalityEl = tooltip.querySelector(".personality");
-
-      if (nameEl) nameEl.textContent = c.name;
-      if (detailsEl) detailsEl.textContent = `gen ${c.generation} · ${formatAge(c.age)}`;
+      if (tooltipNameEl) tooltipNameEl.textContent = c.name;
+      if (tooltipDetailsEl) tooltipDetailsEl.textContent = `gen ${c.generation} · ${formatAge(c.age)}`;
 
       const trustWord =
         c.trust > 0.8 ? "devoted" :
@@ -4214,10 +4260,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
         c.trust > 0.2 ? "wary" : "fearful";
       const visibleFear = Math.min(1, c.fear * (1.2 - c.stability * 0.4));
       const fearInfo = visibleFear > 0.35 ? " · scared!" : visibleFear > 0.2 ? " · nervous" : "";
-      if (statsEl) {
-        statsEl.innerHTML = `<span>energy ${Math.round(c.energy)}%</span><span>happy ${Math.round(c.happiness)}%</span><span>${trustWord}${fearInfo}</span>`;
+      if (tooltipStatsEl) {
+        tooltipStatsEl.innerHTML = `<span>energy ${Math.round(c.energy)}%</span><span>happy ${Math.round(c.happiness)}%</span><span>${trustWord}${fearInfo}</span>`;
       }
-      if (personalityEl) personalityEl.textContent = getPersonalityDescription(c);
+      if (tooltipPersonalityEl) tooltipPersonalityEl.textContent = getPersonalityDescription(c);
 
       const tooltipW = 140, tooltipH = 80;
       const tx = Math.min(W - tooltipW, Math.max(10, c.x + c.displaySize + 15));
@@ -4232,26 +4278,27 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   function updatePickupRing(): void {
+    if (destroyed || !pickupRingCtx) return;
+
     if (rightClickTarget && !rightClickTarget.isDead && pickupProgress > 0 && !heldCreature) {
       pickupRing.style.opacity = "1";
       pickupRing.style.left = rightClickTarget.x - 30 + "px";
       pickupRing.style.top = rightClickTarget.y - 30 + "px";
 
-      const ringCtx = pickupRing.getContext("2d");
-      if (!ringCtx) return;
-
-      ringCtx.clearRect(0, 0, 60, 60);
-      ringCtx.strokeStyle = "rgba(255, 200, 150, 0.6)";
-      ringCtx.lineWidth = 2;
-      ringCtx.beginPath();
-      ringCtx.arc(30, 30, 25, -Math.PI / 2, -Math.PI / 2 + pickupProgress * Math.PI * 2);
-      ringCtx.stroke();
+      pickupRingCtx.clearRect(0, 0, 60, 60);
+      pickupRingCtx.strokeStyle = "rgba(255, 200, 150, 0.6)";
+      pickupRingCtx.lineWidth = 2;
+      pickupRingCtx.beginPath();
+      pickupRingCtx.arc(30, 30, 25, -Math.PI / 2, -Math.PI / 2 + pickupProgress * Math.PI * 2);
+      pickupRingCtx.stroke();
     } else {
       pickupRing.style.opacity = "0";
     }
   }
 
   function draw(): void {
+    if (destroyed) return;
+
     const depthDarkness = Math.min(1, currentDepth * 0.08);
     const baseR = Math.floor(10 * (1 - depthDarkness * 0.6));
     const baseG = Math.floor(10 * (1 - depthDarkness * 0.6));
@@ -4315,6 +4362,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
   let gameLoopId: number | null = null;
 
   function gameLoop(): void {
+    if (destroyed) return;
+
     update();
     draw();
     gameLoopId = requestAnimationFrame(gameLoop);
@@ -4442,7 +4491,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         heldCreature = null;
       }
 
-      setTimeout(() => {
+      scheduleTimeout(() => {
         if (!mouse.rightDown && !heldCreature) {
           tooltipCreature = null;
         }
@@ -4540,7 +4589,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         touched.pet(touchStartPos.x, touchStartPos.y);
         tooltipCreature = null;
       } else {
-        setTimeout(() => {
+        scheduleTimeout(() => {
           if (tooltipCreature === touched) {
             tooltipCreature = null;
           }
@@ -4641,20 +4690,41 @@ export function initVoidGame(options: GameInitOptions): () => void {
     spawnStructures(true);
   }
 
+  const handleBeforeUnload = (): void => {
+    cleanup();
+  };
+  const handlePageHide = (): void => {
+    cleanup();
+  };
+
   // Cleanup function
   function cleanup(): void {
+    if (destroyed) return;
+    destroyed = true;
+
     eventAbortController.abort();
-    if (gameLoopId) {
+    window.removeEventListener("beforeunload", handleBeforeUnload);
+    window.removeEventListener("pagehide", handlePageHide);
+    clearPendingAsyncTasks();
+
+    if (gameLoopId !== null) {
       cancelAnimationFrame(gameLoopId);
       gameLoopId = null;
     }
+
+    fogWorker.onRevealMapReceived = null;
     fogWorker.destroy();
+
+    if (activeVoidGameCleanup === cleanup) {
+      activeVoidGameCleanup = null;
+    }
   }
 
   // No signal - these trigger cleanup which calls abort()
-  window.addEventListener("beforeunload", cleanup);
-  window.addEventListener("pagehide", cleanup);
+  window.addEventListener("beforeunload", handleBeforeUnload);
+  window.addEventListener("pagehide", handlePageHide);
 
+  activeVoidGameCleanup = cleanup;
   gameLoop();
 
   return cleanup;

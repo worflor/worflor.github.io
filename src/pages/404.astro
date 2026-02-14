@@ -294,7 +294,7 @@
     <script>
       import { initVoidGame } from "../scripts/void-game";
 
-      const _cleanup = initVoidGame({
+      const cleanup = initVoidGame({
         canvas: document.getElementById("game") as HTMLCanvasElement,
         lostPath: document.getElementById("lost-path")!,
         titleSub: document.getElementById("title-sub")!,
@@ -305,6 +305,9 @@
         homeBtn: document.getElementById("home") as HTMLButtonElement,
         resetBtn: document.getElementById("btn-reset") as HTMLButtonElement,
       });
+
+      window.addEventListener("pagehide", cleanup, { once: true });
+      document.addEventListener("astro:before-swap", cleanup, { once: true });
     </script>
   </body>
 </html>
