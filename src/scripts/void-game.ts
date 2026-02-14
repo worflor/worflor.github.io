@@ -169,9 +169,17 @@ interface SerializedCreature {
 }
 
 interface SaveData {
+  version: number;
   creatures: SerializedCreature[];
   revealMap: number[] | null;
   revealDims: { w: number; h: number } | null;
+}
+
+interface SaveDataEnvelope {
+  version?: unknown;
+  creatures?: unknown;
+  revealMap?: unknown;
+  revealDims?: unknown;
 }
 
 // Init options
@@ -251,6 +259,8 @@ type FogWorkerOutMessage =
 // ============================================================================
 // GAME CONSTANTS
 // ============================================================================
+
+const SAVE_SCHEMA_VERSION = 1;
 
 const CONFIG = {
   // Timing
@@ -573,8 +583,27 @@ export function initVoidGame(options: GameInitOptions): () => void {
   const { canvas, lostPath, titleSub, title, toast, tooltip, pickupRing, homeBtn, resetBtn } =
     options;
 
-  const ctx = canvas.getContext("2d")!;
-  if (!ctx) throw new Error("Canvas not supported");
+  const requiredElements: Array<[string, unknown, typeof Element]> = [
+    ["canvas", canvas, HTMLCanvasElement],
+    ["lostPath", lostPath, HTMLElement],
+    ["titleSub", titleSub, HTMLElement],
+    ["title", title, HTMLElement],
+    ["toast", toast, HTMLElement],
+    ["tooltip", tooltip, HTMLElement],
+    ["pickupRing", pickupRing, HTMLCanvasElement],
+    ["homeBtn", homeBtn, HTMLButtonElement],
+    ["resetBtn", resetBtn, HTMLButtonElement],
+  ];
+
+  for (const [name, value, ctor] of requiredElements) {
+    if (!(value instanceof ctor)) {
+      throw new Error(`[void404] Invalid init option: ${name}`);
+    }
+  }
+
+  const ctxMaybe = canvas.getContext("2d");
+  if (!ctxMaybe) throw new Error("Canvas not supported");
+  const ctx: CanvasRenderingContext2D = ctxMaybe;
 
   // Core State
   let W = window.innerWidth;
@@ -3911,12 +3940,116 @@ export function initVoidGame(options: GameInitOptions): () => void {
     return result;
   }
 
+  function isSerializedCreature(value: unknown): value is SerializedCreature {
+    if (!value || typeof value !== "object") return false;
+    const c = value as Partial<SerializedCreature>;
+
+    if (typeof c.id !== "string" || typeof c.name !== "string") return false;
+    if (typeof c.x !== "number" || !Number.isFinite(c.x)) return false;
+    if (typeof c.y !== "number" || !Number.isFinite(c.y)) return false;
+    if (typeof c.generation !== "number" || !Number.isFinite(c.generation)) return false;
+
+    const numericFields: Array<keyof SerializedCreature> = [
+      "openness",
+      "conscientiousness",
+      "extraversion",
+      "agreeableness",
+      "stability",
+      "roundness",
+      "glow",
+      "hue",
+      "energy",
+      "happiness",
+      "age",
+      "size",
+      "targetSize",
+      "trust",
+      "fear",
+      "stress",
+      "attachment",
+      "fatigue",
+      "restedness",
+      "moodBaseline",
+      "homeX",
+      "homeY",
+      "homeStrength",
+      "comforted",
+      "lonely",
+      "anticipation",
+      "vx",
+      "vy",
+    ];
+
+    for (const field of numericFields) {
+      const n = c[field];
+      if (typeof n !== "number" || !Number.isFinite(n)) return false;
+    }
+
+    if (!Array.isArray(c.friends) || c.friends.some((f) => typeof f !== "string")) return false;
+    if (!Array.isArray(c.bonds)) return false;
+    if (c.parentId !== null && typeof c.parentId !== "string") return false;
+    if (typeof c.sleeping !== "boolean") return false;
+    if (!c.memories || typeof c.memories !== "object") return false;
+
+    return true;
+  }
+
+  function validateRevealDims(value: unknown): { w: number; h: number } | null {
+    if (!value || typeof value !== "object") return null;
+    const dims = value as { w?: unknown; h?: unknown };
+    if (typeof dims.w !== "number" || typeof dims.h !== "number") return null;
+    if (!Number.isFinite(dims.w) || !Number.isFinite(dims.h)) return null;
+    return { w: dims.w, h: dims.h };
+  }
+
+  function normalizeSaveData(raw: unknown): SaveData | null {
+    if (!raw || typeof raw !== "object") return null;
+    const data = raw as SaveDataEnvelope;
+
+    if (data.version !== SAVE_SCHEMA_VERSION) {
+      return null;
+    }
+
+    if (!Array.isArray(data.creatures) || !data.creatures.every(isSerializedCreature)) {
+      return null;
+    }
+
+    let revealMap: number[] | null = null;
+    if (data.revealMap === null || typeof data.revealMap === "undefined") {
+      revealMap = null;
+    } else if (
+      Array.isArray(data.revealMap) &&
+      data.revealMap.length % 2 === 0 &&
+      data.revealMap.every((n) => typeof n === "number" && Number.isFinite(n))
+    ) {
+      revealMap = data.revealMap;
+    } else {
+      return null;
+    }
+
+    let revealDims: { w: number; h: number } | null = null;
+    if (data.revealDims === null || typeof data.revealDims === "undefined") {
+      revealDims = null;
+    } else {
+      revealDims = validateRevealDims(data.revealDims);
+      if (!revealDims) return null;
+    }
+
+    return {
+      version: SAVE_SCHEMA_VERSION,
+      creatures: data.creatures,
+      revealMap,
+      revealDims,
+    };
+  }
+
   // ============================================================================
   // SAVE / LOAD / RESET
   // ============================================================================
 
   function save(): void {
     const data: SaveData = {
+      version: SAVE_SCHEMA_VERSION,
       creatures: creatures.map((c) => serializeCreature(c)),
       revealMap: revealMap ? compressRevealMap(revealMap) : null,
       revealDims: revealMap ? { w: revealW, h: revealH } : null,
@@ -3950,13 +4083,23 @@ export function initVoidGame(options: GameInitOptions): () => void {
     try {
       const saved = localStorage.getItem("void404_save");
       if (!saved) return false;
-      const data = JSON.parse(saved) as SaveData;
+      const parsed = JSON.parse(saved) as unknown;
+      const data = normalizeSaveData(parsed);
+      if (!data) return false;
 
+      const loadedCreatures: Creature[] = [];
       for (const c of data.creatures) {
         const creature = new Creature(c.x, c.y);
         deserializeCreature(creature, c);
-        creatures.push(creature);
+        loadedCreatures.push(creature);
       }
+
+      const loadedRevealMap =
+        currentDepth === 0 && data.revealMap && data.revealDims && data.revealDims.w === revealW && data.revealDims.h === revealH
+          ? decompressRevealMap(data.revealMap, revealW * revealH)
+          : null;
+
+      creatures = loadedCreatures;
 
       const creatureIds = new Set(creatures.map((c) => c.id));
       for (const creature of creatures) {
@@ -3973,12 +4116,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
         }
       }
 
-      if (currentDepth === 0 && data.revealMap) {
-        if (data.revealDims && data.revealDims.w === revealW && data.revealDims.h === revealH) {
-          revealMap = decompressRevealMap(data.revealMap, revealW * revealH);
-        } else if (Array.isArray(data.revealMap) && data.revealMap.length === revealW * revealH) {
-          revealMap = new Float32Array(data.revealMap);
-        }
+      if (currentDepth === 0 && loadedRevealMap) {
+        revealMap = loadedRevealMap;
         // Sync loaded reveal map to worker (queues until ready)
         if (revealMap) {
           fogWorker.setRevealMap(revealMap);
@@ -4481,7 +4620,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }, { signal });
 
   document.addEventListener("mousedown", (e) => {
-    if ((e.target as HTMLElement).tagName === "BUTTON" || (e.target as HTMLElement).tagName === "A") return;
+    const target = e.target;
+    if (target instanceof Element && target.closest("button, a")) return;
 
     mouse.x = e.clientX;
     mouse.y = e.clientY;
@@ -4561,7 +4701,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
   document.addEventListener(
     "touchstart",
     (e) => {
-      if ((e.target as HTMLElement).closest("#home, #btn-reset, #controls")) return;
+      const target = e.target;
+      if (target instanceof Element && target.closest("#home, #btn-reset, #controls")) return;
       if (e.touches.length === 0) return;
 
       // Ignore multi-touch gestures to keep interactions deterministic.

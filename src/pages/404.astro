@@ -294,20 +294,58 @@
     <script>
       import { initVoidGame } from "../scripts/void-game";
 
-      const cleanup = initVoidGame({
-        canvas: document.getElementById("game") as HTMLCanvasElement,
-        lostPath: document.getElementById("lost-path")!,
-        titleSub: document.getElementById("title-sub")!,
-        title: document.getElementById("title")!,
-        toast: document.getElementById("toast")!,
-        tooltip: document.getElementById("creature-tooltip")!,
-        pickupRing: document.getElementById("pickup-ring") as HTMLCanvasElement,
-        homeBtn: document.getElementById("home") as HTMLButtonElement,
-        resetBtn: document.getElementById("btn-reset") as HTMLButtonElement,
-      });
+      function getRequiredElement<T extends Element>(
+        id: string,
+        ctor: { new (...args: any[]): T }
+      ): T | null {
+        const el = document.getElementById(id);
+        if (!(el instanceof ctor)) {
+          console.error(
+            `[void404] Initialization aborted: required element #${id} missing or invalid.`
+          );
+          return null;
+        }
+        return el;
+      }
 
-      window.addEventListener("pagehide", cleanup, { once: true });
-      document.addEventListener("astro:before-swap", cleanup, { once: true });
+      const canvas = getRequiredElement("game", HTMLCanvasElement);
+      const lostPath = getRequiredElement("lost-path", HTMLElement);
+      const titleSub = getRequiredElement("title-sub", HTMLElement);
+      const title = getRequiredElement("title", HTMLElement);
+      const toast = getRequiredElement("toast", HTMLElement);
+      const tooltip = getRequiredElement("creature-tooltip", HTMLElement);
+      const pickupRing = getRequiredElement("pickup-ring", HTMLCanvasElement);
+      const homeBtn = getRequiredElement("home", HTMLButtonElement);
+      const resetBtn = getRequiredElement("btn-reset", HTMLButtonElement);
+
+      if (
+        !canvas ||
+        !lostPath ||
+        !titleSub ||
+        !title ||
+        !toast ||
+        !tooltip ||
+        !pickupRing ||
+        !homeBtn ||
+        !resetBtn
+      ) {
+        // Required DOM not available; do not attempt startup.
+      } else {
+        const cleanup = initVoidGame({
+          canvas,
+          lostPath,
+          titleSub,
+          title,
+          toast,
+          tooltip,
+          pickupRing,
+          homeBtn,
+          resetBtn,
+        });
+
+        window.addEventListener("pagehide", cleanup, { once: true });
+        document.addEventListener("astro:before-swap", cleanup, { once: true });
+      }
     </script>
   </body>
 </html>
