@@ -4099,10 +4099,20 @@ export function initVoidGame(options: GameInitOptions): () => void {
         loadedCreatures.push(creature);
       }
 
-      const loadedRevealMap =
-        currentDepth === 0 && data.revealMap && data.revealDims && data.revealDims.w === revealW && data.revealDims.h === revealH
-          ? decompressRevealMap(data.revealMap, revealW * revealH)
-          : null;
+      let loadedRevealMap: Float32Array | null = null;
+      if (currentDepth === 0 && data.revealMap) {
+        const expectedCells = revealW * revealH;
+        const hasMatchingDims =
+          data.revealDims && data.revealDims.w === revealW && data.revealDims.h === revealH;
+
+        if (hasMatchingDims) {
+          // Preferred current format: RLE-compressed map with dimensions metadata.
+          loadedRevealMap = decompressRevealMap(data.revealMap, expectedCells);
+        } else if (data.revealMap.length === expectedCells) {
+          // Legacy fallback: raw reveal grid persisted without compression metadata.
+          loadedRevealMap = new Float32Array(data.revealMap);
+        }
+      }
 
       creatures = loadedCreatures;
 
