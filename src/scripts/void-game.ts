@@ -4425,6 +4425,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const oldH = revealH;
 
     initRevealMap(false);
+    fogWorker.resize(W, H);
 
     if (oldReveal && oldW && oldH && revealW && revealH && revealMap && lastRevealTime) {
       const scaleX = oldW / revealW;
@@ -4448,7 +4449,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       workerFogDirty = true;
     }
 
-    fogWorker.resize(W, H);
     fogDirty = true;
     fogCanvas = null;
   }
