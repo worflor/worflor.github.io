@@ -604,6 +604,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   let fogCanvas: HTMLCanvasElement | null = null;
   let fogCtx: CanvasRenderingContext2D | null = null;
   let fogImageData: ImageData | null = null;
+  let workerFogDirty = true;
 
   // AbortController for clean event listener removal
   const eventAbortController = new AbortController();
@@ -3583,6 +3584,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       revealRes: CONFIG.REVEAL_RES,
       revealDecay: CONFIG.REVEAL_DECAY,
     });
+    workerFogDirty = true;
 
     // Set up callback to sync worker's revealMap to main thread
     fogWorker.onRevealMapReceived = (data: Float32Array) => {
@@ -3605,6 +3607,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     // Clear worker fog state
     if (fogWorker.isActive && revealMap) {
       fogWorker.setRevealMap(new Float32Array(revealMap.length));
+      workerFogDirty = true;
     }
   }
 
@@ -3626,7 +3629,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }));
 
       fogWorker.updateEntities(creatureData, monolithData);
-      fogWorker.requestRender();
+      if (creatureData.length > 0 || monolithData.length > 0) {
+        workerFogDirty = true;
+      }
+
+      if (workerFogDirty) {
+        fogWorker.requestRender();
+        workerFogDirty = false;
+      }
 
       if (fogWorker.hasBitmap) {
         fogWorker.draw(ctx);
@@ -3717,6 +3727,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         // Sync to worker so it renders the fade
         if (fogWorker.isActive) {
           fogWorker.setRevealMap(revealMap);
+          workerFogDirty = true;
         }
       }
       return;
@@ -3725,6 +3736,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     // Worker handles decay internally
     if (fogWorker.isActive) {
       fogWorker.decay();
+      workerFogDirty = true;
       return;
     }
 
@@ -3926,6 +3938,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     // Use worker for reveal if active
     if (fogWorker.isActive) {
       fogWorker.addRevealPoints([{ x, y, radius, intensity: 0.15 }]);
+      workerFogDirty = true;
     } else if (revealMap) {
       // Fallback: direct reveal map manipulation
       const cx = Math.floor(x / revealRes);
@@ -4269,8 +4282,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     for (const m of monoliths) m.draw();
     for (const f of foods) f.draw();
 
-    creatures.sort((a, b) => a.y - b.y);
-    for (const c of creatures) c.draw();
+    const renderCreatures = [...creatures].sort((a, b) => a.y - b.y);
+    for (const c of renderCreatures) c.draw();
 
     for (const p of particles) p.draw();
     for (const e of emotes) e.draw();
@@ -4335,6 +4348,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // Sync scaled reveal map to worker
       if (fogWorker.isActive) {
         fogWorker.setRevealMap(revealMap);
+        workerFogDirty = true;
       }
     }
     fogDirty = true;
@@ -4360,6 +4374,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
   document.addEventListener("mousedown", (e) => {
     if ((e.target as HTMLElement).tagName === "BUTTON" || (e.target as HTMLElement).tagName === "A") return;
+
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
 
     const creature = getCreatureAt(mouse.x, mouse.y);
 
@@ -4507,14 +4524,15 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
   document.addEventListener("touchend", () => {
     const holdDuration = Date.now() - touchStartTime;
+    const touched = touchCreature;
 
-    if (touchCreature && !touchCreature.isDead && !heldCreature) {
+    if (touched && !touched.isDead && !heldCreature) {
       if (holdDuration < 200) {
-        touchCreature.pet(touchStartPos.x, touchStartPos.y);
+        touched.pet(touchStartPos.x, touchStartPos.y);
         tooltipCreature = null;
       } else {
         setTimeout(() => {
-          if (tooltipCreature === touchCreature) {
+          if (tooltipCreature === touched) {
             tooltipCreature = null;
           }
         }, CONFIG.TOOLTIP_DURATION);
