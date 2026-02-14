@@ -3443,6 +3443,15 @@ export function initVoidGame(options: GameInitOptions): () => void {
       heldCreature.putdown();
       heldCreature = null;
     }
+    tooltipCreature = null;
+    rightClickTarget = null;
+    touchCreature = null;
+    mouse.down = false;
+    mouse.rightDown = false;
+    mouse.holdTime = 0;
+    mouse.rightHoldTime = 0;
+    mouse.tappedHole = null;
+    pickupProgress = 0;
     respawnPending = false;
 
     const creatureData = creatures.map((c) => ({
@@ -4552,6 +4561,21 @@ export function initVoidGame(options: GameInitOptions): () => void {
     "touchstart",
     (e) => {
       if ((e.target as HTMLElement).closest("#home, #btn-reset, #controls")) return;
+      if (e.touches.length === 0) return;
+
+      // Ignore multi-touch gestures to keep interactions deterministic.
+      if (e.touches.length > 1) {
+        mouse.down = false;
+        mouse.rightDown = false;
+        mouse.holdTime = 0;
+        mouse.rightHoldTime = 0;
+        mouse.tappedHole = null;
+        rightClickTarget = null;
+        touchCreature = null;
+        pickupProgress = 0;
+        return;
+      }
+
       e.preventDefault();
       const touch = e.touches[0];
       mouse.x = touch.clientX;
@@ -4593,6 +4617,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
   document.addEventListener(
     "touchmove",
     (e) => {
+      if (e.touches.length === 0) return;
+
       const touch = e.touches[0];
       mouse.x = touch.clientX;
       mouse.y = touch.clientY;
