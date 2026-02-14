@@ -413,8 +413,10 @@ class FogWorker {
   private worker: Worker | null = null;
   private bitmap: ImageBitmap | null = null;
   private ready = false;
+  private initialized = false;
   private pendingRender = false;
   private pendingRevealMapRequest = false;
+  private pendingRevealMapSync: Float32Array | null = null;
   private _onRevealMapReceived: ((data: Float32Array) => void) | null = null;
 
   constructor() {
@@ -433,6 +435,11 @@ class FogWorker {
         const msg = e.data;
         if (msg.type === "ready") {
           this.ready = true;
+          if (this.pendingRevealMapSync) {
+            const pending = this.pendingRevealMapSync;
+            this.pendingRevealMapSync = null;
+            this.postRevealMap(pending);
+          }
         } else if (msg.type === "rendered") {
           this.pendingRender = false;
           if (msg.changed && msg.bitmap) {
@@ -470,10 +477,12 @@ class FogWorker {
   }
 
   init(width: number, height: number, config: FogWorkerConfig): void {
+    this.initialized = true;
     this.worker?.postMessage({ type: "init", width, height, config } satisfies FogWorkerInMessage);
   }
 
   resize(width: number, height: number): void {
+    if (!this.initialized) return;
     this.worker?.postMessage({ type: "resize", width, height } satisfies FogWorkerInMessage);
   }
 
@@ -508,9 +517,21 @@ class FogWorker {
     }
   }
 
-  setRevealMap(data: Float32Array): void {
+  private postRevealMap(data: Float32Array): void {
     const copy = new Float32Array(data);
     this.worker?.postMessage({ type: "setRevealMap", data: copy } satisfies FogWorkerInMessage, [copy.buffer]);
+  }
+
+  setRevealMap(data: Float32Array): void {
+    if (!this.worker) return;
+
+    if (this.ready) {
+      this.postRevealMap(data);
+      this.pendingRevealMapSync = null;
+      return;
+    }
+
+    this.pendingRevealMapSync = new Float32Array(data);
   }
 
   requestRevealMap(): void {
@@ -528,7 +549,9 @@ class FogWorker {
       this.worker = null;
     }
     this.ready = false;
+    this.initialized = false;
     this.pendingRender = false;
+    this.pendingRevealMapSync = null;
     if (this.bitmap) {
       this.bitmap.close();
       this.bitmap = null;
@@ -613,6 +636,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   let fogCtx: CanvasRenderingContext2D | null = null;
   let fogImageData: ImageData | null = null;
   let workerFogDirty = true;
+  let fogWorkerInitialized = false;
 
   // AbortController for clean event listener removal
   const eventAbortController = new AbortController();
@@ -3615,26 +3639,32 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // REVEAL MAP / FOG FUNCTIONS
   // ============================================================================
 
-  function initRevealMap(): void {
-    revealW = Math.ceil(W / revealRes);
-    revealH = Math.ceil(H / revealRes);
-    revealMap = new Float32Array(revealW * revealH);
-    lastRevealTime = new Float32Array(revealW * revealH);
+  function initializeFogWorkerIfNeeded(): void {
+    if (fogWorkerInitialized) return;
 
-    // Initialize fog worker
     fogWorker.init(W, H, {
       revealRes: CONFIG.REVEAL_RES,
       revealDecay: CONFIG.REVEAL_DECAY,
     });
-    workerFogDirty = true;
 
-    // Set up callback to sync worker's revealMap to main thread
     fogWorker.onRevealMapReceived = (data: Float32Array) => {
       if (destroyed) return;
       if (revealMap && data.length === revealMap.length) {
         revealMap.set(data);
       }
     };
+
+    fogWorkerInitialized = true;
+  }
+
+  function initRevealMap(): void {
+    revealW = Math.ceil(W / revealRes);
+    revealH = Math.ceil(H / revealRes);
+    revealMap = new Float32Array(revealW * revealH);
+    lastRevealTime = new Float32Array(revealW * revealH);
+
+    initializeFogWorkerIfNeeded();
+    workerFogDirty = true;
   }
 
   function resetFog(): void {
@@ -3647,8 +3677,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
     fogDirty = true;
 
-    // Clear worker fog state
-    if (fogWorker.isActive && revealMap) {
+    // Clear worker fog state (queues if worker is not ready yet)
+    if (revealMap) {
       fogWorker.setRevealMap(new Float32Array(revealMap.length));
       workerFogDirty = true;
     }
@@ -3767,11 +3797,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
       if (anyChanged) {
         fogDirty = true;
-        // Sync to worker so it renders the fade
-        if (fogWorker.isActive) {
-          fogWorker.setRevealMap(revealMap);
-          workerFogDirty = true;
-        }
+        // Sync to worker so it renders the fade (queues until ready)
+        fogWorker.setRevealMap(revealMap);
+        workerFogDirty = true;
       }
       return;
     }
@@ -3886,6 +3914,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
     };
 
     if (typeof requestIdleCallback !== "undefined") {
+      if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
+        cancelIdleCallback(pendingIdleSave);
+        pendingIdleSave = null;
+      }
+
       pendingIdleSave = requestIdleCallback(() => {
         pendingIdleSave = null;
         if (destroyed) return;
@@ -3929,8 +3962,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
         } else if (Array.isArray(data.revealMap) && data.revealMap.length === revealW * revealH) {
           revealMap = new Float32Array(data.revealMap);
         }
-        // Sync loaded reveal map to worker
-        if (revealMap && fogWorker.isActive) {
+        // Sync loaded reveal map to worker (queues until ready)
+        if (revealMap) {
           fogWorker.setRevealMap(revealMap);
         }
         fogCanvas = null;
@@ -4403,12 +4436,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
           }
         }
       }
-      // Sync scaled reveal map to worker
-      if (fogWorker.isActive) {
-        fogWorker.setRevealMap(revealMap);
-        workerFogDirty = true;
-      }
+      // Sync scaled reveal map to worker (queues until worker is ready)
+      fogWorker.setRevealMap(revealMap);
+      workerFogDirty = true;
     }
+
+    fogWorker.resize(W, H);
     fogDirty = true;
     fogCanvas = null;
   }
