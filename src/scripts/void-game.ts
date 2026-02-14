@@ -3657,13 +3657,20 @@ export function initVoidGame(options: GameInitOptions): () => void {
     fogWorkerInitialized = true;
   }
 
-  function initRevealMap(): void {
+  function initRevealMap(syncWorker = true): void {
     revealW = Math.ceil(W / revealRes);
     revealH = Math.ceil(H / revealRes);
     revealMap = new Float32Array(revealW * revealH);
     lastRevealTime = new Float32Array(revealW * revealH);
 
     initializeFogWorkerIfNeeded();
+
+    // Keep worker fog state in sync with the newly initialized world map.
+    // Depth transitions/world resets should start with a fresh fog map.
+    if (syncWorker && revealMap) {
+      fogWorker.setRevealMap(revealMap);
+    }
+
     workerFogDirty = true;
   }
 
@@ -4417,7 +4424,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const oldW = revealW;
     const oldH = revealH;
 
-    initRevealMap();
+    initRevealMap(false);
 
     if (oldReveal && oldW && oldH && revealW && revealH && revealMap && lastRevealTime) {
       const scaleX = oldW / revealW;
