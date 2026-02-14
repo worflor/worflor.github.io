@@ -2667,7 +2667,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
 
       // Wander if no target
-      if (!this.targetX && !this.seekingFood) {
+      // NOTE: target coordinates can validly be 0 (screen edge), so null-check explicitly.
+      if (this.targetX === null && this.targetY === null && !this.seekingFood) {
         this.wanderTimer--;
         if (this.wanderTimer <= 0) {
           this.wanderTimer = 60 + Math.random() * 120;
@@ -4566,6 +4567,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // Ignore multi-touch gestures to keep interactions deterministic.
       if (e.touches.length > 1) {
         e.preventDefault();
+
+        // Multi-touch cancels single-touch interaction state entirely.
+        // Ensure a currently held creature is always released to avoid stale drag state.
+        if (heldCreature) {
+          heldCreature.putdown();
+          heldCreature = null;
+        }
+
         mouse.down = false;
         mouse.rightDown = false;
         mouse.holdTime = 0;
