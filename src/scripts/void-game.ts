@@ -4570,6 +4570,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         mouse.holdTime = 0;
         mouse.rightHoldTime = 0;
         mouse.tappedHole = null;
+        tooltipCreature = null;
         rightClickTarget = null;
         touchCreature = null;
         pickupProgress = 0;
