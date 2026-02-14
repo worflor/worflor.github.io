@@ -355,7 +355,7 @@ function computeDecay(): void {
 function render(): void {
   if (!revealMap || !offscreen || !offscreenCtx || !imageData) return;
 
-  const changed = fogDirty;
+  if (!fogDirty) return;
 
   if (fogDirty) {
     const data = imageData.data;
@@ -403,10 +403,10 @@ function render(): void {
     fogDirty = false;
   }
 
-  // Create bitmap and transfer
+  // Create bitmap and transfer only when fog changed
   const bitmap = offscreen.transferToImageBitmap();
   self.postMessage(
-    { type: "rendered", bitmap, changed } as WorkerOutMessage,
+    { type: "rendered", bitmap, changed: true } as WorkerOutMessage,
     { transfer: [bitmap] }
   );
 }
