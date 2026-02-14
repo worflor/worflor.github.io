@@ -4006,7 +4006,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (!raw || typeof raw !== "object") return null;
     const data = raw as SaveDataEnvelope;
 
-    if (data.version !== SAVE_SCHEMA_VERSION) {
+    // Accept pre-versioned saves only when the payload already matches the current schema.
+    // This preserves pre-launch local progress without introducing long-term migration branches.
+    if (
+      typeof data.version !== "undefined" &&
+      data.version !== SAVE_SCHEMA_VERSION
+    ) {
       return null;
     }
 
