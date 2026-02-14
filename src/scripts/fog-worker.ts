@@ -51,7 +51,7 @@ type WorkerInMessage =
 // Messages to main thread
 type WorkerOutMessage =
   | { readonly type: "ready" }
-  | { readonly type: "rendered"; readonly bitmap: ImageBitmap; readonly changed: boolean }
+  | { readonly type: "rendered"; readonly changed: boolean; readonly bitmap?: ImageBitmap }
   | { readonly type: "revealMap"; readonly data: Float32Array }
   | { readonly type: "fogDirty"; readonly dirty: boolean };
 
@@ -355,7 +355,10 @@ function computeDecay(): void {
 function render(): void {
   if (!revealMap || !offscreen || !offscreenCtx || !imageData) return;
 
-  if (!fogDirty) return;
+  if (!fogDirty) {
+    self.postMessage({ type: "rendered", changed: false } as WorkerOutMessage);
+    return;
+  }
 
   if (fogDirty) {
     const data = imageData.data;
@@ -405,10 +408,9 @@ function render(): void {
 
   // Create bitmap and transfer only when fog changed
   const bitmap = offscreen.transferToImageBitmap();
-  self.postMessage(
-    { type: "rendered", bitmap, changed: true } as WorkerOutMessage,
-    { transfer: [bitmap] }
-  );
+  self.postMessage({ type: "rendered", bitmap, changed: true } as WorkerOutMessage, {
+    transfer: [bitmap],
+  });
 }
 
 // ============================================================================
