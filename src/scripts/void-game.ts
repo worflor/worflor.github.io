@@ -169,12 +169,14 @@ interface SerializedCreature {
 }
 
 interface SaveData {
+  version: number;
   creatures: SerializedCreature[];
   revealMap: number[] | null;
   revealDims: { w: number; h: number } | null;
 }
 
 interface SaveDataEnvelope {
+  version?: unknown;
   creatures?: unknown;
   revealMap?: unknown;
   revealDims?: unknown;
@@ -257,6 +259,8 @@ type FogWorkerOutMessage =
 // ============================================================================
 // GAME CONSTANTS
 // ============================================================================
+
+const SAVE_SCHEMA_VERSION = 1;
 
 const CONFIG = {
   // Timing
@@ -4002,6 +4006,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (!raw || typeof raw !== "object") return null;
     const data = raw as SaveDataEnvelope;
 
+    if (data.version !== SAVE_SCHEMA_VERSION) {
+      return null;
+    }
+
     if (!Array.isArray(data.creatures) || !data.creatures.every(isSerializedCreature)) {
       return null;
     }
@@ -4011,6 +4019,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       revealMap = null;
     } else if (
       Array.isArray(data.revealMap) &&
+      data.revealMap.length % 2 === 0 &&
       data.revealMap.every((n) => typeof n === "number" && Number.isFinite(n))
     ) {
       revealMap = data.revealMap;
@@ -4027,6 +4036,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     return {
+      version: SAVE_SCHEMA_VERSION,
       creatures: data.creatures,
       revealMap,
       revealDims,
@@ -4039,6 +4049,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
   function save(): void {
     const data: SaveData = {
+      version: SAVE_SCHEMA_VERSION,
       creatures: creatures.map((c) => serializeCreature(c)),
       revealMap: revealMap ? compressRevealMap(revealMap) : null,
       revealDims: revealMap ? { w: revealW, h: revealH } : null,
@@ -4084,12 +4095,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
 
       const loadedRevealMap =
-        currentDepth === 0 && data.revealMap
-          ? data.revealDims && data.revealDims.w === revealW && data.revealDims.h === revealH
-            ? decompressRevealMap(data.revealMap, revealW * revealH)
-            : Array.isArray(data.revealMap) && data.revealMap.length === revealW * revealH
-              ? new Float32Array(data.revealMap)
-              : null
+        currentDepth === 0 && data.revealMap && data.revealDims && data.revealDims.w === revealW && data.revealDims.h === revealH
+          ? decompressRevealMap(data.revealMap, revealW * revealH)
           : null;
 
       creatures = loadedCreatures;
