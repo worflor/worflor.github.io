@@ -192,6 +192,13 @@ export const projectsPageContent: ProjectPageContent = {
       year: "2026",
       url: "/blog/wdym",
     },
+    {
+      title: "Minecraft Server Maintainer",
+      description: "Pure Java 21 <br>Let your server take care of itself with automatic updates for Minecraft, mods, plugins, and datapacks.",
+      image: "/images/placeholder-1.webp",
+      year: "2026",
+      url: "https://github.com/worflor/minecraft-server-maintainer",
+    },
     /*
 
     {
