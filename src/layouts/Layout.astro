@@ -322,6 +322,9 @@ const { seo } = Astro.props;
           window.removeEventListener('resize', applyBreadcrumbSize);
           document.removeEventListener('astro:before-swap', cleanup);
         }, { once: true });
+        // Pages with [data-breadcrumb-controller] manage their own breadcrumb
+        if (document.querySelector('[data-breadcrumb-controller]')) return;
+
         var headings = Array.from(document.querySelectorAll('main h1, main h2, main h3'));
         if (!headings.length || !breadcrumb) return;
 
