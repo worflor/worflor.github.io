@@ -465,6 +465,9 @@ function updatePointValue(
 
 // ─── Bar Tooltip ─────────────────────────────────────────────────────────────
 
+/** Cleanup functions for tooltip interaction listeners, keyed by bar wrap element. */
+const tipCleanups = new WeakMap<HTMLElement, () => void>();
+
 /** Weight → human label for the tooltip. */
 const WEIGHT_LABELS: Record<number, string> = {
   5: "very high",
@@ -486,29 +489,57 @@ function esc(s: string): string {
 }
 
 /**
- * On mouseenter, measure whether the tooltip fits above the bar without
- * being clipped by the sticky header (or viewport top). If not, flip it
- * below by toggling `.bar-tooltip--below`. Runs once per hover — cheap.
+ * Positions the tooltip above or below the bar depending on available space,
+ * and wires up tap-to-toggle + outside-dismiss for touch devices (following
+ * the same pointerdown pattern as the site's mobile menu).
  */
-function attachTooltipFlip(barWrap: HTMLElement): void {
-  barWrap.addEventListener("mouseenter", () => {
+function attachTooltipInteraction(barWrap: HTMLElement): () => void {
+  const controller = new AbortController();
+  const { signal } = controller;
+
+  /** Re-evaluate flip direction based on current scroll position. */
+  function positionTip() {
     const tip = barWrap.querySelector<HTMLElement>(".bar-tooltip");
     if (!tip) return;
 
-    // Sticky header bottom edge is the ceiling we can't overlap.
     const header = document.querySelector<HTMLElement>(".site-header");
     const ceiling = header ? header.getBoundingClientRect().bottom : 0;
 
-    // Temporarily remove flip so we measure natural (above) position.
     tip.classList.remove("bar-tooltip--below");
-
-    // Use the tooltip's own bounding box — it already accounts for the
-    // gap and arrow from CSS, so no magic numbers needed here.
     const tipTop = tip.getBoundingClientRect().top;
-    const fitsAbove = tipTop >= ceiling;
+    tip.classList.toggle("bar-tooltip--below", tipTop < ceiling);
+  }
 
-    tip.classList.toggle("bar-tooltip--below", !fitsAbove);
-  });
+  // Desktop: reposition on hover.
+  barWrap.addEventListener("mouseenter", positionTip, { signal });
+
+  // Touch / pointer: tap bar to toggle, tap outside to dismiss.
+  barWrap.addEventListener("pointerdown", (e) => {
+    const tip = barWrap.querySelector<HTMLElement>(".bar-tooltip");
+    if (!tip) return;
+
+    // If the tap landed on a tooltip row link, let it through.
+    if ((e.target as HTMLElement).closest(".bar-tooltip-row")) return;
+
+    const isOpen = tip.classList.contains("bar-tooltip--open");
+    if (isOpen) {
+      tip.classList.remove("bar-tooltip--open");
+    } else {
+      positionTip();
+      tip.classList.add("bar-tooltip--open");
+    }
+  }, { signal });
+
+  // Dismiss on outside tap (same pattern as site mobile menu).
+  document.addEventListener("pointerdown", (e) => {
+    const tip = barWrap.querySelector<HTMLElement>(".bar-tooltip");
+    if (!tip || !tip.classList.contains("bar-tooltip--open")) return;
+    if (!(e.target instanceof Node)) return;
+    if (barWrap.contains(e.target)) return;
+    tip.classList.remove("bar-tooltip--open");
+  }, { signal });
+
+  return () => controller.abort();
 }
 
 /**
@@ -551,7 +582,8 @@ function syncBarTooltip(
   tip.innerHTML = html;
 
   if (isNew) {
-    attachTooltipFlip(barWrap);
+    const detach = attachTooltipInteraction(barWrap);
+    tipCleanups.set(barWrap, detach);
 
     // Click a tooltip row → scroll to the corresponding data point.
     tip.addEventListener("click", (e) => {
@@ -1122,6 +1154,9 @@ export function initMirror(opts: MirrorUIOptions): () => void {
       activeScanController.abort();
       activeScanController = null;
     }
+    // Detach tooltip interaction listeners (document pointerdown etc.)
+    const barWrap = opts.scoreBarExposed.parentElement;
+    if (barWrap) tipCleanups.get(barWrap)?.();
     pointEls.clear();
     pointState.clear();
     categoryEls.clear();

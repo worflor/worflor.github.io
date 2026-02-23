@@ -46,8 +46,7 @@ const seo = {
         your fingerprint: <code id="fingerprint">--------</code>
       </div>
       <div class="score-subtitle">
-        built from your most identifying signals. different browser, different
-        hash.
+        built from your most identifying signals. different browser, different hash.
       </div>
     </div>
   </section>
@@ -492,7 +491,8 @@ const seo = {
     border-top-color: var(--color-border);
   }
 
-  .score-bar-wrap:hover .bar-tooltip {
+  .score-bar-wrap:hover .bar-tooltip,
+  .bar-tooltip.bar-tooltip--open {
     opacity: 1;
     pointer-events: auto;
     transform: translateX(-50%) translateY(0);
@@ -512,7 +512,8 @@ const seo = {
     border-bottom-color: var(--color-border);
   }
 
-  .score-bar-wrap:hover .bar-tooltip.bar-tooltip--below {
+  .score-bar-wrap:hover .bar-tooltip.bar-tooltip--below,
+  .bar-tooltip.bar-tooltip--open.bar-tooltip--below {
     transform: translateX(-50%) translateY(0);
   }
 
