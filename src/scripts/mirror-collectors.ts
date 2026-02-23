@@ -2349,39 +2349,47 @@ function detailConfidence(point: DataPoint): DetailConfidence {
   if (point.status === "unavailable") return "low";
   if (point.status === "pending") return "low";
 
-  // Network: all medium (external API-dependent, VPN/proxy can invalidate)
+  // --- LOW CONFIDENCE (Spoofed, Frozen, Masked, or Gated) ---
+
+  // Browser: frozen/reduced legacy values (spoofed)
+  if (point.id === "br.ua" || point.id === "br.pluginCount" || point.id === "br.pluginList" || point.id === "br.mimeTypeCount") return "low";
+
+  // OS: deprecated platform string (frozen)
+  if (point.id === "os.platform") return "low";
+
+  // GPU: WEBGL_debug_renderer_info is deprecated/restricted/masked
+  if (point.id === "gpu.vendor" || point.id === "gpu.renderer") return "low";
+
+  // WebRTC local IP: masked with mDNS
+  if (point.id === "api.localIP") return "low";
+
+  // Media: permission-gated devices return empty/generic without prompt
+  if (/^media\.(cameras|microphones|speakers)$/.test(point.id)) return "low";
+
+  // Hardware: battery API is removed in many browsers or heavily restricted
+  if (point.id === "hw.batteryLevel" || point.id === "hw.chargingTime" || point.id === "hw.dischargingTime") return "low";
+
+  // --- MEDIUM CONFIDENCE (Estimated, Rounded, or External) ---
+
+  // Network: external API-dependent, VPN/proxy/iCloud Private Relay can invalidate
   if (point.id.startsWith("net.")) return "medium";
 
-  // Connection: fluctuating estimates and unreliable type detection
+  // Connection: fluctuating estimates and heavily rounded values
   if (point.id.startsWith("conn.") && point.id !== "conn.online" && point.id !== "conn.saveData") return "medium";
 
-  // Performance: session-specific snapshots
+  // Performance: session-specific snapshots, intentionally rounded for security
   if (point.id.startsWith("perf.")) return "medium";
 
-  // Fingerprints: most are deterministic (high), but latency/precision are estimates
+  // Fingerprints: latency/precision are estimates/rounded
   if (point.id === "fp.audioBaseLatency" || point.id === "fp.audioOutputLatency" || point.id === "fp.timerPrecision") return "medium";
 
-  // Browser: frozen/reduced legacy values
-  if (point.id === "br.ua" || point.id === "br.pluginCount" || point.id === "br.pluginList" || point.id === "br.mimeTypeCount") return "medium";
+  // Media: async voices, capability estimates
+  if (/^media\.(voiceCount|voiceLangs|capabilities)$/.test(point.id)) return "medium";
 
-  // OS: deprecated platform string
-  if (point.id === "os.platform") return "medium";
-
-  // Hardware: battery estimates
-  if (point.id === "hw.batteryLevel" || point.id === "hw.chargingTime" || point.id === "hw.dischargingTime") return "medium";
-
-  // Media: permission-gated devices, async voices, capability estimates
-  if (/^media\.(cameras|microphones|speakers|voiceCount|voiceLangs|capabilities)$/.test(point.id)) return "medium";
-
-  // Storage: quota is approximate per spec
+  // Storage: quota is approximate per spec and fuzzed
   if (point.id === "st.storageQuota") return "medium";
 
-  // GPU: WEBGL_debug_renderer_info is deprecated/restricted
-  if (point.id === "gpu.vendor" || point.id === "gpu.renderer") return "medium";
-
-  // WebRTC local IP: variable/blockable
-  if (point.id === "api.localIP") return "medium";
-
+  // --- HIGH CONFIDENCE (Deterministic, Accurate) ---
   return "high";
 }
 
