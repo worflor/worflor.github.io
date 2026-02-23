@@ -146,9 +146,6 @@ function formatDuration(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function safeView(buffer: ArrayBuffer): DataView {
-  return new DataView(buffer);
-}
 
 function fileExtension(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -354,9 +351,11 @@ function walkChunks(
     // size=0 is invalid for RIFF chunks — stop to avoid infinite loop
     if (size === 0) break;
     chunks.push({ id, offset, size });
-    // Chunks are word-aligned (padded to even)
-    const advance = 8 + size + (size % 2);
-    // Guard: if advance would not move us forward (overflow), stop
+    // Chunks are word-aligned (padded to even).
+    // Clamp padded size to avoid 32-bit overflow on very large chunks.
+    const paddedSize = size + (size % 2);
+    if (paddedSize > limit) break; // chunk larger than remaining data
+    const advance = 8 + paddedSize;
     if (advance <= 0 || offset + advance <= offset) break;
     offset += advance;
   }
@@ -378,8 +377,11 @@ function walkBoxes(
     let headerSize = 8;
 
     if (size === 1 && offset + 16 <= limit) {
-      // Extended size: next 8 bytes (we only use lower 32 bits in browser)
-      size = view.getUint32(offset + 12);
+      // Extended size: 8-byte big-endian uint at offset+8.
+      // If the high 32 bits are non-zero the box is >4GB — clamp to limit.
+      const hi = view.getUint32(offset + 8);
+      const lo = view.getUint32(offset + 12);
+      size = hi > 0 ? limit - offset : lo;
       headerSize = 16;
     } else if (size === 0) {
       // Box extends to end of file — only valid for the last box
@@ -419,7 +421,7 @@ function walkPngChunks(view: DataView): PngChunk[] {
       size: length,
     });
 
-    // length + 4 (length field) + 4 (type) + 4 (CRC)
+    // 4 (length field) + 4 (type) + data (length bytes) + 4 (CRC)
     const advance = 12 + length;
     // Guard: chunk length could be enormous on malformed PNG
     if (advance <= 0 || offset + advance <= offset) break;
@@ -617,10 +619,10 @@ function extractRiffMeta(
 
   // data chunk → compute duration
   const dataChunk = chunks.find((c) => c.id === "data");
-  if (dataChunk && fmt && fmt.offset + 8 + 12 <= view.byteLength) {
-    const byteRate = view.getUint32(fmt.offset + 8 + 8, true);
-    if (byteRate > 0) {
-      const duration = dataChunk.size / byteRate;
+  if (dataChunk && fmt && fmt.offset + 8 + 16 <= view.byteLength) {
+    const fmtByteRate = view.getUint32(fmt.offset + 8 + 8, true);
+    if (fmtByteRate > 0) {
+      const duration = dataChunk.size / fmtByteRate;
       fields.push(field("riff.duration", "Duration", duration, formatDuration(duration)));
     }
   }
@@ -694,10 +696,10 @@ function extractIsobmffMeta(
   if (moov) {
     const moovBoxes = walkBoxes(view, moov.dataOffset, moov.offset + moov.size);
     const mvhd = moovBoxes.find((b) => b.type === "mvhd");
-    if (mvhd && mvhd.dataOffset + 1 <= view.byteLength) {
+    if (mvhd && mvhd.dataOffset + 4 <= view.byteLength) {
       const version = view.getUint8(mvhd.dataOffset);
-      // v0: 4+4+4+4 (flags,created,modified,timescale) + 4 (duration) = 20 bytes
-      // v1: 4+8+8+4 (flags,created,modified,timescale) + 8 (duration) = 32 bytes
+      // v0: 1(version) + 3(flags) + 4(created) + 4(modified) + 4(timescale) + 4(duration) = 20 bytes
+      // v1: 1(version) + 3(flags) + 8(created) + 8(modified) + 4(timescale) + 8(duration) = 32 bytes
       const minSize = version === 0 ? 20 : 32;
 
       if (mvhd.dataOffset + minSize <= view.byteLength) {
@@ -1020,7 +1022,7 @@ function extractPngMeta(
 
   // Detect animation (acTL chunk = APNG)
   if (chunks.some((c) => c.type === "acTL")) {
-    structureFields.push(field("png.animated", "Animated", true, "APNG"));
+    structureFields.push(field("png.animated", "Animated", 1, "APNG"));
   }
 
   if (structureFields.length > 0) {
@@ -1185,21 +1187,17 @@ function extractPdfMeta(view: DataView): ExifCategory[] {
     }
   }
 
-  // Count pages heuristic
-  const pageMatches = textSlice.match(/\/Type\s*\/Page\b/g);
-  const pagesMatches = textSlice.match(/\/Type\s*\/Pages\b/g);
-  if (pageMatches) {
-    const pageCount = pageMatches.length - (pagesMatches?.length ?? 0);
-    if (pageCount > 0) {
-      fields.push(
-        field("pdf.pages", "Pages", pageCount, `~${pageCount}`, "Estimated from internal object count"),
-      );
-    }
+  // Count pages heuristic — /Type /Page (without trailing 's') minus /Type /Pages nodes
+  const pageMatches = textSlice.match(/\/Type\s*\/Page(?!s)\b/g);
+  if (pageMatches && pageMatches.length > 0) {
+    fields.push(
+      field("pdf.pages", "Pages", pageMatches.length, `~${pageMatches.length}`, "Estimated from internal object count"),
+    );
   }
 
   // Check for encryption
   if (textSlice.includes("/Encrypt")) {
-    fields.push(field("pdf.encrypted", "Encrypted", true, "Yes"));
+    fields.push(field("pdf.encrypted", "Encrypted", 1, "Yes"));
   }
 
   if (fields.length === 0) return [];
@@ -1287,8 +1285,9 @@ function extractFontMeta(view: DataView, formatName: string): ExifCategory[] {
 
       let text = "";
       if (platformID === 3 || platformID === 0) {
-        // Unicode (UTF-16BE)
-        for (let j = 0; j < length - 1; j += 2) {
+        // Unicode (UTF-16BE) — read pairs of bytes, rounding down to even length
+        const evenLen = length & ~1;
+        for (let j = 0; j < evenLen; j += 2) {
           text += String.fromCharCode(view.getUint16(strStart + j));
         }
       } else {
@@ -1400,17 +1399,26 @@ async function probeMedia(
     const url = URL.createObjectURL(file);
     let settled = false;
 
+    const cleanup = () => {
+      el.onloadedmetadata = null;
+      el.onerror = null;
+      URL.revokeObjectURL(url);
+      // Detach from any source to release underlying media resource.
+      // Wrapping in try/catch because some browsers fire AbortError
+      // when load() is called without a valid src.
+      try {
+        el.removeAttribute("src");
+        el.load();
+      } catch {
+        // Ignore — element is being discarded anyway
+      }
+    };
+
     const finish = (fields: ExifField[]) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      // Detach handlers to prevent further callbacks
-      el.onloadedmetadata = null;
-      el.onerror = null;
-      // Revoke URL and release media resource without calling load()
-      // (load() on an empty src throws AbortError in some browsers)
-      URL.revokeObjectURL(url);
-      el.removeAttribute("src");
+      cleanup();
       resolve(fields);
     };
 
@@ -1471,7 +1479,8 @@ function isProbablyText(buffer: ArrayBuffer): boolean {
   // more evenly distributed high bytes than real text
   let highByteCount = 0;
 
-  for (const byte of sample) {
+  for (let i = 0; i < sampleLen; i++) {
+    const byte = sample[i];
     if (byte === 0) nullCount++;
     else if (byte < 8 || (byte > 13 && byte < 32 && byte !== 27)) controlCount++;
     else {
@@ -1527,7 +1536,7 @@ function detectTextSubFormat(text: string, ext: string): string {
   if (firstLines.length >= 2) {
     for (const delim of [",", "\t", ";", "|"]) {
       const counts = firstLines.map((l) => l.split(delim).length);
-      if (counts[0] > 2 && counts.every((c) => c === counts[0])) {
+      if (counts[0] >= 2 && counts.every((c) => c === counts[0])) {
         return delim === "\t" ? "TSV" : delim === "," ? "CSV" : `Delimited (${delim})`;
       }
     }
@@ -1675,11 +1684,14 @@ async function analyzeText(
   if (!isProbablyText(buffer)) return null;
 
   const readSize = Math.min(file.size, TEXT_READ_LIMIT);
-  const textBuffer = readSize < buffer.byteLength
-    ? buffer.slice(0, readSize)
-    : readSize > buffer.byteLength
-      ? await file.slice(0, readSize).arrayBuffer()
-      : buffer;
+  let textBuffer: ArrayBuffer;
+  if (readSize <= buffer.byteLength) {
+    // We already have enough data — use it directly (or a view into it)
+    textBuffer = readSize < buffer.byteLength ? buffer.slice(0, readSize) : buffer;
+  } else {
+    // Need more data than the initial read provided
+    textBuffer = await file.slice(0, readSize).arrayBuffer();
+  }
 
   const encoding = detectBom(textBuffer);
   let text: string;
@@ -1822,7 +1834,7 @@ export async function analyzeFile(
   file: File,
   buffer: ArrayBuffer,
 ): Promise<FormatResult> {
-  const view = safeView(buffer);
+  const view = new DataView(buffer);
   const mime = file.type || "";
   const ext = fileExtension(file.name);
 
@@ -2002,7 +2014,7 @@ export async function analyzeFile(
         if (file.size > buffer.byteLength) {
           const tailStart = Math.max(0, file.size - 65536);
           const tailSlice = await file.slice(tailStart).arrayBuffer();
-          zipView = safeView(tailSlice);
+          zipView = new DataView(tailSlice);
           zipBaseOffset = tailStart;
         } else {
           zipView = view;

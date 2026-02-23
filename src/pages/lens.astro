@@ -60,6 +60,7 @@ const seo = {
       class="mt-[var(--space-md)] content-section"
       id="lens-loading"
       style="display:none"
+      aria-live="polite"
     >
       <div class="lens-loading">
         <div class="lens-spinner" aria-hidden="true"></div>
@@ -174,6 +175,7 @@ const seo = {
 
     const LENS_LIFECYCLE_KEY = "__theLensLifecycle";
     let cleanupLens: (() => void) | null = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const lensWindow = window as any;
 
     function boot() {
@@ -212,15 +214,18 @@ const seo = {
       document.addEventListener("astro:before-swap", handleBeforeSwap);
     }
 
-    const prev = lensWindow[LENS_LIFECYCLE_KEY];
+    const prev = lensWindow[LENS_LIFECYCLE_KEY] as
+      | { boot?: () => void; teardown?: () => void; detach?: () => void }
+      | undefined;
+
     if (prev) {
       if (typeof prev.detach === "function") {
         prev.detach();
-      } else {
+      } else if (typeof prev.boot === "function") {
+        // Fallback for older lifecycle shape without detach
         document.removeEventListener("astro:after-swap", prev.boot);
-        document.removeEventListener("astro:before-swap", prev.teardown);
       }
-      prev.teardown?.();
+      if (typeof prev.teardown === "function") prev.teardown();
     }
 
     lensWindow[LENS_LIFECYCLE_KEY] = { boot, teardown, detach: detachLifecycle };

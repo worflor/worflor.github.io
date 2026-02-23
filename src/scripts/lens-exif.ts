@@ -4,7 +4,7 @@
 
 // ── Types ────────────────────────────────────────────────────
 
-export type ExifValueType = string | number | boolean | number[] | null;
+export type ExifValueType = string | number | number[] | null;
 
 export interface ExifField {
   id: string;
@@ -342,6 +342,7 @@ function readRational(
   offset: number,
   le: boolean,
 ): number {
+  if (offset + 8 > view.byteLength) return 0;
   const num = view.getUint32(offset, le);
   const den = view.getUint32(offset + 4, le);
   return den === 0 ? 0 : num / den;
@@ -352,6 +353,7 @@ function readSRational(
   offset: number,
   le: boolean,
 ): number {
+  if (offset + 8 > view.byteLength) return 0;
   const num = view.getInt32(offset, le);
   const den = view.getInt32(offset + 4, le);
   return den === 0 ? 0 : num / den;
@@ -362,9 +364,10 @@ function readAscii(
   offset: number,
   count: number,
 ): string {
+  const end = Math.min(offset + count, view.byteLength);
   let str = "";
-  for (let i = 0; i < count; i++) {
-    const ch = view.getUint8(offset + i);
+  for (let i = offset; i < end; i++) {
+    const ch = view.getUint8(i);
     if (ch === 0) break;
     str += String.fromCharCode(ch);
   }
@@ -392,9 +395,10 @@ function readUserComment(
   }
 
   // For UNICODE (UTF-16) or undefined charset, try ASCII fallback
+  const end = Math.min(dataOffset + dataLen, view.byteLength);
   let str = "";
-  for (let i = 0; i < dataLen; i++) {
-    const ch = view.getUint8(dataOffset + i);
+  for (let i = dataOffset; i < end; i++) {
+    const ch = view.getUint8(i);
     if (ch === 0) continue; // skip nulls (common in UTF-16 ASCII range)
     if (ch >= 32 && ch < 127) str += String.fromCharCode(ch);
   }
@@ -552,7 +556,9 @@ function findApp1(view: DataView): number {
 
     const segLen = view.getUint16(offset + 2);
     if (segLen < 2) return -1; // invalid segment length
-    offset += 2 + segLen;
+    const nextOffset = offset + 2 + segLen;
+    if (nextOffset <= offset) return -1; // overflow guard
+    offset = nextOffset;
     segments++;
   }
 
@@ -634,11 +640,14 @@ function parseExifFromBuffer(buffer: ArrayBuffer): RawExif {
   }
 
   // Follow IFD1 (thumbnail IFD) for additional metadata
-  const ifd0AbsEnd = tiffStart + ifd0Offset + 2 + (view.getUint16(tiffStart + ifd0Offset, le)) * 12;
+  const ifd0AbsStart = tiffStart + ifd0Offset;
+  if (ifd0AbsStart + 2 > view.byteLength) return result;
+  const ifd0EntryCount = view.getUint16(ifd0AbsStart, le);
+  const ifd0AbsEnd = ifd0AbsStart + 2 + ifd0EntryCount * 12;
   if (ifd0AbsEnd + 4 <= view.byteLength) {
     try {
       const ifd1Offset = view.getUint32(ifd0AbsEnd, le);
-      if (ifd1Offset > 0 && ifd1Offset < view.byteLength) {
+      if (ifd1Offset > 0 && tiffStart + ifd1Offset < view.byteLength) {
         const ifd1 = parseIFD(view, tiffStart, ifd1Offset, le, IFD_TAGS);
         // Only take IFD1 fields not already in IFD0
         for (const [key, val] of Object.entries(ifd1)) {
@@ -672,8 +681,9 @@ function formatExposureTime(val: number): string {
 
 function formatFNumber(val: number): string {
   if (val % 1 === 0) return `f/${val}`;
-  // Show one decimal for typical f-stops, two for precision
-  return `f/${val.toFixed(val * 10 % 1 === 0 ? 1 : 2)}`;
+  // Show one decimal for typical f-stops (1.4, 2.8, 5.6), two for precision
+  const oneDecimal = val.toFixed(1);
+  return `f/${parseFloat(oneDecimal) === val ? oneDecimal : val.toFixed(2)}`;
 }
 
 function formatFileSize(bytes: number): string {
@@ -684,20 +694,25 @@ function formatFileSize(bytes: number): string {
 }
 
 function formatDate(dateStr: string, tzOffset?: string): string {
+  if (!dateStr || dateStr.trim().length < 10) return dateStr;
   // EXIF dates are "YYYY:MM:DD HH:MM:SS"
   const cleaned = dateStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
   const withTz = tzOffset ? `${cleaned}${tzOffset}` : cleaned;
-  const d = new Date(withTz);
-  if (isNaN(d.getTime())) return dateStr;
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    ...(tzOffset ? { timeZoneName: "short" } : {}),
-  });
+  try {
+    const d = new Date(withTz);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      ...(tzOffset ? { timeZoneName: "short" } : {}),
+    });
+  } catch {
+    return dateStr;
+  }
 }
 
 function convertGpsCoordinate(
@@ -707,7 +722,8 @@ function convertGpsCoordinate(
   if (!dmsArray || dmsArray.length < 3) return null;
   const [deg, min, sec] = dmsArray;
 
-  // Validate ranges
+  // Validate ranges (180 covers both lat and lon; callers provide valid ref)
+  if (!isFinite(deg) || !isFinite(min) || !isFinite(sec)) return null;
   if (deg < 0 || deg > 180 || min < 0 || min >= 60 || sec < 0 || sec >= 60) return null;
 
   let decimal = deg + min / 60 + sec / 3600;
@@ -1084,7 +1100,8 @@ function buildGpsCategory(exif: RawExif): ExifField[] {
   const lonArr = exif["GPSLongitude"];
   const lonRef = exif["GPSLongitudeRef"];
 
-  const hasCoords = Array.isArray(latArr) && Array.isArray(lonArr);
+  const hasCoords = Array.isArray(latArr) && latArr.length >= 3
+    && Array.isArray(lonArr) && lonArr.length >= 3;
 
   if (hasCoords) {
     // Privacy notice
@@ -1096,7 +1113,7 @@ function buildGpsCategory(exif: RawExif): ExifField[] {
       { sensitive: true }));
 
     const lat = convertGpsCoordinate(
-      latArr as number[],
+      latArr,
       typeof latRef === "string" ? latRef : "N",
     );
     if (lat) {
@@ -1107,7 +1124,7 @@ function buildGpsCategory(exif: RawExif): ExifField[] {
     }
 
     const lon = convertGpsCoordinate(
-      lonArr as number[],
+      lonArr,
       typeof lonRef === "string" ? lonRef : "E",
     );
     if (lon) {
@@ -1437,9 +1454,6 @@ export async function parseFile(file: File): Promise<LensData> {
     summaryItems: formatResult.summary,
   };
 }
-
-/** Backward-compatible alias */
-export const parseImageFile = parseFile;
 
 /** Build result for files with EXIF data (JPEG/TIFF — the original path) */
 function buildExifResult(

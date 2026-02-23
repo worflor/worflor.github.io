@@ -1633,7 +1633,13 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
   // Wire action buttons immediately (not inside .then)
   const toast = (message: string) => showToast(message, uiConfig);
-  const onCopy = () => mirrorData && copyAllData(mirrorData, pointState, toast);
+  const onCopy = () => {
+    if (!mirrorData) {
+      toast("scan still running. try copy again in a moment.");
+      return;
+    }
+    copyAllData(mirrorData, pointState, toast);
+  };
   const onExpand = () => setAllExpandedAndPersist(true);
   const onCollapse = () => setAllExpandedAndPersist(false);
   const onRefresh = () => startScan();

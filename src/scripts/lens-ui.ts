@@ -148,6 +148,7 @@ export function initLens(opts: LensUIOptions): () => void {
   let currentObjectUrl: string | null = null;
   let expansionState = loadExpansionState();
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  let actionBarTimer: ReturnType<typeof setTimeout> | null = null;
   let generation = 0; // monotonic counter to discard stale async results
   const cleanups: Array<() => void> = [];
 
@@ -247,7 +248,7 @@ export function initLens(opts: LensUIOptions): () => void {
 
       // Separator before each dynamic item
       const sep = el("span", "summary-separator");
-      sep.innerHTML = "&middot;";
+      sep.textContent = "\u00B7";
       opts.summaryDynamic.appendChild(sep);
 
       const stat = el("div", "summary-stat");
@@ -350,8 +351,10 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.container.innerHTML = "";
     opts.actionsBar.style.opacity = "0";
     opts.loadingIndicator.style.display = "none";
-    setTimeout(() => {
+    if (actionBarTimer) clearTimeout(actionBarTimer);
+    actionBarTimer = setTimeout(() => {
       if (!destroyed) opts.actionsBar.style.display = "none";
+      actionBarTimer = null;
     }, ACTION_BAR_FADE_MS);
     opts.uploadZone.style.display = "";
     opts.fileInput.value = "";
@@ -383,8 +386,8 @@ export function initLens(opts: LensUIOptions): () => void {
     e.preventDefault();
     dragCounter = 0;
     opts.uploadZone.classList.remove("lens-drop-active");
-    const file = (e as DragEvent).dataTransfer?.files[0];
-    if (file) processFile(file);
+    const dt = (e as DragEvent).dataTransfer;
+    if (dt && dt.files.length > 0) processFile(dt.files[0]);
   });
 
   // Click-to-upload
@@ -408,8 +411,9 @@ export function initLens(opts: LensUIOptions): () => void {
   // ── Clipboard paste ─────────────────────────────────────
 
   on(document, "paste", (e) => {
-    const items = (e as ClipboardEvent).clipboardData?.items;
-    if (!items) return;
+    const clipboard = (e as ClipboardEvent).clipboardData;
+    if (!clipboard) return;
+    const items = clipboard.items;
     for (let i = 0; i < items.length; i++) {
       const file = items[i].getAsFile();
       if (file) {
@@ -522,9 +526,14 @@ export function initLens(opts: LensUIOptions): () => void {
         valueEl.removeAttribute("aria-label");
       };
       valueEl.addEventListener("click", reveal, { once: true });
-      valueEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); reveal(); }
-      }, { once: true });
+      const handleKeydown = (e: KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          reveal();
+          valueEl.removeEventListener("keydown", handleKeydown);
+        }
+      };
+      valueEl.addEventListener("keydown", handleKeydown);
     } else if (f.value === null) {
       valueEl.classList.add("dp-na");
       valueEl.textContent = "-";
@@ -582,12 +591,15 @@ export function initLens(opts: LensUIOptions): () => void {
   // ── Toast ─────────────────────────────────────────────
 
   function showToast(message: string): void {
+    if (destroyed) return;
     // Remove existing toast
     const existing = document.querySelector(".lens-toast");
     if (existing) existing.remove();
     if (toastTimer) clearTimeout(toastTimer);
 
     const toast = el("div", "lens-toast", message);
+    toast.setAttribute("role", "status");
+    toast.setAttribute("aria-live", "polite");
     document.body.appendChild(toast);
 
     requestAnimationFrame(() => {
@@ -646,6 +658,7 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.previewVideo.removeAttribute("src");
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
     if (toastTimer) clearTimeout(toastTimer);
+    if (actionBarTimer) clearTimeout(actionBarTimer);
     const toast = document.querySelector(".lens-toast");
     if (toast) toast.remove();
     cleanups.forEach((fn) => fn());
