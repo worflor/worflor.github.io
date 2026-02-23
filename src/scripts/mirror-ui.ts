@@ -27,7 +27,129 @@ export interface MirrorUIOptions {
   titleEl: HTMLElement;
 }
 
+type MirrorUIIdMap = { [K in keyof MirrorUIOptions]: string };
+
+export const MIRROR_UI_IDS: MirrorUIIdMap = {
+  container: "mirror-categories",
+  scoreExposedCount: "score-exposed-count",
+  scoreBlockedCount: "score-blocked-count",
+  scoreBlockedGroup: "score-blocked-group",
+  scoreBarExposed: "score-bar-exposed",
+  scoreBarBlocked: "score-bar-blocked",
+  scoreVerdict: "score-verdict",
+  fingerprintEl: "fingerprint",
+  timestampEl: "mirror-timestamp",
+  titleEl: "mirror-title",
+};
+
+function queryById(root: ParentNode, id: string): HTMLElement | null {
+  return root.querySelector<HTMLElement>(`#${id}`);
+}
+
+export function resolveMirrorUIOptions(root: ParentNode = document): MirrorUIOptions | null {
+  const container = queryById(root, MIRROR_UI_IDS.container);
+  const scoreExposedCount = queryById(root, MIRROR_UI_IDS.scoreExposedCount);
+  const scoreBlockedCount = queryById(root, MIRROR_UI_IDS.scoreBlockedCount);
+  const scoreBlockedGroup = queryById(root, MIRROR_UI_IDS.scoreBlockedGroup);
+  const scoreBarExposed = queryById(root, MIRROR_UI_IDS.scoreBarExposed);
+  const scoreBarBlocked = queryById(root, MIRROR_UI_IDS.scoreBarBlocked);
+  const scoreVerdict = queryById(root, MIRROR_UI_IDS.scoreVerdict);
+  const fingerprintEl = queryById(root, MIRROR_UI_IDS.fingerprintEl);
+  const timestampEl = queryById(root, MIRROR_UI_IDS.timestampEl);
+  const titleEl = queryById(root, MIRROR_UI_IDS.titleEl);
+
+  if (
+    !container ||
+    !scoreExposedCount ||
+    !scoreBlockedCount ||
+    !scoreBlockedGroup ||
+    !scoreBarExposed ||
+    !scoreBarBlocked ||
+    !scoreVerdict ||
+    !fingerprintEl ||
+    !timestampEl ||
+    !titleEl
+  ) {
+    return null;
+  }
+
+  return {
+    container,
+    scoreExposedCount,
+    scoreBlockedCount,
+    scoreBlockedGroup,
+    scoreBarExposed,
+    scoreBarBlocked,
+    scoreVerdict,
+    fingerprintEl,
+    timestampEl,
+    titleEl,
+  };
+}
+
 const EXPANSION_STATE_KEY = "digitalMirror.categoryExpansion.v1";
+
+interface MirrorUIConstants {
+  timing: {
+    actionTimeoutMs: number;
+    counterAnimationMs: number;
+    categoryRevealStaggerMs: number;
+    categoryRevealDurationMs: number;
+    pointHighlightMs: number;
+    toastVisibleMs: number;
+    toastExitMs: number;
+    breadcrumbScrollLockMs: number;
+    breadcrumbTypeIntervalMs: number;
+    breadcrumbClearIntervalMs: number;
+  };
+  layout: {
+    categoryRevealOffsetPx: number;
+    toastOffsetPx: number;
+    headerFallbackPx: number;
+    breadcrumbScrollOffsetPx: number;
+    breadcrumbDetectionOffsetPx: number;
+    breadcrumbObserverBottomMarginPct: number;
+  };
+  motion: {
+    categoryRevealEasing: string;
+  };
+}
+
+const MIRROR_UI_CONSTANTS = {
+  timing: {
+    actionTimeoutMs: 12000,
+    counterAnimationMs: 600,
+    categoryRevealStaggerMs: 80,
+    categoryRevealDurationMs: 300,
+    pointHighlightMs: 1500,
+    toastVisibleMs: 2200,
+    toastExitMs: 300,
+    breadcrumbScrollLockMs: 800,
+    breadcrumbTypeIntervalMs: 35,
+    breadcrumbClearIntervalMs: 20,
+  },
+  layout: {
+    categoryRevealOffsetPx: 8,
+    toastOffsetPx: 8,
+    headerFallbackPx: 60,
+    breadcrumbScrollOffsetPx: 8,
+    breadcrumbDetectionOffsetPx: 24,
+    breadcrumbObserverBottomMarginPct: 60,
+  },
+  motion: {
+    categoryRevealEasing: "ease",
+  },
+} as const satisfies MirrorUIConstants;
+
+function toCssSeconds(ms: number): string {
+  return `${ms / 1000}s`;
+}
+
+const CATEGORY_REVEAL_DURATION = toCssSeconds(MIRROR_UI_CONSTANTS.timing.categoryRevealDurationMs);
+const CATEGORY_REVEAL_TRANSITION = [
+  `opacity ${CATEGORY_REVEAL_DURATION} ${MIRROR_UI_CONSTANTS.motion.categoryRevealEasing}`,
+  `transform ${CATEGORY_REVEAL_DURATION} ${MIRROR_UI_CONSTANTS.motion.categoryRevealEasing}`,
+].join(", ");
 
 function loadExpansionState(): Map<string, boolean> {
   const state = new Map<string, boolean>();
@@ -252,6 +374,63 @@ function renderDetail(point: DataPoint): HTMLElement | null {
   return detail;
 }
 
+// ─── Greeting ─────────────────────────────────────────────────────────────────
+
+/**
+ * Detect the user's browser as specifically as possible.
+ * Order matters — check niche browsers before generic engines,
+ * since many browsers include "Chrome" or "Safari" in their UA.
+ */
+function detectBrowser(): string {
+  const ua = navigator.userAgent;
+  if (/Zen\//.test(ua)) return "Zen";
+  if ((navigator as unknown as Record<string, unknown>).brave) return "Brave";
+  if (/Vivaldi\//.test(ua)) return "Vivaldi";
+  if (/OPR\//.test(ua)) return "Opera";
+  if (/Edg\//.test(ua)) return "Edge";
+  if (/SamsungBrowser\//.test(ua)) return "Samsung Internet";
+  if (/Firefox\//.test(ua)) return "Firefox";
+  if (/CriOS\//.test(ua)) return "Chrome";
+  if (/FxiOS\//.test(ua)) return "Firefox";
+  if (/Safari\//.test(ua) && !/Chrome\//.test(ua)) return "Safari";
+  if (/Chrome\//.test(ua)) return "Chrome";
+  return "browser";
+}
+
+/**
+ * Build a context-aware greeting from local signals — time of day, browser,
+ * and whether this is a returning visit. Each branch has its own phrasing
+ * so the result feels written, not slot-filled.
+ */
+function buildGreeting(): string {
+  const hour = new Date().getHours();
+  const browser = detectBrowser();
+
+  let returning = false;
+  try { returning = !!localStorage.getItem(EXPANSION_STATE_KEY); } catch { /* blocked storage */ }
+
+  // Deep night (midnight–5 AM)
+  if (hour < 5) return returning
+    ? `still up? welcome back, ${browser} user...`
+    : `it's late, ${browser} user...`;
+
+  // Early morning (5–7 AM)
+  if (hour < 7) return returning
+    ? `early again, ${browser} user...`
+    : `you're up early, ${browser} user...`;
+
+  // Late evening (9 PM–midnight)
+  if (hour >= 21) return returning
+    ? `back for a late night visit, ${browser} user...`
+    : `late night, ${browser} user...`;
+
+  // Standard hours (7 AM – 9 PM)
+  const period = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+  return returning
+    ? `welcome back, ${browser} user...`
+    : `good ${period}, ${browser} user...`;
+}
+
 // ─── Animations ───────────────────────────────────────────────────────────────
 
 function reducedMotion(): boolean {
@@ -262,7 +441,11 @@ function reducedMotion(): boolean {
 /** Tracks active counter animations so rapid calls don't stack or restart from 0. */
 const activeCounters = new WeakMap<HTMLElement, number>();
 
-function animateCounter(element: HTMLElement, target: number, duration = 600): void {
+function animateCounter(
+  element: HTMLElement,
+  target: number,
+  duration = MIRROR_UI_CONSTANTS.timing.counterAnimationMs,
+): void {
   const current = parseInt(element.textContent || "0", 10) || 0;
   if (current === target) return;
   if (reducedMotion()) { element.textContent = String(target); return; }
@@ -317,7 +500,10 @@ function renderDataPoint(
       try {
         const result = await Promise.race([
           point.action(),
-          new Promise<null>((_, reject) => setTimeout(() => reject(new Error("timeout")), 12000)),
+          new Promise<null>((_, reject) => setTimeout(
+            () => reject(new Error("timeout")),
+            MIRROR_UI_CONSTANTS.timing.actionTimeoutMs,
+          )),
         ]);
         if (!valueEl.isConnected) return;
         if (result != null) {
@@ -384,12 +570,12 @@ function renderCategory(
   // Stagger reveal
   if (!reducedMotion()) {
     section.style.opacity = "0";
-    section.style.transform = "translateY(8px)";
+    section.style.transform = `translateY(${MIRROR_UI_CONSTANTS.layout.categoryRevealOffsetPx}px)`;
     setTimeout(() => {
-      section.style.transition = "opacity 0.3s ease, transform 0.3s ease";
+      section.style.transition = CATEGORY_REVEAL_TRANSITION;
       section.style.opacity = "1";
       section.style.transform = "translateY(0)";
-    }, 80 * index);
+    }, MIRROR_UI_CONSTANTS.timing.categoryRevealStaggerMs * index);
   }
 
   return section;
@@ -609,7 +795,7 @@ function syncBarTooltip(
       requestAnimationFrame(() => {
         dpRow.scrollIntoView({ behavior: "smooth", block: "center" });
         dpRow.classList.add("dp-row--highlight");
-        setTimeout(() => dpRow.classList.remove("dp-row--highlight"), 1500);
+        setTimeout(() => dpRow.classList.remove("dp-row--highlight"), MIRROR_UI_CONSTANTS.timing.pointHighlightMs);
       });
     });
   }
@@ -719,9 +905,9 @@ function showToast(msg: string): void {
   setTimeout(() => {
     if (!toast.isConnected) return;
     toast.style.opacity = "0";
-    toast.style.transform = "translateX(-50%) translateY(8px)";
-    setTimeout(() => toast.remove(), 300);
-  }, 2200);
+    toast.style.transform = `translateX(-50%) translateY(${MIRROR_UI_CONSTANTS.layout.toastOffsetPx}px)`;
+    setTimeout(() => toast.remove(), MIRROR_UI_CONSTANTS.timing.toastExitMs);
+  }, MIRROR_UI_CONSTANTS.timing.toastVisibleMs);
 }
 
 // ─── Copy All ─────────────────────────────────────────────────────────────────
@@ -857,7 +1043,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
   const breadcrumbEl = document.getElementById("header-breadcrumb");
   const headerEl = document.querySelector<HTMLElement>(".site-header");
-  const headerHeight = headerEl ? headerEl.offsetHeight : 60;
+  const headerHeight = headerEl ? headerEl.offsetHeight : MIRROR_UI_CONSTANTS.layout.headerFallbackPx;
 
   // Intersection state — updated by observer, read by scroll handler
   const visibleSections = new Set<HTMLElement>();
@@ -872,7 +1058,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
     if (scrollLockTimer) clearTimeout(scrollLockTimer);
     scrollLockCatId = catId;
     if (catId) {
-      scrollLockTimer = setTimeout(() => { scrollLockCatId = null; scrollLockTimer = null; }, 800);
+      scrollLockTimer = setTimeout(() => { scrollLockCatId = null; scrollLockTimer = null; }, MIRROR_UI_CONSTANTS.timing.breadcrumbScrollLockMs);
     }
   }
 
@@ -891,7 +1077,10 @@ export function initMirror(opts: MirrorUIOptions): () => void {
         const catId = targetEl.dataset?.cat;
         if (catId) lockScrollTo(catId);
 
-        const y = targetEl.getBoundingClientRect().top + window.scrollY - headerHeight - 8;
+        const y = targetEl.getBoundingClientRect().top
+          + window.scrollY
+          - headerHeight
+          - MIRROR_UI_CONSTANTS.layout.breadcrumbScrollOffsetPx;
         window.scrollTo({ top: Math.max(0, y) });
       };
       crumb.addEventListener("click", scrollTo);
@@ -934,7 +1123,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
         inner.textContent = texts[idx].slice(0, len);
         rem -= len;
       });
-    }, 35);
+    }, MIRROR_UI_CONSTANTS.timing.breadcrumbTypeIntervalMs);
   }
 
   function clearThenType(crumbs: Crumb[]) {
@@ -968,7 +1157,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
           break;
         }
       }
-    }, 20);
+    }, MIRROR_UI_CONSTANTS.timing.breadcrumbClearIntervalMs);
   }
 
   function setCrumbs(crumbs: Crumb[]) {
@@ -993,7 +1182,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
     // Pick the section whose top edge is closest to (but above) the detection
     // line just below the sticky header. This is the section the user is "in".
-    const line = headerHeight + 24;
+    const line = headerHeight + MIRROR_UI_CONSTANTS.layout.breadcrumbDetectionOffsetPx;
     let best: HTMLElement | null = null;
     let bestTop = -Infinity;
     for (const sec of visibleSections) {
@@ -1040,7 +1229,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
         }
         onBreadcrumbScroll();
       },
-      { rootMargin: `-${headerHeight}px 0px -60% 0px` },
+      { rootMargin: `-${headerHeight}px 0px -${MIRROR_UI_CONSTANTS.layout.breadcrumbObserverBottomMarginPct}% 0px` },
     );
 
     for (const sec of sections) breadcrumbObserver.observe(sec);
@@ -1141,11 +1330,8 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   });
   cleanups.push(stopLive);
 
-  // Timestamp
-  const updateTs = () => { opts.timestampEl.textContent = new Date().toLocaleTimeString(); };
-  updateTs();
-  const tsId = setInterval(updateTs, 1000);
-  cleanups.push(() => clearInterval(tsId));
+  // Greeting — context-aware, set once per scan
+  opts.timestampEl.textContent = buildGreeting();
 
   const cleanup = () => {
     destroyed = true;

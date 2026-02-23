@@ -12,85 +12,87 @@ const seo = {
 ---
 
 <Layout seo={seo}>
-  <section class="mt-8 content-section mirror-intro">
-    <h1 class="page-title mirror-title" id="mirror-title"></h1>
-    <p class="mirror-tagline">a reflection of your browser's face</p>
-    <p class="mirror-time tabular-nums">
-      <span id="mirror-timestamp"></span>
-    </p>
-  </section>
+  <div class="mirror-page">
+    <section class="mt-8 content-section mirror-intro">
+      <h1 class="page-title mirror-title" id="mirror-title">Digital Mirror</h1>
+      <p class="mirror-tagline">a reflection of your browser's face</p>
+      <p class="mirror-time tabular-nums">
+        <span id="mirror-timestamp"></span>
+      </p>
+    </section>
 
-  <!-- Score -->
-  <section class="mt-[var(--space-md)] content-section">
-    <div class="mirror-score">
+    <!-- Score -->
+    <section class="mt-[var(--space-md)] content-section">
+      <div class="mirror-score">
 
-      <div class="score-numbers tabular-nums">
-        <span class="score-exposed"
-          ><span id="score-exposed-count">0</span><span class="score-unit">
-            exposed</span
-          ></span
-        ><span class="score-separator"> &middot; </span><span
-          class="score-blocked"
-          id="score-blocked-group"
-          ><span id="score-blocked-count">0</span><span class="score-unit">
-            blocked</span
-          ></span
-        >
+        <div class="score-numbers tabular-nums">
+          <span class="score-exposed"
+            ><span id="score-exposed-count">0</span><span class="score-unit">
+              exposed</span
+            ></span
+          ><span class="score-separator"> &middot; </span><span
+            class="score-blocked"
+            id="score-blocked-group"
+            ><span id="score-blocked-count">0</span><span class="score-unit">
+              blocked</span
+            ></span
+          >
+        </div>
+        <div class="score-bar-wrap">
+          <div class="score-bar-exposed" id="score-bar-exposed"></div>
+          <div class="score-bar-blocked" id="score-bar-blocked"></div>
+        </div>
+        <div class="score-verdict" id="score-verdict"></div>
+        <div class="score-fingerprint">
+          your fingerprint: <code id="fingerprint">--------</code>
+        </div>
+        <div class="score-subtitle">
+          built from your most identifying signals. different browser, different hash.
+        </div>
       </div>
-      <div class="score-bar-wrap">
-        <div class="score-bar-exposed" id="score-bar-exposed"></div>
-        <div class="score-bar-blocked" id="score-bar-blocked"></div>
+    </section>
+
+    <!-- Categories (populated by JS) -->
+    <section class="mt-[var(--space-sm)] content-section">
+      <div id="mirror-categories" data-breadcrumb-controller></div>
+    </section>
+
+    <!-- Insights -->
+    <section class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section">
+      <div class="mirror-insights">
+        <h2 class="insights-title">Are you stalking me..?</h2>
+        <p class="insights-text">
+          no, but none of this asked for your permission. no popups, no
+          prompts... just browser APIs that any website can call the moment you
+          land on their page. silently. that's the part worth knowing.
+        </p>
+        <p class="insights-text">
+          the canvas and audio fingerprints up there? those aren't demos. they're
+          real tracking techniques. your browser renders things <em>slightly</em>
+          differently than everyone else's, and that difference alone can build a
+          unique ID without cookies. combine that with your IP, timezone, GPU, and
+          screen size... and you're often uniquely identifiable.
+          <br />the ones <span class="sensitive-indicator">&bull;</span>marked are the worst offenders.
+        </p>
+        <p class="insights-text">
+          privacy browsers help (Firefox, Brave). tracking protection helps. VPNs
+          help. when something shows a &ldquo;-&rdquo; up there, that's
+          your browser doing its job :]
+        </p>
       </div>
-      <div class="score-verdict" id="score-verdict"></div>
-      <div class="score-fingerprint">
-        your fingerprint: <code id="fingerprint">--------</code>
-      </div>
-      <div class="score-subtitle">
-        built from your most identifying signals. different browser, different hash.
-      </div>
+    </section>
+
+    <!-- Actions -->
+    <div class="mirror-actions">
+      <button class="action-btn" id="action-copy">Copy All</button>
+      <button class="action-btn" id="action-expand">Expand All</button>
+      <button class="action-btn" id="action-collapse">Collapse All</button>
+      <button class="action-btn" id="action-refresh">Rescan</button>
     </div>
-  </section>
-
-  <!-- Categories (populated by JS) -->
-  <section class="mt-[var(--space-sm)] content-section">
-    <div id="mirror-categories" data-breadcrumb-controller></div>
-  </section>
-
-  <!-- Insights -->
-  <section class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section">
-    <div class="mirror-insights">
-      <h2 class="insights-title">Are you stalking me..?</h2>
-      <p class="insights-text">
-        no, but none of this asked for your permission. no popups, no
-        prompts... just browser APIs that any website can call the moment you
-        land on their page. silently. that's the part worth knowing.
-      </p>
-      <p class="insights-text">
-        the canvas and audio fingerprints up there? those aren't demos. they're
-        real tracking techniques. your browser renders things <em>slightly</em>
-        differently than everyone else's, and that difference alone can build a
-        unique ID without cookies. combine that with your IP, timezone, GPU, and
-        screen size... and you're often uniquely identifiable.
-        <br />the ones <span class="sensitive-indicator">&bull;</span>marked are the worst offenders.
-      </p>
-      <p class="insights-text">
-        privacy browsers help (Firefox, Brave). tracking protection helps. VPNs
-        help. when something shows a &ldquo;-&rdquo; up there, that's
-        your browser doing its job :]
-      </p>
-    </div>
-  </section>
-
-  <!-- Actions -->
-  <div class="mirror-actions">
-    <button class="action-btn" id="action-copy">Copy All</button>
-    <button class="action-btn" id="action-expand">Expand All</button>
-    <button class="action-btn" id="action-collapse">Collapse All</button>
-    <button class="action-btn" id="action-refresh">Rescan</button>
   </div>
 
   <script>
-    import { initMirror } from "../scripts/mirror-ui";
+    import { initMirror, resolveMirrorUIOptions } from "../scripts/mirror-ui";
 
     const MIRROR_LIFECYCLE_KEY = "__digitalMirrorLifecycle";
     let cleanupMirror: (() => void) | null = null;
@@ -102,45 +104,8 @@ const seo = {
         cleanupMirror = null;
       }
 
-      const container = document.getElementById("mirror-categories");
-      const scoreExposedCount = document.getElementById("score-exposed-count");
-      const scoreBlockedCount = document.getElementById("score-blocked-count");
-      const scoreBlockedGroup = document.getElementById("score-blocked-group");
-      const scoreBarExposed = document.getElementById("score-bar-exposed");
-      const scoreBarBlocked = document.getElementById("score-bar-blocked");
-
-      const scoreVerdict = document.getElementById("score-verdict");
-      const fingerprintEl = document.getElementById("fingerprint");
-      const timestampEl = document.getElementById("mirror-timestamp");
-      const titleEl = document.getElementById("mirror-title");
-
-      if (
-        container &&
-        scoreExposedCount &&
-        scoreBlockedCount &&
-        scoreBlockedGroup &&
-        scoreBarExposed &&
-        scoreBarBlocked &&
-
-        scoreVerdict &&
-        fingerprintEl &&
-        timestampEl &&
-        titleEl
-      ) {
-        cleanupMirror = initMirror({
-          container,
-          scoreExposedCount,
-          scoreBlockedCount,
-          scoreBlockedGroup,
-          scoreBarExposed,
-          scoreBarBlocked,
-
-          scoreVerdict,
-          fingerprintEl,
-          timestampEl,
-          titleEl,
-        });
-      }
+      const mirrorOptions = resolveMirrorUIOptions(document);
+      if (mirrorOptions) cleanupMirror = initMirror(mirrorOptions);
     }
 
     function teardown() {
@@ -190,9 +155,31 @@ const seo = {
 <style>
   /* ── Score Hero ──────────────────────────────────────────── */
 
+  .mirror-page {
+    --mirror-duration-fade:
+      calc(var(--duration-slow) + var(--duration-fast) + var(--duration-fast));
+    --mirror-duration-fill: calc(var(--duration-slow) * 4);
+    --mirror-space-tight: calc(var(--space-xs) * 0.7);
+    --mirror-space-2xs: calc(var(--space-xs) * 0.2);
+    --mirror-chip-font-size: clamp(
+      calc(var(--text-sm) * 0.72),
+      calc((var(--text-sm) * 0.69) + 0.08vw),
+      calc(var(--text-sm) * 0.8)
+    );
+    --mirror-chip-pad-y: calc(var(--space-xs) * 0.12);
+    --mirror-chip-pad-x: calc(var(--space-xs) * 0.76);
+    --mirror-micro-text-size: calc(var(--text-sm) * 0.6875);
+    --mirror-sensitive-text-size: calc(var(--text-sm) * 0.625);
+    --mirror-supporting-text-size: clamp(
+      calc(var(--text-sm) * 0.875),
+      calc((var(--text-sm) * 0.8125) + 0.2vw),
+      var(--text-sm)
+    );
+  }
+
   .mirror-intro {
     display: grid;
-    gap: 0.35rem;
+    gap: var(--mirror-space-tight);
   }
 
   .mirror-title {
@@ -207,7 +194,7 @@ const seo = {
   }
 
   .mirror-time {
-    margin: 0.05rem 0 0;
+    margin: calc(var(--space-xs) * 0.1) 0 0;
     font-size: var(--text-sm);
     color: rgb(var(--color-text-rgb) / 0.3);
   }
@@ -215,7 +202,7 @@ const seo = {
   .mirror-score {
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
     border-radius: var(--radius-lg);
-    padding: var(--space-md) var(--space-md) calc(var(--space-sm) + 0.08rem);
+    padding: var(--space-md) var(--space-md) calc(var(--space-sm) + var(--mirror-space-2xs));
     text-align: center;
     background:
       linear-gradient(
@@ -257,7 +244,7 @@ const seo = {
 
   .score-blocked {
     opacity: 0;
-    transition: opacity 0.5s ease;
+    transition: opacity var(--mirror-duration-fade) var(--ease-out);
   }
 
   .score-blocked .score-unit {
@@ -273,7 +260,7 @@ const seo = {
     height: 4px;
     background: rgb(var(--color-text-rgb) / 0.06);
     border-radius: 2px;
-    margin-top: calc(var(--space-xs) + 0.1rem);
+    margin-top: calc(var(--space-xs) + (var(--space-xs) * 0.2));
     overflow: visible;
   }
 
@@ -292,7 +279,7 @@ const seo = {
     background: rgb(var(--chromatic-cyan) / 0.8);
     box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.3);
     border-radius: 2px;
-    transition: width 1.2s var(--ease-spring);
+    transition: width var(--mirror-duration-fill) var(--ease-spring);
   }
 
   .score-bar-blocked {
@@ -303,14 +290,14 @@ const seo = {
     width: 0%;
     background: rgb(var(--chromatic-red) / 0.10);
     border-radius: 2px;
-    transition: width 1.2s var(--ease-spring);
+    transition: width var(--mirror-duration-fill) var(--ease-spring);
   }
 
   .score-verdict {
     font-size: var(--text-sm);
     opacity: 0;
     margin-top: var(--space-xs);
-    transition: opacity 0.5s ease;
+    transition: opacity var(--mirror-duration-fade) var(--ease-out);
   }
 
   .score-verdict.visible {
@@ -335,7 +322,7 @@ const seo = {
   .score-subtitle {
     font-size: var(--text-sm);
     opacity: 0.24;
-    margin-top: 0.35rem;
+    margin-top: var(--mirror-space-tight);
   }
 
   /* ── Insights ──────────────────────────────────────────── */
@@ -364,7 +351,7 @@ const seo = {
     font-size: var(--text-sm);
     opacity: 0.45;
     line-height: 1.8;
-    margin-bottom: 0.85rem;
+    margin-bottom: calc(var(--space-sm) * 0.85);
   }
 
   .insights-text:last-of-type {
@@ -395,8 +382,8 @@ const seo = {
     left: 50%;
     transform: translateX(-50%);
     display: inline-flex;
-    gap: 2px;
-    padding: 0.35rem;
+    gap: calc(var(--space-xs) * 0.25);
+    padding: var(--mirror-space-tight);
     background: var(--color-bg);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
@@ -406,7 +393,7 @@ const seo = {
   }
 
   .action-btn {
-    padding: 0.4rem 0.75rem;
+    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
     background: transparent;
     border: none;
     border-radius: calc(var(--radius-lg) - 3px);
@@ -454,7 +441,7 @@ const seo = {
     --_tip-gap: var(--space-xs);
     --_tip-arrow: 6px;
     --_tip-slide: 4px;
-    --_tip-chip: clamp(0.58rem, 0.55rem + 0.08vw, 0.64rem);
+    --_tip-chip: var(--mirror-chip-font-size);
 
     position: absolute;
     bottom: calc(100% + var(--_tip-gap) + var(--_tip-arrow));
@@ -522,14 +509,17 @@ const seo = {
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: rgb(var(--color-text-rgb) / var(--opacity-subtle));
-    padding: 0.2rem 0.45rem 0.35rem;
+    padding:
+      calc(var(--space-xs) * 0.4)
+      calc(var(--space-xs) * 0.9)
+      calc(var(--space-xs) * 0.7);
   }
 
   .bar-tooltip-row {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: 0.3rem 0.45rem;
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.9);
     border-radius: 3px;
     cursor: pointer;
     transition: background var(--duration-normal) var(--ease-out);
@@ -565,7 +555,7 @@ const seo = {
     flex-shrink: 0;
     font-size: var(--_tip-chip);
     letter-spacing: 0.02em;
-    padding: 0.06rem 0.38rem;
+    padding: var(--mirror-chip-pad-y) var(--mirror-chip-pad-x);
     border-radius: 999px;
     background: rgb(var(--chromatic-cyan) / 0.04);
     border: 1px solid rgb(var(--chromatic-cyan) / var(--opacity-faint));
@@ -590,8 +580,8 @@ const seo = {
     width: 100%;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.6rem 0.75rem;
+    gap: var(--space-xs);
+    padding: calc(var(--space-xs) * 1.2) calc(var(--space-xs) * 1.5);
     background: rgb(var(--color-text-rgb) / 0.02);
     border: 1px solid var(--color-border);
     border-left: 2px solid transparent;
@@ -614,7 +604,7 @@ const seo = {
   }
 
   .cat-arrow {
-    font-size: 0.65rem;
+    font-size: calc(var(--text-sm) * 0.8125);
     width: 1em;
     flex-shrink: 0;
     opacity: 0.3;
@@ -636,7 +626,7 @@ const seo = {
   }
 
   .cat-body {
-    padding: 0.25rem 0 0.75rem 0;
+    padding: calc(var(--space-xs) * 0.5) 0 var(--space-sm) 0;
   }
 
   /* ── Data Point Rows ──────────────────────────────────────── */
@@ -647,7 +637,7 @@ const seo = {
     --mirror-depth-border: rgb(var(--color-text-rgb) / 0.08);
     --mirror-depth-text: rgb(var(--color-text-rgb) / 0.42);
 
-    padding: 0.4rem 0.75rem;
+    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
     border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.04);
     border-radius: 3px;
     transition:
@@ -678,7 +668,7 @@ const seo = {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: 1rem;
+    gap: var(--space-sm);
     flex-wrap: wrap;
   }
 
@@ -714,14 +704,14 @@ const seo = {
 
   .dp-sensitive {
     color: #ff6b35;
-    font-size: 0.5rem;
+    font-size: var(--mirror-sensitive-text-size);
     vertical-align: middle;
     text-shadow: 0 0 6px rgba(255, 107, 53, 0.3);
   }
 
   .dp-live {
     display: inline-block;
-    font-size: 0.55rem;
+    font-size: var(--mirror-micro-text-size);
     color: rgb(var(--chromatic-cyan));
     background: rgb(var(--chromatic-cyan) / 0.06);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.3);
@@ -745,7 +735,7 @@ const seo = {
 
   .dp-try {
     display: inline-block;
-    font-size: 0.55rem;
+    font-size: var(--mirror-micro-text-size);
     font-family: var(--font-body);
     color: rgb(var(--chromatic-cyan));
     background: rgb(var(--chromatic-cyan) / 0.06);
@@ -789,8 +779,8 @@ const seo = {
 
   .dp-explain {
     opacity: 0.3;
-    font-size: clamp(0.7rem, 0.65rem + 0.2vw, 0.8rem);
-    margin-top: 0.2rem;
+    font-size: var(--mirror-supporting-text-size);
+    margin-top: calc(var(--space-xs) * 0.4);
     line-height: 1.52;
     max-width: min(62ch, 100%);
     transition: opacity var(--duration-normal) var(--ease-out);
@@ -805,7 +795,7 @@ const seo = {
   }
 
   .dp-detail {
-    margin-top: 0.28rem;
+    margin-top: calc(var(--space-xs) * 0.56);
     min-height: 1rem;
     opacity: 0.7;
     transform: translateY(1px);
@@ -824,21 +814,21 @@ const seo = {
   .dp-detail-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.22rem 0.28rem;
+    gap: calc(var(--space-xs) * 0.44) calc(var(--space-xs) * 0.56);
     align-items: center;
   }
 
   .dp-detail-chip {
     --chip-rgb: var(--color-text-rgb);
 
-    font-size: clamp(0.58rem, 0.55rem + 0.08vw, 0.64rem);
+    font-size: var(--mirror-chip-font-size);
     letter-spacing: 0.02em;
     text-transform: lowercase;
     color: rgb(var(--chip-rgb) / 0.76);
     background: rgb(var(--chip-rgb) / 0.055);
     border: 1px solid rgb(var(--chip-rgb) / 0.2);
     border-radius: 999px;
-    padding: 0.06rem 0.38rem;
+    padding: var(--mirror-chip-pad-y) var(--mirror-chip-pad-x);
     line-height: 1.25;
     transition:
       color var(--duration-normal) var(--ease-out),
@@ -992,13 +982,13 @@ const seo = {
     -webkit-backdrop-filter: blur(16px);
     backdrop-filter: blur(16px);
     color: var(--color-text);
-    padding: 0.45rem 1.1rem;
+    padding: calc(var(--space-xs) * 0.9) calc(var(--space-sm) * 1.1);
     border-radius: var(--radius-lg);
     font-family: var(--font-body);
     font-size: var(--text-sm);
     opacity: 0;
     transition:
-      opacity var(--duration-slow) ease,
+      opacity var(--duration-slow) var(--ease-out),
       transform var(--duration-slow) var(--ease-spring);
     z-index: 200;
     pointer-events: none;
@@ -1023,7 +1013,7 @@ const seo = {
   @media (max-width: 640px) {
     .dp-header {
       flex-direction: column;
-      gap: 0.15rem;
+      gap: calc(var(--space-xs) * 0.3);
     }
     .dp-value {
       text-align: left;
