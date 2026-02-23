@@ -3528,6 +3528,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const displayPath = newUrl.replace(/^\//, "") || "nowhere";
     lostPath.textContent = `404 - /${displayPath} - page not found`;
 
+    save(true);
     showToast(`depth ${currentDepth}`);
   }
 
@@ -3588,6 +3589,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const displayPath = window.location.pathname.replace(/^\//, "") || "nowhere";
     lostPath.textContent = `404 - /${displayPath} - page not found`;
 
+    save(true);
     showToast(currentDepth > 0 ? `depth ${currentDepth}` : "surface");
   }
 
@@ -4063,7 +4065,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // SAVE / LOAD / RESET
   // ============================================================================
 
-  function save(): void {
+  function save(immediate = false): void {
     const data: SaveData = {
       version: SAVE_SCHEMA_VERSION,
       depth: currentDepth,
@@ -4079,6 +4081,15 @@ export function initVoidGame(options: GameInitOptions): () => void {
         // Storage quota exceeded - silently fail
       }
     };
+
+    if (immediate) {
+      if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
+        cancelIdleCallback(pendingIdleSave);
+        pendingIdleSave = null;
+      }
+      doSave();
+      return;
+    }
 
     if (typeof requestIdleCallback !== "undefined") {
       if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
