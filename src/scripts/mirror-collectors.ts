@@ -1946,7 +1946,7 @@ function collectAPIs(): DataPoint[] {
 
   // Crypto
   p.push(pt("api.cryptoSubtle", "Web Crypto", !!(window.crypto?.subtle), "Cryptographic operations (AES, RSA, ECDSA, etc.)."));
-  p.push(pt("api.cryptoUUID", "crypto.randomUUID", typeof window.crypto?.randomUUID === "function", "Generate cryptographic UUIDs.",
+  p.push(pt("api.cryptoUUID", "Random UUID", typeof window.crypto?.randomUUID === "function", "Generate cryptographic UUIDs.",
     false, false, 1,
     typeof window.crypto?.randomUUID === "function" ? async () => crypto.randomUUID() : undefined));
 
@@ -1973,156 +1973,8 @@ function collectAPIs(): DataPoint[] {
   p.push(pt("api.speechSynthesis", "Speech Synthesis", "speechSynthesis" in window, "Text-to-speech.",
     false, false, 1,
     "speechSynthesis" in window ? async () => {
-      // ── Weighted observation pool ───────────────────────────────────
-      // Each probe is independently failable. Higher weight = more
-      // interesting = survives the cut when we cap total observations.
-      type Observation = { weight: number; text: string };
-      const pool: Observation[] = [];
-      const observe = (weight: number, text: string) => pool.push({ weight, text });
-
-      /** Safely run a synchronous probe; returns undefined on any throw. */
-      function probe<T>(fn: () => T): T | undefined {
-        try { return fn(); } catch { return undefined; }
-      }
-      /** Safely run an async probe with a hard timeout. */
-      async function probeAsync<T>(fn: () => Promise<T>, ms: number): Promise<T | undefined> {
-        try {
-          return await Promise.race([
-            fn(),
-            new Promise<undefined>((r) => setTimeout(() => r(undefined), ms)),
-          ]);
-        } catch { return undefined; }
-      }
-
-      // ── Greeting (always leads, never pooled) ──────────────────────
-      const hour = new Date().getHours();
-      const greetings: [number, string][] = [
-        [5, "it is very late"],
-        [12, "good morning"],
-        [17, "good afternoon"],
-        [21, "good evening"],
-        [24, "it is getting late"],
-      ];
-      let greeting = "hello";
-      for (const [until, text] of greetings) {
-        if (hour < until) { greeting = text; break; }
-      }
-
-      // ── Timezone city ─────────────────────────────────────────────
-      const tz = probe(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
-      if (tz) {
-        const city = tz.split("/").pop()?.replace(/_/g, " ");
-        if (city) observe(3, `I see you are in ${city}`);
-      }
-
-      // ── GPU ────────────────────────────────────────────────────────
-      const gpu = probe(() => {
-        const c = document.createElement("canvas");
-        const gl = c.getContext("webgl2") ?? c.getContext("webgl");
-        if (!gl) return undefined;
-        try {
-          const ext = gl.getExtension("WEBGL_debug_renderer_info");
-          return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string : undefined;
-        } finally {
-          gl.getExtension("WEBGL_lose_context")?.loseContext();
-        }
-      });
-      if (gpu) {
-        // ANGLE strings: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11...)"
-        const m = gpu.match(/ANGLE\s*\([^,]*,\s*([^,)]+)/);
-        const name = (m ? m[1] : gpu).trim();
-        if (name.length > 2 && name.length < 80) observe(5, `I see your ${name}`);
-      }
-
-      // ── CPU cores (value-aware phrasing) ───────────────────────────
-      const cores = probe(() => navigator.hardwareConcurrency);
-      if (typeof cores === "number" && cores > 0) {
-        const corePhrases: [number, string][] = [
-          [16, `${cores} cores, that is serious`],
-          [8, `${cores} cores, not bad at all`],
-          [4, `running on ${cores} cores`],
-          [0, `only ${cores} cores, cozy`],
-        ];
-        for (const [min, text] of corePhrases) {
-          if (cores >= min) { observe(cores >= 16 ? 3 : 2, text); break; }
-        }
-      }
-
-      // ── Device memory (value-aware phrasing) ───────────────────────
-      const mem = probe(() => (navigator as any).deviceMemory as number | undefined);
-      if (typeof mem === "number" && mem > 0) {
-        if (mem >= 8) observe(2, `with ${mem} gigs of ram`);
-        else observe(3, `only ${mem} gigs of ram, traveling light`);
-      }
-
-      // ── Display ────────────────────────────────────────────────────
-      const dpr = probe(() => window.devicePixelRatio);
-      if (typeof dpr === "number" && dpr >= 2) observe(2, "nice high-res display");
-
-      const screenW = probe(() => screen.width);
-      if (typeof screenW === "number") {
-        if (screenW >= 2560) observe(2, "on a big screen too");
-        else if (screenW <= 500) observe(2, "browsing on a small screen");
-      }
-
-      // ── Color scheme ───────────────────────────────────────────────
-      const dark = probe(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
-      if (dark === true) observe(1, "a dark mode user, I approve");
-      else if (dark === false) observe(1, "light mode, bold choice");
-
-      // ── Battery (async, with timeout) ──────────────────────────────
-      const bat = await probeAsync(async () => {
-        const fn = (navigator as any).getBattery;
-        if (typeof fn !== "function") return undefined;
-        return fn.call(navigator) as { level: number; charging: boolean };
-      }, 2000);
-      if (bat && typeof bat.level === "number" && isFinite(bat.level)) {
-        const pct = Math.round(bat.level * 100);
-        if (bat.charging) observe(2, `charging at ${pct} percent`);
-        else if (pct <= 15) observe(5, `only ${pct} percent battery, living dangerously`);
-        else if (pct <= 30) observe(4, `${pct} percent battery, might want to plug in`);
-        else observe(1, `${pct} percent battery`);
-      }
-
-      // ── Connection quality ─────────────────────────────────────────
-      const conn = probe(() => (navigator as any).connection as { effectiveType?: string } | undefined);
-      if (conn?.effectiveType === "2g" || conn?.effectiveType === "slow-2g") {
-        observe(4, "your connection is quite slow");
-      } else if (conn?.effectiveType === "3g") {
-        observe(3, "your connection seems a bit slow");
-      }
-
-      // ── Privacy signals ────────────────────────────────────────────
-      const dnt = probe(() => navigator.doNotTrack);
-      if (dnt === "1") observe(2, "do not track enabled, smart");
-
-      const gpc = probe(() => (navigator as any).globalPrivacyControl as boolean | undefined);
-      if (gpc === true) observe(2, "global privacy control too");
-
-      // ── Touch + mouse combo ────────────────────────────────────────
-      const touchPoints = probe(() => navigator.maxTouchPoints);
-      if (typeof touchPoints === "number" && touchPoints > 0) {
-        const fine = probe(() => window.matchMedia("(pointer: fine)").matches);
-        if (fine) observe(2, "touchscreen and a mouse, versatile");
-      }
-
-      // ── Reduced motion ─────────────────────────────────────────────
-      const rm = probe(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-      if (rm === true) observe(1, "reduced motion on, keeping things calm");
-
-      // ── Language ───────────────────────────────────────────────────
-      const lang = probe(() => navigator.language?.split("-")[0]);
-      if (lang && lang !== "en") observe(2, `I can try to speak ${lang} too`);
-
-      // ── Compose utterance ──────────────────────────────────────────
-      // Sort by weight descending, take the most interesting ones.
-      const MAX_OBSERVATIONS = 5;
-      pool.sort((a, b) => b.weight - a.weight);
-      const selected = pool.slice(0, MAX_OBSERVATIONS).map((o) => o.text);
-      const message = [greeting, ...selected].join(". ") + ".";
-
       speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(message);
+      const utter = new SpeechSynthesisUtterance("hello there!");
       utter.rate = 0.9;
       speechSynthesis.speak(utter);
       return true;

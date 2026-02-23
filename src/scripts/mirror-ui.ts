@@ -151,6 +151,40 @@ const CATEGORY_REVEAL_TRANSITION = [
   `transform ${CATEGORY_REVEAL_DURATION} ${MIRROR_UI_CONSTANTS.motion.categoryRevealEasing}`,
 ].join(", ");
 
+const CLICK_TO_REVEAL_POINT_IDS = new Set([
+  "net.ip",
+  "net.coords",
+  "net.postal",
+  "net.isp",
+  "api.localIP",
+]);
+
+function shouldUseClickToReveal(pointId: string, value: unknown): value is string {
+  return typeof value === "string" && CLICK_TO_REVEAL_POINT_IDS.has(pointId);
+}
+
+function renderClickToRevealValue(valueEl: HTMLElement, raw: string): void {
+  const revealBtn = el("button", "dp-reveal", "click to reveal");
+  revealBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    revealBtn.replaceWith(document.createTextNode(normalizeTextForDisplay(raw)));
+  }, { once: true });
+  valueEl.appendChild(revealBtn);
+}
+
+function cssEscapeValue(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  // Best-effort fallback for older engines without CSS.escape.
+  return value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function isPointMaskedInUi(pointId: string): boolean {
+  if (!CLICK_TO_REVEAL_POINT_IDS.has(pointId)) return false;
+  return !!document.querySelector(`.dp-row[data-id="${cssEscapeValue(pointId)}"] .dp-reveal`);
+}
+
 function loadExpansionState(): Map<string, boolean> {
   const state = new Map<string, boolean>();
   const validIds = new Set(CATEGORY_ORDER.map((category) => category.id));
@@ -236,15 +270,10 @@ function renderValue(valueEl: HTMLElement, point: DataPoint): void {
 
   const v = point.value;
 
-  // IP address — masked by default, click to reveal.
+  // Selected doxx-prone fields are masked by default.
   // Resets naturally on rescan because rebuildCategoryShell recreates all DOM.
-  if (point.id === "net.ip" && typeof v === "string") {
-    const revealBtn = el("button", "dp-reveal", "click to reveal");
-    revealBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      revealBtn.replaceWith(document.createTextNode(normalizeTextForDisplay(v)));
-    }, { once: true });
-    valueEl.appendChild(revealBtn);
+  if (shouldUseClickToReveal(point.id, v)) {
+    renderClickToRevealValue(valueEl, v);
     return;
   }
 
@@ -588,8 +617,13 @@ function updateCategoryBody(
   pointState: Map<string, DataPoint>,
 ): void {
   const body = sectionEl.querySelector<HTMLElement>(".cat-body");
+  const toggle = sectionEl.querySelector<HTMLElement>(".cat-toggle");
+  const arrow = sectionEl.querySelector<HTMLElement>(".cat-arrow");
   const countEl = sectionEl.querySelector<HTMLElement>(".cat-count");
   if (!body) return;
+
+  // Preserve user-expanded/collapsed state across async collector updates.
+  const expanded = toggle ? toggle.getAttribute("aria-expanded") !== "false" : body.style.display !== "none";
 
   for (const row of body.querySelectorAll<HTMLElement>(".dp-row")) {
     const id = row.dataset.id;
@@ -599,8 +633,14 @@ function updateCategoryBody(
     }
   }
 
-  body.innerHTML = "";
-  for (const pt of points) body.appendChild(renderDataPoint(pt, pointEls, pointState));
+  const fragment = document.createDocumentFragment();
+  for (const pt of points) fragment.appendChild(renderDataPoint(pt, pointEls, pointState));
+  body.replaceChildren(fragment);
+
+  body.style.display = expanded ? "" : "none";
+  if (toggle) toggle.setAttribute("aria-expanded", String(expanded));
+  if (arrow) arrow.textContent = expanded ? "\u25bc" : "\u25b6";
+
   if (countEl) countEl.textContent = ` (${points.length})`;
 }
 
@@ -754,8 +794,8 @@ function syncBarTooltip(
   let html = `<div class="bar-tooltip-heading">biggest exposures</div>`;
   for (const p of points) {
     const label = esc(normalizeTextForDisplay(p.label));
-    // If the IP is still masked in the UI, hide it in the tooltip too.
-    const isMasked = p.id === "net.ip" && !!document.querySelector(`.dp-row[data-id="net.ip"] .dp-reveal`);
+    // If a reveal-gated field is still masked in the row, hide it in tooltip too.
+    const isMasked = isPointMaskedInUi(p.id);
     const val = isMasked ? "click row to reveal" : esc(truncateValue(p.value));
     const wLabel = WEIGHT_LABELS[p.privacyWeight] ?? "";
     html += `<div class="bar-tooltip-row" data-point-id="${esc(p.id)}">`;
@@ -778,7 +818,7 @@ function syncBarTooltip(
       const id = row.dataset.pointId;
       if (!id) return;
 
-      const dpRow = document.querySelector<HTMLElement>(`.dp-row[data-id="${CSS.escape(id)}"]`);
+      const dpRow = document.querySelector<HTMLElement>(`.dp-row[data-id="${cssEscapeValue(id)}"]`);
       if (!dpRow) return;
 
       // Ensure the parent category is expanded.
@@ -914,6 +954,7 @@ function showToast(msg: string): void {
 
 /** IDs whose raw values are too large or not useful in a text export. */
 const COPY_EXCLUDE_IDS = new Set(["fp.canvasPreview"]);
+const COPY_REDACTED_VALUE = "[click to reveal in UI]";
 
 function copyAllData(data: MirrorData, liveState: Map<string, DataPoint>): void {
   const out: Record<string, unknown> = {
@@ -930,6 +971,10 @@ function copyAllData(data: MirrorData, liveState: Map<string, DataPoint>): void 
       // Prefer live-updated value over stale snapshot
       const current = liveState.get(pt.id) ?? pt;
       const label = normalizeTextForDisplay(current.label);
+      if (CLICK_TO_REVEAL_POINT_IDS.has(current.id)) {
+        d[label] = COPY_REDACTED_VALUE;
+        continue;
+      }
       const value = typeof current.value === "string" ? normalizeTextForDisplay(current.value) : current.value;
       d[label] = value;
     }
