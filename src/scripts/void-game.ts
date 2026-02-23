@@ -676,6 +676,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // Async task tracking
   const pendingTimeouts = new Set<number>();
   let pendingIdleSave: number | null = null;
+  let pendingTimeoutSave: number | null = null;
 
   function scheduleTimeout(callback: () => void, delay: number): number {
     const id = window.setTimeout(() => {
@@ -697,6 +698,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       cancelIdleCallback(pendingIdleSave);
     }
     pendingIdleSave = null;
+
+    if (pendingTimeoutSave !== null) {
+      window.clearTimeout(pendingTimeoutSave);
+      pendingTimeoutSave = null;
+    }
   }
 
   // Cache static UI references used each frame
@@ -4082,28 +4088,32 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
     };
 
+    if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
+      cancelIdleCallback(pendingIdleSave);
+      pendingIdleSave = null;
+    }
+    if (pendingTimeoutSave !== null) {
+      window.clearTimeout(pendingTimeoutSave);
+      pendingTimeoutSave = null;
+    }
+
     if (immediate) {
-      if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
-        cancelIdleCallback(pendingIdleSave);
-        pendingIdleSave = null;
-      }
       doSave();
       return;
     }
 
     if (typeof requestIdleCallback !== "undefined") {
-      if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
-        cancelIdleCallback(pendingIdleSave);
-        pendingIdleSave = null;
-      }
-
       pendingIdleSave = requestIdleCallback(() => {
         pendingIdleSave = null;
         if (destroyed) return;
         doSave();
       }, { timeout: 1000 });
     } else {
-      scheduleTimeout(doSave, 0);
+      pendingTimeoutSave = window.setTimeout(() => {
+        pendingTimeoutSave = null;
+        if (destroyed) return;
+        doSave();
+      }, 0);
     }
   }
 
