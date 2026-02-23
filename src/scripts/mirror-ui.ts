@@ -20,7 +20,7 @@ export interface MirrorUIOptions {
   scoreBlockedGroup: HTMLElement;
   scoreBarExposed: HTMLElement;
   scoreBarBlocked: HTMLElement;
-  scoreLabel: HTMLElement;
+
   scoreVerdict: HTMLElement;
   fingerprintEl: HTMLElement;
   timestampEl: HTMLElement;
@@ -447,7 +447,6 @@ function updateScore(
   opts.scoreBarBlocked.style.width = `${blockedPct}%`;
 
   if (scanComplete) {
-    opts.scoreLabel.textContent = "Scan Complete";
     opts.scoreVerdict.textContent = getVerdict(resolved, unavailable, total);
     opts.scoreVerdict.classList.add("visible");
   }
@@ -600,7 +599,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
     opts.scoreBlockedGroup.classList.remove("visible");
     opts.scoreBarExposed.style.width = "0%";
     opts.scoreBarBlocked.style.width = "0%";
-    opts.scoreLabel.textContent = "Scanning Your Browser";
+
     opts.scoreVerdict.textContent = "";
     opts.scoreVerdict.classList.remove("visible");
     opts.fingerprintEl.textContent = "--------";

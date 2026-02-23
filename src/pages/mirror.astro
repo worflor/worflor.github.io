@@ -23,7 +23,7 @@ const seo = {
   <!-- Score -->
   <section class="mt-[var(--space-md)] content-section">
     <div class="mirror-score">
-      <div class="score-label" id="score-label">Scanning Your Browser</div>
+
       <div class="score-numbers tabular-nums">
         <span class="score-exposed"
           ><span id="score-exposed-count">0</span><span class="score-unit">
@@ -109,7 +109,7 @@ const seo = {
       const scoreBlockedGroup = document.getElementById("score-blocked-group");
       const scoreBarExposed = document.getElementById("score-bar-exposed");
       const scoreBarBlocked = document.getElementById("score-bar-blocked");
-      const scoreLabel = document.getElementById("score-label");
+
       const scoreVerdict = document.getElementById("score-verdict");
       const fingerprintEl = document.getElementById("fingerprint");
       const timestampEl = document.getElementById("mirror-timestamp");
@@ -122,7 +122,7 @@ const seo = {
         scoreBlockedGroup &&
         scoreBarExposed &&
         scoreBarBlocked &&
-        scoreLabel &&
+
         scoreVerdict &&
         fingerprintEl &&
         timestampEl &&
@@ -135,7 +135,7 @@ const seo = {
           scoreBlockedGroup,
           scoreBarExposed,
           scoreBarBlocked,
-          scoreLabel,
+
           scoreVerdict,
           fingerprintEl,
           timestampEl,
@@ -228,13 +228,6 @@ const seo = {
     box-shadow: var(--edge-highlight);
   }
 
-  .score-label {
-    font-size: var(--text-sm);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: rgb(var(--color-text-rgb) / 0.48);
-    margin-bottom: var(--space-xs);
-  }
 
   .score-numbers {
     display: flex;
