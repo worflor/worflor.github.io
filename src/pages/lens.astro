@@ -78,7 +78,28 @@ const seo = {
           id="lens-preview-img"
           alt="Uploaded file preview"
           class="lens-preview-img"
+          style="display:none"
         />
+        <audio
+          id="lens-preview-audio"
+          class="lens-preview-audio"
+          controls
+          preload="metadata"
+          style="display:none"
+        ></audio>
+        <video
+          id="lens-preview-video"
+          class="lens-preview-video"
+          controls
+          playsinline
+          preload="metadata"
+          style="display:none"
+        ></video>
+        <pre
+          id="lens-preview-text"
+          class="lens-preview-text"
+          style="display:none"
+        ></pre>
       </div>
     </section>
 
@@ -93,30 +114,21 @@ const seo = {
           <span class="summary-number" id="lens-summary-fields">0</span>
           <span class="summary-label">fields found</span>
         </div>
-        <span class="summary-separator">&middot;</span>
-        <div class="summary-stat">
-          <span class="summary-value" id="lens-summary-camera">-</span>
-          <span class="summary-label">camera</span>
-        </div>
-        <span class="summary-separator">&middot;</span>
-        <div class="summary-stat">
-          <span class="summary-value" id="lens-summary-gps">-</span>
-          <span class="summary-label">GPS</span>
-        </div>
+        <div id="lens-summary-dynamic"></div>
       </div>
     </section>
 
-    <!-- Empty state: no EXIF found (hidden until needed) -->
+    <!-- Empty state: no metadata found beyond file info (hidden until needed) -->
     <section
       class="mt-[var(--space-sm)] content-section"
       id="lens-empty-state"
       style="display:none"
     >
       <div class="lens-no-exif">
-        <p class="no-exif-text">no EXIF metadata found</p>
+        <p class="no-exif-text">no embedded metadata found</p>
         <p class="no-exif-subtext">
-          screenshots, web downloads, and processed files typically don't contain
-          embedded metadata. file info is still shown below.
+          this file doesn't contain recognized metadata structures.
+          file info is still shown below.
         </p>
       </div>
     </section>
@@ -131,20 +143,21 @@ const seo = {
       <div class="lens-insights">
         <h2 class="insights-title">what's hiding in your files?</h2>
         <p class="insights-text">
-          every file your phone or camera creates embeds invisible metadata.
-          camera model, lens info, shutter speed... and sometimes your exact
-          GPS coordinates. most social platforms strip this on upload, but sharing
-          files directly? it's all still there.
+          every file carries invisible structure. photos embed camera settings
+          and GPS coordinates. audio files store artist info and album art.
+          documents carry author names and edit histories. even a plain text
+          file has encoding patterns worth understanding.
         </p>
         <p class="insights-text">
-          nothing here ever leaves your browser. the file is read locally
-          using JavaScript's File API, parsed byte-by-byte, and displayed right
-          here. no servers, no uploads, no tracking.
+          nothing here ever leaves your browser. the file is read locally,
+          its bytes are walked structure-by-structure, and everything is
+          displayed right here. no servers, no uploads, no tracking.
         </p>
         <p class="insights-text">
-          want to strip metadata before sharing? most operating systems let you
-          remove it from file properties. or just screenshot it &mdash; screenshots
-          rarely carry the original's metadata.
+          the lens reads container formats (RIFF, ISOBMFF, ZIP), embedded
+          tags (EXIF, ID3, PNG text chunks), and falls back to heuristic
+          analysis for anything it doesn't recognize. drop any file to
+          see what it finds.
         </p>
       </div>
     </section>
@@ -414,6 +427,32 @@ const seo = {
     transition: opacity var(--duration-slow) var(--ease-out);
   }
 
+  .lens-preview-audio {
+    width: 100%;
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  .lens-preview-video {
+    display: block;
+    max-width: 100%;
+    max-height: clamp(14rem, 12rem + 8vw, 22rem);
+    margin: 0 auto;
+  }
+
+  .lens-preview-text {
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: calc(var(--text-sm) * 0.9);
+    line-height: 1.65;
+    color: rgb(var(--color-text-rgb) / 0.6);
+    max-height: clamp(14rem, 12rem + 8vw, 24rem);
+    overflow: auto;
+    white-space: pre;
+    tab-size: 4;
+    -moz-tab-size: 4;
+  }
+
   /* ── Summary ────────────────────────────────────────────── */
 
   .lens-summary {
@@ -434,6 +473,10 @@ const seo = {
         transparent 100%
       );
     box-shadow: var(--edge-highlight);
+  }
+
+  #lens-summary-dynamic {
+    display: contents;
   }
 
   .summary-stat {

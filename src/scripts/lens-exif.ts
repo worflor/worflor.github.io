@@ -33,6 +33,16 @@ export interface LensData {
   fileName: string;
   fileSize: number;
   parsedAt: number;
+  /** Structural family detected from bytes */
+  formatFamily: string;
+  /** Human-readable format name */
+  formatName: string;
+  /** How the UI should preview this file */
+  previewType: "image" | "audio" | "video" | "text" | "none";
+  /** Text content preview (first ~200 lines) */
+  textPreview?: string;
+  /** Dynamic summary items (replaces hardcoded camera/GPS) */
+  summaryItems: { label: string; value: string }[];
 }
 
 export interface FileMetadata {
@@ -1331,6 +1341,12 @@ function buildAdvancedCategory(exif: RawExif): ExifField[] {
 export const LENS_CATEGORY_ORDER = [
   { id: "file", title: "FILE" },
   { id: "image", title: "IMAGE" },
+  { id: "audio", title: "AUDIO" },
+  { id: "video", title: "VIDEO" },
+  { id: "content", title: "CONTENT" },
+  { id: "document", title: "DOCUMENT" },
+  { id: "structure", title: "STRUCTURE" },
+  { id: "metadata", title: "METADATA" },
   { id: "camera", title: "CAMERA" },
   { id: "exposure", title: "EXPOSURE" },
   { id: "focus", title: "FOCUS & FLASH" },
@@ -1342,7 +1358,7 @@ export const LENS_CATEGORY_ORDER = [
 
 // ── Main Entry Point ─────────────────────────────────────────
 
-export async function parseImageFile(file: File): Promise<LensData> {
+export async function parseFile(file: File): Promise<LensData> {
   const meta: FileMetadata = {
     name: file.name,
     size: file.size,
@@ -1356,6 +1372,7 @@ export async function parseImageFile(file: File): Promise<LensData> {
   const slice = file.slice(0, readSize);
   const buffer = await slice.arrayBuffer();
 
+  // Try EXIF parsing first (JPEG/TIFF)
   let exif: RawExif = {};
   try {
     exif = parseExifFromBuffer(buffer);
@@ -1363,7 +1380,65 @@ export async function parseImageFile(file: File): Promise<LensData> {
     // Parsing failed — we'll still show file metadata
   }
 
-  // Build categories
+  const hasExif = Object.keys(exif).length > 0;
+
+  // If we found EXIF data, build image-specific categories (original path)
+  if (hasExif) {
+    return buildExifResult(exif, meta, buffer);
+  }
+
+  // No EXIF — use the universal format engine
+  const { analyzeFile } = await import("./lens-formats");
+  const formatResult = await analyzeFile(file, buffer);
+
+  // Build FILE category (always present)
+  const fileFields = buildFileCategory(meta);
+  const categories: ExifCategory[] = [{
+    id: "file",
+    title: "FILE",
+    fields: fileFields,
+    expanded: true,
+  }];
+
+  // Append format-specific categories
+  categories.push(...formatResult.categories);
+
+  let totalFields = 0;
+  let populatedFields = 0;
+  for (const cat of categories) {
+    totalFields += cat.fields.length;
+    populatedFields += cat.fields.filter(
+      (f) => f.value !== null && f.id !== "gps.warning",
+    ).length;
+  }
+
+  return {
+    categories,
+    totalFields,
+    populatedFields,
+    hasGps: false,
+    hasExif: formatResult.categories.length > 0,
+    cameraName: null,
+    fileName: meta.name,
+    fileSize: meta.size,
+    parsedAt: Date.now(),
+    formatFamily: formatResult.formatFamily,
+    formatName: formatResult.formatName,
+    previewType: formatResult.previewType,
+    textPreview: formatResult.textPreview,
+    summaryItems: formatResult.summary,
+  };
+}
+
+/** Backward-compatible alias */
+export const parseImageFile = parseFile;
+
+/** Build result for files with EXIF data (JPEG/TIFF — the original path) */
+function buildExifResult(
+  exif: RawExif,
+  meta: FileMetadata,
+  _buffer: ArrayBuffer,
+): LensData {
   const builders: Array<{
     id: string;
     title: string;
@@ -1405,7 +1480,6 @@ export async function parseImageFile(file: File): Promise<LensData> {
   const model = typeof exif["Model"] === "string" ? exif["Model"].trim() : "";
   let cameraName: string | null = null;
   if (model) {
-    // Avoid "Canon Canon EOS R5" — check if model already contains make
     cameraName = make && !model.toLowerCase().startsWith(make.toLowerCase())
       ? `${make} ${model}`
       : model;
@@ -1413,7 +1487,6 @@ export async function parseImageFile(file: File): Promise<LensData> {
     cameraName = make;
   }
 
-  const hasExif = Object.keys(exif).length > 0;
   const hasGps = categories.some(
     (c) => c.id === "gps" && c.fields.some((f) => f.id !== "gps.warning"),
   );
@@ -1423,10 +1496,17 @@ export async function parseImageFile(file: File): Promise<LensData> {
     totalFields,
     populatedFields,
     hasGps,
-    hasExif,
+    hasExif: true,
     cameraName,
     fileName: meta.name,
     fileSize: meta.size,
     parsedAt: Date.now(),
+    formatFamily: "tiff",
+    formatName: meta.type === "image/jpeg" ? "JPEG" : "TIFF",
+    previewType: "image",
+    summaryItems: [
+      { label: "camera", value: cameraName ?? "none" },
+      { label: "GPS", value: hasGps ? "yes" : "no" },
+    ],
   };
 }

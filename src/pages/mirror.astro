@@ -95,24 +95,19 @@ const seo = {
     import { initMirror, resolveMirrorUIOptions } from "../scripts/mirror-ui";
 
     const MIRROR_LIFECYCLE_KEY = "__digitalMirrorLifecycle";
+    type MirrorLifecycle = { boot: () => void; teardown: () => void; detach?: () => void };
     let cleanupMirror: (() => void) | null = null;
-    const mirrorWindow = window as any;
+    const mirrorWindow = window as unknown as Record<string, MirrorLifecycle | undefined>;
 
     function boot() {
-      if (typeof cleanupMirror === "function") {
-        cleanupMirror();
-        cleanupMirror = null;
-      }
-
+      teardown();
       const mirrorOptions = resolveMirrorUIOptions(document);
       if (mirrorOptions) cleanupMirror = initMirror(mirrorOptions);
     }
 
     function teardown() {
-      if (typeof cleanupMirror === "function") {
-        cleanupMirror();
-        cleanupMirror = null;
-      }
+      cleanupMirror?.();
+      cleanupMirror = null;
     }
 
     function detachLifecycle() {
@@ -136,7 +131,7 @@ const seo = {
 
     const prev = mirrorWindow[MIRROR_LIFECYCLE_KEY];
     if (prev) {
-      if (typeof prev.detach === "function") {
+      if (prev.detach) {
         prev.detach();
       } else {
         document.removeEventListener("astro:after-swap", prev.boot);

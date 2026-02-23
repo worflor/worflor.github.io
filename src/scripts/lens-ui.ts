@@ -2,7 +2,7 @@
 // Consumes data from lens-exif.ts. No module-level mutable state — all
 // state is scoped inside initLens() so Astro lifecycle produces a clean tear-down.
 
-import { parseImageFile, LENS_CATEGORY_ORDER, type ExifCategory, type ExifField, type LensData } from "./lens-exif";
+import { parseFile, LENS_CATEGORY_ORDER, type ExifCategory, type ExifField, type LensData } from "./lens-exif";
 
 // ─── Options ──────────────────────────────────────────────────────────────────
 
@@ -12,10 +12,12 @@ export interface LensUIOptions {
   fileInput: HTMLInputElement;
   previewSection: HTMLElement;
   previewImg: HTMLImageElement;
+  previewAudio: HTMLAudioElement;
+  previewVideo: HTMLVideoElement;
+  previewText: HTMLPreElement;
   summarySection: HTMLElement;
   summaryFields: HTMLElement;
-  summaryCamera: HTMLElement;
-  summaryGps: HTMLElement;
+  summaryDynamic: HTMLElement;
   actionsBar: HTMLElement;
   actionCopyBtn: HTMLButtonElement;
   actionUploadBtn: HTMLButtonElement;
@@ -31,10 +33,12 @@ export const LENS_UI_IDS: LensUIIdMap = {
   fileInput: "lens-file-input",
   previewSection: "lens-preview-section",
   previewImg: "lens-preview-img",
+  previewAudio: "lens-preview-audio",
+  previewVideo: "lens-preview-video",
+  previewText: "lens-preview-text",
   summarySection: "lens-summary-section",
   summaryFields: "lens-summary-fields",
-  summaryCamera: "lens-summary-camera",
-  summaryGps: "lens-summary-gps",
+  summaryDynamic: "lens-summary-dynamic",
   actionsBar: "lens-actions",
   actionCopyBtn: "lens-action-copy",
   actionUploadBtn: "lens-action-upload",
@@ -61,16 +65,33 @@ function queryImgById(root: ParentNode, id: string): HTMLImageElement | null {
   return node instanceof HTMLImageElement ? node : null;
 }
 
+function queryAudioById(root: ParentNode, id: string): HTMLAudioElement | null {
+  const node = queryById(root, id);
+  return node instanceof HTMLAudioElement ? node : null;
+}
+
+function queryVideoById(root: ParentNode, id: string): HTMLVideoElement | null {
+  const node = queryById(root, id);
+  return node instanceof HTMLVideoElement ? node : null;
+}
+
+function queryPreById(root: ParentNode, id: string): HTMLPreElement | null {
+  const node = queryById(root, id);
+  return node instanceof HTMLPreElement ? node : null;
+}
+
 export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions | null {
   const container = queryById(root, LENS_UI_IDS.container);
   const uploadZone = queryById(root, LENS_UI_IDS.uploadZone);
   const fileInput = queryInputById(root, LENS_UI_IDS.fileInput);
   const previewSection = queryById(root, LENS_UI_IDS.previewSection);
   const previewImg = queryImgById(root, LENS_UI_IDS.previewImg);
+  const previewAudio = queryAudioById(root, LENS_UI_IDS.previewAudio);
+  const previewVideo = queryVideoById(root, LENS_UI_IDS.previewVideo);
+  const previewText = queryPreById(root, LENS_UI_IDS.previewText);
   const summarySection = queryById(root, LENS_UI_IDS.summarySection);
   const summaryFields = queryById(root, LENS_UI_IDS.summaryFields);
-  const summaryCamera = queryById(root, LENS_UI_IDS.summaryCamera);
-  const summaryGps = queryById(root, LENS_UI_IDS.summaryGps);
+  const summaryDynamic = queryById(root, LENS_UI_IDS.summaryDynamic);
   const actionsBar = queryById(root, LENS_UI_IDS.actionsBar);
   const actionCopyBtn = queryButtonById(root, LENS_UI_IDS.actionCopyBtn);
   const actionUploadBtn = queryButtonById(root, LENS_UI_IDS.actionUploadBtn);
@@ -79,16 +100,18 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
 
   if (
     !container || !uploadZone || !fileInput || !previewSection ||
-    !previewImg || !summarySection || !summaryFields || !summaryCamera ||
-    !summaryGps || !actionsBar || !actionCopyBtn ||
+    !previewImg || !previewAudio || !previewVideo || !previewText ||
+    !summarySection || !summaryFields || !summaryDynamic ||
+    !actionsBar || !actionCopyBtn ||
     !actionUploadBtn || !loadingIndicator || !emptyState
   ) {
     return null;
   }
 
   return {
-    container, uploadZone, fileInput, previewSection, previewImg,
-    summarySection, summaryFields, summaryCamera, summaryGps,
+    container, uploadZone, fileInput, previewSection,
+    previewImg, previewAudio, previewVideo, previewText,
+    summarySection, summaryFields, summaryDynamic,
     actionsBar, actionCopyBtn, actionUploadBtn,
     loadingIndicator, emptyState,
   };
@@ -138,6 +161,113 @@ export function initLens(opts: LensUIOptions): () => void {
     cleanups.push(() => target.removeEventListener(event, handler as EventListener, options));
   }
 
+  // ── Preview management ────────────────────────────────
+
+  function hideAllPreviews(): void {
+    opts.previewImg.style.display = "none";
+    opts.previewImg.style.opacity = "0";
+    opts.previewAudio.style.display = "none";
+    opts.previewAudio.pause();
+    opts.previewAudio.removeAttribute("src");
+    opts.previewVideo.style.display = "none";
+    opts.previewVideo.pause();
+    opts.previewVideo.removeAttribute("src");
+    opts.previewText.style.display = "none";
+    opts.previewText.textContent = "";
+  }
+
+  function showPreview(data: LensData, objectUrl: string): void {
+    hideAllPreviews();
+
+    switch (data.previewType) {
+      case "image": {
+        opts.previewImg.src = objectUrl;
+        opts.previewImg.alt = `Preview of ${data.fileName}`;
+        opts.previewImg.style.display = "";
+        opts.previewImg.style.opacity = "0";
+        opts.previewSection.style.display = "";
+
+        opts.previewImg.onload = () => {
+          requestAnimationFrame(() => {
+            opts.previewImg.style.opacity = "1";
+          });
+        };
+        opts.previewImg.onerror = () => {
+          opts.previewImg.style.display = "none";
+          // If no other preview is visible, hide the section
+          opts.previewSection.style.display = "none";
+        };
+        break;
+      }
+
+      case "audio": {
+        opts.previewAudio.src = objectUrl;
+        opts.previewAudio.style.display = "";
+        opts.previewSection.style.display = "";
+        break;
+      }
+
+      case "video": {
+        opts.previewVideo.src = objectUrl;
+        opts.previewVideo.style.display = "";
+        opts.previewSection.style.display = "";
+        break;
+      }
+
+      case "text": {
+        if (data.textPreview) {
+          opts.previewText.textContent = data.textPreview;
+          opts.previewText.style.display = "";
+          opts.previewSection.style.display = "";
+        }
+        break;
+      }
+
+      case "none":
+      default:
+        opts.previewSection.style.display = "none";
+        break;
+    }
+  }
+
+  // ── Summary rendering ─────────────────────────────────
+
+  function renderSummary(data: LensData): void {
+    opts.summaryFields.textContent = String(data.populatedFields);
+
+    // Clear dynamic summary
+    opts.summaryDynamic.innerHTML = "";
+
+    const items = data.summaryItems;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      // Separator before each dynamic item
+      const sep = el("span", "summary-separator");
+      sep.innerHTML = "&middot;";
+      opts.summaryDynamic.appendChild(sep);
+
+      const stat = el("div", "summary-stat");
+      const value = el("span", "summary-value");
+      value.textContent = item.value;
+
+      // Apply GPS-specific styling for backward compatibility
+      if (item.label === "GPS") {
+        const isGps = item.value === "yes";
+        value.classList.toggle("lens-gps-yes", isGps);
+        value.classList.toggle("lens-gps-no", !isGps);
+      }
+
+      const label = el("span", "summary-label");
+      label.textContent = item.label;
+
+      stat.append(value, label);
+      opts.summaryDynamic.appendChild(stat);
+    }
+
+    opts.summarySection.style.display = "";
+  }
+
   // ── File handling ─────────────────────────────────────
 
   async function processFile(file: File): Promise<void> {
@@ -154,28 +284,14 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.emptyState.style.display = "none";
     opts.loadingIndicator.style.display = "";
 
-    // Set up preview — try to render it, hide if browser can't
+    // Create object URL for previews
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
     currentObjectUrl = URL.createObjectURL(file);
-    opts.previewImg.src = currentObjectUrl;
-    opts.previewImg.alt = `Preview of ${file.name}`;
 
-    opts.previewImg.style.opacity = "0";
-    opts.previewSection.style.display = "";
-    opts.previewImg.onload = () => {
-      requestAnimationFrame(() => {
-        opts.previewImg.style.opacity = "1";
-      });
-    };
-    opts.previewImg.onerror = () => {
-      // Browser can't render this format — hide the preview entirely
-      opts.previewSection.style.display = "none";
-    };
-
-    // Parse EXIF
+    // Parse file
     let data: LensData;
     try {
-      data = await parseImageFile(file);
+      data = await parseFile(file);
     } catch {
       showToast("failed to parse file");
       opts.loadingIndicator.style.display = "none";
@@ -189,15 +305,13 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.loadingIndicator.style.display = "none";
     currentData = data;
 
-    // Update summary
-    opts.summaryFields.textContent = String(data.populatedFields);
-    opts.summaryCamera.textContent = data.cameraName ?? "none";
-    opts.summaryGps.textContent = data.hasGps ? "yes" : "no";
-    opts.summaryGps.classList.toggle("lens-gps-yes", data.hasGps);
-    opts.summaryGps.classList.toggle("lens-gps-no", !data.hasGps);
-    opts.summarySection.style.display = "";
+    // Set up preview based on detected format
+    showPreview(data, currentObjectUrl);
 
-    // Check if we have meaningful EXIF data beyond file metadata
+    // Update summary
+    renderSummary(data);
+
+    // Check if we have meaningful metadata beyond file info
     if (!data.hasExif) {
       opts.emptyState.style.display = "";
     }
@@ -215,15 +329,22 @@ export function initLens(opts: LensUIOptions): () => void {
   }
 
   function resetToUpload(): void {
+    // Pause and clean up media elements
+    opts.previewAudio.pause();
+    opts.previewAudio.removeAttribute("src");
+    opts.previewVideo.pause();
+    opts.previewVideo.removeAttribute("src");
+    opts.previewText.textContent = "";
+
     if (currentObjectUrl) {
       URL.revokeObjectURL(currentObjectUrl);
       currentObjectUrl = null;
     }
     currentData = null;
     opts.previewSection.style.display = "none";
-    opts.previewImg.src = "";
-    opts.previewImg.style.opacity = "0";
+    hideAllPreviews();
     opts.summarySection.style.display = "none";
+    opts.summaryDynamic.innerHTML = "";
     opts.emptyState.style.display = "none";
     opts.container.innerHTML = "";
     opts.actionsBar.style.opacity = "0";
@@ -289,10 +410,10 @@ export function initLens(opts: LensUIOptions): () => void {
     const items = (e as ClipboardEvent).clipboardData?.items;
     if (!items) return;
     for (let i = 0; i < items.length; i++) {
-      if (items[i].type.startsWith("image/")) {
+      const file = items[i].getAsFile();
+      if (file) {
         e.preventDefault();
-        const file = items[i].getAsFile();
-        if (file) processFile(file);
+        processFile(file);
         return;
       }
     }
@@ -517,6 +638,11 @@ export function initLens(opts: LensUIOptions): () => void {
 
   return () => {
     destroyed = true;
+    // Clean up media elements
+    opts.previewAudio.pause();
+    opts.previewAudio.removeAttribute("src");
+    opts.previewVideo.pause();
+    opts.previewVideo.removeAttribute("src");
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
     if (toastTimer) clearTimeout(toastTimer);
     const toast = document.querySelector(".lens-toast");

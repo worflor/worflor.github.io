@@ -121,18 +121,15 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-async function fetchJsonWithTimeout(
-  url: string,
-  timeoutMs: number,
-  signal?: AbortSignal,
-): Promise<Record<string, unknown> | null> {
-  throwIfAborted(signal);
+interface TimedRequestContext {
+  requestSignal?: AbortSignal;
+  cleanup: () => void;
+}
 
+function createTimedRequestContext(timeoutMs: number, signal?: AbortSignal): TimedRequestContext {
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const onAbort = () => controller?.abort();
-  const requestSignal = controller?.signal ?? signal;
-
   if (signal && controller) {
     if (signal.aborted) {
       controller.abort();
@@ -140,10 +137,28 @@ async function fetchJsonWithTimeout(
       signal.addEventListener("abort", onAbort, { once: true });
     }
   }
+  return {
+    requestSignal: controller?.signal ?? signal,
+    cleanup: () => {
+      if (signal && controller) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    },
+  };
+}
+
+async function fetchJsonWithTimeout(
+  url: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown> | null> {
+  throwIfAborted(signal);
+  const timedRequest = createTimedRequestContext(timeoutMs, signal);
 
   try {
     const response = await fetch(url, {
-      signal: requestSignal,
+      signal: timedRequest.requestSignal,
       cache: "no-store",
       headers: { Accept: "application/json" },
     });
@@ -154,10 +169,7 @@ async function fetchJsonWithTimeout(
     if (isAbortError(error)) throw error;
     return null;
   } finally {
-    if (signal && controller) {
-      signal.removeEventListener("abort", onAbort);
-    }
-    if (timeoutId !== null) clearTimeout(timeoutId);
+    timedRequest.cleanup();
   }
 }
 
@@ -1039,19 +1051,7 @@ async function fetchProbeSample(
   signal?: AbortSignal,
 ): Promise<{ durationMs: number; bytes: number } | null> {
   throwIfAborted(signal);
-
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  const onAbort = () => controller?.abort();
-  const requestSignal = controller?.signal ?? signal;
-
-  if (signal && controller) {
-    if (signal.aborted) {
-      controller.abort();
-    } else {
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  }
+  const timedRequest = createTimedRequestContext(timeoutMs, signal);
 
   const sep = path.includes("?") ? "&" : "?";
   const probeUrl = `${path}${sep}mirror_probe=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -1059,7 +1059,7 @@ async function fetchProbeSample(
 
   try {
     const response = await fetch(probeUrl, {
-      signal: requestSignal,
+      signal: timedRequest.requestSignal,
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -1071,10 +1071,7 @@ async function fetchProbeSample(
     if (isAbortError(error)) throw error;
     return null;
   } finally {
-    if (signal && controller) {
-      signal.removeEventListener("abort", onAbort);
-    }
-    if (timeoutId !== null) clearTimeout(timeoutId);
+    timedRequest.cleanup();
   }
 }
 

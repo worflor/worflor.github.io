@@ -61,56 +61,25 @@ function queryButtonById(root: ParentNode, id: string): HTMLButtonElement | null
 }
 
 export function resolveMirrorUIOptions(root: ParentNode = document): MirrorUIOptions | null {
-  const container = queryById(root, MIRROR_UI_IDS.container);
-  const scoreExposedCount = queryById(root, MIRROR_UI_IDS.scoreExposedCount);
-  const scoreBlockedCount = queryById(root, MIRROR_UI_IDS.scoreBlockedCount);
-  const scoreBlockedGroup = queryById(root, MIRROR_UI_IDS.scoreBlockedGroup);
-  const scoreBarExposed = queryById(root, MIRROR_UI_IDS.scoreBarExposed);
-  const scoreBarBlocked = queryById(root, MIRROR_UI_IDS.scoreBarBlocked);
-  const scoreVerdict = queryById(root, MIRROR_UI_IDS.scoreVerdict);
-  const fingerprintEl = queryById(root, MIRROR_UI_IDS.fingerprintEl);
-  const timestampEl = queryById(root, MIRROR_UI_IDS.timestampEl);
-  const titleEl = queryById(root, MIRROR_UI_IDS.titleEl);
-  const actionCopyBtn = queryButtonById(root, MIRROR_UI_IDS.actionCopyBtn);
-  const actionExpandBtn = queryButtonById(root, MIRROR_UI_IDS.actionExpandBtn);
-  const actionCollapseBtn = queryButtonById(root, MIRROR_UI_IDS.actionCollapseBtn);
-  const actionRefreshBtn = queryButtonById(root, MIRROR_UI_IDS.actionRefreshBtn);
-
-  if (
-    !container ||
-    !scoreExposedCount ||
-    !scoreBlockedCount ||
-    !scoreBlockedGroup ||
-    !scoreBarExposed ||
-    !scoreBarBlocked ||
-    !scoreVerdict ||
-    !fingerprintEl ||
-    !timestampEl ||
-    !titleEl ||
-    !actionCopyBtn ||
-    !actionExpandBtn ||
-    !actionCollapseBtn ||
-    !actionRefreshBtn
-  ) {
-    return null;
-  }
-
-  return {
-    container,
-    scoreExposedCount,
-    scoreBlockedCount,
-    scoreBlockedGroup,
-    scoreBarExposed,
-    scoreBarBlocked,
-    scoreVerdict,
-    fingerprintEl,
-    timestampEl,
-    titleEl,
-    actionCopyBtn,
-    actionExpandBtn,
-    actionCollapseBtn,
-    actionRefreshBtn,
+  const resolved = {
+    container: queryById(root, MIRROR_UI_IDS.container),
+    scoreExposedCount: queryById(root, MIRROR_UI_IDS.scoreExposedCount),
+    scoreBlockedCount: queryById(root, MIRROR_UI_IDS.scoreBlockedCount),
+    scoreBlockedGroup: queryById(root, MIRROR_UI_IDS.scoreBlockedGroup),
+    scoreBarExposed: queryById(root, MIRROR_UI_IDS.scoreBarExposed),
+    scoreBarBlocked: queryById(root, MIRROR_UI_IDS.scoreBarBlocked),
+    scoreVerdict: queryById(root, MIRROR_UI_IDS.scoreVerdict),
+    fingerprintEl: queryById(root, MIRROR_UI_IDS.fingerprintEl),
+    timestampEl: queryById(root, MIRROR_UI_IDS.timestampEl),
+    titleEl: queryById(root, MIRROR_UI_IDS.titleEl),
+    actionCopyBtn: queryButtonById(root, MIRROR_UI_IDS.actionCopyBtn),
+    actionExpandBtn: queryButtonById(root, MIRROR_UI_IDS.actionExpandBtn),
+    actionCollapseBtn: queryButtonById(root, MIRROR_UI_IDS.actionCollapseBtn),
+    actionRefreshBtn: queryButtonById(root, MIRROR_UI_IDS.actionRefreshBtn),
   };
+  return Object.values(resolved).every((value) => value !== null)
+    ? (resolved as MirrorUIOptions)
+    : null;
 }
 
 const EXPANSION_STATE_KEY = "digitalMirror.categoryExpansion.v1";
@@ -296,69 +265,33 @@ function resolveMirrorUiConfig(container: HTMLElement): MirrorUiRuntimeConfig {
     motion: { ...MIRROR_UI_DEFAULTS.motion },
   };
 
-  const counterAnimationMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.counterAnimationMs);
-  if (counterAnimationMs !== null) resolved.timing.counterAnimationMs = counterAnimationMs;
-
-  const categoryRevealStaggerMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.categoryRevealStaggerMs);
-  if (categoryRevealStaggerMs !== null) resolved.timing.categoryRevealStaggerMs = categoryRevealStaggerMs;
-
-  const categoryRevealDurationMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.categoryRevealDurationMs);
-  if (categoryRevealDurationMs !== null) resolved.timing.categoryRevealDurationMs = categoryRevealDurationMs;
-
-  const pointHighlightMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.pointHighlightMs);
-  if (pointHighlightMs !== null) resolved.timing.pointHighlightMs = pointHighlightMs;
-
-  const toastVisibleMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.toastVisibleMs);
-  if (toastVisibleMs !== null) resolved.timing.toastVisibleMs = toastVisibleMs;
-
-  const toastExitMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.toastExitMs);
-  if (toastExitMs !== null) resolved.timing.toastExitMs = toastExitMs;
-
-  const breadcrumbScrollLockMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.breadcrumbScrollLockMs);
-  if (breadcrumbScrollLockMs !== null) resolved.timing.breadcrumbScrollLockMs = breadcrumbScrollLockMs;
-
-  const breadcrumbTypeIntervalMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.breadcrumbTypeIntervalMs);
-  if (breadcrumbTypeIntervalMs !== null) resolved.timing.breadcrumbTypeIntervalMs = breadcrumbTypeIntervalMs;
-
-  const breadcrumbClearIntervalMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.breadcrumbClearIntervalMs);
-  if (breadcrumbClearIntervalMs !== null) resolved.timing.breadcrumbClearIntervalMs = breadcrumbClearIntervalMs;
+  const durationTokenPairs: Array<[keyof MirrorUIConstants["timing"], string]> = [
+    ["counterAnimationMs", MIRROR_UI_CSS_TOKENS.timing.counterAnimationMs],
+    ["categoryRevealStaggerMs", MIRROR_UI_CSS_TOKENS.timing.categoryRevealStaggerMs],
+    ["categoryRevealDurationMs", MIRROR_UI_CSS_TOKENS.timing.categoryRevealDurationMs],
+    ["pointHighlightMs", MIRROR_UI_CSS_TOKENS.timing.pointHighlightMs],
+    ["toastVisibleMs", MIRROR_UI_CSS_TOKENS.timing.toastVisibleMs],
+    ["toastExitMs", MIRROR_UI_CSS_TOKENS.timing.toastExitMs],
+    ["breadcrumbScrollLockMs", MIRROR_UI_CSS_TOKENS.timing.breadcrumbScrollLockMs],
+    ["breadcrumbTypeIntervalMs", MIRROR_UI_CSS_TOKENS.timing.breadcrumbTypeIntervalMs],
+    ["breadcrumbClearIntervalMs", MIRROR_UI_CSS_TOKENS.timing.breadcrumbClearIntervalMs],
+  ];
+  for (const [key, token] of durationTokenPairs) {
+    const value = readCssDurationTokenMs(tokenScope, style, token);
+    if (value !== null) resolved.timing[key] = value;
+  }
 
   const legacyOffsetPx = readCssLengthTokenPx(tokenScope, style, MIRROR_UI_CSS_TOKENS.layout.legacyOffsetPx);
-
-  const categoryRevealOffsetPx = readCssLengthTokenPx(
-    tokenScope,
-    style,
-    MIRROR_UI_CSS_TOKENS.layout.categoryRevealOffsetPx,
-  ) ?? legacyOffsetPx;
-  if (categoryRevealOffsetPx !== null) {
-    resolved.layout.categoryRevealOffsetPx = categoryRevealOffsetPx;
-  }
-
-  const toastOffsetPx = readCssLengthTokenPx(
-    tokenScope,
-    style,
-    MIRROR_UI_CSS_TOKENS.layout.toastOffsetPx,
-  ) ?? legacyOffsetPx;
-  if (toastOffsetPx !== null) {
-    resolved.layout.toastOffsetPx = toastOffsetPx;
-  }
-
-  const breadcrumbScrollOffsetPx = readCssLengthTokenPx(
-    tokenScope,
-    style,
-    MIRROR_UI_CSS_TOKENS.layout.breadcrumbScrollOffsetPx,
-  ) ?? legacyOffsetPx;
-  if (breadcrumbScrollOffsetPx !== null) {
-    resolved.layout.breadcrumbScrollOffsetPx = breadcrumbScrollOffsetPx;
-  }
-
-  const breadcrumbDetectionOffsetPx = readCssLengthTokenPx(
-    tokenScope,
-    style,
-    MIRROR_UI_CSS_TOKENS.layout.breadcrumbDetectionOffsetPx,
-  );
-  if (breadcrumbDetectionOffsetPx !== null) {
-    resolved.layout.breadcrumbDetectionOffsetPx = breadcrumbDetectionOffsetPx;
+  const lengthTokenPairs: Array<[keyof MirrorUIConstants["layout"], string, boolean]> = [
+    ["categoryRevealOffsetPx", MIRROR_UI_CSS_TOKENS.layout.categoryRevealOffsetPx, true],
+    ["toastOffsetPx", MIRROR_UI_CSS_TOKENS.layout.toastOffsetPx, true],
+    ["breadcrumbScrollOffsetPx", MIRROR_UI_CSS_TOKENS.layout.breadcrumbScrollOffsetPx, true],
+    ["breadcrumbDetectionOffsetPx", MIRROR_UI_CSS_TOKENS.layout.breadcrumbDetectionOffsetPx, false],
+  ];
+  for (const [key, token, allowLegacyFallback] of lengthTokenPairs) {
+    const value = readCssLengthTokenPx(tokenScope, style, token)
+      ?? (allowLegacyFallback ? legacyOffsetPx : null);
+    if (value !== null) resolved.layout[key] = value;
   }
 
   const breadcrumbObserverBottomMarginPct = readCssNumberToken(
@@ -566,13 +499,6 @@ function addLiveBadge(valueEl: HTMLElement, point: DataPoint): void {
   }
 }
 
-function detailStabilityLabel(point: DataPoint): string | null {
-  if (point.detailStability === "live") return "live signal";
-  if (point.detailStability === "session") return "session-variant";
-  if (point.detailStability === "stable") return "stable signal";
-  return null;
-}
-
 type DetailChipTier = "low" | "medium" | "high";
 
 interface DetailChip {
@@ -600,6 +526,34 @@ const STABILITY_TITLES: Record<NonNullable<DataPoint["detailStability"]>, string
   live: "Live signal: updates continuously while this page is open.",
 };
 
+const DETAIL_STABILITY_LABELS: Record<NonNullable<DataPoint["detailStability"]>, string> = {
+  live: "live signal",
+  session: "session-variant",
+  stable: "stable signal",
+};
+
+const SIGNAL_TIER_CHIP_TIERS: Record<SignalTier, DetailChipTier> = {
+  core: "high",
+  context: "medium",
+  deep: "low",
+};
+
+const CONFIDENCE_CHIP_TIERS: Record<NonNullable<DataPoint["detailConfidence"]>, DetailChipTier> = {
+  high: "high",
+  medium: "medium",
+  low: "low",
+};
+
+const STABILITY_CHIP_TIERS: Record<NonNullable<DataPoint["detailStability"]>, DetailChipTier> = {
+  stable: "high",
+  session: "medium",
+  live: "medium",
+};
+
+function detailStabilityLabel(point: DataPoint): string | null {
+  return point.detailStability ? DETAIL_STABILITY_LABELS[point.detailStability] : null;
+}
+
 function categoryToggleTitle(title: string, pointCount: number): string {
   return `${title} (${pointCount} points). Click to expand or collapse.`;
 }
@@ -608,12 +562,9 @@ function signalTierChip(point: DataPoint): DetailChip | null {
   const tier = point.signalTier;
   if (!tier) return null;
 
-  const chipTier: DetailChipTier =
-    tier === "core" ? "high" : tier === "context" ? "medium" : "low";
-
   return {
     text: tier,
-    tier: chipTier,
+    tier: SIGNAL_TIER_CHIP_TIERS[tier],
     tint: `tier_${tier}`,
     title: SIGNAL_TIER_TITLES[tier],
   };
@@ -631,28 +582,22 @@ function sourceChip(detailSource?: string): DetailChip | null {
 
 function confidenceChip(confidence?: DataPoint["detailConfidence"]): DetailChip | null {
   if (!confidence) return null;
-  const tier: DetailChipTier =
-    confidence === "high"
-      ? "high"
-      : confidence === "medium"
-        ? "medium"
-        : "low";
   return {
     text: `${confidence} confidence`,
-    tier,
+    tier: CONFIDENCE_CHIP_TIERS[confidence],
     tint: `confidence_${confidence}`,
     title: CONFIDENCE_TITLES[confidence],
   };
 }
 
 function stabilityChip(point: DataPoint): DetailChip | null {
+  const stabilityKey = point.detailStability;
+  if (!stabilityKey) return null;
   const stability = detailStabilityLabel(point);
   if (!stability) return null;
-  const stabilityKey = point.detailStability || "stable";
-  const tier: DetailChipTier = stabilityKey === "stable" ? "high" : "medium";
   return {
     text: stability,
-    tier,
+    tier: STABILITY_CHIP_TIERS[stabilityKey],
     tint: `stability_${stabilityKey}`,
     title: STABILITY_TITLES[stabilityKey],
   };
@@ -676,14 +621,13 @@ function toToken(input: string): string {
 }
 
 function renderDetail(point: DataPoint): HTMLElement | null {
-  const chips: DetailChip[] = [];
-  const pushChip = (chip: DetailChip | null) => { if (chip) chips.push(chip); };
-
-  pushChip(sourceChip(point.detailSource));
-  pushChip(confidenceChip(point.detailConfidence));
-  pushChip(stabilityChip(point));
-  pushChip(interactiveChip(point));
-  pushChip(signalTierChip(point));
+  const chips = [
+    sourceChip(point.detailSource),
+    confidenceChip(point.detailConfidence),
+    stabilityChip(point),
+    interactiveChip(point),
+    signalTierChip(point),
+  ].filter((chip): chip is DetailChip => chip !== null);
 
   if (chips.length === 0) return null;
 
@@ -1678,16 +1622,20 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   const onExpand = () => setAllExpandedAndPersist(true);
   const onCollapse = () => setAllExpandedAndPersist(false);
   const onRefresh = () => startScan();
-  opts.actionCopyBtn.addEventListener("click", onCopy);
-  opts.actionExpandBtn.addEventListener("click", onExpand);
-  opts.actionCollapseBtn.addEventListener("click", onCollapse);
-  opts.actionRefreshBtn.addEventListener("click", onRefresh);
+  const actionBindings: Array<[HTMLButtonElement, () => void]> = [
+    [opts.actionCopyBtn, onCopy],
+    [opts.actionExpandBtn, onExpand],
+    [opts.actionCollapseBtn, onCollapse],
+    [opts.actionRefreshBtn, onRefresh],
+  ];
+  for (const [button, handler] of actionBindings) {
+    button.addEventListener("click", handler);
+  }
 
   cleanups.push(() => {
-    opts.actionCopyBtn.removeEventListener("click", onCopy);
-    opts.actionExpandBtn.removeEventListener("click", onExpand);
-    opts.actionCollapseBtn.removeEventListener("click", onCollapse);
-    opts.actionRefreshBtn.removeEventListener("click", onRefresh);
+    for (const [button, handler] of actionBindings) {
+      button.removeEventListener("click", handler);
+    }
   });
 
   // Live updaters
