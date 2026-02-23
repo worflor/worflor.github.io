@@ -271,11 +271,11 @@ const seo = {
 
   .score-bar-wrap {
     position: relative;
-    height: 3px;
+    height: 4px;
     background: rgb(var(--color-text-rgb) / 0.06);
     border-radius: 2px;
     margin-top: calc(var(--space-xs) + 0.1rem);
-    overflow: hidden;
+    overflow: visible;
   }
 
   .score-bar-exposed {
@@ -285,6 +285,7 @@ const seo = {
     height: 100%;
     width: 0%;
     background: rgb(var(--chromatic-cyan) / 0.8);
+    box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.3);
     border-radius: 2px;
     transition: width 1.2s var(--ease-spring);
   }
@@ -295,7 +296,7 @@ const seo = {
     top: 0;
     height: 100%;
     width: 0%;
-    background: rgb(var(--color-text-rgb) / 0.15);
+    background: rgb(var(--chromatic-red) / 0.10);
     border-radius: 2px;
     transition: width 1.2s var(--ease-spring);
   }
