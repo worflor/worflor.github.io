@@ -588,6 +588,22 @@ const SIGNAL_TIER_TITLES: Record<SignalTier, string> = {
   deep: "Interesting deep-dive signal that is often derived, legacy, or experimental.",
 };
 
+const CONFIDENCE_TITLES: Record<NonNullable<DataPoint["detailConfidence"]>, string> = {
+  high: "High confidence: this signal is usually direct and reliable in this session.",
+  medium: "Medium confidence: this signal is estimated, rounded, or partially constrained.",
+  low: "Low confidence: this signal may be frozen, masked, gated, or frequently unavailable.",
+};
+
+const STABILITY_TITLES: Record<NonNullable<DataPoint["detailStability"]>, string> = {
+  stable: "Stable signal: tends to stay constant across the current device/browser setup.",
+  session: "Session-variant signal: can change between page loads or network context.",
+  live: "Live signal: updates continuously while this page is open.",
+};
+
+function categoryToggleTitle(title: string, pointCount: number): string {
+  return `${title} (${pointCount} points). Click to expand or collapse.`;
+}
+
 function signalTierChip(point: DataPoint): DetailChip | null {
   const tier = point.signalTier;
   if (!tier) return null;
@@ -609,6 +625,7 @@ function sourceChip(detailSource?: string): DetailChip | null {
     text: detailSource,
     tier: "low",
     tint: `source_${toToken(detailSource)}`,
+    title: `Data source: ${detailSource}.`,
   };
 }
 
@@ -624,6 +641,7 @@ function confidenceChip(confidence?: DataPoint["detailConfidence"]): DetailChip 
     text: `${confidence} confidence`,
     tier,
     tint: `confidence_${confidence}`,
+    title: CONFIDENCE_TITLES[confidence],
   };
 }
 
@@ -636,6 +654,7 @@ function stabilityChip(point: DataPoint): DetailChip | null {
     text: stability,
     tier,
     tint: `stability_${stabilityKey}`,
+    title: STABILITY_TITLES[stabilityKey],
   };
 }
 
@@ -645,6 +664,7 @@ function interactiveChip(point: DataPoint): DetailChip | null {
     text: "interactive",
     tier: "medium",
     tint: "action_interactive",
+    title: "Interactive signal: use the row's try action to query this API on demand.",
   };
 }
 
@@ -674,7 +694,7 @@ function renderDetail(point: DataPoint): HTMLElement | null {
     const chipEl = el("span", "dp-detail-chip", chipText);
     chipEl.setAttribute("data-chip-tier", chip.tier);
     chipEl.setAttribute("data-chip-tint", chip.tint);
-    if (chip.title) chipEl.title = chip.title;
+    chipEl.title = normalizeTextForDisplay(chip.title ?? chipText);
     meta.appendChild(chipEl);
   }
   detail.appendChild(meta);
@@ -790,6 +810,7 @@ function renderDataPoint(
 
   const header = el("div", "dp-header");
   const label = el("span", "dp-label");
+  label.title = normalizeTextForDisplay(point.explanation);
   if (point.sensitive) label.appendChild(el("span", "dp-sensitive", "\u25cf "));
   label.appendChild(document.createTextNode(normalizeTextForDisplay(point.label)));
 
@@ -854,8 +875,11 @@ function renderCategory(
 
   const toggle = el("button", "cat-toggle");
   toggle.setAttribute("aria-expanded", String(cat.expanded));
+  const normalizedTitle = normalizeTextForDisplay(cat.title);
+  toggle.title = categoryToggleTitle(normalizedTitle, cat.points.length);
   const arrow = el("span", "cat-arrow", "\u25bc");
-  const title = el("span", "cat-title", ` ${normalizeTextForDisplay(cat.title)}`);
+  const title = el("span", "cat-title", ` ${normalizedTitle}`);
+  title.title = categoryToggleTitle(normalizedTitle, cat.points.length);
   const count = el("span", "cat-count", ` (${cat.points.length})`);
   toggle.append(arrow, title, count);
 
@@ -902,6 +926,7 @@ function updateCategoryBody(
   const body = sectionEl.querySelector<HTMLElement>(".cat-body");
   const toggle = sectionEl.querySelector<HTMLElement>(".cat-toggle");
   const arrow = sectionEl.querySelector<HTMLElement>(".cat-arrow");
+  const titleEl = sectionEl.querySelector<HTMLElement>(".cat-title");
   const countEl = sectionEl.querySelector<HTMLElement>(".cat-count");
   if (!body) return;
 
@@ -925,6 +950,10 @@ function updateCategoryBody(
   if (arrow) arrow.textContent = expanded ? "\u25bc" : "\u25b6";
 
   if (countEl) countEl.textContent = ` (${points.length})`;
+  const categoryTitle = titleEl?.textContent?.trim() || sectionEl.dataset.cat || "category";
+  const categoryTitleTooltip = categoryToggleTitle(categoryTitle, points.length);
+  if (toggle) toggle.title = categoryTitleTooltip;
+  if (titleEl) titleEl.title = categoryTitleTooltip;
 }
 
 function updatePointValue(
