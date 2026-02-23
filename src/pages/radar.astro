@@ -554,7 +554,7 @@ const seo = {
   }
 
   .radar-feeds-fluid {
-    columns: 2 16rem;
+    columns: 2 18rem;
     column-gap: var(--space-sm);
   }
 
@@ -987,15 +987,47 @@ const seo = {
     }
   }
 
-  /* ── Mobile: reorder for canvas-first experience ─────────────── */
+  /* ── Tablet: 3-column feeds, wider canvas ─────────────────── */
 
-  @media (max-width: 480px) {
+  @media (min-width: 768px) {
+    .radar-canvas-section {
+      max-width: calc(var(--content-width) + 6rem);
+    }
+
+    .radar-feeds-section {
+      max-width: calc(var(--content-width) + 6rem);
+    }
+
+    .radar-feeds-fluid {
+      columns: 3 16rem;
+    }
+
+    .radar-readout-strip {
+      padding: calc(var(--space-xs) * 0.8) var(--space-sm);
+    }
+  }
+
+  /* ── Desktop: widen further ──────────────────────────────────── */
+
+  @media (min-width: 1024px) {
+    .radar-canvas-section {
+      max-width: calc(var(--content-width) + 8rem);
+    }
+
+    .radar-feeds-section {
+      max-width: calc(var(--content-width) + 8rem);
+    }
+  }
+
+  /* ── Mobile: canvas-first, single-column, compact ────────────── */
+
+  @media (max-width: 520px) {
     .radar-page {
       display: flex;
       flex-direction: column;
     }
 
-    /* Push all sections back; named ones get explicit order */
+    /* Canvas-first reorder */
     .radar-page > * {
       order: 10;
     }
@@ -1006,13 +1038,22 @@ const seo = {
       order: 2;
     }
 
-    /* On mobile, feeds stack single-column */
+    /* Canvas: slightly shorter on portrait phones */
+    .radar-canvas {
+      aspect-ratio: 5 / 4;
+    }
+
+    /* Single-column feeds */
     .radar-feeds-fluid {
       columns: 1;
     }
-  }
 
-  @media (max-width: 520px) {
+    /* Tighter contacts on small screens */
+    .feed-list-contacts {
+      max-height: 20rem;
+    }
+
+    /* Compact action bar */
     .radar-actions {
       gap: calc(var(--space-xs) * 0.18);
       padding: calc(var(--space-xs) * 0.6);
@@ -1023,7 +1064,7 @@ const seo = {
       padding-inline: calc(var(--space-xs) * 1);
     }
 
-    /* Readout strip wraps tighter on small screens */
+    /* Hide stat dividers — strip wraps freely */
     .stat-divider {
       display: none;
     }
