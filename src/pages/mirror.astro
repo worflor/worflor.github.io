@@ -159,8 +159,36 @@ const seo = {
     --mirror-duration-fade:
       calc(var(--duration-slow) + var(--duration-fast) + var(--duration-fast));
     --mirror-duration-fill: calc(var(--duration-slow) * 4);
+    --mirror-duration-counter: calc(var(--duration-slow) * 2);
+    --mirror-duration-category-stagger: calc(var(--duration-fast) * 0.8);
+    --mirror-duration-category-reveal: var(--duration-slow);
+    --mirror-duration-point-highlight: calc(var(--duration-slow) * 5);
+    --mirror-duration-toast-visible: calc((var(--duration-slow) * 7) + var(--duration-fast));
+    --mirror-duration-toast-exit: var(--duration-slow);
+    --mirror-duration-breadcrumb-lock: calc((var(--duration-slow) * 2) + (var(--duration-fast) * 2));
+    --mirror-duration-breadcrumb-type: 35ms;
+    --mirror-duration-breadcrumb-clear: 20ms;
+    --mirror-layout-offset: var(--space-xs);
+    --mirror-category-reveal-offset: var(--mirror-layout-offset);
+    --mirror-toast-offset: var(--mirror-layout-offset);
+    --mirror-breadcrumb-scroll-offset: var(--mirror-layout-offset);
+    --mirror-breadcrumb-detection-offset: calc(var(--mirror-layout-offset) * 3);
+    --mirror-breadcrumb-observer-bottom-margin-pct: 60;
     --mirror-space-tight: calc(var(--space-xs) * 0.7);
     --mirror-space-2xs: calc(var(--space-xs) * 0.2);
+    --mirror-stack-gap: calc(var(--space-xs) * 0.25);
+    --mirror-radius-xs: var(--radius-xs);
+    --mirror-radius-sm: var(--radius-sm);
+    --mirror-action-radius: calc(var(--radius-lg) - var(--mirror-radius-sm));
+    --mirror-inline-gap-tight: 0.15em;
+    --mirror-inline-code-pad-y: 0.15em;
+    --mirror-inline-code-pad-x: 0.5em;
+    --mirror-inline-code-size: 0.9em;
+    --mirror-text-track-title: -0.018em;
+    --mirror-text-track-wide: 0.04em;
+    --mirror-text-track-chip: 0.02em;
+    --mirror-line-tight: 1.1;
+    --mirror-line-chip: 1.25;
     --mirror-chip-font-size: clamp(
       calc(var(--text-sm) * 0.72),
       calc((var(--text-sm) * 0.69) + 0.08vw),
@@ -185,7 +213,7 @@ const seo = {
   .mirror-title {
     margin: 0;
     line-height: 1.03;
-    letter-spacing: -0.018em;
+    letter-spacing: var(--mirror-text-track-title);
   }
 
   .mirror-tagline {
@@ -220,10 +248,10 @@ const seo = {
     align-items: baseline;
     justify-content: center;
     flex-wrap: wrap;
-    gap: 0.15em;
+    gap: var(--mirror-inline-gap-tight);
     font-size: var(--text-2xl);
     font-weight: 700;
-    line-height: 1.1;
+    line-height: var(--mirror-line-tight);
   }
 
   .score-exposed {
@@ -259,7 +287,7 @@ const seo = {
     position: relative;
     height: 4px;
     background: rgb(var(--color-text-rgb) / 0.06);
-    border-radius: 2px;
+    border-radius: var(--mirror-radius-xs);
     margin-top: calc(var(--space-xs) + (var(--space-xs) * 0.2));
     overflow: visible;
   }
@@ -278,7 +306,7 @@ const seo = {
     width: 0%;
     background: rgb(var(--chromatic-cyan) / 0.8);
     box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.3);
-    border-radius: 2px;
+    border-radius: var(--mirror-radius-xs);
     transition: width var(--mirror-duration-fill) var(--ease-spring);
   }
 
@@ -289,7 +317,7 @@ const seo = {
     height: 100%;
     width: 0%;
     background: rgb(var(--chromatic-red) / 0.10);
-    border-radius: 2px;
+    border-radius: var(--mirror-radius-xs);
     transition: width var(--mirror-duration-fill) var(--ease-spring);
   }
 
@@ -313,9 +341,9 @@ const seo = {
   .score-fingerprint code {
     color: rgb(var(--chromatic-cyan));
     background: rgb(var(--chromatic-cyan) / 0.06);
-    padding: 0.15em 0.5em;
-    border-radius: 3px;
-    font-size: 0.9em;
+    padding: var(--mirror-inline-code-pad-y) var(--mirror-inline-code-pad-x);
+    border-radius: var(--mirror-radius-sm);
+    font-size: var(--mirror-inline-code-size);
     box-shadow: 0 0 8px rgb(var(--chromatic-cyan) / 0.06);
   }
 
@@ -396,7 +424,7 @@ const seo = {
     padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
     background: transparent;
     border: none;
-    border-radius: calc(var(--radius-lg) - 3px);
+    border-radius: var(--mirror-action-radius);
     color: var(--color-text-muted);
     font-family: var(--font-body);
     font-size: var(--text-sm);
@@ -506,7 +534,7 @@ const seo = {
 
   .bar-tooltip-heading {
     font-size: var(--_tip-chip);
-    letter-spacing: 0.04em;
+    letter-spacing: var(--mirror-text-track-wide);
     text-transform: uppercase;
     color: rgb(var(--color-text-rgb) / var(--opacity-subtle));
     padding:
@@ -520,7 +548,7 @@ const seo = {
     align-items: center;
     gap: var(--space-xs);
     padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.9);
-    border-radius: 3px;
+    border-radius: var(--mirror-radius-sm);
     cursor: pointer;
     transition: background var(--duration-normal) var(--ease-out);
   }
@@ -554,13 +582,13 @@ const seo = {
   .bar-tooltip-weight {
     flex-shrink: 0;
     font-size: var(--_tip-chip);
-    letter-spacing: 0.02em;
+    letter-spacing: var(--mirror-text-track-chip);
     padding: var(--mirror-chip-pad-y) var(--mirror-chip-pad-x);
     border-radius: 999px;
     background: rgb(var(--chromatic-cyan) / 0.04);
     border: 1px solid rgb(var(--chromatic-cyan) / var(--opacity-faint));
     color: rgb(var(--chromatic-cyan) / var(--opacity-hover-dim));
-    line-height: 1.25;
+    line-height: var(--mirror-line-chip);
     white-space: nowrap;
   }
 
@@ -573,7 +601,7 @@ const seo = {
   /* ── Categories ──────────────────────────────────────────── */
 
   .cat-section {
-    margin-bottom: 3px;
+    margin-bottom: var(--mirror-stack-gap);
   }
 
   .cat-toggle {
@@ -646,7 +674,7 @@ const seo = {
 
     padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
     border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.04);
-    border-radius: 3px;
+    border-radius: var(--mirror-radius-sm);
     transition:
       background var(--duration-normal) var(--ease-out),
       box-shadow var(--duration-normal) var(--ease-out);
@@ -722,11 +750,11 @@ const seo = {
     color: rgb(var(--chromatic-cyan));
     background: rgb(var(--chromatic-cyan) / 0.06);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.3);
-    border-radius: 3px;
+    border-radius: var(--mirror-radius-sm);
     padding: 0.05em 0.3em;
     margin-left: 0.4em;
     vertical-align: middle;
-    letter-spacing: 0.04em;
+    letter-spacing: var(--mirror-text-track-wide);
     animation: pulse-live 2.5s ease-in-out infinite;
   }
 
@@ -747,11 +775,11 @@ const seo = {
     color: rgb(var(--chromatic-cyan));
     background: rgb(var(--chromatic-cyan) / 0.06);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.15);
-    border-radius: 3px;
+    border-radius: var(--mirror-radius-sm);
     padding: 0.05em 0.4em;
     margin-left: 0.4em;
     vertical-align: middle;
-    letter-spacing: 0.04em;
+    letter-spacing: var(--mirror-text-track-wide);
     cursor: pointer;
     text-transform: lowercase;
     transition:
@@ -829,14 +857,14 @@ const seo = {
     --chip-rgb: var(--color-text-rgb);
 
     font-size: var(--mirror-chip-font-size);
-    letter-spacing: 0.02em;
+    letter-spacing: var(--mirror-text-track-chip);
     text-transform: lowercase;
     color: rgb(var(--chip-rgb) / 0.76);
     background: rgb(var(--chip-rgb) / 0.055);
     border: 1px solid rgb(var(--chip-rgb) / 0.2);
     border-radius: 999px;
     padding: var(--mirror-chip-pad-y) var(--mirror-chip-pad-x);
-    line-height: 1.25;
+    line-height: var(--mirror-line-chip);
     transition:
       color var(--duration-normal) var(--ease-out),
       background var(--duration-normal) var(--ease-out),
@@ -947,7 +975,7 @@ const seo = {
     display: inline-block;
     width: 12px;
     height: 12px;
-    border-radius: 3px;
+    border-radius: var(--mirror-radius-sm);
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     vertical-align: middle;
     margin-right: 0.35em;
@@ -971,7 +999,7 @@ const seo = {
     max-width: 100%;
     height: auto;
     border: 1px solid var(--color-border);
-    border-radius: 3px;
+    border-radius: var(--mirror-radius-sm);
     margin-top: 0;
     image-rendering: pixelated;
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
@@ -983,7 +1011,7 @@ const seo = {
     position: fixed;
     bottom: 4.5rem;
     left: 50%;
-    transform: translateX(-50%) translateY(8px);
+    transform: translateX(-50%) translateY(var(--mirror-toast-offset, var(--space-xs)));
     background: rgb(var(--color-text-rgb) / 0.06);
     border: 1px solid rgb(var(--color-text-rgb) / 0.06);
     -webkit-backdrop-filter: blur(16px);

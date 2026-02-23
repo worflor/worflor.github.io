@@ -2348,11 +2348,40 @@ function detailSource(id: string): string {
 function detailConfidence(point: DataPoint): DetailConfidence {
   if (point.status === "unavailable") return "low";
   if (point.status === "pending") return "low";
-  if (point.id.startsWith("net.") && point.id !== "net.ip") return "medium";
-  if (point.id.startsWith("conn.") && /effective|downlink|rtt/.test(point.id)) return "medium";
+
+  // Network: all medium (external API-dependent, VPN/proxy can invalidate)
+  if (point.id.startsWith("net.")) return "medium";
+
+  // Connection: fluctuating estimates and unreliable type detection
+  if (point.id.startsWith("conn.") && point.id !== "conn.online" && point.id !== "conn.saveData") return "medium";
+
+  // Performance: session-specific snapshots
   if (point.id.startsWith("perf.")) return "medium";
-  if (point.id.startsWith("fp.")) return "medium";
+
+  // Fingerprints: most are deterministic (high), but latency/precision are estimates
+  if (point.id === "fp.audioBaseLatency" || point.id === "fp.audioOutputLatency" || point.id === "fp.timerPrecision") return "medium";
+
+  // Browser: frozen/reduced legacy values
+  if (point.id === "br.ua" || point.id === "br.pluginCount" || point.id === "br.pluginList" || point.id === "br.mimeTypeCount") return "medium";
+
+  // OS: deprecated platform string
+  if (point.id === "os.platform") return "medium";
+
+  // Hardware: battery estimates
+  if (point.id === "hw.batteryLevel" || point.id === "hw.chargingTime" || point.id === "hw.dischargingTime") return "medium";
+
+  // Media: permission-gated devices, async voices, capability estimates
+  if (/^media\.(cameras|microphones|speakers|voiceCount|voiceLangs|capabilities)$/.test(point.id)) return "medium";
+
+  // Storage: quota is approximate per spec
+  if (point.id === "st.storageQuota") return "medium";
+
+  // GPU: WEBGL_debug_renderer_info is deprecated/restricted
+  if (point.id === "gpu.vendor" || point.id === "gpu.renderer") return "medium";
+
+  // WebRTC local IP: variable/blockable
   if (point.id === "api.localIP") return "medium";
+
   return "high";
 }
 

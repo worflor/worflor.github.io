@@ -25,6 +25,10 @@ export interface MirrorUIOptions {
   fingerprintEl: HTMLElement;
   timestampEl: HTMLElement;
   titleEl: HTMLElement;
+  actionCopyBtn: HTMLButtonElement;
+  actionExpandBtn: HTMLButtonElement;
+  actionCollapseBtn: HTMLButtonElement;
+  actionRefreshBtn: HTMLButtonElement;
 }
 
 type MirrorUIIdMap = { [K in keyof MirrorUIOptions]: string };
@@ -40,10 +44,19 @@ export const MIRROR_UI_IDS: MirrorUIIdMap = {
   fingerprintEl: "fingerprint",
   timestampEl: "mirror-timestamp",
   titleEl: "mirror-title",
+  actionCopyBtn: "action-copy",
+  actionExpandBtn: "action-expand",
+  actionCollapseBtn: "action-collapse",
+  actionRefreshBtn: "action-refresh",
 };
 
 function queryById(root: ParentNode, id: string): HTMLElement | null {
   return root.querySelector<HTMLElement>(`#${id}`);
+}
+
+function queryButtonById(root: ParentNode, id: string): HTMLButtonElement | null {
+  const node = queryById(root, id);
+  return node instanceof HTMLButtonElement ? node : null;
 }
 
 export function resolveMirrorUIOptions(root: ParentNode = document): MirrorUIOptions | null {
@@ -57,6 +70,10 @@ export function resolveMirrorUIOptions(root: ParentNode = document): MirrorUIOpt
   const fingerprintEl = queryById(root, MIRROR_UI_IDS.fingerprintEl);
   const timestampEl = queryById(root, MIRROR_UI_IDS.timestampEl);
   const titleEl = queryById(root, MIRROR_UI_IDS.titleEl);
+  const actionCopyBtn = queryButtonById(root, MIRROR_UI_IDS.actionCopyBtn);
+  const actionExpandBtn = queryButtonById(root, MIRROR_UI_IDS.actionExpandBtn);
+  const actionCollapseBtn = queryButtonById(root, MIRROR_UI_IDS.actionCollapseBtn);
+  const actionRefreshBtn = queryButtonById(root, MIRROR_UI_IDS.actionRefreshBtn);
 
   if (
     !container ||
@@ -68,7 +85,11 @@ export function resolveMirrorUIOptions(root: ParentNode = document): MirrorUIOpt
     !scoreVerdict ||
     !fingerprintEl ||
     !timestampEl ||
-    !titleEl
+    !titleEl ||
+    !actionCopyBtn ||
+    !actionExpandBtn ||
+    !actionCollapseBtn ||
+    !actionRefreshBtn
   ) {
     return null;
   }
@@ -84,6 +105,10 @@ export function resolveMirrorUIOptions(root: ParentNode = document): MirrorUIOpt
     fingerprintEl,
     timestampEl,
     titleEl,
+    actionCopyBtn,
+    actionExpandBtn,
+    actionCollapseBtn,
+    actionRefreshBtn,
   };
 }
 
@@ -115,7 +140,7 @@ interface MirrorUIConstants {
   };
 }
 
-const MIRROR_UI_CONSTANTS = {
+const MIRROR_UI_DEFAULTS = {
   timing: {
     actionTimeoutMs: 12000,
     counterAnimationMs: 600,
@@ -145,11 +170,215 @@ function toCssSeconds(ms: number): string {
   return `${ms / 1000}s`;
 }
 
-const CATEGORY_REVEAL_DURATION = toCssSeconds(MIRROR_UI_CONSTANTS.timing.categoryRevealDurationMs);
-const CATEGORY_REVEAL_TRANSITION = [
-  `opacity ${CATEGORY_REVEAL_DURATION} ${MIRROR_UI_CONSTANTS.motion.categoryRevealEasing}`,
-  `transform ${CATEGORY_REVEAL_DURATION} ${MIRROR_UI_CONSTANTS.motion.categoryRevealEasing}`,
-].join(", ");
+interface MirrorUiRuntimeConfig extends MirrorUIConstants {
+  categoryRevealTransition: string;
+}
+
+// Runtime behavior derives from the same mirror CSS variables used for styling.
+// This keeps motion/layout values centralized on the page token layer.
+const MIRROR_UI_CSS_TOKENS = {
+  timing: {
+    counterAnimationMs: "--mirror-duration-counter",
+    categoryRevealStaggerMs: "--mirror-duration-category-stagger",
+    categoryRevealDurationMs: "--mirror-duration-category-reveal",
+    pointHighlightMs: "--mirror-duration-point-highlight",
+    toastVisibleMs: "--mirror-duration-toast-visible",
+    toastExitMs: "--mirror-duration-toast-exit",
+    breadcrumbScrollLockMs: "--mirror-duration-breadcrumb-lock",
+    breadcrumbTypeIntervalMs: "--mirror-duration-breadcrumb-type",
+    breadcrumbClearIntervalMs: "--mirror-duration-breadcrumb-clear",
+  },
+  layout: {
+    legacyOffsetPx: "--mirror-layout-offset",
+    categoryRevealOffsetPx: "--mirror-category-reveal-offset",
+    toastOffsetPx: "--mirror-toast-offset",
+    breadcrumbScrollOffsetPx: "--mirror-breadcrumb-scroll-offset",
+    breadcrumbDetectionOffsetPx: "--mirror-breadcrumb-detection-offset",
+    breadcrumbObserverBottomMarginPct: "--mirror-breadcrumb-observer-bottom-margin-pct",
+  },
+} as const;
+
+function parseCssTimeToMs(value: string): number | null {
+  const raw = value.trim();
+  if (!raw) return null;
+  if (raw.endsWith("ms")) {
+    const ms = Number.parseFloat(raw.slice(0, -2));
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (raw.endsWith("s")) {
+    const sec = Number.parseFloat(raw.slice(0, -1));
+    return Number.isFinite(sec) ? sec * 1000 : null;
+  }
+  const numeric = Number.parseFloat(raw);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function evaluateCssLengthPx(scope: HTMLElement, cssValue: string): number | null {
+  const raw = cssValue.trim();
+  if (!raw) return null;
+  if (typeof CSS !== "undefined" && typeof CSS.supports === "function" && !CSS.supports("width", raw)) {
+    return null;
+  }
+
+  const probe = document.createElement("div");
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.pointerEvents = "none";
+  probe.style.width = "0px";
+  probe.style.width = raw;
+  probe.style.height = "0";
+  probe.style.padding = "0";
+  probe.style.border = "0";
+  scope.appendChild(probe);
+
+  const resolved = Number.parseFloat(getComputedStyle(probe).width);
+  probe.remove();
+  return Number.isFinite(resolved) ? resolved : null;
+}
+
+function evaluateCssDurationMs(scope: HTMLElement, cssValue: string): number | null {
+  const raw = cssValue.trim();
+  if (!raw) return null;
+  if (typeof CSS !== "undefined" && typeof CSS.supports === "function" && !CSS.supports("animation-duration", raw)) {
+    return null;
+  }
+
+  const probe = document.createElement("div");
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.pointerEvents = "none";
+  probe.style.animationDuration = "0ms";
+  probe.style.animationDuration = raw;
+  scope.appendChild(probe);
+
+  const computed = getComputedStyle(probe).animationDuration.split(",")[0]?.trim() || "";
+  probe.remove();
+  const ms = parseCssTimeToMs(computed);
+  return ms !== null ? ms : null;
+}
+
+function readCssLengthTokenPx(
+  scope: HTMLElement,
+  style: CSSStyleDeclaration,
+  tokenName: string,
+): number | null {
+  const raw = style.getPropertyValue(tokenName).trim();
+  return raw ? evaluateCssLengthPx(scope, raw) : null;
+}
+
+function readCssDurationTokenMs(
+  scope: HTMLElement,
+  style: CSSStyleDeclaration,
+  tokenName: string,
+): number | null {
+  const raw = style.getPropertyValue(tokenName).trim();
+  return raw ? evaluateCssDurationMs(scope, raw) : null;
+}
+
+function readCssNumberToken(style: CSSStyleDeclaration, tokenName: string): number | null {
+  const raw = style.getPropertyValue(tokenName).trim();
+  if (!raw) return null;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getMirrorTokenScope(container: HTMLElement): HTMLElement {
+  return container.closest<HTMLElement>(".mirror-page") ?? document.documentElement;
+}
+
+function resolveMirrorUiConfig(container: HTMLElement): MirrorUiRuntimeConfig {
+  const tokenScope = getMirrorTokenScope(container);
+  const style = getComputedStyle(tokenScope);
+  const resolved: MirrorUIConstants = {
+    timing: { ...MIRROR_UI_DEFAULTS.timing },
+    layout: { ...MIRROR_UI_DEFAULTS.layout },
+    motion: { ...MIRROR_UI_DEFAULTS.motion },
+  };
+
+  const counterAnimationMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.counterAnimationMs);
+  if (counterAnimationMs !== null) resolved.timing.counterAnimationMs = counterAnimationMs;
+
+  const categoryRevealStaggerMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.categoryRevealStaggerMs);
+  if (categoryRevealStaggerMs !== null) resolved.timing.categoryRevealStaggerMs = categoryRevealStaggerMs;
+
+  const categoryRevealDurationMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.categoryRevealDurationMs);
+  if (categoryRevealDurationMs !== null) resolved.timing.categoryRevealDurationMs = categoryRevealDurationMs;
+
+  const pointHighlightMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.pointHighlightMs);
+  if (pointHighlightMs !== null) resolved.timing.pointHighlightMs = pointHighlightMs;
+
+  const toastVisibleMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.toastVisibleMs);
+  if (toastVisibleMs !== null) resolved.timing.toastVisibleMs = toastVisibleMs;
+
+  const toastExitMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.toastExitMs);
+  if (toastExitMs !== null) resolved.timing.toastExitMs = toastExitMs;
+
+  const breadcrumbScrollLockMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.breadcrumbScrollLockMs);
+  if (breadcrumbScrollLockMs !== null) resolved.timing.breadcrumbScrollLockMs = breadcrumbScrollLockMs;
+
+  const breadcrumbTypeIntervalMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.breadcrumbTypeIntervalMs);
+  if (breadcrumbTypeIntervalMs !== null) resolved.timing.breadcrumbTypeIntervalMs = breadcrumbTypeIntervalMs;
+
+  const breadcrumbClearIntervalMs = readCssDurationTokenMs(tokenScope, style, MIRROR_UI_CSS_TOKENS.timing.breadcrumbClearIntervalMs);
+  if (breadcrumbClearIntervalMs !== null) resolved.timing.breadcrumbClearIntervalMs = breadcrumbClearIntervalMs;
+
+  const legacyOffsetPx = readCssLengthTokenPx(tokenScope, style, MIRROR_UI_CSS_TOKENS.layout.legacyOffsetPx);
+
+  const categoryRevealOffsetPx = readCssLengthTokenPx(
+    tokenScope,
+    style,
+    MIRROR_UI_CSS_TOKENS.layout.categoryRevealOffsetPx,
+  ) ?? legacyOffsetPx;
+  if (categoryRevealOffsetPx !== null) {
+    resolved.layout.categoryRevealOffsetPx = categoryRevealOffsetPx;
+  }
+
+  const toastOffsetPx = readCssLengthTokenPx(
+    tokenScope,
+    style,
+    MIRROR_UI_CSS_TOKENS.layout.toastOffsetPx,
+  ) ?? legacyOffsetPx;
+  if (toastOffsetPx !== null) {
+    resolved.layout.toastOffsetPx = toastOffsetPx;
+  }
+
+  const breadcrumbScrollOffsetPx = readCssLengthTokenPx(
+    tokenScope,
+    style,
+    MIRROR_UI_CSS_TOKENS.layout.breadcrumbScrollOffsetPx,
+  ) ?? legacyOffsetPx;
+  if (breadcrumbScrollOffsetPx !== null) {
+    resolved.layout.breadcrumbScrollOffsetPx = breadcrumbScrollOffsetPx;
+  }
+
+  const breadcrumbDetectionOffsetPx = readCssLengthTokenPx(
+    tokenScope,
+    style,
+    MIRROR_UI_CSS_TOKENS.layout.breadcrumbDetectionOffsetPx,
+  );
+  if (breadcrumbDetectionOffsetPx !== null) {
+    resolved.layout.breadcrumbDetectionOffsetPx = breadcrumbDetectionOffsetPx;
+  }
+
+  const breadcrumbObserverBottomMarginPct = readCssNumberToken(
+    style,
+    MIRROR_UI_CSS_TOKENS.layout.breadcrumbObserverBottomMarginPct,
+  );
+  if (breadcrumbObserverBottomMarginPct !== null) {
+    resolved.layout.breadcrumbObserverBottomMarginPct = breadcrumbObserverBottomMarginPct;
+  }
+
+  const categoryRevealDuration = toCssSeconds(resolved.timing.categoryRevealDurationMs);
+  const categoryRevealTransition = [
+    `opacity ${categoryRevealDuration} ${resolved.motion.categoryRevealEasing}`,
+    `transform ${categoryRevealDuration} ${resolved.motion.categoryRevealEasing}`,
+  ].join(", ");
+
+  return {
+    ...resolved,
+    categoryRevealTransition,
+  };
+}
 
 const CLICK_TO_REVEAL_POINT_IDS = new Set([
   "net.ip",
@@ -158,6 +387,18 @@ const CLICK_TO_REVEAL_POINT_IDS = new Set([
   "net.isp",
   "api.localIP",
 ]);
+
+/**
+ * Plainly fictional stand-ins shown in the tooltip for still-masked fields.
+ * Chosen to be instantly recognisable as fake — no real IP is 000.000.000.000.
+ */
+const TOOLTIP_MOCK_VALUES: Record<string, string> = {
+  "net.ip":      "000.000.000.000",
+  "net.coords":  "00.0000, 00.0000",
+  "net.postal":  "00000",
+  "net.isp":     "Acme ISP LLC",
+  "api.localIP": "000.000.000.000",
+};
 
 function shouldUseClickToReveal(pointId: string, value: unknown): value is string {
   return typeof value === "string" && CLICK_TO_REVEAL_POINT_IDS.has(pointId);
@@ -473,7 +714,7 @@ const activeCounters = new WeakMap<HTMLElement, number>();
 function animateCounter(
   element: HTMLElement,
   target: number,
-  duration = MIRROR_UI_CONSTANTS.timing.counterAnimationMs,
+  duration: number,
 ): void {
   const current = parseInt(element.textContent || "0", 10) || 0;
   if (current === target) return;
@@ -503,6 +744,7 @@ function renderDataPoint(
   point: DataPoint,
   pointEls: Map<string, HTMLElement>,
   pointState: Map<string, DataPoint>,
+  uiConfig: MirrorUiRuntimeConfig,
 ): HTMLElement {
   const row = el("div", "dp-row");
   row.dataset.id = point.id;
@@ -531,7 +773,7 @@ function renderDataPoint(
           point.action(),
           new Promise<null>((_, reject) => setTimeout(
             () => reject(new Error("timeout")),
-            MIRROR_UI_CONSTANTS.timing.actionTimeoutMs,
+            uiConfig.timing.actionTimeoutMs,
           )),
         ]);
         if (!valueEl.isConnected) return;
@@ -565,6 +807,7 @@ function renderCategory(
   index: number,
   pointEls: Map<string, HTMLElement>,
   pointState: Map<string, DataPoint>,
+  uiConfig: MirrorUiRuntimeConfig,
   onExpandedChange?: (categoryId: string, expanded: boolean) => void,
 ): HTMLElement {
   const section = el("section", "cat-section");
@@ -578,7 +821,7 @@ function renderCategory(
   toggle.append(arrow, title, count);
 
   const body = el("div", "cat-body");
-  for (const pt of cat.points) body.appendChild(renderDataPoint(pt, pointEls, pointState));
+  for (const pt of cat.points) body.appendChild(renderDataPoint(pt, pointEls, pointState, uiConfig));
 
   const applyExpanded = (expanded: boolean) => {
     body.style.display = expanded ? "" : "none";
@@ -599,12 +842,12 @@ function renderCategory(
   // Stagger reveal
   if (!reducedMotion()) {
     section.style.opacity = "0";
-    section.style.transform = `translateY(${MIRROR_UI_CONSTANTS.layout.categoryRevealOffsetPx}px)`;
+    section.style.transform = `translateY(${uiConfig.layout.categoryRevealOffsetPx}px)`;
     setTimeout(() => {
-      section.style.transition = CATEGORY_REVEAL_TRANSITION;
+      section.style.transition = uiConfig.categoryRevealTransition;
       section.style.opacity = "1";
       section.style.transform = "translateY(0)";
-    }, MIRROR_UI_CONSTANTS.timing.categoryRevealStaggerMs * index);
+    }, uiConfig.timing.categoryRevealStaggerMs * index);
   }
 
   return section;
@@ -615,6 +858,7 @@ function updateCategoryBody(
   points: DataPoint[],
   pointEls: Map<string, HTMLElement>,
   pointState: Map<string, DataPoint>,
+  uiConfig: MirrorUiRuntimeConfig,
 ): void {
   const body = sectionEl.querySelector<HTMLElement>(".cat-body");
   const toggle = sectionEl.querySelector<HTMLElement>(".cat-toggle");
@@ -634,7 +878,7 @@ function updateCategoryBody(
   }
 
   const fragment = document.createDocumentFragment();
-  for (const pt of points) fragment.appendChild(renderDataPoint(pt, pointEls, pointState));
+  for (const pt of points) fragment.appendChild(renderDataPoint(pt, pointEls, pointState, uiConfig));
   body.replaceChildren(fragment);
 
   body.style.display = expanded ? "" : "none";
@@ -776,6 +1020,7 @@ function attachTooltipInteraction(barWrap: HTMLElement): () => void {
 function syncBarTooltip(
   barWrap: HTMLElement,
   points: DataPoint[],
+  uiConfig: MirrorUiRuntimeConfig,
 ): void {
   let tip = barWrap.querySelector<HTMLElement>(".bar-tooltip");
 
@@ -794,9 +1039,9 @@ function syncBarTooltip(
   let html = `<div class="bar-tooltip-heading">biggest exposures</div>`;
   for (const p of points) {
     const label = esc(normalizeTextForDisplay(p.label));
-    // If a reveal-gated field is still masked in the row, hide it in tooltip too.
+    // Masked fields get an obviously fake placeholder — never the real value.
     const isMasked = isPointMaskedInUi(p.id);
-    const val = isMasked ? "click row to reveal" : esc(truncateValue(p.value));
+    const val = isMasked ? esc(TOOLTIP_MOCK_VALUES[p.id] ?? "000.000.000.000") : esc(truncateValue(p.value));
     const wLabel = WEIGHT_LABELS[p.privacyWeight] ?? "";
     html += `<div class="bar-tooltip-row" data-point-id="${esc(p.id)}">`;
     html += `<span class="bar-tooltip-label">${label}</span>`;
@@ -835,7 +1080,7 @@ function syncBarTooltip(
       requestAnimationFrame(() => {
         dpRow.scrollIntoView({ behavior: "smooth", block: "center" });
         dpRow.classList.add("dp-row--highlight");
-        setTimeout(() => dpRow.classList.remove("dp-row--highlight"), MIRROR_UI_CONSTANTS.timing.pointHighlightMs);
+        setTimeout(() => dpRow.classList.remove("dp-row--highlight"), uiConfig.timing.pointHighlightMs);
       });
     });
   }
@@ -845,9 +1090,10 @@ function updateScore(
   opts: MirrorUIOptions,
   tally: PointTally,
   scanComplete: boolean,
+  uiConfig: MirrorUiRuntimeConfig,
 ): void {
-  animateCounter(opts.scoreExposedCount, tally.resolved);
-  animateCounter(opts.scoreBlockedCount, tally.unavailable);
+  animateCounter(opts.scoreExposedCount, tally.resolved, uiConfig.timing.counterAnimationMs);
+  animateCounter(opts.scoreBlockedCount, tally.unavailable, uiConfig.timing.counterAnimationMs);
 
   opts.scoreBlockedGroup.classList.toggle("visible", tally.unavailable > 0);
 
@@ -862,7 +1108,7 @@ function updateScore(
 
   // Tooltip lives on the bar wrap — hover target is the full bar width.
   const barWrap = opts.scoreBarExposed.parentElement;
-  if (barWrap) syncBarTooltip(barWrap, tally.topExposed);
+  if (barWrap) syncBarTooltip(barWrap, tally.topExposed, uiConfig);
 
   if (scanComplete) {
     opts.scoreVerdict.textContent = getVerdict(exposedPct);
@@ -937,7 +1183,7 @@ function tallyPoints(categoryPoints: Iterable<DataPoint[]>): PointTally {
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 
-function showToast(msg: string): void {
+function showToast(msg: string, uiConfig: MirrorUiRuntimeConfig): void {
   document.querySelector(".mirror-toast")?.remove();
   const toast = el("div", "mirror-toast", msg);
   document.body.appendChild(toast);
@@ -945,9 +1191,9 @@ function showToast(msg: string): void {
   setTimeout(() => {
     if (!toast.isConnected) return;
     toast.style.opacity = "0";
-    toast.style.transform = `translateX(-50%) translateY(${MIRROR_UI_CONSTANTS.layout.toastOffsetPx}px)`;
-    setTimeout(() => toast.remove(), MIRROR_UI_CONSTANTS.timing.toastExitMs);
-  }, MIRROR_UI_CONSTANTS.timing.toastVisibleMs);
+    toast.style.transform = `translateX(-50%) translateY(${uiConfig.layout.toastOffsetPx}px)`;
+    setTimeout(() => toast.remove(), uiConfig.timing.toastExitMs);
+  }, uiConfig.timing.toastVisibleMs);
 }
 
 // ─── Copy All ─────────────────────────────────────────────────────────────────
@@ -956,7 +1202,11 @@ function showToast(msg: string): void {
 const COPY_EXCLUDE_IDS = new Set(["fp.canvasPreview"]);
 const COPY_REDACTED_VALUE = "[click to reveal in UI]";
 
-function copyAllData(data: MirrorData, liveState: Map<string, DataPoint>): void {
+function copyAllData(
+  data: MirrorData,
+  liveState: Map<string, DataPoint>,
+  toast: (message: string) => void,
+): void {
   const out: Record<string, unknown> = {
     source: "woflo.dev/mirror",
     fingerprint: data.fingerprintHash,
@@ -983,22 +1233,22 @@ function copyAllData(data: MirrorData, liveState: Map<string, DataPoint>): void 
   const json = JSON.stringify(out, null, 2);
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(json).then(
-      () => showToast("Copied to clipboard"),
-      () => fallbackCopy(json),
+      () => toast("Copied to clipboard"),
+      () => fallbackCopy(json, toast),
     );
   } else {
-    fallbackCopy(json);
+    fallbackCopy(json, toast);
   }
 }
 
-function fallbackCopy(text: string): void {
+function fallbackCopy(text: string, toast: (message: string) => void): void {
   const ta = document.createElement("textarea");
   ta.value = text;
   ta.style.cssText = "position:fixed;top:-9999px";
   document.body.appendChild(ta);
   ta.select();
-  try { document.execCommand("copy"); showToast("Copied to clipboard"); }
-  catch { showToast("Copy failed"); }
+  try { document.execCommand("copy"); toast("Copied to clipboard"); }
+  catch { toast("Copy failed"); }
   finally { ta.remove(); }
 }
 
@@ -1030,6 +1280,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   const categoryEls = new Map<string, HTMLElement>();
   const categoryPoints = new Map<string, DataPoint[]>();
   const expansionState = loadExpansionState();
+  const uiConfig = resolveMirrorUiConfig(opts.container);
   const cleanups: Array<() => void> = [];
   let mirrorData: MirrorData | null = null;
   let destroyed = false;
@@ -1071,7 +1322,14 @@ export function initMirror(opts: MirrorUIOptions): () => void {
       const def = CATEGORY_ORDER[i];
       const expanded = expansionState.get(def.id) ?? true;
       const placeholder: DataCategory = { id: def.id, title: def.title, points: [], expanded };
-      const sectionEl = renderCategory(placeholder, i, pointEls, pointState, setCategoryExpandedState);
+      const sectionEl = renderCategory(
+        placeholder,
+        i,
+        pointEls,
+        pointState,
+        uiConfig,
+        setCategoryExpandedState,
+      );
       opts.container.appendChild(sectionEl);
       categoryEls.set(def.id, sectionEl);
     }
@@ -1088,7 +1346,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
   const breadcrumbEl = document.getElementById("header-breadcrumb");
   const headerEl = document.querySelector<HTMLElement>(".site-header");
-  const headerHeight = headerEl ? headerEl.offsetHeight : MIRROR_UI_CONSTANTS.layout.headerFallbackPx;
+  const headerHeight = headerEl ? headerEl.offsetHeight : uiConfig.layout.headerFallbackPx;
 
   // Intersection state — updated by observer, read by scroll handler
   const visibleSections = new Set<HTMLElement>();
@@ -1103,7 +1361,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
     if (scrollLockTimer) clearTimeout(scrollLockTimer);
     scrollLockCatId = catId;
     if (catId) {
-      scrollLockTimer = setTimeout(() => { scrollLockCatId = null; scrollLockTimer = null; }, MIRROR_UI_CONSTANTS.timing.breadcrumbScrollLockMs);
+      scrollLockTimer = setTimeout(() => { scrollLockCatId = null; scrollLockTimer = null; }, uiConfig.timing.breadcrumbScrollLockMs);
     }
   }
 
@@ -1125,7 +1383,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
         const y = targetEl.getBoundingClientRect().top
           + window.scrollY
           - headerHeight
-          - MIRROR_UI_CONSTANTS.layout.breadcrumbScrollOffsetPx;
+          - uiConfig.layout.breadcrumbScrollOffsetPx;
         window.scrollTo({ top: Math.max(0, y) });
       };
       crumb.addEventListener("click", scrollTo);
@@ -1168,7 +1426,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
         inner.textContent = texts[idx].slice(0, len);
         rem -= len;
       });
-    }, MIRROR_UI_CONSTANTS.timing.breadcrumbTypeIntervalMs);
+    }, uiConfig.timing.breadcrumbTypeIntervalMs);
   }
 
   function clearThenType(crumbs: Crumb[]) {
@@ -1202,7 +1460,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
           break;
         }
       }
-    }, MIRROR_UI_CONSTANTS.timing.breadcrumbClearIntervalMs);
+    }, uiConfig.timing.breadcrumbClearIntervalMs);
   }
 
   function setCrumbs(crumbs: Crumb[]) {
@@ -1227,7 +1485,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
     // Pick the section whose top edge is closest to (but above) the detection
     // line just below the sticky header. This is the section the user is "in".
-    const line = headerHeight + MIRROR_UI_CONSTANTS.layout.breadcrumbDetectionOffsetPx;
+    const line = headerHeight + uiConfig.layout.breadcrumbDetectionOffsetPx;
     let best: HTMLElement | null = null;
     let bestTop = -Infinity;
     for (const sec of visibleSections) {
@@ -1274,7 +1532,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
         }
         onBreadcrumbScroll();
       },
-      { rootMargin: `-${headerHeight}px 0px -${MIRROR_UI_CONSTANTS.layout.breadcrumbObserverBottomMarginPct}% 0px` },
+      { rootMargin: `-${headerHeight}px 0px -${uiConfig.layout.breadcrumbObserverBottomMarginPct}% 0px` },
     );
 
     for (const sec of sections) breadcrumbObserver.observe(sec);
@@ -1317,11 +1575,11 @@ export function initMirror(opts: MirrorUIOptions): () => void {
     const onUpdate = (catId: string, points: DataPoint[]) => {
       if (destroyed || runId !== scanRunId) return;
       const sectionEl = categoryEls.get(catId);
-      if (sectionEl) updateCategoryBody(sectionEl, points, pointEls, pointState);
+      if (sectionEl) updateCategoryBody(sectionEl, points, pointEls, pointState, uiConfig);
 
       categoryPoints.set(catId, points);
       const tally = tallyPoints(categoryPoints.values());
-      updateScore(opts, tally, false);
+      updateScore(opts, tally, false, uiConfig);
     };
 
     collectAllData(onUpdate, { signal: scanController.signal })
@@ -1333,7 +1591,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
         // Final score -- use the same categoryPoints totals for consistency,
         // then mark scan complete (label swap, verdict, fingerprint reveal)
         const tally = tallyPoints(categoryPoints.values());
-        updateScore(opts, tally, true);
+        updateScore(opts, tally, true, uiConfig);
       })
       .catch(() => {
         // Individual collectors are error-isolated; this prevents an unhandled rejection.
@@ -1347,26 +1605,21 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   };
 
   // Wire action buttons immediately (not inside .then)
-  const onCopy = () => mirrorData && copyAllData(mirrorData, pointState);
+  const toast = (message: string) => showToast(message, uiConfig);
+  const onCopy = () => mirrorData && copyAllData(mirrorData, pointState, toast);
   const onExpand = () => setAllExpandedAndPersist(true);
   const onCollapse = () => setAllExpandedAndPersist(false);
   const onRefresh = () => startScan();
-
-  const copyBtn = document.getElementById("action-copy");
-  const expandBtn = document.getElementById("action-expand");
-  const collapseBtn = document.getElementById("action-collapse");
-  const refreshBtn = document.getElementById("action-refresh");
-
-  copyBtn?.addEventListener("click", onCopy);
-  expandBtn?.addEventListener("click", onExpand);
-  collapseBtn?.addEventListener("click", onCollapse);
-  refreshBtn?.addEventListener("click", onRefresh);
+  opts.actionCopyBtn.addEventListener("click", onCopy);
+  opts.actionExpandBtn.addEventListener("click", onExpand);
+  opts.actionCollapseBtn.addEventListener("click", onCollapse);
+  opts.actionRefreshBtn.addEventListener("click", onRefresh);
 
   cleanups.push(() => {
-    copyBtn?.removeEventListener("click", onCopy);
-    expandBtn?.removeEventListener("click", onExpand);
-    collapseBtn?.removeEventListener("click", onCollapse);
-    refreshBtn?.removeEventListener("click", onRefresh);
+    opts.actionCopyBtn.removeEventListener("click", onCopy);
+    opts.actionExpandBtn.removeEventListener("click", onExpand);
+    opts.actionCollapseBtn.removeEventListener("click", onCollapse);
+    opts.actionRefreshBtn.removeEventListener("click", onRefresh);
   });
 
   // Live updaters

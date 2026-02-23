@@ -109,6 +109,8 @@
   --scale-indicator: 1.2;
 
   /* border radius */
+  --radius-xs: calc(var(--radius-lg) * 0.25);
+  --radius-sm: calc(var(--radius-lg) * 0.375);
   --radius-lg: 0.5rem;
   --radius-full: 50%;
 
