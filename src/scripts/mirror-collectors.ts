@@ -2352,7 +2352,21 @@ function detailConfidence(point: DataPoint): DetailConfidence {
   // --- LOW CONFIDENCE (Spoofed, Frozen, Masked, or Gated) ---
 
   // Browser: frozen/reduced legacy values (spoofed)
-  if (point.id === "br.ua" || point.id === "br.pluginCount" || point.id === "br.pluginList" || point.id === "br.mimeTypeCount") return "low";
+  if (
+    point.id === "br.ua" ||
+    point.id === "br.appName" ||
+    point.id === "br.appVersion" ||
+    point.id === "br.product" ||
+    point.id === "br.productSub" ||
+    point.id === "br.vendor" ||
+    point.id === "br.vendorSub" ||
+    point.id === "br.buildID" ||
+    point.id === "br.pluginCount" ||
+    point.id === "br.pluginList" ||
+    point.id === "br.mimeTypeCount"
+  ) {
+    return "low";
+  }
 
   // OS: deprecated platform string (frozen)
   if (point.id === "os.platform") return "low";
@@ -2367,7 +2381,10 @@ function detailConfidence(point: DataPoint): DetailConfidence {
   if (/^media\.(cameras|microphones|speakers)$/.test(point.id)) return "low";
 
   // Hardware: battery API is removed in many browsers or heavily restricted
-  if (point.id === "hw.batteryLevel" || point.id === "hw.chargingTime" || point.id === "hw.dischargingTime") return "low";
+  if (point.id === "hw.batteryLevel" || point.id === "hw.batteryCharging" || point.id === "hw.chargingTime" || point.id === "hw.dischargingTime") return "low";
+
+  // Hardware: touch support is notoriously unreliable on desktop
+  if (point.id === "hw.touchSupport") return "low";
 
   // --- MEDIUM CONFIDENCE (Estimated, Rounded, or External) ---
 
@@ -2388,6 +2405,9 @@ function detailConfidence(point: DataPoint): DetailConfidence {
 
   // Storage: quota is approximate per spec and fuzzed
   if (point.id === "st.storageQuota") return "medium";
+
+  // Hardware: concurrency and memory are often capped or rounded to prevent fingerprinting
+  if (point.id === "hw.cores" || point.id === "hw.memory") return "medium";
 
   // --- HIGH CONFIDENCE (Deterministic, Accurate) ---
   return "high";
