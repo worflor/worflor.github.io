@@ -453,31 +453,31 @@ function updatePointValue(
 
 function updateScore(
   opts: MirrorUIOptions,
-  resolved: number,
-  unavailable: number,
-  total: number,
+  tally: PointTally,
   scanComplete: boolean,
 ): void {
-  animateCounter(opts.scoreExposedCount, resolved);
-  animateCounter(opts.scoreBlockedCount, unavailable);
+  animateCounter(opts.scoreExposedCount, tally.resolved);
+  animateCounter(opts.scoreBlockedCount, tally.unavailable);
 
-  opts.scoreBlockedGroup.classList.toggle("visible", unavailable > 0);
+  opts.scoreBlockedGroup.classList.toggle("visible", tally.unavailable > 0);
 
-  const exposedPct = total > 0 ? (resolved / total) * 100 : 0;
-  const blockedPct = total > 0 ? (unavailable / total) * 100 : 0;
+  // Bar and verdict use weighted percentages so high-entropy signals
+  // (canvas, fonts, GPU) carry more visual weight than low-entropy booleans.
+  const wTotal = tally.weightedTotal;
+  const exposedPct = wTotal > 0 ? (tally.weightedResolved / wTotal) * 100 : 0;
+  const blockedPct = wTotal > 0 ? (tally.weightedUnavailable / wTotal) * 100 : 0;
 
   opts.scoreBarExposed.style.width = `${exposedPct}%`;
   opts.scoreBarBlocked.style.width = `${blockedPct}%`;
 
   if (scanComplete) {
-    opts.scoreVerdict.textContent = getVerdict(resolved, unavailable, total);
+    opts.scoreVerdict.textContent = getVerdict(exposedPct);
     opts.scoreVerdict.classList.add("visible");
   }
 }
 
-function getVerdict(_exposed: number, _blocked: number, total: number): string {
-  const pct = total > 0 ? (_exposed / total) * 100 : 0;
-  const rounded = Math.round(pct);
+function getVerdict(weightedPct: number): string {
+  const rounded = Math.round(weightedPct);
   // Verdicts ordered by exposure: clear reflection → nearly opaque.
   // Each threshold is [minPct, verdictFn]; first match wins.
   const verdicts: [number, () => string][] = [
@@ -488,33 +488,45 @@ function getVerdict(_exposed: number, _blocked: number, total: number): string {
     [0, () => `almost opaque. just ${rounded}% slipped through.`],
   ];
   for (const [min, fn] of verdicts) {
-    if (pct >= min) return fn();
+    if (weightedPct >= min) return fn();
   }
   return verdicts[verdicts.length - 1][1]();
 }
 
-function tallyPoints(categoryPoints: Iterable<DataPoint[]>): {
+interface PointTally {
   total: number;
   resolved: number;
   unavailable: number;
-} {
+  weightedTotal: number;
+  weightedResolved: number;
+  weightedUnavailable: number;
+}
+
+function tallyPoints(categoryPoints: Iterable<DataPoint[]>): PointTally {
   let total = 0;
   let resolved = 0;
   let unavailable = 0;
+  let weightedTotal = 0;
+  let weightedResolved = 0;
+  let weightedUnavailable = 0;
 
   for (const points of categoryPoints) {
     for (const point of points) {
       if (point.status === "pending") continue;
+      const w = point.privacyWeight;
       total++;
+      weightedTotal += w;
       if (point.status === "resolved") {
         resolved++;
+        weightedResolved += w;
       } else if (point.status === "unavailable") {
         unavailable++;
+        weightedUnavailable += w;
       }
     }
   }
 
-  return { total, resolved, unavailable };
+  return { total, resolved, unavailable, weightedTotal, weightedResolved, weightedUnavailable };
 }
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
@@ -894,8 +906,8 @@ export function initMirror(opts: MirrorUIOptions): () => void {
       if (sectionEl) updateCategoryBody(sectionEl, points, pointEls, pointState);
 
       categoryPoints.set(catId, points);
-      const { total, resolved, unavailable } = tallyPoints(categoryPoints.values());
-      updateScore(opts, resolved, unavailable, total, false);
+      const tally = tallyPoints(categoryPoints.values());
+      updateScore(opts, tally, false);
     };
 
     collectAllData(onUpdate, { signal: scanController.signal })
@@ -906,8 +918,8 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
         // Final score -- use the same categoryPoints totals for consistency,
         // then mark scan complete (label swap, verdict, fingerprint reveal)
-        const { total, resolved, unavailable } = tallyPoints(categoryPoints.values());
-        updateScore(opts, resolved, unavailable, total, true);
+        const tally = tallyPoints(categoryPoints.values());
+        updateScore(opts, tally, true);
       })
       .catch(() => {
         // Individual collectors are error-isolated; this prevents an unhandled rejection.
