@@ -113,6 +113,7 @@ const EXPANSION_STATE_KEY = "theLens.categoryExpansion.v1";
 const CATEGORY_STAGGER_MS = 80;
 const CATEGORY_REVEAL_MS = 300;
 const CATEGORY_REVEAL_OFFSET_PX = 8;
+const ACTION_BAR_FADE_MS = 300;
 const TOAST_VISIBLE_MS = 2200;
 const TOAST_EXIT_MS = 300;
 
@@ -190,7 +191,7 @@ export function initLens(opts: LensUIOptions): () => void {
 
     // Update summary
     opts.summaryFields.textContent = String(data.populatedFields);
-    opts.summaryCamera.textContent = data.cameraName ?? "unknown";
+    opts.summaryCamera.textContent = data.cameraName ?? "none";
     opts.summaryGps.textContent = data.hasGps ? "yes" : "no";
     opts.summaryGps.classList.toggle("lens-gps-yes", data.hasGps);
     opts.summaryGps.classList.toggle("lens-gps-no", !data.hasGps);
@@ -229,7 +230,7 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.loadingIndicator.style.display = "none";
     setTimeout(() => {
       if (!destroyed) opts.actionsBar.style.display = "none";
-    }, 300);
+    }, ACTION_BAR_FADE_MS);
     opts.uploadZone.style.display = "";
     opts.fileInput.value = "";
   }
