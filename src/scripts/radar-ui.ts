@@ -1574,6 +1574,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
     for (const row of mapRows) {
       const target = row.target;
+      if (target.id === "self:device") continue;
       const staleFactor = clamp(1 - row.ageMs / (STALE_TARGET_MS + LOST_CONTACT_RETENTION_MS), 0.12, 1);
       const isSelected = selectedContactId === target.id;
       const isHovered = hoveredContactId === target.id;
@@ -1770,6 +1771,13 @@ export function initRadar(opts: RadarUIOptions): () => void {
     context.beginPath();
     context.arc(cx, cy, 3.5, 0, Math.PI * 2);
     context.fill();
+
+    // Map center hit region for self device
+    canvasTargetHits.set("self:device", {
+      x: cx,
+      y: cy,
+      r: 12,
+    });
 
   }
 
@@ -2623,19 +2631,33 @@ export function initRadar(opts: RadarUIOptions): () => void {
         ? avgRtt
         : smoothedRttMs * 0.6 + avgRtt * 0.4;
 
-      const syntheticRssi = rttToSyntheticRssi(smoothedRttMs);
-      const rttDisplay = Math.round(smoothedRttMs);
-
-      upsertTarget({
-        id: "net:timing:rtt",
-        label: `network rtt ${rttDisplay}ms`,
-        protocol: "wifi",
-        evidence: "inferred",
-        rssi: syntheticRssi,
-        txPower: DEFAULT_TX_POWER,
-        meta: `${rttSamples.length} sample${rttSamples.length !== 1 ? "s" : ""} | avg ${rttDisplay}ms | timing API`,
-      });
+      upsertSelfDevice();
     } catch { /* timing API read failed */ }
+  }
+
+  // ── Self device consolidation ──────────────────────────────────────────
+
+  function upsertSelfDevice(): void {
+    if (!isScanActive()) return;
+
+    const parts: string[] = [];
+    if (smoothedRttMs !== null) parts.push(`Net RTT ${Math.round(smoothedRttMs)}ms`);
+    if (smoothedFetchRttMs !== null) parts.push(`Fetch ${Math.round(smoothedFetchRttMs)}ms`);
+    if (smoothedDnsMs !== null) parts.push(`DNS ${Math.round(smoothedDnsMs)}ms`);
+
+    // Signal strength from best available RTT
+    const bestRtt = smoothedFetchRttMs ?? smoothedRttMs ?? 0;
+    const selfRssi = bestRtt > 0 ? rttToSyntheticRssi(bestRtt) : -25;
+
+    upsertTarget({
+      id: "self:device",
+      label: "self device",
+      protocol: "self" as RadarProtocol,
+      evidence: "inferred",
+      rssi: selfRssi,
+      txPower: DEFAULT_TX_POWER,
+      meta: parts.join(" | ") || "local metrics",
+    });
   }
 
   // ── PerformanceObserver for live resource timing ───────────────────────
@@ -2669,18 +2691,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
           ? avgRtt
           : smoothedRttMs * 0.6 + avgRtt * 0.4;
 
-        const syntheticRssi = rttToSyntheticRssi(smoothedRttMs);
-        const rttDisplay = Math.round(smoothedRttMs);
-
-        upsertTarget({
-          id: "net:timing:rtt",
-          label: `network rtt ${rttDisplay}ms`,
-          protocol: "wifi",
-          evidence: "inferred",
-          rssi: syntheticRssi,
-          txPower: DEFAULT_TX_POWER,
-          meta: `live | avg ${rttDisplay}ms | resource observer`,
-        });
+        upsertSelfDevice();
       });
 
       resourceObserver.observe({ type: "resource", buffered: false });
@@ -2717,18 +2728,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
         ? rttMs
         : smoothedFetchRttMs * 0.5 + rttMs * 0.5;
 
-      const syntheticRssi = rttToSyntheticRssi(smoothedFetchRttMs);
-      const display = Math.round(smoothedFetchRttMs);
-
-      upsertTarget({
-        id: "net:fetch:rtt",
-        label: `fetch rtt ${display}ms`,
-        protocol: "wifi",
-        evidence: "measured",
-        rssi: syntheticRssi,
-        txPower: DEFAULT_TX_POWER,
-        meta: `HEAD ${url.split("?")[0]} | ${display}ms | measured`,
-      });
+      upsertSelfDevice();
     } catch { /* fetch failed — offline or blocked */ }
   }
 
@@ -2767,20 +2767,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
         ? avgDns
         : smoothedDnsMs * 0.6 + avgDns * 0.4;
 
-      // DNS timing to RSSI: <5ms = local resolver (-25), 5-50ms = nearby (-40 to -55), 50ms+ = distant (-60+)
-      const dnsRssi = smoothedDnsMs <= 0 ? -25
-        : clamp(Math.round(-25 - (Math.log2(clamp(smoothedDnsMs, 1, 200)) * 5)), -80, -20);
-      const display = Math.round(smoothedDnsMs);
-
-      upsertTarget({
-        id: "net:dns:resolver",
-        label: `dns resolver ${display}ms`,
-        protocol: "wifi",
-        evidence: "inferred",
-        rssi: dnsRssi,
-        txPower: DEFAULT_TX_POWER,
-        meta: `${dnsSamples.length} lookup${dnsSamples.length !== 1 ? "s" : ""} | avg ${display}ms`,
-      });
+      upsertSelfDevice();
     } catch { /* timing API read failed */ }
   }
 
@@ -2799,6 +2786,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     startGeolocation();
     void startNfcScan();
     startResourceTimingObserver();
+    upsertSelfDevice();
   }
 
   function stopSensors(): void {

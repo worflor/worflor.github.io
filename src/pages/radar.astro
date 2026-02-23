@@ -444,13 +444,18 @@ const seo = {
     color: var(--radar-muted);
   }
 
-  .status-value,
-  .stat-number {
+  .status-value {
     font-weight: 700;
     letter-spacing: 0.02em;
     font-size: var(--text-sm);
     overflow-wrap: break-word;
     word-break: break-word;
+  }
+
+  .stat-number {
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    font-size: var(--text-sm);
   }
 
   .status-value[data-bt="no-api"],
@@ -530,6 +535,7 @@ const seo = {
     padding: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.65);
     border-radius: calc(var(--radius-lg) - 2px);
     transition: background var(--duration-normal) var(--ease-out);
+    white-space: nowrap;
   }
 
   /* stat-chip hover only on pointer devices */
