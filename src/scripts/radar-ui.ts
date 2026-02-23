@@ -124,9 +124,16 @@ interface NetworkConnectionLike {
   saveData?: boolean;
 }
 
+interface NDEFReadingEventLike extends Event {
+  serialNumber: string;
+  message: { records: Array<{ recordType: string }> };
+}
+
 interface NavigatorLike extends Navigator {
   bluetooth?: BluetoothLike;
   connection?: NetworkConnectionLike;
+  usb?: unknown;
+  serial?: unknown;
 }
 
 interface DeviceOrientationLike extends Event {
@@ -824,6 +831,7 @@ function getEventPoint(event: Event): EventPoint | null {
 
 function resolveCapabilities(nav: NavigatorLike): Capability[] {
   const bt = nav.bluetooth;
+  const hasBt = Boolean(bt);
   const hasLeScan = Boolean(bt && typeof bt.requestLEScan === "function");
   const hasPicker = Boolean(bt && typeof bt.requestDevice === "function");
   const hasNetworkInfo = Boolean(nav.connection);
@@ -834,6 +842,10 @@ function resolveCapabilities(nav: NavigatorLike): Capability[] {
   const hasEnumerateDevices = typeof nav.mediaDevices?.enumerateDevices === "function";
   let hasAls = false;
   try { hasAls = "AmbientLightSensor" in window; } catch { /* */ }
+  let hasNfc = false;
+  try { hasNfc = "NDEFReader" in window; } catch { /* */ }
+  const hasUsb = "usb" in nav;
+  const hasSerial = "serial" in nav;
 
   return [
     {
@@ -846,13 +858,21 @@ function resolveCapabilities(nav: NavigatorLike): Capability[] {
       key: "bluetooth-le-scan",
       available: hasLeScan,
       quality: hasLeScan ? "full" : "none",
-      note: hasLeScan ? "real-time advertisement RSSI stream" : "Chrome only - chrome://flags/#enable-experimental-web-platform-features",
+      note: hasLeScan
+        ? "real-time advertisement RSSI stream"
+        : hasBt
+          ? "bluetooth present but passive scan not exposed (device picker may still work)"
+          : "Web Bluetooth not available in this browser",
     },
     {
       key: "bluetooth-device-picker",
       available: hasPicker,
       quality: hasPicker ? "partial" : "none",
-      note: hasPicker ? "manual device selection via browser dialog" : "Chrome/Edge only - not supported in Firefox or Safari",
+      note: hasPicker
+        ? "manual device selection via browser dialog"
+        : hasBt
+          ? "bluetooth present but requestDevice not exposed"
+          : "Web Bluetooth not available in this browser",
     },
     {
       key: "network-information",
@@ -889,6 +909,24 @@ function resolveCapabilities(nav: NavigatorLike): Capability[] {
       available: hasAls,
       quality: hasAls ? "partial" : "none",
       note: hasAls ? "environment lux reading" : "sensor not exposed",
+    },
+    {
+      key: "web-nfc",
+      available: hasNfc,
+      quality: hasNfc ? "partial" : "none",
+      note: hasNfc ? "NFC tag reading via NDEFReader" : "NDEFReader not available",
+    },
+    {
+      key: "web-usb",
+      available: hasUsb,
+      quality: hasUsb ? "partial" : "none",
+      note: hasUsb ? "USB device access available" : "navigator.usb not available",
+    },
+    {
+      key: "web-serial",
+      available: hasSerial,
+      quality: hasSerial ? "partial" : "none",
+      note: hasSerial ? "serial port access available" : "navigator.serial not available",
     },
     {
       key: "wifi-passive-scan",
@@ -2136,7 +2174,11 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
   async function startBluetoothScan(): Promise<void> {
     if (!bluetooth || typeof bluetooth.requestLEScan !== "function") {
-      pushEvent("LE scan unavailable | Chrome only | enable chrome://flags/#enable-experimental-web-platform-features");
+      pushEvent(
+        bluetooth
+          ? "LE scan not exposed by this browser (try device picker instead)"
+          : "Web Bluetooth not available in this browser"
+      );
       return;
     }
 
@@ -2196,7 +2238,11 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
   async function pickBluetoothDevice(): Promise<void> {
     if (!bluetooth || typeof bluetooth.requestDevice !== "function") {
-      pushEvent("bluetooth device picker not available");
+      pushEvent(
+        bluetooth
+          ? "device picker not exposed by this browser"
+          : "Web Bluetooth not available in this browser"
+      );
       return;
     }
 
@@ -2331,6 +2377,44 @@ export function initRadar(opts: RadarUIOptions): () => void {
     }
   }
 
+  // ── NFC ───────────────────────────────────────────────────────────────
+
+  async function startNfcScan(): Promise<void> {
+    if (!("NDEFReader" in window)) return;
+    try {
+      type NDEFReaderLike = EventTarget & {
+        scan: (opts?: { signal?: AbortSignal }) => Promise<void>;
+      };
+      const Ctor = (window as unknown as { NDEFReader: new () => NDEFReaderLike }).NDEFReader;
+      const reader = new Ctor();
+      const abort = new AbortController();
+      await reader.scan({ signal: abort.signal });
+      const handler = (event: Event) => {
+        if (!isScanActive()) return;
+        const e = event as unknown as NDEFReadingEventLike;
+        const serial = e.serialNumber || "unknown";
+        const records = e.message?.records?.length ?? 0;
+        upsertTarget({
+          id: `nfc:${serial}`,
+          label: `NFC ${serial.slice(0, 8)}`,
+          protocol: "radio",
+          evidence: "measured",
+          rssi: -20,
+          txPower: -10,
+          meta: `nfc | contact range | ${records} record${records !== 1 ? "s" : ""}`,
+        });
+      };
+      reader.addEventListener("reading", handler);
+      registerCleanup(sensorCleanups, () => {
+        reader.removeEventListener("reading", handler);
+        abort.abort();
+      });
+      pushEvent("NFC scan active");
+    } catch {
+      // permission denied or unavailable — silent
+    }
+  }
+
   // ── Geolocation ────────────────────────────────────────────────────────
 
   function startGeolocation(): void {
@@ -2366,6 +2450,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     startCompass();
     startAmbientLight();
     startGeolocation();
+    void startNfcScan();
   }
 
   function stopSensors(): void {

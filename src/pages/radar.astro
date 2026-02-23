@@ -16,7 +16,7 @@ const seo = {
       <p class="radar-tagline">local signal detection</p>
     </section>
 
-    <section class="mt-[var(--space-md)] content-section">
+    <section class="mt-[var(--space-md)] content-section radar-status-section">
       <div class="radar-status surface-raised">
         <div class="status-item">
           <span class="status-label">mode</span>
@@ -33,7 +33,7 @@ const seo = {
       </div>
     </section>
 
-    <section class="mt-[var(--space-sm)] content-section">
+    <section class="mt-[var(--space-sm)] content-section radar-sensors-section">
       <div class="radar-sensors surface-raised">
         <div class="status-item">
           <span class="status-label">position</span>
@@ -50,7 +50,7 @@ const seo = {
       </div>
     </section>
 
-    <section class="mt-[var(--space-sm)] content-section">
+    <section class="mt-[var(--space-sm)] content-section radar-canvas-section">
       <div class="radar-scope-wrap surface-raised">
         <canvas id="radar-canvas" class="radar-canvas" aria-label="Signal map" role="img"></canvas>
       </div>
@@ -694,6 +694,29 @@ const seo = {
     .radar-sensors {
       grid-template-columns: 1fr;
       justify-items: start;
+      gap: 0.35rem;
+    }
+
+    .status-item {
+      display: flex;
+      flex-direction: row;
+      align-items: baseline;
+      gap: 0.6em;
+      text-align: left;
+    }
+
+    .status-label {
+      flex: 0 0 auto;
+      min-width: 5.5em;
+    }
+
+    .status-value {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      text-align: left;
     }
 
     .radar-stats {
@@ -725,6 +748,29 @@ const seo = {
       .radar-sensors {
         grid-template-columns: 1fr;
         justify-items: start;
+        gap: 0.35rem;
+      }
+
+      .status-item {
+        display: flex;
+        flex-direction: row;
+        align-items: baseline;
+        gap: 0.6em;
+        text-align: left;
+      }
+
+      .status-label {
+        flex: 0 0 auto;
+        min-width: 5.5em;
+      }
+
+      .status-value {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        text-align: left;
       }
 
       .radar-stats {
@@ -739,6 +785,20 @@ const seo = {
         grid-column: span 1;
       }
     }
+  }
+
+  @media (max-width: 480px) {
+    .radar-page {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Push all sections to the back; named sections get explicit order */
+    .radar-page > * { order: 10; }
+    .radar-intro        { order: 1; }
+    .radar-canvas-section { order: 2; }
+    .radar-status-section { order: 3; }
+    .radar-sensors-section { order: 4; }
   }
 
   @media (max-width: 520px) {
