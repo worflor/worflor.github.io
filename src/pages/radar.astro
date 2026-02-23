@@ -802,9 +802,33 @@ const seo = {
     font-size: calc(var(--text-sm) * 0.9);
     color: var(--radar-muted);
     display: grid;
-    gap: 0.1rem;
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    gap: 0.15rem 0.6rem;
     line-height: 1.5;
     word-break: break-word;
+  }
+
+  .feed-list-contacts :global(.detail-header) {
+    grid-column: 1 / -1;
+    margin-top: 0.4rem;
+    margin-bottom: 0.1rem;
+    padding-bottom: 0.15rem;
+    border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    color: var(--color-text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: calc(var(--text-sm) * 0.75);
+    letter-spacing: 0.05em;
+  }
+
+  .feed-list-contacts :global(.detail-header:first-child) {
+    margin-top: 0;
+  }
+
+  .feed-list-contacts :global(.detail-item strong) {
+    color: var(--color-text-muted);
+    font-weight: 600;
+    margin-right: 0.3rem;
   }
 
   .feed-list-lock :global(li.lock-primary) {

@@ -699,6 +699,7 @@ function computeTargetPriority(target: RadarTarget, now: number): number {
 }
 
 function matchesTriage(row: ContactRow, triage: RadarTriageModel): boolean {
+  if (row.target.id === "self:device") return true;
   if (triage.protocol !== "all" && row.target.protocol !== triage.protocol) return false;
   if (triage.evidence !== "all" && row.target.evidence !== triage.evidence) return false;
   if (triage.state !== "all" && row.state !== triage.state) return false;
@@ -746,7 +747,7 @@ function resolveFilteredRows(
 ): { allRows: ContactRow[]; filteredRows: ContactRow[] } {
   const allRows: ContactRow[] = [];
   for (const target of targets) {
-    if (target.protocol === "self") continue;
+    if (target.protocol === "self" && target.id !== "self:device") continue;
     const ageMs = Math.max(0, now - target.lastSeen);
     const row: ContactRow = {
       target,
@@ -1084,6 +1085,9 @@ export function initRadar(opts: RadarUIOptions): () => void {
   let smoothedRttMs: number | null = null;
   let smoothedFetchRttMs: number | null = null;
   let smoothedDnsMs: number | null = null;
+  let selfUplink: string | null = null;
+  const selfHardware = new Map<string, string>();
+  const selfRoutes = new Set<string>();
   let selectedContactId: string | null = null;
   let hoveredContactId: string | null = null;
   const canvasTargetHits = new Map<string, { x: number; y: number; r: number }>();
@@ -1105,6 +1109,12 @@ export function initRadar(opts: RadarUIOptions): () => void {
   const context = maybeContext;
 
   // ── Helpers ────────────────────────────────────────────────────────────
+
+  function escapeText(s: string): string {
+    const div = document.createElement("div");
+    div.textContent = s;
+    return div.innerHTML;
+  }
 
   function on(
     target: EventTarget,
@@ -1483,6 +1493,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     const redRgb = styles.getPropertyValue("--chromatic-red").trim() || "255 0 0";
 
     context.clearRect(0, 0, cssWidth, cssHeight);
+    canvasTargetHits.clear();
 
     const ringDistances = buildRangeRings(mapRangeM);
     const fontSize = Math.max(8, cssWidth * 0.024);
@@ -1772,6 +1783,16 @@ export function initRadar(opts: RadarUIOptions): () => void {
     context.arc(cx, cy, 3.5, 0, Math.PI * 2);
     context.fill();
 
+    // Visual selection feedback for the center dot
+    if (selectedContactId === "self:device" || hoveredContactId === "self:device") {
+      const isSelected = selectedContactId === "self:device";
+      context.strokeStyle = `rgb(${cyanRgb} / ${isSelected ? 0.5 : 0.3})`;
+      context.lineWidth = 1;
+      context.beginPath();
+      context.arc(cx, cy, 3.5 + (isSelected ? 4 : 3), 0, Math.PI * 2);
+      context.stroke();
+    }
+
     // Map center hit region for self device
     canvasTargetHits.set("self:device", {
       x: cx,
@@ -1779,6 +1800,21 @@ export function initRadar(opts: RadarUIOptions): () => void {
       r: 12,
     });
 
+    // Draw hover label for self device if needed
+    const selfTarget = targets.get("self:device");
+    if (selfTarget) {
+      const isSelected = selectedContactId === "self:device";
+      const isHovered = hoveredContactId === "self:device";
+      if (isSelected || isHovered) {
+        context.font = `${fontSize}px "Inter", system-ui, sans-serif`;
+        context.textAlign = "center";
+        context.textBaseline = "bottom";
+        const selfLabel = "self device";
+        const labelY = cy - 8;
+        context.fillStyle = isSelected ? `rgb(${cyanRgb} / 0.9)` : `rgb(${textRgb} / 0.72)`;
+        context.fillText(selfLabel, cx, labelY);
+      }
+    }
   }
 
   function renderStats(): void {
@@ -1813,6 +1849,117 @@ export function initRadar(opts: RadarUIOptions): () => void {
     opts.measuredEl.textContent = String(measured);
     opts.inferredEl.textContent = String(inferred);
     opts.nearestEl.textContent = nearest === null ? "--" : formatDistance(nearest);
+  }
+
+  function renderContactDetailHtml(row: ContactRow, now: number): string {
+    const target = row.target;
+    const isSelected = selectedContactId === target.id;
+    if (!isSelected) return "";
+
+    const lines: string[] = [];
+    if (target.id === "self:device") {
+      lines.push(`<div class="detail-header">network</div>`);
+      if (smoothedRttMs !== null) lines.push(`<div class="detail-item"><strong>rtt</strong> ${Math.round(smoothedRttMs)}ms</div>`);
+      if (smoothedFetchRttMs !== null) lines.push(`<div class="detail-item"><strong>fetch rtt</strong> ${Math.round(smoothedFetchRttMs)}ms</div>`);
+      if (smoothedDnsMs !== null) lines.push(`<div class="detail-item"><strong>dns timing</strong> ${Math.round(smoothedDnsMs)}ms</div>`);
+      if (selfUplink) lines.push(`<div class="detail-item"><strong>uplink</strong> ${selfUplink}</div>`);
+
+      if (selfHardware.size > 0) {
+        lines.push(`<div class="detail-header">hardware</div>`);
+        for (const [kind, val] of selfHardware) {
+          lines.push(`<div class="detail-item"><strong>${kind}</strong> ${val}</div>`);
+        }
+      }
+
+      if (selfRoutes.size > 0) {
+        lines.push(`<div class="detail-header">interfaces</div>`);
+        for (const route of selfRoutes) {
+          lines.push(`<div class="detail-item">${route}</div>`);
+        }
+      }
+    } else {
+      const stateLabel = formatContactState(row.state);
+      const activityLabel = row.active ? "active" : "inactive";
+      const conf = Math.round(target.confidence * 100);
+      const stateAgeSec = Math.max(0, Math.floor((now - target.stateSince) / 1000));
+      const bearingDeg = angleRadToBearingDeg(target.angleRad);
+      const cardinal = bearingToCardinal(bearingDeg);
+      const trend = target.trend === "unknown" ? "unknown" : target.trend;
+
+      lines.push(`<div class="detail-header">lifecycle</div>`);
+      lines.push(`<div class="detail-item"><strong>state</strong> ${stateLabel}</div>`);
+      lines.push(`<div class="detail-item"><strong>age</strong> ${stateAgeSec}s</div>`);
+      lines.push(`<div class="detail-item"><strong>activity</strong> ${activityLabel}</div>`);
+
+      lines.push(`<div class="detail-header">signal</div>`);
+      lines.push(`<div class="detail-item"><strong>rssi raw</strong> ${target.rssiRaw} dBm</div>`);
+      lines.push(`<div class="detail-item"><strong>rssi filtered</strong> ${target.rssiFiltered.toFixed(1)} dBm</div>`);
+      lines.push(`<div class="detail-item"><strong>update rate</strong> ${formatUpdateRate(target.updateHz)}</div>`);
+      lines.push(`<div class="detail-item"><strong>confidence</strong> ${conf}%</div>`);
+
+      lines.push(`<div class="detail-header">spatial</div>`);
+      lines.push(`<div class="detail-item"><strong>bearing</strong> ${Math.round(bearingDeg)}deg ${cardinal}</div>`);
+      if (target.distanceM !== null) {
+        lines.push(`<div class="detail-item"><strong>distance</strong> ${formatDistance(target.distanceM)}</div>`);
+      }
+      lines.push(`<div class="detail-item"><strong>trend</strong> ${trend}</div>`);
+    }
+
+    return `<div class="contact-detail">${lines.join("")}</div>`;
+  }
+
+  /**
+   * Renders the structured HTML for the lock panel target details.
+   * Handles the specialized 'self:device' dashboard view as well as
+   * standard kinematic/signal locking for radio/bluetooth contacts.
+   */
+  function renderLockTargetHtml(
+    row: ContactRow,
+    now: number,
+    bearingDeg: number,
+    cardinal: string,
+    relative: string | null,
+    rangeLabel: string,
+    sigmaLabel: string,
+    stateLabel: string,
+    stateAge: number,
+    activityLabel: string,
+  ): string {
+    const target = row.target;
+    const conf = Math.round(target.confidence * 100);
+    const priority = Math.round(row.priority * 100);
+    const ageSec = Math.max(0, Math.floor((now - target.lastSeen) / 1000));
+    const trend = target.trend === "unknown" ? "unknown" : target.trend;
+
+    if (target.id === "self:device") {
+      const parts = [
+        `<li class="lock-primary"><strong>lock self device</strong> | ${target.protocol} | ${rangeLabel} | ${stateLabel} | ${activityLabel}</li>`,
+      ];
+      if (smoothedRttMs !== null || selfUplink) {
+        let net = `<strong>network</strong> `;
+        if (smoothedRttMs !== null) net += `rtt ${Math.round(smoothedRttMs)}ms | `;
+        if (selfUplink) net += `uplink ${selfUplink}`;
+        parts.push(`<li class="lock-secondary">${net.replace(/ \| $/, "")}</li>`);
+      }
+      if (selfHardware.size > 0) {
+        const hwCount = Array.from(selfHardware.values()).join(" | ");
+        parts.push(`<li class="lock-secondary"><strong>hardware</strong> ${hwCount}</li>`);
+      }
+      if (selfRoutes.size > 0) {
+        parts.push(`<li class="lock-secondary"><strong>interfaces</strong> ${Array.from(selfRoutes).join(" | ")}</li>`);
+      }
+      return parts.join("");
+    }
+
+    const lines = [
+      `<li class="lock-primary"><strong>lock ${escapeText(target.label)}</strong> | ${target.protocol} | ${rangeLabel}${sigmaLabel} | ${Math.round(bearingDeg)}deg ${cardinal}${relative ? ` | ${relative}` : ""} | ${stateLabel} ${stateAge}s | ${activityLabel} | ${trend}</li>`,
+      `<li class="lock-secondary"><strong>signal</strong> rssi ${Math.round(target.rssiFiltered)} dBm | sigma ${target.rssiSigma.toFixed(1)} dB | conf ${conf}% | pri ${priority}</li>`,
+      `<li class="lock-secondary"><strong>kinematics</strong> ${escapeText(formatRate(target.distanceRateMps))} | update ${escapeText(formatUpdateRate(target.updateHz))} | age ${ageSec}s</li>`,
+    ];
+    if (target.meta) {
+      lines.push(`<li class="lock-secondary"><strong>meta</strong> ${escapeText(target.meta)}</li>`);
+    }
+    return lines.join("");
   }
 
   function renderContacts(): void {
@@ -1854,39 +2001,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
         const trend = target.trend === "unknown" ? "unknown" : target.trend;
         const stateLabel = formatContactState(row.state);
         const activityLabel = row.active ? "active" : "inactive";
-
-        let detail = "";
-        if (isSelected) {
-          const lines: string[] = [];
-          lines.push(`state: ${stateLabel} (${stateAgeSec}s)`);
-          lines.push(`activity: ${activityLabel}`);
-          lines.push(`rssi raw: ${target.rssiRaw} dBm`);
-          lines.push(`rssi filtered: ${target.rssiFiltered.toFixed(1)} dBm`);
-          lines.push(`rssi sigma: ${target.rssiSigma.toFixed(2)} dB`);
-          lines.push(`tx power: ${target.txPower} dBm`);
-          lines.push(`samples: ${target.stats.count}`);
-          lines.push(`variance: ${variance(target.stats).toFixed(2)}`);
-          lines.push(`update rate: ${formatUpdateRate(target.updateHz)}`);
-          lines.push(`range rate: ${formatRate(target.distanceRateMps)}`);
-          lines.push(`trend: ${trend}`);
-          lines.push(`priority: ${priority}pct`);
-          lines.push(`bearing: ${Math.round(bearingDeg)}deg ${cardinal}`);
-          if (relativeLabel) lines.push(`relative: ${relativeLabel}`);
-          lines.push(`evidence: ${target.evidence}`);
-          if (target.distanceM !== null) {
-            lines.push(`distance: ${formatDistance(target.distanceM)}`);
-          }
-          if (target.sigmaM !== null) {
-            lines.push(`distance sigma: +/-${target.sigmaM.toFixed(2)}m`);
-          }
-          lines.push(`confidence: ${conf}%`);
-          lines.push(`first seen: ${formatTime(target.firstSeen)}`);
-          lines.push(`last seen: ${formatTime(target.lastSeen)} (${ageSec}s ago)`);
-          lines.push(`angle: ${Math.round((target.angleRad * 180) / Math.PI)}deg`);
-          if (target.meta) lines.push(`meta: ${target.meta}`);
-
-          detail = `<div class="contact-detail">${lines.map((line) => `<div>${escapeText(line)}</div>`).join("")}</div>`;
-        }
+        const detail = renderContactDetailHtml(row, now);
 
         if (target.evidence === "measured" && target.distanceM !== null && target.sigmaM !== null) {
           const summaryParts = [
@@ -1996,15 +2111,18 @@ export function initRadar(opts: RadarUIOptions): () => void {
     const stateAge = Math.max(0, Math.floor((now - selectedTarget.stateSince) / 1000));
     const activityLabel = selectedRow.active ? "active" : "inactive";
 
-    const lines = [
-      `<li class="lock-primary"><strong>lock ${escapeText(selectedTarget.label)}</strong> | ${selectedTarget.protocol} | ${rangeLabel}${sigmaLabel} | ${Math.round(bearingDeg)}deg ${cardinal}${relative ? ` | ${relative}` : ""} | ${stateLabel} ${stateAge}s | ${activityLabel} | ${trend}</li>`,
-      `<li class="lock-secondary"><strong>signal</strong> rssi ${Math.round(selectedTarget.rssiFiltered)} dBm | sigma ${selectedTarget.rssiSigma.toFixed(1)} dB | conf ${conf}% | pri ${priority}</li>`,
-      `<li class="lock-secondary"><strong>kinematics</strong> ${escapeText(formatRate(selectedTarget.distanceRateMps))} | update ${escapeText(formatUpdateRate(selectedTarget.updateHz))} | age ${ageSec}s</li>`,
-    ];
-    if (selectedTarget.meta) {
-      lines.push(`<li class="lock-secondary"><strong>meta</strong> ${escapeText(selectedTarget.meta)}</li>`);
-    }
-    opts.lockEl.innerHTML = lines.join("");
+    opts.lockEl.innerHTML = renderLockTargetHtml(
+      selectedRow,
+      now,
+      bearingDeg,
+      cardinal,
+      relative,
+      rangeLabel,
+      sigmaLabel,
+      stateLabel,
+      stateAge,
+      activityLabel
+    );
   }
 
   function renderEvents(): void {
@@ -2111,15 +2229,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
     if (metrics.length === 0) return;
 
     const typeKey = connType ?? effectiveType ?? "unknown";
-    upsertTarget({
-      id: `net:uplink:${typeKey}`,
-      label: `uplink ${typeKey}`,
-      protocol: "wifi",
-      evidence: "inferred",
-      rssi: inferredRssi ?? -60,
-      txPower: DEFAULT_TX_POWER,
-      meta: metrics.join(" | "),
-    });
+    selfUplink = `${typeKey} (${metrics.join(" | ")})`;
+    upsertSelfDevice();
   }
 
   async function runIceProbe(): Promise<void> {
@@ -2173,42 +2284,12 @@ export function initRadar(opts: RadarUIOptions): () => void {
           metaParts.push(parsed.protocol);
           metaParts.push(`port ${parsed.port}`);
 
-          if (parsed.isIp) {
-            const addr = parsed.address;
-            const ipClass = classifyIp(addr);
-            if (ipClass === "loopback") return;
-            const isPrivate = ipClass === "private";
-            ipCount += 1;
-
-            metaParts.push(addr);
-
-            upsertTarget({
-              id: `route:${addr}`,
-              label: isPrivate ? "local route" : "wan route",
-              protocol: isPrivate ? "wifi" : "radio",
-              evidence: "inferred",
-              rssi: isPrivate ? -52 : -74,
-              txPower: DEFAULT_TX_POWER,
-              meta: metaParts.join(" | "),
-            });
-          } else if (parsed.isMdns) {
-            const label = parsed.type === "srflx" ? "reflexive route"
-              : parsed.type === "relay" ? "relay route"
-                : "local interface";
-            const mdnsBucket = `${parsed.type}:${parsed.protocol}:port${parsed.port}`;
-
-            metaParts.push(parsed.address);
-
-            upsertTarget({
-              id: `route:mdns:${mdnsBucket}`,
-              label,
-              protocol: "wifi",
-              evidence: "inferred",
-              rssi: parsed.type === "host" ? -48 : -62,
-              txPower: DEFAULT_TX_POWER,
-              meta: metaParts.join(" | "),
-            });
+          if (parsed.isMdns) {
+            selfRoutes.add(`mdns:${parsed.address}`);
+          } else {
+            selfRoutes.add(parsed.address);
           }
+          upsertSelfDevice();
         });
 
         peer.addEventListener("icegatheringstatechange", () => {
@@ -2272,23 +2353,16 @@ export function initRadar(opts: RadarUIOptions): () => void {
       for (const d of devices) counts[d.kind] = (counts[d.kind] ?? 0) + 1;
       for (const [kind, count] of Object.entries(counts)) {
         const kindLabel = kind === "audioinput"
-          ? "audio input"
+          ? "mic"
           : kind === "audiooutput"
-            ? "audio output"
+            ? "speaker"
             : kind === "videoinput"
-              ? "video input"
+              ? "cam"
               : kind;
 
-        upsertTarget({
-          id: `hw:${kind}`,
-          label: `${count}x ${kindLabel}`,
-          protocol: "radio",
-          evidence: "inferred",
-          rssi: -30, // local hardware, treat as very close
-          txPower: DEFAULT_TX_POWER,
-          meta: `${count} local device${count > 1 ? "s" : ""} | ${kindLabel}`,
-        });
+        selfHardware.set(kind, `${count}x ${kindLabel}`);
       }
+      upsertSelfDevice();
     } catch { /* permission denied or unavailable */ }
   }
 
@@ -2637,13 +2711,17 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
   // ── Self device consolidation ──────────────────────────────────────────
 
+  /**
+   * Consolidates local environmental signals (network RTT, uplink status,
+   * hardware sensors, and interface routes) into the central 'self:device' contact.
+   * This ensures the radar center dot is interactive and descriptive.
+   */
   function upsertSelfDevice(): void {
-    if (!isScanActive()) return;
+    if (destroyed) return;
 
-    const parts: string[] = [];
-    if (smoothedRttMs !== null) parts.push(`Net RTT ${Math.round(smoothedRttMs)}ms`);
-    if (smoothedFetchRttMs !== null) parts.push(`Fetch ${Math.round(smoothedFetchRttMs)}ms`);
-    if (smoothedDnsMs !== null) parts.push(`DNS ${Math.round(smoothedDnsMs)}ms`);
+    const summaryParts: string[] = [];
+    if (smoothedRttMs !== null) summaryParts.push(`${Math.round(smoothedRttMs)}ms`);
+    if (selfUplink) summaryParts.push(selfUplink);
 
     // Signal strength from best available RTT
     const bestRtt = smoothedFetchRttMs ?? smoothedRttMs ?? 0;
@@ -2656,7 +2734,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
       evidence: "inferred",
       rssi: selfRssi,
       txPower: DEFAULT_TX_POWER,
-      meta: parts.join(" | ") || "local metrics",
+      meta: summaryParts.join(" | ") || "local metrics",
     });
   }
 
