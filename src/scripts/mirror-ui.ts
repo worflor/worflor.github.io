@@ -9,6 +9,7 @@ import {
   type DataCategory,
   type DataPoint,
   type MirrorData,
+  type SignalTier,
 } from "./mirror-collectors";
 
 // ─── Options ──────────────────────────────────────────────────────────────────
@@ -578,6 +579,73 @@ interface DetailChip {
   text: string;
   tier: DetailChipTier;
   tint: string;
+  title?: string;
+}
+
+const SIGNAL_TIER_TITLES: Record<SignalTier, string> = {
+  core: "High-signal and generally fingerprint-relevant.",
+  context: "Useful context, but often session-variant or medium-confidence.",
+  deep: "Interesting deep-dive signal that is often derived, legacy, or experimental.",
+};
+
+function signalTierChip(point: DataPoint): DetailChip | null {
+  const tier = point.signalTier;
+  if (!tier) return null;
+
+  const chipTier: DetailChipTier =
+    tier === "core" ? "high" : tier === "context" ? "medium" : "low";
+
+  return {
+    text: tier,
+    tier: chipTier,
+    tint: `tier_${tier}`,
+    title: SIGNAL_TIER_TITLES[tier],
+  };
+}
+
+function sourceChip(detailSource?: string): DetailChip | null {
+  if (!detailSource) return null;
+  return {
+    text: detailSource,
+    tier: "low",
+    tint: `source_${toToken(detailSource)}`,
+  };
+}
+
+function confidenceChip(confidence?: DataPoint["detailConfidence"]): DetailChip | null {
+  if (!confidence) return null;
+  const tier: DetailChipTier =
+    confidence === "high"
+      ? "high"
+      : confidence === "medium"
+        ? "medium"
+        : "low";
+  return {
+    text: `${confidence} confidence`,
+    tier,
+    tint: `confidence_${confidence}`,
+  };
+}
+
+function stabilityChip(point: DataPoint): DetailChip | null {
+  const stability = detailStabilityLabel(point);
+  if (!stability) return null;
+  const stabilityKey = point.detailStability || "stable";
+  const tier: DetailChipTier = stabilityKey === "stable" ? "high" : "medium";
+  return {
+    text: stability,
+    tier,
+    tint: `stability_${stabilityKey}`,
+  };
+}
+
+function interactiveChip(point: DataPoint): DetailChip | null {
+  if (!point.action) return null;
+  return {
+    text: "interactive",
+    tier: "medium",
+    tint: "action_interactive",
+  };
 }
 
 function toToken(input: string): string {
@@ -589,44 +657,13 @@ function toToken(input: string): string {
 
 function renderDetail(point: DataPoint): HTMLElement | null {
   const chips: DetailChip[] = [];
-  if (point.detailSource) {
-    chips.push({
-      text: point.detailSource,
-      tier: "low",
-      tint: `source_${toToken(point.detailSource)}`,
-    });
-  }
-  if (point.detailConfidence) {
-    const confidenceKey = point.detailConfidence;
-    const tier: DetailChipTier =
-      confidenceKey === "high"
-        ? "high"
-        : confidenceKey === "medium"
-          ? "medium"
-          : "low";
-    chips.push({
-      text: `${confidenceKey} confidence`,
-      tier,
-      tint: `confidence_${confidenceKey}`,
-    });
-  }
-  const stability = detailStabilityLabel(point);
-  if (stability) {
-    const stabilityKey = point.detailStability || "stable";
-    const tier: DetailChipTier = stabilityKey === "stable" ? "high" : "medium";
-    chips.push({
-      text: stability,
-      tier,
-      tint: `stability_${stabilityKey}`,
-    });
-  }
-  if (point.action) {
-    chips.push({
-      text: "interactive",
-      tier: "medium",
-      tint: "action_interactive",
-    });
-  }
+  const pushChip = (chip: DetailChip | null) => { if (chip) chips.push(chip); };
+
+  pushChip(sourceChip(point.detailSource));
+  pushChip(confidenceChip(point.detailConfidence));
+  pushChip(stabilityChip(point));
+  pushChip(interactiveChip(point));
+  pushChip(signalTierChip(point));
 
   if (chips.length === 0) return null;
 
@@ -637,6 +674,7 @@ function renderDetail(point: DataPoint): HTMLElement | null {
     const chipEl = el("span", "dp-detail-chip", chipText);
     chipEl.setAttribute("data-chip-tier", chip.tier);
     chipEl.setAttribute("data-chip-tint", chip.tint);
+    if (chip.title) chipEl.title = chip.title;
     meta.appendChild(chipEl);
   }
   detail.appendChild(meta);
@@ -748,6 +786,7 @@ function renderDataPoint(
 ): HTMLElement {
   const row = el("div", "dp-row");
   row.dataset.id = point.id;
+  row.dataset.signalTier = point.signalTier ?? "context";
 
   const header = el("div", "dp-header");
   const label = el("span", "dp-label");

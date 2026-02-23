@@ -9,6 +9,7 @@
 export type CollectionStatus = "pending" | "resolved" | "unavailable";
 export type DetailConfidence = "high" | "medium" | "low";
 export type DetailStability = "stable" | "session" | "live";
+export type SignalTier = "core" | "context" | "deep";
 
 export interface DataPoint {
   id: string;
@@ -23,6 +24,7 @@ export interface DataPoint {
   detailSource?: string;
   detailConfidence?: DetailConfidence;
   detailStability?: DetailStability;
+  signalTier?: SignalTier;
 }
 
 export interface DataCategory {
@@ -731,6 +733,11 @@ interface ConnectionProbeOptions {
   includeDownlink?: boolean;
 }
 
+interface ConnectionPointBuildOptions {
+  includePending: boolean;
+  includeUnavailableSaveData: boolean;
+}
+
 const CONNECTION_RTT_PROBE_URL = "/favicon.svg";
 const CONNECTION_DOWNLINK_PROBE_URL = "/images/placeholder-2.webp";
 const CONNECTION_RTT_SAMPLE_COUNT = 3;
@@ -927,6 +934,105 @@ function annotateMediaQueryDerivedPoint(point: DataPoint): DataPoint {
   };
 }
 
+function selectConnectionPoint<T extends string | number>(
+  value: T | null,
+  options: {
+    nativeHasValue: boolean;
+    includePending: boolean;
+    pendingPoint: () => DataPoint;
+    nativePoint: (resolvedValue: T) => DataPoint;
+    probePoint: (resolvedValue: T) => DataPoint;
+  },
+): DataPoint | null {
+  if (value === null) {
+    return options.includePending ? options.pendingPoint() : null;
+  }
+  return options.nativeHasValue ? options.nativePoint(value) : options.probePoint(value);
+}
+
+function buildConnectionPoints(
+  native: NativeConnectionSnapshot,
+  probe: ConnectionProbeSnapshot | null,
+  options: ConnectionPointBuildOptions,
+): DataPoint[] {
+  const points: DataPoint[] = [];
+
+  const typeValue = native.type ?? probe?.type ?? null;
+  const downlinkValue = native.downlinkMbps ?? probe?.downlinkMbps ?? null;
+  const downlinkMaxValue = native.downlinkMaxMbps ?? probe?.downlinkMaxMbps ?? downlinkValue;
+  const rttValue = native.rttMs ?? probe?.rttMs ?? null;
+  const saveDataValue = resolveSaveDataPreference(native.saveData);
+
+  const typePoint = selectConnectionPoint(typeValue, {
+    nativeHasValue: native.type !== null,
+    includePending: options.includePending,
+    pendingPoint: () => pendingPt("conn.type", "Connection Type", "measuring...", "Inferring connection medium from active fetch timing probes."),
+    nativePoint: (resolvedValue) => pt("conn.type", "Connection Type", resolvedValue, "Physical medium - wifi, cellular, ethernet, bluetooth, etc."),
+    probePoint: (resolvedValue) => annotateProbeDerivedPoint(
+      pt("conn.type", "Connection Type", resolvedValue, "Inferred connection medium from active timing probes."),
+      "session",
+    ),
+  });
+  if (typePoint) points.push(typePoint);
+
+  const downlinkPoint = selectConnectionPoint(
+    downlinkValue != null ? roundTo(downlinkValue, 2) : null,
+    {
+      nativeHasValue: native.downlinkMbps !== null,
+      includePending: options.includePending,
+      pendingPoint: () => pendingPt("conn.downlink", "Downlink (Mbps)", "measuring...", "Measured from active same-origin transfer timings.", false, true),
+      nativePoint: (resolvedValue) => pt("conn.downlink", "Downlink (Mbps)", resolvedValue, "Estimated downstream bandwidth.", false, true),
+      probePoint: (resolvedValue) => annotateProbeDerivedPoint(
+        pt("conn.downlink", "Downlink (Mbps)", resolvedValue, "Measured downstream throughput from active same-origin transfers.", false, true),
+      ),
+    },
+  );
+  if (downlinkPoint) points.push(downlinkPoint);
+
+  const downlinkMaxPoint = selectConnectionPoint(
+    downlinkMaxValue != null ? roundTo(downlinkMaxValue, 2) : null,
+    {
+      nativeHasValue: native.downlinkMaxMbps !== null,
+      includePending: options.includePending,
+      pendingPoint: () => pendingPt("conn.downlinkMax", "Max Downlink (Mbps)", "measuring...", "Highest observed downlink speed from active probe samples."),
+      nativePoint: (resolvedValue) => pt("conn.downlinkMax", "Max Downlink (Mbps)", resolvedValue, "Maximum downlink speed of the current connection technology."),
+      probePoint: (resolvedValue) => annotateProbeDerivedPoint(
+        pt("conn.downlinkMax", "Max Downlink (Mbps)", resolvedValue, "Highest observed downlink throughput during this session."),
+        "session",
+      ),
+    },
+  );
+  if (downlinkMaxPoint) points.push(downlinkMaxPoint);
+
+  const rttPoint = selectConnectionPoint(
+    rttValue != null ? Math.max(1, Math.round(rttValue)) : null,
+    {
+      nativeHasValue: native.rttMs !== null,
+      includePending: options.includePending,
+      pendingPoint: () => pendingPt("conn.rtt", "RTT (ms)", "measuring...", "Measured round-trip timing from active same-origin requests.", false, true),
+      nativePoint: (resolvedValue) => pt("conn.rtt", "RTT (ms)", resolvedValue, "Estimated network round-trip time (general quality metric, not specific to this server).", false, true),
+      probePoint: (resolvedValue) => annotateProbeDerivedPoint(
+        pt("conn.rtt", "RTT (ms)", resolvedValue, "Measured network round-trip time from active same-origin probe requests.", false, true),
+      ),
+    },
+  );
+  if (rttPoint) points.push(rttPoint);
+
+  if (saveDataValue !== null) {
+    points.push(
+      native.saveData !== null
+        ? pt("conn.saveData", "Data Saver", saveDataValue, "Whether the user has requested reduced data usage.")
+        : annotateMediaQueryDerivedPoint(
+            pt("conn.saveData", "Data Saver", saveDataValue, "Reduced-data preference inferred from the prefers-reduced-data media query."),
+          ),
+    );
+  } else if (options.includeUnavailableSaveData) {
+    points.push(pt("conn.saveData", "Data Saver", null, "Whether the user has requested reduced data usage."));
+  }
+
+  return points;
+}
+
 async function fetchProbeSample(
   path: string,
   timeoutMs: number,
@@ -1014,72 +1120,19 @@ async function probeConnectionSnapshot(
 }
 
 function collectConnection(): DataPoint[] {
-  const p: DataPoint[] = [];
   const native = readNativeConnectionSnapshot();
   const probe = buildProbeSnapshotFromState();
 
-  p.push(pt("conn.online", "Online", navigator.onLine, "Whether the browser currently has network access.", false, true));
-  const typeValue = native.type ?? probe?.type ?? null;
-  const downlinkValue = native.downlinkMbps ?? probe?.downlinkMbps ?? null;
-  const downlinkMaxValue = native.downlinkMaxMbps ?? probe?.downlinkMaxMbps ?? downlinkValue;
-  const rttValue = native.rttMs ?? probe?.rttMs ?? null;
-  const saveDataValue = resolveSaveDataPreference(native.saveData);
-
-  p.push(
-    typeValue !== null
-      ? (native.type !== null
-          ? pt("conn.type", "Connection Type", typeValue, "Physical medium - wifi, cellular, ethernet, bluetooth, etc.")
-          : annotateProbeDerivedPoint(
-              pt("conn.type", "Connection Type", typeValue, "Inferred connection medium from active timing probes."),
-              "session",
-            ))
-      : pendingPt("conn.type", "Connection Type", "measuring...", "Inferring connection medium from active fetch timing probes."),
-  );
-  p.push(
-    downlinkValue !== null
-      ? (native.downlinkMbps !== null
-          ? pt("conn.downlink", "Downlink (Mbps)", roundTo(downlinkValue, 2), "Estimated downstream bandwidth.", false, true)
-          : annotateProbeDerivedPoint(
-              pt("conn.downlink", "Downlink (Mbps)", roundTo(downlinkValue, 2), "Measured downstream throughput from active same-origin transfers.", false, true),
-            ))
-      : pendingPt("conn.downlink", "Downlink (Mbps)", "measuring...", "Measured from active same-origin transfer timings.", false, true),
-  );
-  p.push(
-    downlinkMaxValue !== null
-      ? (native.downlinkMaxMbps !== null
-          ? pt("conn.downlinkMax", "Max Downlink (Mbps)", roundTo(downlinkMaxValue, 2), "Maximum downlink speed of the current connection technology.")
-          : annotateProbeDerivedPoint(
-              pt("conn.downlinkMax", "Max Downlink (Mbps)", roundTo(downlinkMaxValue, 2), "Highest observed downlink throughput during this session."),
-              "session",
-            ))
-      : pendingPt("conn.downlinkMax", "Max Downlink (Mbps)", "measuring...", "Highest observed downlink speed from active probe samples."),
-  );
-  p.push(
-    rttValue !== null
-      ? (native.rttMs !== null
-          ? pt("conn.rtt", "RTT (ms)", Math.max(1, Math.round(rttValue)), "Estimated network round-trip time (general quality metric, not specific to this server).", false, true)
-          : annotateProbeDerivedPoint(
-              pt("conn.rtt", "RTT (ms)", Math.max(1, Math.round(rttValue)), "Measured network round-trip time from active same-origin probe requests.", false, true),
-            ))
-      : pendingPt("conn.rtt", "RTT (ms)", "measuring...", "Measured round-trip timing from active same-origin requests.", false, true),
-  );
-  if (saveDataValue !== null) {
-    p.push(
-      native.saveData !== null
-        ? pt("conn.saveData", "Data Saver", saveDataValue, "Whether the user has requested reduced data usage.")
-        : annotateMediaQueryDerivedPoint(
-            pt("conn.saveData", "Data Saver", saveDataValue, "Reduced-data preference inferred from the prefers-reduced-data media query."),
-          ),
-    );
-  } else {
-    p.push(pt("conn.saveData", "Data Saver", null, "Whether the user has requested reduced data usage."));
-  }
-
-  return p;
+  return [
+    pt("conn.online", "Online", navigator.onLine, "Whether the browser currently has network access.", false, true),
+    ...buildConnectionPoints(native, probe, {
+      includePending: true,
+      includeUnavailableSaveData: true,
+    }),
+  ];
 }
 
 async function collectConnectionAsync(signal?: AbortSignal): Promise<DataPoint[]> {
-  const p: DataPoint[] = [];
   const native = readNativeConnectionSnapshot();
   throwIfAborted(signal);
 
@@ -1091,64 +1144,10 @@ async function collectConnectionAsync(signal?: AbortSignal): Promise<DataPoint[]
   }
   throwIfAborted(signal);
 
-  const typeValue = native.type ?? probe?.type ?? null;
-  if (typeValue !== null) {
-    p.push(
-      native.type !== null
-        ? pt("conn.type", "Connection Type", typeValue, "Physical medium - wifi, cellular, ethernet, bluetooth, etc.")
-        : annotateProbeDerivedPoint(
-            pt("conn.type", "Connection Type", typeValue, "Inferred connection medium from active timing probes."),
-            "session",
-          ),
-    );
-  }
-
-  const downlinkValue = native.downlinkMbps ?? probe?.downlinkMbps ?? null;
-  if (downlinkValue !== null) {
-    p.push(
-      native.downlinkMbps !== null
-        ? pt("conn.downlink", "Downlink (Mbps)", roundTo(downlinkValue, 2), "Estimated downstream bandwidth.", false, true)
-        : annotateProbeDerivedPoint(
-            pt("conn.downlink", "Downlink (Mbps)", roundTo(downlinkValue, 2), "Measured downstream throughput from active same-origin transfers.", false, true),
-          ),
-    );
-  }
-
-  const downlinkMaxValue = native.downlinkMaxMbps ?? probe?.downlinkMaxMbps ?? downlinkValue;
-  if (downlinkMaxValue !== null) {
-    p.push(
-      native.downlinkMaxMbps !== null
-        ? pt("conn.downlinkMax", "Max Downlink (Mbps)", roundTo(downlinkMaxValue, 2), "Maximum downlink speed of the current connection technology.")
-        : annotateProbeDerivedPoint(
-            pt("conn.downlinkMax", "Max Downlink (Mbps)", roundTo(downlinkMaxValue, 2), "Highest observed downlink throughput during this session."),
-            "session",
-          ),
-    );
-  }
-
-  const rttValue = native.rttMs ?? probe?.rttMs ?? null;
-  if (rttValue !== null) {
-    p.push(
-      native.rttMs !== null
-        ? pt("conn.rtt", "RTT (ms)", Math.max(1, Math.round(rttValue)), "Estimated network round-trip time (general quality metric, not specific to this server).", false, true)
-        : annotateProbeDerivedPoint(
-            pt("conn.rtt", "RTT (ms)", Math.max(1, Math.round(rttValue)), "Measured network round-trip time from active same-origin probe requests.", false, true),
-          ),
-    );
-  }
-
-  const saveDataValue = resolveSaveDataPreference(native.saveData);
-  if (saveDataValue !== null) {
-    p.push(
-      native.saveData !== null
-        ? pt("conn.saveData", "Data Saver", saveDataValue, "Whether the user has requested reduced data usage.")
-        : annotateMediaQueryDerivedPoint(
-            pt("conn.saveData", "Data Saver", saveDataValue, "Reduced-data preference inferred from the prefers-reduced-data media query."),
-          ),
-    );
-  }
-
-  return p;
+  return buildConnectionPoints(native, probe, {
+    includePending: false,
+    includeUnavailableSaveData: false,
+  });
 }
 
 // 
@@ -2770,96 +2769,162 @@ function detailSource(id: string): string {
   return DETAIL_SOURCE_BY_PREFIX[prefix] || "browser";
 }
 
+const DETAIL_CONFIDENCE_LOW_IDS = new Set<string>([
+  "br.ua",
+  "br.appName",
+  "br.appVersion",
+  "br.product",
+  "br.productSub",
+  "br.vendor",
+  "br.vendorSub",
+  "br.buildID",
+  "br.pluginCount",
+  "br.pluginList",
+  "br.mimeTypeCount",
+  "os.platform",
+  "gpu.vendor",
+  "gpu.renderer",
+  "api.localIP",
+  "hw.batteryLevel",
+  "hw.batteryCharging",
+  "hw.chargingTime",
+  "hw.dischargingTime",
+  "hw.touchSupport",
+]);
+
+const DETAIL_CONFIDENCE_MEDIUM_IDS = new Set<string>([
+  "fp.audioBaseLatency",
+  "fp.audioOutputLatency",
+  "fp.timerPrecision",
+  "st.storageQuota",
+  "hw.cores",
+  "hw.memory",
+]);
+
+const DETAIL_STABILITY_SESSION_IDS = new Set<string>([
+  "hw.orientation",
+  "os.mqOrientation",
+]);
+
+const DETAIL_CONFIDENCE_MEDIUM_PREFIXES = ["net.", "perf."] as const;
+const DETAIL_STABILITY_SESSION_PREFIXES = ["dt.", "perf.", "net.", "hw.viewport", "hw.window"] as const;
+
+function startsWithAny(id: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => id.startsWith(prefix));
+}
+
 function detailConfidence(point: DataPoint): DetailConfidence {
   if (point.status === "unavailable") return "low";
   if (point.status === "pending") return "low";
 
-  // --- LOW CONFIDENCE (Spoofed, Frozen, Masked, or Gated) ---
+  if (DETAIL_CONFIDENCE_LOW_IDS.has(point.id)) return "low";
 
-  // Browser: frozen/reduced legacy values (spoofed)
-  if (
-    point.id === "br.ua" ||
-    point.id === "br.appName" ||
-    point.id === "br.appVersion" ||
-    point.id === "br.product" ||
-    point.id === "br.productSub" ||
-    point.id === "br.vendor" ||
-    point.id === "br.vendorSub" ||
-    point.id === "br.buildID" ||
-    point.id === "br.pluginCount" ||
-    point.id === "br.pluginList" ||
-    point.id === "br.mimeTypeCount"
-  ) {
-    return "low";
-  }
-
-  // OS: deprecated platform string (frozen)
-  if (point.id === "os.platform") return "low";
-
-  // GPU: WEBGL_debug_renderer_info is deprecated/restricted/masked
-  if (point.id === "gpu.vendor" || point.id === "gpu.renderer") return "low";
-
-  // WebRTC local IP: masked with mDNS
-  if (point.id === "api.localIP") return "low";
-
-  // Media: permission-gated devices return empty/generic without prompt
+  // Permission-gated media device lists are often redacted until user grants access.
   if (/^media\.(cameras|microphones|speakers)$/.test(point.id)) return "low";
 
-  // Hardware: battery API is removed in many browsers or heavily restricted
-  if (point.id === "hw.batteryLevel" || point.id === "hw.batteryCharging" || point.id === "hw.chargingTime" || point.id === "hw.dischargingTime") return "low";
+  if (startsWithAny(point.id, DETAIL_CONFIDENCE_MEDIUM_PREFIXES)) return "medium";
 
-  // Hardware: touch support is notoriously unreliable on desktop
-  if (point.id === "hw.touchSupport") return "low";
-
-  // --- MEDIUM CONFIDENCE (Estimated, Rounded, or External) ---
-
-  // Network: external API-dependent, VPN/proxy/iCloud Private Relay can invalidate
-  if (point.id.startsWith("net.")) return "medium";
-
-  // Connection: fluctuating estimates and heavily rounded values
+  // Connection metrics other than explicit online/saveData are estimates.
   if (point.id.startsWith("conn.") && point.id !== "conn.online" && point.id !== "conn.saveData") return "medium";
 
-  // Performance: session-specific snapshots, intentionally rounded for security
-  if (point.id.startsWith("perf.")) return "medium";
-
-  // Fingerprints: latency/precision are estimates/rounded
-  if (point.id === "fp.audioBaseLatency" || point.id === "fp.audioOutputLatency" || point.id === "fp.timerPrecision") return "medium";
-
-  // Media: async voices, capability estimates
+  // Voice enumeration and media capabilities tend to be async, rounded, or coarse.
   if (/^media\.(voiceCount|voiceLangs|capabilities)$/.test(point.id)) return "medium";
 
-  // Storage: quota is approximate per spec and fuzzed
-  if (point.id === "st.storageQuota") return "medium";
+  if (DETAIL_CONFIDENCE_MEDIUM_IDS.has(point.id)) return "medium";
 
-  // Hardware: concurrency and memory are often capped or rounded to prevent fingerprinting
-  if (point.id === "hw.cores" || point.id === "hw.memory") return "medium";
-
-  // --- HIGH CONFIDENCE (Deterministic, Accurate) ---
   return "high";
 }
 
 function detailStability(point: DataPoint): DetailStability {
   if (point.live) return "live";
-  if (
-    point.id.startsWith("dt.") ||
-    point.id.startsWith("perf.") ||
-    point.id.startsWith("net.") ||
-    point.id.startsWith("hw.viewport") ||
-    point.id.startsWith("hw.window") ||
-    point.id === "hw.orientation" ||
-    point.id === "os.mqOrientation"
-  ) {
+
+  if (DETAIL_STABILITY_SESSION_IDS.has(point.id)) return "session";
+  if (startsWithAny(point.id, DETAIL_STABILITY_SESSION_PREFIXES)) {
     return "session";
   }
+
   return "stable";
 }
 
+const SIGNAL_TIER_BY_ID: Record<string, SignalTier> = {
+  // Core, high-signal identity fields
+  "net.ip": "core",
+  "net.coords": "core",
+  "net.postal": "core",
+  "net.isp": "core",
+  "net.asn": "core",
+  "net.country": "core",
+  "net.countryCode": "core",
+  "br.ua": "core",
+  "br.brands": "core",
+  "br.fullVersions": "core",
+  "br.language": "core",
+  "br.languages": "core",
+  "br.arch": "core",
+  "br.platformVer": "core",
+  "br.model": "core",
+  "hw.screenRes": "core",
+  "hw.dpr": "core",
+  "hw.cores": "core",
+  "hw.memory": "core",
+  "dt.timezone": "core",
+  "dt.utcOffset": "core",
+  "conn.online": "core",
+  "conn.type": "core",
+
+  // Useful context signals with meaningful session variance
+  "conn.downlink": "context",
+  "conn.downlinkMax": "context",
+  "conn.rtt": "context",
+  "conn.saveData": "context",
+
+  // Deep-dive / legacy / heavily derived
+  "fp.canvasPreview": "deep",
+  "br.appName": "deep",
+  "br.appVersion": "deep",
+  "br.product": "deep",
+  "br.productSub": "deep",
+  "br.vendor": "deep",
+  "br.vendorSub": "deep",
+  "br.buildID": "deep",
+  "br.pluginCount": "deep",
+  "br.pluginList": "deep",
+  "br.mimeTypeCount": "deep",
+  "br.javaEnabled": "deep",
+  "br.dnt": "deep",
+  "os.platform": "deep",
+  "dt.numberFormat": "deep",
+  "dt.currencyFormat": "deep",
+  "dt.percentFormat": "deep",
+  "dt.knownCalendars": "deep",
+  "dt.knownTimezones": "deep",
+  "dt.knownCurrencies": "deep",
+  "dt.knownNumberingSystems": "deep",
+  "net.currency": "deep",
+  "net.callingCode": "deep",
+};
+
+function signalTier(point: DataPoint, confidence: DetailConfidence): SignalTier {
+  const explicit = SIGNAL_TIER_BY_ID[point.id];
+  if (explicit) return explicit;
+
+  if (point.id.startsWith("theme.")) return "deep";
+  if (point.id.startsWith("fp.")) return "core";
+  if (point.privacyWeight >= 4) return "core";
+  if (confidence === "low" && point.privacyWeight <= 2) return "deep";
+  return "context";
+}
+
 function withDetail(point: DataPoint): DataPoint {
+  const resolvedSource = point.detailSource ?? detailSource(point.id);
+  const resolvedConfidence = point.detailConfidence ?? detailConfidence(point);
+  const resolvedStability = point.detailStability ?? detailStability(point);
   return {
     ...point,
-    detailSource: point.detailSource ?? detailSource(point.id),
-    detailConfidence: point.detailConfidence ?? detailConfidence(point),
-    detailStability: point.detailStability ?? detailStability(point),
+    detailSource: resolvedSource,
+    detailConfidence: resolvedConfidence,
+    detailStability: resolvedStability,
+    signalTier: point.signalTier ?? signalTier(point, resolvedConfidence),
   };
 }
 

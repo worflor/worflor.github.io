@@ -203,6 +203,9 @@ const seo = {
       calc((var(--text-sm) * 0.8125) + 0.2vw),
       var(--text-sm)
     );
+    --mirror-tier-core-rgb: 123 92 214;
+    --mirror-tier-context-rgb: 232 96 166;
+    --mirror-tier-deep-rgb: 153 151 172;
   }
 
   .mirror-intro {
@@ -675,6 +678,9 @@ const seo = {
     --mirror-depth-bg-active: rgb(var(--color-text-rgb) / 0.035);
     --mirror-depth-border: rgb(var(--color-text-rgb) / 0.08);
     --mirror-depth-text: rgb(var(--color-text-rgb) / 0.42);
+    --mirror-tier-label-opacity: 0.72;
+    --mirror-tier-explain-opacity: 0.3;
+    --mirror-tier-detail-opacity: 0.7;
 
     padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
     border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.04);
@@ -686,6 +692,18 @@ const seo = {
 
   .dp-row:last-child {
     border-bottom: none;
+  }
+
+  .dp-row[data-signal-tier="context"] {
+    --mirror-tier-label-opacity: 0.67;
+    --mirror-tier-explain-opacity: 0.27;
+    --mirror-tier-detail-opacity: 0.64;
+  }
+
+  .dp-row[data-signal-tier="deep"] {
+    --mirror-tier-label-opacity: 0.6;
+    --mirror-tier-explain-opacity: 0.23;
+    --mirror-tier-detail-opacity: 0.58;
   }
 
   .dp-row--highlight {
@@ -712,7 +730,7 @@ const seo = {
   }
 
   .dp-label {
-    color: rgb(var(--color-text-rgb) / 0.72);
+    color: rgb(var(--color-text-rgb) / var(--mirror-tier-label-opacity));
     opacity: 1;
     font-size: var(--text-sm);
     flex-shrink: 0;
@@ -817,7 +835,7 @@ const seo = {
   }
 
   .dp-explain {
-    opacity: 0.3;
+    opacity: var(--mirror-tier-explain-opacity);
     font-size: var(--mirror-supporting-text-size);
     margin-top: calc(var(--space-xs) * 0.4);
     line-height: 1.52;
@@ -836,7 +854,7 @@ const seo = {
   .dp-detail {
     margin-top: calc(var(--space-xs) * 0.56);
     min-height: 1rem;
-    opacity: 0.7;
+    opacity: var(--mirror-tier-detail-opacity);
     transform: translateY(1px);
     transition:
       opacity var(--duration-normal) var(--ease-out),
@@ -927,6 +945,12 @@ const seo = {
   .dp-detail-chip[data-chip-tint="stability_live"] { --chip-rgb: 104 166 178; }
 
   .dp-detail-chip[data-chip-tint="action_interactive"] { --chip-rgb: 96 170 190; }
+  .dp-detail-chip[data-chip-tint="tier_core"] { --chip-rgb: var(--mirror-tier-core-rgb); }
+  .dp-detail-chip[data-chip-tint="tier_context"] { --chip-rgb: var(--mirror-tier-context-rgb); }
+  .dp-detail-chip[data-chip-tint="tier_deep"] {
+    --chip-rgb: var(--mirror-tier-deep-rgb);
+    border-style: dashed;
+  }
 
   .dp-row:hover .dp-detail-chip[data-chip-tier="low"],
   .dp-row:focus-within .dp-detail-chip[data-chip-tier="low"] {
