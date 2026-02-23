@@ -509,6 +509,7 @@ const COPY_EXCLUDE_IDS = new Set(["fp.canvasPreview"]);
 
 function copyAllData(data: MirrorData, liveState: Map<string, DataPoint>): void {
   const out: Record<string, unknown> = {
+    source: "woflo.dev/mirror",
     fingerprint: data.fingerprintHash,
     collectedAt: new Date(data.collectedAt).toISOString(),
     totalPoints: data.totalPoints,
