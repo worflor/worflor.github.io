@@ -690,8 +690,8 @@ function computeTargetPriority(target: RadarTarget, now: number): number {
   const lostPenalty = target.state === "lost" ? 0.4 : 1;
   return clamp(
     (confidence * 0.37 + freshness * 0.22 + proximity * 0.18 + stability * 0.11 + stateTerm * 0.12) *
-      evidenceWeight *
-      lostPenalty,
+    evidenceWeight *
+    lostPenalty,
     0.02,
     0.99,
   );
@@ -847,6 +847,19 @@ function resolveCapabilities(nav: NavigatorLike): Capability[] {
   const hasUsb = "usb" in nav;
   const hasSerial = "serial" in nav;
 
+  const hasNavTiming = typeof performance !== "undefined" &&
+    typeof performance.getEntriesByType === "function";
+  let hasNavTimingEntries = false;
+  try {
+    if (hasNavTiming) hasNavTimingEntries = performance.getEntriesByType("navigation").length > 0;
+  } catch { /* */ }
+
+  const hasResourceTiming = typeof PerformanceObserver !== "undefined" &&
+    typeof (PerformanceObserver as unknown as { supportedEntryTypes?: string[] })
+      .supportedEntryTypes?.includes === "function" &&
+    (PerformanceObserver as unknown as { supportedEntryTypes: string[] })
+      .supportedEntryTypes.includes("resource");
+
   return [
     {
       key: "secure-context",
@@ -881,6 +894,24 @@ function resolveCapabilities(nav: NavigatorLike): Capability[] {
       note: hasNetworkInfo ? "effective type, downlink, rtt" : "API not available",
     },
     {
+      key: "navigation-timing",
+      available: hasNavTiming && hasNavTimingEntries,
+      quality: hasNavTimingEntries ? "full" : hasNavTiming ? "partial" : "none",
+      note: hasNavTimingEntries
+        ? "page-load connection timing for RTT inference"
+        : hasNavTiming
+          ? "API present but no navigation entries available"
+          : "Performance API unavailable",
+    },
+    {
+      key: "resource-timing",
+      available: hasResourceTiming,
+      quality: hasResourceTiming ? "full" : "none",
+      note: hasResourceTiming
+        ? "live resource fetch timing via PerformanceObserver"
+        : "PerformanceObserver resource entries unavailable",
+    },
+    {
       key: "enumerate-devices",
       available: hasEnumerateDevices,
       quality: hasEnumerateDevices ? "partial" : "none",
@@ -902,7 +933,7 @@ function resolveCapabilities(nav: NavigatorLike): Capability[] {
       key: "geolocation",
       available: hasGeo,
       quality: hasGeo ? "partial" : "none",
-      note: hasGeo ? "self-position with accuracy" : "not available",
+      note: hasGeo ? "self-position with accuracy and heading fallback" : "not available",
     },
     {
       key: "ambient-light-sensor",
@@ -1035,10 +1066,17 @@ export function initRadar(opts: RadarUIOptions): () => void {
   let lastModeSecond = -1;
 
   let compassHeading: number | null = null;
+  let compassFromOrientation = false;
   let ambientLux: number | null = null;
   let selfLat: number | null = null;
   let selfLon: number | null = null;
   let selfAcc: number | null = null;
+  let selfSpeed: number | null = null;
+  let geoHeadingAvailable = false;
+  let timingProbeInFlight = false;
+  let timingProbePending = false;
+  let resourceObserver: PerformanceObserver | null = null;
+  let smoothedRttMs: number | null = null;
   let selectedContactId: string | null = null;
   let hoveredContactId: string | null = null;
   const canvasTargetHits = new Map<string, { x: number; y: number; r: number }>();
@@ -1056,7 +1094,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
   }
 
   const maybeContext = opts.canvas.getContext("2d");
-  if (!(maybeContext instanceof CanvasRenderingContext2D)) return () => {};
+  if (!(maybeContext instanceof CanvasRenderingContext2D)) return () => { };
   const context = maybeContext;
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -1195,10 +1233,19 @@ export function initRadar(opts: RadarUIOptions): () => void {
     run: runEnumerateDevicesProbe,
   });
 
+  const scheduleTimingProbe = createProbeScheduler({
+    getInFlight: () => timingProbeInFlight,
+    setInFlight: (value) => { timingProbeInFlight = value; },
+    getPending: () => timingProbePending,
+    setPending: (value) => { timingProbePending = value; },
+    run: runNavigationTimingProbe,
+  });
+
   function runNetworkProbeCycle(): void {
     runNetworkProbe();
     scheduleIceProbe();
     scheduleEnumerateDevicesProbe();
+    scheduleTimingProbe();
   }
 
   function startNetworkProbeLoop(options?: { immediate?: boolean }): void {
@@ -1842,8 +1889,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
     const selectedRow = selectedContactId
       ? visibleRows.find((row) => row.target.id === selectedContactId) ??
-        allRows.find((row) => row.target.id === selectedContactId) ??
-        null
+      allRows.find((row) => row.target.id === selectedContactId) ??
+      null
       : null;
     renderLock(selectedRow, visibleRows, allRows, now);
   }
@@ -1955,8 +2002,11 @@ export function initRadar(opts: RadarUIOptions): () => void {
     if (selfLat !== null && selfLon !== null) {
       const lat = formatCoord(selfLat, "N", "S");
       const lon = formatCoord(selfLon, "E", "W");
-      const acc = selfAcc !== null ? ` +/-${Math.round(selfAcc)}m` : "";
-      opts.selfLocEl.textContent = `${lat} ${lon}${acc}`;
+      const acc = selfAcc !== null ? ` ±${Math.round(selfAcc)}m` : "";
+      const spd = selfSpeed !== null && Number.isFinite(selfSpeed) && selfSpeed > 0
+        ? ` ${selfSpeed.toFixed(1)}m/s`
+        : "";
+      opts.selfLocEl.textContent = `${lat} ${lon}${acc}${spd}`;
     } else {
       opts.selfLocEl.textContent = "no fix";
     }
@@ -2043,96 +2093,135 @@ export function initRadar(opts: RadarUIOptions): () => void {
     if (!isScanActive()) return;
     if (typeof RTCPeerConnection !== "function") return;
 
-    const peer = new RTCPeerConnection({
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun.cloudflare.com:3478" },
-      ],
-    });
+    const primaryServers = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+    ];
+    const fallbackServers = [
+      { urls: "stun:stun.nextcloud.com:443" },
+      { urls: "stun:stun.stunprotocol.org:3478" },
+    ];
 
-    const seen = new Set<string>();
-    const done = new Promise<void>((resolve) => {
-      let settled = false;
-      const timeout = window.setTimeout(() => finish(), 2500);
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timeout);
-        resolve();
-      };
+    async function gatherWithServers(
+      servers: { urls: string }[],
+      timeoutMs: number,
+    ): Promise<{ seen: Set<string>; ipCount: number }> {
+      if (!isScanActive()) return { seen: new Set(), ipCount: 0 };
 
-      peer.addEventListener("icecandidate", (event) => {
-        if (!isScanActive()) return;
-        const candidateStr = event.candidate?.candidate;
-        if (!candidateStr) { finish(); return; }
+      const peer = new RTCPeerConnection({ iceServers: servers });
+      const seen = new Set<string>();
+      let ipCount = 0;
 
-        const parsed = parseIceCandidate(candidateStr);
-        if (!parsed) return;
+      const done = new Promise<void>((resolve) => {
+        let settled = false;
+        const timeout = window.setTimeout(() => finish(), timeoutMs);
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          resolve();
+        };
 
-        const key = `${parsed.address}:${parsed.port}`;
-        if (seen.has(key)) return;
-        seen.add(key);
+        peer.addEventListener("icecandidate", (event) => {
+          if (!isScanActive()) return;
+          const candidateStr = event.candidate?.candidate;
+          if (!candidateStr) { finish(); return; }
 
-        // Build descriptive meta from what the candidate actually tells us
-        const metaParts: string[] = [];
-        metaParts.push(parsed.type); // host, srflx, relay, prflx
-        metaParts.push(parsed.protocol); // udp, tcp
-        metaParts.push(`port ${parsed.port}`);
+          const parsed = parseIceCandidate(candidateStr);
+          if (!parsed) return;
 
-        if (parsed.isIp) {
-          const addr = parsed.address;
-          const ipClass = classifyIp(addr);
-          if (ipClass === "loopback") return; // not useful signal
-          const isPrivate = ipClass === "private";
+          const key = `${parsed.address}:${parsed.port}`;
+          if (seen.has(key)) return;
+          seen.add(key);
 
-          metaParts.push(addr);
+          const metaParts: string[] = [];
+          metaParts.push(parsed.type);
+          metaParts.push(parsed.protocol);
+          metaParts.push(`port ${parsed.port}`);
 
-          upsertTarget({
-            id: `route:${addr}`,
-            label: isPrivate ? "local route" : "wan route",
-            protocol: isPrivate ? "wifi" : "radio",
-            evidence: "inferred",
-            rssi: isPrivate ? -52 : -74,
-            txPower: DEFAULT_TX_POWER,
-            meta: metaParts.join(" | "),
-          });
-        } else if (parsed.isMdns) {
-          // mDNS-obfuscated candidate — still a real network interface,
-          // we just can't see the IP. The candidate type tells us what it is.
-          const label = parsed.type === "srflx" ? "reflexive route"
-            : parsed.type === "relay" ? "relay route"
-            : "local interface";
-          const mdnsBucket = `${parsed.type}:${parsed.protocol}:port${parsed.port}`;
+          if (parsed.isIp) {
+            const addr = parsed.address;
+            const ipClass = classifyIp(addr);
+            if (ipClass === "loopback") return;
+            const isPrivate = ipClass === "private";
+            ipCount += 1;
 
-          metaParts.push(parsed.address);
+            metaParts.push(addr);
 
-          upsertTarget({
-            id: `route:mdns:${mdnsBucket}`,
-            label,
-            protocol: "wifi",
-            evidence: "inferred",
-            rssi: parsed.type === "host" ? -48 : -62,
-            txPower: DEFAULT_TX_POWER,
-            meta: metaParts.join(" | "),
-          });
-        }
+            upsertTarget({
+              id: `route:${addr}`,
+              label: isPrivate ? "local route" : "wan route",
+              protocol: isPrivate ? "wifi" : "radio",
+              evidence: "inferred",
+              rssi: isPrivate ? -52 : -74,
+              txPower: DEFAULT_TX_POWER,
+              meta: metaParts.join(" | "),
+            });
+          } else if (parsed.isMdns) {
+            const label = parsed.type === "srflx" ? "reflexive route"
+              : parsed.type === "relay" ? "relay route"
+                : "local interface";
+            const mdnsBucket = `${parsed.type}:${parsed.protocol}:port${parsed.port}`;
+
+            metaParts.push(parsed.address);
+
+            upsertTarget({
+              id: `route:mdns:${mdnsBucket}`,
+              label,
+              protocol: "wifi",
+              evidence: "inferred",
+              rssi: parsed.type === "host" ? -48 : -62,
+              txPower: DEFAULT_TX_POWER,
+              meta: metaParts.join(" | "),
+            });
+          }
+        });
+
+        peer.addEventListener("icegatheringstatechange", () => {
+          if (peer.iceGatheringState === "complete") finish();
+        });
       });
 
-      peer.addEventListener("icegatheringstatechange", () => {
-        if (peer.iceGatheringState === "complete") finish();
-      });
-    });
+      try {
+        peer.createDataChannel("radar");
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        await done;
+      } catch {
+        // gather failed silently
+      } finally {
+        try { peer.close(); } catch { /* */ }
+      }
+
+      return { seen, ipCount };
+    }
 
     try {
-      peer.createDataChannel("radar");
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      await done;
+      // Primary tier: shorter window
+      const primary = await gatherWithServers(primaryServers, 1500);
+      if (!isScanActive()) return;
+
+      // Fallback tier: only if primary yielded zero real IPs (mDNS-only or empty)
+      if (primary.ipCount === 0 && primary.seen.size > 0) {
+        // We got mDNS-only candidates — try fallback servers for real IPs
+        await gatherWithServers(fallbackServers, 1000);
+      } else if (primary.seen.size === 0) {
+        // No candidates at all — ICE is likely restricted
+        const fallback = await gatherWithServers(fallbackServers, 1000);
+        if (fallback.seen.size === 0 && !destroyed) {
+          pushEvent("ICE candidates restricted — route discovery unavailable");
+          // Dynamically update webrtc-ice capability to reflect actual state
+          const iceCap = capabilities.find((c) => c.key === "webrtc-ice");
+          if (iceCap) {
+            iceCap.quality = "none";
+            iceCap.note = "ICE gathering restricted — no candidates produced";
+            renderCapabilities();
+          }
+        }
+      }
     } catch {
       if (!destroyed) pushEvent("webrtc ice probe failed");
-    } finally {
-      try { peer.close(); } catch { /* */ }
     }
   }
 
@@ -2302,10 +2391,13 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
     if (typeof e.webkitCompassHeading === "number") {
       compassHeading = e.webkitCompassHeading;
+      compassFromOrientation = true;
     } else if (e.absolute && typeof e.alpha === "number") {
       compassHeading = (360 - e.alpha) % 360;
+      compassFromOrientation = true;
     } else if (typeof e.alpha === "number") {
       compassHeading = (360 - e.alpha) % 360;
+      compassFromOrientation = true;
     }
 
     renderCompass();
@@ -2426,6 +2518,28 @@ export function initRadar(opts: RadarUIOptions): () => void {
         selfLat = pos.coords.latitude;
         selfLon = pos.coords.longitude;
         selfAcc = pos.coords.accuracy;
+
+        // Capture speed when available
+        if (typeof pos.coords.speed === "number" && Number.isFinite(pos.coords.speed)) {
+          selfSpeed = pos.coords.speed;
+        }
+
+        // Geolocation heading fallback: coords.heading is the direction of travel
+        // (non-null when the device is actually moving). Use it to fill compass
+        // when deviceorientation events are unavailable or unreliable.
+        if (
+          typeof pos.coords.heading === "number" &&
+          Number.isFinite(pos.coords.heading) &&
+          pos.coords.heading >= 0
+        ) {
+          geoHeadingAvailable = true;
+          // Only apply if device orientation hasn't provided a heading
+          if (!compassFromOrientation) {
+            compassHeading = pos.coords.heading;
+            renderCompass();
+          }
+        }
+
         renderSelfLoc();
       },
       (err) => {
@@ -2435,6 +2549,121 @@ export function initRadar(opts: RadarUIOptions): () => void {
     );
 
     registerCleanup(sensorCleanups, () => navigator.geolocation.clearWatch(watchId));
+  }
+
+  // ── Navigation Timing / Resource Timing probe ──────────────────────────
+
+  function rttToSyntheticRssi(rttMs: number): number {
+    // Map RTT to synthetic RSSI: lower RTT → stronger signal
+    // 0-20ms → -30 (excellent), 20-80ms → -45 to -60, 80-200ms → -60 to -75, 200ms+ → -80+
+    if (rttMs <= 0) return -30;
+    const clamped = clamp(rttMs, 1, 500);
+    return clamp(Math.round(-30 - (Math.log2(clamped) * 6)), -90, -25);
+  }
+
+  async function runNavigationTimingProbe(): Promise<void> {
+    if (!isScanActive()) return;
+    if (typeof performance === "undefined" || typeof performance.getEntriesByType !== "function") return;
+
+    try {
+      // Collect RTT measurements from recent resource entries
+      const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+
+      // Filter to entries with actual connection timing (non-cached, non-zero)
+      const rttSamples: number[] = [];
+      const recentCutoff = performance.now() - 30_000; // last 30 seconds
+
+      for (let i = entries.length - 1; i >= 0 && rttSamples.length < 10; i--) {
+        const e = entries[i];
+        if (e.startTime < recentCutoff) break;
+        // Only count entries with actual TCP handshakes (transferSize > 0 means not from cache)
+        const connectTime = e.connectEnd - e.connectStart;
+        if (connectTime > 0 && e.transferSize > 0) {
+          rttSamples.push(connectTime);
+        }
+      }
+
+      // Also sample the page navigation entry for baseline
+      const navEntries = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+      if (navEntries.length > 0) {
+        const nav = navEntries[0];
+        const navConnect = nav.connectEnd - nav.connectStart;
+        if (navConnect > 0) rttSamples.push(navConnect);
+      }
+
+      if (rttSamples.length === 0) return;
+
+      const avgRtt = rttSamples.reduce((sum, v) => sum + v, 0) / rttSamples.length;
+      smoothedRttMs = smoothedRttMs === null
+        ? avgRtt
+        : smoothedRttMs * 0.6 + avgRtt * 0.4;
+
+      const syntheticRssi = rttToSyntheticRssi(smoothedRttMs);
+      const rttDisplay = Math.round(smoothedRttMs);
+
+      upsertTarget({
+        id: "net:timing:rtt",
+        label: `network rtt ${rttDisplay}ms`,
+        protocol: "wifi",
+        evidence: "inferred",
+        rssi: syntheticRssi,
+        txPower: DEFAULT_TX_POWER,
+        meta: `${rttSamples.length} sample${rttSamples.length !== 1 ? "s" : ""} | avg ${rttDisplay}ms | timing API`,
+      });
+    } catch { /* timing API read failed */ }
+  }
+
+  // ── PerformanceObserver for live resource timing ───────────────────────
+
+  function startResourceTimingObserver(): void {
+    if (typeof PerformanceObserver === "undefined") return;
+
+    // Check if resource entries are supported
+    const supported = (PerformanceObserver as unknown as { supportedEntryTypes?: string[] })
+      .supportedEntryTypes;
+    if (!supported?.includes("resource")) return;
+
+    try {
+      resourceObserver = new PerformanceObserver((list) => {
+        if (!isScanActive()) return;
+
+        const entries = list.getEntries() as PerformanceResourceTiming[];
+        const rttSamples: number[] = [];
+
+        for (const e of entries) {
+          const connectTime = e.connectEnd - e.connectStart;
+          if (connectTime > 0 && e.transferSize > 0) {
+            rttSamples.push(connectTime);
+          }
+        }
+
+        if (rttSamples.length === 0) return;
+
+        const avgRtt = rttSamples.reduce((sum, v) => sum + v, 0) / rttSamples.length;
+        smoothedRttMs = smoothedRttMs === null
+          ? avgRtt
+          : smoothedRttMs * 0.6 + avgRtt * 0.4;
+
+        const syntheticRssi = rttToSyntheticRssi(smoothedRttMs);
+        const rttDisplay = Math.round(smoothedRttMs);
+
+        upsertTarget({
+          id: "net:timing:rtt",
+          label: `network rtt ${rttDisplay}ms`,
+          protocol: "wifi",
+          evidence: "inferred",
+          rssi: syntheticRssi,
+          txPower: DEFAULT_TX_POWER,
+          meta: `live | avg ${rttDisplay}ms | resource observer`,
+        });
+      });
+
+      resourceObserver.observe({ type: "resource", buffered: false });
+      registerCleanup(sensorCleanups, () => {
+        resourceObserver?.disconnect();
+        resourceObserver = null;
+      });
+    } catch { /* observer creation failed */ }
   }
 
   // ── Sweep lifecycle ────────────────────────────────────────────────────
@@ -2451,6 +2680,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     startAmbientLight();
     startGeolocation();
     void startNfcScan();
+    startResourceTimingObserver();
   }
 
   function stopSensors(): void {
@@ -2477,8 +2707,12 @@ export function initRadar(opts: RadarUIOptions): () => void {
     selfLat = null;
     selfLon = null;
     selfAcc = null;
+    selfSpeed = null;
     compassHeading = null;
+    compassFromOrientation = false;
+    geoHeadingAvailable = false;
     ambientLux = null;
+    smoothedRttMs = null;
     renderSelfLoc();
     renderCompass();
     renderAmbient();
@@ -2524,6 +2758,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
     iceProbePending = false;
     mediaProbePending = false;
+    timingProbePending = false;
   }
 
   function clearTargets(): void {
