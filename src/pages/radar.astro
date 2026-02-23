@@ -195,8 +195,9 @@ const seo = {
         <p class="model-note">
           fully client-side. measured range comes from log-distance path loss with
           Kalman-filtered RSSI and online variance tracking. lock telemetry uses
-          derived bearing/rate from the same local signals. inferred contacts are
+          derived rate from the same local signals. inferred contacts are
           network and route hints, not literal nearby people.
+          radio sounding: probing the invisible geometry of a space through its signals.
         </p>
       </div>
     </section>
@@ -333,6 +334,8 @@ const seo = {
     font-weight: 700;
     letter-spacing: 0.02em;
     font-size: var(--text-sm);
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   .status-value[data-bt="no-api"],
@@ -690,35 +693,6 @@ const seo = {
   }
 
   @container (max-width: 36rem) {
-    .radar-status,
-    .radar-sensors {
-      grid-template-columns: 1fr;
-      justify-items: start;
-      gap: 0.35rem;
-    }
-
-    .status-item {
-      display: flex;
-      flex-direction: row;
-      align-items: baseline;
-      gap: 0.6em;
-      text-align: left;
-    }
-
-    .status-label {
-      flex: 0 0 auto;
-      min-width: 5.5em;
-    }
-
-    .status-value {
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-      text-align: left;
-    }
-
     .radar-stats {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -744,35 +718,6 @@ const seo = {
     }
 
     @media (max-width: 36rem) {
-      .radar-status,
-      .radar-sensors {
-        grid-template-columns: 1fr;
-        justify-items: start;
-        gap: 0.35rem;
-      }
-
-      .status-item {
-        display: flex;
-        flex-direction: row;
-        align-items: baseline;
-        gap: 0.6em;
-        text-align: left;
-      }
-
-      .status-label {
-        flex: 0 0 auto;
-        min-width: 5.5em;
-      }
-
-      .status-value {
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-        text-align: left;
-      }
-
       .radar-stats {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }

@@ -2677,7 +2677,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
       ? ""
       : "Bluetooth picker API not available in this browser";
   }
-  opts.modelEl.textContent = "path-loss + kalman + online variance + bearing/rate telemetry";
+  opts.modelEl.textContent = "path-loss + kalman + online variance + rate telemetry";
   setMode("idle");
 
   syncTriageControls();
