@@ -114,6 +114,18 @@ function renderValue(valueEl: HTMLElement, point: DataPoint): void {
 
   const v = point.value;
 
+  // IP address — masked by default, click to reveal.
+  // Resets naturally on rescan because rebuildCategoryShell recreates all DOM.
+  if (point.id === "net.ip" && typeof v === "string") {
+    const revealBtn = el("button", "dp-reveal", "click to reveal");
+    revealBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      revealBtn.replaceWith(document.createTextNode(normalizeTextForDisplay(v)));
+    }, { once: true });
+    valueEl.appendChild(revealBtn);
+    return;
+  }
+
   // Boolean → ✓ / ✗
   if (typeof v === "boolean") {
     const span = el("span", v ? "dp-bool-true" : "dp-bool-false", v ? "yes" : "no");
@@ -451,6 +463,126 @@ function updatePointValue(
 
 // ─── Score ─────────────────────────────────────────────────────────────────────
 
+// ─── Bar Tooltip ─────────────────────────────────────────────────────────────
+
+/** Weight → human label for the tooltip. */
+const WEIGHT_LABELS: Record<number, string> = {
+  5: "very high",
+  4: "high",
+  3: "moderate",
+};
+
+/** Truncate a display value so it fits the tooltip row. */
+function truncateValue(v: string | number | boolean | null, max = 28): string {
+  if (v === null) return "-";
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  const s = String(v);
+  return s.length <= max ? s : s.slice(0, max - 1) + "\u2026";
+}
+
+/** Escape HTML entities in user-controlled values. */
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * On mouseenter, measure whether the tooltip fits above the bar without
+ * being clipped by the sticky header (or viewport top). If not, flip it
+ * below by toggling `.bar-tooltip--below`. Runs once per hover — cheap.
+ */
+function attachTooltipFlip(barWrap: HTMLElement): void {
+  barWrap.addEventListener("mouseenter", () => {
+    const tip = barWrap.querySelector<HTMLElement>(".bar-tooltip");
+    if (!tip) return;
+
+    // Sticky header bottom edge is the ceiling we can't overlap.
+    const header = document.querySelector<HTMLElement>(".site-header");
+    const ceiling = header ? header.getBoundingClientRect().bottom : 0;
+
+    // Temporarily remove flip so we measure natural (above) position.
+    tip.classList.remove("bar-tooltip--below");
+
+    // Use the tooltip's own bounding box — it already accounts for the
+    // gap and arrow from CSS, so no magic numbers needed here.
+    const tipTop = tip.getBoundingClientRect().top;
+    const fitsAbove = tipTop >= ceiling;
+
+    tip.classList.toggle("bar-tooltip--below", !fitsAbove);
+  });
+}
+
+/**
+ * Build or update the single tooltip on .score-bar-wrap showing the
+ * top exposed data points. Only created once — innerHTML is swapped
+ * on each tally update so the content stays live during the scan.
+ */
+function syncBarTooltip(
+  barWrap: HTMLElement,
+  points: DataPoint[],
+): void {
+  let tip = barWrap.querySelector<HTMLElement>(".bar-tooltip");
+
+  if (points.length === 0) {
+    if (tip) tip.remove();
+    return;
+  }
+
+  const isNew = !tip;
+  if (!tip) {
+    tip = el("div", "bar-tooltip");
+    tip.setAttribute("role", "tooltip");
+    barWrap.appendChild(tip);
+  }
+
+  let html = `<div class="bar-tooltip-heading">biggest exposures</div>`;
+  for (const p of points) {
+    const label = esc(normalizeTextForDisplay(p.label));
+    // If the IP is still masked in the UI, hide it in the tooltip too.
+    const isMasked = p.id === "net.ip" && !!document.querySelector(`.dp-row[data-id="net.ip"] .dp-reveal`);
+    const val = isMasked ? "click row to reveal" : esc(truncateValue(p.value));
+    const wLabel = WEIGHT_LABELS[p.privacyWeight] ?? "";
+    html += `<div class="bar-tooltip-row" data-point-id="${esc(p.id)}">`;
+    html += `<span class="bar-tooltip-label">${label}</span>`;
+    html += `<span class="bar-tooltip-val">${val}</span>`;
+    if (wLabel) html += `<span class="bar-tooltip-weight">${wLabel}</span>`;
+    html += `</div>`;
+  }
+
+  tip.innerHTML = html;
+
+  if (isNew) {
+    attachTooltipFlip(barWrap);
+
+    // Click a tooltip row → scroll to the corresponding data point.
+    tip.addEventListener("click", (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLElement>(".bar-tooltip-row");
+      if (!row) return;
+      const id = row.dataset.pointId;
+      if (!id) return;
+
+      const dpRow = document.querySelector<HTMLElement>(`.dp-row[data-id="${CSS.escape(id)}"]`);
+      if (!dpRow) return;
+
+      // Ensure the parent category is expanded.
+      const section = dpRow.closest<HTMLElement>(".cat-section");
+      if (section) {
+        const toggle = section.querySelector<HTMLButtonElement>(".cat-toggle");
+        const body = section.querySelector<HTMLElement>(".cat-body");
+        if (toggle && body && toggle.getAttribute("aria-expanded") === "false") {
+          toggle.click();
+        }
+      }
+
+      // Scroll into view after a frame so the expand can settle.
+      requestAnimationFrame(() => {
+        dpRow.scrollIntoView({ behavior: "smooth", block: "center" });
+        dpRow.classList.add("dp-row--highlight");
+        setTimeout(() => dpRow.classList.remove("dp-row--highlight"), 1500);
+      });
+    });
+  }
+}
+
 function updateScore(
   opts: MirrorUIOptions,
   tally: PointTally,
@@ -469,6 +601,10 @@ function updateScore(
 
   opts.scoreBarExposed.style.width = `${exposedPct}%`;
   opts.scoreBarBlocked.style.width = `${blockedPct}%`;
+
+  // Tooltip lives on the bar wrap — hover target is the full bar width.
+  const barWrap = opts.scoreBarExposed.parentElement;
+  if (barWrap) syncBarTooltip(barWrap, tally.topExposed);
 
   if (scanComplete) {
     opts.scoreVerdict.textContent = getVerdict(exposedPct);
@@ -500,7 +636,11 @@ interface PointTally {
   weightedTotal: number;
   weightedResolved: number;
   weightedUnavailable: number;
+  topExposed: DataPoint[];
 }
+
+/** How many offenders to show in the bar tooltip. */
+const BAR_TOOLTIP_MAX = 5;
 
 function tallyPoints(categoryPoints: Iterable<DataPoint[]>): PointTally {
   let total = 0;
@@ -509,6 +649,7 @@ function tallyPoints(categoryPoints: Iterable<DataPoint[]>): PointTally {
   let weightedTotal = 0;
   let weightedResolved = 0;
   let weightedUnavailable = 0;
+  const exposed: DataPoint[] = [];
 
   for (const points of categoryPoints) {
     for (const point of points) {
@@ -519,6 +660,7 @@ function tallyPoints(categoryPoints: Iterable<DataPoint[]>): PointTally {
       if (point.status === "resolved") {
         resolved++;
         weightedResolved += w;
+        if (w >= 3) exposed.push(point);
       } else if (point.status === "unavailable") {
         unavailable++;
         weightedUnavailable += w;
@@ -526,7 +668,13 @@ function tallyPoints(categoryPoints: Iterable<DataPoint[]>): PointTally {
     }
   }
 
-  return { total, resolved, unavailable, weightedTotal, weightedResolved, weightedUnavailable };
+  exposed.sort((a, b) => b.privacyWeight - a.privacyWeight);
+
+  return {
+    total, resolved, unavailable,
+    weightedTotal, weightedResolved, weightedUnavailable,
+    topExposed: exposed.slice(0, BAR_TOOLTIP_MAX),
+  };
 }
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
