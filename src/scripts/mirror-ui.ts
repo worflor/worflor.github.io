@@ -1233,7 +1233,7 @@ function copyAllData(
   const json = JSON.stringify(out, null, 2);
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(json).then(
-      () => toast("Copied to clipboard"),
+      () => toast("copied to clipboard. dont dox yourself :)"),
       () => fallbackCopy(json, toast),
     );
   } else {
@@ -1247,7 +1247,7 @@ function fallbackCopy(text: string, toast: (message: string) => void): void {
   ta.style.cssText = "position:fixed;top:-9999px";
   document.body.appendChild(ta);
   ta.select();
-  try { document.execCommand("copy"); toast("Copied to clipboard"); }
+  try { document.execCommand("copy"); toast("copied to clipboard. dont dox yourself :)"); }
   catch { toast("Copy failed"); }
   finally { ta.remove(); }
 }
