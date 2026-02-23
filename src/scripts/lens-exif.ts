@@ -538,14 +538,22 @@ function findApp1(view: DataView): number {
   if (view.getUint16(0) !== 0xffd8) return -1;
 
   let offset = 2;
-  while (offset + 4 < view.byteLength) {
+  // APP1 always appears early in JPEG (before scan data).
+  // Cap iterations to avoid runaway scanning on malformed files.
+  let segments = 0;
+  const MAX_SEGMENTS = 64;
+
+  while (offset + 4 < view.byteLength && segments < MAX_SEGMENTS) {
     const marker = view.getUint16(offset);
     if (marker === 0xffe1) return offset; // APP1
     if ((marker & 0xff00) !== 0xff00) return -1; // not a valid marker
+    // Stop at SOS (Start of Scan) — APP1 is always before this
+    if (marker === 0xffda) return -1;
 
     const segLen = view.getUint16(offset + 2);
     if (segLen < 2) return -1; // invalid segment length
     offset += 2 + segLen;
+    segments++;
   }
 
   return -1;
@@ -1384,7 +1392,7 @@ export async function parseFile(file: File): Promise<LensData> {
 
   // If we found EXIF data, build image-specific categories (original path)
   if (hasExif) {
-    return buildExifResult(exif, meta, buffer);
+    return buildExifResult(exif, meta);
   }
 
   // No EXIF — use the universal format engine
@@ -1437,7 +1445,6 @@ export const parseImageFile = parseFile;
 function buildExifResult(
   exif: RawExif,
   meta: FileMetadata,
-  _buffer: ArrayBuffer,
 ): LensData {
   const builders: Array<{
     id: string;

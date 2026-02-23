@@ -1378,6 +1378,16 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   }
 
   type Crumb = { text: string; target: HTMLElement | null };
+  const BREADCRUMB_COMPACT_MAX_WIDTH_PX = 220;
+
+  function visibleBreadcrumbCrumbs(crumbs: Crumb[]): Crumb[] {
+    if (!breadcrumbEl || crumbs.length <= 1) return crumbs;
+    const measuredWidth = breadcrumbEl.getBoundingClientRect().width;
+    const compact = measuredWidth > 0
+      ? measuredWidth < BREADCRUMB_COMPACT_MAX_WIDTH_PX
+      : window.matchMedia("(max-width: 479px)").matches;
+    return compact ? crumbs.slice(-1) : crumbs;
+  }
 
   function makeCrumb(c: Crumb): HTMLElement {
     const crumb = el("span", "crumb");
@@ -1408,8 +1418,10 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
   function buildCrumbDOM(crumbs: Crumb[]) {
     if (!breadcrumbEl) return;
+    const visibleCrumbs = visibleBreadcrumbCrumbs(crumbs);
     breadcrumbEl.innerHTML = "";
-    for (const c of crumbs) {
+    breadcrumbEl.classList.toggle("single-crumb", visibleCrumbs.length === 1);
+    for (const c of visibleCrumbs) {
       const sep = el("span", "crumb-sep", "\u00b7");
       sep.setAttribute("aria-hidden", "true");
       breadcrumbEl.append(sep, makeCrumb(c));
@@ -1477,12 +1489,13 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
   function setCrumbs(crumbs: Crumb[]) {
     if (!breadcrumbEl) return;
-    const key = crumbs.map(c => c.text).join("|");
+    const visibleCrumbs = visibleBreadcrumbCrumbs(crumbs);
+    const key = visibleCrumbs.map(c => c.text).join("|");
     if (key === currentBreadcrumbKey) return;
     currentBreadcrumbKey = key;
 
     const hasExisting = !!breadcrumbEl.querySelector(".crumb-inner");
-    if (!hasExisting && crumbs.length) typeOut(crumbs);
+    if (!hasExisting && visibleCrumbs.length) typeOut(crumbs);
     else clearThenType(crumbs);
   }
 
@@ -1551,9 +1564,11 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   }
 
   window.addEventListener("scroll", onBreadcrumbScroll, { passive: true });
+  window.addEventListener("resize", onBreadcrumbScroll);
 
   cleanups.push(() => {
     window.removeEventListener("scroll", onBreadcrumbScroll);
+    window.removeEventListener("resize", onBreadcrumbScroll);
     if (typeTimer) { clearInterval(typeTimer); typeTimer = null; }
     if (scrollLockTimer) { clearTimeout(scrollLockTimer); scrollLockTimer = null; }
     scrollLockCatId = null;

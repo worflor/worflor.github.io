@@ -148,7 +148,7 @@ export function initLens(opts: LensUIOptions): () => void {
   let currentObjectUrl: string | null = null;
   let expansionState = loadExpansionState();
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
-  let processing = false;
+  let generation = 0; // monotonic counter to discard stale async results
   const cleanups: Array<() => void> = [];
 
   function on<K extends keyof HTMLElementEventMap>(
@@ -164,6 +164,9 @@ export function initLens(opts: LensUIOptions): () => void {
   // ── Preview management ────────────────────────────────
 
   function hideAllPreviews(): void {
+    // Clear img event handlers to prevent stale callbacks
+    opts.previewImg.onload = null;
+    opts.previewImg.onerror = null;
     opts.previewImg.style.display = "none";
     opts.previewImg.style.opacity = "0";
     opts.previewAudio.style.display = "none";
@@ -271,13 +274,14 @@ export function initLens(opts: LensUIOptions): () => void {
   // ── File handling ─────────────────────────────────────
 
   async function processFile(file: File): Promise<void> {
-    if (destroyed || processing) return;
+    if (destroyed) return;
     if (file.size === 0) {
       showToast("empty file");
       return;
     }
 
-    processing = true;
+    // If already processing, cancel the old run by bumping generation
+    const thisGen = ++generation;
 
     // Hide upload zone, show loading
     opts.uploadZone.style.display = "none";
@@ -293,14 +297,17 @@ export function initLens(opts: LensUIOptions): () => void {
     try {
       data = await parseFile(file);
     } catch {
+      // Only act if we're still the active generation
+      if (thisGen !== generation) return;
       showToast("failed to parse file");
       opts.loadingIndicator.style.display = "none";
-      processing = false;
+
       resetToUpload();
       return;
     }
 
-    if (destroyed) { processing = false; return; }
+    // Stale check: if a newer file was submitted while we were parsing, discard
+    if (destroyed || thisGen !== generation) return;
 
     opts.loadingIndicator.style.display = "none";
     currentData = data;
@@ -324,25 +331,19 @@ export function initLens(opts: LensUIOptions): () => void {
     requestAnimationFrame(() => {
       opts.actionsBar.style.opacity = "1";
     });
-
-    processing = false;
   }
 
   function resetToUpload(): void {
-    // Pause and clean up media elements
-    opts.previewAudio.pause();
-    opts.previewAudio.removeAttribute("src");
-    opts.previewVideo.pause();
-    opts.previewVideo.removeAttribute("src");
-    opts.previewText.textContent = "";
+    // Stop all previews and clear sources first (before revoking URL)
+    hideAllPreviews();
+    opts.previewSection.style.display = "none";
 
+    // Now safe to revoke — no element is still loading from this URL
     if (currentObjectUrl) {
       URL.revokeObjectURL(currentObjectUrl);
       currentObjectUrl = null;
     }
     currentData = null;
-    opts.previewSection.style.display = "none";
-    hideAllPreviews();
     opts.summarySection.style.display = "none";
     opts.summaryDynamic.innerHTML = "";
     opts.emptyState.style.display = "none";

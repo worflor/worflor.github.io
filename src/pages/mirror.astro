@@ -83,10 +83,10 @@ const seo = {
     </section>
 
     <!-- Actions -->
-    <div class="mirror-actions">
-      <button class="action-btn" id="action-copy">Copy All</button>
-      <button class="action-btn" id="action-expand">Expand All</button>
-      <button class="action-btn" id="action-collapse">Collapse All</button>
+    <div class="mirror-actions" role="group" aria-label="Mirror actions">
+      <button class="action-btn" id="action-copy">Copy</button>
+      <button class="action-btn" id="action-expand">Expand</button>
+      <button class="action-btn" id="action-collapse">Collapse</button>
       <button class="action-btn" id="action-refresh">Rescan</button>
     </div>
   </div>
@@ -201,6 +201,10 @@ const seo = {
     --mirror-tier-core-rgb: 123 92 214;
     --mirror-tier-context-rgb: 232 96 166;
     --mirror-tier-deep-rgb: 153 151 172;
+    --mirror-actions-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
+    --mirror-actions-inline-gap: calc(var(--space-xs) * 0.25);
+
+    padding-bottom: calc(var(--mirror-actions-offset) + var(--space-lg));
   }
 
   .mirror-intro {
@@ -407,8 +411,13 @@ const seo = {
     bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
     left: 50%;
     transform: translateX(-50%);
-    display: inline-flex;
-    gap: calc(var(--space-xs) * 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    gap: var(--mirror-actions-inline-gap);
+    width: min(max-content, calc(100vw - (2 * clamp(0.75rem, 4vw, 1.5rem))));
+    max-width: min(var(--content-width), 30rem);
     padding: var(--mirror-space-tight);
     background: rgb(10 10 10 / 0.8);
     -webkit-backdrop-filter: blur(16px) saturate(1.2);
@@ -420,9 +429,23 @@ const seo = {
       0 4px 20px rgba(0, 0, 0, 0.25);
     z-index: 40;
     white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .mirror-actions::-webkit-scrollbar {
+    display: none;
   }
 
   .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-height: var(--touch-target);
+    min-width: 0;
     padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
     background: transparent;
     border: none;
@@ -446,6 +469,13 @@ const seo = {
     background: rgb(var(--color-text-rgb) / 0.1);
   }
 
+  .action-btn:focus-visible {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    outline-offset: 1px;
+    color: var(--color-text);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
   /* ── Reduced Motion ──────────────────────────────────────── */
 
   @media (prefers-reduced-motion: reduce) {
@@ -456,6 +486,18 @@ const seo = {
     .score-blocked,
     .score-verdict {
       transition: none;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .mirror-actions {
+      gap: calc(var(--space-xs) * 0.18);
+      padding: calc(var(--space-xs) * 0.6);
+    }
+
+    .action-btn {
+      font-size: calc(var(--text-sm) * 0.9);
+      padding-inline: calc(var(--space-xs) * 1.0);
     }
   }
 </style>
@@ -597,6 +639,16 @@ const seo = {
   @media (prefers-reduced-motion: reduce) {
     .bar-tooltip {
       transition: none;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .bar-tooltip {
+      max-width: min(94vw, 24rem);
+    }
+
+    .bar-tooltip-row {
+      gap: calc(var(--space-xs) * 0.75);
     }
   }
 
@@ -1033,7 +1085,7 @@ const seo = {
 
   .mirror-toast {
     position: fixed;
-    bottom: 4.5rem;
+    bottom: calc(var(--touch-target) + (var(--space-sm) * 2) + env(safe-area-inset-bottom, 0px));
     left: 50%;
     transform: translateX(-50%) translateY(var(--mirror-toast-offset, var(--space-xs)));
     background: rgb(var(--color-text-rgb) / 0.06);
@@ -1045,6 +1097,8 @@ const seo = {
     border-radius: var(--radius-lg);
     font-family: var(--font-body);
     font-size: var(--text-sm);
+    max-width: min(90vw, 30rem);
+    text-align: center;
     opacity: 0;
     transition:
       opacity var(--duration-slow) var(--ease-out),
@@ -1069,17 +1123,61 @@ const seo = {
 
   /* ── Responsive ──────────────────────────────────────────── */
 
-  @media (max-width: 640px) {
+  @container (max-width: 40rem) {
     .dp-header {
       flex-direction: column;
+      align-items: flex-start;
       gap: calc(var(--space-xs) * 0.3);
     }
+
     .dp-value {
       text-align: left;
       max-width: 100%;
     }
+
+    .dp-row {
+      padding-inline: calc(var(--space-xs) * 1.15);
+    }
+
     .dp-row[data-id="fp.canvasPreview"] .dp-value {
       justify-content: flex-start;
+    }
+  }
+
+  @container (min-width: 48rem) {
+    .dp-value {
+      max-width: min(64%, 44rem);
+    }
+  }
+
+  @container (min-width: 60rem) {
+    .cat-body {
+      padding-bottom: calc(var(--space-sm) * 1.1);
+    }
+
+    .dp-row {
+      padding-inline: calc(var(--space-xs) * 1.75);
+    }
+
+    .dp-value {
+      max-width: min(58%, 46rem);
+    }
+  }
+
+  @media (hover: none) {
+    .cat-toggle:hover {
+      background: transparent;
+      border-color: var(--color-border);
+      box-shadow: none;
+    }
+
+    .dp-row:hover {
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .bar-tooltip-row:hover {
+      background: transparent;
     }
   }
 </style>

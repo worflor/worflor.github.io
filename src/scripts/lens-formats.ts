@@ -94,14 +94,35 @@ function field(
 }
 
 function ascii(view: DataView, offset: number, length: number): string {
-  let s = "";
   const end = Math.min(offset + length, view.byteLength);
+  const count = end - offset;
+  if (count <= 0) return "";
+  // For short strings (most fourCC, field values) concat is fine.
+  // For longer strings (PDF text scans, etc.) use batch decode.
+  if (count <= 64) {
+    let s = "";
+    for (let i = offset; i < end; i++) {
+      const c = view.getUint8(i);
+      if (c === 0) break;
+      s += String.fromCharCode(c);
+    }
+    return s;
+  }
+  // Batch: collect codes and convert in chunks to avoid call-stack limits
+  // String.fromCharCode.apply can fail above ~65K args on some engines
+  const codes: number[] = [];
   for (let i = offset; i < end; i++) {
     const c = view.getUint8(i);
     if (c === 0) break;
-    s += String.fromCharCode(c);
+    codes.push(c);
   }
-  return s;
+  if (codes.length <= 8192) return String.fromCharCode(...codes);
+  // Chunked conversion for very large strings
+  const parts: string[] = [];
+  for (let i = 0; i < codes.length; i += 8192) {
+    parts.push(String.fromCharCode(...codes.slice(i, i + 8192)));
+  }
+  return parts.join("");
 }
 
 function fourCC(view: DataView, offset: number): string {
@@ -185,13 +206,26 @@ const SIGNATURES: FormatSignature[] = [
     previewHint: "audio",
     test: (h) => h.byteLength >= 3 && ascii(h, 0, 3) === "ID3",
   },
-  // MP3 without ID3 — sync word 0xFFE0-0xFFFF (11 bits set)
+  // MP3 without ID3 — MPEG audio frame sync (11 bits set) + valid MPEG audio header.
+  // We require: sync word (11 bits) + valid MPEG version (not 01) + valid layer (not 00)
+  // + valid bitrate (not 1111). This eliminates most false positives from raw 0xFF bytes.
   {
     name: "MP3",
     family: "id3",
     previewHint: "audio",
     subtype: "bare",
-    test: (h) => h.byteLength >= 2 && (h.getUint16(0) & 0xffe0) === 0xffe0,
+    test: (h) => {
+      if (h.byteLength < 4) return false;
+      const w = h.getUint16(0);
+      if ((w & 0xffe0) !== 0xffe0) return false;
+      // Validate MPEG audio header fields in byte 1-2
+      const b1 = h.getUint8(1);
+      const b2 = h.getUint8(2);
+      const version = (b1 >> 3) & 0x03;   // 00=2.5, 01=reserved, 10=2, 11=1
+      const layer = (b1 >> 1) & 0x03;     // 00=reserved, 01=III, 10=II, 11=I
+      const bitrate = (b2 >> 4) & 0x0f;   // 1111=bad
+      return version !== 1 && layer !== 0 && bitrate !== 15;
+    },
   },
   // ISOBMFF (MP4, MOV, M4A, HEIC, AVIF, 3GP)
   {
@@ -300,6 +334,10 @@ function detectFormat(
 
 // ── Layer 2: Structure Walkers ───────────────────────────────
 
+// Safety cap: no walker should ever yield more entries than this.
+// Real-world files rarely exceed a few hundred chunks/boxes.
+const MAX_WALKER_ENTRIES = 2048;
+
 function walkChunks(
   view: DataView,
   startOffset: number,
@@ -309,13 +347,18 @@ function walkChunks(
   let offset = startOffset;
   const limit = end ?? view.byteLength;
 
-  while (offset + 8 <= limit) {
+  while (offset + 8 <= limit && chunks.length < MAX_WALKER_ENTRIES) {
     const id = fourCC(view, offset);
     const size = view.getUint32(offset + 4, true); // RIFF is little-endian
-    if (size === 0 || id === "") break;
+    if (id === "") break;
+    // size=0 is invalid for RIFF chunks — stop to avoid infinite loop
+    if (size === 0) break;
     chunks.push({ id, offset, size });
     // Chunks are word-aligned (padded to even)
-    offset += 8 + size + (size % 2);
+    const advance = 8 + size + (size % 2);
+    // Guard: if advance would not move us forward (overflow), stop
+    if (advance <= 0 || offset + advance <= offset) break;
+    offset += advance;
   }
   return chunks;
 }
@@ -329,7 +372,7 @@ function walkBoxes(
   let offset = startOffset;
   const limit = end ?? view.byteLength;
 
-  while (offset + 8 <= limit) {
+  while (offset + 8 <= limit && boxes.length < MAX_WALKER_ENTRIES) {
     let size = view.getUint32(offset); // big-endian
     const type = fourCC(view, offset + 4);
     let headerSize = 8;
@@ -339,7 +382,7 @@ function walkBoxes(
       size = view.getUint32(offset + 12);
       headerSize = 16;
     } else if (size === 0) {
-      // Box extends to end of file
+      // Box extends to end of file — only valid for the last box
       size = limit - offset;
     }
 
@@ -353,6 +396,8 @@ function walkBoxes(
       dataOffset: offset + headerSize,
     });
 
+    // Guard: ensure forward progress
+    if (offset + size <= offset) break;
     offset += size;
   }
   return boxes;
@@ -362,7 +407,7 @@ function walkPngChunks(view: DataView): PngChunk[] {
   const chunks: PngChunk[] = [];
   let offset = 8; // Skip PNG signature
 
-  while (offset + 12 <= view.byteLength) {
+  while (offset + 12 <= view.byteLength && chunks.length < MAX_WALKER_ENTRIES) {
     const length = view.getUint32(offset);
     const type = fourCC(view, offset + 4);
     if (type === "") break;
@@ -375,7 +420,10 @@ function walkPngChunks(view: DataView): PngChunk[] {
     });
 
     // length + 4 (length field) + 4 (type) + 4 (CRC)
-    offset += 12 + length;
+    const advance = 12 + length;
+    // Guard: chunk length could be enormous on malformed PNG
+    if (advance <= 0 || offset + advance <= offset) break;
+    offset += advance;
 
     if (type === "IEND") break;
   }
@@ -390,10 +438,10 @@ function walkID3Frames(
 ): ID3Frame[] {
   const frames: ID3Frame[] = [];
   let offset = startOffset;
-  const end = startOffset + tagSize;
+  const end = Math.min(startOffset + tagSize, view.byteLength);
   const frameHeaderSize = version >= 3 ? 10 : 6;
 
-  while (offset + frameHeaderSize <= end) {
+  while (offset + frameHeaderSize <= end && frames.length < MAX_WALKER_ENTRIES) {
     let id: string;
     let size: number;
 
@@ -438,54 +486,60 @@ function walkID3Frames(
 
 function walkZipCentralDir(
   view: DataView,
-  fileSize: number,
+  baseOffset: number = 0,
 ): ZipEntry[] {
   const entries: ZipEntry[] = [];
+  const bufLen = view.byteLength;
 
-  // Find End of Central Directory (scan backwards, max 65KB comment)
-  const searchStart = Math.max(0, fileSize - 65557);
-  let eocdOffset = -1;
+  // Find End of Central Directory (scan backwards from end of buffer).
+  // EOCD signature: PK\x05\x06
+  // We scan the buffer itself — the EOCD is always in the last 65557 bytes of the file.
+  let eocdBufPos = -1;
+  const scanStart = Math.max(0, bufLen - 65557);
 
-  for (let i = fileSize - 22; i >= searchStart; i--) {
-    if (i + 4 > view.byteLength) continue;
+  for (let i = bufLen - 22; i >= scanStart; i--) {
     if (
       view.getUint8(i) === 0x50 &&
       view.getUint8(i + 1) === 0x4b &&
       view.getUint8(i + 2) === 0x05 &&
       view.getUint8(i + 3) === 0x06
     ) {
-      eocdOffset = i;
+      eocdBufPos = i;
       break;
     }
   }
 
-  if (eocdOffset < 0 || eocdOffset + 22 > view.byteLength) return entries;
+  if (eocdBufPos < 0 || eocdBufPos + 22 > bufLen) return entries;
 
-  const entryCount = view.getUint16(eocdOffset + 10, true);
-  const cdOffset = view.getUint32(eocdOffset + 16, true);
+  const entryCount = view.getUint16(eocdBufPos + 10, true);
+  // cdOffset is an absolute file offset — translate to buffer-relative
+  const cdFileOffset = view.getUint32(eocdBufPos + 16, true);
 
-  let offset = cdOffset;
-  const maxEntries = Math.min(entryCount, 200);
+  // If the central directory starts before our buffer window, we can't read it
+  if (cdFileOffset < baseOffset) return entries;
+  let bufPos = cdFileOffset - baseOffset;
 
-  for (let i = 0; i < maxEntries && offset + 46 <= view.byteLength; i++) {
+  const maxEntries = Math.min(entryCount, 500);
+
+  for (let i = 0; i < maxEntries && bufPos + 46 <= bufLen; i++) {
     // Central directory file header signature
-    if (view.getUint32(offset, true) !== 0x02014b50) break;
+    if (view.getUint32(bufPos, true) !== 0x02014b50) break;
 
-    const method = view.getUint16(offset + 10, true);
-    const compressedSize = view.getUint32(offset + 20, true);
-    const uncompressedSize = view.getUint32(offset + 24, true);
-    const nameLen = view.getUint16(offset + 28, true);
-    const extraLen = view.getUint16(offset + 30, true);
-    const commentLen = view.getUint16(offset + 32, true);
+    const method = view.getUint16(bufPos + 10, true);
+    const compressedSize = view.getUint32(bufPos + 20, true);
+    const uncompressedSize = view.getUint32(bufPos + 24, true);
+    const nameLen = view.getUint16(bufPos + 28, true);
+    const extraLen = view.getUint16(bufPos + 30, true);
+    const commentLen = view.getUint16(bufPos + 32, true);
 
     const filename =
-      offset + 46 + nameLen <= view.byteLength
-        ? ascii(view, offset + 46, nameLen)
+      bufPos + 46 + nameLen <= bufLen
+        ? ascii(view, bufPos + 46, nameLen)
         : "";
 
     entries.push({ filename, compressedSize, uncompressedSize, method });
 
-    offset += 46 + nameLen + extraLen + commentLen;
+    bufPos += 46 + nameLen + extraLen + commentLen;
   }
 
   return entries;
@@ -640,25 +694,31 @@ function extractIsobmffMeta(
   if (moov) {
     const moovBoxes = walkBoxes(view, moov.dataOffset, moov.offset + moov.size);
     const mvhd = moovBoxes.find((b) => b.type === "mvhd");
-    if (mvhd && mvhd.dataOffset + 20 <= view.byteLength) {
+    if (mvhd && mvhd.dataOffset + 1 <= view.byteLength) {
       const version = view.getUint8(mvhd.dataOffset);
-      let timescale: number;
-      let duration: number;
+      // v0: 4+4+4+4 (flags,created,modified,timescale) + 4 (duration) = 20 bytes
+      // v1: 4+8+8+4 (flags,created,modified,timescale) + 8 (duration) = 32 bytes
+      const minSize = version === 0 ? 20 : 32;
 
-      if (version === 0) {
-        timescale = view.getUint32(mvhd.dataOffset + 12);
-        duration = view.getUint32(mvhd.dataOffset + 16);
-      } else {
-        timescale = view.getUint32(mvhd.dataOffset + 20);
-        duration = view.getUint32(mvhd.dataOffset + 24); // Using lower 32 bits
-      }
+      if (mvhd.dataOffset + minSize <= view.byteLength) {
+        let timescale: number;
+        let duration: number;
 
-      if (timescale > 0) {
-        const durationSec = duration / timescale;
-        fields.push(
-          field("isobmff.duration", "Duration", durationSec, formatDuration(durationSec)),
-          field("isobmff.timescale", "Timescale", timescale, `${timescale} Hz`),
-        );
+        if (version === 0) {
+          timescale = view.getUint32(mvhd.dataOffset + 12);
+          duration = view.getUint32(mvhd.dataOffset + 16);
+        } else {
+          timescale = view.getUint32(mvhd.dataOffset + 20);
+          duration = view.getUint32(mvhd.dataOffset + 24); // Using lower 32 bits of 64-bit field
+        }
+
+        if (timescale > 0) {
+          const durationSec = duration / timescale;
+          fields.push(
+            field("isobmff.duration", "Duration", durationSec, formatDuration(durationSec)),
+            field("isobmff.timescale", "Timescale", timescale, `${timescale} Hz`),
+          );
+        }
       }
     }
 
@@ -785,8 +845,10 @@ function extractFlacMeta(view: DataView): ExifCategory[] {
 
   // After "fLaC" signature, metadata blocks
   let offset = 4;
+  let blocks = 0;
 
-  while (offset + 4 <= view.byteLength) {
+  while (offset + 4 <= view.byteLength && blocks < 128) {
+    blocks++;
     const blockHeader = view.getUint8(offset);
     const isLast = (blockHeader & 0x80) !== 0;
     const blockType = blockHeader & 0x7f;
@@ -836,7 +898,9 @@ function extractFlacMeta(view: DataView): ExifCategory[] {
       }
     }
 
-    offset += 4 + blockSize;
+    const advance = 4 + blockSize;
+    if (advance <= 0 || offset + advance <= offset) break;
+    offset += advance;
     if (isLast) break;
   }
 
@@ -994,21 +1058,30 @@ function extractGifMeta(view: DataView): ExifCategory[] {
     fields.push(field("gif.palette", "Palette", `${gctSize} colors`));
   }
 
-  // Count frames (scan for image descriptors: 0x2C followed by graphic control extensions: 0x21 0xF9)
+  // Count frames by scanning GIF block structure.
+  // Cap both frame count and scan depth to avoid runaway loops on malformed data.
   let frameCount = 0;
+  const MAX_GIF_FRAMES = 10000;
   let offset = 13 + (hasGCT ? gctSize * 3 : 0);
-  while (offset < view.byteLength) {
+  // Track consecutive unknown bytes — if we hit too many, the structure is broken
+  let unknownRun = 0;
+  const MAX_UNKNOWN_RUN = 16;
+
+  while (offset < view.byteLength && frameCount <= MAX_GIF_FRAMES) {
     const intro = view.getUint8(offset);
     if (intro === 0x2c) {
+      unknownRun = 0;
       frameCount++;
-      // Skip image descriptor (9 bytes) + possible local color table + image data
+      // Image descriptor is 10 bytes (intro + 4 shorts + packed)
+      if (offset + 10 > view.byteLength) break;
       offset += 10;
-      const localPacked = offset - 1 < view.byteLength ? view.getUint8(offset - 1) : 0;
+      const localPacked = view.getUint8(offset - 1);
       if (localPacked & 0x80) {
         offset += (1 << ((localPacked & 0x07) + 1)) * 3;
       }
       // Skip LZW min code size + data sub-blocks
-      if (offset < view.byteLength) offset++; // LZW min code size
+      if (offset >= view.byteLength) break;
+      offset++; // LZW min code size
       while (offset < view.byteLength) {
         const blockSize = view.getUint8(offset);
         offset++;
@@ -1016,8 +1089,9 @@ function extractGifMeta(view: DataView): ExifCategory[] {
         offset += blockSize;
       }
     } else if (intro === 0x21) {
-      // Extension block
-      offset += 2; // Skip extension type
+      unknownRun = 0;
+      // Extension block: skip label byte + sub-blocks
+      offset += 2;
       while (offset < view.byteLength) {
         const blockSize = view.getUint8(offset);
         offset++;
@@ -1028,6 +1102,9 @@ function extractGifMeta(view: DataView): ExifCategory[] {
       // Trailer
       break;
     } else {
+      // Unknown intro byte — tolerate a few, then bail
+      unknownRun++;
+      if (unknownRun >= MAX_UNKNOWN_RUN) break;
       offset++;
     }
   }
@@ -1321,21 +1398,27 @@ async function probeMedia(
     const el = document.createElement(type);
     el.preload = "metadata";
     const url = URL.createObjectURL(file);
-    el.src = url;
+    let settled = false;
 
-    const cleanup = () => {
+    const finish = (fields: ExifField[]) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Detach handlers to prevent further callbacks
+      el.onloadedmetadata = null;
+      el.onerror = null;
+      // Revoke URL and release media resource without calling load()
+      // (load() on an empty src throws AbortError in some browsers)
       URL.revokeObjectURL(url);
-      el.src = "";
-      el.load();
+      el.removeAttribute("src");
+      resolve(fields);
     };
 
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve([]);
-    }, MEDIA_PROBE_TIMEOUT);
+    el.src = url;
+
+    const timer = setTimeout(() => finish([]), MEDIA_PROBE_TIMEOUT);
 
     el.onloadedmetadata = () => {
-      clearTimeout(timer);
       const fields: ExifField[] = [];
 
       if (isFinite(el.duration) && el.duration > 0) {
@@ -1353,15 +1436,10 @@ async function probeMedia(
         }
       }
 
-      cleanup();
-      resolve(fields);
+      finish(fields);
     };
 
-    el.onerror = () => {
-      clearTimeout(timer);
-      cleanup();
-      resolve([]);
-    };
+    el.onerror = () => finish([]);
   });
 }
 
@@ -1383,23 +1461,35 @@ interface TextAnalysis {
 }
 
 function isProbablyText(buffer: ArrayBuffer): boolean {
-  const sample = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, TEXT_SAMPLE_SIZE));
+  const sampleLen = Math.min(buffer.byteLength, TEXT_SAMPLE_SIZE);
+  if (sampleLen === 0) return false;
+  const sample = new Uint8Array(buffer, 0, sampleLen);
   let nullCount = 0;
   let controlCount = 0;
   let textLikeCount = 0;
+  // Track high-byte density (0x80-0xFF) — binary formats tend to have
+  // more evenly distributed high bytes than real text
+  let highByteCount = 0;
 
   for (const byte of sample) {
     if (byte === 0) nullCount++;
     else if (byte < 8 || (byte > 13 && byte < 32 && byte !== 27)) controlCount++;
-    else textLikeCount++;
+    else {
+      textLikeCount++;
+      if (byte >= 0x80) highByteCount++;
+    }
   }
 
   // Too many nulls → binary (unless very small file)
   if (nullCount > sample.length * 0.05 && sample.length > 32) return false;
   // Too many control characters → binary
   if (controlCount > sample.length * 0.1) return false;
-  // Most bytes are text-like → probably text
-  return textLikeCount > sample.length * 0.7;
+  // High byte ratio: UTF-8 text typically has <30% high bytes.
+  // Pure binary with ASCII-range headers might pass the text-like check
+  // but will have higher density of 0x80-0xFF bytes.
+  if (highByteCount > sample.length * 0.35) return false;
+  // Require a strong majority of text-like bytes
+  return textLikeCount > sample.length * 0.75;
 }
 
 function detectBom(buffer: ArrayBuffer): string {
@@ -1550,13 +1640,27 @@ function analyzeJsonStructure(text: string): ExifField[] {
       const keys = Object.keys(parsed);
       fields.push(field("text.json.keys", "Keys", keys.length, `${keys.length} (${keys.slice(0, 8).join(", ")}${keys.length > 8 ? "…" : ""})`));
 
-      // Measure nesting depth
-      const depth = (obj: unknown, d: number): number => {
-        if (d > 10 || typeof obj !== "object" || obj === null) return d;
-        const children = Object.values(obj);
-        return Math.max(d, ...children.map((c) => depth(c, d + 1)));
-      };
-      fields.push(field("text.json.depth", "Nesting Depth", depth(parsed, 0)));
+      // Measure nesting depth — iterative BFS to avoid stack overflow
+      // on deeply nested or extremely wide objects
+      let maxDepth = 0;
+      const stack: Array<{ value: unknown; depth: number }> = [{ value: parsed, depth: 0 }];
+      let visited = 0;
+      const MAX_VISITS = 5000; // cap work to stay responsive
+
+      while (stack.length > 0 && visited < MAX_VISITS) {
+        const { value: node, depth: d } = stack.pop()!;
+        if (d > maxDepth) maxDepth = d;
+        if (d >= 20) continue; // don't go deeper than 20
+        if (typeof node !== "object" || node === null) continue;
+        visited++;
+        // Sample children — for wide objects, only check first few
+        const childKeys = Object.keys(node);
+        const sampled = childKeys.length > 8 ? childKeys.slice(0, 8) : childKeys;
+        for (const k of sampled) {
+          stack.push({ value: (node as Record<string, unknown>)[k], depth: d + 1 });
+        }
+      }
+      fields.push(field("text.json.depth", "Nesting Depth", maxDepth));
     }
   } catch {
     // Partial JSON
@@ -1592,18 +1696,22 @@ async function analyzeText(
   const lines = text.split("\n");
   const lineCount = lines.length;
   const charCount = text.length;
-  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  // Count words without creating a full split array — match and count
+  const wordMatches = text.match(/\S+/g);
+  const wordCount = wordMatches ? wordMatches.length : 0;
+
+  const isPartial = file.size > TEXT_READ_LIMIT;
+  const approx = isPartial ? "~" : "";
 
   const fields: ExifField[] = [
     field("text.encoding", "Encoding", encoding),
     field("text.format", "Format", subFormat),
-    field("text.lines", "Lines", lineCount, lineCount.toLocaleString()),
-    field("text.characters", "Characters", charCount, charCount.toLocaleString()),
-    field("text.words", "Words", wordCount, wordCount.toLocaleString()),
+    field("text.lines", "Lines", lineCount, `${approx}${lineCount.toLocaleString()}`),
+    field("text.characters", "Characters", charCount, `${approx}${charCount.toLocaleString()}`),
+    field("text.words", "Words", wordCount, `${approx}${wordCount.toLocaleString()}`),
   ];
 
-  // Indicate if we only read part of the file
-  if (file.size > TEXT_READ_LIMIT) {
+  if (isPartial) {
     fields.push(
       field("text.partial", "Note", "partial", `Analysis based on first ${formatBytes(TEXT_READ_LIMIT)}`),
     );
@@ -1884,20 +1992,24 @@ export async function analyzeFile(
       }
 
       case "zip": {
-        // Need to read more of the file for ZIP central directory (at end)
-        let zipBuffer = buffer;
+        // ZIP central directory lives at the END of the file.
+        // For files larger than our initial read, fetch the tail separately.
+        // We pass the tail buffer and its base offset so walkZipCentralDir
+        // can translate absolute file offsets into buffer-relative ones.
+        let zipView: DataView;
+        let zipBaseOffset: number; // file offset that corresponds to byte 0 of zipView
+
         if (file.size > buffer.byteLength) {
-          // Read last 64KB for central directory
           const tailStart = Math.max(0, file.size - 65536);
           const tailSlice = await file.slice(tailStart).arrayBuffer();
-          // Combine: we need the start (for local headers) and end (for central dir)
-          const combined = new Uint8Array(buffer.byteLength + tailSlice.byteLength);
-          combined.set(new Uint8Array(buffer));
-          combined.set(new Uint8Array(tailSlice), buffer.byteLength);
-          zipBuffer = combined.buffer;
+          zipView = safeView(tailSlice);
+          zipBaseOffset = tailStart;
+        } else {
+          zipView = view;
+          zipBaseOffset = 0;
         }
-        const zipView = safeView(zipBuffer);
-        const entries = walkZipCentralDir(zipView, file.size);
+
+        const entries = walkZipCentralDir(zipView, zipBaseOffset);
         categories.push(...extractZipMeta(entries));
         break;
       }
