@@ -14,7 +14,12 @@ export interface RadarUIOptions {
   bluetoothCountEl: HTMLElement;
   wifiCountEl: HTMLElement;
   radioCountEl: HTMLElement;
+  activeEl: HTMLElement;
+  measuredEl: HTMLElement;
+  inferredEl: HTMLElement;
+  nearestEl: HTMLElement;
   contactsEl: HTMLElement;
+  lockEl: HTMLElement;
   eventsEl: HTMLElement;
   capabilitiesEl: HTMLElement;
   startBtn: HTMLButtonElement;
@@ -38,7 +43,12 @@ export const RADAR_UI_IDS: RadarUIIdMap = {
   bluetoothCountEl: "radar-bt-count",
   wifiCountEl: "radar-wifi-count",
   radioCountEl: "radar-radio-count",
+  activeEl: "radar-active",
+  measuredEl: "radar-measured",
+  inferredEl: "radar-inferred",
+  nearestEl: "radar-nearest",
   contactsEl: "radar-contacts",
+  lockEl: "radar-lock",
   eventsEl: "radar-events",
   capabilitiesEl: "radar-capabilities",
   startBtn: "radar-start",
@@ -127,6 +137,7 @@ interface DeviceOrientationEventLike {
 
 type RadarProtocol = "self" | "bluetooth" | "wifi" | "radio";
 type EvidenceKind = "measured" | "inferred";
+type TrendState = "approaching" | "receding" | "stable" | "unknown";
 
 interface RssiStats {
   count: number;
@@ -139,6 +150,12 @@ interface KalmanRssi {
   p: number;
   q: number;
   r: number;
+}
+
+interface TargetHistorySample {
+  time: number;
+  distanceM: number | null;
+  rssi: number;
 }
 
 interface RadarTarget {
@@ -159,6 +176,10 @@ interface RadarTarget {
   angleRad: number;
   stats: RssiStats;
   filter: KalmanRssi;
+  history: TargetHistorySample[];
+  updateHz: number;
+  distanceRateMps: number | null;
+  trend: TrendState;
 }
 
 interface RadarEvent {
@@ -187,6 +208,11 @@ const STALE_TARGET_MS = 30_000;
 const NETWORK_POLL_MS = 7_000;
 const STALE_PURGE_MS = 4_000;
 const EVENT_COALESCE_WINDOW_MS = 15_000;
+const CONTACT_ACTIVE_WINDOW_MS = 10_000;
+const TARGET_HISTORY_LIMIT = 14;
+const RANGE_RATE_EPSILON_MPS = 0.16;
+const MAP_RANGE_FLOOR_M = 16;
+const MAP_RANGE_PADDING = 1.35;
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -374,8 +400,9 @@ function connectionToInferredRssi(effectiveType: string | undefined, connType: s
   }
 }
 
-function rangeToCanvasRadius(distanceM: number, scopeRadiusPx: number): number {
-  const normalized = Math.log1p(distanceM) / Math.log1p(MAX_DISTANCE_M);
+function rangeToCanvasRadius(distanceM: number, scopeRadiusPx: number, mapRangeM = MAX_DISTANCE_M): number {
+  const clampedRange = clamp(mapRangeM, MAP_RANGE_FLOOR_M, MAX_DISTANCE_M);
+  const normalized = Math.log1p(distanceM) / Math.log1p(clampedRange);
   return clamp(normalized, 0.03, 0.98) * scopeRadiusPx;
 }
 
@@ -408,6 +435,91 @@ function formatDistance(meters: number): string {
 function formatCoord(deg: number, posChar: string, negChar: string): string {
   const dir = deg >= 0 ? posChar : negChar;
   return `${Math.abs(deg).toFixed(5)}${dir}`;
+}
+
+function normalizeDegrees(degrees: number): number {
+  const normalized = degrees % 360;
+  return normalized < 0 ? normalized + 360 : normalized;
+}
+
+function angleRadToBearingDeg(angleRad: number): number {
+  return normalizeDegrees((angleRad * 180) / Math.PI + 90);
+}
+
+function bearingToCardinal(bearingDeg: number): string {
+  const cardinals = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  const index = Math.round(normalizeDegrees(bearingDeg) / 45) % cardinals.length;
+  return cardinals[index];
+}
+
+function relativeBearingLabel(bearingDeg: number, headingDeg: number | null): string | null {
+  if (headingDeg === null) return null;
+  const delta = normalizeDegrees(bearingDeg - headingDeg);
+  if (delta < 22.5 || delta >= 337.5) return "ahead";
+  if (delta < 67.5) return "ahead-right";
+  if (delta < 112.5) return "right";
+  if (delta < 157.5) return "rear-right";
+  if (delta < 202.5) return "rear";
+  if (delta < 247.5) return "rear-left";
+  if (delta < 292.5) return "left";
+  return "ahead-left";
+}
+
+function trendFromRate(rateMps: number | null): TrendState {
+  if (rateMps === null || !Number.isFinite(rateMps)) return "unknown";
+  if (rateMps <= -RANGE_RATE_EPSILON_MPS) return "approaching";
+  if (rateMps >= RANGE_RATE_EPSILON_MPS) return "receding";
+  return "stable";
+}
+
+function formatRate(rateMps: number | null): string {
+  if (rateMps === null || !Number.isFinite(rateMps)) return "--";
+  const magnitude = Math.abs(rateMps);
+  const precision = magnitude >= 10 ? 0 : magnitude >= 1 ? 1 : 2;
+  const suffix = trendFromRate(rateMps);
+  if (suffix === "stable") return `${magnitude.toFixed(precision)}m/s stable`;
+  return `${magnitude.toFixed(precision)}m/s ${suffix === "approaching" ? "closing" : "opening"}`;
+}
+
+function formatUpdateRate(updateHz: number): string {
+  if (!Number.isFinite(updateHz) || updateHz <= 0) return "--";
+  if (updateHz >= 10) return `${updateHz.toFixed(1)}Hz`;
+  if (updateHz >= 1) return `${updateHz.toFixed(2)}Hz`;
+  return `${updateHz.toFixed(3)}Hz`;
+}
+
+function computeTargetPriority(target: RadarTarget, now: number): number {
+  const ageMs = Math.max(0, now - target.lastSeen);
+  const freshness = clamp(1 - ageMs / STALE_TARGET_MS, 0, 1);
+  const confidence = target.confidence;
+  const stability = clamp(1 - target.rssiSigma / 18, 0, 1);
+  const proximity = target.distanceM === null ? 0.45 : clamp(1 - target.distanceM / MAX_DISTANCE_M, 0, 1);
+  const evidenceWeight = target.evidence === "measured" ? 1 : 0.7;
+  return clamp((confidence * 0.45 + freshness * 0.25 + proximity * 0.2 + stability * 0.1) * evidenceWeight, 0.02, 0.99);
+}
+
+function resolveMapRangeMeters(targets: Iterable<RadarTarget>): number {
+  let farthestMeasured = 0;
+  for (const target of targets) {
+    if (target.protocol === "self") continue;
+    if (target.evidence !== "measured" || target.distanceM === null) continue;
+    farthestMeasured = Math.max(farthestMeasured, target.distanceM);
+  }
+
+  if (farthestMeasured <= 0) return MAX_DISTANCE_M;
+  return clamp(farthestMeasured * MAP_RANGE_PADDING, MAP_RANGE_FLOOR_M, MAX_DISTANCE_M);
+}
+
+function buildRangeRings(mapRangeM: number): number[] {
+  const fractions = [0.1, 0.24, 0.42, 0.67, 1];
+  const rings: number[] = [];
+  for (const fraction of fractions) {
+    const raw = mapRangeM * fraction;
+    const rounded = raw < 1 ? Math.max(0.2, Number(raw.toFixed(1))) : Math.max(1, Math.round(raw));
+    if (rings.length === 0 || rounded > rings[rings.length - 1]) rings.push(rounded);
+  }
+  if (rings[rings.length - 1] !== Math.round(mapRangeM)) rings[rings.length - 1] = Math.round(mapRangeM);
+  return rings;
 }
 
 function findContactItem(target: EventTarget | null): HTMLElement | null {
@@ -477,13 +589,13 @@ function resolveCapabilities(nav: NavigatorLike): Capability[] {
       key: "bluetooth-le-scan",
       available: hasLeScan,
       quality: hasLeScan ? "full" : "none",
-      note: hasLeScan ? "real-time advertisement RSSI stream" : "Chrome only · chrome://flags/#enable-experimental-web-platform-features",
+      note: hasLeScan ? "real-time advertisement RSSI stream" : "Chrome only - chrome://flags/#enable-experimental-web-platform-features",
     },
     {
       key: "bluetooth-device-picker",
       available: hasPicker,
       quality: hasPicker ? "partial" : "none",
-      note: hasPicker ? "manual device selection via browser dialog" : "Chrome/Edge only · not supported in Firefox or Safari",
+      note: hasPicker ? "manual device selection via browser dialog" : "Chrome/Edge only - not supported in Firefox or Safari",
     },
     {
       key: "network-information",
@@ -547,7 +659,12 @@ export function resolveRadarUIOptions(root: ParentNode = document): RadarUIOptio
   const bluetoothCountEl = queryById(root, RADAR_UI_IDS.bluetoothCountEl);
   const wifiCountEl = queryById(root, RADAR_UI_IDS.wifiCountEl);
   const radioCountEl = queryById(root, RADAR_UI_IDS.radioCountEl);
+  const activeEl = queryById(root, RADAR_UI_IDS.activeEl);
+  const measuredEl = queryById(root, RADAR_UI_IDS.measuredEl);
+  const inferredEl = queryById(root, RADAR_UI_IDS.inferredEl);
+  const nearestEl = queryById(root, RADAR_UI_IDS.nearestEl);
   const contactsEl = queryById(root, RADAR_UI_IDS.contactsEl);
+  const lockEl = queryById(root, RADAR_UI_IDS.lockEl);
   const eventsEl = queryById(root, RADAR_UI_IDS.eventsEl);
   const capabilitiesEl = queryById(root, RADAR_UI_IDS.capabilitiesEl);
   const startBtn = queryButtonById(root, RADAR_UI_IDS.startBtn);
@@ -562,7 +679,8 @@ export function resolveRadarUIOptions(root: ParentNode = document): RadarUIOptio
   if (
     !canvas || !modeEl || !bluetoothEl || !modelEl ||
     !totalEl || !bluetoothCountEl || !wifiCountEl || !radioCountEl ||
-    !contactsEl || !eventsEl || !capabilitiesEl || !startBtn || !stopBtn ||
+    !activeEl || !measuredEl || !inferredEl || !nearestEl ||
+    !contactsEl || !lockEl || !eventsEl || !capabilitiesEl || !startBtn || !stopBtn ||
     !bluetoothScanBtn || !bluetoothPickBtn || !clearBtn ||
     !selfLocEl || !compassEl || !ambientEl
   ) {
@@ -572,7 +690,8 @@ export function resolveRadarUIOptions(root: ParentNode = document): RadarUIOptio
   return {
     canvas, modeEl, bluetoothEl, modelEl,
     totalEl, bluetoothCountEl, wifiCountEl, radioCountEl,
-    contactsEl, eventsEl, capabilitiesEl,
+    activeEl, measuredEl, inferredEl, nearestEl,
+    contactsEl, lockEl, eventsEl, capabilitiesEl,
     startBtn, stopBtn, bluetoothScanBtn, bluetoothPickBtn, clearBtn,
     selfLocEl, compassEl, ambientEl,
   };
@@ -600,6 +719,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
   let iceProbePending = false;
   let mediaProbeInFlight = false;
   let mediaProbePending = false;
+  let scanStartedAt: number | null = null;
+  let lastModeSecond = -1;
 
   let compassHeading: number | null = null;
   let ambientLux: number | null = null;
@@ -763,10 +884,16 @@ export function initRadar(opts: RadarUIOptions): () => void {
         angleRad: hashAngle(input.id),
         stats,
         filter,
+        history: [{ time: now, distanceM: distance, rssi }],
+        updateHz: 0,
+        distanceRateMps: null,
+        trend: "unknown",
       });
 
       pushEvent(`+ ${input.label} [${input.protocol}]`);
     } else {
+      const prevSeen = existing.lastSeen;
+      const prevDistanceM = existing.distanceM;
       existing.rssiRaw = rssi;
       existing.txPower = input.txPower;
       existing.label = input.label;
@@ -790,6 +917,27 @@ export function initRadar(opts: RadarUIOptions): () => void {
           : sigmaDistanceMeters(existing.distanceM, existing.rssiSigma, PATH_LOSS_N);
 
       existing.confidence = confidenceScore(existing.stats.count, existing.rssiSigma, existing.evidence);
+
+      const dtMs = Math.max(1, now - prevSeen);
+      const instantaneousHz = 1000 / dtMs;
+      existing.updateHz = existing.updateHz <= 0
+        ? instantaneousHz
+        : existing.updateHz * 0.72 + instantaneousHz * 0.28;
+
+      if (prevDistanceM !== null && existing.distanceM !== null) {
+        const instantRate = (existing.distanceM - prevDistanceM) / (dtMs / 1000);
+        existing.distanceRateMps = existing.distanceRateMps === null
+          ? instantRate
+          : existing.distanceRateMps * 0.65 + instantRate * 0.35;
+      } else {
+        existing.distanceRateMps = null;
+      }
+      existing.trend = trendFromRate(existing.distanceRateMps);
+
+      existing.history.push({ time: now, distanceM: existing.distanceM, rssi });
+      if (existing.history.length > TARGET_HISTORY_LIMIT) {
+        existing.history.splice(0, existing.history.length - TARGET_HISTORY_LIMIT);
+      }
     }
 
     renderStats();
@@ -832,6 +980,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
     const cx = cssWidth * 0.5;
     const cy = cssHeight * 0.5;
     const scopeRadius = Math.max(0, Math.min(cssWidth, cssHeight) * 0.46);
+    const visibleTargets = Array.from(targets.values()).filter((target) => target.protocol !== "self");
+    const mapRangeM = resolveMapRangeMeters(visibleTargets);
 
     const styles = getComputedStyle(opts.canvas);
     const textRgb = styles.getPropertyValue("--color-text-rgb").trim() || "245 245 245";
@@ -840,8 +990,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
     context.clearRect(0, 0, cssWidth, cssHeight);
 
-    // Distance rings with labels
-    const ringDistances = [1, 5, 15, 35, 80];
+    const ringDistances = buildRangeRings(mapRangeM);
     const fontSize = Math.max(8, cssWidth * 0.024);
 
     context.lineWidth = 0.7;
@@ -849,18 +998,17 @@ export function initRadar(opts: RadarUIOptions): () => void {
     context.textAlign = "left";
     context.textBaseline = "bottom";
 
-    for (let i = 0; i < ringDistances.length; i++) {
-      const ringRadius = rangeToCanvasRadius(ringDistances[i], scopeRadius);
+    for (let i = 0; i < ringDistances.length; i += 1) {
+      const ringRadius = rangeToCanvasRadius(ringDistances[i], scopeRadius, mapRangeM);
       context.strokeStyle = `rgb(${textRgb} / 0.1)`;
       context.beginPath();
       context.arc(cx, cy, ringRadius, 0, Math.PI * 2);
       context.stroke();
 
       context.fillStyle = `rgb(${textRgb} / 0.2)`;
-      context.fillText(`${ringDistances[i]}m`, cx + 4, cy - ringRadius + fontSize + 1);
+      context.fillText(formatDistance(ringDistances[i]), cx + 4, cy - ringRadius + fontSize + 1);
     }
 
-    // Crosshairs
     context.strokeStyle = `rgb(${textRgb} / 0.07)`;
     context.lineWidth = 0.7;
     context.beginPath();
@@ -870,12 +1018,14 @@ export function initRadar(opts: RadarUIOptions): () => void {
     context.lineTo(cx, cy + scopeRadius);
     context.stroke();
 
-    // Compass cardinal directions
     if (compassHeading !== null) {
       const headingRad = (compassHeading * Math.PI) / 180;
-      const cardinals: Array<[string, number]> = [
-        ["N", 0], ["E", Math.PI / 2], ["S", Math.PI], ["W", (3 * Math.PI) / 2],
-      ];
+      const cardinals = [
+        ["N", 0],
+        ["E", Math.PI / 2],
+        ["S", Math.PI],
+        ["W", (3 * Math.PI) / 2],
+      ] as const;
       const labelOffset = scopeRadius + Math.max(10, cssWidth * 0.028);
       context.fillStyle = `rgb(${textRgb} / 0.3)`;
       context.font = `bold ${Math.max(9, cssWidth * 0.026)}px sans-serif`;
@@ -890,9 +1040,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
       }
     }
 
-    // Self accuracy radius (from GPS)
     if (selfAcc !== null && selfAcc > 0) {
-      const accRadius = rangeToCanvasRadius(selfAcc, scopeRadius);
+      const accRadius = rangeToCanvasRadius(selfAcc, scopeRadius, mapRangeM);
       if (accRadius > 6 && accRadius < scopeRadius) {
         context.strokeStyle = `rgb(${cyanRgb} / 0.08)`;
         context.lineWidth = 0.7;
@@ -904,20 +1053,18 @@ export function initRadar(opts: RadarUIOptions): () => void {
       }
     }
 
-    // ── Render targets ──────────────────────────────────────────────────
-
     const now = Date.now();
     canvasTargetHits.clear();
 
-    // Draw inferred ring once (shared by all inferred targets)
     let hasInferred = false;
-    for (const target of targets.values()) {
-      if (target.protocol !== "self" && target.evidence !== "measured") {
+    for (const target of visibleTargets) {
+      if (target.evidence !== "measured") {
         hasInferred = true;
         break;
       }
     }
-    const inferredRadius = scopeRadius * 0.78;
+
+    const inferredRadius = scopeRadius * 0.83;
     if (hasInferred) {
       context.strokeStyle = `rgb(${textRgb} / 0.08)`;
       context.setLineDash([3, 5]);
@@ -928,9 +1075,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
       context.setLineDash([]);
     }
 
-    for (const target of targets.values()) {
-      if (target.protocol === "self") continue;
-
+    for (const target of visibleTargets) {
       const age = now - target.lastSeen;
       const staleFactor = clamp(1 - age / STALE_TARGET_MS, 0.2, 1);
       const isSelected = selectedContactId === target.id;
@@ -947,12 +1092,14 @@ export function initRadar(opts: RadarUIOptions): () => void {
       let markerSize: number;
 
       if (target.evidence === "measured" && target.distanceM !== null) {
-        const radius = rangeToCanvasRadius(target.distanceM, scopeRadius);
-
-        // Uncertainty band
+        const radius = rangeToCanvasRadius(target.distanceM, scopeRadius, mapRangeM);
         const sigma = target.sigmaM ?? 0.5;
-        const innerRadius = rangeToCanvasRadius(Math.max(MIN_DISTANCE_M, target.distanceM - sigma), scopeRadius);
-        const outerRadius = rangeToCanvasRadius(target.distanceM + sigma, scopeRadius);
+        const innerRadius = rangeToCanvasRadius(
+          Math.max(MIN_DISTANCE_M, target.distanceM - sigma),
+          scopeRadius,
+          mapRangeM,
+        );
+        const outerRadius = rangeToCanvasRadius(target.distanceM + sigma, scopeRadius, mapRangeM);
         const bandWidth = outerRadius - innerRadius;
 
         context.strokeStyle = `rgb(${colorRgb} / ${(0.08 * staleFactor).toFixed(3)})`;
@@ -961,25 +1108,49 @@ export function initRadar(opts: RadarUIOptions): () => void {
         context.arc(cx, cy, radius, 0, Math.PI * 2);
         context.stroke();
 
+        if (target.history.length > 2) {
+          context.strokeStyle = `rgb(${colorRgb} / ${(0.2 * staleFactor).toFixed(3)})`;
+          context.lineWidth = 1;
+          context.beginPath();
+          let drewTrail = false;
+          for (const sample of target.history) {
+            if (sample.distanceM === null) continue;
+            const historyRadius = rangeToCanvasRadius(sample.distanceM, scopeRadius, mapRangeM);
+            const hx = cx + Math.cos(target.angleRad) * historyRadius;
+            const hy = cy + Math.sin(target.angleRad) * historyRadius;
+            if (!drewTrail) {
+              context.moveTo(hx, hy);
+              drewTrail = true;
+            } else {
+              context.lineTo(hx, hy);
+            }
+          }
+          if (drewTrail) context.stroke();
+        }
+
         tx = cx + Math.cos(target.angleRad) * radius;
         ty = cy + Math.sin(target.angleRad) * radius;
-        markerSize = clamp(2 + target.confidence * 3, 2.2, 5.5);
+        markerSize = clamp(2.2 + target.confidence * 3.6, 2.2, 6.2);
+      } else if (isLocalBrowserTarget(target)) {
+        const inner = scopeRadius * 0.08;
+        const outer = scopeRadius * 0.22;
+        const localRadius = inner + (outer - inner) * hashUnit(target.id);
+        tx = cx + Math.cos(target.angleRad) * localRadius;
+        ty = cy + Math.sin(target.angleRad) * localRadius;
+        markerSize = 2.9;
       } else {
-        if (isLocalBrowserTarget(target)) {
-          const inner = scopeRadius * 0.08;
-          const outer = scopeRadius * 0.22;
-          const localRadius = inner + (outer - inner) * hashUnit(target.id);
-          tx = cx + Math.cos(target.angleRad) * localRadius;
-          ty = cy + Math.sin(target.angleRad) * localRadius;
-          markerSize = 2.9;
-        } else {
-          tx = cx + Math.cos(target.angleRad) * inferredRadius;
-          ty = cy + Math.sin(target.angleRad) * inferredRadius;
-          markerSize = 2.5;
-        }
+        tx = cx + Math.cos(target.angleRad) * inferredRadius;
+        ty = cy + Math.sin(target.angleRad) * inferredRadius;
+        markerSize = 2.5;
       }
 
-      // Marker dot
+      if (target.evidence === "measured") {
+        context.fillStyle = `rgb(${colorRgb} / ${(0.06 * staleFactor).toFixed(3)})`;
+        context.beginPath();
+        context.arc(tx, ty, markerSize + 4, 0, Math.PI * 2);
+        context.fill();
+      }
+
       context.fillStyle = `rgb(${colorRgb} / ${alpha.toFixed(3)})`;
       context.beginPath();
       context.arc(tx, ty, markerSize, 0, Math.PI * 2);
@@ -991,7 +1162,6 @@ export function initRadar(opts: RadarUIOptions): () => void {
         r: Math.max(markerSize + 8, 11),
       });
 
-      // Selection indicator + label
       if (isSelected || isHovered) {
         const ringAlpha = isSelected ? 0.5 * staleFactor : 0.3 * staleFactor;
         context.strokeStyle = `rgb(${colorRgb} / ${ringAlpha.toFixed(3)})`;
@@ -1005,41 +1175,98 @@ export function initRadar(opts: RadarUIOptions): () => void {
         context.textAlign = "center";
         context.textBaseline = "bottom";
         const distLabel = target.distanceM !== null ? ` ${formatDistance(target.distanceM)}` : "";
-        context.fillText(`${target.label}${distLabel}`, tx, ty - markerSize - 5);
+        const bearing = Math.round(angleRadToBearingDeg(target.angleRad));
+        context.fillText(`${target.label}${distLabel} ${bearing}deg`, tx, ty - markerSize - 5);
       }
     }
 
-    // Center self dot
+    const selectedTarget = selectedContactId ? targets.get(selectedContactId) ?? null : null;
+    if (selectedTarget && selectedTarget.protocol !== "self") {
+      const hit = canvasTargetHits.get(selectedTarget.id);
+      if (hit) {
+        const bearingDeg = angleRadToBearingDeg(selectedTarget.angleRad);
+
+        context.strokeStyle = `rgb(${cyanRgb} / 0.26)`;
+        context.lineWidth = 0.9;
+        context.setLineDash([4, 4]);
+        context.beginPath();
+        context.moveTo(cx, cy);
+        context.lineTo(hit.x, hit.y);
+        context.stroke();
+        context.setLineDash([]);
+
+        const statusParts = [
+          `lock ${selectedTarget.label}`,
+          selectedTarget.distanceM !== null ? formatDistance(selectedTarget.distanceM) : "inferred",
+          `${Math.round(selectedTarget.confidence * 100)}pct`,
+          `${Math.round(bearingDeg)}deg ${bearingToCardinal(bearingDeg)}`,
+          selectedTarget.trend,
+        ];
+        context.fillStyle = `rgb(${textRgb} / 0.68)`;
+        context.font = `${Math.max(9, cssWidth * 0.021)}px sans-serif`;
+        context.textAlign = "left";
+        context.textBaseline = "top";
+        context.fillText(statusParts.join(" | "), 8, 8);
+      }
+    }
+
     context.fillStyle = `rgb(${cyanRgb} / 0.7)`;
     context.beginPath();
     context.arc(cx, cy, 3.5, 0, Math.PI * 2);
     context.fill();
-  }
 
-  // ── Render: stats, contacts, events, capabilities ──────────────────────
+    context.fillStyle = `rgb(${textRgb} / 0.3)`;
+    context.font = `${Math.max(8, cssWidth * 0.021)}px sans-serif`;
+    context.textAlign = "right";
+    context.textBaseline = "bottom";
+    context.fillText(`range ${Math.round(mapRangeM)}m`, cssWidth - 8, cssHeight - 8);
+  }
 
   function renderStats(): void {
     let bt = 0;
     let wifi = 0;
     let radio = 0;
+    let active = 0;
+    let measured = 0;
+    let inferred = 0;
+    let nearest: number | null = null;
+    const now = Date.now();
     for (const target of targets.values()) {
+      if (target.protocol === "self") continue;
       if (target.protocol === "bluetooth") bt += 1;
       if (target.protocol === "wifi") wifi += 1;
       if (target.protocol === "radio") radio += 1;
+      if (now - target.lastSeen <= CONTACT_ACTIVE_WINDOW_MS) active += 1;
+      if (target.evidence === "measured" && target.distanceM !== null) {
+        measured += 1;
+        nearest = nearest === null ? target.distanceM : Math.min(nearest, target.distanceM);
+      } else {
+        inferred += 1;
+      }
     }
 
-    opts.totalEl.textContent = String(targets.size);
+    opts.totalEl.textContent = String(bt + wifi + radio);
     opts.bluetoothCountEl.textContent = String(bt);
     opts.wifiCountEl.textContent = String(wifi);
     opts.radioCountEl.textContent = String(radio);
+    opts.activeEl.textContent = String(active);
+    opts.measuredEl.textContent = String(measured);
+    opts.inferredEl.textContent = String(inferred);
+    opts.nearestEl.textContent = nearest === null ? "--" : formatDistance(nearest);
   }
 
   function renderContacts(): void {
+    const now = Date.now();
     const sorted = Array.from(targets.values())
-      .filter((t) => t.protocol !== "self")
+      .filter((target) => target.protocol !== "self")
       .sort((a, b) => {
-        if (a.distanceM !== null && b.distanceM === null) return -1;
-        if (a.distanceM === null && b.distanceM !== null) return 1;
+        const aMeasured = a.evidence === "measured" && a.distanceM !== null;
+        const bMeasured = b.evidence === "measured" && b.distanceM !== null;
+        if (aMeasured !== bMeasured) return aMeasured ? -1 : 1;
+
+        const priorityDelta = computeTargetPriority(b, now) - computeTargetPriority(a, now);
+        if (Math.abs(priorityDelta) > 0.0001) return priorityDelta;
+
         if (a.distanceM !== null && b.distanceM !== null) return a.distanceM - b.distanceM;
         return b.lastSeen - a.lastSeen;
       })
@@ -1047,21 +1274,25 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
     if (sorted.length === 0) {
       opts.contactsEl.innerHTML = "<li>no contacts</li>";
+      renderLock(null, sorted, now);
       return;
     }
 
-    const now = Date.now();
     opts.contactsEl.innerHTML = sorted
       .map((target) => {
         const ageSec = Math.max(0, Math.floor((now - target.lastSeen) / 1000));
         const conf = Math.round(target.confidence * 100);
+        const priority = Math.round(computeTargetPriority(target, now) * 100);
+        const bearingDeg = angleRadToBearingDeg(target.angleRad);
+        const cardinal = bearingToCardinal(bearingDeg);
+        const relativeLabel = relativeBearingLabel(bearingDeg, compassHeading);
         const isSelected = selectedContactId === target.id;
         const isHovered = hoveredContactId === target.id;
         const selectedClass = isSelected ? " contact-selected" : "";
         const hoverClass = !isSelected && isHovered ? " contact-hovered" : "";
-        const meta = target.meta ? ` · ${escapeText(target.meta)}` : "";
+        const meta = target.meta ? ` | ${escapeText(target.meta)}` : "";
+        const trend = target.trend === "unknown" ? "unknown" : target.trend;
 
-        // Expanded detail for selected contact
         let detail = "";
         if (isSelected) {
           const lines: string[] = [];
@@ -1071,29 +1302,119 @@ export function initRadar(opts: RadarUIOptions): () => void {
           lines.push(`tx power: ${target.txPower} dBm`);
           lines.push(`samples: ${target.stats.count}`);
           lines.push(`variance: ${variance(target.stats).toFixed(2)}`);
+          lines.push(`update rate: ${formatUpdateRate(target.updateHz)}`);
+          lines.push(`range rate: ${formatRate(target.distanceRateMps)}`);
+          lines.push(`trend: ${trend}`);
+          lines.push(`priority: ${priority}pct`);
+          lines.push(`bearing: ${Math.round(bearingDeg)}deg ${cardinal}`);
+          if (relativeLabel) lines.push(`relative: ${relativeLabel}`);
           lines.push(`evidence: ${target.evidence}`);
           if (target.distanceM !== null) {
             lines.push(`distance: ${formatDistance(target.distanceM)}`);
           }
           if (target.sigmaM !== null) {
-            lines.push(`distance sigma: ±${target.sigmaM.toFixed(2)}m`);
+            lines.push(`distance sigma: +/-${target.sigmaM.toFixed(2)}m`);
           }
           lines.push(`confidence: ${conf}%`);
           lines.push(`first seen: ${formatTime(target.firstSeen)}`);
           lines.push(`last seen: ${formatTime(target.lastSeen)} (${ageSec}s ago)`);
-          lines.push(`angle: ${Math.round((target.angleRad * 180) / Math.PI)}°`);
+          lines.push(`angle: ${Math.round((target.angleRad * 180) / Math.PI)}deg`);
           if (target.meta) lines.push(`meta: ${target.meta}`);
 
-          detail = `<div class="contact-detail">${lines.map((l) => `<div>${escapeText(l)}</div>`).join("")}</div>`;
+          detail = `<div class="contact-detail">${lines.map((line) => `<div>${escapeText(line)}</div>`).join("")}</div>`;
         }
 
         if (target.evidence === "measured" && target.distanceM !== null && target.sigmaM !== null) {
-          return `<li class="contact-item${selectedClass}${hoverClass}" data-contact-id="${escapeText(target.id)}" role="button" tabindex="0" aria-expanded="${isSelected ? "true" : "false"}"><div class="contact-summary"><strong>${escapeText(target.label)}</strong> · ${target.protocol} · ${formatDistance(target.distanceM)} ±${target.sigmaM.toFixed(1)}m · ${conf}% · ${ageSec}s${meta}</div>${detail}</li>`;
+          const summaryParts = [
+            `${target.protocol}`,
+            `${formatDistance(target.distanceM)} +/-${target.sigmaM.toFixed(1)}m`,
+            `${Math.round(bearingDeg)}deg ${cardinal}`,
+            `${conf}% conf`,
+            `${priority} pri`,
+            `${trend}`,
+            `${ageSec}s`,
+          ];
+          if (relativeLabel) summaryParts.splice(3, 0, relativeLabel);
+
+          return `<li class="contact-item${selectedClass}${hoverClass}" data-contact-id="${escapeText(target.id)}" role="button" tabindex="0" aria-expanded="${isSelected ? "true" : "false"}"><div class="contact-summary"><strong>${escapeText(target.label)}</strong> | ${summaryParts.join(" | ")}${meta}</div>${detail}</li>`;
         }
 
-        return `<li class="contact-item${selectedClass}${hoverClass}" data-contact-id="${escapeText(target.id)}" role="button" tabindex="0" aria-expanded="${isSelected ? "true" : "false"}"><div class="contact-summary"><strong>${escapeText(target.label)}</strong> · ${target.protocol} · inferred · ${conf}% · ${ageSec}s${meta}</div>${detail}</li>`;
+        const inferredParts = [
+          target.protocol,
+          "inferred",
+          `${Math.round(bearingDeg)}deg ${cardinal}`,
+          `${priority} pri`,
+          `${conf}% conf`,
+          `${ageSec}s`,
+        ];
+        if (relativeLabel) inferredParts.splice(3, 0, relativeLabel);
+        return `<li class="contact-item${selectedClass}${hoverClass}" data-contact-id="${escapeText(target.id)}" role="button" tabindex="0" aria-expanded="${isSelected ? "true" : "false"}"><div class="contact-summary"><strong>${escapeText(target.label)}</strong> | ${inferredParts.join(" | ")}${meta}</div>${detail}</li>`;
       })
       .join("");
+
+    renderLock(selectedContactId ? targets.get(selectedContactId) ?? null : null, sorted, now);
+  }
+
+  function renderLock(selectedTarget: RadarTarget | null, sorted: RadarTarget[], now: number): void {
+    if (!selectedTarget) {
+      if (sorted.length === 0) {
+        opts.lockEl.innerHTML = "<li>no lock target</li>";
+        return;
+      }
+
+      let active = 0;
+      let measured = 0;
+      let nearest: number | null = null;
+      for (const target of sorted) {
+        if (now - target.lastSeen <= CONTACT_ACTIVE_WINDOW_MS) active += 1;
+        if (target.evidence === "measured" && target.distanceM !== null) {
+          measured += 1;
+          nearest = nearest === null ? target.distanceM : Math.min(nearest, target.distanceM);
+        }
+      }
+
+      const top = sorted
+        .slice(0, 3)
+        .map((target, index) => {
+          const priority = Math.round(computeTargetPriority(target, now) * 100);
+          const ageSec = Math.max(0, Math.floor((now - target.lastSeen) / 1000));
+          const bearingDeg = angleRadToBearingDeg(target.angleRad);
+          const rangeLabel = target.distanceM === null ? "inferred" : formatDistance(target.distanceM);
+          return `<li class="lock-secondary"><strong>${index + 1}.</strong> ${escapeText(target.label)} | ${target.protocol} | ${rangeLabel} | ${Math.round(bearingDeg)}deg | ${priority} pri | ${ageSec}s</li>`;
+        })
+        .join("");
+
+      const summaryParts = [
+        `contacts ${sorted.length}`,
+        `active ${active}`,
+        `measured ${measured}`,
+        `inferred ${sorted.length - measured}`,
+        `nearest ${nearest === null ? "--" : formatDistance(nearest)}`,
+        `range ${Math.round(resolveMapRangeMeters(sorted))}m`,
+      ];
+      opts.lockEl.innerHTML = `<li class="lock-primary"><strong>scan summary</strong> | ${summaryParts.join(" | ")}</li>${top}`;
+      return;
+    }
+
+    const ageSec = Math.max(0, Math.floor((now - selectedTarget.lastSeen) / 1000));
+    const conf = Math.round(selectedTarget.confidence * 100);
+    const priority = Math.round(computeTargetPriority(selectedTarget, now) * 100);
+    const bearingDeg = angleRadToBearingDeg(selectedTarget.angleRad);
+    const cardinal = bearingToCardinal(bearingDeg);
+    const relative = relativeBearingLabel(bearingDeg, compassHeading);
+    const rangeLabel = selectedTarget.distanceM === null ? "inferred" : formatDistance(selectedTarget.distanceM);
+    const sigmaLabel = selectedTarget.sigmaM === null ? "" : ` +/-${selectedTarget.sigmaM.toFixed(1)}m`;
+    const trend = selectedTarget.trend === "unknown" ? "unknown" : selectedTarget.trend;
+
+    const lines = [
+      `<li class="lock-primary"><strong>lock ${escapeText(selectedTarget.label)}</strong> | ${selectedTarget.protocol} | ${rangeLabel}${sigmaLabel} | ${Math.round(bearingDeg)}deg ${cardinal}${relative ? ` | ${relative}` : ""} | ${trend}</li>`,
+      `<li class="lock-secondary"><strong>signal</strong> rssi ${Math.round(selectedTarget.rssiFiltered)} dBm | sigma ${selectedTarget.rssiSigma.toFixed(1)} dB | conf ${conf}% | pri ${priority}</li>`,
+      `<li class="lock-secondary"><strong>kinematics</strong> ${escapeText(formatRate(selectedTarget.distanceRateMps))} | update ${escapeText(formatUpdateRate(selectedTarget.updateHz))} | age ${ageSec}s</li>`,
+    ];
+    if (selectedTarget.meta) {
+      lines.push(`<li class="lock-secondary"><strong>meta</strong> ${escapeText(selectedTarget.meta)}</li>`);
+    }
+    opts.lockEl.innerHTML = lines.join("");
   }
 
   function renderEvents(): void {
@@ -1105,7 +1426,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     opts.eventsEl.innerHTML = events
       .slice(0, 40)
       .map((item) => {
-        const repeat = item.repeatCount && item.repeatCount > 1 ? ` ×${item.repeatCount}` : "";
+        const repeat = item.repeatCount && item.repeatCount > 1 ? ` x${item.repeatCount}` : "";
         return `<li>${escapeText(formatTime(item.time))} ${escapeText(item.message)}${escapeText(repeat)}</li>`;
       })
       .join("");
@@ -1115,7 +1436,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     opts.capabilitiesEl.innerHTML = capabilities
       .map((cap) => {
         const status = cap.available ? "+" : "-";
-        return `<li><strong>${status} ${escapeText(cap.key)}</strong> · ${cap.quality} · ${escapeText(cap.note)}</li>`;
+        return `<li><strong>${status} ${escapeText(cap.key)}</strong> | ${cap.quality} | ${escapeText(cap.note)}</li>`;
       })
       .join("");
   }
@@ -1124,7 +1445,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     if (selfLat !== null && selfLon !== null) {
       const lat = formatCoord(selfLat, "N", "S");
       const lon = formatCoord(selfLon, "E", "W");
-      const acc = selfAcc !== null ? ` ±${Math.round(selfAcc)}m` : "";
+      const acc = selfAcc !== null ? ` +/-${Math.round(selfAcc)}m` : "";
       opts.selfLocEl.textContent = `${lat} ${lon}${acc}`;
     } else {
       opts.selfLocEl.textContent = "no fix";
@@ -1133,7 +1454,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
   function renderCompass(): void {
     if (compassHeading !== null) {
-      opts.compassEl.textContent = `${Math.round(compassHeading)}°`;
+      opts.compassEl.textContent = `${Math.round(compassHeading)}deg`;
     } else {
       opts.compassEl.textContent = "--";
     }
@@ -1151,10 +1472,19 @@ export function initRadar(opts: RadarUIOptions): () => void {
     opts.modeEl.textContent = mode;
   }
 
+  function updateModeRuntime(): void {
+    if (!running || scanStartedAt === null) return;
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - scanStartedAt) / 1000));
+    if (elapsedSec === lastModeSecond) return;
+    lastModeSecond = elapsedSec;
+    setMode(`scanning ${elapsedSec}s`);
+  }
+
   // ── Animation loop (just redraws — no sweep gimmick) ───────────────────
 
   function tick(): void {
     if (destroyed) return;
+    updateModeRuntime();
     drawCanvas();
     animationFrameId = requestAnimationFrame(tick);
   }
@@ -1191,7 +1521,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
       evidence: "inferred",
       rssi: inferredRssi ?? -60,
       txPower: DEFAULT_TX_POWER,
-      meta: metrics.join(" · "),
+      meta: metrics.join(" | "),
     });
   }
 
@@ -1251,7 +1581,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
             evidence: "inferred",
             rssi: isPrivate ? -52 : -74,
             txPower: DEFAULT_TX_POWER,
-            meta: metaParts.join(" · "),
+            meta: metaParts.join(" | "),
           });
         } else if (parsed.isMdns) {
           // mDNS-obfuscated candidate — still a real network interface,
@@ -1270,7 +1600,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
             evidence: "inferred",
             rssi: parsed.type === "host" ? -48 : -62,
             txPower: DEFAULT_TX_POWER,
-            meta: metaParts.join(" · "),
+            meta: metaParts.join(" | "),
           });
         }
       });
@@ -1315,12 +1645,12 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
         upsertTarget({
           id: `hw:${kind}`,
-          label: `${count}× ${kindLabel}`,
+          label: `${count}x ${kindLabel}`,
           protocol: "radio",
           evidence: "inferred",
           rssi: -30, // local hardware, treat as very close
           txPower: DEFAULT_TX_POWER,
-          meta: `${count} local device${count > 1 ? "s" : ""} · ${kindLabel}`,
+          meta: `${count} local device${count > 1 ? "s" : ""} | ${kindLabel}`,
         });
       }
     } catch { /* permission denied or unavailable */ }
@@ -1330,7 +1660,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
   async function startBluetoothScan(): Promise<void> {
     if (!bluetooth || typeof bluetooth.requestLEScan !== "function") {
-      pushEvent("LE scan unavailable · Chrome only · enable chrome://flags/#enable-experimental-web-platform-features");
+      pushEvent("LE scan unavailable | Chrome only | enable chrome://flags/#enable-experimental-web-platform-features");
       return;
     }
 
@@ -1363,7 +1693,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
           evidence: "measured",
           rssi,
           txPower,
-          meta: `rssi ${rssi} · tx ${txPower} · ${services} svc`,
+          meta: `rssi ${rssi} | tx ${txPower} | ${services} svc`,
         });
       };
 
@@ -1423,9 +1753,9 @@ export function initRadar(opts: RadarUIOptions): () => void {
           if (!destroyed) {
             const existing = targets.get(`bt:pick:${device.id}`);
             if (existing) {
-              existing.meta = `paired · ${services.length} GATT service${services.length !== 1 ? "s" : ""}`;
+              existing.meta = `paired | ${services.length} GATT service${services.length !== 1 ? "s" : ""}`;
               const uuids = services.map((s) => s.uuid).join(", ");
-              if (uuids) existing.meta += ` · ${uuids}`;
+              if (uuids) existing.meta += ` | ${uuids}`;
             }
             renderContacts();
             pushEvent(`${label}: ${services.length} GATT services`);
@@ -1572,8 +1902,10 @@ export function initRadar(opts: RadarUIOptions): () => void {
   function startSweep(): void {
     if (running) return;
     running = true;
+    scanStartedAt = Date.now();
+    lastModeSecond = -1;
     syncButtonStates();
-    setMode("scanning");
+    setMode("scanning 0s");
     pushEvent("scan started");
 
     // Start sensors on first scan — this is inside the click handler chain,
@@ -1600,6 +1932,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
   function stopSweep(): void {
     if (!running) return;
     running = false;
+    scanStartedAt = null;
+    lastModeSecond = -1;
     syncButtonStates();
     setMode("idle");
     pushEvent("scan stopped");
@@ -1776,7 +2110,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
       ? ""
       : "Bluetooth picker API not available in this browser";
   }
-  opts.modelEl.textContent = "log-distance path-loss + kalman + welford variance";
+  opts.modelEl.textContent = "path-loss + kalman + online variance + bearing/rate telemetry";
   setMode("idle");
 
   syncButtonStates();
@@ -1802,3 +2136,5 @@ export function initRadar(opts: RadarUIOptions): () => void {
     for (const cleanup of cleanups) cleanup();
   };
 }
+
+

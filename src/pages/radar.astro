@@ -74,6 +74,22 @@ const seo = {
           <span class="stat-number tabular-nums" id="radar-radio-count">0</span>
           <span class="stat-label">radio</span>
         </div>
+        <div class="stat-chip">
+          <span class="stat-number tabular-nums" id="radar-active">0</span>
+          <span class="stat-label">active</span>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-number tabular-nums" id="radar-measured">0</span>
+          <span class="stat-label">measured</span>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-number tabular-nums" id="radar-inferred">0</span>
+          <span class="stat-label">inferred</span>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-number tabular-nums" id="radar-nearest">--</span>
+          <span class="stat-label">nearest</span>
+        </div>
       </div>
     </section>
 
@@ -82,6 +98,14 @@ const seo = {
         <h2 class="feed-title">contacts</h2>
         <p class="feed-hint">select a contact to expand signal detail</p>
         <ul id="radar-contacts" class="feed-list feed-list-contacts" aria-live="polite"></ul>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] content-section">
+      <div class="radar-feed surface-raised">
+        <h2 class="feed-title">lock</h2>
+        <p class="feed-hint">target lock with derived range, bearing, and trend</p>
+        <ul id="radar-lock" class="feed-list feed-list-lock" aria-live="polite"></ul>
       </div>
     </section>
 
@@ -102,7 +126,10 @@ const seo = {
     <section class="mt-[var(--space-sm)] mb-[var(--space-xl)] content-section">
       <div class="radar-model surface-raised">
         <p class="model-note">
-          all client-side, nothing leaves your device. distance is estimated by signal strength and smoothed with a Kalman filter. contacts are inferred from network routing... not literal nearby people.
+          fully client-side. measured range comes from log-distance path loss with
+          Kalman-filtered RSSI and online variance tracking. lock telemetry uses
+          derived bearing/rate from the same local signals. inferred contacts are
+          network and route hints, not literal nearby people.
         </p>
       </div>
     </section>
@@ -304,6 +331,19 @@ const seo = {
     max-height: 28rem;
   }
 
+  .feed-list-lock {
+    max-height: none;
+  }
+
+  .feed-list-lock :global(li) {
+    font-family: monospace;
+    line-height: 1.45;
+  }
+
+  .feed-list-lock :global(li strong) {
+    font-family: var(--font-body);
+  }
+
   .feed-list :global(li) {
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     border-radius: var(--radius-sm);
@@ -355,6 +395,16 @@ const seo = {
     gap: 0.1rem;
     line-height: 1.5;
     word-break: break-word;
+  }
+
+  .feed-list-lock :global(li.lock-primary) {
+    border-color: rgb(var(--chromatic-cyan) / 0.28);
+    background: rgb(var(--chromatic-cyan) / 0.05);
+  }
+
+  .feed-list-lock :global(li.lock-secondary strong) {
+    color: var(--color-text-muted);
+    font-weight: 600;
   }
 
   .radar-actions {
