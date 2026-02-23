@@ -1125,14 +1125,14 @@ const seo = {
 
   @container (max-width: 40rem) {
     .dp-header {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: calc(var(--space-xs) * 0.3);
+      justify-content: space-between;
+      align-items: baseline;
+      gap: calc(var(--space-xs) * 0.6);
     }
 
     .dp-value {
-      text-align: left;
-      max-width: 100%;
+      text-align: right;
+      max-width: min(72%, 28rem);
     }
 
     .dp-row {
@@ -1140,13 +1140,7 @@ const seo = {
     }
 
     .dp-row[data-id="fp.canvasPreview"] .dp-value {
-      justify-content: flex-start;
-    }
-  }
-
-  @container (min-width: 48rem) {
-    .dp-value {
-      max-width: min(64%, 44rem);
+      justify-content: flex-end;
     }
   }
 
@@ -1157,10 +1151,6 @@ const seo = {
 
     .dp-row {
       padding-inline: calc(var(--space-xs) * 1.75);
-    }
-
-    .dp-value {
-      max-width: min(58%, 46rem);
     }
   }
 
