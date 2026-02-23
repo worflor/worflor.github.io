@@ -95,6 +95,7 @@ const seo = {
 
     const MIRROR_LIFECYCLE_KEY = "__digitalMirrorLifecycle";
     let cleanupMirror: (() => void) | null = null;
+    const mirrorWindow = window as any;
 
     function boot() {
       if (typeof cleanupMirror === "function") {
@@ -150,19 +151,40 @@ const seo = {
       }
     }
 
-    const mirrorWindow = window as any;
-    const prev = mirrorWindow[MIRROR_LIFECYCLE_KEY];
-    if (prev) {
-      document.removeEventListener("astro:after-swap", prev.boot);
-      document.removeEventListener("astro:before-swap", prev.teardown);
-      prev.teardown();
+    function detachLifecycle() {
+      document.removeEventListener("astro:after-swap", boot);
+      document.removeEventListener("astro:before-swap", handleBeforeSwap);
     }
 
-    mirrorWindow[MIRROR_LIFECYCLE_KEY] = { boot, teardown };
+    function handleBeforeSwap() {
+      teardown();
+      detachLifecycle();
+      const current = mirrorWindow[MIRROR_LIFECYCLE_KEY];
+      if (current?.boot === boot) {
+        delete mirrorWindow[MIRROR_LIFECYCLE_KEY];
+      }
+    }
+
+    function attachLifecycle() {
+      document.addEventListener("astro:after-swap", boot);
+      document.addEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    const prev = mirrorWindow[MIRROR_LIFECYCLE_KEY];
+    if (prev) {
+      if (typeof prev.detach === "function") {
+        prev.detach();
+      } else {
+        document.removeEventListener("astro:after-swap", prev.boot);
+        document.removeEventListener("astro:before-swap", prev.teardown);
+      }
+      prev.teardown?.();
+    }
+
+    mirrorWindow[MIRROR_LIFECYCLE_KEY] = { boot, teardown, detach: detachLifecycle };
 
     boot();
-    document.addEventListener("astro:after-swap", boot);
-    document.addEventListener("astro:before-swap", teardown);
+    attachLifecycle();
   </script>
 </Layout>
 

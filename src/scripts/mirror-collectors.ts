@@ -65,18 +65,32 @@ function pt(
   live = false,
   weight = 1,
   action?: () => Promise<string | number | boolean | null>,
+  statusOverride?: CollectionStatus,
 ): DataPoint {
   return {
     id,
     label,
     value,
-    status: value === null ? "unavailable" : "resolved",
+    status: statusOverride ?? (value === null ? "unavailable" : "resolved"),
     explanation,
     sensitive,
     live,
     privacyWeight: weight,
     action,
   };
+}
+
+function pendingPt(
+  id: string,
+  label: string,
+  value: string | number | boolean | null,
+  explanation: string,
+  sensitive = false,
+  live = false,
+  weight = 1,
+  action?: () => Promise<string | number | boolean | null>,
+): DataPoint {
+  return pt(id, label, value, explanation, sensitive, live, weight, action, "pending");
 }
 
 function str(v: unknown): string | null {
@@ -93,25 +107,54 @@ function has(obj: object, prop: string): boolean {
   return prop in obj;
 }
 
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 async function fetchJsonWithTimeout(
   url: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown> | null> {
+  throwIfAborted(signal);
+
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const onAbort = () => controller?.abort();
+  const requestSignal = controller?.signal ?? signal;
+
+  if (signal && controller) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }
 
   try {
     const response = await fetch(url, {
-      signal: controller?.signal,
+      signal: requestSignal,
       cache: "no-store",
       headers: { Accept: "application/json" },
     });
     if (!response.ok) return null;
     const json = await response.json();
     return typeof json === "object" && json !== null ? (json as Record<string, unknown>) : null;
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     return null;
   } finally {
+    if (signal && controller) {
+      signal.removeEventListener("abort", onAbort);
+    }
     if (timeoutId !== null) clearTimeout(timeoutId);
   }
 }
@@ -609,17 +652,21 @@ const NETWORK_PROVIDER_PIPELINE: Array<{
   { url: "https://ipapi.co/json/", timeoutMs: 4500, extract: extractFromIpapiCo },
 ];
 
-async function collectNetwork(): Promise<DataPoint[]> {
+async function collectNetwork(signal?: AbortSignal): Promise<DataPoint[]> {
   const p: DataPoint[] = [];
   let snapshot = emptyNetworkSnapshot();
 
+  throwIfAborted(signal);
+
   const providerResults = await Promise.allSettled(
     NETWORK_PROVIDER_PIPELINE.map(async provider => {
-      const raw = await fetchJsonWithTimeout(provider.url, provider.timeoutMs);
+      const raw = await fetchJsonWithTimeout(provider.url, provider.timeoutMs, signal);
       if (!raw) return null;
       return provider.extract(raw);
     }),
   );
+
+  throwIfAborted(signal);
 
   // Merge in configured provider order so precedence stays deterministic.
   for (const result of providerResults) {
@@ -629,7 +676,7 @@ async function collectNetwork(): Promise<DataPoint[]> {
 
   // Last-resort fallback: public IP only.
   if (!snapshot.ip) {
-    const ipify = await fetchJsonWithTimeout("https://api.ipify.org?format=json", 4000);
+    const ipify = await fetchJsonWithTimeout("https://api.ipify.org?format=json", 4000, signal);
     snapshot = mergeNetworkSnapshot(snapshot, { ip: str(ipify?.ip) });
   }
 
@@ -732,8 +779,9 @@ function collectBrowser(): DataPoint[] {
   return p;
 }
 
-async function collectBrowserAsync(): Promise<DataPoint[]> {
+async function collectBrowserAsync(signal?: AbortSignal): Promise<DataPoint[]> {
   const p: DataPoint[] = [];
+  throwIfAborted(signal);
   const uad = (navigator as any).userAgentData;
   if (!uad?.getHighEntropyValues) return p;
 
@@ -741,6 +789,7 @@ async function collectBrowserAsync(): Promise<DataPoint[]> {
     const he = await uad.getHighEntropyValues([
       "architecture", "bitness", "model", "platformVersion", "fullVersionList", "wow64",
     ]);
+    throwIfAborted(signal);
     p.push(pt("br.arch", "Architecture", str(he.architecture), "CPU architecture - x86, arm, etc.", false, false, 3));
     p.push(pt("br.bitness", "Bitness", str(he.bitness), "32-bit or 64-bit OS/CPU.", false, false, 2));
     p.push(pt("br.model", "Device Model", str(he.model), "Device model string - usually only populated on mobile.", true, false, 3));
@@ -803,24 +852,30 @@ function collectDevice(): DataPoint[] {
   p.push(pt("hw.touchSupport", "Touch Support", "ontouchstart" in window || navigator.maxTouchPoints > 0, "Whether the device reports touchscreen support. Desktop Chrome may report true even without a physical touchscreen.", false, false, 2));
 
   // Gamepads
-  try {
-    const gp = navigator.getGamepads?.();
-    const names = gp ? Array.from(gp).filter(Boolean).map(g => g!.id) : [];
-    p.push(pt("hw.gamepads", "Gamepads", names.length > 0 ? names.join(", ") : null, "Connected game controllers and their IDs."));
-  } catch {
+  if (!navigator.getGamepads) {
     p.push(pt("hw.gamepads", "Gamepads", null, "Gamepad API not available."));
+  } else {
+    try {
+      const gp = navigator.getGamepads();
+      const names = gp ? Array.from(gp).filter(Boolean).map(g => g!.id) : [];
+      p.push(pt("hw.gamepads", "Gamepads", names.length > 0 ? names.join(", ") : "none", "Connected game controllers and their IDs."));
+    } catch {
+      p.push(pt("hw.gamepads", "Gamepads", null, "Gamepad API query failed."));
+    }
   }
 
   return p;
 }
 
-async function collectDeviceAsync(): Promise<DataPoint[]> {
+async function collectDeviceAsync(signal?: AbortSignal): Promise<DataPoint[]> {
   const p: DataPoint[] = [];
+  throwIfAborted(signal);
 
   // Battery
   try {
     if ("getBattery" in navigator) {
       const bat = await (navigator as any).getBattery();
+      throwIfAborted(signal);
       p.push(pt("hw.batteryLevel", "Battery Level", `${Math.round(bat.level * 100)}%`, "Current battery charge level.", true, true, 3));
       p.push(pt("hw.batteryCharging", "Charging", bat.charging, "Whether the device is currently plugged in.", false, true));
       if (bat.chargingTime !== Infinity && bat.chargingTime > 0) {
@@ -1321,22 +1376,29 @@ function collectMedia(): DataPoint[] {
   p.push(pt("media.mediaSession", "MediaSession", "mediaSession" in navigator, "Control media playback notifications and hardware media keys."));
 
   // Speech synthesis (voices reveal locale and OS)
-  try {
-    const voices = synth?.getVoices?.() || [];
-    p.push(pt("media.voiceCount", "Speech Voices", voices.length > 0 ? voices.length : null, "Text-to-speech voices - reveals installed languages and OS. Some browsers load voices asynchronously.", false, false, 3));
-    if (voices.length > 0) {
-      const langs = [...new Set(voices.map(v => v.lang))].sort();
-      p.push(pt("media.voiceLangs", "Voice Languages", langs.join(", "), "Languages available for text-to-speech."));
-    }
-  } catch {
+  if (!synth || typeof synth.getVoices !== "function") {
     p.push(pt("media.voiceCount", "Speech Voices", null, "Speech Synthesis API not available."));
+  } else {
+    try {
+      const voices = synth.getVoices();
+      if (voices.length > 0) {
+        p.push(pt("media.voiceCount", "Speech Voices", voices.length, "Text-to-speech voices - reveals installed languages and OS.", false, false, 3));
+        const langs = [...new Set(voices.map(v => v.lang))].sort();
+        p.push(pt("media.voiceLangs", "Voice Languages", langs.join(", "), "Languages available for text-to-speech."));
+      } else {
+        p.push(pendingPt("media.voiceCount", "Speech Voices", null, "Voice list is still loading; some browsers populate it asynchronously.", false, false, 3));
+      }
+    } catch {
+      p.push(pt("media.voiceCount", "Speech Voices", null, "Speech Synthesis API blocked."));
+    }
   }
 
   return p;
 }
 
-async function collectMediaAsync(): Promise<DataPoint[]> {
+async function collectMediaAsync(signal?: AbortSignal): Promise<DataPoint[]> {
   const p: DataPoint[] = [];
+  throwIfAborted(signal);
   const synth = typeof window !== "undefined" ? window.speechSynthesis : undefined;
   const pushMediaDeviceUnavailable = (reason: string): void => {
     p.push(pt("media.cameras", "Cameras", null, reason));
@@ -1384,8 +1446,10 @@ async function collectMediaAsync(): Promise<DataPoint[]> {
         permissionState("camera"),
         permissionState("microphone"),
       ]);
+      throwIfAborted(signal);
 
       const devices = await navigator.mediaDevices.enumerateDevices();
+      throwIfAborted(signal);
       const cameras = devices.filter(d => d.kind === "videoinput").length;
       const mics = devices.filter(d => d.kind === "audioinput").length;
       const speakers = devices.filter(d => d.kind === "audiooutput").length;
@@ -1451,10 +1515,13 @@ async function collectMediaAsync(): Promise<DataPoint[]> {
           synth.addEventListener("voiceschanged", check);
         }
       });
+      throwIfAborted(signal);
       if (voices.length > 0) {
         p.push(pt("media.voiceCount", "Speech Voices", voices.length, "Text-to-speech voices (loaded async).", false, false, 3));
         const langs = [...new Set(voices.map(v => v.lang))].sort();
         p.push(pt("media.voiceLangs", "Voice Languages", langs.join(", "), "Languages available for text-to-speech."));
+      } else {
+        p.push(pt("media.voiceCount", "Speech Voices", 0, "Speech Synthesis is available but no voices were reported after async probe.", false, false, 3));
       }
     }
   } catch { /* speechSynthesis issues */ }
@@ -1503,12 +1570,14 @@ function collectStorage(): DataPoint[] {
   return p;
 }
 
-async function collectStorageAsync(): Promise<DataPoint[]> {
+async function collectStorageAsync(signal?: AbortSignal): Promise<DataPoint[]> {
   const p: DataPoint[] = [];
+  throwIfAborted(signal);
 
   if (navigator.storage?.estimate) {
     try {
       const est = await navigator.storage.estimate();
+      throwIfAborted(signal);
       const usageMB = est.usage != null ? (est.usage / 1024 / 1024).toFixed(2) : "?";
       const quotaMB = est.quota != null ? (est.quota / 1024 / 1024).toFixed(0) : "?";
       p.push(pt("st.storageQuota", "Storage Quota", `${usageMB} MB / ${quotaMB} MB`, "How much storage this origin has used vs. available."));
@@ -1522,6 +1591,7 @@ async function collectStorageAsync(): Promise<DataPoint[]> {
   if (navigator.storage?.persisted) {
     try {
       const persisted = await navigator.storage.persisted();
+      throwIfAborted(signal);
       p.push(pt("st.persisted", "Storage Persisted", persisted, "Whether stored data is protected from automatic cleanup."));
     } catch {
       p.push(pt("st.persisted", "Storage Persisted", null, "Not available."));
@@ -1537,8 +1607,9 @@ async function collectStorageAsync(): Promise<DataPoint[]> {
 // 10. PERMISSIONS (probe without requesting)
 // 
 
-async function collectPermissions(): Promise<DataPoint[]> {
+async function collectPermissions(signal?: AbortSignal): Promise<DataPoint[]> {
   const p: DataPoint[] = [];
+  throwIfAborted(signal);
   if (!navigator.permissions?.query) {
     p.push(pt("perm.api", "Permissions API", false, "Permissions API not available in this browser."));
     return p;
@@ -1578,6 +1649,7 @@ async function collectPermissions(): Promise<DataPoint[]> {
       }
     }),
   );
+  throwIfAborted(signal);
 
   for (const r of results) {
     if (r.status === "fulfilled") p.push(r.value);
@@ -1731,8 +1803,156 @@ function collectAPIs(): DataPoint[] {
   p.push(pt("api.speechSynthesis", "Speech Synthesis", "speechSynthesis" in window, "Text-to-speech.",
     false, false, 1,
     "speechSynthesis" in window ? async () => {
+      // ── Weighted observation pool ───────────────────────────────────
+      // Each probe is independently failable. Higher weight = more
+      // interesting = survives the cut when we cap total observations.
+      type Observation = { weight: number; text: string };
+      const pool: Observation[] = [];
+      const observe = (weight: number, text: string) => pool.push({ weight, text });
+
+      /** Safely run a synchronous probe; returns undefined on any throw. */
+      function probe<T>(fn: () => T): T | undefined {
+        try { return fn(); } catch { return undefined; }
+      }
+      /** Safely run an async probe with a hard timeout. */
+      async function probeAsync<T>(fn: () => Promise<T>, ms: number): Promise<T | undefined> {
+        try {
+          return await Promise.race([
+            fn(),
+            new Promise<undefined>((r) => setTimeout(() => r(undefined), ms)),
+          ]);
+        } catch { return undefined; }
+      }
+
+      // ── Greeting (always leads, never pooled) ──────────────────────
+      const hour = new Date().getHours();
+      const greetings: [number, string][] = [
+        [5, "it is very late"],
+        [12, "good morning"],
+        [17, "good afternoon"],
+        [21, "good evening"],
+        [24, "it is getting late"],
+      ];
+      let greeting = "hello";
+      for (const [until, text] of greetings) {
+        if (hour < until) { greeting = text; break; }
+      }
+
+      // ── Timezone city ─────────────────────────────────────────────
+      const tz = probe(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+      if (tz) {
+        const city = tz.split("/").pop()?.replace(/_/g, " ");
+        if (city) observe(3, `I see you are in ${city}`);
+      }
+
+      // ── GPU ────────────────────────────────────────────────────────
+      const gpu = probe(() => {
+        const c = document.createElement("canvas");
+        const gl = c.getContext("webgl2") ?? c.getContext("webgl");
+        if (!gl) return undefined;
+        try {
+          const ext = gl.getExtension("WEBGL_debug_renderer_info");
+          return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string : undefined;
+        } finally {
+          gl.getExtension("WEBGL_lose_context")?.loseContext();
+        }
+      });
+      if (gpu) {
+        // ANGLE strings: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11...)"
+        const m = gpu.match(/ANGLE\s*\([^,]*,\s*([^,)]+)/);
+        const name = (m ? m[1] : gpu).trim();
+        if (name.length > 2 && name.length < 80) observe(5, `I see your ${name}`);
+      }
+
+      // ── CPU cores (value-aware phrasing) ───────────────────────────
+      const cores = probe(() => navigator.hardwareConcurrency);
+      if (typeof cores === "number" && cores > 0) {
+        const corePhrases: [number, string][] = [
+          [16, `${cores} cores, that is serious`],
+          [8, `${cores} cores, not bad at all`],
+          [4, `running on ${cores} cores`],
+          [0, `only ${cores} cores, cozy`],
+        ];
+        for (const [min, text] of corePhrases) {
+          if (cores >= min) { observe(cores >= 16 ? 3 : 2, text); break; }
+        }
+      }
+
+      // ── Device memory (value-aware phrasing) ───────────────────────
+      const mem = probe(() => (navigator as any).deviceMemory as number | undefined);
+      if (typeof mem === "number" && mem > 0) {
+        if (mem >= 8) observe(2, `with ${mem} gigs of ram`);
+        else observe(3, `only ${mem} gigs of ram, traveling light`);
+      }
+
+      // ── Display ────────────────────────────────────────────────────
+      const dpr = probe(() => window.devicePixelRatio);
+      if (typeof dpr === "number" && dpr >= 2) observe(2, "nice high-res display");
+
+      const screenW = probe(() => screen.width);
+      if (typeof screenW === "number") {
+        if (screenW >= 2560) observe(2, "on a big screen too");
+        else if (screenW <= 500) observe(2, "browsing on a small screen");
+      }
+
+      // ── Color scheme ───────────────────────────────────────────────
+      const dark = probe(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+      if (dark === true) observe(1, "a dark mode user, I approve");
+      else if (dark === false) observe(1, "light mode, bold choice");
+
+      // ── Battery (async, with timeout) ──────────────────────────────
+      const bat = await probeAsync(async () => {
+        const fn = (navigator as any).getBattery;
+        if (typeof fn !== "function") return undefined;
+        return fn.call(navigator) as { level: number; charging: boolean };
+      }, 2000);
+      if (bat && typeof bat.level === "number" && isFinite(bat.level)) {
+        const pct = Math.round(bat.level * 100);
+        if (bat.charging) observe(2, `charging at ${pct} percent`);
+        else if (pct <= 15) observe(5, `only ${pct} percent battery, living dangerously`);
+        else if (pct <= 30) observe(4, `${pct} percent battery, might want to plug in`);
+        else observe(1, `${pct} percent battery`);
+      }
+
+      // ── Connection quality ─────────────────────────────────────────
+      const conn = probe(() => (navigator as any).connection as { effectiveType?: string } | undefined);
+      if (conn?.effectiveType === "2g" || conn?.effectiveType === "slow-2g") {
+        observe(4, "your connection is quite slow");
+      } else if (conn?.effectiveType === "3g") {
+        observe(3, "your connection seems a bit slow");
+      }
+
+      // ── Privacy signals ────────────────────────────────────────────
+      const dnt = probe(() => navigator.doNotTrack);
+      if (dnt === "1") observe(2, "do not track enabled, smart");
+
+      const gpc = probe(() => (navigator as any).globalPrivacyControl as boolean | undefined);
+      if (gpc === true) observe(2, "global privacy control too");
+
+      // ── Touch + mouse combo ────────────────────────────────────────
+      const touchPoints = probe(() => navigator.maxTouchPoints);
+      if (typeof touchPoints === "number" && touchPoints > 0) {
+        const fine = probe(() => window.matchMedia("(pointer: fine)").matches);
+        if (fine) observe(2, "touchscreen and a mouse, versatile");
+      }
+
+      // ── Reduced motion ─────────────────────────────────────────────
+      const rm = probe(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      if (rm === true) observe(1, "reduced motion on, keeping things calm");
+
+      // ── Language ───────────────────────────────────────────────────
+      const lang = probe(() => navigator.language?.split("-")[0]);
+      if (lang && lang !== "en") observe(2, `I can try to speak ${lang} too`);
+
+      // ── Compose utterance ──────────────────────────────────────────
+      // Sort by weight descending, take the most interesting ones.
+      const MAX_OBSERVATIONS = 5;
+      pool.sort((a, b) => b.weight - a.weight);
+      const selected = pool.slice(0, MAX_OBSERVATIONS).map((o) => o.text);
+      const message = [greeting, ...selected].join(". ") + ".";
+
       speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance("you are being watched");
+      const utter = new SpeechSynthesisUtterance(message);
       utter.rate = 0.9;
       speechSynthesis.speak(utter);
       return true;
@@ -1741,8 +1961,9 @@ function collectAPIs(): DataPoint[] {
   return p;
 }
 
-async function collectAPIAsync(): Promise<DataPoint[]> {
+async function collectAPIAsync(signal?: AbortSignal): Promise<DataPoint[]> {
   const p: DataPoint[] = [];
+  throwIfAborted(signal);
   if (!("RTCPeerConnection" in window)) {
     p.push(pt("api.localIP", "Local IP (WebRTC)", null, "WebRTC peer connection API not available in this browser."));
     return p;
@@ -1791,19 +2012,38 @@ async function collectAPIAsync(): Promise<DataPoint[]> {
     try {
       pc.createDataChannel("");
       const offer = await pc.createOffer();
+      throwIfAborted(signal);
       await pc.setLocalDescription(offer);
+      throwIfAborted(signal);
 
       ip = await new Promise<string | null>((resolve) => {
-        const timeout = setTimeout(() => resolve(null), 4000);
+        let settled = false;
+        const finish = (value: string | null) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (signal) signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        };
+        const timeout = setTimeout(() => finish(null), 4000);
+        const onAbort = () => finish(null);
+        if (signal) {
+          if (signal.aborted) {
+            finish(null);
+            return;
+          }
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+
         pc.onicecandidate = (e) => {
           if (!e.candidate) return;
           const host = extractHostCandidate(e.candidate.candidate);
           if (host && isLikelyLocalHost(host)) {
-            clearTimeout(timeout);
-            resolve(host);
+            finish(host);
           }
         };
       });
+      throwIfAborted(signal);
     } finally {
       pc.close();
     }
@@ -1836,14 +2076,11 @@ function collectPerformance(): DataPoint[] {
       p.push(pt("perf.domParsing", "DOM Parsing", `${Math.round(nav.domInteractive - nav.responseEnd)} ms`, "Time to parse the HTML document."));
       p.push(pt("perf.domContentLoaded", "DOMContentLoaded", `${Math.round(nav.domContentLoadedEventEnd - nav.startTime)} ms`, "Time until HTML was fully parsed and deferred scripts executed."));
       const pageLoadMs = nav.loadEventEnd > 0 ? Math.round(nav.loadEventEnd - nav.startTime) : null;
-      p.push(pt(
-        "perf.pageLoad",
-        "Page Load",
-        pageLoadMs != null ? `${pageLoadMs} ms` : null,
+      p.push(
         pageLoadMs != null
-          ? "Total time to fully load."
-          : "Not available until the window load event has completed.",
-      ));
+          ? pt("perf.pageLoad", "Page Load", `${pageLoadMs} ms`, "Total time to fully load.")
+          : pendingPt("perf.pageLoad", "Page Load", null, "Waiting for the window load event to complete."),
+      );
       p.push(pt("perf.transferSize", "Document Transfer", `${(nav.transferSize / 1024).toFixed(1)} KB`, "Bytes transferred for this HTML document."));
       p.push(pt("perf.decodedSize", "Decoded Size", `${(nav.decodedBodySize / 1024).toFixed(1)} KB`, "Decompressed document size."));
       p.push(pt("perf.protocol", "HTTP Protocol", nav.nextHopProtocol, "Network protocol used (h2, h3, http/1.1)."));
@@ -2088,6 +2325,7 @@ function detailSource(id: string): string {
 
 function detailConfidence(point: DataPoint): DetailConfidence {
   if (point.status === "unavailable") return "low";
+  if (point.status === "pending") return "low";
   if (point.id.startsWith("net.") && point.id !== "net.ip") return "medium";
   if (point.id.startsWith("conn.") && /effective|downlink|rtt/.test(point.id)) return "medium";
   if (point.id.startsWith("perf.")) return "medium";
@@ -2168,7 +2406,7 @@ function mergePointsById(existing: DataPoint[], incoming: DataPoint[]): DataPoin
 // COORDINATOR
 // 
 
-const CATEGORY_ORDER: Array<{ id: string; title: string; syncFn?: () => DataPoint[]; asyncFn?: () => Promise<DataPoint[]> }> = [
+const CATEGORY_ORDER: Array<{ id: string; title: string; syncFn?: () => DataPoint[]; asyncFn?: (signal?: AbortSignal) => Promise<DataPoint[]> }> = [
   { id: "network",     title: "NETWORK",              asyncFn: collectNetwork },
   { id: "connection",  title: "CONNECTION",            syncFn: collectConnection },
   { id: "browser",     title: "BROWSER",               syncFn: collectBrowser, asyncFn: collectBrowserAsync },
@@ -2188,20 +2426,31 @@ const CATEGORY_ORDER: Array<{ id: string; title: string; syncFn?: () => DataPoin
 
 export { CATEGORY_ORDER };
 
-export async function collectAllData(onUpdate: OnDataUpdate): Promise<MirrorData> {
+export async function collectAllData(
+  onUpdate: OnDataUpdate,
+  options: { signal?: AbortSignal } = {},
+): Promise<MirrorData> {
+  const { signal } = options;
+  throwIfAborted(signal);
   const categories: DataCategory[] = [];
   const categoriesById = new Map<string, DataCategory>();
 
   // Build all categories and run sync collectors immediately
   for (const def of CATEGORY_ORDER) {
+    throwIfAborted(signal);
     const cat: DataCategory = { id: def.id, title: def.title, points: [], expanded: true };
     categories.push(cat);
     categoriesById.set(cat.id, cat);
     if (def.syncFn) {
       try {
+        throwIfAborted(signal);
         cat.points = dedupePointsById(withDetailForAll(def.syncFn()));
+        throwIfAborted(signal);
         onUpdate(cat.id, cat.points);
-      } catch { /* swallowed  individual collectors handle their own errors */ }
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        /* swallowed  individual collectors handle their own errors */
+      }
     }
   }
 
@@ -2210,19 +2459,26 @@ export async function collectAllData(onUpdate: OnDataUpdate): Promise<MirrorData
     .filter(d => d.asyncFn)
     .map(d => ({
       id: d.id,
-      promise: d.asyncFn!(),
+      promise: d.asyncFn!(signal),
     }));
 
   await Promise.allSettled(asyncTasks.map(async ({ id, promise }) => {
     try {
+      throwIfAborted(signal);
       const pts = dedupePointsById(withDetailForAll(await promise));
+      throwIfAborted(signal);
       const cat = categoriesById.get(id);
       if (cat && pts.length > 0) {
         cat.points = mergePointsById(cat.points, pts);
+        throwIfAborted(signal);
         onUpdate(cat.id, cat.points);
       }
-    } catch { /* swallowed */ }
+    } catch (error) {
+      if (isAbortError(error)) return;
+      /* swallowed */
+    }
   }));
+  throwIfAborted(signal);
 
   // Totals
   const allPoints = categories.flatMap(c => c.points);

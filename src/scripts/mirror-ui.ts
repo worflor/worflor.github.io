@@ -438,9 +438,7 @@ function updateScore(
   animateCounter(opts.scoreExposedCount, resolved);
   animateCounter(opts.scoreBlockedCount, unavailable);
 
-  if (unavailable > 0) {
-    opts.scoreBlockedGroup.classList.add("visible");
-  }
+  opts.scoreBlockedGroup.classList.toggle("visible", unavailable > 0);
 
   const exposedPct = total > 0 ? (resolved / total) * 100 : 0;
   const blockedPct = total > 0 ? (unavailable / total) * 100 : 0;
@@ -474,8 +472,9 @@ function tallyPoints(categoryPoints: Iterable<DataPoint[]>): {
   let unavailable = 0;
 
   for (const points of categoryPoints) {
-    total += points.length;
     for (const point of points) {
+      if (point.status === "pending") continue;
+      total++;
       if (point.status === "resolved") {
         resolved++;
       } else if (point.status === "unavailable") {
@@ -581,8 +580,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   let mirrorData: MirrorData | null = null;
   let destroyed = false;
   let scanRunId = 0;
-  let scanInFlight = false;
-  let scanQueued = false;
+  let activeScanController: AbortController | null = null;
 
   const setCategoryExpandedState = (categoryId: string, expanded: boolean) => {
     expansionState.set(categoryId, expanded);
@@ -839,13 +837,15 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
   const startScan = () => {
     if (destroyed) return;
-    if (scanInFlight) {
-      scanQueued = true;
-      return;
+
+    // Abort previous run so stale async collectors don't keep running.
+    if (activeScanController) {
+      activeScanController.abort();
+      activeScanController = null;
     }
 
-    scanInFlight = true;
-    scanQueued = false;
+    const scanController = new AbortController();
+    activeScanController = scanController;
     scanRunId += 1;
     const runId = scanRunId;
     mirrorData = null;
@@ -867,7 +867,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
       updateScore(opts, resolved, unavailable, total, false);
     };
 
-    collectAllData(onUpdate)
+    collectAllData(onUpdate, { signal: scanController.signal })
       .then(data => {
         if (destroyed || runId !== scanRunId) return;
         mirrorData = data;
@@ -883,10 +883,8 @@ export function initMirror(opts: MirrorUIOptions): () => void {
       })
       .finally(() => {
         if (runId !== scanRunId) return;
-        scanInFlight = false;
-        if (scanQueued && !destroyed) {
-          scanQueued = false;
-          startScan();
+        if (activeScanController === scanController) {
+          activeScanController = null;
         }
       });
   };
@@ -929,8 +927,10 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   const cleanup = () => {
     destroyed = true;
     scanRunId += 1;
-    scanInFlight = false;
-    scanQueued = false;
+    if (activeScanController) {
+      activeScanController.abort();
+      activeScanController = null;
+    }
     pointEls.clear();
     pointState.clear();
     categoryEls.clear();
