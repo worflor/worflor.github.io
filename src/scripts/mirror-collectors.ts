@@ -770,6 +770,28 @@ function collectBrowser(): DataPoint[] {
   p.push(pt("br.language", "Primary Language", navigator.language, "Your browser's preferred language.", false, false, 3));
   p.push(pt("br.languages", "All Languages", navigator.languages?.join(", ") || null, "Full ordered preference list - highly fingerprintable.", true, false, 4));
 
+  // Plugins & MIME types (legacy but still exposed in some browsers)
+  try {
+    const plugins = navigator.plugins;
+    const count = plugins ? plugins.length : 0;
+    if (count > 0) {
+      const names = Array.from(plugins).map(p => p.name).filter(Boolean);
+      p.push(pt("br.pluginCount", "Plugins", count, "Legacy plugin objects reported by the browser.", false, false, 2));
+      p.push(pt("br.pluginList", "Plugin List", names.join(", ") || null, "Named plugins - modern browsers report a fixed set for PDF/viewer support.", false, false, 2));
+    } else {
+      p.push(pt("br.pluginCount", "Plugins", 0, "No legacy plugins reported."));
+    }
+  } catch {
+    p.push(pt("br.pluginCount", "Plugins", null, "Plugin enumeration blocked."));
+  }
+
+  try {
+    const mimes = navigator.mimeTypes;
+    p.push(pt("br.mimeTypeCount", "MIME Types", mimes ? mimes.length : null, "Legacy MIME type entries - reveals which file types the browser claims to handle natively.", false, false, 2));
+  } catch {
+    p.push(pt("br.mimeTypeCount", "MIME Types", null, "MIME type enumeration blocked."));
+  }
+
   // Misc
   p.push(pt("br.pdfViewer", "PDF Viewer", (navigator as any).pdfViewerEnabled ?? null, "Whether the browser has a built-in PDF viewer."));
   p.push(pt("br.webdriver", "WebDriver", (navigator as any).webdriver ?? null, "True if the browser is controlled by automation (Selenium, Puppeteer).", false, false, 2));
@@ -818,29 +840,14 @@ function collectDevice(): DataPoint[] {
 
   // Screen
   p.push(pt("hw.screenRes", "Screen Resolution", `${screen.width} x ${screen.height}`, "Screen resolution in CSS pixels.", false, false, 3));
-  p.push(pt("hw.availScreen", "Available Screen", `${screen.availWidth} x ${screen.availHeight}`, "Screen area minus OS chrome (taskbar, dock, etc.)."));
+  p.push(pt("hw.dpr", "Device Pixel Ratio", window.devicePixelRatio, "Physical pixels per CSS pixel (retina = 2+).", false, false, 3));
   p.push(pt("hw.colorDepth", "Color Depth", screen.colorDepth, "Bits per pixel for the screen."));
   p.push(pt("hw.pixelDepth", "Pixel Depth", screen.pixelDepth, "Bits per pixel of the screen buffer."));
 
   const orient = screen.orientation;
   p.push(pt("hw.orientation", "Screen Orientation", orient ? `${orient.type} (${orient.angle} deg)` : null, "Current orientation type and rotation angle."));
   p.push(pt("hw.isExtended", "Multi-Monitor", (screen as any).isExtended ?? null, "Whether the display extends across multiple monitors.", false, false, 2));
-
-  // Window
-  p.push(pt("hw.viewportSize", "Viewport Size", `${window.innerWidth} x ${window.innerHeight}`, "Browser viewport dimensions.", false, true));
-  p.push(pt("hw.windowSize", "Window Size",
-    window.outerWidth > 0 || window.outerHeight > 0 ? `${window.outerWidth} x ${window.outerHeight}` : null,
-    "Full browser window including toolbars."));
-  p.push(pt("hw.windowPos", "Window Position", `(${window.screenX}, ${window.screenY})`, "Window position on screen - reveals monitor layout.", true, false, 2));
-  p.push(pt("hw.dpr", "Device Pixel Ratio", window.devicePixelRatio, "Physical pixels per CSS pixel (retina = 2+).", false, false, 3));
-
-  // Visual viewport
-  const vv = window.visualViewport;
-  if (vv) {
-    p.push(pt("hw.vvSize", "Visual Viewport", `${Math.round(vv.width)} x ${Math.round(vv.height)}`, "The visible portion of the page after pinch-zoom."));
-    p.push(pt("hw.vvScale", "Viewport Scale", vv.scale, "Current pinch-zoom scale factor.", false, true));
-    p.push(pt("hw.vvOffset", "Viewport Offset", `(${Math.round(vv.offsetLeft)}, ${Math.round(vv.offsetTop)})`, "Offset of visual viewport from layout viewport."));
-  }
+  p.push(pt("hw.availScreen", "Available Screen", `${screen.availWidth} x ${screen.availHeight}`, "Screen area minus OS chrome (taskbar, dock, etc.)."));
 
   // CPU & memory
   p.push(pt("hw.cores", "CPU Cores", num(navigator.hardwareConcurrency), "Logical CPU cores - used for fingerprinting.", true, false, 4));
@@ -862,6 +869,20 @@ function collectDevice(): DataPoint[] {
     } catch {
       p.push(pt("hw.gamepads", "Gamepads", null, "Gamepad API query failed."));
     }
+  }
+
+  // Window & viewport
+  p.push(pt("hw.viewportSize", "Viewport Size", `${window.innerWidth} x ${window.innerHeight}`, "Browser viewport dimensions.", false, true));
+  p.push(pt("hw.windowSize", "Window Size",
+    window.outerWidth > 0 || window.outerHeight > 0 ? `${window.outerWidth} x ${window.outerHeight}` : null,
+    "Full browser window including toolbars."));
+  p.push(pt("hw.windowPos", "Window Position", `(${window.screenX}, ${window.screenY})`, "Window position on screen - reveals monitor layout.", true, false, 2));
+
+  const vv = window.visualViewport;
+  if (vv) {
+    p.push(pt("hw.vvSize", "Visual Viewport", `${Math.round(vv.width)} x ${Math.round(vv.height)}`, "The visible portion of the page after pinch-zoom."));
+    p.push(pt("hw.vvScale", "Viewport Scale", vv.scale, "Current pinch-zoom scale factor.", false, true));
+    p.push(pt("hw.vvOffset", "Viewport Offset", `(${Math.round(vv.offsetLeft)}, ${Math.round(vv.offsetTop)})`, "Offset of visual viewport from layout viewport."));
   }
 
   return p;
@@ -891,6 +912,23 @@ async function collectDeviceAsync(signal?: AbortSignal): Promise<DataPoint[]> {
   } catch {
     p.push(pt("hw.batteryLevel", "Battery Level", null, "Battery Status API blocked."));
     p.push(pt("hw.batteryCharging", "Charging", null, "Battery Status API blocked."));
+  }
+
+  // Keyboard layout
+  try {
+    const kb = (navigator as any).keyboard;
+    if (kb && typeof kb.getLayoutMap === "function") {
+      const layoutMap = await kb.getLayoutMap();
+      throwIfAborted(signal);
+      const entries = Array.from(layoutMap.entries() as Iterable<[string, string]>);
+      const sample = entries.slice(0, 12).map(([code, key]) => `${code}:${key}`).join(", ");
+      p.push(pt("hw.keyboardLayout", "Keyboard Layout", `${entries.length} keys (${sample}...)`,
+        "Physical key-to-character mapping reveals your keyboard layout and locale.", true, false, 3));
+    } else {
+      p.push(pt("hw.keyboardLayout", "Keyboard Layout", null, "Keyboard API not available."));
+    }
+  } catch {
+    p.push(pt("hw.keyboardLayout", "Keyboard Layout", null, "Keyboard layout detection blocked."));
   }
 
   return p;
@@ -1298,13 +1336,82 @@ function collectFingerprints(): DataPoint[] {
     p.push(pt("fp.installedFonts", "Installed Fonts", null, "Font detection failed."));
   }
 
-  //  Error stack format (reveals engine) 
+  //  Error stack format (reveals engine)
   try {
     const err = new Error("test");
     const stackSample = err.stack?.split("\n").slice(0, 2).join(" | ") || null;
     p.push(pt("fp.errorFormat", "Error Stack Format", stackSample, "How the browser formats error stacks - differs between Chrome, Firefox, and Safari."));
   } catch {
     p.push(pt("fp.errorFormat", "Error Stack Format", null, "Could not capture."));
+  }
+
+  //  CSS @supports fingerprint
+  // Probe a set of CSS features; the support profile differs per browser/version.
+  try {
+    const cssFeatures = [
+      "display: grid", "display: subgrid", "display: flex",
+      "container-type: inline-size", "contain: paint",
+      "color: oklch(0.5 0.2 240)", "color: color-mix(in srgb, red, blue)",
+      "color: light-dark(black, white)",
+      "accent-color: auto", "field-sizing: content",
+      "anchor-name: --a", "position-anchor: --a",
+      "text-wrap: balance", "text-wrap: pretty",
+      "font-size: 1cap", "font-size: 1rex",
+      "view-transition-name: x",
+      "animation-timeline: scroll()", "scroll-timeline-name: --s",
+      "offset-path: circle(50%)",
+      "backdrop-filter: blur(1px)", "filter: blur(1px)",
+      "overscroll-behavior: contain",
+      "touch-action: manipulation",
+      "content-visibility: auto",
+      "overflow: clip",
+      "text-decoration-thickness: from-font",
+      "hanging-punctuation: first",
+      "math-style: normal",
+      "mask-image: none",
+      "writing-mode: vertical-rl",
+      "user-select: none",
+    ];
+    const supported = cssFeatures.filter(f => {
+      try { return CSS.supports(f); } catch { return false; }
+    });
+    p.push(pt("fp.cssSupport", "CSS Support Hash", fnv1a(supported.join(",")),
+      `Hash of ${supported.length}/${cssFeatures.length} supported CSS features. Differs across browsers and versions.`, false, false, 4));
+  } catch {
+    p.push(pt("fp.cssSupport", "CSS Support Hash", null, "CSS.supports() not available."));
+  }
+
+  //  Window property count (global API surface)
+  // The set of enumerable window properties is browser/version-specific.
+  try {
+    const keys = Object.getOwnPropertyNames(window);
+    p.push(pt("fp.windowProps", "Window Properties", keys.length,
+      "Number of global properties on the window object. Varies by browser, version, and extensions.", false, false, 3));
+  } catch {
+    p.push(pt("fp.windowProps", "Window Properties", null, "Could not enumerate."));
+  }
+
+  //  System font fingerprint
+  // Measure the default system font metrics — differs across OS, locale, and font config.
+  try {
+    const span = document.createElement("span");
+    span.style.cssText = "position:absolute;top:-9999px;left:-9999px;visibility:hidden;font-size:72px";
+    span.textContent = "mmmmmmmmmmlli1|WwQq@#";
+    const systemFonts = ["system-ui", "sans-serif", "serif", "monospace", "cursive", "fantasy"];
+    const widths: string[] = [];
+    document.body.appendChild(span);
+    try {
+      for (const f of systemFonts) {
+        span.style.fontFamily = f;
+        widths.push(`${f}:${span.offsetWidth}x${span.offsetHeight}`);
+      }
+    } finally {
+      span.remove();
+    }
+    p.push(pt("fp.systemFonts", "System Font Metrics", fnv1a(widths.join(",")),
+      "Hash of default system font rendering widths. Different OSes and font configs produce different metrics.", false, false, 3));
+  } catch {
+    p.push(pt("fp.systemFonts", "System Font Metrics", null, "Could not measure."));
   }
 
   return p;
@@ -1492,6 +1599,58 @@ async function collectMediaAsync(signal?: AbortSignal): Promise<DataPoint[]> {
     pushMediaDeviceUnavailable("MediaDevices API blocked.");
   }
 
+  // DRM / Encrypted Media Extensions
+  try {
+    const reqMKSA = (navigator as any).requestMediaKeySystemAccess;
+    if (typeof reqMKSA === "function") {
+      const keySystems: [string, string][] = [
+        ["Widevine", "com.widevine.alpha"],
+        ["PlayReady", "com.microsoft.playready"],
+        ["FairPlay", "com.apple.fps"],
+        ["ClearKey", "org.w3.clearkey"],
+      ];
+      const detected: string[] = [];
+      for (const [name, ks] of keySystems) {
+        try {
+          await reqMKSA.call(navigator, ks, [{
+            initDataTypes: ["cenc"],
+            videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }],
+          }]);
+          detected.push(name);
+        } catch { /* key system not supported */ }
+      }
+      throwIfAborted(signal);
+      p.push(pt("media.drm", "DRM Key Systems", detected.length > 0 ? detected.join(", ") : "none detected",
+        "Encrypted Media Extensions - reveals which DRM systems are available. Differs by OS and browser.", false, false, 3));
+    } else {
+      p.push(pt("media.drm", "DRM Key Systems", null, "Encrypted Media Extensions not available."));
+    }
+  } catch {
+    p.push(pt("media.drm", "DRM Key Systems", null, "EME detection failed."));
+  }
+
+  // Media Capabilities (codec power efficiency)
+  try {
+    const mc = (navigator as any).mediaCapabilities;
+    if (mc && typeof mc.decodingInfo === "function") {
+      const result = await mc.decodingInfo({
+        type: "file",
+        video: { contentType: 'video/mp4; codecs="avc1.42E01E"', width: 1920, height: 1080, bitrate: 5000000, framerate: 30 },
+      });
+      throwIfAborted(signal);
+      const parts: string[] = [];
+      if (result.supported) parts.push("supported");
+      if (result.smooth) parts.push("smooth");
+      if (result.powerEfficient) parts.push("power efficient");
+      p.push(pt("media.capabilities", "H.264 Decode Info", parts.join(", ") || "not supported",
+        "Media Capabilities API reveals codec performance characteristics - smooth playback and power efficiency.", false, false, 2));
+    } else {
+      p.push(pt("media.capabilities", "H.264 Decode Info", null, "Media Capabilities API not available."));
+    }
+  } catch {
+    p.push(pt("media.capabilities", "H.264 Decode Info", null, "Media Capabilities query failed."));
+  }
+
   // Voices (async re-try  some browsers load voices lazily)
   try {
     if (synth && synth.getVoices().length === 0) {
@@ -1566,6 +1725,7 @@ function collectStorage(): DataPoint[] {
   p.push(pt("st.cacheAPI", "Cache API", "caches" in window, "Programmatic cache for network responses."));
   p.push(pt("st.opfs", "Origin Private FS", typeof navigator?.storage?.getDirectory === "function", "Origin-private file system for high-performance storage."));
   p.push(pt("st.fileSystem", "File System Access", "showOpenFilePicker" in window, "API to read/write local files (Chromium-based browsers only)."));
+  p.push(pt("st.cookieStore", "Cookie Store API", "cookieStore" in window, "Async cookie management API - alternative to document.cookie."));
 
   return p;
 }
@@ -1696,6 +1856,7 @@ function collectAPIs(): DataPoint[] {
   // Communication
   p.push(pt("api.webSocket", "WebSocket", "WebSocket" in window, "Real-time two-way communication."));
   p.push(pt("api.webRTC", "WebRTC", "RTCPeerConnection" in window, "Peer-to-peer audio/video/data - can leak local IPs.", false, false, 3));
+  p.push(pt("api.webTransport", "WebTransport", "WebTransport" in window, "Modern alternative to WebSocket using HTTP/3 and QUIC."));
   p.push(pt("api.eventSource", "EventSource (SSE)", "EventSource" in window, "Server-Sent Events for real-time server-to-client streaming."));
   p.push(pt("api.broadcastChannel", "BroadcastChannel", "BroadcastChannel" in window, "Cross-tab messaging within same origin."));
 
@@ -1709,6 +1870,7 @@ function collectAPIs(): DataPoint[] {
   p.push(pt("api.wasmStreaming", "WASM Streaming",
     typeof WebAssembly !== "undefined" && typeof WebAssembly.compileStreaming === "function",
     "Compile WebAssembly while downloading."));
+  p.push(pt("api.computePressure", "Compute Pressure", "PressureObserver" in window, "Observe CPU pressure states for adaptive performance."));
 
   // Input/Device
   p.push(pt("api.clipboard", "Clipboard API", has(navigator, "clipboard"), "Programmatic clipboard access."));
@@ -1756,10 +1918,17 @@ function collectAPIs(): DataPoint[] {
       return true;
     } : undefined));
   p.push(pt("api.pictureInPicture", "Picture-in-Picture", "pictureInPictureEnabled" in document, "Floating video window."));
+  p.push(pt("api.notification", "Notifications", "Notification" in window, "Push notification support.",
+    false, false, 1,
+    "Notification" in window ? async () => {
+      const perm = await Notification.requestPermission();
+      return perm;
+    } : undefined));
 
   // Auth/Payment
   p.push(pt("api.paymentRequest", "Payment Request", "PaymentRequest" in window, "Streamlined payment flow."));
   p.push(pt("api.credentials", "Credential Mgmt", has(navigator, "credentials"), "Password/federated login management."));
+  p.push(pt("api.webauthn", "WebAuthn", "PublicKeyCredential" in window, "Passwordless authentication with passkeys and security keys."));
 
   // Observation
   p.push(pt("api.resizeObserver", "ResizeObserver", "ResizeObserver" in window, "Observe element size changes."));
@@ -1773,6 +1942,7 @@ function collectAPIs(): DataPoint[] {
   p.push(pt("api.compression", "CompressionStream", "CompressionStream" in window, "Native gzip/deflate compression."));
   p.push(pt("api.textEncoder", "TextEncoder", "TextEncoder" in window, "UTF-8 text encoding."));
   p.push(pt("api.structuredClone", "structuredClone", "structuredClone" in window, "Deep clone JS objects."));
+  p.push(pt("api.temporal", "Temporal", "Temporal" in (globalThis as any), "Modern date/time API - presence reveals browser engine and version.", false, false, 2));
 
   // Crypto
   p.push(pt("api.cryptoSubtle", "Web Crypto", !!(window.crypto?.subtle), "Cryptographic operations (AES, RSA, ECDSA, etc.)."));
@@ -2408,18 +2578,18 @@ function mergePointsById(existing: DataPoint[], incoming: DataPoint[]): DataPoin
 
 const CATEGORY_ORDER: Array<{ id: string; title: string; syncFn?: () => DataPoint[]; asyncFn?: (signal?: AbortSignal) => Promise<DataPoint[]> }> = [
   { id: "network",     title: "NETWORK",              asyncFn: collectNetwork },
-  { id: "connection",  title: "CONNECTION",            syncFn: collectConnection },
   { id: "browser",     title: "BROWSER",               syncFn: collectBrowser, asyncFn: collectBrowserAsync },
   { id: "hardware",    title: "DEVICE & HARDWARE",     syncFn: collectDevice, asyncFn: collectDeviceAsync },
   { id: "gpu",         title: "GPU & GRAPHICS",        syncFn: collectGPU },
   { id: "os",          title: "OS & PREFERENCES",      syncFn: collectOS },
   { id: "fingerprint", title: "FINGERPRINTS",          syncFn: collectFingerprints },
+  { id: "performance", title: "PERFORMANCE",           syncFn: collectPerformance },
+  { id: "connection",  title: "CONNECTION",            syncFn: collectConnection },
+  { id: "datetime",    title: "DATE / TIME / LOCALE",  syncFn: collectDateTime },
   { id: "media",       title: "MEDIA & CODECS",        syncFn: collectMedia, asyncFn: collectMediaAsync },
   { id: "storage",     title: "STORAGE",               syncFn: collectStorage, asyncFn: collectStorageAsync },
   { id: "permissions", title: "PERMISSIONS",            asyncFn: collectPermissions },
   { id: "apis",        title: "APIs & FEATURES",       syncFn: collectAPIs, asyncFn: collectAPIAsync },
-  { id: "performance", title: "PERFORMANCE",           syncFn: collectPerformance },
-  { id: "datetime",    title: "DATE / TIME / LOCALE",  syncFn: collectDateTime },
   { id: "document",    title: "NAVIGATION & DOCUMENT", syncFn: collectNavigation },
   { id: "theme",       title: "SYSTEM THEME",          syncFn: collectSystemColors },
 ];
