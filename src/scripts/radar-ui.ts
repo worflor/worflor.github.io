@@ -18,6 +18,13 @@ export interface RadarUIOptions {
   measuredEl: HTMLElement;
   inferredEl: HTMLElement;
   nearestEl: HTMLElement;
+  triageProtocolEl: HTMLSelectElement;
+  triageEvidenceEl: HTMLSelectElement;
+  triageStateEl: HTMLSelectElement;
+  triageSortEl: HTMLSelectElement;
+  triageMinConfidenceEl: HTMLInputElement;
+  triageMinConfidenceValueEl: HTMLElement;
+  triageActiveOnlyEl: HTMLInputElement;
   contactsEl: HTMLElement;
   lockEl: HTMLElement;
   eventsEl: HTMLElement;
@@ -47,6 +54,13 @@ export const RADAR_UI_IDS: RadarUIIdMap = {
   measuredEl: "radar-measured",
   inferredEl: "radar-inferred",
   nearestEl: "radar-nearest",
+  triageProtocolEl: "radar-triage-protocol",
+  triageEvidenceEl: "radar-triage-evidence",
+  triageStateEl: "radar-triage-state",
+  triageSortEl: "radar-triage-sort",
+  triageMinConfidenceEl: "radar-triage-min-confidence",
+  triageMinConfidenceValueEl: "radar-triage-min-confidence-value",
+  triageActiveOnlyEl: "radar-triage-active-only",
   contactsEl: "radar-contacts",
   lockEl: "radar-lock",
   eventsEl: "radar-events",
@@ -138,6 +152,23 @@ interface DeviceOrientationEventLike {
 type RadarProtocol = "self" | "bluetooth" | "wifi" | "radio";
 type EvidenceKind = "measured" | "inferred";
 type TrendState = "approaching" | "receding" | "stable" | "unknown";
+type ContactLifecycleState = "new" | "acquiring" | "stable" | "degrading" | "lost";
+type TriageProtocolFilter = "all" | Exclude<RadarProtocol, "self">;
+type TriageEvidenceFilter = "all" | EvidenceKind;
+type TriageStateFilter = "all" | ContactLifecycleState;
+type TriageSortMode = "priority" | "nearest" | "confidence" | "recent";
+
+function isContactLifecycleState(value: unknown): value is ContactLifecycleState {
+  return value === "new" ||
+    value === "acquiring" ||
+    value === "stable" ||
+    value === "degrading" ||
+    value === "lost";
+}
+
+function coerceContactLifecycleState(value: unknown): ContactLifecycleState {
+  return isContactLifecycleState(value) ? value : "new";
+}
 
 interface RssiStats {
   count: number;
@@ -156,6 +187,15 @@ interface TargetHistorySample {
   time: number;
   distanceM: number | null;
   rssi: number;
+}
+
+interface RadarTriageModel {
+  protocol: TriageProtocolFilter;
+  evidence: TriageEvidenceFilter;
+  state: TriageStateFilter;
+  sort: TriageSortMode;
+  minConfidence: number;
+  activeOnly: boolean;
 }
 
 interface RadarTarget {
@@ -180,6 +220,17 @@ interface RadarTarget {
   updateHz: number;
   distanceRateMps: number | null;
   trend: TrendState;
+  state: ContactLifecycleState;
+  stateSince: number;
+}
+
+interface ContactRow {
+  target: RadarTarget;
+  ageMs: number;
+  ageSec: number;
+  priority: number;
+  state: ContactLifecycleState;
+  active: boolean;
 }
 
 interface RadarEvent {
@@ -209,10 +260,21 @@ const NETWORK_POLL_MS = 7_000;
 const STALE_PURGE_MS = 4_000;
 const EVENT_COALESCE_WINDOW_MS = 15_000;
 const CONTACT_ACTIVE_WINDOW_MS = 10_000;
+const LOST_CONTACT_RETENTION_MS = 12_000;
 const TARGET_HISTORY_LIMIT = 14;
 const RANGE_RATE_EPSILON_MPS = 0.16;
 const MAP_RANGE_FLOOR_M = 16;
 const MAP_RANGE_PADDING = 1.35;
+const STABLE_SIGMA_MEASURED_DB = 5.2;
+const STABLE_SIGMA_INFERRED_DB = 8.8;
+const DEGRADING_SIGMA_MEASURED_DB = 8.5;
+const DEGRADING_SIGMA_INFERRED_DB = 13.5;
+const STABLE_SAMPLE_MIN_MEASURED = 6;
+const STABLE_SAMPLE_MIN_INFERRED = 4;
+const ACQUIRING_SAMPLE_MIN_MEASURED = 2;
+const ACQUIRING_SAMPLE_MIN_INFERRED = 1;
+const STABLE_UPDATE_HZ_MIN_MEASURED = 0.2;
+const STABLE_UPDATE_HZ_MIN_INFERRED = 0.08;
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -223,6 +285,16 @@ function queryById(root: ParentNode, id: string): HTMLElement | null {
 function queryButtonById(root: ParentNode, id: string): HTMLButtonElement | null {
   const node = queryById(root, id);
   return node instanceof HTMLButtonElement ? node : null;
+}
+
+function queryInputById(root: ParentNode, id: string): HTMLInputElement | null {
+  const node = queryById(root, id);
+  return node instanceof HTMLInputElement ? node : null;
+}
+
+function querySelectById(root: ParentNode, id: string): HTMLSelectElement | null {
+  const node = queryById(root, id);
+  return node instanceof HTMLSelectElement ? node : null;
 }
 
 function queryCanvasById(root: ParentNode, id: string): HTMLCanvasElement | null {
@@ -488,6 +560,118 @@ function formatUpdateRate(updateHz: number): string {
   return `${updateHz.toFixed(3)}Hz`;
 }
 
+function sanitizeProtocolFilter(value: string): TriageProtocolFilter {
+  if (value === "bluetooth" || value === "wifi" || value === "radio") return value;
+  return "all";
+}
+
+function sanitizeEvidenceFilter(value: string): TriageEvidenceFilter {
+  if (value === "measured" || value === "inferred") return value;
+  return "all";
+}
+
+function sanitizeStateFilter(value: string): TriageStateFilter {
+  if (
+    value === "new" ||
+    value === "acquiring" ||
+    value === "stable" ||
+    value === "degrading" ||
+    value === "lost"
+  ) {
+    return value;
+  }
+  return "all";
+}
+
+function sanitizeSortMode(value: string): TriageSortMode {
+  if (value === "nearest" || value === "confidence" || value === "recent") return value;
+  return "priority";
+}
+
+function formatContactState(state: ContactLifecycleState): string {
+  return coerceContactLifecycleState(state);
+}
+
+function stateWeight(state: ContactLifecycleState): number {
+  switch (coerceContactLifecycleState(state)) {
+    case "stable":
+      return 1;
+    case "acquiring":
+      return 0.82;
+    case "new":
+      return 0.7;
+    case "degrading":
+      return 0.52;
+    case "lost":
+      return 0.2;
+    default:
+      return 0.7;
+  }
+}
+
+function isTargetStableCandidate(target: RadarTarget, ageMs: number): boolean {
+  const sampleMin = target.evidence === "measured" ? STABLE_SAMPLE_MIN_MEASURED : STABLE_SAMPLE_MIN_INFERRED;
+  const sigmaMax = target.evidence === "measured" ? STABLE_SIGMA_MEASURED_DB : STABLE_SIGMA_INFERRED_DB;
+  const updateMin = target.evidence === "measured" ? STABLE_UPDATE_HZ_MIN_MEASURED : STABLE_UPDATE_HZ_MIN_INFERRED;
+  return (
+    target.stats.count >= sampleMin &&
+    target.rssiSigma <= sigmaMax &&
+    target.updateHz >= updateMin &&
+    ageMs <= CONTACT_ACTIVE_WINDOW_MS * 0.45
+  );
+}
+
+function isTargetAcquiringCandidate(target: RadarTarget, ageMs: number): boolean {
+  const sampleMin = target.evidence === "measured" ? ACQUIRING_SAMPLE_MIN_MEASURED : ACQUIRING_SAMPLE_MIN_INFERRED;
+  const sigmaMax = target.evidence === "measured" ? DEGRADING_SIGMA_MEASURED_DB : DEGRADING_SIGMA_INFERRED_DB;
+  return target.stats.count >= sampleMin && target.rssiSigma <= sigmaMax && ageMs <= CONTACT_ACTIVE_WINDOW_MS;
+}
+
+function deriveNextTargetState(target: RadarTarget, now: number): ContactLifecycleState {
+  const currentState = coerceContactLifecycleState(target.state);
+  if (target.state !== currentState) {
+    target.state = currentState;
+    target.stateSince = Number.isFinite(target.stateSince) ? target.stateSince : now;
+  }
+  const ageMs = Math.max(0, now - target.lastSeen);
+  if (ageMs >= STALE_TARGET_MS) return "lost";
+
+  const stable = isTargetStableCandidate(target, ageMs);
+  const acquiring = isTargetAcquiringCandidate(target, ageMs);
+
+  switch (currentState) {
+    case "new":
+      if (ageMs > CONTACT_ACTIVE_WINDOW_MS * 0.7) return "degrading";
+      return acquiring ? "acquiring" : "new";
+    case "acquiring":
+      if (stable) return "stable";
+      if (ageMs > CONTACT_ACTIVE_WINDOW_MS * 0.8) return "degrading";
+      return "acquiring";
+    case "stable":
+      if (stable) return "stable";
+      return "degrading";
+    case "degrading":
+      if (stable) return "stable";
+      if (acquiring) return "acquiring";
+      if (ageMs > CONTACT_ACTIVE_WINDOW_MS) return "lost";
+      return "degrading";
+    case "lost":
+      return acquiring ? "acquiring" : "lost";
+  }
+}
+
+function syncTargetState(target: RadarTarget, now: number): boolean {
+  const next = deriveNextTargetState(target, now);
+  if (next === target.state) return false;
+  target.state = next;
+  target.stateSince = now;
+  return true;
+}
+
+function isTargetActive(target: RadarTarget, now: number): boolean {
+  return now - target.lastSeen <= CONTACT_ACTIVE_WINDOW_MS && target.state !== "lost";
+}
+
 function computeTargetPriority(target: RadarTarget, now: number): number {
   const ageMs = Math.max(0, now - target.lastSeen);
   const freshness = clamp(1 - ageMs / STALE_TARGET_MS, 0, 1);
@@ -495,7 +679,80 @@ function computeTargetPriority(target: RadarTarget, now: number): number {
   const stability = clamp(1 - target.rssiSigma / 18, 0, 1);
   const proximity = target.distanceM === null ? 0.45 : clamp(1 - target.distanceM / MAX_DISTANCE_M, 0, 1);
   const evidenceWeight = target.evidence === "measured" ? 1 : 0.7;
-  return clamp((confidence * 0.45 + freshness * 0.25 + proximity * 0.2 + stability * 0.1) * evidenceWeight, 0.02, 0.99);
+  const stateTerm = stateWeight(target.state);
+  const lostPenalty = target.state === "lost" ? 0.4 : 1;
+  return clamp(
+    (confidence * 0.37 + freshness * 0.22 + proximity * 0.18 + stability * 0.11 + stateTerm * 0.12) *
+      evidenceWeight *
+      lostPenalty,
+    0.02,
+    0.99,
+  );
+}
+
+function matchesTriage(row: ContactRow, triage: RadarTriageModel): boolean {
+  if (triage.protocol !== "all" && row.target.protocol !== triage.protocol) return false;
+  if (triage.evidence !== "all" && row.target.evidence !== triage.evidence) return false;
+  if (triage.state !== "all" && row.state !== triage.state) return false;
+  if (triage.activeOnly && !row.active) return false;
+  if (Math.round(row.target.confidence * 100) < triage.minConfidence) return false;
+  return true;
+}
+
+function compareRowsByPriority(a: ContactRow, b: ContactRow): number {
+  const measuredDelta = Number(b.target.evidence === "measured") - Number(a.target.evidence === "measured");
+  if (measuredDelta !== 0) return measuredDelta;
+  const priorityDelta = b.priority - a.priority;
+  if (Math.abs(priorityDelta) > 0.0001) return priorityDelta;
+  if (a.target.distanceM !== null && b.target.distanceM !== null) return a.target.distanceM - b.target.distanceM;
+  return b.target.lastSeen - a.target.lastSeen;
+}
+
+function sortContactRows(rows: ContactRow[], mode: TriageSortMode): ContactRow[] {
+  const sorted = [...rows];
+  sorted.sort((a, b) => {
+    if (mode === "nearest") {
+      const aDistance = a.target.distanceM ?? Number.POSITIVE_INFINITY;
+      const bDistance = b.target.distanceM ?? Number.POSITIVE_INFINITY;
+      if (aDistance !== bDistance) return aDistance - bDistance;
+      return compareRowsByPriority(a, b);
+    }
+    if (mode === "confidence") {
+      const confidenceDelta = b.target.confidence - a.target.confidence;
+      if (Math.abs(confidenceDelta) > 0.0001) return confidenceDelta;
+      return compareRowsByPriority(a, b);
+    }
+    if (mode === "recent") {
+      if (a.target.lastSeen !== b.target.lastSeen) return b.target.lastSeen - a.target.lastSeen;
+      return compareRowsByPriority(a, b);
+    }
+    return compareRowsByPriority(a, b);
+  });
+  return sorted;
+}
+
+function resolveFilteredRows(
+  targets: Iterable<RadarTarget>,
+  now: number,
+  triage: RadarTriageModel,
+): { allRows: ContactRow[]; filteredRows: ContactRow[] } {
+  const allRows: ContactRow[] = [];
+  for (const target of targets) {
+    if (target.protocol === "self") continue;
+    const ageMs = Math.max(0, now - target.lastSeen);
+    const row: ContactRow = {
+      target,
+      ageMs,
+      ageSec: Math.max(0, Math.floor(ageMs / 1000)),
+      priority: computeTargetPriority(target, now),
+      state: coerceContactLifecycleState(target.state),
+      active: isTargetActive(target, now),
+    };
+    allRows.push(row);
+  }
+
+  const filteredRows = sortContactRows(allRows.filter((row) => matchesTriage(row, triage)), triage.sort);
+  return { allRows, filteredRows };
 }
 
 function resolveMapRangeMeters(targets: Iterable<RadarTarget>): number {
@@ -663,6 +920,13 @@ export function resolveRadarUIOptions(root: ParentNode = document): RadarUIOptio
   const measuredEl = queryById(root, RADAR_UI_IDS.measuredEl);
   const inferredEl = queryById(root, RADAR_UI_IDS.inferredEl);
   const nearestEl = queryById(root, RADAR_UI_IDS.nearestEl);
+  const triageProtocolEl = querySelectById(root, RADAR_UI_IDS.triageProtocolEl);
+  const triageEvidenceEl = querySelectById(root, RADAR_UI_IDS.triageEvidenceEl);
+  const triageStateEl = querySelectById(root, RADAR_UI_IDS.triageStateEl);
+  const triageSortEl = querySelectById(root, RADAR_UI_IDS.triageSortEl);
+  const triageMinConfidenceEl = queryInputById(root, RADAR_UI_IDS.triageMinConfidenceEl);
+  const triageMinConfidenceValueEl = queryById(root, RADAR_UI_IDS.triageMinConfidenceValueEl);
+  const triageActiveOnlyEl = queryInputById(root, RADAR_UI_IDS.triageActiveOnlyEl);
   const contactsEl = queryById(root, RADAR_UI_IDS.contactsEl);
   const lockEl = queryById(root, RADAR_UI_IDS.lockEl);
   const eventsEl = queryById(root, RADAR_UI_IDS.eventsEl);
@@ -680,6 +944,8 @@ export function resolveRadarUIOptions(root: ParentNode = document): RadarUIOptio
     !canvas || !modeEl || !bluetoothEl || !modelEl ||
     !totalEl || !bluetoothCountEl || !wifiCountEl || !radioCountEl ||
     !activeEl || !measuredEl || !inferredEl || !nearestEl ||
+    !triageProtocolEl || !triageEvidenceEl || !triageStateEl || !triageSortEl ||
+    !triageMinConfidenceEl || !triageMinConfidenceValueEl || !triageActiveOnlyEl ||
     !contactsEl || !lockEl || !eventsEl || !capabilitiesEl || !startBtn || !stopBtn ||
     !bluetoothScanBtn || !bluetoothPickBtn || !clearBtn ||
     !selfLocEl || !compassEl || !ambientEl
@@ -691,6 +957,13 @@ export function resolveRadarUIOptions(root: ParentNode = document): RadarUIOptio
     canvas, modeEl, bluetoothEl, modelEl,
     totalEl, bluetoothCountEl, wifiCountEl, radioCountEl,
     activeEl, measuredEl, inferredEl, nearestEl,
+    triageProtocolEl,
+    triageEvidenceEl,
+    triageStateEl,
+    triageSortEl,
+    triageMinConfidenceEl,
+    triageMinConfidenceValueEl,
+    triageActiveOnlyEl,
     contactsEl, lockEl, eventsEl, capabilitiesEl,
     startBtn, stopBtn, bluetoothScanBtn, bluetoothPickBtn, clearBtn,
     selfLocEl, compassEl, ambientEl,
@@ -707,6 +980,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
   const events: RadarEvent[] = [];
   const capabilities = resolveCapabilities(navigatorLike);
   const cleanups: Array<() => void> = [];
+  const sensorCleanups: Array<() => void> = [];
 
   let destroyed = false;
   let running = false;
@@ -730,6 +1004,14 @@ export function initRadar(opts: RadarUIOptions): () => void {
   let selectedContactId: string | null = null;
   let hoveredContactId: string | null = null;
   const canvasTargetHits = new Map<string, { x: number; y: number; r: number }>();
+  const triage: RadarTriageModel = {
+    protocol: sanitizeProtocolFilter(opts.triageProtocolEl.value),
+    evidence: sanitizeEvidenceFilter(opts.triageEvidenceEl.value),
+    state: sanitizeStateFilter(opts.triageStateEl.value),
+    sort: sanitizeSortMode(opts.triageSortEl.value),
+    minConfidence: clamp(Number(opts.triageMinConfidenceEl.value) || 0, 0, 95),
+    activeOnly: Boolean(opts.triageActiveOnlyEl.checked),
+  };
 
   function isScanActive(): boolean {
     return running && !destroyed;
@@ -749,6 +1031,25 @@ export function initRadar(opts: RadarUIOptions): () => void {
   ): void {
     target.addEventListener(event, handler as EventListener, options);
     cleanups.push(() => target.removeEventListener(event, handler as EventListener, options));
+  }
+
+  function registerCleanup(bucket: Array<() => void>, cleanup: () => void): () => void {
+    let active = true;
+    const wrapped = () => {
+      if (!active) return;
+      active = false;
+      try { cleanup(); } catch { /* */ }
+    };
+    bucket.push(wrapped);
+    cleanups.push(wrapped);
+    return wrapped;
+  }
+
+  function runAndClearCleanups(bucket: Array<() => void>): void {
+    const pending = bucket.splice(0, bucket.length);
+    for (const cleanup of pending) {
+      try { cleanup(); } catch { /* */ }
+    }
   }
 
   function pushEvent(message: string): void {
@@ -776,36 +1077,104 @@ export function initRadar(opts: RadarUIOptions): () => void {
     renderEvents();
   }
 
-  function scheduleIceProbe(): void {
-    if (!isScanActive()) return;
-    if (iceProbeInFlight) {
-      iceProbePending = true;
-      return;
-    }
-
-    iceProbeInFlight = true;
-    void runIceProbe().finally(() => {
-      iceProbeInFlight = false;
-      if (!iceProbePending) return;
-      iceProbePending = false;
-      scheduleIceProbe();
-    });
+  function syncTriageReadout(): void {
+    const rounded = Math.round(clamp(triage.minConfidence, 0, 95));
+    opts.triageMinConfidenceValueEl.textContent = `${rounded}%`;
   }
 
-  function scheduleEnumerateDevicesProbe(): void {
-    if (!isScanActive()) return;
-    if (mediaProbeInFlight) {
-      mediaProbePending = true;
-      return;
-    }
+  function syncTriageControls(): void {
+    opts.triageProtocolEl.value = triage.protocol;
+    opts.triageEvidenceEl.value = triage.evidence;
+    opts.triageStateEl.value = triage.state;
+    opts.triageSortEl.value = triage.sort;
+    opts.triageMinConfidenceEl.value = String(Math.round(triage.minConfidence));
+    opts.triageActiveOnlyEl.checked = triage.activeOnly;
+    syncTriageReadout();
+  }
 
-    mediaProbeInFlight = true;
-    void runEnumerateDevicesProbe().finally(() => {
-      mediaProbeInFlight = false;
-      if (!mediaProbePending) return;
-      mediaProbePending = false;
-      scheduleEnumerateDevicesProbe();
-    });
+  function applyTriageFromControls(): void {
+    triage.protocol = sanitizeProtocolFilter(opts.triageProtocolEl.value);
+    triage.evidence = sanitizeEvidenceFilter(opts.triageEvidenceEl.value);
+    triage.state = sanitizeStateFilter(opts.triageStateEl.value);
+    triage.sort = sanitizeSortMode(opts.triageSortEl.value);
+    triage.minConfidence = clamp(Number(opts.triageMinConfidenceEl.value) || 0, 0, 95);
+    triage.activeOnly = Boolean(opts.triageActiveOnlyEl.checked);
+    syncTriageReadout();
+    renderContacts();
+    drawCanvas();
+  }
+
+  function syncTargetStates(now: number): void {
+    for (const target of targets.values()) {
+      if (target.protocol === "self") continue;
+      syncTargetState(target, now);
+    }
+  }
+
+  function resolveContactRows(now: number): { allRows: ContactRow[]; filteredRows: ContactRow[] } {
+    syncTargetStates(now);
+    return resolveFilteredRows(targets.values(), now, triage);
+  }
+
+  function createProbeScheduler(state: {
+    getInFlight: () => boolean;
+    setInFlight: (value: boolean) => void;
+    getPending: () => boolean;
+    setPending: (value: boolean) => void;
+    run: () => Promise<void>;
+  }): () => void {
+    const schedule = () => {
+      if (!isScanActive()) return;
+      if (state.getInFlight()) {
+        state.setPending(true);
+        return;
+      }
+
+      state.setInFlight(true);
+      void state.run().finally(() => {
+        state.setInFlight(false);
+        if (!state.getPending()) return;
+        state.setPending(false);
+        schedule();
+      });
+    };
+    return schedule;
+  }
+
+  const scheduleIceProbe = createProbeScheduler({
+    getInFlight: () => iceProbeInFlight,
+    setInFlight: (value) => { iceProbeInFlight = value; },
+    getPending: () => iceProbePending,
+    setPending: (value) => { iceProbePending = value; },
+    run: runIceProbe,
+  });
+
+  const scheduleEnumerateDevicesProbe = createProbeScheduler({
+    getInFlight: () => mediaProbeInFlight,
+    setInFlight: (value) => { mediaProbeInFlight = value; },
+    getPending: () => mediaProbePending,
+    setPending: (value) => { mediaProbePending = value; },
+    run: runEnumerateDevicesProbe,
+  });
+
+  function runNetworkProbeCycle(): void {
+    runNetworkProbe();
+    scheduleIceProbe();
+    scheduleEnumerateDevicesProbe();
+  }
+
+  function startNetworkProbeLoop(options?: { immediate?: boolean }): void {
+    if (networkPollTimer !== null) return;
+    if (options?.immediate ?? true) runNetworkProbeCycle();
+    networkPollTimer = window.setInterval(() => {
+      runNetworkProbeCycle();
+    }, NETWORK_POLL_MS);
+  }
+
+  function stopNetworkProbeLoop(): void {
+    if (networkPollTimer === null) return;
+    window.clearInterval(networkPollTimer);
+    networkPollTimer = null;
   }
 
   function setHoveredContact(id: string | null): void {
@@ -888,7 +1257,11 @@ export function initRadar(opts: RadarUIOptions): () => void {
         updateHz: 0,
         distanceRateMps: null,
         trend: "unknown",
+        state: "new",
+        stateSince: now,
       });
+      const created = targets.get(input.id);
+      if (created) syncTargetState(created, now);
 
       pushEvent(`+ ${input.label} [${input.protocol}]`);
     } else {
@@ -938,6 +1311,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
       if (existing.history.length > TARGET_HISTORY_LIMIT) {
         existing.history.splice(0, existing.history.length - TARGET_HISTORY_LIMIT);
       }
+      syncTargetState(existing, now);
     }
 
     renderStats();
@@ -945,7 +1319,9 @@ export function initRadar(opts: RadarUIOptions): () => void {
   }
 
   function removeStaleTargets(): void {
-    const cutoff = Date.now() - STALE_TARGET_MS;
+    const now = Date.now();
+    syncTargetStates(now);
+    const cutoff = now - (STALE_TARGET_MS + LOST_CONTACT_RETENTION_MS);
     let staleCount = 0;
     for (const [id, target] of targets.entries()) {
       if (target.protocol === "self") continue;
@@ -980,8 +1356,16 @@ export function initRadar(opts: RadarUIOptions): () => void {
     const cx = cssWidth * 0.5;
     const cy = cssHeight * 0.5;
     const scopeRadius = Math.max(0, Math.min(cssWidth, cssHeight) * 0.46);
-    const visibleTargets = Array.from(targets.values()).filter((target) => target.protocol !== "self");
-    const mapRangeM = resolveMapRangeMeters(visibleTargets);
+    const now = Date.now();
+    const { allRows, filteredRows } = resolveContactRows(now);
+    const mapRows = filteredRows.length > 0
+      ? filteredRows.slice(0, 90)
+      : sortContactRows(allRows, triage.sort).slice(0, 90);
+    const mapTargets = mapRows.map((row) => row.target);
+    const mapRangeSource = mapTargets.length > 0
+      ? mapTargets
+      : allRows.map((row) => row.target);
+    const mapRangeM = resolveMapRangeMeters(mapRangeSource);
 
     const styles = getComputedStyle(opts.canvas);
     const textRgb = styles.getPropertyValue("--color-text-rgb").trim() || "245 245 245";
@@ -994,7 +1378,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     const fontSize = Math.max(8, cssWidth * 0.024);
 
     context.lineWidth = 0.7;
-    context.font = `${fontSize}px sans-serif`;
+    context.font = `${fontSize}px "Inter", system-ui, sans-serif`;
     context.textAlign = "left";
     context.textBaseline = "bottom";
 
@@ -1028,7 +1412,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
       ] as const;
       const labelOffset = scopeRadius + Math.max(10, cssWidth * 0.028);
       context.fillStyle = `rgb(${textRgb} / 0.3)`;
-      context.font = `bold ${Math.max(9, cssWidth * 0.026)}px sans-serif`;
+      context.font = `bold ${Math.max(9, cssWidth * 0.026)}px "Inter", system-ui, sans-serif`;
       context.textAlign = "center";
       context.textBaseline = "middle";
 
@@ -1053,12 +1437,15 @@ export function initRadar(opts: RadarUIOptions): () => void {
       }
     }
 
-    const now = Date.now();
+    const visibleIds = new Set(mapRows.map((row) => row.target.id));
+    if (selectedContactId !== null && !visibleIds.has(selectedContactId)) selectedContactId = null;
+    if (hoveredContactId !== null && !visibleIds.has(hoveredContactId)) hoveredContactId = null;
+
     canvasTargetHits.clear();
 
     let hasInferred = false;
-    for (const target of visibleTargets) {
-      if (target.evidence !== "measured") {
+    for (const row of mapRows) {
+      if (row.target.evidence !== "measured") {
         hasInferred = true;
         break;
       }
@@ -1075,17 +1462,18 @@ export function initRadar(opts: RadarUIOptions): () => void {
       context.setLineDash([]);
     }
 
-    for (const target of visibleTargets) {
-      const age = now - target.lastSeen;
-      const staleFactor = clamp(1 - age / STALE_TARGET_MS, 0.2, 1);
+    for (const row of mapRows) {
+      const target = row.target;
+      const staleFactor = clamp(1 - row.ageMs / (STALE_TARGET_MS + LOST_CONTACT_RETENTION_MS), 0.12, 1);
       const isSelected = selectedContactId === target.id;
       const isHovered = hoveredContactId === target.id;
+      const stateAlpha = stateWeight(row.state);
 
       let colorRgb = textRgb;
       if (target.protocol === "bluetooth") colorRgb = cyanRgb;
       if (target.protocol === "radio") colorRgb = redRgb;
 
-      const alpha = staleFactor * (target.evidence === "measured" ? 0.85 : 0.55);
+      const alpha = staleFactor * stateAlpha * (target.evidence === "measured" ? 0.86 : 0.58);
 
       let tx: number;
       let ty: number;
@@ -1130,31 +1518,52 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
         tx = cx + Math.cos(target.angleRad) * radius;
         ty = cy + Math.sin(target.angleRad) * radius;
-        markerSize = clamp(2.2 + target.confidence * 3.6, 2.2, 6.2);
+        markerSize = clamp(2.2 + target.confidence * 3.6 + stateAlpha * 0.5, 2.2, 6.4);
       } else if (isLocalBrowserTarget(target)) {
         const inner = scopeRadius * 0.08;
         const outer = scopeRadius * 0.22;
         const localRadius = inner + (outer - inner) * hashUnit(target.id);
         tx = cx + Math.cos(target.angleRad) * localRadius;
         ty = cy + Math.sin(target.angleRad) * localRadius;
-        markerSize = 2.9;
+        markerSize = row.state === "lost" ? 2.2 : 2.9;
       } else {
         tx = cx + Math.cos(target.angleRad) * inferredRadius;
         ty = cy + Math.sin(target.angleRad) * inferredRadius;
-        markerSize = 2.5;
+        markerSize = row.state === "lost" ? 2.1 : 2.5;
       }
 
-      if (target.evidence === "measured") {
+      if (target.evidence === "measured" && row.state !== "lost") {
         context.fillStyle = `rgb(${colorRgb} / ${(0.06 * staleFactor).toFixed(3)})`;
         context.beginPath();
         context.arc(tx, ty, markerSize + 4, 0, Math.PI * 2);
         context.fill();
       }
 
-      context.fillStyle = `rgb(${colorRgb} / ${alpha.toFixed(3)})`;
-      context.beginPath();
-      context.arc(tx, ty, markerSize, 0, Math.PI * 2);
-      context.fill();
+      if (row.state === "lost") {
+        context.strokeStyle = `rgb(${colorRgb} / ${(alpha * 0.95).toFixed(3)})`;
+        context.lineWidth = 1.25;
+        context.beginPath();
+        context.moveTo(tx - markerSize - 1.8, ty - markerSize - 1.8);
+        context.lineTo(tx + markerSize + 1.8, ty + markerSize + 1.8);
+        context.moveTo(tx - markerSize - 1.8, ty + markerSize + 1.8);
+        context.lineTo(tx + markerSize + 1.8, ty - markerSize - 1.8);
+        context.stroke();
+      } else {
+        context.fillStyle = `rgb(${colorRgb} / ${alpha.toFixed(3)})`;
+        context.beginPath();
+        context.arc(tx, ty, markerSize, 0, Math.PI * 2);
+        context.fill();
+      }
+
+      if (row.state === "acquiring" || row.state === "degrading") {
+        context.strokeStyle = `rgb(${colorRgb} / ${(alpha * 0.72).toFixed(3)})`;
+        context.lineWidth = 0.9;
+        context.setLineDash(row.state === "acquiring" ? [2, 3] : [4, 3]);
+        context.beginPath();
+        context.arc(tx, ty, markerSize + 3.2, 0, Math.PI * 2);
+        context.stroke();
+        context.setLineDash([]);
+      }
 
       canvasTargetHits.set(target.id, {
         x: tx,
@@ -1170,18 +1579,38 @@ export function initRadar(opts: RadarUIOptions): () => void {
         context.arc(tx, ty, markerSize + (isSelected ? 4 : 3), 0, Math.PI * 2);
         context.stroke();
 
-        context.fillStyle = `rgb(${textRgb} / ${(isSelected ? 0.6 : 0.48).toFixed(3)})`;
-        context.font = `${Math.max(9, cssWidth * 0.024)}px sans-serif`;
+        const dotLabelFontSize = Math.max(9, cssWidth * 0.024);
+        context.font = `${dotLabelFontSize}px "Inter", system-ui, sans-serif`;
         context.textAlign = "center";
         context.textBaseline = "bottom";
         const distLabel = target.distanceM !== null ? ` ${formatDistance(target.distanceM)}` : "";
         const bearing = Math.round(angleRadToBearingDeg(target.angleRad));
-        context.fillText(`${target.label}${distLabel} ${bearing}deg`, tx, ty - markerSize - 5);
+        const stateLabel = formatContactState(row.state);
+        const dotLabelText = `${target.label}${distLabel} ${bearing}deg ${stateLabel}`;
+        const dotLabelY = ty - markerSize - 6;
+        const dotLabelMetrics = context.measureText(dotLabelText);
+        const dotPadX = 5;
+        const dotPadY = 3;
+        const dotLabelW = dotLabelMetrics.width + dotPadX * 2;
+        const dotLabelH = dotLabelFontSize + dotPadY * 2;
+        const dotLabelBgX = tx - dotLabelW / 2;
+        const dotLabelBgY = dotLabelY - dotLabelH + dotPadY;
+        context.fillStyle = `rgb(10 10 10 / 0.62)`;
+        context.beginPath();
+        context.roundRect(dotLabelBgX, dotLabelBgY, dotLabelW, dotLabelH, 3);
+        context.fill();
+        context.fillStyle = isSelected
+          ? `rgb(${colorRgb} / ${(0.9 * staleFactor).toFixed(3)})`
+          : `rgb(${textRgb} / ${(0.52 * staleFactor).toFixed(3)})`;
+        context.fillText(dotLabelText, tx, dotLabelY);
       }
     }
 
-    const selectedTarget = selectedContactId ? targets.get(selectedContactId) ?? null : null;
-    if (selectedTarget && selectedTarget.protocol !== "self") {
+    const selectedTargetRow = selectedContactId
+      ? mapRows.find((row) => row.target.id === selectedContactId) ?? null
+      : null;
+    const selectedTarget = selectedTargetRow?.target ?? null;
+    if (selectedTarget) {
       const hit = canvasTargetHits.get(selectedTarget.id);
       if (hit) {
         const bearingDeg = angleRadToBearingDeg(selectedTarget.angleRad);
@@ -1200,13 +1629,30 @@ export function initRadar(opts: RadarUIOptions): () => void {
           selectedTarget.distanceM !== null ? formatDistance(selectedTarget.distanceM) : "inferred",
           `${Math.round(selectedTarget.confidence * 100)}pct`,
           `${Math.round(bearingDeg)}deg ${bearingToCardinal(bearingDeg)}`,
+          selectedTargetRow ? formatContactState(selectedTargetRow.state) : "unknown",
           selectedTarget.trend,
         ];
-        context.fillStyle = `rgb(${textRgb} / 0.68)`;
-        context.font = `${Math.max(9, cssWidth * 0.021)}px sans-serif`;
+        const hintFontSize = Math.max(9, cssWidth * 0.021);
+        context.font = `${hintFontSize}px "Inter", system-ui, sans-serif`;
         context.textAlign = "left";
         context.textBaseline = "top";
-        context.fillText(statusParts.join(" | "), 8, 8);
+        const hintText = statusParts.join(" | ");
+        const hintMetrics = context.measureText(hintText);
+        const hintPadX = 7;
+        const hintPadY = 5;
+        const hintX = 8;
+        const hintY = 8;
+        const hintW = hintMetrics.width + hintPadX * 2;
+        const hintH = hintFontSize + hintPadY * 2;
+        context.fillStyle = `rgb(10 10 10 / 0.72)`;
+        context.beginPath();
+        context.roundRect(hintX - hintPadX, hintY - hintPadY, hintW, hintH, 4);
+        context.fill();
+        context.strokeStyle = `rgb(${textRgb} / 0.1)`;
+        context.lineWidth = 0.7;
+        context.stroke();
+        context.fillStyle = `rgb(${textRgb} / 0.72)`;
+        context.fillText(hintText, hintX, hintY);
       }
     }
 
@@ -1215,14 +1661,11 @@ export function initRadar(opts: RadarUIOptions): () => void {
     context.arc(cx, cy, 3.5, 0, Math.PI * 2);
     context.fill();
 
-    context.fillStyle = `rgb(${textRgb} / 0.3)`;
-    context.font = `${Math.max(8, cssWidth * 0.021)}px sans-serif`;
-    context.textAlign = "right";
-    context.textBaseline = "bottom";
-    context.fillText(`range ${Math.round(mapRangeM)}m`, cssWidth - 8, cssHeight - 8);
   }
 
   function renderStats(): void {
+    const now = Date.now();
+    syncTargetStates(now);
     let bt = 0;
     let wifi = 0;
     let radio = 0;
@@ -1230,13 +1673,12 @@ export function initRadar(opts: RadarUIOptions): () => void {
     let measured = 0;
     let inferred = 0;
     let nearest: number | null = null;
-    const now = Date.now();
     for (const target of targets.values()) {
       if (target.protocol === "self") continue;
       if (target.protocol === "bluetooth") bt += 1;
       if (target.protocol === "wifi") wifi += 1;
       if (target.protocol === "radio") radio += 1;
-      if (now - target.lastSeen <= CONTACT_ACTIVE_WINDOW_MS) active += 1;
+      if (isTargetActive(target, now)) active += 1;
       if (target.evidence === "measured" && target.distanceM !== null) {
         measured += 1;
         nearest = nearest === null ? target.distanceM : Math.min(nearest, target.distanceM);
@@ -1257,32 +1699,32 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
   function renderContacts(): void {
     const now = Date.now();
-    const sorted = Array.from(targets.values())
-      .filter((target) => target.protocol !== "self")
-      .sort((a, b) => {
-        const aMeasured = a.evidence === "measured" && a.distanceM !== null;
-        const bMeasured = b.evidence === "measured" && b.distanceM !== null;
-        if (aMeasured !== bMeasured) return aMeasured ? -1 : 1;
+    const { allRows, filteredRows } = resolveContactRows(now);
+    const visibleRows = filteredRows.slice(0, 60);
+    const allIds = new Set(allRows.map((row) => row.target.id));
+    if (selectedContactId !== null && !allIds.has(selectedContactId)) selectedContactId = null;
+    if (hoveredContactId !== null && !allIds.has(hoveredContactId)) hoveredContactId = null;
 
-        const priorityDelta = computeTargetPriority(b, now) - computeTargetPriority(a, now);
-        if (Math.abs(priorityDelta) > 0.0001) return priorityDelta;
-
-        if (a.distanceM !== null && b.distanceM !== null) return a.distanceM - b.distanceM;
-        return b.lastSeen - a.lastSeen;
-      })
-      .slice(0, 60);
-
-    if (sorted.length === 0) {
-      opts.contactsEl.innerHTML = "<li>no contacts</li>";
-      renderLock(null, sorted, now);
+    if (visibleRows.length === 0) {
+      if (allRows.length === 0) {
+        opts.contactsEl.innerHTML = "<li>no contacts</li>";
+      } else {
+        opts.contactsEl.innerHTML = "<li>no contacts match triage</li>";
+      }
+      const selectedRow = selectedContactId
+        ? allRows.find((row) => row.target.id === selectedContactId) ?? null
+        : null;
+      renderLock(selectedRow, visibleRows, allRows, now);
       return;
     }
 
-    opts.contactsEl.innerHTML = sorted
-      .map((target) => {
-        const ageSec = Math.max(0, Math.floor((now - target.lastSeen) / 1000));
+    opts.contactsEl.innerHTML = visibleRows
+      .map((row) => {
+        const target = row.target;
+        const ageSec = row.ageSec;
+        const stateAgeSec = Math.max(0, Math.floor((now - target.stateSince) / 1000));
         const conf = Math.round(target.confidence * 100);
-        const priority = Math.round(computeTargetPriority(target, now) * 100);
+        const priority = Math.round(row.priority * 100);
         const bearingDeg = angleRadToBearingDeg(target.angleRad);
         const cardinal = bearingToCardinal(bearingDeg);
         const relativeLabel = relativeBearingLabel(bearingDeg, compassHeading);
@@ -1292,10 +1734,14 @@ export function initRadar(opts: RadarUIOptions): () => void {
         const hoverClass = !isSelected && isHovered ? " contact-hovered" : "";
         const meta = target.meta ? ` | ${escapeText(target.meta)}` : "";
         const trend = target.trend === "unknown" ? "unknown" : target.trend;
+        const stateLabel = formatContactState(row.state);
+        const activityLabel = row.active ? "active" : "inactive";
 
         let detail = "";
         if (isSelected) {
           const lines: string[] = [];
+          lines.push(`state: ${stateLabel} (${stateAgeSec}s)`);
+          lines.push(`activity: ${activityLabel}`);
           lines.push(`rssi raw: ${target.rssiRaw} dBm`);
           lines.push(`rssi filtered: ${target.rssiFiltered.toFixed(1)} dBm`);
           lines.push(`rssi sigma: ${target.rssiSigma.toFixed(2)} dB`);
@@ -1329,9 +1775,11 @@ export function initRadar(opts: RadarUIOptions): () => void {
             `${target.protocol}`,
             `${formatDistance(target.distanceM)} +/-${target.sigmaM.toFixed(1)}m`,
             `${Math.round(bearingDeg)}deg ${cardinal}`,
+            `${stateLabel}`,
             `${conf}% conf`,
             `${priority} pri`,
             `${trend}`,
+            `${activityLabel}`,
             `${ageSec}s`,
           ];
           if (relativeLabel) summaryParts.splice(3, 0, relativeLabel);
@@ -1343,8 +1791,10 @@ export function initRadar(opts: RadarUIOptions): () => void {
           target.protocol,
           "inferred",
           `${Math.round(bearingDeg)}deg ${cardinal}`,
+          `${stateLabel}`,
           `${priority} pri`,
           `${conf}% conf`,
+          `${activityLabel}`,
           `${ageSec}s`,
         ];
         if (relativeLabel) inferredParts.splice(3, 0, relativeLabel);
@@ -1352,12 +1802,22 @@ export function initRadar(opts: RadarUIOptions): () => void {
       })
       .join("");
 
-    renderLock(selectedContactId ? targets.get(selectedContactId) ?? null : null, sorted, now);
+    const selectedRow = selectedContactId
+      ? visibleRows.find((row) => row.target.id === selectedContactId) ??
+        allRows.find((row) => row.target.id === selectedContactId) ??
+        null
+      : null;
+    renderLock(selectedRow, visibleRows, allRows, now);
   }
 
-  function renderLock(selectedTarget: RadarTarget | null, sorted: RadarTarget[], now: number): void {
-    if (!selectedTarget) {
-      if (sorted.length === 0) {
+  function renderLock(
+    selectedRow: ContactRow | null,
+    visibleRows: ContactRow[],
+    allRows: ContactRow[],
+    now: number,
+  ): void {
+    if (!selectedRow) {
+      if (allRows.length === 0) {
         opts.lockEl.innerHTML = "<li>no lock target</li>";
         return;
       }
@@ -1365,49 +1825,61 @@ export function initRadar(opts: RadarUIOptions): () => void {
       let active = 0;
       let measured = 0;
       let nearest: number | null = null;
-      for (const target of sorted) {
-        if (now - target.lastSeen <= CONTACT_ACTIVE_WINDOW_MS) active += 1;
+      const summaryRows = visibleRows.length > 0 ? visibleRows : allRows;
+      for (const row of summaryRows) {
+        const target = row.target;
+        if (row.active) active += 1;
         if (target.evidence === "measured" && target.distanceM !== null) {
           measured += 1;
           nearest = nearest === null ? target.distanceM : Math.min(nearest, target.distanceM);
         }
       }
 
-      const top = sorted
+      const ranked = visibleRows.length > 0
+        ? visibleRows
+        : sortContactRows(allRows, "priority").slice(0, 3);
+      const top = ranked
         .slice(0, 3)
-        .map((target, index) => {
-          const priority = Math.round(computeTargetPriority(target, now) * 100);
-          const ageSec = Math.max(0, Math.floor((now - target.lastSeen) / 1000));
+        .map((row, index) => {
+          const target = row.target;
+          const priority = Math.round(row.priority * 100);
+          const ageSec = row.ageSec;
           const bearingDeg = angleRadToBearingDeg(target.angleRad);
           const rangeLabel = target.distanceM === null ? "inferred" : formatDistance(target.distanceM);
-          return `<li class="lock-secondary"><strong>${index + 1}.</strong> ${escapeText(target.label)} | ${target.protocol} | ${rangeLabel} | ${Math.round(bearingDeg)}deg | ${priority} pri | ${ageSec}s</li>`;
+          return `<li class="lock-secondary"><strong>${index + 1}.</strong> ${escapeText(target.label)} | ${target.protocol} | ${rangeLabel} | ${Math.round(bearingDeg)}deg | ${formatContactState(row.state)} | ${priority} pri | ${ageSec}s</li>`;
         })
         .join("");
 
-      const summaryParts = [
-        `contacts ${sorted.length}`,
+      const summaryParts = [`contacts ${allRows.length}`];
+      if (visibleRows.length !== allRows.length) summaryParts.push(`view ${visibleRows.length}`);
+      summaryParts.push(
         `active ${active}`,
         `measured ${measured}`,
-        `inferred ${sorted.length - measured}`,
+        `inferred ${Math.max(0, summaryRows.length - measured)}`,
         `nearest ${nearest === null ? "--" : formatDistance(nearest)}`,
-        `range ${Math.round(resolveMapRangeMeters(sorted))}m`,
-      ];
-      opts.lockEl.innerHTML = `<li class="lock-primary"><strong>scan summary</strong> | ${summaryParts.join(" | ")}</li>${top}`;
+        `sort ${triage.sort}`,
+      );
+      const header = visibleRows.length > 0 ? "scan summary" : "scan summary (triage empty)";
+      opts.lockEl.innerHTML = `<li class="lock-primary"><strong>${header}</strong> | ${summaryParts.join(" | ")}</li>${top}`;
       return;
     }
 
+    const selectedTarget = selectedRow.target;
     const ageSec = Math.max(0, Math.floor((now - selectedTarget.lastSeen) / 1000));
     const conf = Math.round(selectedTarget.confidence * 100);
-    const priority = Math.round(computeTargetPriority(selectedTarget, now) * 100);
+    const priority = Math.round(selectedRow.priority * 100);
     const bearingDeg = angleRadToBearingDeg(selectedTarget.angleRad);
     const cardinal = bearingToCardinal(bearingDeg);
     const relative = relativeBearingLabel(bearingDeg, compassHeading);
     const rangeLabel = selectedTarget.distanceM === null ? "inferred" : formatDistance(selectedTarget.distanceM);
     const sigmaLabel = selectedTarget.sigmaM === null ? "" : ` +/-${selectedTarget.sigmaM.toFixed(1)}m`;
     const trend = selectedTarget.trend === "unknown" ? "unknown" : selectedTarget.trend;
+    const stateLabel = formatContactState(selectedRow.state);
+    const stateAge = Math.max(0, Math.floor((now - selectedTarget.stateSince) / 1000));
+    const activityLabel = selectedRow.active ? "active" : "inactive";
 
     const lines = [
-      `<li class="lock-primary"><strong>lock ${escapeText(selectedTarget.label)}</strong> | ${selectedTarget.protocol} | ${rangeLabel}${sigmaLabel} | ${Math.round(bearingDeg)}deg ${cardinal}${relative ? ` | ${relative}` : ""} | ${trend}</li>`,
+      `<li class="lock-primary"><strong>lock ${escapeText(selectedTarget.label)}</strong> | ${selectedTarget.protocol} | ${rangeLabel}${sigmaLabel} | ${Math.round(bearingDeg)}deg ${cardinal}${relative ? ` | ${relative}` : ""} | ${stateLabel} ${stateAge}s | ${activityLabel} | ${trend}</li>`,
       `<li class="lock-secondary"><strong>signal</strong> rssi ${Math.round(selectedTarget.rssiFiltered)} dBm | sigma ${selectedTarget.rssiSigma.toFixed(1)} dB | conf ${conf}% | pri ${priority}</li>`,
       `<li class="lock-secondary"><strong>kinematics</strong> ${escapeText(formatRate(selectedTarget.distanceRateMps))} | update ${escapeText(formatUpdateRate(selectedTarget.updateHz))} | age ${ageSec}s</li>`,
     ];
@@ -1485,7 +1957,11 @@ export function initRadar(opts: RadarUIOptions): () => void {
   function tick(): void {
     if (destroyed) return;
     updateModeRuntime();
-    drawCanvas();
+    try {
+      drawCanvas();
+    } catch {
+      if (!destroyed) pushEvent("minimap render fault recovered");
+    }
     animationFrameId = requestAnimationFrame(tick);
   }
 
@@ -1792,8 +2268,14 @@ export function initRadar(opts: RadarUIOptions): () => void {
   function attachCompassListeners(): void {
     if (compassListenersAttached) return;
     compassListenersAttached = true;
-    on(window, "deviceorientationabsolute", handleOrientation, { passive: true });
-    on(window, "deviceorientation", handleOrientation, { passive: true });
+    const options: AddEventListenerOptions = { passive: true };
+    window.addEventListener("deviceorientationabsolute", handleOrientation, options);
+    window.addEventListener("deviceorientation", handleOrientation, options);
+    registerCleanup(sensorCleanups, () => {
+      window.removeEventListener("deviceorientationabsolute", handleOrientation, options);
+      window.removeEventListener("deviceorientation", handleOrientation, options);
+      compassListenersAttached = false;
+    });
   }
 
   function startCompass(): void {
@@ -1805,6 +2287,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
     if (typeof orientationCtor.requestPermission === "function") {
       orientationCtor.requestPermission()
         .then((perm: string) => {
+          if (!isScanActive()) return;
           if (perm === "granted") {
             attachCompassListeners();
             pushEvent("compass permission granted");
@@ -1812,7 +2295,9 @@ export function initRadar(opts: RadarUIOptions): () => void {
             pushEvent("compass permission denied");
           }
         })
-        .catch(() => pushEvent("compass permission request failed"));
+        .catch(() => {
+          if (isScanActive()) pushEvent("compass permission request failed");
+        });
     } else {
       attachCompassListeners();
     }
@@ -1836,7 +2321,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
         renderAmbient();
       };
       sensor.addEventListener("reading", handler);
-      cleanups.push(() => {
+      registerCleanup(sensorCleanups, () => {
         sensor.removeEventListener("reading", handler);
         sensor.stop();
       });
@@ -1865,7 +2350,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 },
     );
 
-    cleanups.push(() => navigator.geolocation.clearWatch(watchId));
+    registerCleanup(sensorCleanups, () => navigator.geolocation.clearWatch(watchId));
   }
 
   // ── Sweep lifecycle ────────────────────────────────────────────────────
@@ -1881,6 +2366,26 @@ export function initRadar(opts: RadarUIOptions): () => void {
     startCompass();
     startAmbientLight();
     startGeolocation();
+  }
+
+  function stopSensors(): void {
+    runAndClearCleanups(sensorCleanups);
+    sensorsStarted = false;
+  }
+
+  function startStalePurgeLoop(): void {
+    if (stalePurgeTimer !== null) return;
+    stalePurgeTimer = window.setInterval(() => {
+      removeStaleTargets();
+      renderStats();
+      renderContacts();
+    }, STALE_PURGE_MS);
+  }
+
+  function stopStalePurgeLoop(): void {
+    if (stalePurgeTimer === null) return;
+    window.clearInterval(stalePurgeTimer);
+    stalePurgeTimer = null;
   }
 
   function resetSensorReadouts(): void {
@@ -1912,21 +2417,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
     // so iOS permission prompts work correctly.
     startSensors();
 
-    runNetworkProbe();
-    scheduleIceProbe();
-    scheduleEnumerateDevicesProbe();
-
-    networkPollTimer = window.setInterval(() => {
-      runNetworkProbe();
-      scheduleIceProbe();
-      scheduleEnumerateDevicesProbe();
-    }, NETWORK_POLL_MS);
-
-    stalePurgeTimer = window.setInterval(() => {
-      removeStaleTargets();
-      renderStats();
-      renderContacts();
-    }, STALE_PURGE_MS);
+    startNetworkProbeLoop({ immediate: true });
+    startStalePurgeLoop();
   }
 
   function stopSweep(): void {
@@ -1938,18 +2430,12 @@ export function initRadar(opts: RadarUIOptions): () => void {
     setMode("idle");
     pushEvent("scan stopped");
 
+    stopNetworkProbeLoop();
+    stopStalePurgeLoop();
+    stopSensors();
+
     // Return top sensor readouts to idle defaults immediately on stop.
     resetSensorReadouts();
-
-    if (networkPollTimer !== null) {
-      window.clearInterval(networkPollTimer);
-      networkPollTimer = null;
-    }
-
-    if (stalePurgeTimer !== null) {
-      window.clearInterval(stalePurgeTimer);
-      stalePurgeTimer = null;
-    }
 
     iceProbePending = false;
     mediaProbePending = false;
@@ -2029,6 +2515,13 @@ export function initRadar(opts: RadarUIOptions): () => void {
   on(opts.bluetoothScanBtn, "click", () => { void startBluetoothScan(); });
   on(opts.bluetoothPickBtn, "click", () => { void pickBluetoothDevice(); });
   on(opts.clearBtn, "click", () => clearTargets());
+  on(opts.triageProtocolEl, "change", () => applyTriageFromControls());
+  on(opts.triageEvidenceEl, "change", () => applyTriageFromControls());
+  on(opts.triageStateEl, "change", () => applyTriageFromControls());
+  on(opts.triageSortEl, "change", () => applyTriageFromControls());
+  on(opts.triageMinConfidenceEl, "input", () => applyTriageFromControls());
+  on(opts.triageMinConfidenceEl, "change", () => applyTriageFromControls());
+  on(opts.triageActiveOnlyEl, "change", () => applyTriageFromControls());
   on(opts.contactsEl, "click", handleContactClick);
   on(opts.contactsEl, "keydown", handleContactKeydown);
   const supportsPointerEvents = typeof PointerEvent !== "undefined";
@@ -2055,20 +2548,9 @@ export function initRadar(opts: RadarUIOptions): () => void {
   on(document, "visibilitychange", () => {
     if (!running) return;
     if (document.visibilityState === "hidden") {
-      if (networkPollTimer !== null) {
-        window.clearInterval(networkPollTimer);
-        networkPollTimer = null;
-      }
+      stopNetworkProbeLoop();
     } else if (networkPollTimer === null) {
-      // Tab restored — fire an immediate probe then restart the interval.
-      runNetworkProbe();
-      scheduleIceProbe();
-      scheduleEnumerateDevicesProbe();
-      networkPollTimer = window.setInterval(() => {
-        runNetworkProbe();
-        scheduleIceProbe();
-        scheduleEnumerateDevicesProbe();
-      }, NETWORK_POLL_MS);
+      startNetworkProbeLoop({ immediate: true });
     }
   }, { passive: true });
 
@@ -2113,6 +2595,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
   opts.modelEl.textContent = "path-loss + kalman + online variance + bearing/rate telemetry";
   setMode("idle");
 
+  syncTriageControls();
   syncButtonStates();
   renderCapabilities();
   renderStats();
@@ -2131,10 +2614,14 @@ export function initRadar(opts: RadarUIOptions): () => void {
   return () => {
     destroyed = true;
     stopSweep();
+    stopNetworkProbeLoop();
+    stopStalePurgeLoop();
+    stopSensors();
     stopBluetoothScan();
     if (animationFrameId) cancelAnimationFrame(animationFrameId);
-    for (const cleanup of cleanups) cleanup();
+    runAndClearCleanups(cleanups);
   };
 }
+
 
 

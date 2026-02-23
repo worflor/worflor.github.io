@@ -94,6 +94,73 @@ const seo = {
     </section>
 
     <section class="mt-[var(--space-sm)] content-section">
+      <div class="radar-triage surface-raised">
+        <h2 class="feed-title">triage</h2>
+        <p class="feed-hint">filter and rank contacts without external data</p>
+        <div class="triage-grid">
+          <label class="triage-field" for="radar-triage-protocol">
+            <span class="triage-field-label">protocol</span>
+            <select id="radar-triage-protocol" class="triage-select">
+              <option value="all">all</option>
+              <option value="bluetooth">bluetooth</option>
+              <option value="wifi">wifi/net</option>
+              <option value="radio">radio</option>
+            </select>
+          </label>
+
+          <label class="triage-field" for="radar-triage-evidence">
+            <span class="triage-field-label">evidence</span>
+            <select id="radar-triage-evidence" class="triage-select">
+              <option value="all">all</option>
+              <option value="measured">measured</option>
+              <option value="inferred">inferred</option>
+            </select>
+          </label>
+
+          <label class="triage-field" for="radar-triage-state">
+            <span class="triage-field-label">state</span>
+            <select id="radar-triage-state" class="triage-select">
+              <option value="all">all</option>
+              <option value="new">new</option>
+              <option value="acquiring">acquiring</option>
+              <option value="stable">stable</option>
+              <option value="degrading">degrading</option>
+              <option value="lost">lost</option>
+            </select>
+          </label>
+
+          <label class="triage-field" for="radar-triage-sort">
+            <span class="triage-field-label">sort</span>
+            <select id="radar-triage-sort" class="triage-select">
+              <option value="priority">priority</option>
+              <option value="nearest">nearest</option>
+              <option value="confidence">confidence</option>
+              <option value="recent">recent</option>
+            </select>
+          </label>
+
+          <label class="triage-field triage-field-wide" for="radar-triage-min-confidence">
+            <span class="triage-field-label">min confidence <span id="radar-triage-min-confidence-value" class="triage-output">0%</span></span>
+            <input
+              id="radar-triage-min-confidence"
+              class="triage-range"
+              type="range"
+              min="0"
+              max="95"
+              step="5"
+              value="0"
+            />
+          </label>
+
+          <label class="triage-toggle" for="radar-triage-active-only">
+            <input id="radar-triage-active-only" type="checkbox" />
+            <span>active only</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] content-section">
       <div class="radar-feed surface-raised">
         <h2 class="feed-title">contacts</h2>
         <p class="feed-hint">select a contact to expand signal detail</p>
@@ -226,6 +293,7 @@ const seo = {
   .radar-sensors,
   .radar-scope-wrap,
   .radar-stats,
+  .radar-triage,
   .radar-model,
   .radar-feed {
     border: 1px solid var(--radar-edge);
@@ -274,11 +342,11 @@ const seo = {
   }
 
   .status-value[data-bt="scanning"] {
-    color: var(--chromatic-cyan);
+    color: rgb(var(--chromatic-cyan));
   }
 
   .status-value[data-bt="blocked"] {
-    color: var(--chromatic-red);
+    color: rgb(var(--chromatic-red));
   }
 
   .radar-canvas {
@@ -294,6 +362,93 @@ const seo = {
   .model-note {
     margin: 0;
     line-height: 1.5;
+  }
+
+  .radar-triage {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.75);
+  }
+
+  .triage-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: calc(var(--space-xs) * 0.7);
+    align-items: end;
+  }
+
+  .triage-field {
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .triage-field-wide {
+    grid-column: span 2;
+  }
+
+  .triage-field-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: var(--text-sm);
+    color: var(--radar-muted);
+    text-transform: lowercase;
+  }
+
+  .triage-output {
+    font-family: monospace;
+    font-size: calc(var(--text-sm) * 0.95);
+    color: rgb(var(--chromatic-cyan) / 0.9);
+  }
+
+  .triage-select,
+  .triage-range {
+    width: 100%;
+  }
+
+  .triage-select {
+    background: rgb(var(--color-text-rgb) / 0.025);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.16);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    min-height: calc(var(--touch-target) * 0.8);
+    padding: calc(var(--space-xs) * 0.55) calc(var(--space-xs) * 0.72);
+    font: inherit;
+    line-height: 1.2;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+
+  .triage-select:focus-visible,
+  .triage-range:focus-visible,
+  .triage-toggle:focus-within {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.42);
+    outline-offset: 1px;
+  }
+
+  .triage-range {
+    accent-color: rgb(var(--chromatic-cyan));
+    min-height: calc(var(--touch-target) * 0.6);
+  }
+
+  .triage-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.45);
+    min-height: calc(var(--touch-target) * 0.8);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.16);
+    border-radius: var(--radius-sm);
+    padding: calc(var(--space-xs) * 0.55) calc(var(--space-xs) * 0.7);
+    background: rgb(var(--color-text-rgb) / 0.025);
+    color: var(--radar-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .triage-toggle input[type="checkbox"] {
+    accent-color: rgb(var(--chromatic-cyan));
+    width: 0.95rem;
+    height: 0.95rem;
   }
 
   .feed-title {
@@ -524,6 +679,16 @@ const seo = {
     }
   }
 
+  @container (max-width: 56rem) {
+    .triage-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .triage-field-wide {
+      grid-column: span 2;
+    }
+  }
+
   @container (max-width: 36rem) {
     .radar-status,
     .radar-sensors {
@@ -534,9 +699,27 @@ const seo = {
     .radar-stats {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    .triage-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .triage-field-wide {
+      grid-column: span 1;
+    }
   }
 
   @supports not (container-type: inline-size) {
+    @media (max-width: 56rem) {
+      .triage-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .triage-field-wide {
+        grid-column: span 2;
+      }
+    }
+
     @media (max-width: 36rem) {
       .radar-status,
       .radar-sensors {
@@ -546,6 +729,14 @@ const seo = {
 
       .radar-stats {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .triage-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .triage-field-wide {
+        grid-column: span 1;
       }
     }
   }
