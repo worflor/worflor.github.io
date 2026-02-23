@@ -11,57 +11,80 @@ const seo = {
 
 <Layout seo={seo}>
   <div class="radar-page">
-    <section class="mt-8 content-section radar-intro">
+    <!-- ── Header ─────────────────────────────────────────────── -->
+    <section
+      class="mt-8 content-section radar-intro radar-reveal"
+      style="--reveal-delay: 0ms"
+    >
       <h1 class="page-title radar-title" id="radar-title">Radar</h1>
       <p class="radar-tagline">local signal detection</p>
     </section>
 
-    <section class="mt-[var(--space-md)] content-section radar-status-section">
-      <div class="radar-status surface-raised">
-        <div class="status-item">
-          <span class="status-label">mode</span>
-          <span class="status-value" id="radar-mode">idle</span>
+    <!-- ── Merged Telemetry Bar (status + sensors combined) ────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section radar-reveal"
+      style="--reveal-delay: 60ms"
+    >
+      <div class="radar-telemetry surface-raised">
+        <div class="telemetry-group telemetry-group--status">
+          <div class="status-item">
+            <span class="status-label">mode</span>
+            <span class="status-value" id="radar-mode">idle</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">bluetooth</span>
+            <span class="status-value" id="radar-bluetooth">unknown</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">model</span>
+            <span class="status-value" id="radar-model">--</span>
+          </div>
         </div>
-        <div class="status-item">
-          <span class="status-label">bluetooth</span>
-          <span class="status-value" id="radar-bluetooth">unknown</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">model</span>
-          <span class="status-value" id="radar-model">--</span>
+        <div class="telemetry-divider" aria-hidden="true"></div>
+        <div class="telemetry-group telemetry-group--sensors">
+          <div class="status-item">
+            <span class="status-label">position</span>
+            <span class="status-value tabular-nums" id="radar-self-loc"
+              >no fix</span
+            >
+          </div>
+          <div class="status-item">
+            <span class="status-label">heading</span>
+            <span class="status-value tabular-nums" id="radar-compass">--</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">ambient</span>
+            <span class="status-value tabular-nums" id="radar-ambient">--</span>
+          </div>
         </div>
       </div>
     </section>
 
-    <section class="mt-[var(--space-sm)] content-section radar-sensors-section">
-      <div class="radar-sensors surface-raised">
-        <div class="status-item">
-          <span class="status-label">position</span>
-          <span class="status-value tabular-nums" id="radar-self-loc">no fix</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">heading</span>
-          <span class="status-value tabular-nums" id="radar-compass">--</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">ambient</span>
-          <span class="status-value tabular-nums" id="radar-ambient">--</span>
-        </div>
-      </div>
-    </section>
-
-    <section class="mt-[var(--space-sm)] content-section radar-canvas-section">
+    <!-- ── Hero Canvas ────────────────────────────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] radar-canvas-section radar-reveal"
+      style="--reveal-delay: 120ms"
+    >
       <div class="radar-scope-wrap surface-raised">
-        <canvas id="radar-canvas" class="radar-canvas" aria-label="Signal map" role="img"></canvas>
+        <canvas
+          id="radar-canvas"
+          class="radar-canvas"
+          aria-label="Signal map"
+          role="img"></canvas>
       </div>
     </section>
 
-    <section class="mt-[var(--space-sm)] content-section">
-      <div class="radar-stats surface-raised">
+    <!-- ── Stat Readout Strip ─────────────────────────────────── -->
+    <section
+      class="mt-[var(--space-xs)] content-section radar-reveal"
+      style="--reveal-delay: 180ms"
+    >
+      <div class="radar-readout-strip">
         <div class="stat-chip">
           <span class="stat-number tabular-nums" id="radar-total">0</span>
           <span class="stat-label">total</span>
         </div>
+        <div class="stat-divider" aria-hidden="true"></div>
         <div class="stat-chip">
           <span class="stat-number tabular-nums" id="radar-bt-count">0</span>
           <span class="stat-label">bluetooth</span>
@@ -74,6 +97,7 @@ const seo = {
           <span class="stat-number tabular-nums" id="radar-radio-count">0</span>
           <span class="stat-label">radio</span>
         </div>
+        <div class="stat-divider" aria-hidden="true"></div>
         <div class="stat-chip">
           <span class="stat-number tabular-nums" id="radar-active">0</span>
           <span class="stat-label">active</span>
@@ -86,6 +110,7 @@ const seo = {
           <span class="stat-number tabular-nums" id="radar-inferred">0</span>
           <span class="stat-label">inferred</span>
         </div>
+        <div class="stat-divider" aria-hidden="true"></div>
         <div class="stat-chip">
           <span class="stat-number tabular-nums" id="radar-nearest">--</span>
           <span class="stat-label">nearest</span>
@@ -93,7 +118,11 @@ const seo = {
       </div>
     </section>
 
-    <section class="mt-[var(--space-sm)] content-section">
+    <!-- ── Triage ─────────────────────────────────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section radar-reveal"
+      style="--reveal-delay: 240ms"
+    >
       <div class="radar-triage surface-raised">
         <h2 class="feed-title">triage</h2>
         <p class="feed-hint">filter and rank contacts without external data</p>
@@ -139,8 +168,16 @@ const seo = {
             </select>
           </label>
 
-          <label class="triage-field triage-field-wide" for="radar-triage-min-confidence">
-            <span class="triage-field-label">min confidence <span id="radar-triage-min-confidence-value" class="triage-output">0%</span></span>
+          <label
+            class="triage-field triage-field-wide"
+            for="radar-triage-min-confidence"
+          >
+            <span class="triage-field-label"
+              >min confidence <span
+                id="radar-triage-min-confidence-value"
+                class="triage-output">0%</span
+              ></span
+            >
             <input
               id="radar-triage-min-confidence"
               class="triage-range"
@@ -160,52 +197,78 @@ const seo = {
       </div>
     </section>
 
-    <section class="mt-[var(--space-sm)] content-section">
-      <div class="radar-feed surface-raised">
-        <h2 class="feed-title">contacts</h2>
-        <p class="feed-hint">select a contact to expand signal detail</p>
-        <ul id="radar-contacts" class="feed-list feed-list-contacts" aria-live="polite"></ul>
+    <!-- ── All Feeds (fluid grid) ─────────────────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] radar-feeds-section radar-reveal"
+      style="--reveal-delay: 300ms"
+    >
+      <div class="radar-feeds-fluid">
+        <div class="radar-feed radar-feed--contacts surface-raised">
+          <h2 class="feed-title">contacts</h2>
+          <p class="feed-hint">select a contact to expand signal detail</p>
+          <ul
+            id="radar-contacts"
+            class="feed-list feed-list-contacts"
+            aria-live="polite"
+          >
+          </ul>
+        </div>
+        <div class="radar-feed surface-raised">
+          <h2 class="feed-title">lock</h2>
+          <p class="feed-hint">
+            target lock with derived range, bearing, and trend
+          </p>
+          <ul
+            id="radar-lock"
+            class="feed-list feed-list-lock"
+            aria-live="polite"
+          >
+          </ul>
+        </div>
+        <div class="radar-feed surface-raised">
+          <h2 class="feed-title">events</h2>
+          <ul
+            id="radar-events"
+            class="feed-list feed-list-events"
+            aria-live="polite"
+          >
+          </ul>
+        </div>
+        <div class="radar-feed surface-raised">
+          <h2 class="feed-title">capabilities</h2>
+          <ul
+            id="radar-capabilities"
+            class="feed-list feed-list-capabilities"
+            aria-live="polite"
+          >
+          </ul>
+        </div>
       </div>
     </section>
 
-    <section class="mt-[var(--space-sm)] content-section">
-      <div class="radar-feed surface-raised">
-        <h2 class="feed-title">lock</h2>
-        <p class="feed-hint">target lock with derived range, bearing, and trend</p>
-        <ul id="radar-lock" class="feed-list feed-list-lock" aria-live="polite"></ul>
-      </div>
+    <!-- ── Model Note ─────────────────────────────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] mb-[var(--space-xl)] content-section radar-reveal"
+      style="--reveal-delay: 420ms"
+    >
+      <p class="model-note">
+        fully client-side. measured range comes from log-distance path loss with
+        Kalman-filtered RSSI and online variance tracking. lock telemetry uses
+        derived rate from the same local signals. inferred contacts are network
+        and route hints, not literal nearby people.
+      </p>
     </section>
 
-    <section class="mt-[var(--space-sm)] content-section">
-      <div class="radar-feed surface-raised">
-        <h2 class="feed-title">events</h2>
-        <ul id="radar-events" class="feed-list feed-list-events" aria-live="polite"></ul>
-      </div>
-    </section>
-
-    <section class="mt-[var(--space-sm)] content-section">
-      <div class="radar-feed surface-raised">
-        <h2 class="feed-title">capabilities</h2>
-        <ul id="radar-capabilities" class="feed-list feed-list-capabilities" aria-live="polite"></ul>
-      </div>
-    </section>
-
-    <section class="mt-[var(--space-sm)] mb-[var(--space-xl)] content-section">
-      <div class="radar-model surface-raised">
-        <p class="model-note">
-          fully client-side. measured range comes from log-distance path loss with
-          Kalman-filtered RSSI and online variance tracking. lock telemetry uses
-          derived rate from the same local signals. inferred contacts are
-          network and route hints, not literal nearby people.
-        </p>
-      </div>
-    </section>
-
+    <!-- ── Action Bar ─────────────────────────────────────────── -->
     <div class="radar-actions" role="group" aria-label="Radar controls">
       <button class="action-btn" id="radar-start" type="button">Scan</button>
       <button class="action-btn" id="radar-stop" type="button">Stop</button>
-      <button class="action-btn" id="radar-bt-scan" type="button">BT LE Scan</button>
-      <button class="action-btn" id="radar-bt-pick" type="button">BT Pair</button>
+      <button class="action-btn" id="radar-bt-scan" type="button"
+        >BT LE Scan</button
+      >
+      <button class="action-btn" id="radar-bt-pick" type="button"
+        >BT Pair</button
+      >
       <button class="action-btn" id="radar-clear" type="button">Clear</button>
     </div>
   </div>
@@ -214,9 +277,16 @@ const seo = {
     import { initRadar, resolveRadarUIOptions } from "../scripts/radar-ui";
 
     const RADAR_LIFECYCLE_KEY = "__radarLifecycle";
-    type RadarLifecycle = { boot: () => void; teardown: () => void; detach?: () => void };
+    type RadarLifecycle = {
+      boot: () => void;
+      teardown: () => void;
+      detach?: () => void;
+    };
     let cleanupRadar: (() => void) | null = null;
-    const radarWindow = window as unknown as Record<string, RadarLifecycle | undefined>;
+    const radarWindow = window as unknown as Record<
+      string,
+      RadarLifecycle | undefined
+    >;
 
     function boot() {
       teardown();
@@ -256,7 +326,11 @@ const seo = {
       prev.teardown?.();
     }
 
-    radarWindow[RADAR_LIFECYCLE_KEY] = { boot, teardown, detach: detachLifecycle };
+    radarWindow[RADAR_LIFECYCLE_KEY] = {
+      boot,
+      teardown,
+      detach: detachLifecycle,
+    };
 
     boot();
     attachLifecycle();
@@ -264,6 +338,8 @@ const seo = {
 </Layout>
 
 <style>
+  /* ── Page Shell ─────────────────────────────────────────────── */
+
   .radar-page {
     --radar-radius: var(--radius-lg);
     --radar-muted: rgb(var(--color-text-rgb) / 0.58);
@@ -272,6 +348,32 @@ const seo = {
     --radar-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
     padding-bottom: calc(var(--radar-action-offset) + var(--space-lg));
   }
+
+  /* ── Staggered reveal animation ──────────────────────────────── */
+
+  @keyframes radar-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .radar-reveal {
+    animation: radar-fade-up 0.4s var(--ease-out) both;
+    animation-delay: var(--reveal-delay, 0ms);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .radar-reveal {
+      animation: none;
+    }
+  }
+
+  /* ── Header ─────────────────────────────────────────────────── */
 
   .radar-intro {
     display: grid;
@@ -289,28 +391,31 @@ const seo = {
     color: var(--radar-muted);
   }
 
-  .radar-status,
-  .radar-sensors,
-  .radar-scope-wrap,
-  .radar-stats,
-  .radar-triage,
-  .radar-model,
-  .radar-feed {
+  /* ── Merged Telemetry Bar ────────────────────────────────────── */
+
+  .radar-telemetry {
+    display: flex;
+    align-items: center;
     border: 1px solid var(--radar-edge);
+    border-left: 2px solid rgb(var(--chromatic-cyan) / 0.25);
     border-radius: var(--radar-radius);
     padding: var(--space-sm);
+    overflow: hidden;
   }
 
-  .radar-status,
-  .radar-sensors,
-  .radar-stats {
+  .telemetry-group {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: calc(var(--space-xs) * 0.8);
+    flex: 1;
   }
 
-  .radar-stats {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+  .telemetry-divider {
+    width: 1px;
+    background: var(--radar-edge);
+    margin: 0 var(--space-sm);
+    flex-shrink: 0;
+    align-self: stretch;
   }
 
   .status-item,
@@ -351,6 +456,29 @@ const seo = {
     color: rgb(var(--chromatic-red));
   }
 
+  /* ── Hero Canvas ─────────────────────────────────────────────── */
+
+  /* Canvas section breaks out slightly wider than content-width */
+  .radar-canvas-section {
+    width: 100%;
+    max-width: calc(var(--content-width) + 4rem);
+    margin-inline: auto;
+    padding-inline: max(
+      clamp(1rem, 4vw, 1.5rem),
+      env(safe-area-inset-left),
+      env(safe-area-inset-right)
+    );
+  }
+
+  .radar-scope-wrap {
+    border: 1px solid var(--radar-edge);
+    border-radius: var(--radar-radius);
+    padding: var(--space-sm);
+    box-shadow:
+      var(--edge-highlight),
+      0 4px 24px rgba(0, 0, 0, 0.3);
+  }
+
   .radar-canvas {
     display: block;
     width: 100%;
@@ -361,12 +489,98 @@ const seo = {
     touch-action: manipulation;
   }
 
-  .model-note {
-    margin: 0;
-    line-height: 1.5;
+  /* ── Borderless Stat Readout Strip ───────────────────────────── */
+
+  .radar-readout-strip {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.3);
+    padding: calc(var(--space-xs) * 0.6) 0;
   }
 
+  .radar-readout-strip .stat-chip {
+    display: flex;
+    flex-direction: row;
+    gap: 0.35em;
+    align-items: baseline;
+    text-align: left;
+    padding: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.7);
+    border-radius: var(--radius-sm);
+    transition: background var(--duration-normal) var(--ease-out);
+  }
+
+  /* stat-chip hover only on pointer devices */
+  @media (hover: hover) {
+    .radar-readout-strip .stat-chip:hover {
+      background: rgb(var(--color-text-rgb) / 0.04);
+    }
+  }
+
+  .radar-readout-strip .stat-number {
+    font-size: var(--text-base);
+    font-weight: 700;
+    color: var(--color-text);
+    letter-spacing: -0.01em;
+  }
+
+  .radar-readout-strip .stat-label {
+    font-size: calc(var(--text-sm) * 0.875);
+    color: var(--radar-faint);
+    letter-spacing: 0.03em;
+  }
+
+  .stat-divider {
+    width: 1px;
+    height: 1.1em;
+    background: var(--radar-edge);
+    flex-shrink: 0;
+    margin-inline: calc(var(--space-xs) * 0.2);
+    align-self: center;
+  }
+
+  /* ── Fluid Feed Grid ─────────────────────────────────────────── */
+
+  .radar-feeds-section {
+    width: 100%;
+    max-width: calc(var(--content-width) + 4rem);
+    margin-inline: auto;
+    padding-inline: max(
+      clamp(1rem, 4vw, 1.5rem),
+      env(safe-area-inset-left),
+      env(safe-area-inset-right)
+    );
+  }
+
+  .radar-feeds-fluid {
+    columns: 2 16rem;
+    column-gap: var(--space-sm);
+  }
+
+  .radar-feeds-fluid > * {
+    break-inside: avoid;
+    margin-bottom: var(--space-sm);
+  }
+
+  /* prevent trailing margin on the last item in each column */
+  .radar-feeds-fluid > :last-child {
+    margin-bottom: 0;
+  }
+
+  .radar-feed {
+    border: 1px solid var(--radar-edge);
+    border-radius: var(--radar-radius);
+    padding: var(--space-sm);
+    min-width: 0;
+  }
+
+  /* ── Triage ──────────────────────────────────────────────────── */
+
   .radar-triage {
+    border: 1px solid var(--radar-edge);
+    border-radius: var(--radar-radius);
+    padding: var(--space-sm);
     display: grid;
     gap: calc(var(--space-xs) * 0.75);
   }
@@ -453,6 +667,8 @@ const seo = {
     height: 0.95rem;
   }
 
+  /* ── Feed Titles & Lists ─────────────────────────────────────── */
+
   .feed-title {
     margin: 0 0 calc(var(--space-xs) * 0.5);
     font-size: var(--text-base);
@@ -485,7 +701,7 @@ const seo = {
   }
 
   .feed-list-contacts {
-    max-height: 28rem;
+    max-height: 32rem;
   }
 
   .feed-list-lock {
@@ -564,6 +780,18 @@ const seo = {
     font-weight: 600;
   }
 
+  /* ── Model Note ──────────────────────────────────────────────── */
+
+  .model-note {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--radar-faint);
+    line-height: 1.6;
+    text-align: center;
+  }
+
+  /* ── Fixed Action Bar ────────────────────────────────────────── */
+
   .radar-actions {
     position: fixed;
     bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
@@ -587,7 +815,10 @@ const seo = {
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
     overscroll-behavior-x: contain;
-    max-width: min(var(--content-width), calc(100vw - 2 * clamp(0.75rem, 4vw, 1.5rem)));
+    max-width: min(
+      var(--content-width),
+      calc(100vw - 2 * clamp(0.75rem, 4vw, 1.5rem))
+    );
   }
 
   .radar-actions::-webkit-scrollbar {
@@ -616,7 +847,9 @@ const seo = {
       color var(--duration-normal) var(--ease-out);
   }
 
-  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  @supports not (
+    (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+  ) {
     .radar-actions {
       background: rgb(10 10 10 / 0.94);
     }
@@ -644,6 +877,8 @@ const seo = {
     background: transparent;
     opacity: 1;
   }
+
+  /* ── Hover States ────────────────────────────────────────────── */
 
   @media (hover: hover) {
     .feed-list-contacts :global(li:hover) {
@@ -681,6 +916,8 @@ const seo = {
     }
   }
 
+  /* ── Container / responsive breakpoints ─────────────────────── */
+
   @container (max-width: 56rem) {
     .triage-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -692,16 +929,26 @@ const seo = {
   }
 
   @container (max-width: 36rem) {
-    .radar-stats {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
     .triage-grid {
       grid-template-columns: 1fr;
     }
 
     .triage-field-wide {
       grid-column: span 1;
+    }
+  }
+
+  /* Telemetry bar: collapse to 3+3 stacked on narrow */
+  @container (max-width: 38rem) {
+    .radar-telemetry {
+      flex-direction: column;
+      gap: var(--space-xs);
+    }
+
+    .telemetry-divider {
+      width: 100%;
+      height: 1px;
+      margin: 0;
     }
   }
 
@@ -717,10 +964,6 @@ const seo = {
     }
 
     @media (max-width: 36rem) {
-      .radar-stats {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
       .triage-grid {
         grid-template-columns: 1fr;
       }
@@ -729,7 +972,22 @@ const seo = {
         grid-column: span 1;
       }
     }
+
+    @media (max-width: 38rem) {
+      .radar-telemetry {
+        flex-direction: column;
+        gap: var(--space-xs);
+      }
+
+      .telemetry-divider {
+        width: 100%;
+        height: 1px;
+        margin: 0;
+      }
+    }
   }
+
+  /* ── Mobile: reorder for canvas-first experience ─────────────── */
 
   @media (max-width: 480px) {
     .radar-page {
@@ -737,12 +995,21 @@ const seo = {
       flex-direction: column;
     }
 
-    /* Push all sections to the back; named sections get explicit order */
-    .radar-page > * { order: 10; }
-    .radar-intro        { order: 1; }
-    .radar-canvas-section { order: 2; }
-    .radar-status-section { order: 3; }
-    .radar-sensors-section { order: 4; }
+    /* Push all sections back; named ones get explicit order */
+    .radar-page > * {
+      order: 10;
+    }
+    .radar-intro {
+      order: 1;
+    }
+    .radar-canvas-section {
+      order: 2;
+    }
+
+    /* On mobile, feeds stack single-column */
+    .radar-feeds-fluid {
+      columns: 1;
+    }
   }
 
   @media (max-width: 520px) {
@@ -753,7 +1020,12 @@ const seo = {
 
     .action-btn {
       font-size: calc(var(--text-sm) * 0.9);
-      padding-inline: calc(var(--space-xs) * 1.0);
+      padding-inline: calc(var(--space-xs) * 1);
+    }
+
+    /* Readout strip wraps tighter on small screens */
+    .stat-divider {
+      display: none;
     }
   }
 </style>
