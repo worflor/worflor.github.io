@@ -56,7 +56,7 @@ export const homePageContent: HomePageContent = {
   seo: {
     title: "woflo",
     description:
-      "Canadian Game and Technology Enthusiast who likes building cool things.",
+      "Canadian game and technology enthusiast who likes building cool things. I fixate on little details and tinker with computers.",
     image: identity.logo,
   },
   role: "Game & Software Developer",
@@ -80,13 +80,13 @@ export const aboutPageContent: AboutPageContent = {
   seo: {
     title: "About | woflo",
     description:
-      "Lifetime gamer and professional picky person from Canada.",
+      "Lifetime gamer and professional picky person from Canada. I like to do things ;]",
     image: identity.logo,
   },
   subtitle: "hey, let's get to know each other.",
   about: {
     description: `
-I'm Michael, a game and general technology enthusiast from Canada and I like to do stuff :]
+I'm Michael, a game and general technology enthusiast from Canada and I like to do things ;]
 <br/><br/>
 Through the miracle of Osmosis, I've picked up a few things along my journey. From Theatre and Teaching (2019-2023), to Game Development (2023-present) with dabbles in general software development, game modding, networking, and more. 
 <br/><br/>
@@ -177,6 +177,13 @@ export const projectsPageContent: ProjectPageContent = {
   },
   subtitle: "some endeavours.",
   projects: [
+    {
+      title: "Radar - Local Signal Minimap",
+      description: "Browser-native recon surface for local Bluetooth, network path telemetry, and live radio bridge feeds.<br>Pure client-side rendering with raw minimap sweep and event stream.",
+      image: "/images/social-card.png",
+      year: "2026",
+      url: "/radar",
+    },
     {
       title: "Minecraft Server Maintainer",
       description: "<1MB, written in Java 21<br>Handles Vanilla, Plugins, Datapacks, and Mods<br>Running, restarting, updating, validating, backing up, and on top of that it's reliable.",

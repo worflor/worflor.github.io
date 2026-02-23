@@ -88,8 +88,6 @@ interface MirrorUIConstants {
   timing: {
     actionTimeoutMs: number;
     counterAnimationMs: number;
-    categoryRevealStaggerMs: number;
-    categoryRevealDurationMs: number;
     pointHighlightMs: number;
     toastVisibleMs: number;
     toastExitMs: number;
@@ -98,15 +96,11 @@ interface MirrorUIConstants {
     breadcrumbClearIntervalMs: number;
   };
   layout: {
-    categoryRevealOffsetPx: number;
     toastOffsetPx: number;
     headerFallbackPx: number;
     breadcrumbScrollOffsetPx: number;
     breadcrumbDetectionOffsetPx: number;
     breadcrumbObserverBottomMarginPct: number;
-  };
-  motion: {
-    categoryRevealEasing: string;
   };
 }
 
@@ -114,8 +108,6 @@ const MIRROR_UI_DEFAULTS = {
   timing: {
     actionTimeoutMs: 12000,
     counterAnimationMs: 600,
-    categoryRevealStaggerMs: 80,
-    categoryRevealDurationMs: 300,
     pointHighlightMs: 1500,
     toastVisibleMs: 2200,
     toastExitMs: 300,
@@ -124,33 +116,21 @@ const MIRROR_UI_DEFAULTS = {
     breadcrumbClearIntervalMs: 20,
   },
   layout: {
-    categoryRevealOffsetPx: 8,
     toastOffsetPx: 8,
     headerFallbackPx: 60,
     breadcrumbScrollOffsetPx: 8,
     breadcrumbDetectionOffsetPx: 24,
     breadcrumbObserverBottomMarginPct: 60,
   },
-  motion: {
-    categoryRevealEasing: "ease",
-  },
 } as const satisfies MirrorUIConstants;
 
-function toCssSeconds(ms: number): string {
-  return `${ms / 1000}s`;
-}
-
-interface MirrorUiRuntimeConfig extends MirrorUIConstants {
-  categoryRevealTransition: string;
-}
+type MirrorUiRuntimeConfig = MirrorUIConstants;
 
 // Runtime behavior derives from the same mirror CSS variables used for styling.
 // This keeps motion/layout values centralized on the page token layer.
 const MIRROR_UI_CSS_TOKENS = {
   timing: {
     counterAnimationMs: "--mirror-duration-counter",
-    categoryRevealStaggerMs: "--mirror-duration-category-stagger",
-    categoryRevealDurationMs: "--mirror-duration-category-reveal",
     pointHighlightMs: "--mirror-duration-point-highlight",
     toastVisibleMs: "--mirror-duration-toast-visible",
     toastExitMs: "--mirror-duration-toast-exit",
@@ -160,7 +140,6 @@ const MIRROR_UI_CSS_TOKENS = {
   },
   layout: {
     legacyOffsetPx: "--mirror-layout-offset",
-    categoryRevealOffsetPx: "--mirror-category-reveal-offset",
     toastOffsetPx: "--mirror-toast-offset",
     breadcrumbScrollOffsetPx: "--mirror-breadcrumb-scroll-offset",
     breadcrumbDetectionOffsetPx: "--mirror-breadcrumb-detection-offset",
@@ -262,13 +241,10 @@ function resolveMirrorUiConfig(container: HTMLElement): MirrorUiRuntimeConfig {
   const resolved: MirrorUIConstants = {
     timing: { ...MIRROR_UI_DEFAULTS.timing },
     layout: { ...MIRROR_UI_DEFAULTS.layout },
-    motion: { ...MIRROR_UI_DEFAULTS.motion },
   };
 
   const durationTokenPairs: Array<[keyof MirrorUIConstants["timing"], string]> = [
     ["counterAnimationMs", MIRROR_UI_CSS_TOKENS.timing.counterAnimationMs],
-    ["categoryRevealStaggerMs", MIRROR_UI_CSS_TOKENS.timing.categoryRevealStaggerMs],
-    ["categoryRevealDurationMs", MIRROR_UI_CSS_TOKENS.timing.categoryRevealDurationMs],
     ["pointHighlightMs", MIRROR_UI_CSS_TOKENS.timing.pointHighlightMs],
     ["toastVisibleMs", MIRROR_UI_CSS_TOKENS.timing.toastVisibleMs],
     ["toastExitMs", MIRROR_UI_CSS_TOKENS.timing.toastExitMs],
@@ -283,7 +259,6 @@ function resolveMirrorUiConfig(container: HTMLElement): MirrorUiRuntimeConfig {
 
   const legacyOffsetPx = readCssLengthTokenPx(tokenScope, style, MIRROR_UI_CSS_TOKENS.layout.legacyOffsetPx);
   const lengthTokenPairs: Array<[keyof MirrorUIConstants["layout"], string, boolean]> = [
-    ["categoryRevealOffsetPx", MIRROR_UI_CSS_TOKENS.layout.categoryRevealOffsetPx, true],
     ["toastOffsetPx", MIRROR_UI_CSS_TOKENS.layout.toastOffsetPx, true],
     ["breadcrumbScrollOffsetPx", MIRROR_UI_CSS_TOKENS.layout.breadcrumbScrollOffsetPx, true],
     ["breadcrumbDetectionOffsetPx", MIRROR_UI_CSS_TOKENS.layout.breadcrumbDetectionOffsetPx, false],
@@ -302,16 +277,7 @@ function resolveMirrorUiConfig(container: HTMLElement): MirrorUiRuntimeConfig {
     resolved.layout.breadcrumbObserverBottomMarginPct = breadcrumbObserverBottomMarginPct;
   }
 
-  const categoryRevealDuration = toCssSeconds(resolved.timing.categoryRevealDurationMs);
-  const categoryRevealTransition = [
-    `opacity ${categoryRevealDuration} ${resolved.motion.categoryRevealEasing}`,
-    `transform ${categoryRevealDuration} ${resolved.motion.categoryRevealEasing}`,
-  ].join(", ");
-
-  return {
-    ...resolved,
-    categoryRevealTransition,
-  };
+  return resolved;
 }
 
 const CLICK_TO_REVEAL_POINT_IDS = new Set([
@@ -808,7 +774,6 @@ function renderDataPoint(
 
 function renderCategory(
   cat: DataCategory,
-  index: number,
   pointEls: Map<string, HTMLElement>,
   pointState: Map<string, DataPoint>,
   uiConfig: MirrorUiRuntimeConfig,
@@ -845,17 +810,6 @@ function renderCategory(
   });
 
   section.append(toggle, body);
-
-  // Stagger reveal
-  if (!reducedMotion()) {
-    section.style.opacity = "0";
-    section.style.transform = `translateY(${uiConfig.layout.categoryRevealOffsetPx}px)`;
-    setTimeout(() => {
-      section.style.transition = uiConfig.categoryRevealTransition;
-      section.style.opacity = "1";
-      section.style.transform = "translateY(0)";
-    }, uiConfig.timing.categoryRevealStaggerMs * index);
-  }
 
   return section;
 }
@@ -1212,7 +1166,13 @@ function showToast(msg: string, uiConfig: MirrorUiRuntimeConfig): void {
 
 /** IDs whose raw values are too large or not useful in a text export. */
 const COPY_EXCLUDE_IDS = new Set(["fp.canvasPreview"]);
-const COPY_REDACTED_VALUE = "[click to reveal in UI]";
+
+function shouldIncludeInCopy(point: DataPoint): boolean {
+  if (!CLICK_TO_REVEAL_POINT_IDS.has(point.id)) return true;
+  // If a field is still masked in the UI, omit it from clipboard output
+  // rather than writing placeholder/dummy text.
+  return !isPointMaskedInUi(point.id);
+}
 
 function copyAllData(
   data: MirrorData,
@@ -1232,11 +1192,8 @@ function copyAllData(
       if (COPY_EXCLUDE_IDS.has(pt.id)) continue;
       // Prefer live-updated value over stale snapshot
       const current = liveState.get(pt.id) ?? pt;
+      if (!shouldIncludeInCopy(current)) continue;
       const label = normalizeTextForDisplay(current.label);
-      if (CLICK_TO_REVEAL_POINT_IDS.has(current.id)) {
-        d[label] = COPY_REDACTED_VALUE;
-        continue;
-      }
       const value = typeof current.value === "string" ? normalizeTextForDisplay(current.value) : current.value;
       d[label] = value;
     }
@@ -1336,7 +1293,6 @@ export function initMirror(opts: MirrorUIOptions): () => void {
       const placeholder: DataCategory = { id: def.id, title: def.title, points: [], expanded };
       const sectionEl = renderCategory(
         placeholder,
-        i,
         pointEls,
         pointState,
         uiConfig,
@@ -1358,7 +1314,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
   const breadcrumbEl = document.getElementById("header-breadcrumb");
   const headerEl = document.querySelector<HTMLElement>(".site-header");
-  const headerHeight = headerEl ? headerEl.offsetHeight : uiConfig.layout.headerFallbackPx;
+  const getHeaderHeight = () => headerEl?.offsetHeight ?? uiConfig.layout.headerFallbackPx;
 
   // Intersection state — updated by observer, read by scroll handler
   const visibleSections = new Set<HTMLElement>();
@@ -1404,7 +1360,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
         const y = targetEl.getBoundingClientRect().top
           + window.scrollY
-          - headerHeight
+          - getHeaderHeight()
           - uiConfig.layout.breadcrumbScrollOffsetPx;
         window.scrollTo({ top: Math.max(0, y) });
       };
@@ -1510,7 +1466,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
     // Pick the section whose top edge is closest to (but above) the detection
     // line just below the sticky header. This is the section the user is "in".
-    const line = headerHeight + uiConfig.layout.breadcrumbDetectionOffsetPx;
+    const line = getHeaderHeight() + uiConfig.layout.breadcrumbDetectionOffsetPx;
     let best: HTMLElement | null = null;
     let bestTop = -Infinity;
     for (const sec of visibleSections) {
@@ -1532,7 +1488,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
   }
 
   function onBreadcrumbScroll() {
-    const scrolledPastTitle = window.scrollY > headerHeight;
+    const scrolledPastTitle = window.scrollY > getHeaderHeight();
     if (!scrolledPastTitle) { setCrumbs([]); return; }
 
     const top = getTopmostCategory();
@@ -1547,6 +1503,7 @@ export function initMirror(opts: MirrorUIOptions): () => void {
 
     const sections = opts.container.querySelectorAll<HTMLElement>(".cat-section");
     if (!sections.length) return;
+    const headerHeight = getHeaderHeight();
 
     breadcrumbObserver = new IntersectionObserver(
       (entries) => {
@@ -1563,12 +1520,17 @@ export function initMirror(opts: MirrorUIOptions): () => void {
     for (const sec of sections) breadcrumbObserver.observe(sec);
   }
 
+  function onBreadcrumbResize() {
+    setupBreadcrumbObserver();
+    onBreadcrumbScroll();
+  }
+
   window.addEventListener("scroll", onBreadcrumbScroll, { passive: true });
-  window.addEventListener("resize", onBreadcrumbScroll);
+  window.addEventListener("resize", onBreadcrumbResize);
 
   cleanups.push(() => {
     window.removeEventListener("scroll", onBreadcrumbScroll);
-    window.removeEventListener("resize", onBreadcrumbScroll);
+    window.removeEventListener("resize", onBreadcrumbResize);
     if (typeTimer) { clearInterval(typeTimer); typeTimer = null; }
     if (scrollLockTimer) { clearTimeout(scrollLockTimer); scrollLockTimer = null; }
     scrollLockCatId = null;
@@ -1591,6 +1553,11 @@ export function initMirror(opts: MirrorUIOptions): () => void {
     scanRunId += 1;
     const runId = scanRunId;
     mirrorData = null;
+
+    // Disable Rescan while active — prevents accidental double-scans.
+    // Re-enabled in .finally() once the current run settles.
+    opts.actionRefreshBtn.disabled = true;
+    opts.actionRefreshBtn.setAttribute("aria-busy", "true");
 
     resetScoreUi();
     rebuildCategoryShell();
@@ -1628,6 +1595,8 @@ export function initMirror(opts: MirrorUIOptions): () => void {
         if (activeScanController === scanController) {
           activeScanController = null;
         }
+        opts.actionRefreshBtn.disabled = false;
+        opts.actionRefreshBtn.removeAttribute("aria-busy");
       });
   };
 

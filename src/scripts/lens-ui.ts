@@ -519,6 +519,7 @@ export function initLens(opts: LensUIOptions): () => void {
       valueEl.setAttribute("tabindex", "0");
       valueEl.setAttribute("aria-label", `Reveal ${f.label}`);
       const reveal = () => {
+        valueEl.removeEventListener("keydown", handleKeydown);
         valueEl.textContent = f.displayValue;
         valueEl.classList.remove("dp-masked");
         valueEl.removeAttribute("role");

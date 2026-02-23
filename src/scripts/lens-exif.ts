@@ -757,7 +757,10 @@ function field(
 }
 
 function buildFileCategory(meta: FileMetadata): ExifField[] {
-  const ext = meta.name.split(".").pop()?.toUpperCase() ?? "";
+  const dot = meta.name.lastIndexOf(".");
+  const ext = dot > 0 && dot < meta.name.length - 1
+    ? meta.name.slice(dot + 1).toUpperCase()
+    : "";
   return [
     field("file.name", "File Name", meta.name, meta.name,
       "the name of the file on your device"),
@@ -1383,6 +1386,22 @@ export const LENS_CATEGORY_ORDER = [
 
 // ── Main Entry Point ─────────────────────────────────────────
 
+type ExifContainerFormat = "JPEG" | "TIFF";
+
+function detectExifContainerFormat(
+  buffer: ArrayBuffer,
+  mimeType: string,
+): ExifContainerFormat | null {
+  const view = new DataView(buffer);
+  if (isJpeg(view)) return "JPEG";
+  if (isTiff(view)) return "TIFF";
+
+  const mime = mimeType.toLowerCase();
+  if (mime === "image/jpeg" || mime === "image/jpg") return "JPEG";
+  if (mime === "image/tiff" || mime === "image/x-tiff") return "TIFF";
+  return null;
+}
+
 export async function parseFile(file: File): Promise<LensData> {
   const meta: FileMetadata = {
     name: file.name,
@@ -1396,6 +1415,7 @@ export async function parseFile(file: File): Promise<LensData> {
   const readSize = Math.min(file.size, 262144);
   const slice = file.slice(0, readSize);
   const buffer = await slice.arrayBuffer();
+  const containerFormat = detectExifContainerFormat(buffer, meta.type);
 
   // Try EXIF parsing first (JPEG/TIFF)
   let exif: RawExif = {};
@@ -1409,7 +1429,7 @@ export async function parseFile(file: File): Promise<LensData> {
 
   // If we found EXIF data, build image-specific categories (original path)
   if (hasExif) {
-    return buildExifResult(exif, meta);
+    return buildExifResult(exif, meta, containerFormat);
   }
 
   // No EXIF — use the universal format engine
@@ -1459,6 +1479,7 @@ export async function parseFile(file: File): Promise<LensData> {
 function buildExifResult(
   exif: RawExif,
   meta: FileMetadata,
+  containerFormat: ExifContainerFormat | null,
 ): LensData {
   const builders: Array<{
     id: string;
@@ -1511,6 +1532,9 @@ function buildExifResult(
   const hasGps = categories.some(
     (c) => c.id === "gps" && c.fields.some((f) => f.id !== "gps.warning"),
   );
+  const formatName = containerFormat
+    ?? (meta.type === "image/jpeg" || meta.type === "image/jpg" ? "JPEG" : "TIFF");
+  const formatFamily = formatName === "JPEG" ? "jpeg" : "tiff";
 
   return {
     categories,
@@ -1522,8 +1546,8 @@ function buildExifResult(
     fileName: meta.name,
     fileSize: meta.size,
     parsedAt: Date.now(),
-    formatFamily: "tiff",
-    formatName: meta.type === "image/jpeg" ? "JPEG" : "TIFF",
+    formatFamily,
+    formatName,
     previewType: "image",
     summaryItems: [
       { label: "camera", value: cameraName ?? "none" },

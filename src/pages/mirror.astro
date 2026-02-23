@@ -6,7 +6,7 @@ import Layout from "../layouts/Layout.astro";
 const seo = {
   title: "Digital Mirror | woflo",
   description:
-    "A transparent look at your browser's footprint.",
+    "A reflection of your browser's face. A transparent, educational display of all browser-detectable client information. All client-side.",
   image: "/images/social-card.png",
 };
 ---
@@ -151,12 +151,8 @@ const seo = {
   /* ── Score Hero ──────────────────────────────────────────── */
 
   .mirror-page {
-    --mirror-duration-fade:
-      calc(var(--duration-slow) + var(--duration-fast) + var(--duration-fast));
     --mirror-duration-fill: calc(var(--duration-slow) * 4);
     --mirror-duration-counter: calc(var(--duration-slow) * 2);
-    --mirror-duration-category-stagger: calc(var(--duration-fast) * 0.8);
-    --mirror-duration-category-reveal: var(--duration-slow);
     --mirror-duration-point-highlight: calc(var(--duration-slow) * 5);
     --mirror-duration-toast-visible: calc((var(--duration-slow) * 7) + var(--duration-fast));
     --mirror-duration-toast-exit: var(--duration-slow);
@@ -164,7 +160,6 @@ const seo = {
     --mirror-duration-breadcrumb-type: 35ms;
     --mirror-duration-breadcrumb-clear: 20ms;
     --mirror-layout-offset: var(--space-xs);
-    --mirror-category-reveal-offset: var(--mirror-layout-offset);
     --mirror-toast-offset: var(--mirror-layout-offset);
     --mirror-breadcrumb-scroll-offset: var(--mirror-layout-offset);
     --mirror-breadcrumb-detection-offset: calc(var(--mirror-layout-offset) * 3);

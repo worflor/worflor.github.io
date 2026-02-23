@@ -18,6 +18,8 @@ export type StructureFamily =
   | "pdf"
   | "png"
   | "gif"
+  | "jpeg"
+  | "tiff"
   | "xml"
   | "text"
   | "font"
@@ -174,6 +176,35 @@ const SIGNATURES: FormatSignature[] = [
       h.byteLength >= 6 &&
       ascii(h, 0, 3) === "GIF" &&
       (ascii(h, 3, 3) === "87a" || ascii(h, 3, 3) === "89a"),
+  },
+  // JPEG (for files without EXIF data)
+  {
+    name: "JPEG",
+    family: "jpeg",
+    previewHint: "image",
+    test: (h) =>
+      h.byteLength >= 3 &&
+      h.getUint8(0) === 0xff &&
+      h.getUint8(1) === 0xd8 &&
+      h.getUint8(2) === 0xff,
+  },
+  // TIFF (for files without EXIF data)
+  {
+    name: "TIFF",
+    family: "tiff",
+    previewHint: "image",
+    test: (h) =>
+      h.byteLength >= 4 &&
+      (
+        (h.getUint8(0) === 0x49 &&
+          h.getUint8(1) === 0x49 &&
+          h.getUint8(2) === 0x2a &&
+          h.getUint8(3) === 0x00) ||
+        (h.getUint8(0) === 0x4d &&
+          h.getUint8(1) === 0x4d &&
+          h.getUint8(2) === 0x00 &&
+          h.getUint8(3) === 0x2a)
+      ),
   },
   // RIFF (WAV, AVI, WebP)
   {
@@ -628,9 +659,19 @@ function extractRiffMeta(
   }
 
   if (fields.length > 0) {
-    const title = riffType === "WAVE" ? "AUDIO" : riffType === "AVI " ? "VIDEO" : "RIFF";
+    const isAudio = riffType === "WAVE";
+    const isVideo = riffType === "AVI ";
+    const isImage = riffType === "WEBP";
+    const title = isAudio
+      ? "AUDIO"
+      : isVideo
+        ? "VIDEO"
+        : isImage
+          ? "IMAGE"
+          : "RIFF";
+    const id = isAudio ? "audio" : isVideo ? "video" : isImage ? "image" : "structure";
     categories.push({
-      id: riffType === "AVI " ? "video" : "audio",
+      id,
       title,
       fields,
       expanded: true,
@@ -1501,15 +1542,80 @@ function isProbablyText(buffer: ArrayBuffer): boolean {
   return textLikeCount > sample.length * 0.75;
 }
 
-function detectBom(buffer: ArrayBuffer): string {
+type BomEncoding = "utf-8" | "utf-16be" | "utf-16le" | null;
+
+function detectBomEncoding(buffer: ArrayBuffer): BomEncoding {
   const view = new Uint8Array(buffer, 0, Math.min(4, buffer.byteLength));
-  if (view.length >= 3 && view[0] === 0xef && view[1] === 0xbb && view[2] === 0xbf) return "UTF-8 (BOM)";
-  if (view.length >= 2 && view[0] === 0xfe && view[1] === 0xff) return "UTF-16 BE";
-  if (view.length >= 2 && view[0] === 0xff && view[1] === 0xfe) return "UTF-16 LE";
+  if (view.length >= 3 && view[0] === 0xef && view[1] === 0xbb && view[2] === 0xbf) return "utf-8";
+  if (view.length >= 2 && view[0] === 0xfe && view[1] === 0xff) return "utf-16be";
+  if (view.length >= 2 && view[0] === 0xff && view[1] === 0xfe) return "utf-16le";
+  return null;
+}
+
+function detectBom(buffer: ArrayBuffer): string {
+  const encoding = detectBomEncoding(buffer);
+  if (encoding === "utf-8") return "UTF-8 (BOM)";
+  if (encoding === "utf-16be") return "UTF-16 BE";
+  if (encoding === "utf-16le") return "UTF-16 LE";
   return "UTF-8";
 }
 
+// Extensions where content heuristics (Markdown, YAML, CSV, etc.) should not
+// override extension-based identification.
+const CODE_EXTENSIONS: Record<string, string> = {
+  js: "JavaScript",
+  ts: "TypeScript",
+  jsx: "JSX",
+  tsx: "TSX",
+  py: "Python",
+  rb: "Ruby",
+  rs: "Rust",
+  go: "Go",
+  java: "Java",
+  kt: "Kotlin",
+  swift: "Swift",
+  c: "C",
+  cpp: "C++",
+  h: "C/C++ Header",
+  cs: "C#",
+  php: "PHP",
+  sh: "Shell",
+  bash: "Bash",
+  zsh: "Zsh",
+  fish: "Fish",
+  ps1: "PowerShell",
+  bat: "Batch",
+  sql: "SQL",
+  r: "R",
+  lua: "Lua",
+  vim: "Vim Script",
+  el: "Emacs Lisp",
+  ex: "Elixir",
+  erl: "Erlang",
+  hs: "Haskell",
+  ml: "OCaml",
+  scala: "Scala",
+  clj: "Clojure",
+  dart: "Dart",
+  zig: "Zig",
+  nim: "Nim",
+  v: "V",
+  d: "D",
+  css: "CSS",
+  scss: "SCSS",
+  sass: "Sass",
+  less: "Less",
+  tex: "LaTeX",
+  bib: "BibTeX",
+  dockerfile: "Dockerfile",
+  makefile: "Makefile",
+  cmake: "CMake",
+};
+
 function detectTextSubFormat(text: string, ext: string): string {
+  const codeMatch = CODE_EXTENSIONS[ext];
+  if (codeMatch) return codeMatch;
+
   // Try JSON
   const trimmed = text.trimStart();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
@@ -1681,7 +1787,8 @@ async function analyzeText(
   buffer: ArrayBuffer,
   file: File,
 ): Promise<TextAnalysis | null> {
-  if (!isProbablyText(buffer)) return null;
+  const initialBom = detectBomEncoding(buffer);
+  if (!initialBom && !isProbablyText(buffer)) return null;
 
   const readSize = Math.min(file.size, TEXT_READ_LIMIT);
   let textBuffer: ArrayBuffer;
@@ -1693,10 +1800,17 @@ async function analyzeText(
     textBuffer = await file.slice(0, readSize).arrayBuffer();
   }
 
+  const bomEncoding = detectBomEncoding(textBuffer);
   const encoding = detectBom(textBuffer);
   let text: string;
   try {
-    const decoder = new TextDecoder("utf-8", { fatal: false });
+    const decoderLabel =
+      bomEncoding === "utf-16be"
+        ? "utf-16be"
+        : bomEncoding === "utf-16le"
+          ? "utf-16le"
+          : "utf-8";
+    const decoder = new TextDecoder(decoderLabel, { fatal: false });
     text = decoder.decode(textBuffer);
   } catch {
     return null;
@@ -1850,6 +1964,11 @@ export async function analyzeFile(
   // Step 2: Walk structure and extract metadata based on family
   try {
     switch (family) {
+      case "jpeg":
+      case "tiff":
+        // No container-level walker needed; preview + format name are enough.
+        break;
+
       case "riff": {
         const riffType = fourCC(view, 8);
         formatName = riffType === "WAVE" ? "WAV" : riffType === "AVI " ? "AVI" : riffType === "WEBP" ? "WebP" : `RIFF/${riffType}`;
@@ -1858,13 +1977,19 @@ export async function analyzeFile(
         const chunks = walkChunks(view, 12);
         categories.push(...extractRiffMeta(view, chunks, riffType));
 
-        // Browser probe for duration if not already extracted
-        if (!categories.some((c) => c.fields.some((f) => f.id === "riff.duration"))) {
-          const probeFields = await probeMedia(file, riffType === "AVI " ? "video" : "audio");
+        // Browser media probe only for audio/video RIFF variants.
+        const mediaProbeType = riffType === "AVI " ? "video" : riffType === "WAVE" ? "audio" : null;
+        if (mediaProbeType && !categories.some((c) => c.fields.some((f) => f.id === "riff.duration"))) {
+          const probeFields = await probeMedia(file, mediaProbeType);
           if (probeFields.length > 0) {
-            const cat = categories.find((c) => c.id === "audio" || c.id === "video");
+            const cat = categories.find((c) => c.id === mediaProbeType);
             if (cat) cat.fields.push(...probeFields);
-            else categories.push({ id: "audio", title: "AUDIO", fields: probeFields, expanded: true });
+            else categories.push({
+              id: mediaProbeType,
+              title: mediaProbeType === "audio" ? "AUDIO" : "VIDEO",
+              fields: probeFields,
+              expanded: true,
+            });
           }
         }
         break;

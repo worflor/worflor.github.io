@@ -3280,14 +3280,31 @@ export function createLiveUpdaters(onUpdate: (id: string, value: string | number
   pushConnectionSnapshot(initialConnectionSnapshot);
 
   if (conn) {
+    // Debounce rapid-fire change events (common on mobile during network handoffs)
+    // so we emit at most one snapshot update per burst rather than one per event.
+    let connChangeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const flushConnectionChange = () => {
+      connChangeTimer = null;
+      if (!disposed) pushConnectionSnapshot(readNativeConnectionSnapshot(conn));
+    };
+
     const onChange = () => {
       if (disposed) return;
-      pushConnectionSnapshot(readNativeConnectionSnapshot(conn));
+      if (connChangeTimer !== null) clearTimeout(connChangeTimer);
+      connChangeTimer = setTimeout(flushConnectionChange, 80);
+    };
+
+    const cancelConnChangeTimer = () => {
+      if (connChangeTimer !== null) { clearTimeout(connChangeTimer); connChangeTimer = null; }
     };
 
     if (typeof conn.addEventListener === "function") {
       conn.addEventListener("change", onChange);
-      cleanups.push(() => conn.removeEventListener("change", onChange));
+      cleanups.push(() => {
+        conn.removeEventListener("change", onChange);
+        cancelConnChangeTimer();
+      });
     } else {
       const prev = conn.onchange;
       conn.onchange = onChange;
@@ -3295,6 +3312,7 @@ export function createLiveUpdaters(onUpdate: (id: string, value: string | number
         if (conn.onchange === onChange) {
           conn.onchange = prev ?? null;
         }
+        cancelConnChangeTimer();
       });
     }
   }

@@ -1,0 +1,514 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+const seo = {
+  title: "Radar | woflo",
+  description:
+    "Local signal detection. Distance estimated by signal strength and smoothed with a Kalman filter. Contacts inferred from network routing. All client-side, nothing leaves your device.",
+  image: "/images/social-card.png",
+};
+---
+
+<Layout seo={seo}>
+  <div class="radar-page">
+    <section class="mt-8 content-section radar-intro">
+      <h1 class="page-title radar-title" id="radar-title">Radar</h1>
+      <p class="radar-tagline">local signal detection</p>
+    </section>
+
+    <section class="mt-[var(--space-md)] content-section">
+      <div class="radar-status surface-raised">
+        <div class="status-item">
+          <span class="status-label">mode</span>
+          <span class="status-value" id="radar-mode">idle</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">bluetooth</span>
+          <span class="status-value" id="radar-bluetooth">unknown</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">model</span>
+          <span class="status-value" id="radar-model">--</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] content-section">
+      <div class="radar-sensors surface-raised">
+        <div class="status-item">
+          <span class="status-label">position</span>
+          <span class="status-value tabular-nums" id="radar-self-loc">no fix</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">heading</span>
+          <span class="status-value tabular-nums" id="radar-compass">--</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">ambient</span>
+          <span class="status-value tabular-nums" id="radar-ambient">--</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] content-section">
+      <div class="radar-scope-wrap surface-raised">
+        <canvas id="radar-canvas" class="radar-canvas" aria-label="Signal map" role="img"></canvas>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] content-section">
+      <div class="radar-stats surface-raised">
+        <div class="stat-chip">
+          <span class="stat-number tabular-nums" id="radar-total">0</span>
+          <span class="stat-label">total</span>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-number tabular-nums" id="radar-bt-count">0</span>
+          <span class="stat-label">bluetooth</span>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-number tabular-nums" id="radar-wifi-count">0</span>
+          <span class="stat-label">wifi/net</span>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-number tabular-nums" id="radar-radio-count">0</span>
+          <span class="stat-label">radio</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] content-section">
+      <div class="radar-feed surface-raised">
+        <h2 class="feed-title">contacts</h2>
+        <p class="feed-hint">select a contact to expand signal detail</p>
+        <ul id="radar-contacts" class="feed-list feed-list-contacts" aria-live="polite"></ul>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] content-section">
+      <div class="radar-feed surface-raised">
+        <h2 class="feed-title">events</h2>
+        <ul id="radar-events" class="feed-list feed-list-events" aria-live="polite"></ul>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] content-section">
+      <div class="radar-feed surface-raised">
+        <h2 class="feed-title">capabilities</h2>
+        <ul id="radar-capabilities" class="feed-list feed-list-capabilities" aria-live="polite"></ul>
+      </div>
+    </section>
+
+    <section class="mt-[var(--space-sm)] mb-[var(--space-xl)] content-section">
+      <div class="radar-model surface-raised">
+        <p class="model-note">
+          all client-side, nothing leaves your device. distance is estimated by signal strength and smoothed with a Kalman filter. contacts are inferred from network routing... not literal nearby people.
+        </p>
+      </div>
+    </section>
+
+    <div class="radar-actions" role="group" aria-label="Radar controls">
+      <button class="action-btn" id="radar-start" type="button">Scan</button>
+      <button class="action-btn" id="radar-stop" type="button">Stop</button>
+      <button class="action-btn" id="radar-bt-scan" type="button">BT LE Scan</button>
+      <button class="action-btn" id="radar-bt-pick" type="button">BT Pair</button>
+      <button class="action-btn" id="radar-clear" type="button">Clear</button>
+    </div>
+  </div>
+
+  <script>
+    import { initRadar, resolveRadarUIOptions } from "../scripts/radar-ui";
+
+    const RADAR_LIFECYCLE_KEY = "__radarLifecycle";
+    type RadarLifecycle = { boot: () => void; teardown: () => void; detach?: () => void };
+    let cleanupRadar: (() => void) | null = null;
+    const radarWindow = window as unknown as Record<string, RadarLifecycle | undefined>;
+
+    function boot() {
+      teardown();
+      const radarOptions = resolveRadarUIOptions(document);
+      if (radarOptions) cleanupRadar = initRadar(radarOptions);
+    }
+
+    function teardown() {
+      cleanupRadar?.();
+      cleanupRadar = null;
+    }
+
+    function detachLifecycle() {
+      document.removeEventListener("astro:after-swap", boot);
+      document.removeEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    function handleBeforeSwap() {
+      teardown();
+      detachLifecycle();
+      const current = radarWindow[RADAR_LIFECYCLE_KEY];
+      if (current?.boot === boot) delete radarWindow[RADAR_LIFECYCLE_KEY];
+    }
+
+    function attachLifecycle() {
+      document.addEventListener("astro:after-swap", boot);
+      document.addEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    const prev = radarWindow[RADAR_LIFECYCLE_KEY];
+    if (prev) {
+      if (prev.detach) prev.detach();
+      else {
+        document.removeEventListener("astro:after-swap", prev.boot);
+        document.removeEventListener("astro:before-swap", prev.teardown);
+      }
+      prev.teardown?.();
+    }
+
+    radarWindow[RADAR_LIFECYCLE_KEY] = { boot, teardown, detach: detachLifecycle };
+
+    boot();
+    attachLifecycle();
+  </script>
+</Layout>
+
+<style>
+  .radar-page {
+    --radar-radius: var(--radius-lg);
+    --radar-muted: rgb(var(--color-text-rgb) / 0.58);
+    --radar-faint: rgb(var(--color-text-rgb) / 0.3);
+    --radar-edge: rgb(var(--color-text-rgb) / 0.14);
+    --radar-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
+    padding-bottom: calc(var(--radar-action-offset) + var(--space-lg));
+  }
+
+  .radar-intro {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.7);
+  }
+
+  .radar-title {
+    margin: 0;
+    line-height: 1.03;
+    letter-spacing: -0.018em;
+  }
+
+  .radar-tagline {
+    margin: 0;
+    color: var(--radar-muted);
+  }
+
+  .radar-status,
+  .radar-sensors,
+  .radar-scope-wrap,
+  .radar-stats,
+  .radar-model,
+  .radar-feed {
+    border: 1px solid var(--radar-edge);
+    border-radius: var(--radar-radius);
+    padding: var(--space-sm);
+  }
+
+  .radar-status,
+  .radar-sensors,
+  .radar-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: calc(var(--space-xs) * 0.8);
+  }
+
+  .radar-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .status-item,
+  .stat-chip {
+    display: grid;
+    gap: 0.15rem;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .status-label,
+  .stat-label,
+  .model-note {
+    font-size: var(--text-sm);
+    color: var(--radar-muted);
+  }
+
+  .status-value,
+  .stat-number {
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    font-size: var(--text-sm);
+  }
+
+  .status-value[data-bt="no-api"],
+  .status-value[data-bt="unavailable"] {
+    color: var(--radar-muted);
+    font-weight: 400;
+  }
+
+  .status-value[data-bt="scanning"] {
+    color: var(--chromatic-cyan);
+  }
+
+  .status-value[data-bt="blocked"] {
+    color: var(--chromatic-red);
+  }
+
+  .radar-canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: calc(var(--radar-radius) - var(--radius-xs));
+    background: rgb(var(--color-text-rgb) / 0.015);
+    cursor: default;
+    touch-action: manipulation;
+  }
+
+  .model-note {
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .feed-title {
+    margin: 0 0 calc(var(--space-xs) * 0.5);
+    font-size: var(--text-base);
+    letter-spacing: 0.02em;
+  }
+
+  .feed-hint {
+    margin: 0 0 calc(var(--space-xs) * 0.5);
+    font-size: var(--text-sm);
+    color: var(--radar-faint);
+  }
+
+  .feed-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: calc(var(--space-xs) * 0.4);
+    max-height: 20rem;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .feed-list-events {
+    max-height: 12rem;
+  }
+
+  .feed-list-capabilities {
+    max-height: none;
+  }
+
+  .feed-list-contacts {
+    max-height: 28rem;
+  }
+
+  .feed-list :global(li) {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--radius-sm);
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.8);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+    transition:
+      border-color var(--duration-fast) var(--ease-out),
+      background var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out),
+      transform var(--duration-fast) var(--ease-out);
+  }
+
+  .feed-list-contacts :global(li) {
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .feed-list-contacts :global(li.contact-selected) {
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+    background: rgb(var(--color-text-rgb) / 0.04);
+  }
+
+  .feed-list-contacts :global(li.contact-hovered) {
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+    background: rgb(var(--color-text-rgb) / 0.04);
+  }
+
+  .feed-list-contacts :global(li:focus-visible) {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    outline-offset: 1px;
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .feed-list-contacts :global(.contact-summary strong) {
+    transition: color var(--duration-fast) var(--ease-out);
+  }
+
+  .feed-list-contacts :global(.contact-detail) {
+    margin-top: calc(var(--space-xs) * 0.5);
+    padding-top: calc(var(--space-xs) * 0.5);
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    font-family: monospace;
+    font-size: calc(var(--text-sm) * 0.9);
+    color: var(--radar-muted);
+    display: grid;
+    gap: 0.1rem;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .radar-actions {
+    position: fixed;
+    bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    gap: calc(var(--space-xs) * 0.25);
+    padding: calc(var(--space-xs) * 0.7);
+    background: rgb(10 10 10 / 0.8);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+    backdrop-filter: blur(16px) saturate(1.2);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--radius-lg);
+    box-shadow:
+      var(--edge-highlight),
+      0 4px 20px rgba(0, 0, 0, 0.25);
+    z-index: 40;
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    max-width: min(var(--content-width), calc(100vw - 2 * clamp(0.75rem, 4vw, 1.5rem)));
+  }
+
+  .radar-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-height: var(--touch-target);
+    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
+    background: transparent;
+    border: none;
+    border-radius: calc(var(--radius-lg) * 0.625);
+    color: var(--color-text-muted);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    .radar-actions {
+      background: rgb(10 10 10 / 0.94);
+    }
+  }
+
+  .action-btn:hover {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: var(--color-text);
+  }
+
+  .action-btn:active {
+    background: rgb(var(--color-text-rgb) / 0.1);
+  }
+
+  .action-btn:focus-visible {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    outline-offset: 1px;
+    color: var(--color-text);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .action-btn:disabled {
+    cursor: not-allowed;
+    color: rgb(var(--color-text-rgb) / 0.4);
+    background: transparent;
+    opacity: 1;
+  }
+
+  @media (hover: hover) {
+    .feed-list-contacts :global(li:hover) {
+      border-color: rgb(var(--color-text-rgb) / 0.2);
+      background: rgb(var(--color-text-rgb) / 0.04);
+      transform: translateY(-1px);
+    }
+
+    .feed-list-contacts :global(li:hover .contact-summary strong) {
+      color: var(--color-text);
+    }
+  }
+
+  @media (hover: none) {
+    .feed-list-contacts :global(li:hover) {
+      border-color: rgb(var(--color-text-rgb) / 0.1);
+      background: rgb(var(--color-text-rgb) / 0.02);
+      transform: none;
+    }
+
+    .feed-list-contacts :global(li:active) {
+      border-color: rgb(var(--color-text-rgb) / 0.2);
+      background: rgb(var(--color-text-rgb) / 0.05);
+      transform: none;
+    }
+
+    .action-btn:hover {
+      background: transparent;
+      color: var(--color-text-muted);
+    }
+
+    .action-btn:active {
+      background: rgb(var(--color-text-rgb) / 0.1);
+      color: var(--color-text);
+    }
+  }
+
+  @container (max-width: 36rem) {
+    .radar-status,
+    .radar-sensors {
+      grid-template-columns: 1fr;
+      justify-items: start;
+    }
+
+    .radar-stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @supports not (container-type: inline-size) {
+    @media (max-width: 36rem) {
+      .radar-status,
+      .radar-sensors {
+        grid-template-columns: 1fr;
+        justify-items: start;
+      }
+
+      .radar-stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  }
+
+  @media (max-width: 520px) {
+    .radar-actions {
+      gap: calc(var(--space-xs) * 0.18);
+      padding: calc(var(--space-xs) * 0.6);
+    }
+
+    .action-btn {
+      font-size: calc(var(--text-sm) * 0.9);
+      padding-inline: calc(var(--space-xs) * 1.0);
+    }
+  }
+</style>
