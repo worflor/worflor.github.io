@@ -582,9 +582,8 @@ const seo = {
     align-items: center;
     gap: var(--space-xs);
     padding: calc(var(--space-xs) * 1.2) calc(var(--space-xs) * 1.5);
-    background: rgb(var(--color-text-rgb) / 0.02);
+    background: transparent;
     border: 1px solid var(--color-border);
-    border-left: 2px solid transparent;
     border-radius: var(--radius-lg);
     color: var(--color-text);
     font-family: var(--font-body);
@@ -594,13 +593,21 @@ const seo = {
     text-align: left;
     transition:
       background var(--duration-normal) var(--ease-out),
-      border-color var(--duration-normal) var(--ease-out);
+      border-color var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out),
+      text-shadow var(--duration-normal) var(--ease-out);
     min-height: var(--touch-target);
   }
 
   .cat-toggle:hover {
-    background: rgb(var(--color-text-rgb) / 0.04);
-    border-left-color: rgb(var(--chromatic-cyan) / 0.3);
+    background: rgb(var(--color-text-rgb) / 0.03);
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+    box-shadow: var(--chromatic-shadow);
+  }
+
+  .cat-toggle:active {
+    transform: scale(var(--scale-active));
+    opacity: var(--opacity-muted);
   }
 
   .cat-arrow {
