@@ -1,0 +1,798 @@
+---
+// woflo - the lens
+// A privacy-first client-side EXIF metadata viewer.
+// Files never leave the browser.
+import Layout from "../layouts/Layout.astro";
+
+const seo = {
+  title: "Lens | woflo",
+  description:
+    "Look closer at your files. A privacy-first metadata viewer — everything stays in your browser.",
+  image: "/images/social-card.png",
+};
+---
+
+<Layout seo={seo}>
+  <div class="lens-page">
+    <!-- Hero -->
+    <section class="mt-8 content-section lens-intro">
+      <h1 class="page-title lens-title" id="lens-title">Lens</h1>
+      <p class="lens-tagline">look closer at your files</p>
+      <p class="lens-privacy-badge">
+        <span class="privacy-dot"></span>
+        your files never leave this browser
+      </p>
+    </section>
+
+    <!-- Upload Zone -->
+    <section class="mt-[var(--space-md)] content-section">
+      <div
+        class="lens-upload-zone"
+        id="lens-upload-zone"
+        role="button"
+        tabindex="0"
+        aria-label="Upload a file to inspect its metadata"
+      >
+        <div class="upload-icon" aria-hidden="true">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <circle cx="12" cy="12" r="4"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+          </svg>
+        </div>
+        <p class="upload-text">drop a file here</p>
+        <p class="upload-subtext">or click / paste to browse</p>
+        <p class="upload-formats">JPEG &middot; TIFF &middot; RAW &middot; PNG &middot; HEIC &middot; any file</p>
+        <input
+          type="file"
+          id="lens-file-input"
+          class="sr-only"
+          aria-hidden="true"
+        />
+      </div>
+    </section>
+
+    <!-- Loading indicator (hidden until processing) -->
+    <section
+      class="mt-[var(--space-md)] content-section"
+      id="lens-loading"
+      style="display:none"
+    >
+      <div class="lens-loading">
+        <div class="lens-spinner" aria-hidden="true"></div>
+        <p class="lens-loading-text">reading metadata&hellip;</p>
+      </div>
+    </section>
+
+    <!-- Preview (hidden until file loaded) -->
+    <section
+      class="mt-[var(--space-md)] content-section"
+      id="lens-preview-section"
+      style="display:none"
+    >
+      <div class="lens-preview">
+        <img
+          id="lens-preview-img"
+          alt="Uploaded file preview"
+          class="lens-preview-img"
+        />
+      </div>
+    </section>
+
+    <!-- Summary (hidden until file loaded) -->
+    <section
+      class="mt-[var(--space-md)] content-section"
+      id="lens-summary-section"
+      style="display:none"
+    >
+      <div class="lens-summary">
+        <div class="summary-stat">
+          <span class="summary-number" id="lens-summary-fields">0</span>
+          <span class="summary-label">fields found</span>
+        </div>
+        <span class="summary-separator">&middot;</span>
+        <div class="summary-stat">
+          <span class="summary-value" id="lens-summary-camera">-</span>
+          <span class="summary-label">camera</span>
+        </div>
+        <span class="summary-separator">&middot;</span>
+        <div class="summary-stat">
+          <span class="summary-value" id="lens-summary-gps">-</span>
+          <span class="summary-label">GPS</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Empty state: no EXIF found (hidden until needed) -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+      id="lens-empty-state"
+      style="display:none"
+    >
+      <div class="lens-no-exif">
+        <p class="no-exif-text">no EXIF metadata found</p>
+        <p class="no-exif-subtext">
+          screenshots, web downloads, and processed files typically don't contain
+          embedded metadata. file info is still shown below.
+        </p>
+      </div>
+    </section>
+
+    <!-- Categories (populated by JS) -->
+    <section class="mt-[var(--space-sm)] content-section">
+      <div id="lens-categories"></div>
+    </section>
+
+    <!-- Insights -->
+    <section class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section">
+      <div class="lens-insights">
+        <h2 class="insights-title">what's hiding in your files?</h2>
+        <p class="insights-text">
+          every file your phone or camera creates embeds invisible metadata.
+          camera model, lens info, shutter speed... and sometimes your exact
+          GPS coordinates. most social platforms strip this on upload, but sharing
+          files directly? it's all still there.
+        </p>
+        <p class="insights-text">
+          nothing here ever leaves your browser. the file is read locally
+          using JavaScript's File API, parsed byte-by-byte, and displayed right
+          here. no servers, no uploads, no tracking.
+        </p>
+        <p class="insights-text">
+          want to strip metadata before sharing? most operating systems let you
+          remove it from file properties. or just screenshot it &mdash; screenshots
+          rarely carry the original's metadata.
+        </p>
+      </div>
+    </section>
+
+    <!-- Actions (hidden until file loaded) -->
+    <div class="lens-actions" id="lens-actions" style="display:none;opacity:0">
+      <button class="action-btn" id="lens-action-copy">Copy All</button>
+      <button class="action-btn" id="lens-action-upload">Upload New</button>
+    </div>
+  </div>
+
+  <script>
+    import { initLens, resolveLensUIOptions } from "../scripts/lens-ui";
+
+    const LENS_LIFECYCLE_KEY = "__theLensLifecycle";
+    let cleanupLens: (() => void) | null = null;
+    const lensWindow = window as any;
+
+    function boot() {
+      if (typeof cleanupLens === "function") {
+        cleanupLens();
+        cleanupLens = null;
+      }
+
+      const lensOptions = resolveLensUIOptions(document);
+      if (lensOptions) cleanupLens = initLens(lensOptions);
+    }
+
+    function teardown() {
+      if (typeof cleanupLens === "function") {
+        cleanupLens();
+        cleanupLens = null;
+      }
+    }
+
+    function detachLifecycle() {
+      document.removeEventListener("astro:after-swap", boot);
+      document.removeEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    function handleBeforeSwap() {
+      teardown();
+      detachLifecycle();
+      const current = lensWindow[LENS_LIFECYCLE_KEY];
+      if (current?.boot === boot) {
+        delete lensWindow[LENS_LIFECYCLE_KEY];
+      }
+    }
+
+    function attachLifecycle() {
+      document.addEventListener("astro:after-swap", boot);
+      document.addEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    const prev = lensWindow[LENS_LIFECYCLE_KEY];
+    if (prev) {
+      if (typeof prev.detach === "function") {
+        prev.detach();
+      } else {
+        document.removeEventListener("astro:after-swap", prev.boot);
+        document.removeEventListener("astro:before-swap", prev.teardown);
+      }
+      prev.teardown?.();
+    }
+
+    lensWindow[LENS_LIFECYCLE_KEY] = { boot, teardown, detach: detachLifecycle };
+
+    boot();
+    attachLifecycle();
+  </script>
+</Layout>
+
+<style>
+  /* ── Lens Page ──────────────────────────────────────────── */
+
+  .lens-intro {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.7);
+  }
+
+  .lens-title {
+    margin: 0;
+    line-height: 1.03;
+    letter-spacing: -0.018em;
+  }
+
+  .lens-tagline {
+    margin: 0;
+    color: rgb(var(--color-text-rgb) / 0.58);
+  }
+
+  .lens-privacy-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.35);
+    margin-top: calc(var(--space-xs) * 0.1);
+  }
+
+  .privacy-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-full);
+    background: #4ade80;
+    box-shadow: 0 0 6px rgba(74, 222, 128, 0.4);
+    flex-shrink: 0;
+    animation: privacy-pulse 3s ease-in-out infinite;
+  }
+
+  @keyframes privacy-pulse {
+    0%, 100% { box-shadow: 0 0 6px rgba(74, 222, 128, 0.4); }
+    50% { box-shadow: 0 0 10px rgba(74, 222, 128, 0.6); }
+  }
+
+  /* ── Upload Zone ────────────────────────────────────────── */
+
+  .lens-upload-zone {
+    position: relative;
+    border: 2px dashed rgb(var(--color-text-rgb) / 0.14);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xl) var(--space-md);
+    text-align: center;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  .lens-upload-zone:hover,
+  .lens-upload-zone:global(.lens-drop-active) {
+    border-color: rgb(var(--chromatic-cyan) / 0.4);
+    background: rgb(var(--chromatic-cyan) / 0.02);
+  }
+
+  .lens-upload-zone:active {
+    border-color: rgb(var(--chromatic-cyan) / 0.55);
+    background: rgb(var(--chromatic-cyan) / 0.04);
+  }
+
+  .lens-upload-zone:focus-visible {
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.15);
+    outline: none;
+  }
+
+  .upload-icon {
+    position: absolute;
+    top: calc(var(--space-sm) * 1.2);
+    left: calc(var(--space-sm) * 1.2);
+    color: rgb(var(--color-text-rgb) / 0.2);
+    line-height: 0;
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .lens-upload-zone:hover .upload-icon {
+    color: rgb(var(--chromatic-cyan) / 0.5);
+  }
+
+  .upload-text {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    margin: 0 0 calc(var(--space-xs) * 0.3);
+    color: rgb(var(--color-text-rgb) / 0.7);
+  }
+
+  .upload-subtext {
+    font-size: var(--text-sm);
+    margin: 0 0 var(--space-sm);
+    color: rgb(var(--color-text-rgb) / 0.35);
+  }
+
+  .upload-formats {
+    font-size: calc(var(--text-sm) * 0.85);
+    margin: 0;
+    color: rgb(var(--color-text-rgb) / 0.2);
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Loading ─────────────────────────────────────────────── */
+
+  .lens-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-lg) var(--space-md);
+  }
+
+  .lens-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid rgb(var(--color-text-rgb) / 0.1);
+    border-top-color: rgb(var(--chromatic-cyan) / 0.6);
+    border-radius: var(--radius-full);
+    animation: lens-spin 0.8s linear infinite;
+  }
+
+  @keyframes lens-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .lens-loading-text {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.35);
+    margin: 0;
+  }
+
+  /* ── Preview ────────────────────────────────────────────── */
+
+  .lens-preview {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    background: rgb(var(--color-text-rgb) / 0.02);
+  }
+
+  .lens-preview-img {
+    display: block;
+    max-width: 100%;
+    max-height: 300px;
+    margin: 0 auto;
+    object-fit: contain;
+    transition: opacity var(--duration-slow) var(--ease-out);
+  }
+
+  /* ── Summary ────────────────────────────────────────────── */
+
+  .lens-summary {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+    text-align: center;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    background:
+      linear-gradient(
+        180deg,
+        rgb(var(--color-text-rgb) / 0.018) 0%,
+        rgb(var(--color-text-rgb) / 0.006) 62%,
+        transparent 100%
+      );
+    box-shadow: var(--edge-highlight);
+  }
+
+  .summary-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.2);
+  }
+
+  .summary-number {
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    color: rgb(var(--chromatic-cyan));
+    font-variant-numeric: tabular-nums;
+  }
+
+  .summary-value {
+    font-size: var(--text-base);
+    font-weight: 500;
+    color: rgb(var(--color-text-rgb) / 0.72);
+  }
+
+  .summary-label {
+    font-size: var(--text-sm);
+    opacity: 0.25;
+  }
+
+  .summary-separator {
+    opacity: 0.15;
+    font-size: var(--text-sm);
+    align-self: center;
+  }
+
+  /* ── No-EXIF empty state ──────────────────────────────── */
+
+  .lens-no-exif {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-left: 2px solid rgb(var(--color-text-rgb) / 0.15);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+  }
+
+  .no-exif-text {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: rgb(var(--color-text-rgb) / 0.5);
+    margin: 0 0 calc(var(--space-xs) * 0.5);
+  }
+
+  .no-exif-subtext {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.3);
+    margin: 0;
+    line-height: 1.6;
+  }
+
+  /* ── Insights ───────────────────────────────────────────── */
+
+  .lens-insights {
+    border: 1px solid var(--color-border);
+    border-left: 2px solid rgb(var(--chromatic-cyan) / 0.2);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+    background:
+      linear-gradient(
+        135deg,
+        rgb(var(--chromatic-cyan) / 0.012) 0%,
+        transparent 40%
+      );
+    box-shadow: var(--edge-highlight);
+  }
+
+  .insights-title {
+    font-size: var(--text-lg);
+    font-weight: 700;
+    margin-bottom: var(--space-sm);
+  }
+
+  .insights-text {
+    font-size: var(--text-sm);
+    opacity: 0.45;
+    line-height: 1.8;
+    margin-bottom: calc(var(--space-sm) * 0.85);
+  }
+
+  .insights-text:last-of-type {
+    margin-bottom: 0;
+  }
+
+  /* ── Action Bar ─────────────────────────────────────────── */
+
+  .lens-actions {
+    position: fixed;
+    bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    gap: calc(var(--space-xs) * 0.25);
+    padding: calc(var(--space-xs) * 0.7);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--edge-highlight);
+    z-index: 40;
+    white-space: nowrap;
+    transition: opacity var(--duration-slow) var(--ease-out);
+  }
+
+  .action-btn {
+    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
+    background: transparent;
+    border: none;
+    border-radius: calc(var(--radius-lg) - calc(var(--radius-lg) * 0.375));
+    color: var(--color-text-muted);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .action-btn:hover {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: var(--color-text);
+  }
+
+  .action-btn:active {
+    background: rgb(var(--color-text-rgb) / 0.1);
+  }
+
+  /* ── Reduced Motion ─────────────────────────────────────── */
+
+  @media (prefers-reduced-motion: reduce) {
+    .lens-actions {
+      transition: none;
+    }
+    .privacy-dot {
+      animation: none;
+    }
+    .lens-spinner {
+      animation-duration: 1.5s;
+    }
+  }
+</style>
+
+<style is:global>
+  /* ── Categories (self-contained — no dependency on mirror page) ── */
+
+  .lens-page .cat-section {
+    margin-bottom: calc(var(--space-xs) * 0.25);
+  }
+
+  .lens-page .cat-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: calc(var(--space-xs) * 1.2) calc(var(--space-xs) * 1.5);
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    color: var(--color-text);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    font-weight: 700;
+    cursor: pointer;
+    text-align: left;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out),
+      text-shadow var(--duration-normal) var(--ease-out);
+    min-height: var(--touch-target);
+  }
+
+  .lens-page .cat-toggle:hover {
+    background: rgb(var(--color-text-rgb) / 0.03);
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+    box-shadow: var(--chromatic-shadow);
+  }
+
+  .lens-page .cat-toggle:active {
+    transform: scale(var(--scale-active));
+    opacity: var(--opacity-muted);
+  }
+
+  .lens-page .cat-arrow {
+    font-size: calc(var(--text-sm) * 0.8125);
+    width: 1em;
+    flex-shrink: 0;
+    opacity: 0.3;
+    transition:
+      opacity var(--duration-normal) var(--ease-out),
+      transform var(--duration-normal) var(--ease-out);
+  }
+
+  .lens-page .cat-toggle:hover .cat-arrow {
+    opacity: 0.55;
+  }
+
+  .lens-page .cat-title {
+    flex: 1;
+  }
+
+  .lens-page .cat-count {
+    opacity: 0.25;
+    font-weight: 400;
+    font-size: var(--text-sm);
+  }
+
+  .lens-page .cat-body {
+    padding: calc(var(--space-xs) * 0.5) 0 var(--space-sm) 0;
+  }
+
+  /* ── Data Point Rows ─────────────────────────────────────── */
+
+  .lens-page .dp-row {
+    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
+    border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.04);
+    border-radius: calc(var(--radius-lg) * 0.375);
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  .lens-page .dp-row:last-child {
+    border-bottom: none;
+  }
+
+  .lens-page .dp-row:hover {
+    background: rgb(var(--color-text-rgb) / 0.02);
+    box-shadow: inset 0 0 0 1px rgb(var(--color-text-rgb) / 0.03);
+  }
+
+  .lens-page .dp-row:focus-within {
+    background: rgb(var(--color-text-rgb) / 0.025);
+    box-shadow: inset 0 0 0 1px rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .lens-page .dp-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+  }
+
+  .lens-page .dp-label {
+    color: rgb(var(--color-text-rgb) / 0.72);
+    font-size: var(--text-sm);
+    flex-shrink: 0;
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .lens-page .dp-row:hover .dp-label {
+    color: rgb(var(--color-text-rgb) / 0.94);
+  }
+
+  .lens-page .dp-value {
+    font-size: var(--text-sm);
+    text-align: right;
+    min-width: 0;
+    max-width: min(70%, 44rem);
+    line-height: 1.34;
+    overflow-wrap: anywhere;
+    word-break: normal;
+    white-space: normal;
+    text-wrap: pretty;
+  }
+
+  .lens-page .dp-value.dp-na {
+    opacity: 0.2;
+    font-style: italic;
+  }
+
+  .lens-page .dp-value.dp-masked {
+    cursor: pointer;
+    opacity: 0.35;
+    font-size: calc(var(--text-sm) * 0.9);
+    letter-spacing: 0.15em;
+    transition:
+      opacity var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .lens-page .dp-value.dp-masked:hover {
+    opacity: 0.6;
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  .lens-page .dp-value.dp-masked:focus-visible {
+    opacity: 0.6;
+    color: rgb(var(--chromatic-cyan));
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.3);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  .lens-page .dp-explain {
+    opacity: 0.3;
+    font-size: clamp(
+      calc(var(--text-sm) * 0.875),
+      calc((var(--text-sm) * 0.8125) + 0.2vw),
+      var(--text-sm)
+    );
+    margin-top: calc(var(--space-xs) * 0.4);
+    line-height: 1.52;
+    max-width: min(62ch, 100%);
+    transition: opacity var(--duration-normal) var(--ease-out);
+  }
+
+  .lens-page .dp-row:hover .dp-explain {
+    opacity: 0.42;
+  }
+
+  /* ── GPS Warning ─────────────────────────────────────────── */
+
+  .lens-page .lens-gps-warning .dp-label {
+    color: #ff6b35;
+  }
+
+  .lens-page .lens-gps-warning .dp-value {
+    color: #ff6b35;
+    text-shadow: 0 0 6px rgba(255, 107, 53, 0.3);
+  }
+
+  .lens-page .lens-gps-warning .dp-explain {
+    opacity: 0.5;
+  }
+
+  /* ── Sensitive rows ──────────────────────────────────────── */
+
+  .lens-page .dp-sensitive .dp-label {
+    color: rgb(var(--color-text-rgb) / 0.55);
+  }
+
+  .lens-page .dp-sensitive .dp-label::after {
+    content: "\00a0\01F512";
+    font-size: 0.75em;
+    opacity: 0.5;
+  }
+
+  /* ── GPS summary indicator ──────────────────────────────── */
+
+  .lens-gps-yes {
+    color: #ff6b35 !important;
+  }
+
+  .lens-gps-no {
+    color: #4ade80 !important;
+  }
+
+  /* ── Toast ───────────────────────────────────────────────── */
+
+  .lens-toast {
+    position: fixed;
+    bottom: 4.5rem;
+    left: 50%;
+    transform: translateX(-50%) translateY(8px);
+    background: rgb(var(--color-text-rgb) / 0.06);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    color: var(--color-text);
+    padding: calc(var(--space-xs) * 0.9) calc(var(--space-sm) * 1.1);
+    border-radius: var(--radius-lg);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    opacity: 0;
+    transition:
+      opacity var(--duration-slow) var(--ease-out),
+      transform var(--duration-slow) var(--ease-spring);
+    z-index: 200;
+    pointer-events: none;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  }
+
+  /* ── Responsive ──────────────────────────────────────────── */
+
+  @media (max-width: 640px) {
+    .lens-page .dp-header {
+      flex-direction: column;
+      gap: calc(var(--space-xs) * 0.3);
+    }
+    .lens-page .dp-value {
+      text-align: left;
+      max-width: 100%;
+    }
+  }
+
+  /* ── Reduced Motion ──────────────────────────────────────── */
+
+  @media (prefers-reduced-motion: reduce) {
+    .lens-page .cat-section {
+      opacity: 1 !important;
+      transform: none !important;
+    }
+    .lens-toast {
+      transition: none;
+    }
+  }
+</style>

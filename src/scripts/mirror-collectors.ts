@@ -711,17 +711,442 @@ async function collectNetwork(signal?: AbortSignal): Promise<DataPoint[]> {
 // 2. CONNECTION
 // 
 
+interface ConnectionProbeSnapshot {
+  type: string | null;
+  downlinkMbps: number | null;
+  downlinkMaxMbps: number | null;
+  rttMs: number | null;
+}
+
+interface NativeConnectionSnapshot {
+  type: string | null;
+  downlinkMbps: number | null;
+  downlinkMaxMbps: number | null;
+  rttMs: number | null;
+  saveData: boolean | null;
+}
+
+interface ConnectionProbeOptions {
+  signal?: AbortSignal;
+  includeDownlink?: boolean;
+}
+
+const CONNECTION_RTT_PROBE_URL = "/favicon.svg";
+const CONNECTION_DOWNLINK_PROBE_URL = "/images/placeholder-2.webp";
+const CONNECTION_RTT_SAMPLE_COUNT = 3;
+const CONNECTION_DOWNLINK_SAMPLE_COUNT = 2;
+const CONNECTION_RTT_TIMEOUT_MS = 3500;
+const CONNECTION_DOWNLINK_TIMEOUT_MS = 7000;
+const CONNECTION_LIVE_RTT_INTERVAL_MS = 10000;
+const CONNECTION_LIVE_DOWNLINK_EVERY_NTH_SAMPLE = 4;
+const CONNECTION_RTT_HISTORY_SIZE = 7;
+const CONNECTION_DOWNLINK_HISTORY_SIZE = 5;
+
+const connectionProbeState = {
+  rttHistory: [] as number[],
+  downlinkHistory: [] as number[],
+  observedDownlinkMaxMbps: null as number | null,
+};
+
+function getNavigatorConnection(): any {
+  const nav = navigator as any;
+  return nav.connection ?? nav.mozConnection ?? nav.webkitConnection ?? null;
+}
+
+function readNativeConnectionSnapshot(conn = getNavigatorConnection()): NativeConnectionSnapshot {
+  return {
+    type: str(conn?.type),
+    downlinkMbps: num(conn?.downlink),
+    downlinkMaxMbps: num(conn?.downlinkMax),
+    rttMs: num(conn?.rtt),
+    saveData: typeof conn?.saveData === "boolean" ? conn.saveData : null,
+  };
+}
+
+function hasNativeConnectionSignal(snapshot: NativeConnectionSnapshot): boolean {
+  return snapshot.type !== null ||
+    snapshot.downlinkMbps !== null ||
+    snapshot.rttMs !== null;
+}
+
+function getReducedDataMediaQueryList(): MediaQueryList | null {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return null;
+  try {
+    return window.matchMedia("(prefers-reduced-data: reduce)");
+  } catch {
+    return null;
+  }
+}
+
+function readReducedDataPreference(): boolean | null {
+  const mql = getReducedDataMediaQueryList();
+  if (!mql) return null;
+  return mql.matches;
+}
+
+function resolveSaveDataPreference(nativeSaveData: boolean | null): boolean | null {
+  if (nativeSaveData !== null) return nativeSaveData;
+  return readReducedDataPreference();
+}
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[middle];
+  return (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function trimNumericHistory(values: number[], maxSize: number): void {
+  while (values.length > maxSize) values.shift();
+}
+
+function resetConnectionProbeState(): void {
+  connectionProbeState.rttHistory.length = 0;
+  connectionProbeState.downlinkHistory.length = 0;
+  connectionProbeState.observedDownlinkMaxMbps = null;
+}
+
+function rememberRttSample(rttMs: number): void {
+  if (!Number.isFinite(rttMs) || rttMs <= 0) return;
+  connectionProbeState.rttHistory.push(Math.max(1, roundTo(rttMs, 2)));
+  trimNumericHistory(connectionProbeState.rttHistory, CONNECTION_RTT_HISTORY_SIZE);
+}
+
+function rememberDownlinkSample(downlinkMbps: number): void {
+  if (!Number.isFinite(downlinkMbps) || downlinkMbps <= 0) return;
+  const value = roundTo(downlinkMbps, 2);
+  connectionProbeState.downlinkHistory.push(value);
+  trimNumericHistory(connectionProbeState.downlinkHistory, CONNECTION_DOWNLINK_HISTORY_SIZE);
+  connectionProbeState.observedDownlinkMaxMbps = connectionProbeState.observedDownlinkMaxMbps == null
+    ? value
+    : Math.max(connectionProbeState.observedDownlinkMaxMbps, value);
+}
+
+function smoothedRttMs(): number | null {
+  const m = median(connectionProbeState.rttHistory);
+  return m != null ? Math.max(1, Math.round(m)) : null;
+}
+
+function smoothedDownlinkMbps(): number | null {
+  const m = median(connectionProbeState.downlinkHistory);
+  return m != null ? roundTo(m, 2) : null;
+}
+
+function observedDownlinkMaxMbps(): number | null {
+  if (connectionProbeState.observedDownlinkMaxMbps != null) {
+    return roundTo(connectionProbeState.observedDownlinkMaxMbps, 2);
+  }
+  const fromHistory = connectionProbeState.downlinkHistory.length > 0
+    ? Math.max(...connectionProbeState.downlinkHistory)
+    : null;
+  return fromHistory != null ? roundTo(fromHistory, 2) : null;
+}
+
+function classifyEffectiveType(
+  rttMs: number | null,
+  downlinkMbps: number | null,
+): string | null {
+  if (rttMs === null && downlinkMbps === null) return null;
+  const rtt = rttMs ?? 0;
+  const down = downlinkMbps ?? Number.POSITIVE_INFINITY;
+
+  // Matches Chromium's coarse ECT buckets (slow-2g/2g/3g/4g) as closely as
+  // possible from measured latency + throughput.
+  if (down < 0.15 || rtt > 2000) return "slow-2g";
+  if (down < 0.4 || rtt > 1400) return "2g";
+  if (down < 0.75 || rtt > 270) return "3g";
+  return "4g";
+}
+
+function inferConnectionType(
+  downlinkMbps: number | null,
+  rttMs: number | null,
+  effectiveType: string | null,
+): string | null {
+  if (downlinkMbps === null && rttMs === null && effectiveType === null) return null;
+  if (effectiveType === "slow-2g" || effectiveType === "2g" || effectiveType === "3g") {
+    return "cellular";
+  }
+  if (downlinkMbps !== null && downlinkMbps >= 30 && (rttMs === null || rttMs <= 80)) {
+    return "ethernet";
+  }
+  if (downlinkMbps !== null && downlinkMbps >= 5 && (rttMs === null || rttMs <= 160)) {
+    return "wifi";
+  }
+  return "unknown";
+}
+
+function buildProbeSnapshotFromState(): ConnectionProbeSnapshot | null {
+  const rttMs = smoothedRttMs();
+  const downlinkMbps = smoothedDownlinkMbps();
+  const downlinkMaxMbps = observedDownlinkMaxMbps();
+  const effectiveType = classifyEffectiveType(rttMs, downlinkMbps);
+  const type = inferConnectionType(downlinkMbps, rttMs, effectiveType);
+
+  if (
+    type === null &&
+    downlinkMbps === null &&
+    downlinkMaxMbps === null &&
+    rttMs === null
+  ) {
+    return null;
+  }
+
+  return {
+    type,
+    downlinkMbps,
+    downlinkMaxMbps,
+    rttMs,
+  };
+}
+
+function annotateProbeDerivedPoint(
+  point: DataPoint,
+  stability: DetailStability = point.live ? "live" : "session",
+): DataPoint {
+  return {
+    ...point,
+    detailSource: "active probe",
+    detailConfidence: "medium",
+    detailStability: stability,
+  };
+}
+
+function annotateMediaQueryDerivedPoint(point: DataPoint): DataPoint {
+  return {
+    ...point,
+    detailSource: "media query",
+    detailConfidence: "medium",
+    detailStability: "stable",
+  };
+}
+
+async function fetchProbeSample(
+  path: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ durationMs: number; bytes: number } | null> {
+  throwIfAborted(signal);
+
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const onAbort = () => controller?.abort();
+  const requestSignal = controller?.signal ?? signal;
+
+  if (signal && controller) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }
+
+  const sep = path.includes("?") ? "&" : "?";
+  const probeUrl = `${path}${sep}mirror_probe=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const started = performance.now();
+
+  try {
+    const response = await fetch(probeUrl, {
+      signal: requestSignal,
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) return null;
+    const body = await response.arrayBuffer();
+    const durationMs = Math.max(1, performance.now() - started);
+    return { durationMs, bytes: body.byteLength };
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return null;
+  } finally {
+    if (signal && controller) {
+      signal.removeEventListener("abort", onAbort);
+    }
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  }
+}
+
+async function probeConnectionSnapshot(
+  options: ConnectionProbeOptions = {},
+): Promise<ConnectionProbeSnapshot | null> {
+  const { signal, includeDownlink = true } = options;
+  throwIfAborted(signal);
+  if (!navigator.onLine) return null;
+
+  const rttSamples: number[] = [];
+  for (let i = 0; i < CONNECTION_RTT_SAMPLE_COUNT; i++) {
+    throwIfAborted(signal);
+    const sample = await fetchProbeSample(CONNECTION_RTT_PROBE_URL, CONNECTION_RTT_TIMEOUT_MS, signal);
+    if (sample) rttSamples.push(sample.durationMs);
+  }
+
+  throwIfAborted(signal);
+
+  const rttMedian = median(rttSamples);
+  if (rttMedian != null) rememberRttSample(rttMedian);
+
+  const downlinkSamples: number[] = [];
+  if (includeDownlink) {
+    for (let i = 0; i < CONNECTION_DOWNLINK_SAMPLE_COUNT; i++) {
+      throwIfAborted(signal);
+      const downlinkSample = await fetchProbeSample(
+        CONNECTION_DOWNLINK_PROBE_URL,
+        CONNECTION_DOWNLINK_TIMEOUT_MS,
+        signal,
+      );
+      if (!downlinkSample) continue;
+      const mbps = (downlinkSample.bytes * 8) / (downlinkSample.durationMs / 1000) / 1_000_000;
+      if (Number.isFinite(mbps) && mbps > 0) {
+        downlinkSamples.push(mbps);
+      }
+    }
+    const downlinkMedian = median(downlinkSamples);
+    if (downlinkMedian != null) rememberDownlinkSample(downlinkMedian);
+  }
+
+  return buildProbeSnapshotFromState();
+}
+
 function collectConnection(): DataPoint[] {
   const p: DataPoint[] = [];
-  const c = (navigator as any).connection;
+  const native = readNativeConnectionSnapshot();
+  const probe = buildProbeSnapshotFromState();
 
   p.push(pt("conn.online", "Online", navigator.onLine, "Whether the browser currently has network access.", false, true));
-  p.push(pt("conn.type", "Connection Type", str(c?.type), "Physical medium - wifi, cellular, ethernet, bluetooth, etc."));
-  p.push(pt("conn.effective", "Effective Type", str(c?.effectiveType), "Estimated quality - slow-2g, 2g, 3g, or 4g.", false, true));
-  p.push(pt("conn.downlink", "Downlink (Mbps)", num(c?.downlink), "Estimated downstream bandwidth.", false, true));
-  p.push(pt("conn.downlinkMax", "Max Downlink (Mbps)", num(c?.downlinkMax), "Maximum downlink speed of the current connection technology."));
-  p.push(pt("conn.rtt", "RTT (ms)", num(c?.rtt), "Estimated network round-trip time (general quality metric, not specific to this server).", false, true));
-  p.push(pt("conn.saveData", "Data Saver", c?.saveData != null ? c.saveData : null, "Whether the user has requested reduced data usage."));
+  const typeValue = native.type ?? probe?.type ?? null;
+  const downlinkValue = native.downlinkMbps ?? probe?.downlinkMbps ?? null;
+  const downlinkMaxValue = native.downlinkMaxMbps ?? probe?.downlinkMaxMbps ?? downlinkValue;
+  const rttValue = native.rttMs ?? probe?.rttMs ?? null;
+  const saveDataValue = resolveSaveDataPreference(native.saveData);
+
+  p.push(
+    typeValue !== null
+      ? (native.type !== null
+          ? pt("conn.type", "Connection Type", typeValue, "Physical medium - wifi, cellular, ethernet, bluetooth, etc.")
+          : annotateProbeDerivedPoint(
+              pt("conn.type", "Connection Type", typeValue, "Inferred connection medium from active timing probes."),
+              "session",
+            ))
+      : pendingPt("conn.type", "Connection Type", "measuring...", "Inferring connection medium from active fetch timing probes."),
+  );
+  p.push(
+    downlinkValue !== null
+      ? (native.downlinkMbps !== null
+          ? pt("conn.downlink", "Downlink (Mbps)", roundTo(downlinkValue, 2), "Estimated downstream bandwidth.", false, true)
+          : annotateProbeDerivedPoint(
+              pt("conn.downlink", "Downlink (Mbps)", roundTo(downlinkValue, 2), "Measured downstream throughput from active same-origin transfers.", false, true),
+            ))
+      : pendingPt("conn.downlink", "Downlink (Mbps)", "measuring...", "Measured from active same-origin transfer timings.", false, true),
+  );
+  p.push(
+    downlinkMaxValue !== null
+      ? (native.downlinkMaxMbps !== null
+          ? pt("conn.downlinkMax", "Max Downlink (Mbps)", roundTo(downlinkMaxValue, 2), "Maximum downlink speed of the current connection technology.")
+          : annotateProbeDerivedPoint(
+              pt("conn.downlinkMax", "Max Downlink (Mbps)", roundTo(downlinkMaxValue, 2), "Highest observed downlink throughput during this session."),
+              "session",
+            ))
+      : pendingPt("conn.downlinkMax", "Max Downlink (Mbps)", "measuring...", "Highest observed downlink speed from active probe samples."),
+  );
+  p.push(
+    rttValue !== null
+      ? (native.rttMs !== null
+          ? pt("conn.rtt", "RTT (ms)", Math.max(1, Math.round(rttValue)), "Estimated network round-trip time (general quality metric, not specific to this server).", false, true)
+          : annotateProbeDerivedPoint(
+              pt("conn.rtt", "RTT (ms)", Math.max(1, Math.round(rttValue)), "Measured network round-trip time from active same-origin probe requests.", false, true),
+            ))
+      : pendingPt("conn.rtt", "RTT (ms)", "measuring...", "Measured round-trip timing from active same-origin requests.", false, true),
+  );
+  if (saveDataValue !== null) {
+    p.push(
+      native.saveData !== null
+        ? pt("conn.saveData", "Data Saver", saveDataValue, "Whether the user has requested reduced data usage.")
+        : annotateMediaQueryDerivedPoint(
+            pt("conn.saveData", "Data Saver", saveDataValue, "Reduced-data preference inferred from the prefers-reduced-data media query."),
+          ),
+    );
+  } else {
+    p.push(pt("conn.saveData", "Data Saver", null, "Whether the user has requested reduced data usage."));
+  }
+
+  return p;
+}
+
+async function collectConnectionAsync(signal?: AbortSignal): Promise<DataPoint[]> {
+  const p: DataPoint[] = [];
+  const native = readNativeConnectionSnapshot();
+  throwIfAborted(signal);
+
+  let probe = buildProbeSnapshotFromState();
+  try {
+    probe = await probeConnectionSnapshot({ signal, includeDownlink: true }) ?? probe;
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+  }
+  throwIfAborted(signal);
+
+  const typeValue = native.type ?? probe?.type ?? null;
+  if (typeValue !== null) {
+    p.push(
+      native.type !== null
+        ? pt("conn.type", "Connection Type", typeValue, "Physical medium - wifi, cellular, ethernet, bluetooth, etc.")
+        : annotateProbeDerivedPoint(
+            pt("conn.type", "Connection Type", typeValue, "Inferred connection medium from active timing probes."),
+            "session",
+          ),
+    );
+  }
+
+  const downlinkValue = native.downlinkMbps ?? probe?.downlinkMbps ?? null;
+  if (downlinkValue !== null) {
+    p.push(
+      native.downlinkMbps !== null
+        ? pt("conn.downlink", "Downlink (Mbps)", roundTo(downlinkValue, 2), "Estimated downstream bandwidth.", false, true)
+        : annotateProbeDerivedPoint(
+            pt("conn.downlink", "Downlink (Mbps)", roundTo(downlinkValue, 2), "Measured downstream throughput from active same-origin transfers.", false, true),
+          ),
+    );
+  }
+
+  const downlinkMaxValue = native.downlinkMaxMbps ?? probe?.downlinkMaxMbps ?? downlinkValue;
+  if (downlinkMaxValue !== null) {
+    p.push(
+      native.downlinkMaxMbps !== null
+        ? pt("conn.downlinkMax", "Max Downlink (Mbps)", roundTo(downlinkMaxValue, 2), "Maximum downlink speed of the current connection technology.")
+        : annotateProbeDerivedPoint(
+            pt("conn.downlinkMax", "Max Downlink (Mbps)", roundTo(downlinkMaxValue, 2), "Highest observed downlink throughput during this session."),
+            "session",
+          ),
+    );
+  }
+
+  const rttValue = native.rttMs ?? probe?.rttMs ?? null;
+  if (rttValue !== null) {
+    p.push(
+      native.rttMs !== null
+        ? pt("conn.rtt", "RTT (ms)", Math.max(1, Math.round(rttValue)), "Estimated network round-trip time (general quality metric, not specific to this server).", false, true)
+        : annotateProbeDerivedPoint(
+            pt("conn.rtt", "RTT (ms)", Math.max(1, Math.round(rttValue)), "Measured network round-trip time from active same-origin probe requests.", false, true),
+          ),
+    );
+  }
+
+  const saveDataValue = resolveSaveDataPreference(native.saveData);
+  if (saveDataValue !== null) {
+    p.push(
+      native.saveData !== null
+        ? pt("conn.saveData", "Data Saver", saveDataValue, "Whether the user has requested reduced data usage.")
+        : annotateMediaQueryDerivedPoint(
+            pt("conn.saveData", "Data Saver", saveDataValue, "Reduced-data preference inferred from the prefers-reduced-data media query."),
+          ),
+    );
+  }
 
   return p;
 }
@@ -2493,7 +2918,7 @@ const CATEGORY_ORDER: Array<{ id: string; title: string; syncFn?: () => DataPoin
   { id: "os",          title: "OS & PREFERENCES",      syncFn: collectOS },
   { id: "fingerprint", title: "FINGERPRINTS",          syncFn: collectFingerprints },
   { id: "performance", title: "PERFORMANCE",           syncFn: collectPerformance },
-  { id: "connection",  title: "CONNECTION",            syncFn: collectConnection },
+  { id: "connection",  title: "CONNECTION",            syncFn: collectConnection, asyncFn: collectConnectionAsync },
   { id: "datetime",    title: "DATE / TIME / LOCALE",  syncFn: collectDateTime },
   { id: "media",       title: "MEDIA & CODECS",        syncFn: collectMedia, asyncFn: collectMediaAsync },
   { id: "storage",     title: "STORAGE",               syncFn: collectStorage, asyncFn: collectStorageAsync },
@@ -2778,14 +3203,26 @@ export function createLiveUpdaters(onUpdate: (id: string, value: string | number
   }
 
   // Connection changes
-  const conn = (navigator as any).connection;
+  const conn = getNavigatorConnection();
+  const pushConnectionSnapshot = (snapshot: NativeConnectionSnapshot): void => {
+    if (snapshot.type !== null) onUpdate("conn.type", snapshot.type);
+    if (snapshot.downlinkMbps !== null) onUpdate("conn.downlink", roundTo(snapshot.downlinkMbps, 2));
+    if (snapshot.downlinkMaxMbps !== null) onUpdate("conn.downlinkMax", roundTo(snapshot.downlinkMaxMbps, 2));
+    if (snapshot.rttMs !== null) onUpdate("conn.rtt", Math.max(1, Math.round(snapshot.rttMs)));
+
+    const saveDataValue = resolveSaveDataPreference(snapshot.saveData);
+    if (saveDataValue !== null) onUpdate("conn.saveData", saveDataValue);
+  };
+
+  const initialConnectionSnapshot = readNativeConnectionSnapshot(conn);
+  pushConnectionSnapshot(initialConnectionSnapshot);
+
   if (conn) {
     const onChange = () => {
       if (disposed) return;
-      if (conn.effectiveType != null) onUpdate("conn.effective", conn.effectiveType);
-      if (conn.downlink != null) onUpdate("conn.downlink", conn.downlink);
-      if (conn.rtt != null) onUpdate("conn.rtt", conn.rtt);
+      pushConnectionSnapshot(readNativeConnectionSnapshot(conn));
     };
+
     if (typeof conn.addEventListener === "function") {
       conn.addEventListener("change", onChange);
       cleanups.push(() => conn.removeEventListener("change", onChange));
@@ -2798,6 +3235,116 @@ export function createLiveUpdaters(onUpdate: (id: string, value: string | number
         }
       });
     }
+  }
+
+  const reducedDataMql = getReducedDataMediaQueryList();
+  if (reducedDataMql && initialConnectionSnapshot.saveData === null) {
+    const onReducedDataChange = () => {
+      if (disposed) return;
+      const saveDataValue = readReducedDataPreference();
+      if (saveDataValue !== null) onUpdate("conn.saveData", saveDataValue);
+    };
+    onReducedDataChange();
+
+    if (typeof reducedDataMql.addEventListener === "function") {
+      reducedDataMql.addEventListener("change", onReducedDataChange);
+      cleanups.push(() => reducedDataMql.removeEventListener("change", onReducedDataChange));
+    } else {
+      const mqlAny = reducedDataMql as MediaQueryList & {
+        onchange: ((this: MediaQueryList, ev: MediaQueryListEvent) => any) | null;
+      };
+      const prev = mqlAny.onchange;
+      const handler = () => onReducedDataChange();
+      mqlAny.onchange = handler;
+      cleanups.push(() => {
+        if (mqlAny.onchange === handler) {
+          mqlAny.onchange = prev ?? null;
+        }
+      });
+    }
+  }
+
+  const shouldProbeAssist =
+    !hasNativeConnectionSignal(initialConnectionSnapshot) ||
+    initialConnectionSnapshot.type === null ||
+    initialConnectionSnapshot.downlinkMbps === null ||
+    initialConnectionSnapshot.rttMs === null;
+
+  if (shouldProbeAssist) {
+    let probing = false;
+    let probeTick = 0;
+    let activeProbeController: AbortController | null = null;
+
+    const runConnectionProbe = async (forceDownlink = false) => {
+      if (disposed || probing || !navigator.onLine || document.visibilityState === "hidden") return;
+      probing = true;
+
+      const nativeNow = readNativeConnectionSnapshot(conn);
+      probeTick += 1;
+      const includeDownlink = forceDownlink ||
+        nativeNow.downlinkMbps === null ||
+        probeTick % CONNECTION_LIVE_DOWNLINK_EVERY_NTH_SAMPLE === 1;
+
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      activeProbeController = controller;
+
+      try {
+        const snapshot = await probeConnectionSnapshot({
+          includeDownlink,
+          signal: controller?.signal,
+        });
+        if (disposed || !snapshot) return;
+
+        const liveNative = readNativeConnectionSnapshot(conn);
+        if (liveNative.type === null && snapshot.type !== null) onUpdate("conn.type", snapshot.type);
+        if (liveNative.rttMs === null && snapshot.rttMs !== null) onUpdate("conn.rtt", snapshot.rttMs);
+        if (liveNative.downlinkMbps === null && snapshot.downlinkMbps !== null) onUpdate("conn.downlink", snapshot.downlinkMbps);
+        if (liveNative.downlinkMaxMbps === null && snapshot.downlinkMaxMbps !== null) onUpdate("conn.downlinkMax", snapshot.downlinkMaxMbps);
+      } catch (error) {
+        if (isAbortError(error)) return;
+      } finally {
+        if (activeProbeController === controller) activeProbeController = null;
+        probing = false;
+      }
+    };
+
+    void runConnectionProbe(true);
+
+    const probeId = setInterval(() => {
+      void runConnectionProbe();
+    }, CONNECTION_LIVE_RTT_INTERVAL_MS);
+    cleanups.push(() => {
+      clearInterval(probeId);
+      if (activeProbeController) {
+        activeProbeController.abort();
+        activeProbeController = null;
+      }
+    });
+
+    const onProbeVisibility = () => {
+      if (document.visibilityState === "visible" && !disposed) {
+        void runConnectionProbe();
+      }
+    };
+    document.addEventListener("visibilitychange", onProbeVisibility);
+    cleanups.push(() => document.removeEventListener("visibilitychange", onProbeVisibility));
+
+    const onProbeOnline = () => {
+      if (disposed) return;
+      resetConnectionProbeState();
+      void runConnectionProbe(true);
+    };
+    window.addEventListener("online", onProbeOnline);
+    cleanups.push(() => window.removeEventListener("online", onProbeOnline));
+
+    const onProbeOffline = () => {
+      if (activeProbeController) {
+        activeProbeController.abort();
+        activeProbeController = null;
+      }
+    };
+    window.addEventListener("offline", onProbeOffline);
+    cleanups.push(() => window.removeEventListener("offline", onProbeOffline));
   }
 
   // Battery
