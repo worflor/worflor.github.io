@@ -449,6 +449,7 @@ function classifyIp(rawAddr: string): "loopback" | "private" | "public" {
 
 function isLocalBrowserTarget(target: RadarTarget): boolean {
   if (target.id.startsWith("hw:")) return true;
+  if (target.id.startsWith("self:")) return true;
   if (target.id.startsWith("net:uplink:")) return true;
   if (target.id.startsWith("route:mdns:")) return true;
 
@@ -1075,8 +1076,14 @@ export function initRadar(opts: RadarUIOptions): () => void {
   let geoHeadingAvailable = false;
   let timingProbeInFlight = false;
   let timingProbePending = false;
+  let fetchProbeInFlight = false;
+  let fetchProbePending = false;
+  let dnsProbeInFlight = false;
+  let dnsProbePending = false;
   let resourceObserver: PerformanceObserver | null = null;
   let smoothedRttMs: number | null = null;
+  let smoothedFetchRttMs: number | null = null;
+  let smoothedDnsMs: number | null = null;
   let selectedContactId: string | null = null;
   let hoveredContactId: string | null = null;
   const canvasTargetHits = new Map<string, { x: number; y: number; r: number }>();
@@ -1241,11 +1248,29 @@ export function initRadar(opts: RadarUIOptions): () => void {
     run: runNavigationTimingProbe,
   });
 
+  const scheduleFetchProbe = createProbeScheduler({
+    getInFlight: () => fetchProbeInFlight,
+    setInFlight: (value) => { fetchProbeInFlight = value; },
+    getPending: () => fetchProbePending,
+    setPending: (value) => { fetchProbePending = value; },
+    run: runActiveFetchProbe,
+  });
+
+  const scheduleDnsProbe = createProbeScheduler({
+    getInFlight: () => dnsProbeInFlight,
+    setInFlight: (value) => { dnsProbeInFlight = value; },
+    getPending: () => dnsProbePending,
+    setPending: (value) => { dnsProbePending = value; },
+    run: runDnsTimingProbe,
+  });
+
   function runNetworkProbeCycle(): void {
     runNetworkProbe();
     scheduleIceProbe();
     scheduleEnumerateDevicesProbe();
     scheduleTimingProbe();
+    scheduleFetchProbe();
+    scheduleDnsProbe();
   }
 
   function startNetworkProbeLoop(options?: { immediate?: boolean }): void {
@@ -2666,6 +2691,99 @@ export function initRadar(opts: RadarUIOptions): () => void {
     } catch { /* observer creation failed */ }
   }
 
+  // ── Active fetch RTT probe ────────────────────────────────────────────
+
+  async function runActiveFetchProbe(): Promise<void> {
+    if (!isScanActive()) return;
+    if (typeof fetch !== "function") return;
+
+    try {
+      // Fetch a tiny same-origin resource to produce a real RTT measurement.
+      // Use the page's own URL with cache-busting to ensure a fresh connection.
+      const url = `/favicon.svg?_radar=${Date.now()}`;
+      const t0 = performance.now();
+      const resp = await fetch(url, {
+        method: "HEAD",
+        cache: "no-store",
+        credentials: "omit",
+      });
+      const t1 = performance.now();
+
+      if (!isScanActive()) return;
+      if (!resp.ok) return;
+
+      const rttMs = t1 - t0;
+      smoothedFetchRttMs = smoothedFetchRttMs === null
+        ? rttMs
+        : smoothedFetchRttMs * 0.5 + rttMs * 0.5;
+
+      const syntheticRssi = rttToSyntheticRssi(smoothedFetchRttMs);
+      const display = Math.round(smoothedFetchRttMs);
+
+      upsertTarget({
+        id: "net:fetch:rtt",
+        label: `fetch rtt ${display}ms`,
+        protocol: "wifi",
+        evidence: "measured",
+        rssi: syntheticRssi,
+        txPower: DEFAULT_TX_POWER,
+        meta: `HEAD ${url.split("?")[0]} | ${display}ms | measured`,
+      });
+    } catch { /* fetch failed — offline or blocked */ }
+  }
+
+  // ── DNS timing probe ──────────────────────────────────────────────────
+
+  async function runDnsTimingProbe(): Promise<void> {
+    if (!isScanActive()) return;
+    if (typeof performance === "undefined" || typeof performance.getEntriesByType !== "function") return;
+
+    try {
+      const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+      const dnsSamples: number[] = [];
+      const recentCutoff = performance.now() - 30_000;
+
+      for (let i = entries.length - 1; i >= 0 && dnsSamples.length < 10; i--) {
+        const e = entries[i];
+        if (e.startTime < recentCutoff) break;
+        const dnsTime = e.domainLookupEnd - e.domainLookupStart;
+        if (dnsTime > 0) {
+          dnsSamples.push(dnsTime);
+        }
+      }
+
+      // Also check the navigation entry
+      const navEntries = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+      if (navEntries.length > 0) {
+        const nav = navEntries[0];
+        const navDns = nav.domainLookupEnd - nav.domainLookupStart;
+        if (navDns > 0) dnsSamples.push(navDns);
+      }
+
+      if (dnsSamples.length === 0) return;
+
+      const avgDns = dnsSamples.reduce((sum, v) => sum + v, 0) / dnsSamples.length;
+      smoothedDnsMs = smoothedDnsMs === null
+        ? avgDns
+        : smoothedDnsMs * 0.6 + avgDns * 0.4;
+
+      // DNS timing to RSSI: <5ms = local resolver (-25), 5-50ms = nearby (-40 to -55), 50ms+ = distant (-60+)
+      const dnsRssi = smoothedDnsMs <= 0 ? -25
+        : clamp(Math.round(-25 - (Math.log2(clamp(smoothedDnsMs, 1, 200)) * 5)), -80, -20);
+      const display = Math.round(smoothedDnsMs);
+
+      upsertTarget({
+        id: "net:dns:resolver",
+        label: `dns resolver ${display}ms`,
+        protocol: "wifi",
+        evidence: "inferred",
+        rssi: dnsRssi,
+        txPower: DEFAULT_TX_POWER,
+        meta: `${dnsSamples.length} lookup${dnsSamples.length !== 1 ? "s" : ""} | avg ${display}ms`,
+      });
+    } catch { /* timing API read failed */ }
+  }
+
   // ── Sweep lifecycle ────────────────────────────────────────────────────
 
   let sensorsStarted = false;
@@ -2713,6 +2831,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
     geoHeadingAvailable = false;
     ambientLux = null;
     smoothedRttMs = null;
+    smoothedFetchRttMs = null;
+    smoothedDnsMs = null;
     renderSelfLoc();
     renderCompass();
     renderAmbient();
@@ -2759,6 +2879,8 @@ export function initRadar(opts: RadarUIOptions): () => void {
     iceProbePending = false;
     mediaProbePending = false;
     timingProbePending = false;
+    fetchProbePending = false;
+    dnsProbePending = false;
   }
 
   function clearTargets(): void {
