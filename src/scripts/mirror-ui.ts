@@ -452,13 +452,22 @@ function updateScore(
   }
 }
 
-function getVerdict(exposed: number, blocked: number, total: number): string {
-  const pct = total > 0 ? (exposed / total) * 100 : 0;
-  if (pct >= 90) return "your browser gave up almost everything. not much was held back.";
-  if (pct >= 75) return "most of your data was exposed. your browser blocked a few things.";
-  if (pct >= 50) return `a fair amount got through, but your browser held back ${blocked} data points.`;
-  if (pct >= 30) return `your browser put up a decent fight. it blocked ${blocked} out of ${total} data points.`;
-  return `your browser blocked most of what we tried. only ${exposed} data points got through.`;
+function getVerdict(_exposed: number, _blocked: number, total: number): string {
+  const pct = total > 0 ? (_exposed / total) * 100 : 0;
+  const rounded = Math.round(pct);
+  // Verdicts ordered by exposure: clear reflection → nearly opaque.
+  // Each threshold is [minPct, verdictFn]; first match wins.
+  const verdicts: [number, () => string][] = [
+    [90, () => `a crystal clear reflection. ${rounded}% of you, right there.`],
+    [75, () => `a sharp image, not quite flawless. ${100 - rounded}% stayed in shadow.`],
+    [50, () => `a recognizable figure, but ${100 - rounded}% was lost in the fog.`],
+    [30, () => `hard to make out. only ${rounded}% came through the glass.`],
+    [0, () => `almost opaque. just ${rounded}% slipped through.`],
+  ];
+  for (const [min, fn] of verdicts) {
+    if (pct >= min) return fn();
+  }
+  return verdicts[verdicts.length - 1][1]();
 }
 
 function tallyPoints(categoryPoints: Iterable<DataPoint[]>): {
