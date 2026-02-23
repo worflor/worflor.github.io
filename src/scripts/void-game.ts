@@ -170,6 +170,7 @@ interface SerializedCreature {
 
 interface SaveData {
   version: number;
+  depth: number;
   creatures: SerializedCreature[];
   revealMap: number[] | null;
   revealDims: { w: number; h: number } | null;
@@ -177,6 +178,7 @@ interface SaveData {
 
 interface SaveDataEnvelope {
   version?: unknown;
+  depth?: unknown;
   creatures?: unknown;
   revealMap?: unknown;
   revealDims?: unknown;
@@ -260,7 +262,7 @@ type FogWorkerOutMessage =
 // GAME CONSTANTS
 // ============================================================================
 
-const SAVE_SCHEMA_VERSION = 1;
+const SAVE_SCHEMA_VERSION = 2;
 
 const CONFIG = {
   // Timing
@@ -655,7 +657,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
   let revealH: number;
   const revealRes = CONFIG.REVEAL_RES;
   const LINGER_DURATION = 180; // Frames to keep fog revealed after creature leaves (~3s at 60fps)
-  const PICKUP_HOLD_TIME = CONFIG.PICKUP_HOLD_TIME;
   let respawnPending = false;
   let fadingToBlack = false;
 
@@ -675,6 +676,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // Async task tracking
   const pendingTimeouts = new Set<number>();
   let pendingIdleSave: number | null = null;
+  let pendingTimeoutSave: number | null = null;
 
   function scheduleTimeout(callback: () => void, delay: number): number {
     const id = window.setTimeout(() => {
@@ -696,6 +698,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       cancelIdleCallback(pendingIdleSave);
     }
     pendingIdleSave = null;
+
+    if (pendingTimeoutSave !== null) {
+      window.clearTimeout(pendingTimeoutSave);
+      pendingTimeoutSave = null;
+    }
   }
 
   // Cache static UI references used each frame
@@ -722,6 +729,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const cleaned = path.replace(/\/depth\/.*$/, "");
     return cleaned || "/404";
   }
+
+  const FRAME_MS = 1000 / 60;
+  const PICKUP_HOLD_MS = CONFIG.PICKUP_HOLD_TIME * FRAME_MS;
+  const FOOD_DROP_MS = CONFIG.FOOD_DROP_INTERVAL * FRAME_MS;
 
   let currentDepth = parseDepthFromPath();
   let holes: Hole[] = [];
@@ -3523,6 +3534,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const displayPath = newUrl.replace(/^\//, "") || "nowhere";
     lostPath.textContent = `404 - /${displayPath} - page not found`;
 
+    save(true);
     showToast(`depth ${currentDepth}`);
   }
 
@@ -3534,6 +3546,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
     tooltipCreature = null;
     respawnPending = false;
     rightClickTarget = null;
+    touchCreature = null;
+    mouse.down = false;
+    mouse.rightDown = false;
+    mouse.holdTime = 0;
+    mouse.rightHoldTime = 0;
+    mouse.tappedHole = null;
     pickupProgress = 0;
 
     const creatureData = creatures.map((c) => ({
@@ -3577,6 +3595,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const displayPath = window.location.pathname.replace(/^\//, "") || "nowhere";
     lostPath.textContent = `404 - /${displayPath} - page not found`;
 
+    save(true);
     showToast(currentDepth > 0 ? `depth ${currentDepth}` : "surface");
   }
 
@@ -4010,6 +4029,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
       return null;
     }
 
+    if (typeof data.depth !== "number" || !Number.isInteger(data.depth) || data.depth < 0) {
+      return null;
+    }
+
     if (!Array.isArray(data.creatures) || !data.creatures.every(isSerializedCreature)) {
       return null;
     }
@@ -4037,6 +4060,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     return {
       version: SAVE_SCHEMA_VERSION,
+      depth: data.depth,
       creatures: data.creatures,
       revealMap,
       revealDims,
@@ -4047,9 +4071,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // SAVE / LOAD / RESET
   // ============================================================================
 
-  function save(): void {
+  function save(immediate = false): void {
     const data: SaveData = {
       version: SAVE_SCHEMA_VERSION,
+      depth: currentDepth,
       creatures: creatures.map((c) => serializeCreature(c)),
       revealMap: revealMap ? compressRevealMap(revealMap) : null,
       revealDims: revealMap ? { w: revealW, h: revealH } : null,
@@ -4063,19 +4088,32 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
     };
 
-    if (typeof requestIdleCallback !== "undefined") {
-      if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
-        cancelIdleCallback(pendingIdleSave);
-        pendingIdleSave = null;
-      }
+    if (pendingIdleSave !== null && typeof cancelIdleCallback !== "undefined") {
+      cancelIdleCallback(pendingIdleSave);
+      pendingIdleSave = null;
+    }
+    if (pendingTimeoutSave !== null) {
+      window.clearTimeout(pendingTimeoutSave);
+      pendingTimeoutSave = null;
+    }
 
+    if (immediate) {
+      doSave();
+      return;
+    }
+
+    if (typeof requestIdleCallback !== "undefined") {
       pendingIdleSave = requestIdleCallback(() => {
         pendingIdleSave = null;
         if (destroyed) return;
         doSave();
       }, { timeout: 1000 });
     } else {
-      scheduleTimeout(doSave, 0);
+      pendingTimeoutSave = window.setTimeout(() => {
+        pendingTimeoutSave = null;
+        if (destroyed) return;
+        doSave();
+      }, 0);
     }
   }
 
@@ -4094,8 +4132,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
         loadedCreatures.push(creature);
       }
 
+      if (data.depth !== currentDepth) {
+        return false;
+      }
+
       const loadedRevealMap =
-        currentDepth === 0 && data.revealMap && data.revealDims && data.revealDims.w === revealW && data.revealDims.h === revealH
+        data.revealMap && data.revealDims && data.revealDims.w === revealW && data.revealDims.h === revealH
           ? decompressRevealMap(data.revealMap, revealW * revealH)
           : null;
 
@@ -4116,7 +4158,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         }
       }
 
-      if (currentDepth === 0 && loadedRevealMap) {
+      if (loadedRevealMap) {
         revealMap = loadedRevealMap;
         // Sync loaded reveal map to worker (queues until ready)
         if (revealMap) {
@@ -4239,13 +4281,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // GAME LOOP
   // ============================================================================
 
-  function update(): void {
+  function update(deltaMs: number): void {
     if (destroyed) return;
     time++;
 
     if (mouse.down && !heldCreature) {
-      mouse.holdTime++;
-      if (mouse.holdTime % CONFIG.FOOD_DROP_INTERVAL === 0 && foods.length < CONFIG.MAX_FOODS) {
+      mouse.holdTime += deltaMs;
+
+      while (mouse.holdTime >= FOOD_DROP_MS && foods.length < CONFIG.MAX_FOODS) {
+        mouse.holdTime -= FOOD_DROP_MS;
+
         let inHazard = false;
         for (const hole of holes) {
           if (dist(mouse.x, mouse.y, hole.x, hole.y) < hole.radius + 5) {
@@ -4274,14 +4319,15 @@ export function initVoidGame(options: GameInitOptions): () => void {
         pickupProgress = 0;
         mouse.rightHoldTime = 0;
       } else {
-        mouse.rightHoldTime++;
-        pickupProgress = Math.min(1, mouse.rightHoldTime / PICKUP_HOLD_TIME);
+        mouse.rightHoldTime += deltaMs;
+        pickupProgress = Math.min(1, mouse.rightHoldTime / PICKUP_HOLD_MS);
 
-        if (mouse.rightHoldTime >= PICKUP_HOLD_TIME) {
+        if (mouse.rightHoldTime >= PICKUP_HOLD_MS) {
           heldCreature = rightClickTarget;
           heldCreature.pickup();
           tooltipCreature = null;
           pickupProgress = 0;
+          mouse.rightHoldTime = 0;
         }
       }
     } else if (!mouse.rightDown) {
@@ -4549,11 +4595,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   let gameLoopId: number | null = null;
+  let lastFrameTimestamp = performance.now();
 
-  function gameLoop(): void {
+  function gameLoop(timestamp = performance.now()): void {
     if (destroyed) return;
 
-    update();
+    const elapsed = timestamp - lastFrameTimestamp;
+    lastFrameTimestamp = timestamp;
+    const deltaMs = Number.isFinite(elapsed) ? Math.min(Math.max(elapsed, 0), 100) : FRAME_MS;
+
+    update(deltaMs);
     draw();
     gameLoopId = requestAnimationFrame(gameLoop);
   }
@@ -4831,6 +4882,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     mouse.rightHoldTime = 0;
     pickupProgress = 0;
     rightClickTarget = null;
+    tooltipCreature = null;
     touchCreature = null;
     mouse.tappedHole = null;
   }, { signal });
@@ -4846,6 +4898,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     mouse.rightHoldTime = 0;
     pickupProgress = 0;
     rightClickTarget = null;
+    tooltipCreature = null;
     touchCreature = null;
     mouse.tappedHole = null;
   }, { signal });
@@ -4943,7 +4996,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
   window.addEventListener("pagehide", handlePageHide);
 
   activeVoidGameCleanup = cleanup;
-  gameLoop();
+  lastFrameTimestamp = performance.now();
+  gameLoop(lastFrameTimestamp);
 
   return cleanup;
 }
