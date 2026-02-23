@@ -423,6 +423,29 @@ function updatePointValue(
     status: "resolved",
   };
   pointState.set(id, nextPoint);
+
+  // For live points that are already rendered, do a surgical text swap
+  // instead of a full teardown/rebuild — this preserves the LIVE badge
+  // and its CSS animation.
+  if (point.live && point.status === "resolved") {
+    // Boolean live points: update the yes/no span text + class
+    if (typeof value === "boolean") {
+      const span = valueEl.querySelector(".dp-bool-true, .dp-bool-false");
+      if (span) {
+        span.className = value ? "dp-bool-true" : "dp-bool-false";
+        span.textContent = value ? "yes" : "no";
+        return;
+      }
+    }
+    // Text/number live points: find the first text node and update it
+    for (const node of valueEl.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        node.textContent = normalizeTextForDisplay(String(value));
+        return;
+      }
+    }
+  }
+
   renderValue(valueEl, nextPoint);
 }
 
