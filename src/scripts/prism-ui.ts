@@ -1374,6 +1374,18 @@ export function initPrism(opts: PrismUIOptions): () => void {
       updateQueueStatus("ready", "ready");
       return;
     }
+
+    const loadableState = prismState === "files_loaded" || prismState === "configured";
+    const currentEngineState = engine?.state ?? "idle";
+    if (loadableState && (currentEngineState === "idle" || currentEngineState === "error")) {
+      const eng = ensureEngine();
+      opts.engineStatus.textContent = "loading engine...";
+      void eng.load();
+      return;
+    }
+
+    if (currentEngineState === "loading") return;
+
     run();
   });
 
