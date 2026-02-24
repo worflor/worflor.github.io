@@ -250,6 +250,19 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+function normalizeSealCodeInput(value: string): string {
+  return value.replace(/\s+/g, "").trim();
+}
+
+function compactSealCode(code: string): string {
+  if (code.length <= 34) return code;
+  return `${code.slice(0, 20)}…${code.slice(-12)}`;
+}
+
+function formatInlineSealPreview(code: string): string {
+  return compactSealCode(code);
+}
+
 /* ── Init ─────────────────────────────────────────────────── */
 
 export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
@@ -329,12 +342,14 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   /* ── Compose helpers ──────────────────────────────────── */
 
   function syncCompose(): void {
-    const code = opts.recipientSealInput.value.trim();
+    const code = normalizeSealCodeInput(opts.recipientSealInput.value);
     const valid = isSealCodeValid(code);
     const hasMsg = opts.messageInput.value.trim().length > 0;
 
     if (code.length > 0) {
-      opts.sealValidation.textContent = valid ? "\u2713 valid public seal" : "\u2717 invalid public seal code";
+      opts.sealValidation.textContent = valid
+        ? "\u2713 valid WS2 public key"
+        : "\u2717 invalid WS2 public key";
       opts.sealValidation.dataset.valid = String(valid);
     } else {
       opts.sealValidation.textContent = "";
@@ -386,10 +401,10 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       mySealPublicCode = identity.code;
 
       opts.sealCode.textContent = identity.code;
-      opts.mySealInline.textContent = identity.alias;
+      opts.mySealInline.textContent = formatInlineSealPreview(identity.code);
       opts.mySealInline.style.display = "";
-      opts.mySealInline.title = `Click to copy full seal code (${identity.alias})`;
-      log(`seal identity ready: ${identity.alias}`);
+      opts.mySealInline.title = "WS2 public key preview — click to copy full code";
+      log("seal identity ready: ws2 public key copied");
       // Stop shimmer, fire copy pulse
       opts.mySealBtn.classList.remove("ws-computing");
       copyToClipboard(identity.code).then(() => {
@@ -415,7 +430,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     opts.sealItBtn.disabled = true;
     opts.sealItBtn.classList.add("ws-computing");
 
-    const recipient = opts.recipientSealInput.value.trim();
+    const recipient = normalizeSealCodeInput(opts.recipientSealInput.value);
     const message = opts.messageInput.value;
     const expiryMs = getExpiryMs();
     const pw = opts.extraPasswordInput.value || undefined;
@@ -472,10 +487,10 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       if (aborted()) return;
       if (identity) {
         mySealPublicCode = identity.code;
-        opts.mySealInline.textContent = identity.alias;
+        opts.mySealInline.textContent = formatInlineSealPreview(identity.code);
         opts.mySealInline.style.display = "";
-        opts.mySealInline.title = `Click to copy full seal code (${identity.alias})`;
-        log(`local identity: ${identity.alias}`);
+        opts.mySealInline.title = "WS2 public key preview — click to copy full code";
+        log(`local identity: ${compactSealCode(identity.code)}`);
       } else {
         log("no local seal identity found");
       }
@@ -577,6 +592,10 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   // Compose — live validation
   opts.recipientSealInput.addEventListener("input", () => {
+    const normalized = normalizeSealCodeInput(opts.recipientSealInput.value);
+    if (normalized !== opts.recipientSealInput.value) {
+      opts.recipientSealInput.value = normalized;
+    }
     syncCompose();
   }, { signal });
 

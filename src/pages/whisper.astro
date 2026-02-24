@@ -165,6 +165,7 @@ const seo = {
               <span class="whisper-field-label">recipient's seal</span>
               <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
             </label>
+            <span class="whisper-field-hint ws-seal-input-hint">Use the full WS2 public key value.</span>
             <span id="ws-seal-validation" class="ws-seal-validation"></span>
 
             <label class="whisper-field" for="ws-message">
@@ -544,11 +545,12 @@ const seo = {
         <!-- My seal — display seal code -->
         <div class="ws-overlay-panel" id="ws-my-seal-phase" style="display:none">
           <div class="whisper-panel ws-seal-display-panel">
-            <h3 class="whisper-panel-title">Your Seal</h3>
+            <h3 class="whisper-panel-title">Your WS2 Public Seal</h3>
             <div class="ws-seal-code-wrap">
               <span id="ws-seal-code" class="ws-seal-code"></span>
             </div>
-            <p class="ws-seal-hint">Share this code with someone who wants to send you a sealed message. Only the browser profile with the matching private key can open it.</p>
+            <p class="ws-seal-hint">Share this full WS2 code to receive messages.</p>
+            <p class="ws-seal-hint">Only the browser profile with the matching private key can open messages sealed to this key.</p>
             <div class="ws-seal-actions">
               <button id="ws-seal-copy" type="button" class="whisper-mini-btn wl-primary">Copy seal</button>
               <button id="ws-seal-back" type="button" class="whisper-mini-btn">Done</button>
@@ -2363,7 +2365,7 @@ const seo = {
     font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
     font-size: calc(var(--text-sm) * 0.92);
     font-weight: 600;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.02em;
     color: rgb(var(--chromatic-cyan));
     background: rgb(var(--chromatic-cyan) / 0.06);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
@@ -2543,6 +2545,12 @@ const seo = {
     margin-top: calc(var(--space-xs) * -0.5);
     min-height: 1.25em;
   }
+
+  .ws-seal-input-hint {
+    display: block;
+    margin-top: calc(var(--space-xs) * -0.45);
+  }
+
   .ws-seal-validation[data-valid="true"] { color: rgb(var(--tool-status-success)); }
   .ws-seal-validation[data-valid="false"] { color: rgb(var(--chromatic-red)); }
 

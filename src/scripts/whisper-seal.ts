@@ -5,17 +5,6 @@
 import { sha256, randomBytes, toArrayBuffer } from "./whisper-wasm";
 import { hkdf, aesGcmEncrypt, aesGcmDecrypt, TE } from "./whisper-live-crypto";
 
-/* ── Seal Alias Word List ─────────────────────────────────── */
-
-const SEAL_WORDS = [
-  "AGATE",    "BASALT",  "COBALT",   "DUSK",    "EMBER",
-  "FLINT",    "GRANITE", "HARBOR",   "IRON",    "JADE",
-  "KEYSTONE", "LUMEN",   "MARBLE",   "NEXUS",   "ONYX",
-  "PRISM",    "QUARTZ",  "RIDGE",    "SLATE",   "TIDAL",
-  "UMBRA",    "VAULT",   "WREN",     "XENON",   "YIELD",
-  "ZENITH",
-] as const;
-
 const WS2_PREFIX = "WS2:";
 const WS2_DB_NAME = "whisper-seal";
 const WS2_DB_VERSION = 2;
@@ -39,7 +28,6 @@ interface SealIdentityStored {
 
 export interface SealIdentity {
   code: string;
-  alias: string;
   fingerprint: string;
 }
 
@@ -131,15 +119,7 @@ export async function computeFingerprint(): Promise<Uint8Array> {
   return sha256(TE.encode(signals.join("|||")));
 }
 
-/* ── Alias + Seal Code Helpers ───────────────────────────── */
-
-export function fingerprintToSealCode(hash: Uint8Array): string {
-  const wordIdx = ((hash[0] << 8) | hash[1]) % SEAL_WORDS.length;
-  const word = SEAL_WORDS[wordIdx];
-  const hex = hash[2].toString(16).toUpperCase().padStart(2, "0");
-  const check = (hash[3] & 0x0F).toString(16).toUpperCase();
-  return `${word}-${hex}${check}`;
-}
+/* ── Seal Code Helpers ───────────────────────────────────── */
 
 function normalizeSealCode(code: string): string {
   return code.trim();
@@ -190,11 +170,6 @@ function b64urlDecode(s: string): Uint8Array {
 
 async function fingerprintFromPublicKey(publicKeyRaw: Uint8Array): Promise<Uint8Array> {
   return sha256(TE.encode(`whisper-seal-v2-pub:${b64url(publicKeyRaw)}`));
-}
-
-async function publicKeyToAlias(publicKeyRaw: Uint8Array): Promise<string> {
-  const hash = await fingerprintFromPublicKey(publicKeyRaw);
-  return fingerprintToSealCode(hash);
 }
 
 async function recipientFingerprintId(publicKeyRaw: Uint8Array): Promise<string> {
@@ -385,7 +360,6 @@ async function getExistingIdentityRecord(): Promise<SealIdentityRecord | null> {
 async function identityToView(record: SealIdentityRecord): Promise<SealIdentity> {
   return {
     code: sealPublicKeyToCode(record.publicKeyRaw),
-    alias: await publicKeyToAlias(record.publicKeyRaw),
     fingerprint: await recipientFingerprintId(record.publicKeyRaw),
   };
 }
