@@ -7,8 +7,8 @@
 
 const FFMPEG_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm";
 const UTIL_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm";
-const CORE_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
-const CORE_MT_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/umd";
+const CORE_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
+const CORE_MT_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
