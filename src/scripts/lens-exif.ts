@@ -86,7 +86,6 @@ function computeFieldCounts(categories: ExifCategory[]): LensFieldCounts {
   const seenPopulated = new Map<string, Set<string>>();
 
   for (const category of categories) {
-    if (category.id === "profile") continue;
     for (const f of category.fields) {
       const key = countKey(f);
 
