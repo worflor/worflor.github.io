@@ -7,8 +7,8 @@
  */
 
 import {
-  computeFingerprint,
-  fingerprintToSealCode,
+  getOrCreateSealIdentity,
+  getExistingSealIdentity,
   isSealCodeValid,
   sealMessage,
   unsealMessage,
@@ -56,6 +56,12 @@ export interface WhisperSealUIOptions {
   expiryCustomVal: HTMLInputElement;
   expiryCustomUnit: HTMLSelectElement;
   sealItBtn: HTMLButtonElement;
+
+  /* Inline seal result */
+  sealedResultWrap: HTMLElement;
+  sealedUrlInline: HTMLPreElement;
+  sealedResultInfo: HTMLElement;
+  sealedResultWarning: HTMLElement;
 
   /* Overlay: computing */
   computingPhase: HTMLElement;
@@ -107,6 +113,10 @@ export const WHISPER_SEAL_IDS = {
   expiryCustomVal: "ws-expiry-custom-val",
   expiryCustomUnit: "ws-expiry-custom-unit",
   sealItBtn: "ws-seal-it",
+  sealedResultWrap: "ws-sealed-result",
+  sealedUrlInline: "ws-sealed-url-inline",
+  sealedResultInfo: "ws-sealed-result-info",
+  sealedResultWarning: "ws-sealed-result-warning",
   computingPhase: "ws-computing-phase",
   mySealPhase: "ws-my-seal-phase",
   sealCode: "ws-seal-code",
@@ -164,6 +174,10 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
   const expiryCustomVal = asInput(q(root, IDS.expiryCustomVal));
   const expiryCustomUnit = root.querySelector<HTMLSelectElement>(`#${IDS.expiryCustomUnit}`);
   const sealItBtn = asButton(q(root, IDS.sealItBtn));
+  const sealedResultWrap = q(root, IDS.sealedResultWrap);
+  const sealedUrlInline = asPre(q(root, IDS.sealedUrlInline));
+  const sealedResultInfo = q(root, IDS.sealedResultInfo);
+  const sealedResultWarning = q(root, IDS.sealedResultWarning);
 
   const computingPhase = q(root, IDS.computingPhase);
   const mySealPhase = q(root, IDS.mySealPhase);
@@ -201,6 +215,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
     !extraPwGenBtn || !extraPwCopyBtn || !expiryGroup ||
     !expiryCustomWrap || !expiryCustomVal || !expiryCustomUnit ||
     !sealItBtn ||
+    !sealedResultWrap || !sealedUrlInline || !sealedResultInfo || !sealedResultWarning ||
     !computingPhase || !mySealPhase || !sealCode || !sealCopyBtn || !sealBackBtn ||
     !resultPhase || !sealedUrl || !urlCopyBtn || !resultSealTarget ||
     !resultExpiryText || !resultUrlWarning || !resultDoneBtn ||
@@ -220,6 +235,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
     extraPwGenBtn, extraPwCopyBtn, expiryGroup,
     expiryCustomWrap, expiryCustomVal, expiryCustomUnit,
     sealItBtn,
+    sealedResultWrap, sealedUrlInline, sealedResultInfo, sealedResultWarning,
     computingPhase, mySealPhase, sealCode, sealCopyBtn, sealBackBtn,
     resultPhase, sealedUrl, urlCopyBtn, resultSealTarget,
     resultExpiryText, resultUrlWarning, resultDoneBtn,
@@ -233,12 +249,6 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
 /* ── Helpers ──────────────────────────────────────────────── */
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** Run `computeFingerprint()` with a minimum display duration for UX. */
-async function computeFingerprintWithMinDelay(): Promise<Uint8Array> {
-  const [fp] = await Promise.all([computeFingerprint(), delay(COMPUTE_MIN_DISPLAY_MS)]);
-  return fp;
-}
 
 /* ── Init ─────────────────────────────────────────────────── */
 
@@ -255,6 +265,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   let busy = false;
   let pendingPayload: SealPayload | null = null;
+  let mySealPublicCode = "";
 
   /** Guard: true if this instance has been torn down. */
   function aborted(): boolean { return signal.aborted; }
@@ -318,12 +329,12 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   /* ── Compose helpers ──────────────────────────────────── */
 
   function syncCompose(): void {
-    const code = opts.recipientSealInput.value.trim().toUpperCase();
+    const code = opts.recipientSealInput.value.trim();
     const valid = isSealCodeValid(code);
     const hasMsg = opts.messageInput.value.trim().length > 0;
 
     if (code.length > 0) {
-      opts.sealValidation.textContent = valid ? "\u2713 valid seal" : "\u2717 invalid format";
+      opts.sealValidation.textContent = valid ? "\u2713 valid public seal" : "\u2717 invalid public seal code";
       opts.sealValidation.dataset.valid = String(valid);
     } else {
       opts.sealValidation.textContent = "";
@@ -342,6 +353,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     opts.extraPasswordInput.value = "";
     opts.sealValidation.textContent = "";
     delete opts.sealValidation.dataset.valid;
+    opts.sealedResultWrap.style.display = "none";
     syncCharCount();
     syncCompose();
   }
@@ -363,26 +375,35 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (busy) return;
     busy = true;
     opts.mySealBtn.disabled = true;
-    opts.mySealBtn.textContent = "computing…";
-    log("computing browser seal...");
+    opts.mySealBtn.classList.add("ws-computing");
+    log("loading your seal identity...");
 
     try {
-      const fp = await computeFingerprintWithMinDelay();
+      await delay(COMPUTE_MIN_DISPLAY_MS);
       if (aborted()) return;
-      const code = fingerprintToSealCode(fp);
-      opts.sealCode.textContent = code;
-      opts.mySealInline.textContent = code;
+      const identity = await getOrCreateSealIdentity();
+      if (aborted()) return;
+      mySealPublicCode = identity.code;
+
+      opts.sealCode.textContent = identity.code;
+      opts.mySealInline.textContent = identity.alias;
       opts.mySealInline.style.display = "";
-      log(`seal ready: ${code}`);
-      // Auto-copy on generate
-      safeCopy(code, opts.mySealBtn, "Copied!");
+      opts.mySealInline.title = `Click to copy full seal code (${identity.alias})`;
+      log(`seal identity ready: ${identity.alias}`);
+      // Stop shimmer, fire copy pulse
+      opts.mySealBtn.classList.remove("ws-computing");
+      copyToClipboard(identity.code).then(() => {
+        if (aborted()) return;
+        copyPulse(opts.mySealBtn);
+        copyPulse(opts.mySealInline);
+      }).catch(() => {});
     } catch (e) {
       if (aborted()) return;
       log(`error: ${e instanceof Error ? e.message : "unknown"}`);
     } finally {
       busy = false;
       opts.mySealBtn.disabled = false;
-      opts.mySealBtn.textContent = "My Seal";
+      opts.mySealBtn.classList.remove("ws-computing");
     }
   }
 
@@ -392,42 +413,46 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (busy) return;
     busy = true;
     opts.sealItBtn.disabled = true;
+    opts.sealItBtn.classList.add("ws-computing");
 
-    const recipient = opts.recipientSealInput.value.trim().toUpperCase();
+    const recipient = opts.recipientSealInput.value.trim();
     const message = opts.messageInput.value;
     const expiryMs = getExpiryMs();
     const pw = opts.extraPasswordInput.value || undefined;
 
-    log(`sealing message for ${recipient} (${message.length.toLocaleString()} chars)`);
-    showOverlay(opts.computingPhase);
+    log(`sealing message for recipient key (${message.length.toLocaleString()} chars)`);
 
     try {
       const payload = await sealMessage(recipient, message, expiryMs, pw);
       if (aborted()) return;
       const url = buildSealUrl(payload);
 
-      opts.sealedUrl.textContent = url;
-      opts.resultSealTarget.textContent = recipient;
-      opts.resultExpiryText.textContent = expiryMs > 0 ? `Expires in ${expiryLabel(expiryMs)}` : "No expiry";
+      // Populate inline result
+      opts.sealedUrlInline.textContent = url;
+
+      const expiryText = expiryMs > 0 ? expiryLabel(expiryMs) : "no expiry";
+      opts.sealedResultInfo.textContent = `for recipient key \u00B7 ${expiryText} \u00B7 ${url.length.toLocaleString()} chars`;
 
       if (url.length > URL_WARN_LENGTH) {
-        opts.resultUrlWarning.textContent =
-          `This URL is ${url.length.toLocaleString()} characters long. Some apps truncate URLs over ${URL_WARN_LENGTH.toLocaleString()} characters — share it somewhere that preserves the full length.`;
-        opts.resultUrlWarning.style.display = "";
+        opts.sealedResultWarning.textContent =
+          `long url — some apps truncate over ${URL_WARN_LENGTH.toLocaleString()} chars`;
+        opts.sealedResultWarning.style.display = "";
       } else {
-        opts.resultUrlWarning.style.display = "none";
+        opts.sealedResultWarning.style.display = "none";
       }
 
-      showOverlay(opts.resultPhase);
+      opts.sealedResultWrap.style.display = "";
       log(`url generated (${url.length.toLocaleString()} chars)`);
-      opts.urlCopyBtn.focus();
+
+      // Auto-copy
+      safeCopy(url, opts.sealItBtn, "Copied!");
     } catch (e) {
       if (aborted()) return;
       log(`seal error: ${e instanceof Error ? e.message : "unknown"}`);
-      hideOverlay();
     } finally {
       busy = false;
       opts.sealItBtn.disabled = false;
+      opts.sealItBtn.classList.remove("ws-computing");
       syncCompose();
     }
   }
@@ -440,15 +465,22 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     pendingPayload = payload;
     showOverlay(opts.unsealPhase);
     showUnsealSub(opts.unsealProgress);
-    log("checking sealed message...");
+    log("checking sealed message (ws2)...");
 
     try {
-      const fp = await computeFingerprintWithMinDelay();
+      const identity = await getExistingSealIdentity();
       if (aborted()) return;
-      const localCode = fingerprintToSealCode(fp);
-      log(`local seal: ${localCode}`);
+      if (identity) {
+        mySealPublicCode = identity.code;
+        opts.mySealInline.textContent = identity.alias;
+        opts.mySealInline.style.display = "";
+        opts.mySealInline.title = `Click to copy full seal code (${identity.alias})`;
+        log(`local identity: ${identity.alias}`);
+      } else {
+        log("no local seal identity found");
+      }
 
-      const result = await unsealMessage(payload, localCode, password);
+      const result = await unsealMessage(payload, password);
       if (aborted()) return;
 
       if (result.ok) {
@@ -475,7 +507,12 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
           break;
         case "wrong-seal":
           showUnsealSub(opts.unsealFail);
-          log(`seal mismatch: message for ${payload.s}, local is ${localCode}`);
+          log("identity mismatch: no matching private key for this message");
+          pendingPayload = null;
+          break;
+        case "identity-missing":
+          showUnsealSub(opts.unsealFail);
+          log("cannot decrypt: local seal identity is missing in this browser profile");
           pendingPayload = null;
           break;
         case "decrypt-failed":
@@ -507,39 +544,58 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     }
   }
 
+  /** Visual pulse on an element to confirm copy — no text change. */
+  function copyPulse(el: HTMLElement): void {
+    el.classList.remove("ws-copy-pulse");
+    // Force reflow so re-adding the class restarts the animation
+    void el.offsetWidth;
+    el.classList.add("ws-copy-pulse");
+  }
+
   /* ── Event Listeners ──────────────────────────────────── */
 
   // My Seal button
   opts.mySealBtn.addEventListener("click", () => generateSeal(), { signal });
 
-  // Inline seal code — click to copy
-  opts.mySealInline.addEventListener("click", () => {
-    const code = opts.mySealInline.textContent ?? "";
-    if (code) safeCopy(code, opts.mySealBtn, "Copied!");
-  }, { signal });
+  // Inline seal code — click to copy with pulse
+  function copySealInline(): void {
+    const code = mySealPublicCode;
+    if (!code) return;
+    copyToClipboard(code).then(() => {
+      if (aborted()) return;
+      copyPulse(opts.mySealInline);
+    }).catch(() => {});
+  }
+  opts.mySealInline.addEventListener("click", copySealInline, { signal });
   opts.mySealInline.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      const code = opts.mySealInline.textContent ?? "";
-      if (code) safeCopy(code, opts.mySealBtn, "Copied!");
-    }
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copySealInline(); }
   }, { signal });
 
   // My Seal overlay — copy & back (kept for unseal flow)
-  opts.sealCopyBtn.addEventListener("click", () => safeCopy(opts.sealCode.textContent ?? "", opts.sealCopyBtn), { signal });
+  opts.sealCopyBtn.addEventListener("click", () => safeCopy(mySealPublicCode, opts.sealCopyBtn), { signal });
   opts.sealBackBtn.addEventListener("click", hideOverlay, { signal });
 
-  // Compose — auto-uppercase seal input as typed
+  // Compose — live validation
   opts.recipientSealInput.addEventListener("input", () => {
-    const el = opts.recipientSealInput;
-    const pos = el.selectionStart;
-    const upper = el.value.toUpperCase();
-    if (el.value !== upper) { el.value = upper; el.selectionStart = el.selectionEnd = pos; }
     syncCompose();
   }, { signal });
 
   opts.messageInput.addEventListener("input", () => { syncCompose(); syncCharCount(); }, { signal });
   opts.sealItBtn.addEventListener("click", () => doSeal(), { signal });
+
+  // Inline sealed URL — click to copy with pulse
+  function copySealedUrl(): void {
+    const url = opts.sealedUrlInline.textContent ?? "";
+    if (!url) return;
+    copyToClipboard(url).then(() => {
+      if (aborted()) return;
+      copyPulse(opts.sealedUrlInline);
+    }).catch(() => {});
+  }
+  opts.sealedUrlInline.addEventListener("click", copySealedUrl, { signal });
+  opts.sealedUrlInline.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copySealedUrl(); }
+  }, { signal });
 
   // Extra password — generate & copy
   opts.extraPwGenBtn.addEventListener("click", () => {
@@ -589,11 +645,11 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   /* ── Boot ─────────────────────────────────────────────── */
 
-  // If URL contains a #ws1: fragment, jump straight to unseal
+  // If URL contains a #ws2: fragment, jump straight to unseal
   const autoPayload = parseSealFragment();
   if (autoPayload) {
     ensureEmbedUrlMode();
-    log("sealed url detected");
+    log("sealed url detected (ws2)");
     runUnseal(autoPayload);
   }
 

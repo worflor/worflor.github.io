@@ -22,7 +22,7 @@ const seo = {
       <p class="whisper-tagline">carrier-bound inert-space encryption</p>
       <p class="whisper-privacy-badge">
         <span class="privacy-dot"></span>
-        local to this browser
+       local to this browser
       </p>
     </section>
 
@@ -163,7 +163,7 @@ const seo = {
           <div class="ws-seal-fields" id="ws-seal-fields">
             <label class="whisper-field" for="ws-recipient-seal">
               <span class="whisper-field-label">recipient's seal</span>
-              <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="e.g. AURORA-7F3" autocomplete="off" spellcheck="false" />
+              <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
             </label>
             <span id="ws-seal-validation" class="ws-seal-validation"></span>
 
@@ -174,9 +174,9 @@ const seo = {
             <span id="ws-char-count" class="ws-char-count">0 / 48,000</span>
 
             <label class="whisper-field" for="ws-extra-password">
-              <span class="whisper-field-label">extra password <span class="whisper-field-hint">(optional — recipient must know it too)</span></span>
+              <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(only if you've agreed on one)</span></span>
               <div class="whisper-password-row">
-                <input id="ws-extra-password" type="password" class="whisper-input whisper-password-input" placeholder="additional passphrase" autocomplete="off" />
+                <input id="ws-extra-password" type="password" class="whisper-input whisper-password-input" placeholder="leave blank if none" autocomplete="off" />
                 <div class="whisper-password-tools ws-extra-pw-tools" role="group" aria-label="Password tools">
                   <button
                     id="ws-extra-pw-gen"
@@ -231,6 +231,15 @@ const seo = {
             </div>
 
             <button id="ws-seal-it" type="button" class="whisper-mini-btn wl-primary" disabled>Seal it</button>
+
+            <div id="ws-sealed-result" class="ws-sealed-result" style="display:none">
+              <span class="ws-sealed-result-label">sealed url</span>
+              <pre id="ws-sealed-url-inline" class="ws-sealed-url-inline" role="button" tabindex="0" title="Click to copy"></pre>
+              <div class="ws-sealed-result-meta">
+                <span id="ws-sealed-result-info"></span>
+                <span id="ws-sealed-result-warning" class="ws-sealed-result-warning" style="display:none"></span>
+              </div>
+            </div>
           </div>
 
           <!-- Hunt multi-file input -->
@@ -539,7 +548,7 @@ const seo = {
             <div class="ws-seal-code-wrap">
               <span id="ws-seal-code" class="ws-seal-code"></span>
             </div>
-            <p class="ws-seal-hint">Share this code with someone who wants to send you a sealed message. Only THIS browser can open messages sealed to this code.</p>
+            <p class="ws-seal-hint">Share this code with someone who wants to send you a sealed message. Only the browser profile with the matching private key can open it.</p>
             <div class="ws-seal-actions">
               <button id="ws-seal-copy" type="button" class="whisper-mini-btn wl-primary">Copy seal</button>
               <button id="ws-seal-back" type="button" class="whisper-mini-btn">Done</button>
@@ -593,7 +602,7 @@ const seo = {
             <div id="ws-unseal-fail" style="display:none">
               <h3 class="whisper-panel-title">Cannot Open</h3>
               <p class="ws-fail-text">This message was sealed for a different browser.</p>
-              <p class="ws-fail-detail">Only the intended recipient can decrypt this message. If you ARE the recipient, make sure you're using the same browser you generated your seal with.</p>
+              <p class="ws-fail-detail">No matching private key was found in this browser profile. If you are the recipient, use the browser profile where your seal identity was created.</p>
               <button id="ws-fail-back" type="button" class="whisper-mini-btn">Back</button>
             </div>
 
@@ -604,10 +613,10 @@ const seo = {
             </div>
 
             <div id="ws-unseal-password" style="display:none">
-              <h3 class="whisper-panel-title">Password Required</h3>
-              <p class="ws-fail-detail">This sealed message requires an additional password.</p>
+              <h3 class="whisper-panel-title">Shared Phrase Required</h3>
+              <p class="ws-fail-detail">This sealed message was locked with a shared phrase.</p>
               <label class="whisper-field" for="ws-unseal-pw-input">
-                <input id="ws-unseal-pw-input" type="password" class="whisper-input" placeholder="enter password" autocomplete="off" />
+                <input id="ws-unseal-pw-input" type="password" class="whisper-input" placeholder="enter shared phrase" autocomplete="off" />
               </label>
               <button id="ws-unseal-pw-submit" type="button" class="whisper-mini-btn wl-primary">Decrypt</button>
             </div>
@@ -1354,8 +1363,9 @@ const seo = {
   /* Seal fields hidden in non-embed modes */
   .whisper-page:not([data-mode="embed"]) .ws-seal-fields { display: none; }
 
-  /* My Seal button only when carrier=url */
-  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-btn { display: none; }
+  /* My Seal button + inline code only when carrier=url */
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-btn,
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline { display: none; }
 
   /* Password tools (generate/copy) only in embed mode */
   .whisper-page:not([data-mode="embed"]) .whisper-password-tools { display: none; }
@@ -2376,16 +2386,90 @@ const seo = {
     box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.15);
   }
 
+  /* Copy-confirm pulse — used on My Seal btn and inline seal code */
+  @keyframes ws-copy-pulse {
+    0%   { background: rgb(var(--chromatic-cyan) / 0.25); border-color: rgb(var(--chromatic-cyan) / 0.5); }
+    100% { background: transparent; border-color: rgb(var(--color-text-rgb) / 0.14); }
+  }
+
+  .ws-copy-pulse {
+    animation: ws-copy-pulse 0.7s ease-out;
+  }
+
+  /* Computing shimmer — repeating border glow while working */
+  @keyframes ws-computing-shimmer {
+    0%   { border-color: rgb(var(--chromatic-cyan) / 0.15); box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0); }
+    50%  { border-color: rgb(var(--chromatic-cyan) / 0.5); box-shadow: 0 0 6px 0 rgb(var(--chromatic-cyan) / 0.15); }
+    100% { border-color: rgb(var(--chromatic-cyan) / 0.15); box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0); }
+  }
+
+  .ws-computing {
+    animation: ws-computing-shimmer 1.2s ease-in-out infinite;
+  }
+
+  /* Sealed URL inline result */
+  .ws-sealed-result {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.4);
+    margin-top: var(--space-sm);
+  }
+
+  .ws-sealed-result-label {
+    font-size: calc(var(--text-sm) * 0.85);
+    color: rgb(var(--color-text-rgb) / 0.4);
+    letter-spacing: 0.03em;
+  }
+
+  .ws-sealed-url-inline {
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: calc(var(--text-sm) * 0.85);
+    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--chromatic-cyan) / 0.06);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
+    border-radius: calc(var(--whisper-radius) * 0.5);
+    padding: 0.5em 0.65em;
+    margin: 0;
+    word-break: break-all;
+    white-space: pre-wrap;
+    max-height: 5rem;
+    overflow-y: auto;
+    cursor: pointer;
+    user-select: all;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
+  }
+
+  .ws-sealed-url-inline:hover {
+    background: rgb(var(--chromatic-cyan) / 0.1);
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+  }
+
+  .ws-sealed-url-inline:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.15);
+  }
+
+  .ws-sealed-result-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.5);
+    font-size: calc(var(--text-sm) * 0.85);
+    color: rgb(var(--color-text-rgb) / 0.4);
+  }
+
+  .ws-sealed-result-warning {
+    color: rgb(var(--tool-status-warning) / 0.8);
+  }
+
   /* Seal fields container */
   .ws-seal-fields {
     display: grid;
     gap: var(--space-sm);
   }
 
-  /* Overlay panel wrapper */
-  .ws-overlay-panel {
-    display: none;
-  }
+  /* Overlay panel wrapper — visibility managed by JS via inline styles.
+     Initial state is style="display:none" in HTML. */
 
   /* Seal code display — big, monospace, prominent */
   .ws-seal-code {

@@ -1,13 +1,11 @@
 // Whisper Seal — crypto engine.
-// Browser-fingerprint-bound message encryption using native WebCrypto.
-// The recipient's browser environment IS the decryption key.
+// WS2-only recipient public-key sealing (ECDH P-256 + AES-GCM).
+// Local private identity key is fingerprint-protected at rest in IndexedDB.
 
-import { sha256, randomBytes } from "./whisper-wasm";
+import { sha256, randomBytes, toArrayBuffer } from "./whisper-wasm";
 import { hkdf, aesGcmEncrypt, aesGcmDecrypt, TE } from "./whisper-live-crypto";
 
-/* ── Seal Code Word List ──────────────────────────────────── */
-// 26 words evoking weight, permanence, and materiality.
-// Phonetically distinct: safe to read aloud over any channel.
+/* ── Seal Alias Word List ─────────────────────────────────── */
 
 const SEAL_WORDS = [
   "AGATE",    "BASALT",  "COBALT",   "DUSK",    "EMBER",
@@ -18,12 +16,34 @@ const SEAL_WORDS = [
   "ZENITH",
 ] as const;
 
-const SEAL_WORD_SET = new Set<string>(SEAL_WORDS);
-const ZERO_SALT_32 = new Uint8Array(32);
+const WS2_PREFIX = "WS2:";
+const WS2_DB_NAME = "whisper-seal";
+const WS2_DB_VERSION = 2;
+const WS2_DB_STORE = "identity";
+const WS2_DB_KEY = "default";
 
-/** Minimum time (ms) to hold the spinner during fingerprint computation.
- *  Prevents jarring sub-100ms flash on fast hardware. */
+/** Minimum time (ms) to hold spinner for "My Seal" generation UX. */
 export const COMPUTE_MIN_DISPLAY_MS = 600;
+
+interface SealIdentityRecord {
+  publicKeyRaw: Uint8Array;
+  privateKey: CryptoKey;
+}
+
+interface SealIdentityStored {
+  publicKeyRaw: Uint8Array;
+  privateKeyCipher: Uint8Array;
+  wrapSalt: Uint8Array;
+  wrapNonce: Uint8Array;
+}
+
+export interface SealIdentity {
+  code: string;
+  alias: string;
+  fingerprint: string;
+}
+
+let identityCache: SealIdentityRecord | null = null;
 
 /* ── Fingerprint Signals ──────────────────────────────────── */
 
@@ -38,9 +58,9 @@ async function canvasSignal(): Promise<string> {
     ctx.fillStyle = "#f60";
     ctx.fillRect(125, 1, 62, 20);
     ctx.fillStyle = "#069";
-    ctx.fillText("Whisper Seal \ud83d\udd12", 2, 15);
+    ctx.fillText("Whisper Seal 🔒", 2, 15);
     ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
-    ctx.fillText("Whisper Seal \ud83d\udd12", 4, 17);
+    ctx.fillText("Whisper Seal 🔒", 4, 17);
     return c.toDataURL();
   } catch { return "canvas-err"; }
 }
@@ -94,8 +114,7 @@ function fontSignal(): string {
   return bits.join("");
 }
 
-/* ── Fingerprint ──────────────────────────────────────────── */
-
+/** Browser fingerprint digest used to protect local identity private key at rest. */
 export async function computeFingerprint(): Promise<Uint8Array> {
   const [canvas, audio] = await Promise.all([canvasSignal(), audioSignal()]);
   const signals = [
@@ -112,7 +131,7 @@ export async function computeFingerprint(): Promise<Uint8Array> {
   return sha256(TE.encode(signals.join("|||")));
 }
 
-/* ── Seal Code Encoding ───────────────────────────────────── */
+/* ── Alias + Seal Code Helpers ───────────────────────────── */
 
 export function fingerprintToSealCode(hash: Uint8Array): string {
   const wordIdx = ((hash[0] << 8) | hash[1]) % SEAL_WORDS.length;
@@ -122,13 +141,35 @@ export function fingerprintToSealCode(hash: Uint8Array): string {
   return `${word}-${hex}${check}`;
 }
 
-export function isSealCodeValid(code: string): boolean {
-  const m = code.match(/^([A-Z]+)-([0-9A-F]{3})$/i);
-  if (!m) return false;
-  return SEAL_WORD_SET.has(m[1].toUpperCase());
+function normalizeSealCode(code: string): string {
+  return code.trim();
 }
 
-/* ── Base64URL ────────────────────────────────────────────── */
+export function sealPublicKeyToCode(publicKeyRaw: Uint8Array): string {
+  return `${WS2_PREFIX}${b64url(publicKeyRaw)}`;
+}
+
+export function parseSealPublicCode(code: string): Uint8Array | null {
+  const normalized = normalizeSealCode(code);
+  const prefix = normalized.slice(0, 4).toUpperCase();
+  if (prefix !== WS2_PREFIX) return null;
+  const encoded = normalized.slice(4);
+  if (!encoded || !/^[A-Za-z0-9_-]+$/.test(encoded)) return null;
+
+  try {
+    const raw = b64urlDecode(encoded);
+    if (raw.length !== 65 || raw[0] !== 0x04) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+export function isSealCodeValid(code: string): boolean {
+  return parseSealPublicCode(code) !== null;
+}
+
+/* ── Base64URL ───────────────────────────────────────────── */
 
 function b64url(bytes: Uint8Array): string {
   let bin = "";
@@ -145,119 +186,416 @@ function b64urlDecode(s: string): Uint8Array {
   return out;
 }
 
-/* ── Byte Helpers ─────────────────────────────────────────── */
+/* ── Identity Fingerprints ───────────────────────────────── */
 
-function xorBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  if (a.length !== b.length) throw new Error(`xor length mismatch: ${a.length} vs ${b.length}`);
-  const out = new Uint8Array(a.length);
-  for (let i = 0; i < a.length; i++) out[i] = a[i] ^ b[i];
-  return out;
+async function fingerprintFromPublicKey(publicKeyRaw: Uint8Array): Promise<Uint8Array> {
+  return sha256(TE.encode(`whisper-seal-v2-pub:${b64url(publicKeyRaw)}`));
 }
 
-async function deriveSealKey(sealCode: string): Promise<Uint8Array> {
-  const codeHash = await sha256(TE.encode(sealCode));
-  return hkdf(codeHash, ZERO_SALT_32, TE.encode("whisper-seal-bind"), 32);
+async function publicKeyToAlias(publicKeyRaw: Uint8Array): Promise<string> {
+  const hash = await fingerprintFromPublicKey(publicKeyRaw);
+  return fingerprintToSealCode(hash);
 }
 
-/* ── Encryption ───────────────────────────────────────────── */
+async function recipientFingerprintId(publicKeyRaw: Uint8Array): Promise<string> {
+  const hash = await fingerprintFromPublicKey(publicKeyRaw);
+  return b64url(hash.subarray(0, 10));
+}
+
+/* ── IndexedDB Storage ───────────────────────────────────── */
+
+async function openSealDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(WS2_DB_NAME, WS2_DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(WS2_DB_STORE)) {
+        db.createObjectStore(WS2_DB_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
+  });
+}
+
+function getIdentityWrapAad(publicKeyRaw: Uint8Array): Uint8Array {
+  return TE.encode(`ws2|identity|${b64url(publicKeyRaw)}`);
+}
+
+async function deriveIdentityWrapKey(fingerprintHash: Uint8Array, salt: Uint8Array): Promise<Uint8Array> {
+  return hkdf(fingerprintHash, salt, TE.encode("whisper-seal-v2-identity-wrap"), 32);
+}
+
+async function loadIdentityStoredFromDb(): Promise<SealIdentityStored | null> {
+  if (typeof indexedDB === "undefined") return null;
+  const db = await openSealDb();
+  try {
+    return await new Promise<SealIdentityStored | null>((resolve, reject) => {
+      const tx = db.transaction(WS2_DB_STORE, "readonly");
+      const store = tx.objectStore(WS2_DB_STORE);
+      const req = store.get(WS2_DB_KEY);
+
+      req.onsuccess = () => {
+        const value = req.result as {
+          publicKeyRaw?: Uint8Array;
+          privateKeyCipher?: Uint8Array;
+          wrapSalt?: Uint8Array;
+          wrapNonce?: Uint8Array;
+        } | undefined;
+
+        if (!value?.publicKeyRaw || !value?.privateKeyCipher || !value?.wrapSalt || !value?.wrapNonce) {
+          resolve(null);
+          return;
+        }
+
+        resolve({
+          publicKeyRaw: new Uint8Array(value.publicKeyRaw),
+          privateKeyCipher: new Uint8Array(value.privateKeyCipher),
+          wrapSalt: new Uint8Array(value.wrapSalt),
+          wrapNonce: new Uint8Array(value.wrapNonce),
+        });
+      };
+      req.onerror = () => reject(req.error ?? new Error("IndexedDB read failed"));
+      tx.onabort = () => reject(tx.error ?? new Error("IndexedDB read aborted"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function saveIdentityStoredToDb(record: SealIdentityStored): Promise<void> {
+  if (typeof indexedDB === "undefined") throw new Error("IndexedDB unavailable");
+
+  const db = await openSealDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(WS2_DB_STORE, "readwrite");
+      const store = tx.objectStore(WS2_DB_STORE);
+      store.put({
+        publicKeyRaw: record.publicKeyRaw,
+        privateKeyCipher: record.privateKeyCipher,
+        wrapSalt: record.wrapSalt,
+        wrapNonce: record.wrapNonce,
+      }, WS2_DB_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("IndexedDB write failed"));
+      tx.onabort = () => reject(tx.error ?? new Error("IndexedDB write aborted"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function unwrapIdentityPrivateKey(stored: SealIdentityStored): Promise<CryptoKey | null> {
+  let fp: Uint8Array | null = null;
+  let wrapKey: Uint8Array | null = null;
+  let privatePkcs8: Uint8Array | null = null;
+  try {
+    fp = await computeFingerprint();
+    wrapKey = await deriveIdentityWrapKey(fp, stored.wrapSalt);
+    const aad = getIdentityWrapAad(stored.publicKeyRaw);
+    privatePkcs8 = await aesGcmDecrypt(wrapKey, stored.privateKeyCipher, stored.wrapNonce, aad);
+
+    const privateKey = await crypto.subtle.importKey(
+      "pkcs8",
+      toArrayBuffer(privatePkcs8),
+      { name: "ECDH", namedCurve: "P-256" },
+      false,
+      ["deriveBits"],
+    );
+
+    return privateKey;
+  } catch {
+    return null;
+  } finally {
+    if (fp) fp.fill(0);
+    if (wrapKey) wrapKey.fill(0);
+    if (privatePkcs8) privatePkcs8.fill(0);
+  }
+}
+
+async function loadIdentityRecordFromDb(): Promise<SealIdentityRecord | null> {
+  const stored = await loadIdentityStoredFromDb();
+  if (!stored) return null;
+
+  const privateKey = await unwrapIdentityPrivateKey(stored);
+  if (!privateKey) return null;
+
+  return {
+    publicKeyRaw: stored.publicKeyRaw,
+    privateKey,
+  };
+}
+
+async function generateIdentityRecord(): Promise<SealIdentityRecord> {
+  const fp = await computeFingerprint();
+
+  const pair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+
+  const publicKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const privatePkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    toArrayBuffer(privatePkcs8),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"],
+  );
+
+  const wrapSalt = randomBytes(16);
+  const wrapNonce = randomBytes(12);
+  const wrapKey = await deriveIdentityWrapKey(fp, wrapSalt);
+  const aad = getIdentityWrapAad(publicKeyRaw);
+  const privateKeyCipher = await aesGcmEncrypt(wrapKey, privatePkcs8, wrapNonce, aad);
+
+  fp.fill(0);
+  wrapKey.fill(0);
+  privatePkcs8.fill(0);
+
+  await saveIdentityStoredToDb({ publicKeyRaw, privateKeyCipher, wrapSalt, wrapNonce });
+
+  return { publicKeyRaw, privateKey };
+}
+
+async function getOrCreateIdentityRecord(): Promise<SealIdentityRecord> {
+  if (identityCache) return identityCache;
+
+  const existing = await loadIdentityRecordFromDb();
+  if (existing) {
+    identityCache = existing;
+    return existing;
+  }
+
+  const created = await generateIdentityRecord();
+  identityCache = created;
+  return created;
+}
+
+async function getExistingIdentityRecord(): Promise<SealIdentityRecord | null> {
+  if (identityCache) return identityCache;
+  const existing = await loadIdentityRecordFromDb();
+  if (existing) identityCache = existing;
+  return existing;
+}
+
+async function identityToView(record: SealIdentityRecord): Promise<SealIdentity> {
+  return {
+    code: sealPublicKeyToCode(record.publicKeyRaw),
+    alias: await publicKeyToAlias(record.publicKeyRaw),
+    fingerprint: await recipientFingerprintId(record.publicKeyRaw),
+  };
+}
+
+export async function getOrCreateSealIdentity(): Promise<SealIdentity> {
+  const record = await getOrCreateIdentityRecord();
+  return identityToView(record);
+}
+
+export async function getExistingSealIdentity(): Promise<SealIdentity | null> {
+  const record = await getExistingIdentityRecord();
+  if (!record) return null;
+  return identityToView(record);
+}
+
+/* ── ECDH Helpers ────────────────────────────────────────── */
+
+async function importP256PublicKey(raw: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    toArrayBuffer(raw),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+}
+
+async function deriveEcdh(privateKey: CryptoKey, peerPublicRaw: Uint8Array): Promise<Uint8Array> {
+  const peerKey = await importP256PublicKey(peerPublicRaw);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "ECDH", public: peerKey },
+    privateKey,
+    256,
+  );
+  return new Uint8Array(bits);
+}
+
+/* ── Payload (WS2 only) ──────────────────────────────────── */
 
 export interface SealPayload {
-  v: number;   // version
-  n: string;   // base64url nonce (12 bytes)
-  k: string;   // base64url key_share (32 bytes, XOR-protected)
-  c: string;   // base64url ciphertext (AES-256-GCM)
-  s: string;   // recipient seal code (for quick-fail check)
-  t: number;   // expiry unix-ms (0 = never)
-  p: number;   // 1 if extra password was used
+  v: 2;
+  epk: string;
+  ks: string;
+  kn: string;
+  k: string;
+  n: string;
+  c: string;
+  rf: string;
+  t: number;
+  p: number;
+  ps?: string;
+}
+
+function buildAADv2(mode: "wrap" | "msg", rf: string, t: number, p: number): Uint8Array {
+  return TE.encode(`ws2|${mode}|${rf}|${t}|${p}`);
 }
 
 export async function sealMessage(
-  sealCode: string,
+  recipientSealCode: string,
   message: string,
   expiryMs: number,
   extraPassword?: string,
 ): Promise<SealPayload> {
-  sealCode = sealCode.trim().toUpperCase();
+  const recipientPublicRaw = parseSealPublicCode(recipientSealCode);
+  if (!recipientPublicRaw) throw new Error("invalid recipient seal code");
 
-  const randomKey = randomBytes(32);
-  const sealDerived = await deriveSealKey(sealCode);
-  const keyShare = xorBytes(randomKey, sealDerived);
+  let shared: Uint8Array | null = null;
+  let wrapKey: Uint8Array | null = null;
+  let contentKey: Uint8Array | null = null;
+  let messageKey: Uint8Array | null = null;
 
-  const salt = await sha256(TE.encode(`whisper-seal-v1|${sealCode}`));
-  let aesKey = await hkdf(randomKey, salt, TE.encode("whisper-seal-encrypt"), 32);
+  const eph = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"],
+  );
+  const ephPublicRaw = new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey));
+  try {
+    shared = await deriveEcdh(eph.privateKey, recipientPublicRaw);
 
-  if (extraPassword) {
-    const pwHash = await sha256(TE.encode(extraPassword));
-    const pwDerived = await hkdf(pwHash, salt, TE.encode("whisper-seal-pw"), 32);
-    aesKey = xorBytes(aesKey, pwDerived);
+    const ks = randomBytes(16);
+    const kn = randomBytes(12);
+    wrapKey = await hkdf(shared, ks, TE.encode("whisper-seal-v2-wrap"), 32);
+
+    contentKey = randomBytes(32);
+    messageKey = contentKey;
+
+    const t = expiryMs > 0 ? Date.now() + expiryMs : 0;
+    const p = extraPassword ? 1 : 0;
+    const rf = await recipientFingerprintId(recipientPublicRaw);
+
+    let pwSalt: Uint8Array | null = null;
+    if (extraPassword) {
+      pwSalt = randomBytes(16);
+      const pwHash = await sha256(TE.encode(extraPassword));
+      const pwKey = await hkdf(pwHash, pwSalt, TE.encode("whisper-seal-v2-pw"), 32);
+      messageKey = await hkdf(contentKey, pwKey, TE.encode("whisper-seal-v2-message"), 32);
+      pwHash.fill(0);
+      pwKey.fill(0);
+    }
+
+    const aadWrap = buildAADv2("wrap", rf, t, p);
+    const wrappedKey = await aesGcmEncrypt(wrapKey, contentKey, kn, aadWrap);
+
+    const n = randomBytes(12);
+    const aadMsg = buildAADv2("msg", rf, t, p);
+    const ciphertext = await aesGcmEncrypt(messageKey, TE.encode(message), n, aadMsg);
+
+    return {
+      v: 2,
+      epk: b64url(ephPublicRaw),
+      ks: b64url(ks),
+      kn: b64url(kn),
+      k: b64url(wrappedKey),
+      n: b64url(n),
+      c: b64url(ciphertext),
+      rf,
+      t,
+      p,
+      ...(pwSalt ? { ps: b64url(pwSalt) } : {}),
+    };
+  } finally {
+    if (shared) shared.fill(0);
+    if (wrapKey) wrapKey.fill(0);
+    if (contentKey) contentKey.fill(0);
+    if (messageKey && messageKey !== contentKey) messageKey.fill(0);
   }
-
-  const nonce = randomBytes(12);
-  const ciphertext = await aesGcmEncrypt(aesKey, TE.encode(message), nonce);
-
-  return {
-    v: 1,
-    n: b64url(nonce),
-    k: b64url(keyShare),
-    c: b64url(ciphertext),
-    s: sealCode,
-    t: expiryMs > 0 ? Date.now() + expiryMs : 0,
-    p: extraPassword ? 1 : 0,
-  };
 }
 
-/* ── Decryption ───────────────────────────────────────────── */
+/* ── Decryption ──────────────────────────────────────────── */
 
 export type UnsealResult =
   | { ok: true; message: string }
-  | { ok: false; reason: "wrong-seal" | "expired" | "password-needed" | "decrypt-failed" };
+  | { ok: false; reason: "wrong-seal" | "expired" | "password-needed" | "decrypt-failed" | "identity-missing" };
 
-export async function unsealMessage(
-  payload: SealPayload,
-  localSealCode: string,
-  extraPassword?: string,
-): Promise<UnsealResult> {
-  localSealCode = localSealCode.trim().toUpperCase();
-
+export async function unsealMessage(payload: SealPayload, extraPassword?: string): Promise<UnsealResult> {
+  if (payload.v !== 2) {
+    return { ok: false, reason: "decrypt-failed" };
+  }
+  if (payload.p !== 0 && payload.p !== 1) {
+    return { ok: false, reason: "decrypt-failed" };
+  }
   if (payload.t > 0 && Date.now() >= payload.t) {
     return { ok: false, reason: "expired" };
-  }
-
-  if (payload.s !== localSealCode) {
-    return { ok: false, reason: "wrong-seal" };
   }
 
   if (payload.p === 1 && !extraPassword) {
     return { ok: false, reason: "password-needed" };
   }
 
+  const identity = await getExistingIdentityRecord();
+  if (!identity) {
+    return { ok: false, reason: "identity-missing" };
+  }
+
+  const localRf = await recipientFingerprintId(identity.publicKeyRaw);
+  if (localRf !== payload.rf) {
+    return { ok: false, reason: "wrong-seal" };
+  }
+
+  let shared: Uint8Array | null = null;
+  let wrapKey: Uint8Array | null = null;
+  let contentKey: Uint8Array | null = null;
+  let messageKey: Uint8Array | null = null;
+
   try {
-    const sealDerived = await deriveSealKey(localSealCode);
-    const keyShare = b64urlDecode(payload.k);
-    if (keyShare.length !== 32) throw new Error("invalid key share length");
-    const randomKey = xorBytes(keyShare, sealDerived);
+    const peerEpk = b64urlDecode(payload.epk);
+    if (peerEpk.length !== 65 || peerEpk[0] !== 0x04) throw new Error("invalid ephemeral key");
 
-    const salt = await sha256(TE.encode(`whisper-seal-v1|${localSealCode}`));
-    let aesKey = await hkdf(randomKey, salt, TE.encode("whisper-seal-encrypt"), 32);
+    shared = await deriveEcdh(identity.privateKey, peerEpk);
 
-    if (extraPassword) {
-      const pwHash = await sha256(TE.encode(extraPassword));
-      const pwDerived = await hkdf(pwHash, salt, TE.encode("whisper-seal-pw"), 32);
-      aesKey = xorBytes(aesKey, pwDerived);
+    const ks = b64urlDecode(payload.ks);
+    if (ks.length < 8) throw new Error("invalid wrap salt");
+    const kn = b64urlDecode(payload.kn);
+    if (kn.length !== 12) throw new Error("invalid wrap nonce");
+
+    wrapKey = await hkdf(shared, ks, TE.encode("whisper-seal-v2-wrap"), 32);
+    const wrapped = b64urlDecode(payload.k);
+    const aadWrap = buildAADv2("wrap", payload.rf, payload.t, payload.p);
+    contentKey = await aesGcmDecrypt(wrapKey, wrapped, kn, aadWrap);
+
+    messageKey = contentKey;
+    if (payload.p === 1) {
+      if (!payload.ps) throw new Error("missing password salt");
+      const ps = b64urlDecode(payload.ps);
+      const pwHash = await sha256(TE.encode(extraPassword ?? ""));
+      const pwKey = await hkdf(pwHash, ps, TE.encode("whisper-seal-v2-pw"), 32);
+      messageKey = await hkdf(contentKey, pwKey, TE.encode("whisper-seal-v2-message"), 32);
+      pwHash.fill(0);
+      pwKey.fill(0);
     }
 
-    const nonce = b64urlDecode(payload.n);
-    if (nonce.length !== 12) throw new Error("invalid nonce length");
-    const ciphertext = b64urlDecode(payload.c);
-    const plaintext = await aesGcmDecrypt(aesKey, ciphertext, nonce);
+    const n = b64urlDecode(payload.n);
+    if (n.length !== 12) throw new Error("invalid nonce");
+    const c = b64urlDecode(payload.c);
+    const aadMsg = buildAADv2("msg", payload.rf, payload.t, payload.p);
+    const plaintext = await aesGcmDecrypt(messageKey, c, n, aadMsg);
 
     return { ok: true, message: new TextDecoder().decode(plaintext) };
   } catch {
     return { ok: false, reason: "decrypt-failed" };
+  } finally {
+    if (shared) shared.fill(0);
+    if (wrapKey) wrapKey.fill(0);
+    if (contentKey) contentKey.fill(0);
+    if (messageKey && messageKey !== contentKey) messageKey.fill(0);
   }
 }
 
-/* ── URL Encoding ─────────────────────────────────────────── */
+/* ── URL Encoding ────────────────────────────────────────── */
 
 export function encodeSealPayload(payload: SealPayload): string {
   return b64url(TE.encode(JSON.stringify(payload)));
@@ -267,10 +605,17 @@ export function decodeSealPayload(encoded: string): SealPayload | null {
   try {
     const json = new TextDecoder().decode(b64urlDecode(encoded));
     const obj = JSON.parse(json);
-    if (obj?.v === 1 &&
-        typeof obj.n === "string" && typeof obj.k === "string" &&
-        typeof obj.c === "string" && typeof obj.s === "string" &&
-        typeof obj.t === "number" && typeof obj.p === "number") {
+
+    if (obj?.v !== 2) return null;
+    if (typeof obj.p !== "number" || (obj.p !== 0 && obj.p !== 1)) return null;
+    if (typeof obj.t !== "number" || !Number.isFinite(obj.t) || obj.t < 0) return null;
+
+    if (obj?.v === 2 &&
+      typeof obj.epk === "string" && typeof obj.ks === "string" &&
+      typeof obj.kn === "string" && typeof obj.k === "string" &&
+      typeof obj.n === "string" && typeof obj.c === "string" &&
+      typeof obj.rf === "string" && obj.rf.length > 0 &&
+      (obj.p === 0 ? typeof obj.ps === "undefined" || typeof obj.ps === "string" : typeof obj.ps === "string")) {
       return obj as SealPayload;
     }
     return null;
@@ -278,16 +623,16 @@ export function decodeSealPayload(encoded: string): SealPayload | null {
 }
 
 export function buildSealUrl(payload: SealPayload): string {
-  return `${window.location.origin}/whisper#ws1:${encodeSealPayload(payload)}`;
+  return `${window.location.origin}/whisper#ws2:${encodeSealPayload(payload)}`;
 }
 
 export function parseSealFragment(): SealPayload | null {
   const hash = window.location.hash;
-  if (!hash.startsWith("#ws1:")) return null;
+  if (!hash.startsWith("#ws2:")) return null;
   return decodeSealPayload(hash.slice(5));
 }
 
-/* ── Expiry Helpers ───────────────────────────────────────── */
+/* ── Expiry Helpers ──────────────────────────────────────── */
 
 const EXPIRY_LABELS: Record<string, string> = {
   "3600000": "1 hour",
