@@ -5,10 +5,10 @@
 
 // ─── CDN URLs ────────────────────────────────────────────────────────────────
 
-const FFMPEG_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm";
+const FFMPEG_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm";
 const UTIL_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm";
-const CORE_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
-const CORE_MT_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm";
+const CORE_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
+const CORE_MT_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/umd";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -202,10 +202,10 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     try {
       // Dynamically import from CDN — no npm dependencies
       const ffmpegModule = await import(/* @vite-ignore */ `${FFMPEG_CDN}/index.js`);
-      // Import util module to satisfy the CDN preload but we do not use fetchFile
-      await import(/* @vite-ignore */ `${UTIL_CDN}/index.js`);
+      const utilModule = await import(/* @vite-ignore */ `${UTIL_CDN}/index.js`);
 
       const FFmpeg = ffmpegModule.FFmpeg;
+      const toBlobURL = utilModule.toBlobURL;
 
       ffmpeg = new FFmpeg();
 
@@ -245,11 +245,15 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       tier = useMultiThread ? "enhanced" : "baseline";
 
       const coreCDN = useMultiThread ? CORE_MT_CDN : CORE_CDN;
-      const coreURL = `${coreCDN}/ffmpeg-core.js`;
-      const wasmURL = `${coreCDN}/ffmpeg-core.wasm`;
-      const workerURL = useMultiThread ? `${coreCDN}/ffmpeg-core.worker.js` : undefined;
 
+      // Convert CDN URLs to blob URLs — required by ffmpeg.wasm to avoid CORS hangs
       log(`loading ${tier} engine...`);
+      const coreURL = await toBlobURL(`${coreCDN}/ffmpeg-core.js`, "text/javascript");
+      const wasmURL = await toBlobURL(`${coreCDN}/ffmpeg-core.wasm`, "application/wasm");
+      const workerURL = useMultiThread
+        ? await toBlobURL(`${coreCDN}/ffmpeg-core.worker.js`, "text/javascript")
+        : undefined;
+
       await ffmpeg.load({ coreURL, wasmURL, workerURL });
       log(`engine ready (${tier})`);
 
