@@ -240,6 +240,10 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
 
 type PrismState = "idle" | "files_loaded" | "configured" | "processing" | "complete" | "error";
 
+function isLoadableState(state: PrismState): state is "files_loaded" | "configured" {
+  return state === "files_loaded" || state === "configured";
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const ACTION_BAR_FADE_MS = 350;
@@ -699,6 +703,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     // ── Action bar buttons ──────────────────────────────────────────────
     // Run button: visible in files_loaded, configured, complete, error
     // Shows "Load" in purple when engine isn't loaded yet, "Run" in cyan otherwise
+    const loadableState = isLoadableState(prismState);
     const engineLoading = Boolean(engine && engine.state === "loading");
     const engineLoaded = Boolean(engine && (engine.state === "ready" || engine.state === "running"));
     if (prismState === "complete") {
@@ -707,21 +712,21 @@ export function initPrism(opts: PrismUIOptions): () => void {
     } else if (prismState === "error") {
       opts.btnRun.textContent = "Try Again";
       opts.btnRun.style.display = "";
-    } else if (prismState === "files_loaded" || prismState === "configured") {
+    } else if (loadableState) {
       opts.btnRun.textContent = engineLoading ? "Loading..." : engineLoaded ? "Run" : "Load";
       opts.btnRun.style.display = "";
     } else {
       opts.btnRun.style.display = "none";
     }
 
-    if (!engineLoaded && (prismState === "files_loaded" || prismState === "configured")) {
+    if (!engineLoaded && loadableState) {
       opts.btnRun.classList.add("action-btn--load");
     } else {
       opts.btnRun.classList.remove("action-btn--load");
     }
     opts.btnRun.classList.toggle("action-btn--ran", runAckActive && prismState === "complete");
 
-    if (engineLoading && (prismState === "files_loaded" || prismState === "configured")) {
+    if (engineLoading && loadableState) {
       opts.btnRun.classList.add("action-btn--loading");
       opts.btnRun.disabled = true;
       opts.btnRun.setAttribute("aria-busy", "true");
@@ -1272,6 +1277,11 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
     outputData = null;
     outputName = "";
+    runAckActive = false;
+    if (runAckTimer) {
+      clearTimeout(runAckTimer);
+      runAckTimer = null;
+    }
     hideAllPreviews();
     hideInputPreview();
     hide(opts.sizeWarning);
@@ -1406,12 +1416,12 @@ export function initPrism(opts: PrismUIOptions): () => void {
       return;
     }
 
-    const loadableState = prismState === "files_loaded" || prismState === "configured";
+    const loadableState = isLoadableState(prismState);
     const currentEngineState = engine?.state ?? "idle";
     if (loadableState && (currentEngineState === "idle" || currentEngineState === "error")) {
       const eng = ensureEngine();
       opts.engineStatus.textContent = "loading engine...";
-      void eng.load();
+      void eng.load().catch(() => {});
       return;
     }
 

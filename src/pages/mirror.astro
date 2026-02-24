@@ -510,6 +510,20 @@ const seo = {
       padding-inline: calc(var(--space-xs) * 1);
     }
   }
+
+  /* ── Hover: touch devices ──────────────────────────────────── */
+
+  @media (hover: none) {
+    .action-btn:hover {
+      background: transparent;
+      color: var(--color-text-muted);
+    }
+
+    .action-btn:active {
+      background: rgb(var(--color-text-rgb) / 0.1);
+      color: var(--color-text);
+    }
+  }
 </style>
 
 <style is:global>

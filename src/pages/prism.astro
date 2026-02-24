@@ -18,7 +18,11 @@ const seo = {
     >
       <div class="prism-title-row">
         <h1 class="page-title prism-title" id="prism-title">Prism</h1>
-        <span class="prism-alpha-badge" id="prism-alpha-badge" style="display:none">ALPHA</span>
+        <span
+          class="prism-alpha-badge"
+          id="prism-alpha-badge"
+          style="display:none">ALPHA</span
+        >
       </div>
       <p class="prism-tagline">local media lab</p>
       <p class="prism-status-line">
@@ -40,16 +44,25 @@ const seo = {
         aria-label="Upload a file to process"
       >
         <div class="upload-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5" />
-            <line x1="12" y1="2" x2="12" y2="22" />
-            <line x1="2" y1="8.5" x2="22" y2="8.5" />
-            <line x1="2" y1="15.5" x2="22" y2="15.5" />
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5"></polygon>
+            <line x1="12" y1="2" x2="12" y2="22"></line>
+            <line x1="2" y1="8.5" x2="22" y2="8.5"></line>
+            <line x1="2" y1="15.5" x2="22" y2="15.5"></line>
           </svg>
         </div>
         <p class="upload-text">drop a file here</p>
         <p class="upload-subtext">or click / paste to browse</p>
-        <p class="upload-formats">video &middot; audio &middot; image &middot; subtitle</p>
+        <p class="upload-formats">
+          video &middot; audio &middot; image &middot; subtitle
+        </p>
         <input
           type="file"
           id="prism-file-input"
@@ -84,15 +97,13 @@ const seo = {
           controls
           playsinline
           preload="metadata"
-          style="display:none"
-        ></video>
+          style="display:none"></video>
         <audio
           id="prism-input-audio"
           class="prism-input-preview-audio"
           controls
           preload="metadata"
-          style="display:none"
-        ></audio>
+          style="display:none"></audio>
         <img
           id="prism-input-img"
           alt="Input file preview"
@@ -122,32 +133,32 @@ const seo = {
           class="prism-tab prism-tab--active"
           role="tab"
           aria-selected="true"
-          data-module="workbench"
-        >Workbench</button>
+          data-module="workbench">Workbench</button
+        >
         <button
           class="prism-tab"
           role="tab"
           aria-selected="false"
-          data-module="shrubber"
-        >Shrubber</button>
+          data-module="shrubber">Shrubber</button
+        >
         <button
           class="prism-tab"
           role="tab"
           aria-selected="false"
-          data-module="audio"
-        >Audio Lab</button>
+          data-module="audio">Audio Lab</button
+        >
         <button
           class="prism-tab"
           role="tab"
           aria-selected="false"
-          data-module="subtitles"
-        >Subtitles</button>
+          data-module="subtitles">Subtitles</button
+        >
         <button
           class="prism-tab"
           role="tab"
           aria-selected="false"
-          data-module="transparency"
-        >Transparency</button>
+          data-module="transparency">Transparency</button
+        >
       </div>
     </section>
 
@@ -193,15 +204,13 @@ const seo = {
           controls
           playsinline
           preload="metadata"
-          style="display:none"
-        ></video>
+          style="display:none"></video>
         <audio
           id="prism-preview-audio"
           class="prism-preview-audio"
           controls
           preload="metadata"
-          style="display:none"
-        ></audio>
+          style="display:none"></audio>
         <img
           id="prism-preview-img"
           alt="Output preview"
@@ -211,8 +220,8 @@ const seo = {
         <pre
           id="prism-preview-text"
           class="prism-preview-text"
-          style="display:none"
-        ></pre>
+          style="display:none">
+        </pre>
       </div>
     </section>
 
@@ -225,15 +234,20 @@ const seo = {
         class="prism-terminal-toggle"
         id="prism-terminal-toggle"
         aria-expanded="false"
-        aria-controls="prism-terminal-body"
-      >&#9656; Terminal</button>
+        aria-controls="prism-terminal-body">&#9656; Terminal</button
+      >
       <div
         class="prism-terminal-body"
         id="prism-terminal-body"
         style="display:none"
       >
         <div class="prism-terminal-toolbar">
-          <button class="prism-terminal-copy" id="prism-terminal-copy" type="button" title="Copy command">Copy</button>
+          <button
+            class="prism-terminal-copy"
+            id="prism-terminal-copy"
+            type="button"
+            title="Copy command">Copy</button
+          >
         </div>
         <pre class="prism-terminal-log" id="prism-terminal-log"></pre>
       </div>
@@ -248,15 +262,15 @@ const seo = {
         <h2 class="insights-title">what can Prism do?</h2>
         <p class="insights-text">
           convert, trim, rotate, crop, and extract from video, audio, and
-          images. strip metadata and re-encode for privacy. normalize
-          loudness, adjust volume and speed. extract, convert, and burn
-          subtitles. visualize motion vectors, frame types, waveforms, and
-          color histograms.
+          images. strip metadata and re-encode for privacy. normalize loudness,
+          adjust volume and speed. extract, convert, and burn subtitles.
+          visualize motion vectors, frame types, waveforms, and color
+          histograms.
         </p>
         <p class="insights-text">
           everything runs in your browser using WebAssembly. the processing
-          engine loads on demand &mdash; about 25 MB on first use, cached after that.
-          no servers, no uploads, no tracking.
+          engine loads on demand &mdash; about 25 MB on first use, cached after
+          that. no servers, no uploads, no tracking.
         </p>
       </div>
     </section>
@@ -269,9 +283,23 @@ const seo = {
       aria-label="Prism controls"
       style="display:none;opacity:0"
     >
-      <button class="action-btn action-btn--primary" id="prism-btn-run" type="button">Run</button>
-      <button class="action-btn" id="prism-btn-cancel" type="button" style="display:none">Cancel</button>
-      <button class="action-btn" id="prism-btn-upload" type="button" style="display:none">New File</button>
+      <button
+        class="action-btn action-btn--primary"
+        id="prism-btn-run"
+        type="button">Run</button
+      >
+      <button
+        class="action-btn"
+        id="prism-btn-cancel"
+        type="button"
+        style="display:none">Cancel</button
+      >
+      <button
+        class="action-btn"
+        id="prism-btn-upload"
+        type="button"
+        style="display:none">New File</button
+      >
       <button
         class="action-btn action-btn--icon"
         id="prism-btn-lens"
@@ -298,7 +326,9 @@ const seo = {
           <line x1="21" y1="12" x2="23" y2="12"></line>
         </svg>
       </button>
-      <button class="action-btn" id="prism-btn-clear" type="button">Clear</button>
+      <button class="action-btn" id="prism-btn-clear" type="button"
+        >Clear</button
+      >
     </div>
   </div>
 
@@ -436,7 +466,9 @@ const seo = {
     border-radius: var(--radius-full);
     background: rgb(var(--color-text-rgb) / 0.2);
     flex-shrink: 0;
-    transition: background var(--duration-slow) var(--ease-out), box-shadow var(--duration-slow) var(--ease-out);
+    transition:
+      background var(--duration-slow) var(--ease-out),
+      box-shadow var(--duration-slow) var(--ease-out);
   }
 
   .prism-page .prism-status--idle {
@@ -483,7 +515,6 @@ const seo = {
       box-shadow: 0 0 10px rgb(var(--prism-load-purple) / 0.6);
     }
   }
-
 
   /* ── Upload Zone ───────────────────────────────────────────── */
 
@@ -754,8 +785,13 @@ const seo = {
   }
 
   @keyframes prism-progress-pulse {
-    0%, 100% { opacity: 0.3; }
-    50% { opacity: 1; }
+    0%,
+    100% {
+      opacity: 0.3;
+    }
+    50% {
+      opacity: 1;
+    }
   }
 
   .prism-progress-text {
@@ -802,7 +838,8 @@ const seo = {
   .prism-preview-text {
     margin: 0;
     padding: var(--space-sm) var(--space-md);
-    font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family:
+      "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
     font-size: calc(var(--text-sm) * 0.9);
     line-height: 1.65;
     color: rgb(var(--color-text-rgb) / 0.6);
@@ -865,7 +902,8 @@ const seo = {
   .prism-terminal-log {
     margin: 0;
     padding: var(--space-sm);
-    font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family:
+      "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
     font-size: calc(var(--text-sm) * 0.85);
     line-height: 1.6;
     color: rgb(var(--color-text-rgb) / 0.45);
@@ -1117,6 +1155,19 @@ const seo = {
   /* ── Mobile ────────────────────────────────────────────────── */
 
   @media (max-width: 520px) {
+    .prism-upload-zone {
+      padding: var(--space-lg) var(--space-sm);
+    }
+
+    .upload-icon {
+      display: none;
+    }
+
+    .prism-input-preview-video,
+    .prism-input-preview-img {
+      max-height: clamp(10rem, 9rem + 6vw, 16rem);
+    }
+
     .prism-tabs {
       gap: calc(var(--space-xs) * 0.2);
     }
@@ -1135,11 +1186,63 @@ const seo = {
       font-size: calc(var(--text-sm) * 0.9);
       padding-inline: calc(var(--space-xs) * 1);
     }
+
+    .prism-preview-video,
+    .prism-preview-img {
+      max-height: clamp(10rem, 9rem + 6vw, 16rem);
+    }
+
+    .prism-insights {
+      padding: var(--space-sm);
+    }
+  }
+
+  /* ── Tablet ───────────────────────────────────────────────── */
+
+  @media (min-width: 521px) and (max-width: 768px) {
+    .prism-upload-zone {
+      padding: var(--space-lg) var(--space-md);
+    }
   }
 
   /* ── Hover: touch devices ──────────────────────────────────── */
 
   @media (hover: none) {
+    .prism-upload-zone:hover {
+      border-color: rgb(var(--color-text-rgb) / 0.12);
+      background: linear-gradient(
+        180deg,
+        rgb(var(--color-text-rgb) / 0.012) 0%,
+        transparent 60%
+      );
+      box-shadow: var(--edge-highlight);
+    }
+
+    .prism-upload-zone:hover .upload-icon {
+      color: rgb(var(--color-text-rgb) / 0.14);
+      transform: none;
+    }
+
+    .prism-upload-zone:hover .upload-text {
+      color: rgb(var(--color-text-rgb) / 0.6);
+    }
+
+    .prism-upload-zone:active {
+      border-color: rgb(var(--chromatic-cyan) / 0.35);
+      background: linear-gradient(
+        180deg,
+        rgb(var(--chromatic-cyan) / 0.03) 0%,
+        rgb(var(--chromatic-cyan) / 0.008) 50%,
+        transparent 100%
+      );
+    }
+
+    .prism-tab:hover:not(:disabled) {
+      background: rgb(var(--color-text-rgb) / 0.015);
+      border-color: rgb(var(--color-text-rgb) / 0.08);
+      color: rgb(var(--color-text-rgb) / 0.55);
+    }
+
     .action-btn:hover {
       background: transparent;
       color: var(--color-text-muted);
@@ -1166,6 +1269,12 @@ const seo = {
 
     .action-btn--primary.action-btn--load:active {
       background: rgb(118 80 220 / 0.22);
+    }
+
+    .prism-terminal-toggle:hover {
+      background: transparent;
+      border-color: rgb(var(--color-text-rgb) / 0.06);
+      color: rgb(var(--color-text-rgb) / 0.25);
     }
   }
 </style>
@@ -1251,7 +1360,8 @@ const seo = {
   }
 
   .prism-page .wb-toggle-opts {
-    padding: calc(var(--space-xs) * 0.6) 0 0 calc(0.95rem + var(--space-xs) * 0.5);
+    padding: calc(var(--space-xs) * 0.6) 0 0
+      calc(0.95rem + var(--space-xs) * 0.5);
     display: grid;
     gap: var(--space-sm);
   }
@@ -1695,7 +1805,8 @@ const seo = {
   }
 
   .prism-page .al-toggle-opts {
-    padding: calc(var(--space-xs) * 0.6) 0 0 calc(0.95rem + var(--space-xs) * 0.5);
+    padding: calc(var(--space-xs) * 0.6) 0 0
+      calc(0.95rem + var(--space-xs) * 0.5);
     display: grid;
     gap: var(--space-sm);
   }
@@ -1724,7 +1835,9 @@ const seo = {
     padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.5);
     cursor: pointer;
     min-height: calc(var(--touch-target) * 0.6);
-    transition: color var(--duration-normal) var(--ease-out), border-color var(--duration-normal) var(--ease-out);
+    transition:
+      color var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
   }
 
   .prism-page .prism-queue-btn:hover {
@@ -1959,19 +2072,6 @@ const seo = {
     color: #ff6b35;
   }
 
-  .prism-page .prism-output-hint {
-    margin-left: auto;
-    font-size: calc(var(--text-sm) * 0.86);
-    color: rgb(var(--color-text-rgb) / 0.36);
-  }
-
-  @media (max-width: 560px) {
-    .prism-page .prism-output-hint {
-      width: 100%;
-      margin-left: 0;
-    }
-  }
-
   /* ── Terminal Toolbar ───────────────────────────────────────── */
 
   .prism-page .prism-terminal-toolbar {
@@ -1990,7 +2090,9 @@ const seo = {
     font-size: calc(var(--text-sm) * 0.8);
     padding: calc(var(--space-xs) * 0.25) calc(var(--space-xs) * 0.6);
     cursor: pointer;
-    transition: color var(--duration-normal) var(--ease-out), border-color var(--duration-normal) var(--ease-out);
+    transition:
+      color var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
   }
 
   .prism-page .prism-terminal-copy:hover {
@@ -2042,6 +2144,91 @@ const seo = {
   @media (max-width: 640px) {
     .prism-page .prism-queue-item {
       font-size: calc(var(--text-sm) * 0.9);
+    }
+
+    .prism-page .wb-section {
+      padding: calc(var(--space-sm) * 0.8) calc(var(--space-sm) * 0.8);
+    }
+
+    .prism-page .prism-output-info {
+      font-size: calc(var(--text-sm) * 0.9);
+      gap: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.8);
+    }
+
+    .prism-toast {
+      max-width: min(92vw, 28rem);
+    }
+  }
+
+  @media (hover: none) {
+    .prism-page .prism-queue-item:hover {
+      border-color: rgb(var(--color-text-rgb) / 0.08);
+      background:
+        var(--surface-sheen),
+        linear-gradient(
+          180deg,
+          rgb(var(--color-text-rgb) / 0.02) 0%,
+          rgb(var(--color-text-rgb) / 0.008) 100%
+        );
+    }
+
+    .prism-page .prism-output-info--download:hover {
+      border-color: rgb(var(--color-text-rgb) / 0.08);
+      background:
+        var(--surface-sheen),
+        linear-gradient(
+          180deg,
+          rgb(var(--color-text-rgb) / 0.02) 0%,
+          rgb(var(--color-text-rgb) / 0.008) 100%
+        );
+    }
+
+    .prism-page .prism-terminal-copy:hover {
+      color: rgb(var(--color-text-rgb) / 0.35);
+      border-color: rgb(var(--color-text-rgb) / 0.1);
+    }
+
+    .prism-page .wb-special-btn:hover {
+      background: rgb(var(--color-text-rgb) / 0.02);
+      color: rgb(var(--color-text-rgb) / 0.5);
+    }
+
+    .prism-page .wb-quality-pill:hover {
+      background: rgb(var(--color-text-rgb) / 0.03);
+      color: rgb(var(--color-text-rgb) / 0.5);
+    }
+
+    .prism-page .wb-pill:hover {
+      background: rgb(var(--color-text-rgb) / 0.03);
+      color: rgb(var(--color-text-rgb) / 0.5);
+    }
+
+    .prism-page .shrub-tab:hover,
+    .prism-page .al-tab:hover,
+    .prism-page .sub-tab:hover,
+    .prism-page .trans-tab:hover {
+      background: rgb(var(--color-text-rgb) / 0.02);
+      color: rgb(var(--color-text-rgb) / 0.5);
+    }
+
+    .prism-page .prism-queue-btn:hover {
+      color: rgb(var(--color-text-rgb) / 0.4);
+      border-color: rgb(var(--color-text-rgb) / 0.1);
+    }
+
+    .prism-page .prism-queue-btn--danger:hover {
+      color: #ff6b35;
+      border-color: rgba(255, 107, 53, 0.2);
+      background: transparent;
+    }
+
+    .prism-page .sub-file-drop:hover {
+      border-color: rgb(var(--color-text-rgb) / 0.1);
+      background: transparent;
+    }
+
+    .prism-page .wb-slider::-webkit-slider-thumb:hover {
+      transform: none;
     }
   }
 

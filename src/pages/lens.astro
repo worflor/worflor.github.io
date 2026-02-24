@@ -190,10 +190,10 @@ const seo = {
           stroke-linejoin="round"
           aria-hidden="true"
         >
-          <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5" />
-          <line x1="12" y1="2" x2="12" y2="22" />
-          <line x1="2" y1="8.5" x2="22" y2="8.5" />
-          <line x1="2" y1="15.5" x2="22" y2="15.5" />
+          <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5"></polygon>
+          <line x1="12" y1="2" x2="12" y2="22"></line>
+          <line x1="2" y1="8.5" x2="22" y2="8.5"></line>
+          <line x1="2" y1="15.5" x2="22" y2="15.5"></line>
         </svg>
       </button>
       <button class="action-btn" id="lens-action-upload">Upload New</button>
@@ -271,6 +271,11 @@ const seo = {
 
 <style>
   /* ── Lens Page ──────────────────────────────────────────── */
+
+  .lens-page {
+    --lens-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
+    padding-bottom: calc(var(--lens-action-offset) + var(--space-lg));
+  }
 
   .lens-intro {
     display: grid;
@@ -686,6 +691,93 @@ const seo = {
       animation-duration: 1.5s;
     }
   }
+
+  /* ── Mobile ──────────────────────────────────────────────── */
+
+  @media (max-width: 520px) {
+    .lens-upload-zone {
+      padding: var(--space-lg) var(--space-sm);
+    }
+
+    .upload-icon {
+      display: none;
+    }
+
+    .lens-actions {
+      gap: calc(var(--space-xs) * 0.18);
+      padding: calc(var(--space-xs) * 0.6);
+    }
+
+    .action-btn {
+      font-size: calc(var(--text-sm) * 0.9);
+      padding-inline: calc(var(--space-xs) * 1);
+    }
+
+    .lens-preview-img,
+    .lens-preview-video {
+      max-height: clamp(10rem, 9rem + 6vw, 16rem);
+    }
+
+    .lens-insights {
+      padding: var(--space-sm);
+    }
+
+    .lens-summary {
+      flex-direction: column;
+      gap: calc(var(--space-xs) * 0.5);
+    }
+  }
+
+  /* ── Tablet ─────────────────────────────────────────────── */
+
+  @media (min-width: 521px) and (max-width: 768px) {
+    .lens-upload-zone {
+      padding: var(--space-lg) var(--space-md);
+    }
+  }
+
+  /* ── Hover: touch devices ───────────────────────────────── */
+
+  @media (hover: none) {
+    .lens-upload-zone:hover {
+      border-color: rgb(var(--color-text-rgb) / 0.12);
+      background: linear-gradient(
+        180deg,
+        rgb(var(--color-text-rgb) / 0.012) 0%,
+        transparent 60%
+      );
+      box-shadow: var(--edge-highlight);
+    }
+
+    .lens-upload-zone:hover .upload-icon {
+      color: rgb(var(--color-text-rgb) / 0.14);
+      transform: none;
+    }
+
+    .lens-upload-zone:hover .upload-text {
+      color: rgb(var(--color-text-rgb) / 0.6);
+    }
+
+    .lens-upload-zone:active {
+      border-color: rgb(var(--chromatic-cyan) / 0.35);
+      background: linear-gradient(
+        180deg,
+        rgb(var(--chromatic-cyan) / 0.03) 0%,
+        rgb(var(--chromatic-cyan) / 0.008) 50%,
+        transparent 100%
+      );
+    }
+
+    .action-btn:hover {
+      background: transparent;
+      color: var(--color-text-muted);
+    }
+
+    .action-btn:active {
+      background: rgb(var(--color-text-rgb) / 0.1);
+      color: var(--color-text);
+    }
+  }
 </style>
 
 <style is:global>
@@ -932,6 +1024,29 @@ const seo = {
     .lens-page .dp-value {
       text-align: left;
       max-width: 100%;
+    }
+    .lens-page .dp-row {
+      padding-inline: calc(var(--space-xs) * 1);
+    }
+    .lens-toast {
+      max-width: min(92vw, 28rem);
+    }
+  }
+
+  @media (hover: none) {
+    .lens-page .cat-toggle:hover {
+      background: transparent;
+      border-color: var(--color-border);
+      box-shadow: none;
+    }
+
+    .lens-page .cat-toggle:hover .cat-arrow {
+      opacity: 0.3;
+    }
+
+    .lens-page .dp-row:hover {
+      background: transparent;
+      box-shadow: none;
     }
   }
 
