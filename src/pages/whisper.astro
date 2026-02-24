@@ -10,7 +10,7 @@ const seo = {
 ---
 
 <Layout seo={seo}>
-  <div class="whisper-page" id="whisper-page" data-mode="embed">
+  <div class="whisper-page" id="whisper-page" data-mode="embed" data-busy="0">
     <!-- ── Hero ─────────────────────────────────────────────── -->
     <section
       class="mt-8 content-section whisper-intro"
@@ -115,7 +115,15 @@ const seo = {
     >
       <div class="whisper-panel">
         <div class="whisper-panel-header">
-          <h2 class="whisper-panel-title">Operation</h2>
+          <h2 class="whisper-panel-title" id="whisper-op-title">
+            <span class="whisper-op whisper-op--idle whisper-op--embed">Embed</span>
+            <span class="whisper-op whisper-op--idle whisper-op--extract">Extract</span>
+            <span class="whisper-op whisper-op--idle whisper-op--hunt">Hunt</span>
+
+            <span class="whisper-op whisper-op--busy whisper-op--embedding">Embedding</span>
+            <span class="whisper-op whisper-op--busy whisper-op--extracting">Extracting</span>
+            <span class="whisper-op whisper-op--busy whisper-op--hunting">Hunting</span>
+          </h2>
           <span class="whisper-panel-mode" id="whisper-status-line">drop a carrier file to begin</span>
         </div>
 
@@ -678,6 +686,22 @@ const seo = {
     margin: 0;
     font-size: var(--text-base);
     color: rgb(var(--color-text-rgb) / 0.86);
+  }
+
+  .whisper-op {
+    display: none;
+  }
+
+  .whisper-page[data-busy="0"][data-mode="embed"] .whisper-op--embed,
+  .whisper-page[data-busy="0"][data-mode="extract"] .whisper-op--extract,
+  .whisper-page[data-busy="0"][data-mode="hunt"] .whisper-op--hunt {
+    display: inline;
+  }
+
+  .whisper-page[data-busy="1"][data-mode="embed"] .whisper-op--embedding,
+  .whisper-page[data-busy="1"][data-mode="extract"] .whisper-op--extracting,
+  .whisper-page[data-busy="1"][data-mode="hunt"] .whisper-op--hunting {
+    display: inline;
   }
 
   .whisper-panel-mode {

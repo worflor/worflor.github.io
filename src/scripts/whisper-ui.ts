@@ -21,6 +21,7 @@ export interface WhisperUIOptions {
   onlyDecodeHereInput: HTMLInputElement;
   allowTailFallbackInput: HTMLInputElement;
   clueInput: HTMLInputElement;
+  opTitle: HTMLElement;
   runButton: HTMLButtonElement;
   uploadButton: HTMLButtonElement;
   clearButton: HTMLButtonElement;
@@ -51,6 +52,7 @@ export const WHISPER_UI_IDS = {
   onlyDecodeHereInput: "whisper-only-decode-here",
   allowTailFallbackInput: "whisper-allow-tail-fallback",
   clueInput: "whisper-clue-input",
+  opTitle: "whisper-op-title",
   runButton: "whisper-action-run",
   uploadButton: "whisper-action-upload",
   clearButton: "whisper-action-clear",
@@ -81,6 +83,7 @@ const MODE_LABELS: Record<WhisperMode, string> = {
   [MODE_EXTRACT]: "Extract",
   [MODE_HUNT]: "Hunt",
 };
+
 
 /* ── DOM Helpers ───────────────────────────────────────── */
 
@@ -189,6 +192,7 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
   const onlyDecodeHereInput = asInput(q(root, WHISPER_UI_IDS.onlyDecodeHereInput));
   const allowTailFallbackInput = asInput(q(root, WHISPER_UI_IDS.allowTailFallbackInput));
   const clueInput = asInput(q(root, WHISPER_UI_IDS.clueInput));
+  const opTitle = q(root, WHISPER_UI_IDS.opTitle);
   const runButton = asButton(q(root, WHISPER_UI_IDS.runButton));
   const uploadButton = asButton(q(root, WHISPER_UI_IDS.uploadButton));
   const clearButton = asButton(q(root, WHISPER_UI_IDS.clearButton));
@@ -209,7 +213,7 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
   if (
     !page || !uploadZone || !carrierInput || !huntCarrierInput || !payloadInput ||
     !passwordInput || !passwordGenButton || !passwordCopyButton || !passwordMeta || !onlyDecodeHereInput || !allowTailFallbackInput || !clueInput || !runButton || !uploadButton || !clearButton ||
-    !actionsBar || !statusLine || !logOutput || !logDot || !results || !downloadArea ||
+    !actionsBar || !statusLine || !opTitle || !logOutput || !logDot || !results || !downloadArea ||
     !progressSection || !progressFill ||
     !uploadText || !uploadMeta || !huntLabel || !payloadLabel || modeButtons.length === 0
   ) {
@@ -219,7 +223,7 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
   return {
     page, modeButtons, uploadZone, carrierInput, huntCarrierInput, payloadInput,
     passwordInput, passwordGenButton, passwordCopyButton, passwordMeta, onlyDecodeHereInput, allowTailFallbackInput, clueInput, runButton, uploadButton, clearButton, actionsBar,
-    statusLine, logOutput, logDot, results, downloadArea, progressSection, progressFill,
+    opTitle, statusLine, logOutput, logDot, results, downloadArea, progressSection, progressFill,
     uploadText, uploadMeta,
     huntLabel, payloadLabel,
   };
@@ -246,6 +250,16 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
       opts.passwordMeta.textContent = "";
       passwordMetaTimer = null;
     }, ms);
+  }
+
+  function syncOpTitle(): void {
+    // Op title text is driven by markup+CSS using [data-mode] and [data-busy].
+    opts.page.dataset.busy = busy ? "1" : "0";
+  }
+
+  function refreshUI(): void {
+    syncState();
+    syncGuidance();
   }
 
   /* ── Action bar visibility (rAF fade like Cage/Lens) ── */
@@ -401,18 +415,18 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     let ready = false;
     switch (activeMode) {
       case MODE_EMBED:
-        if (!hasCarrier()) { updateStatus("drop a carrier file to begin"); break; }
+        if (!hasCarrier()) { updateStatus("drop a carrier file"); break; }
         if (!hasPayload()) { updateStatus("add a payload file"); break; }
         if (!hasPassword()) { updateStatus("enter a password"); break; }
-        updateStatus("ready to embed"); ready = true; break;
+        updateStatus("all set"); ready = true; break;
       case MODE_EXTRACT:
-        if (!hasCarrier()) { updateStatus("drop a carrier file to begin"); break; }
+        if (!hasCarrier()) { updateStatus("drop a carrier file"); break; }
         if (!hasPassword()) { updateStatus("enter a password"); break; }
-        updateStatus("ready to extract"); ready = true; break;
+        updateStatus("all set"); ready = true; break;
       case MODE_HUNT:
-        if (!hasHuntFiles()) { updateStatus("select files to scan"); break; }
+        if (!hasHuntFiles()) { updateStatus("choose carrier files to scan"); break; }
         if (!hasPassword()) { updateStatus("enter a password"); break; }
-        updateStatus("ready to hunt"); ready = true; break;
+        updateStatus("all set"); ready = true; break;
     }
     opts.statusLine.classList.toggle("whisper-status--ready", ready);
   }
@@ -422,14 +436,14 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   function setMode(mode: WhisperMode): void {
     activeMode = mode;
     opts.page.dataset.mode = mode;
+    syncOpTitle();
     opts.modeButtons.forEach((btn) => {
       const active = btn.dataset.whisperMode === mode;
       btn.classList.toggle("whisper-mode-btn--active", active);
       btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
     opts.passwordInput.placeholder = mode === MODE_EMBED ? "password to encrypt" : "password to decrypt";
-    syncState();
-    syncGuidance();
+    refreshUI();
   }
 
   /* ── Upload zone state ───────────────────────────────── */
@@ -510,8 +524,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
       expandUploadZone();
       hideActionsBar();
     }
-    syncState();
-    syncGuidance();
+    refreshUI();
   }, { signal });
 
   opts.huntCarrierInput.addEventListener("change", () => {
@@ -521,21 +534,19 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
       : "choose files\u2026";
     // In hunt mode, show action bar when hunt files are selected
     if (activeMode === MODE_HUNT && count > 0) showActionsBar();
-    syncState();
-    syncGuidance();
+    refreshUI();
   }, { signal });
 
   opts.payloadInput.addEventListener("change", () => {
     const file = readSingleFile(opts.payloadInput);
     opts.payloadLabel.textContent = file ? file.name : "choose file\u2026";
-    syncState();
-    syncGuidance();
+    refreshUI();
   }, { signal });
 
   // Password typing affects canRun
-  opts.passwordInput.addEventListener("input", () => { syncState(); syncGuidance(); }, { signal });
-  opts.onlyDecodeHereInput.addEventListener("change", () => { syncState(); syncGuidance(); }, { signal });
-  opts.allowTailFallbackInput.addEventListener("change", () => { syncState(); syncGuidance(); }, { signal });
+  opts.passwordInput.addEventListener("input", refreshUI, { signal });
+  opts.onlyDecodeHereInput.addEventListener("change", refreshUI, { signal });
+  opts.allowTailFallbackInput.addEventListener("change", refreshUI, { signal });
 
   opts.passwordGenButton.addEventListener("click", () => {
     let pw = "";
@@ -590,6 +601,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     opts.progressFill.classList.toggle("whisper-progress--indeterminate", isBusy);
     opts.runButton.classList.toggle("action-btn--loading", isBusy);
     setLogActive(isBusy);
+    syncOpTitle();
     syncState();
   }
 
@@ -750,8 +762,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     hideActionsBar();
     opts.huntLabel.textContent = "choose files\u2026";
     opts.payloadLabel.textContent = "choose file\u2026";
-    syncState();
-    syncGuidance();
+    refreshUI();
   }, { signal });
 
   /* ── Initial state ───────────────────────────────────── */
