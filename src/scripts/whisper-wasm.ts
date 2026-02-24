@@ -147,13 +147,14 @@ interface WhisperEnvelopeHeader {
 const PAGE_SIZE = 64 * 1024;
 const I32 = 0x7f;
 const BLOCK_VOID = 0x40;
-/** Carrier data starts after the histogram region in WASM linear memory. */
-const CARRIER_OFFSET = 2048 + 256 * 4; // after HISTOGRAM_OFFSET + 256 i32 bins = 3072
+/** Carrier data starts immediately after the 256×i32 histogram bins in WASM linear memory. */
+const CARRIER_OFFSET = HISTOGRAM_OFFSET + 256 * 4; // 3072
 
 const DEFAULT_WINDOW = 4096;
 const DEFAULT_STRIDE = 1024;
 const DEFAULT_MIN_LEN = 96;
 const DEFAULT_MAX_CANDIDATES = 24;
+const SMALL_CARRIER_THRESHOLD = 64 * 1024 * 1024; // 64 MiB — below this, embedFile uses bytes-based embed() for inert-space scan
 
 const LOCATOR_LEN = 12;
 const HEADER_LEN = 64;
@@ -1010,7 +1011,7 @@ function readU32(view: Uint8Array, offset: number): number {
     (view[offset]) |
     (view[offset + 1] << 8) |
     (view[offset + 2] << 16) |
-    (view[offset + 3] << 24 >>> 0)
+    ((view[offset + 3] << 24) >>> 0)
   ) >>> 0;
 }
 
@@ -1535,8 +1536,6 @@ export class WhisperEngine {
     if (carrierFile.size === 0) throw new Error("Carrier is empty.");
     if (payloadFile.size === 0) throw new Error("Payload is empty.");
 
-    // If the file is reasonably small, reuse the bytes-based embed() to leverage inert-space scan.
-    const SMALL_CARRIER_THRESHOLD = 64 * 1024 * 1024;
     if ((options.preferInertSpace ?? true) && carrierFile.size <= SMALL_CARRIER_THRESHOLD) {
       const carrierBytes = new Uint8Array(await carrierFile.arrayBuffer());
       const payloadBytes = new Uint8Array(await payloadFile.arrayBuffer());
