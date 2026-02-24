@@ -245,6 +245,7 @@ type PrismState = "idle" | "files_loaded" | "configured" | "processing" | "compl
 const ACTION_BAR_FADE_MS = 350;
 const TOAST_VISIBLE_MS = 2500;
 const TOAST_EXIT_MS = 300;
+const RUN_ACK_MS = 1200;
 const PRISM_WARM_ENGINE_KEY = "__prismWarmEngine";
 
 type PrismWarmWindow = Window & {
@@ -268,6 +269,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let terminalOpen = false;
   let dragCounter = 0;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  let runAckTimer: ReturnType<typeof setTimeout> | null = null;
+  let runAckActive = false;
   let lensHandoffInFlight = false;
   let handoffSupported = true;
   const cleanups: Array<() => void> = [];
@@ -699,7 +702,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     const engineLoading = Boolean(engine && engine.state === "loading");
     const engineLoaded = Boolean(engine && (engine.state === "ready" || engine.state === "running"));
     if (prismState === "complete") {
-      opts.btnRun.textContent = "Run";
+      opts.btnRun.textContent = runAckActive ? "Ran" : "Run";
       opts.btnRun.style.display = "";
     } else if (prismState === "error") {
       opts.btnRun.textContent = "Try Again";
@@ -716,6 +719,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     } else {
       opts.btnRun.classList.remove("action-btn--load");
     }
+    opts.btnRun.classList.toggle("action-btn--ran", runAckActive && prismState === "complete");
 
     if (engineLoading && (prismState === "files_loaded" || prismState === "configured")) {
       opts.btnRun.classList.add("action-btn--loading");
@@ -1017,12 +1021,38 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (outputUrl) { URL.revokeObjectURL(outputUrl); outputUrl = null; }
     outputData = null;
     outputName = "";
+    runAckActive = false;
+    if (runAckTimer) {
+      clearTimeout(runAckTimer);
+      runAckTimer = null;
+    }
     hideAllPreviews();
     opts.terminalLog.textContent = "";
     // Re-render active module panel (settings are preserved)
     if (getCurrentFileInfo()) {
       modules[activeModuleId].render(opts.modulePanel);
     }
+  }
+
+  function triggerRunAck(): void {
+    runAckActive = true;
+    if (runAckTimer) clearTimeout(runAckTimer);
+    runAckTimer = setTimeout(() => {
+      runAckActive = false;
+      runAckTimer = null;
+      if (!destroyed) updateUI();
+    }, RUN_ACK_MS);
+  }
+
+  function scrollToOutputSummary(): void {
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    requestAnimationFrame(() => {
+      if (destroyed) return;
+      opts.outputSummary.scrollIntoView({
+        behavior: smooth ? "smooth" : "auto",
+        block: "start",
+      });
+    });
   }
 
   // ── VFS Cleanup ──────────────────────────────────────────────────────
@@ -1103,8 +1133,9 @@ export function initPrism(opts: PrismUIOptions): () => void {
           outputData = await eng.readFile(`/output/${result.outputName}`);
           outputName = result.outputName;
           showOutputPreview(outputData, outputName);
+          triggerRunAck();
           setState("complete");
-          showToast("Done!");
+          scrollToOutputSummary();
         } catch {
           showToast("Processing completed but output file wasn't found.");
           setState("error");
@@ -1515,6 +1546,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (outputUrl) URL.revokeObjectURL(outputUrl);
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     if (toastTimer) clearTimeout(toastTimer);
+    if (runAckTimer) clearTimeout(runAckTimer);
     const toast = document.querySelector(".prism-toast");
     if (toast) toast.remove();
     engine?.setCallbacks({});

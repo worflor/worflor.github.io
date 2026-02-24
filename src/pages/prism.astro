@@ -1043,6 +1043,32 @@ const seo = {
     z-index: -1;
   }
 
+  .action-btn--primary.action-btn--ran {
+    animation: prism-run-ack 900ms var(--ease-spring);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.22) 0%,
+      rgb(var(--chromatic-cyan) / 0.1) 100%
+    );
+    color: rgb(var(--chromatic-cyan));
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.35);
+  }
+
+  @keyframes prism-run-ack {
+    0% {
+      transform: translateY(0) scale(1);
+      box-shadow: 0 0 0 rgb(var(--chromatic-cyan) / 0);
+    }
+    35% {
+      transform: translateY(-1px) scale(1.03);
+      box-shadow: 0 0 14px rgb(var(--chromatic-cyan) / 0.24);
+    }
+    100% {
+      transform: translateY(0) scale(1);
+      box-shadow: 0 0 0 rgb(var(--chromatic-cyan) / 0);
+    }
+  }
+
   .action-btn--icon {
     min-width: var(--touch-target);
     padding-inline: calc(var(--space-xs) * 0.8);
