@@ -318,10 +318,22 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   let busy = false;
   let pendingPayload: SealPayload | null = null;
   let mySealPublicCode = "";
-  let qrScanRaf = 0;
-  let qrStream: MediaStream | null = null;
-  let qrScanActive = false;
-  let qrLastFrameAt = 0;
+
+  type QrScanStopReason = "accepted" | "cancelled" | "error" | "teardown";
+  const qrScanSession: {
+    rafId: number;
+    stream: MediaStream | null;
+    active: boolean;
+    lastFrameAt: number;
+    runId: number;
+  } = {
+    rafId: 0,
+    stream: null,
+    active: false,
+    lastFrameAt: 0,
+    runId: 0,
+  };
+
   let qrSupported = false;
   let pageObserver: MutationObserver | null = null;
 
@@ -351,7 +363,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (isSealInlineActiveMode()) return;
     opts.mySealInlinePanel.style.display = "none";
     syncMySealInlinePanelState();
-    if (qrScanActive) stopRecipientQrScan("cancelled");
+    if (qrScanSession.active) stopRecipientQrScan("cancelled");
   }
 
   function setRecipientFromCandidate(rawValue: string, source: "camera" | "image"): boolean {
@@ -370,18 +382,20 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     return true;
   }
 
-  function stopRecipientQrScan(reason: "accepted" | "cancelled" | "error" | "teardown" = "cancelled"): void {
-    if (qrScanRaf) {
-      cancelAnimationFrame(qrScanRaf);
-      qrScanRaf = 0;
+  function stopRecipientQrScan(reason: QrScanStopReason = "cancelled"): void {
+    qrScanSession.runId += 1;
+
+    if (qrScanSession.rafId) {
+      cancelAnimationFrame(qrScanSession.rafId);
+      qrScanSession.rafId = 0;
     }
 
-    qrScanActive = false;
-    qrLastFrameAt = 0;
+    qrScanSession.active = false;
+    qrScanSession.lastFrameAt = 0;
 
-    if (qrStream) {
-      for (const track of qrStream.getTracks()) track.stop();
-      qrStream = null;
+    if (qrScanSession.stream) {
+      for (const track of qrScanSession.stream.getTracks()) track.stop();
+      qrScanSession.stream = null;
     }
 
     opts.recipientQrVideo.pause();
@@ -398,6 +412,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   async function scanRecipientFromImage(file: File): Promise<void> {
     const decoded = await decodeWs2FromImage(file);
+    if (aborted()) return;
     if (!decoded) {
       setRecipientQrStatus("No WS2 key found.");
       log("qr image scan: no ws2 key decoded");
@@ -414,9 +429,12 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   }
 
   async function startRecipientQrScan(): Promise<void> {
-    if (qrScanActive) return;
+    if (qrScanSession.active) return;
+    const runId = qrScanSession.runId + 1;
+    qrScanSession.runId = runId;
 
     const capability = await getQrScannerCapability();
+    if (aborted() || runId !== qrScanSession.runId) return;
     if (!capability.supported) {
       setRecipientQrStatus("Camera unavailable.");
       log("qr camera scan unavailable: native qr detector unsupported");
@@ -430,6 +448,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     }
 
     const detector = await createQrDetector();
+    if (aborted() || runId !== qrScanSession.runId) return;
     if (!detector) {
       setRecipientQrStatus("Camera unavailable.");
       log("qr camera scan unavailable: detector init failed");
@@ -437,30 +456,41 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     }
 
     try {
-      qrStream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: getQrCameraConstraints(),
         audio: false,
       });
+      if (aborted() || runId !== qrScanSession.runId) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
 
-      opts.recipientQrVideo.srcObject = qrStream;
+      qrScanSession.stream = stream;
+
+      opts.recipientQrVideo.srcObject = stream;
       await opts.recipientQrVideo.play();
+      if (aborted() || runId !== qrScanSession.runId) {
+        stopRecipientQrScan("cancelled");
+        return;
+      }
 
-      qrScanActive = true;
+      qrScanSession.active = true;
       opts.recipientQrPanel.style.display = "";
       setRecipientQrUiState(true);
       setRecipientQrStatus("Scanning…");
       log("qr camera scan started");
 
       const loop = async (at: number): Promise<void> => {
-        if (!qrScanActive || aborted()) return;
-        if (at - qrLastFrameAt < getQrScanIntervalMs()) {
-          qrScanRaf = requestAnimationFrame((t) => { void loop(t); });
+        if (!qrScanSession.active || aborted() || runId !== qrScanSession.runId) return;
+        if (at - qrScanSession.lastFrameAt < getQrScanIntervalMs()) {
+          qrScanSession.rafId = requestAnimationFrame((t) => { void loop(t); });
           return;
         }
 
-        qrLastFrameAt = at;
+        qrScanSession.lastFrameAt = at;
         try {
           const detections = await detector.detect(opts.recipientQrVideo);
+          if (!qrScanSession.active || aborted() || runId !== qrScanSession.runId) return;
           for (const detection of detections) {
             if (!detection.rawValue) continue;
             if (setRecipientFromCandidate(detection.rawValue, "camera")) {
@@ -474,10 +504,10 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
           return;
         }
 
-        qrScanRaf = requestAnimationFrame((t) => { void loop(t); });
+        qrScanSession.rafId = requestAnimationFrame((t) => { void loop(t); });
       };
 
-      qrScanRaf = requestAnimationFrame((t) => { void loop(t); });
+      qrScanSession.rafId = requestAnimationFrame((t) => { void loop(t); });
     } catch (e) {
       stopRecipientQrScan("error");
       const msg = e instanceof Error ? e.message : "camera permission denied";
@@ -575,7 +605,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     opts.sealValidation.textContent = "";
     delete opts.sealValidation.dataset.valid;
     opts.sealedResultWrap.style.display = "none";
-    if (qrScanActive) stopRecipientQrScan("cancelled");
+    if (qrScanSession.active) stopRecipientQrScan("cancelled");
     syncCharCount();
     syncCompose();
   }
