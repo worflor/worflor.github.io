@@ -1,0 +1,1269 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+const seo = {
+  title: "Whisper | woflo",
+  description:
+    "Carrier-bound stealth payload embedding and extraction. Inert-space scan, encrypted embed, and multi-file hunt — fully local in your browser.",
+  image: "/images/social-card.png",
+};
+---
+
+<Layout seo={seo}>
+  <div class="whisper-page" id="whisper-page" data-mode="embed">
+    <!-- ── Hero ─────────────────────────────────────────────── -->
+    <section
+      class="mt-8 content-section whisper-intro"
+    >
+      <h1 class="page-title whisper-title" id="whisper-title">Whisper</h1>
+      <p class="whisper-tagline">carrier-bound inert-space encryption</p>
+      <p class="whisper-privacy-badge">
+        <span class="privacy-dot"></span>
+        local to this browser
+      </p>
+    </section>
+
+    <!-- ── Mode Selector ────────────────────────────────────── -->
+    <section
+      class="mt-[var(--space-md)] content-section"
+    >
+      <div class="whisper-mode-bar" role="group" aria-label="Whisper mode">
+        <button
+          class="whisper-mode-btn whisper-mode-btn--active"
+          data-whisper-mode="embed"
+          aria-pressed="true"
+          type="button"
+        >
+          <svg class="whisper-mode-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+            <rect x="2" y="2" width="12" height="12" rx="2"></rect>
+            <path d="M5 8h6M8 5v6"></path>
+          </svg>
+          Embed
+        </button>
+        <button
+          class="whisper-mode-btn"
+          data-whisper-mode="extract"
+          aria-pressed="false"
+          type="button"
+        >
+          <svg class="whisper-mode-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+            <rect x="2" y="2" width="12" height="12" rx="2"></rect>
+            <path d="M5 8h6"></path>
+          </svg>
+          Extract
+        </button>
+        <button
+          class="whisper-mode-btn"
+          data-whisper-mode="hunt"
+          aria-pressed="false"
+          type="button"
+        >
+          <svg class="whisper-mode-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+            <circle cx="7" cy="7" r="4"></circle>
+            <path d="M10 10l3.5 3.5"></path>
+          </svg>
+          Hunt
+        </button>
+      </div>
+    </section>
+
+    <!-- ── Upload Zone (carrier) ────────────────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+    >
+      <div
+        class="whisper-upload-zone"
+        id="whisper-upload-zone"
+        role="button"
+        tabindex="0"
+        aria-label="Upload a carrier file"
+      >
+        <div class="upload-icon" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 3v12"></path>
+            <path d="M8 11l4 4 4-4"></path>
+            <rect x="3" y="17" width="18" height="4" rx="2"></rect>
+            <circle cx="7" cy="19" r="0.5" fill="currentColor"></circle>
+          </svg>
+        </div>
+        <p class="upload-text" id="whisper-upload-text">drop a carrier file here</p>
+        <p class="upload-subtext">or click / paste to browse</p>
+        <p class="upload-formats">PNG &middot; JPEG &middot; TIFF &middot; BMP &middot; any file</p>
+        <p class="upload-file-meta" id="whisper-upload-meta"></p>
+        <input
+          type="file"
+          id="whisper-carrier-input"
+          class="sr-only"
+          aria-hidden="true"
+        />
+      </div>
+    </section>
+
+    <!-- ── Operation Panel ──────────────────────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+    >
+      <div class="whisper-panel">
+        <div class="whisper-panel-header">
+          <h2 class="whisper-panel-title">Operation</h2>
+          <span class="whisper-panel-mode" id="whisper-status-line">drop a carrier file to begin</span>
+        </div>
+
+        <!-- Hunt multi-file input -->
+        <label class="whisper-field whisper-field--hunt" for="whisper-hunt-carrier-input">
+          <span class="whisper-field-label">carrier files <span class="whisper-field-hint">(hunt mode)</span></span>
+          <div class="whisper-file-btn" tabindex="-1">
+            <span class="whisper-file-btn-text" id="whisper-hunt-label">choose files&hellip;</span>
+            <input id="whisper-hunt-carrier-input" type="file" multiple class="sr-only" aria-hidden="true" />
+          </div>
+        </label>
+
+        <!-- Payload input -->
+        <label class="whisper-field whisper-field--embed" for="whisper-payload-input">
+          <span class="whisper-field-label">payload file <span class="whisper-field-hint">(embed mode)</span></span>
+          <div class="whisper-file-btn" tabindex="-1">
+            <span class="whisper-file-btn-text" id="whisper-payload-label">choose file&hellip;</span>
+            <input id="whisper-payload-input" type="file" class="sr-only" aria-hidden="true" />
+          </div>
+        </label>
+
+        <!-- Password -->
+        <label class="whisper-field" for="whisper-password-input">
+          <span class="whisper-field-label">password</span>
+          <div class="whisper-password-row">
+            <input
+              id="whisper-password-input"
+              type="password"
+              class="whisper-input whisper-password-input"
+              autocomplete="off"
+              placeholder="password to encrypt"
+            />
+            <div class="whisper-password-tools" role="group" aria-label="Password tools">
+              <button
+                id="whisper-password-gen"
+                class="whisper-mini-btn"
+                type="button"
+                aria-label="Generate a strong random password"
+                title="Generate"
+              >Generate</button>
+              <button
+                id="whisper-password-copy"
+                class="whisper-mini-btn"
+                type="button"
+                aria-label="Copy password to clipboard"
+                title="Copy"
+              >Copy</button>
+            </div>
+          </div>
+          <p id="whisper-password-meta" class="whisper-password-meta whisper-field-hint" aria-live="polite"></p>
+        </label>
+
+        <!-- Privacy toggle (embed only) -->
+        <div class="whisper-field whisper-field--embed">
+          <span class="whisper-field-label">privacy</span>
+          <label class="whisper-toggle" for="whisper-only-decode-here">
+            <input id="whisper-only-decode-here" type="checkbox" class="whisper-toggle-input" />
+            <span class="whisper-toggle-text">
+              only decode here
+              <span class="whisper-field-hint">(locks decryption to this browser profile)</span>
+            </span>
+          </label>
+        </div>
+
+        <!-- Clue -->
+        <label class="whisper-field whisper-field--hunt" for="whisper-clue-input">
+          <span class="whisper-field-label">payload clue <span class="whisper-field-hint">(optional)</span></span>
+          <input
+            id="whisper-clue-input"
+            type="text"
+            class="whisper-input"
+            placeholder="name fragment or hash prefix"
+          />
+        </label>
+      </div>
+    </section>
+
+    <!-- ── Progress Bar ─────────────────────────────────────── -->
+    <section class="mt-[var(--space-sm)] content-section" id="whisper-progress-section" style="display:none">
+      <div class="whisper-progress">
+        <div class="whisper-progress-fill" id="whisper-progress-fill"></div>
+      </div>
+    </section>
+
+    <!-- ── Results ──────────────────────────────────────────── -->
+    <section class="mt-[var(--space-sm)] content-section">
+      <div id="whisper-results" class="whisper-results" aria-live="polite"></div>
+      <div id="whisper-download-area" class="whisper-downloads"></div>
+    </section>
+
+    <!-- ── Runtime Log ──────────────────────────────────────── -->
+    <section class="mt-[var(--space-sm)] content-section">
+      <div class="whisper-log-wrap">
+        <div class="whisper-log-header">
+          <p class="whisper-log-title">runtime log</p>
+          <span class="whisper-log-dot" id="whisper-log-dot"></span>
+        </div>
+        <pre id="whisper-log-output" class="whisper-log-output"></pre>
+      </div>
+    </section>
+
+    <!-- ── Insights ─────────────────────────────────────────── -->
+    <section class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section">
+      <div class="whisper-insights">
+        <h2 class="insights-title">what does this do?</h2>
+        <p class="insights-text">
+          whisper scans a carrier file for inert regions — padding bytes,
+          alignment gaps, format-specific dead zones — and writes an encrypted
+          payload directly into that space. the carrier still looks and
+          behaves like itself. nothing is appended unless no slot fits.
+        </p>
+        <p class="insights-text">
+          encryption is carrier-bound: the key derivation uses a hash of the
+          carrier excluding the embedded region. move the payload to a
+          different file and decryption fails by design. tamper with the
+          carrier and the key changes. no external metadata, no headers to
+          spot, no side-channel.
+        </p>
+        <p class="insights-text">
+          everything runs in your browser. files never leave your device.
+          the inert-space scanner uses a wasm-accelerated byte-density
+          heuristic. encryption is aes-256-gcm via web crypto with pbkdf2
+          key stretching. hunt mode scans multiple files in sequence,
+          filtering by name or hash prefix.
+        </p>
+      </div>
+    </section>
+
+    <!-- ── Fixed Action Bar (hidden until carrier loaded) ──── -->
+    <div
+      class="whisper-actions"
+      id="whisper-actions"
+      role="group"
+      aria-label="Whisper controls"
+      style="display:none;opacity:0"
+    >
+      <button
+        class="action-btn action-btn--primary"
+        id="whisper-action-run"
+        type="button"
+        disabled
+      >Embed</button>
+      <button
+        class="action-btn"
+        id="whisper-action-upload"
+        type="button"
+      >New File</button>
+      <button
+        class="action-btn action-btn--icon"
+        id="whisper-action-lens"
+        type="button"
+        aria-label="View with Lens"
+        title="View with Lens"
+        style="display:none"
+      >
+        <svg
+          class="lens-handoff-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="10"></circle>
+          <circle cx="12" cy="12" r="4"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line>
+          <line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line>
+          <line x1="21" y1="12" x2="23" y2="12"></line>
+        </svg>
+      </button>
+      <button
+        class="action-btn"
+        id="whisper-action-clear"
+        type="button"
+        disabled
+      >Clear</button>
+    </div>
+  </div>
+
+  <script>
+    import { initWhisper, resolveWhisperUIOptions } from "../scripts/whisper-ui";
+
+    const WHISPER_LIFECYCLE_KEY = "__whisperLifecycle";
+    type WhisperLifecycle = {
+      boot: () => void;
+      teardown: () => void;
+      detach?: () => void;
+    };
+
+    let cleanupWhisper: (() => void) | null = null;
+    const whisperWindow = window as unknown as Record<string, WhisperLifecycle | undefined>;
+
+    function boot() {
+      teardown();
+      const whisperOptions = resolveWhisperUIOptions(document);
+      if (whisperOptions) cleanupWhisper = initWhisper(whisperOptions);
+    }
+
+    function teardown() {
+      cleanupWhisper?.();
+      cleanupWhisper = null;
+    }
+
+    function detachLifecycle() {
+      document.removeEventListener("astro:after-swap", boot);
+      document.removeEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    function handleBeforeSwap() {
+      teardown();
+      detachLifecycle();
+      const current = whisperWindow[WHISPER_LIFECYCLE_KEY];
+      if (current?.boot === boot) {
+        delete whisperWindow[WHISPER_LIFECYCLE_KEY];
+      }
+    }
+
+    function attachLifecycle() {
+      document.addEventListener("astro:after-swap", boot);
+      document.addEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    const prev = whisperWindow[WHISPER_LIFECYCLE_KEY];
+    if (prev) {
+      if (prev.detach) {
+        prev.detach();
+      } else {
+        document.removeEventListener("astro:after-swap", prev.boot);
+        document.removeEventListener("astro:before-swap", prev.teardown);
+      }
+      prev.teardown?.();
+    }
+
+    whisperWindow[WHISPER_LIFECYCLE_KEY] = {
+      boot,
+      teardown,
+      detach: detachLifecycle,
+    };
+
+    boot();
+    attachLifecycle();
+  </script>
+</Layout>
+
+<style>
+  /* ── Page Shell ────────────────────────────────────────── */
+  .whisper-page {
+    --whisper-radius: var(--radius-lg);
+    --whisper-muted: rgb(var(--color-text-rgb) / 0.58);
+    --whisper-faint: rgb(var(--color-text-rgb) / 0.3);
+    --whisper-edge: rgb(var(--color-text-rgb) / 0.14);
+    --whisper-surface: rgb(var(--color-text-rgb) / 0.015);
+    --whisper-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
+    padding-bottom: calc(var(--whisper-action-offset) + var(--space-lg));
+  }
+
+  /* ── Hero ──────────────────────────────────────────────── */
+  .whisper-intro {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.7);
+  }
+
+  .whisper-title {
+    margin: 0;
+    line-height: 1.03;
+    letter-spacing: -0.018em;
+  }
+
+  .whisper-tagline {
+    margin: 0;
+    color: var(--whisper-muted);
+  }
+
+  .whisper-privacy-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.28);
+    margin-top: calc(var(--space-xs) * 0.3);
+  }
+
+  .privacy-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: var(--radius-full);
+    background: rgb(var(--tool-status-success));
+    box-shadow: 0 0 6px rgb(var(--tool-status-success) / 0.35);
+    flex-shrink: 0;
+    animation: privacy-pulse 4s ease-in-out infinite;
+  }
+
+  @keyframes privacy-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 5px rgb(var(--tool-status-success) / 0.3);
+    }
+    50% {
+      box-shadow: 0 0 10px rgb(var(--tool-status-success) / 0.5);
+    }
+  }
+
+  /* ── Mode Bar ──────────────────────────────────────────── */
+  .whisper-mode-bar {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.3);
+    border: 1px solid var(--whisper-edge);
+    border-radius: var(--whisper-radius);
+    padding: calc(var(--space-xs) * 0.35);
+    background: var(--whisper-surface);
+    box-shadow: var(--edge-highlight);
+  }
+
+  .whisper-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    border: 1px solid transparent;
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    background: transparent;
+    color: rgb(var(--color-text-rgb) / 0.55);
+    padding: 0.45rem 0.85rem;
+    min-height: var(--touch-target);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out),
+      background-color var(--duration-normal) var(--ease-out);
+  }
+
+  .whisper-mode-icon {
+    width: 0.95em;
+    height: 0.95em;
+    flex-shrink: 0;
+  }
+
+  .whisper-mode-btn:hover,
+  .whisper-mode-btn:focus-visible {
+    color: rgb(var(--color-text-rgb));
+    border-color: rgb(var(--color-text-rgb) / 0.18);
+    outline: none;
+  }
+
+  .whisper-mode-btn:focus-visible {
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
+  }
+
+  .whisper-mode-btn--active {
+    border-color: rgb(var(--chromatic-cyan) / 0.4);
+    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .whisper-mode-btn--active:hover {
+    border-color: rgb(var(--chromatic-cyan) / 0.55);
+    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--chromatic-cyan) / 0.12);
+  }
+
+  /* ── Upload Zone ───────────────────────────────────────── */
+  .whisper-upload-zone {
+    position: relative;
+    border: 2px dashed rgb(var(--color-text-rgb) / 0.14);
+    border-radius: var(--whisper-radius);
+    padding: var(--space-xl) var(--space-md);
+    text-align: center;
+    cursor: pointer;
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-text-rgb) / 0.012) 0%,
+      transparent 60%
+    );
+    box-shadow: var(--edge-highlight);
+    transition:
+      border-color var(--duration-slow) var(--ease-spring),
+      background var(--duration-slow) var(--ease-spring),
+      box-shadow var(--duration-slow) var(--ease-spring);
+  }
+
+  .whisper-upload-zone:hover,
+  .whisper-upload-zone:global(.whisper-drop-active) {
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.03) 0%,
+      rgb(var(--chromatic-cyan) / 0.008) 50%,
+      transparent 100%
+    );
+    box-shadow: var(--edge-highlight);
+  }
+
+  .whisper-upload-zone:active {
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.05) 0%,
+      rgb(var(--chromatic-cyan) / 0.015) 50%,
+      transparent 100%
+    );
+  }
+
+  .whisper-upload-zone:focus-visible {
+    border-color: rgb(var(--chromatic-cyan) / 0.45);
+    box-shadow:
+      var(--edge-highlight),
+      0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
+    outline: none;
+  }
+
+  .upload-icon {
+    position: absolute;
+    top: calc(var(--space-sm) * 1.2);
+    left: calc(var(--space-sm) * 1.2);
+    width: var(--space-xl);
+    height: var(--space-xl);
+    color: rgb(var(--color-text-rgb) / 0.14);
+    line-height: 0;
+    transition:
+      color var(--duration-slow) var(--ease-spring),
+      transform var(--duration-slow) var(--ease-spring);
+  }
+
+  .whisper-upload-zone:hover .upload-icon {
+    color: rgb(var(--chromatic-cyan) / 0.4);
+    transform: scale(1.06);
+  }
+
+  .whisper-upload-zone:active .upload-icon {
+    transform: scale(0.94);
+  }
+
+  .upload-text {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    margin: 0 0 calc(var(--space-xs) * 0.3);
+    color: rgb(var(--color-text-rgb) / 0.6);
+    transition: color var(--duration-slow) var(--ease-out);
+  }
+
+  .whisper-upload-zone:hover .upload-text {
+    color: rgb(var(--color-text-rgb) / 0.8);
+  }
+
+  .upload-subtext {
+    font-size: var(--text-sm);
+    margin: 0 0 var(--space-sm);
+    color: rgb(var(--color-text-rgb) / 0.28);
+  }
+
+  .upload-formats {
+    font-size: calc(var(--text-sm) * 0.85);
+    margin: 0;
+    color: rgb(var(--color-text-rgb) / 0.15);
+    letter-spacing: 0.06em;
+  }
+
+  /* ── Upload file meta (hidden until file loaded) ────────── */
+  .upload-file-meta {
+    display: none;
+    margin: 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.38);
+  }
+
+  /* ── Upload Zone compact (after file loaded) ────────────── */
+  .whisper-upload-zone:global(.whisper-upload-zone--compact) {
+    padding: calc(var(--space-sm) * 0.9) var(--space-sm);
+    border-style: solid;
+    border-width: 1px;
+    text-align: left;
+    cursor: pointer;
+    background: var(--whisper-surface);
+  }
+
+  .whisper-upload-zone:global(.whisper-upload-zone--compact) .upload-icon {
+    display: none;
+  }
+
+  .whisper-upload-zone:global(.whisper-upload-zone--compact) .upload-text {
+    font-weight: 600;
+    color: rgb(var(--color-text-rgb) / 0.86);
+    margin: 0;
+    word-break: break-word;
+  }
+
+  .whisper-upload-zone:global(.whisper-upload-zone--compact) .upload-subtext,
+  .whisper-upload-zone:global(.whisper-upload-zone--compact) .upload-formats {
+    display: none;
+  }
+
+  .whisper-upload-zone:global(.whisper-upload-zone--compact) .upload-file-meta {
+    display: block;
+    margin-top: calc(var(--space-xs) * 0.35);
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .whisper-upload-zone:global(.whisper-upload-zone--compact):hover .upload-file-meta {
+    color: rgb(var(--chromatic-cyan) / 0.55);
+  }
+
+  /* ── Operation Panel ───────────────────────────────────── */
+  .whisper-panel {
+    display: grid;
+    gap: var(--space-sm);
+    border: 1px solid var(--whisper-edge);
+    border-radius: var(--whisper-radius);
+    padding: var(--space-sm);
+    background: var(--whisper-surface);
+    box-shadow: var(--edge-highlight);
+  }
+
+  .whisper-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .whisper-panel-title {
+    margin: 0;
+    font-size: var(--text-base);
+    color: rgb(var(--color-text-rgb) / 0.86);
+  }
+
+  .whisper-panel-mode {
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.42);
+    letter-spacing: 0.04em;
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .whisper-panel-mode:global(.whisper-status--ready) {
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  .whisper-field {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.35);
+  }
+
+  .whisper-field-label {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.62);
+  }
+
+  .whisper-field-hint {
+    color: rgb(var(--color-text-rgb) / 0.32);
+    font-size: calc(var(--text-sm) * 0.88);
+  }
+
+  .whisper-input {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    color: var(--color-text);
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  .whisper-input::placeholder {
+    color: rgb(var(--color-text-rgb) / 0.22);
+  }
+
+  .whisper-input:focus-visible {
+    outline: none;
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
+  }
+
+  .whisper-password-row {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+    align-items: stretch;
+  }
+
+  .whisper-password-input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .whisper-mini-btn {
+    flex: 0 0 auto;
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    color: rgb(var(--color-text-rgb) / 0.6);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  .whisper-password-tools {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    overflow: hidden;
+  }
+
+  .whisper-password-tools .whisper-mini-btn {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    min-height: var(--touch-target);
+  }
+
+  .whisper-password-tools .whisper-mini-btn + .whisper-mini-btn {
+    border-left: 1px solid rgb(var(--color-text-rgb) / 0.14);
+  }
+
+  .whisper-mini-btn:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.24);
+    background: rgb(var(--color-text-rgb) / 0.04);
+    color: rgb(var(--color-text-rgb) / 0.75);
+  }
+
+  .whisper-password-tools .whisper-mini-btn:hover {
+    border-color: transparent;
+  }
+
+  .whisper-mini-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .whisper-password-meta {
+    margin: 0;
+    min-height: 1.25em;
+  }
+
+  .whisper-mini-btn:focus-visible {
+    outline: none;
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
+  }
+
+  .whisper-file-btn {
+    display: flex;
+    align-items: center;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    min-height: var(--touch-target);
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .whisper-file-btn:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.24);
+    background: rgb(var(--color-text-rgb) / 0.04);
+  }
+
+  .whisper-file-btn-text {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.4);
+  }
+
+  .whisper-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    min-height: var(--touch-target);
+    padding: 0.55rem 0.75rem;
+    cursor: pointer;
+    user-select: none;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  .whisper-toggle:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.24);
+    background: rgb(var(--color-text-rgb) / 0.04);
+  }
+
+  .whisper-toggle:focus-within {
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
+  }
+
+  .whisper-toggle-input {
+    width: 1.05rem;
+    height: 1.05rem;
+    accent-color: rgb(var(--chromatic-cyan));
+    flex-shrink: 0;
+  }
+
+  .whisper-toggle-text {
+    display: inline-flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.66);
+  }
+
+  /* ── Mode-conditional visibility ───────────────────────── */
+  .whisper-page[data-mode="embed"] .whisper-field--hunt,
+  .whisper-page[data-mode="extract"] .whisper-field--hunt,
+  .whisper-page[data-mode="extract"] .whisper-field--embed {
+    display: none;
+  }
+
+  .whisper-page[data-mode="hunt"] .whisper-field--embed {
+    display: none;
+  }
+
+  /* ── Progress ──────────────────────────────────────────── */
+  .whisper-progress {
+    height: 4px;
+    border-radius: 2px;
+    background: rgb(var(--color-text-rgb) / 0.06);
+    overflow: hidden;
+  }
+
+  .whisper-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: rgb(var(--chromatic-cyan));
+    border-radius: 2px;
+    transition: width 0.3s linear;
+  }
+
+  .whisper-progress-fill:global(.whisper-progress--indeterminate) {
+    width: 100%;
+    animation: whisper-progress-pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes whisper-progress-pulse {
+    0%,
+    100% {
+      opacity: 0.3;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  /* ── Results ───────────────────────────────────────────── */
+  .whisper-results {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.4);
+  }
+
+  .whisper-result {
+    margin: 0;
+    border: 1px solid var(--whisper-edge);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    padding: 0.6rem 0.75rem;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+
+  .whisper-result--ok {
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    color: rgb(var(--color-text-rgb) / 0.86);
+    background: rgb(var(--chromatic-cyan) / 0.03);
+  }
+
+  .whisper-result--warn {
+    border-color: rgb(var(--tool-status-warning) / 0.35);
+    color: rgb(var(--tool-status-warning));
+    background: rgb(var(--tool-status-warning) / 0.04);
+  }
+
+  .whisper-result--error {
+    border-color: rgb(var(--chromatic-red) / 0.35);
+    color: rgb(var(--chromatic-red));
+    background: rgb(var(--chromatic-red) / 0.04);
+  }
+
+  /* ── Downloads ─────────────────────────────────────────── */
+  .whisper-downloads {
+    margin-top: var(--space-sm);
+    display: grid;
+    gap: calc(var(--space-xs) * 0.45);
+  }
+
+  .whisper-download-card {
+    border: 1px solid var(--whisper-edge);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    padding: 0.7rem 0.8rem;
+    background: var(--whisper-surface);
+    display: grid;
+    gap: calc(var(--space-xs) * 0.25);
+    box-shadow: var(--edge-highlight);
+  }
+
+  .whisper-download-title,
+  .whisper-download-meta {
+    margin: 0;
+  }
+
+  .whisper-download-title {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.86);
+  }
+
+  .whisper-download-meta {
+    font-size: calc(var(--text-sm) * 0.9);
+    color: rgb(var(--color-text-rgb) / 0.42);
+  }
+
+  .whisper-download-link {
+    width: fit-content;
+    font-size: var(--text-sm);
+    color: rgb(var(--chromatic-cyan));
+    text-decoration: none;
+    border-bottom: 1px solid rgb(var(--chromatic-cyan) / 0.35);
+    transition:
+      color var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
+  }
+
+  .whisper-download-link:hover,
+  .whisper-download-link:focus-visible {
+    color: var(--color-text);
+    border-bottom-color: rgb(var(--color-text-rgb) / 0.5);
+    outline: none;
+  }
+
+  /* ── Log ────────────────────────────────────────────────── */
+  .whisper-log-wrap {
+    border: 1px solid var(--whisper-edge);
+    border-radius: var(--whisper-radius);
+    background: rgb(var(--color-text-rgb) / 0.01);
+    overflow: hidden;
+    box-shadow: var(--edge-highlight);
+  }
+
+  .whisper-log-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.55rem 0.8rem;
+    border-bottom: 1px solid var(--whisper-edge);
+  }
+
+  .whisper-log-title {
+    margin: 0;
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.42);
+    letter-spacing: 0.04em;
+  }
+
+  .whisper-log-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-full);
+    background: rgb(var(--color-text-rgb) / 0.12);
+    flex-shrink: 0;
+    transition: background var(--duration-slow) var(--ease-out);
+  }
+
+  .whisper-log-dot:global(.whisper-log-active) {
+    background: rgb(var(--chromatic-cyan));
+    box-shadow: 0 0 8px rgb(var(--chromatic-cyan) / 0.4);
+    animation: whisper-log-blink 1s ease-in-out infinite;
+  }
+
+  @keyframes whisper-log-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .whisper-log-output {
+    margin: 0;
+    min-height: 7rem;
+    max-height: clamp(14rem, 12rem + 8vw, 24rem);
+    overflow: auto;
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: calc(var(--text-sm) * 0.9);
+    line-height: 1.6;
+    padding: 0.65rem 0.8rem;
+    color: rgb(var(--color-text-rgb) / 0.6);
+    background: transparent;
+  }
+
+  /* ── Insights ──────────────────────────────────────────── */
+  .whisper-insights {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.9);
+  }
+
+  .insights-title {
+    margin: 0;
+    font-size: var(--text-lg);
+    color: rgb(var(--color-text-rgb) / 0.8);
+    letter-spacing: -0.01em;
+  }
+
+  .insights-text {
+    margin: 0;
+    color: rgb(var(--color-text-rgb) / 0.44);
+    font-size: var(--text-sm);
+    line-height: 1.65;
+  }
+
+  /* ── Fixed Action Bar ──────────────────────────────────── */
+  .whisper-actions {
+    position: fixed;
+    bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    gap: calc(var(--space-xs) * 0.25);
+    padding: calc(var(--space-xs) * 0.7);
+    background: var(--tool-actionbar-bg);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+    backdrop-filter: blur(16px) saturate(1.2);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--whisper-radius);
+    box-shadow: var(--edge-highlight), 0 4px 20px rgba(0, 0, 0, 0.25);
+    z-index: 40;
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    max-width: min(
+      var(--content-width),
+      calc(100vw - 2 * clamp(0.75rem, 4vw, 1.5rem))
+    );
+    transition: opacity var(--duration-slow) var(--ease-out);
+  }
+
+  .whisper-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-height: var(--touch-target);
+    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
+    background: transparent;
+    border: none;
+    border-radius: calc(var(--whisper-radius) * 0.625);
+    color: var(--color-text-muted);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .action-btn--primary {
+    background: rgb(var(--tool-action-run) / 0.1);
+    color: rgb(var(--tool-action-run));
+  }
+
+  .action-btn--primary:hover:not(:disabled) {
+    background: rgb(var(--tool-action-run) / 0.18);
+    color: rgb(var(--tool-action-run));
+  }
+
+  .action-btn--primary:global(.action-btn--loading) {
+    background: rgb(var(--tool-action-load) / 0.16);
+    color: rgb(var(--tool-action-load));
+    pointer-events: none;
+  }
+
+  .action-btn--primary:global(.action-btn--ran) {
+    animation: whisper-run-ack 900ms var(--ease-spring);
+    background: linear-gradient(180deg, rgb(var(--chromatic-cyan) / 0.22) 0%, rgb(var(--chromatic-cyan) / 0.1) 100%);
+    color: rgb(var(--chromatic-cyan));
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.35);
+  }
+
+  @keyframes whisper-run-ack {
+    0% {
+      transform: translateY(0) scale(1);
+      box-shadow: 0 0 0 rgb(var(--chromatic-cyan) / 0);
+    }
+    35% {
+      transform: translateY(-1px) scale(1.03);
+      box-shadow: 0 0 14px rgb(var(--chromatic-cyan) / 0.24);
+    }
+    100% {
+      transform: translateY(0) scale(1);
+      box-shadow: 0 0 0 rgb(var(--chromatic-cyan) / 0);
+    }
+  }
+
+  .action-btn--icon {
+    min-width: var(--touch-target);
+    padding-inline: calc(var(--space-xs) * 0.8);
+  }
+
+  .lens-handoff-icon {
+    width: 1.05rem;
+    height: 1.05rem;
+    flex-shrink: 0;
+  }
+
+  .action-btn:hover:not(:disabled) {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: var(--color-text);
+  }
+
+  .action-btn:active {
+    background: rgb(var(--color-text-rgb) / 0.1);
+  }
+
+  .action-btn:focus-visible {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    outline-offset: 1px;
+    color: var(--color-text);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .action-btn:disabled {
+    cursor: not-allowed;
+    color: rgb(var(--color-text-rgb) / 0.38);
+    background: transparent;
+    opacity: 1;
+  }
+
+  @supports not (
+    (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+  ) {
+    .whisper-actions {
+      background: var(--tool-actionbar-bg-fallback);
+    }
+  }
+
+  /* ── Responsive ────────────────────────────────────────── */
+  @media (max-width: 520px) {
+    .whisper-upload-zone {
+      padding: var(--space-lg) var(--space-sm);
+    }
+
+    .upload-icon {
+      display: none;
+    }
+
+    .whisper-actions {
+      gap: calc(var(--space-xs) * 0.18);
+      padding: calc(var(--space-xs) * 0.6);
+    }
+
+    .action-btn {
+      font-size: calc(var(--text-sm) * 0.9);
+      padding-inline: calc(var(--space-xs) * 1);
+    }
+  }
+
+  /* ── Touch devices ─────────────────────────────────────── */
+  @media (hover: none) {
+    .whisper-upload-zone:hover {
+      border-color: rgb(var(--color-text-rgb) / 0.14);
+      background: linear-gradient(
+        180deg,
+        rgb(var(--color-text-rgb) / 0.012) 0%,
+        transparent 60%
+      );
+      box-shadow: var(--edge-highlight);
+    }
+
+    .whisper-upload-zone:hover .upload-icon {
+      color: rgb(var(--color-text-rgb) / 0.14);
+      transform: none;
+    }
+
+    .whisper-upload-zone:hover .upload-text {
+      color: rgb(var(--color-text-rgb) / 0.6);
+    }
+
+    .whisper-upload-zone:active {
+      border-color: rgb(var(--chromatic-cyan) / 0.35);
+      background: linear-gradient(
+        180deg,
+        rgb(var(--chromatic-cyan) / 0.03) 0%,
+        rgb(var(--chromatic-cyan) / 0.008) 50%,
+        transparent 100%
+      );
+    }
+
+    .action-btn:hover {
+      background: transparent;
+      color: var(--color-text-muted);
+    }
+
+    .action-btn:active {
+      background: rgb(var(--color-text-rgb) / 0.1);
+      color: var(--color-text);
+    }
+
+    .action-btn--primary:hover {
+      background: rgb(var(--tool-action-run) / 0.1);
+      color: rgb(var(--tool-action-run));
+    }
+
+    .action-btn--primary:active {
+      background: rgb(var(--tool-action-run) / 0.2);
+    }
+
+    .whisper-mode-btn:hover {
+      color: rgb(var(--color-text-rgb) / 0.55);
+      border-color: transparent;
+    }
+
+    .whisper-mode-btn:active {
+      color: rgb(var(--color-text-rgb));
+      border-color: rgb(var(--color-text-rgb) / 0.18);
+    }
+  }
+
+  /* ── Reduced motion ────────────────────────────────────── */
+  @media (prefers-reduced-motion: reduce) {
+    .privacy-dot {
+      animation: none;
+    }
+
+    .whisper-log-dot:global(.whisper-log-active) {
+      animation: none;
+    }
+  }
+</style>
