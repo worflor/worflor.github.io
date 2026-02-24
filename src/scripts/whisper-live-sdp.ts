@@ -1,8 +1,23 @@
 // Whisper Live offer/answer codec.
 // Parses SDP, strips it to essentials, optionally gzip-compresses, base64url-encodes.
+// When a shared phrase is provided, the code is AES-GCM encrypted — the phrase acts
+// as a room key that hides ICE candidates, DTLS fingerprints, and all connection metadata.
 
-import { concatBytes, toArrayBuffer } from "./whisper-wasm";
-import { TE, TD } from "./whisper-live-crypto";
+import { concatBytes, toArrayBuffer, sha256, randomBytes } from "./whisper-wasm";
+import { TE, TD, hkdf, aesGcmEncrypt, aesGcmDecrypt } from "./whisper-live-crypto";
+
+/* ── SDP Sealing Constants ───────────────────────────────── */
+
+const SDP_SEAL_INFO = TE.encode("whisper-sdp-seal");
+const SDP_PHRASE_PREFIX = "whisper-phrase|";
+const ZERO_SALT_32 = new Uint8Array(32);
+
+/** Flag bytes for wire format */
+const FLAG_RAW  = 0x00;
+const FLAG_GZIP = 0x01;
+const FLAG_SEALED = 0x02;
+
+/* ── Types ───────────────────────────────────────────────── */
 
 interface CompactSDP {
   type: "offer" | "answer";
@@ -22,6 +37,8 @@ interface CompactCandidate {
   type: "host" | "srflx" | "prflx" | "relay";
 }
 
+/* ── Base64url ───────────────────────────────────────────── */
+
 function base64urlEncode(data: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]);
@@ -36,6 +53,8 @@ function base64urlDecode(str: string): Uint8Array {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
+
+/* ── SDP Parse / Reconstruct ─────────────────────────────── */
 
 function parseSDP(sdp: string): CompactSDP {
   const lines = sdp.split("\r\n");
@@ -108,7 +127,9 @@ function reconstructSDP(compact: CompactSDP): string {
   return lines.join("\r\n");
 }
 
-async function compress(compact: CompactSDP): Promise<string> {
+/* ── Compress / Decompress (bytes layer) ─────────────────── */
+
+async function compressToBytes(compact: CompactSDP): Promise<Uint8Array> {
   const raw = TE.encode(JSON.stringify(compact));
 
   if (typeof CompressionStream !== "undefined") {
@@ -128,20 +149,19 @@ async function compress(compact: CompactSDP): Promise<string> {
 
     const gz = concatBytes(...chunks);
     if (gz.length < raw.length) {
-      return base64urlEncode(concatBytes(new Uint8Array([0x01]), gz));
+      return concatBytes(new Uint8Array([FLAG_GZIP]), gz);
     }
   }
 
-  return base64urlEncode(concatBytes(new Uint8Array([0x00]), raw));
+  return concatBytes(new Uint8Array([FLAG_RAW]), raw);
 }
 
-async function decompress(code: string): Promise<CompactSDP> {
-  const data = base64urlDecode(code);
+async function decompressFromBytes(data: Uint8Array): Promise<CompactSDP> {
   const flag = data[0];
   const payload = data.subarray(1);
 
   let json: string;
-  if (flag === 0x01 && typeof DecompressionStream !== "undefined") {
+  if (flag === FLAG_GZIP && typeof DecompressionStream !== "undefined") {
     const ds = new DecompressionStream("gzip");
     const writer = ds.writable.getWriter();
     const reader = ds.readable.getReader();
@@ -164,14 +184,71 @@ async function decompress(code: string): Promise<CompactSDP> {
   return JSON.parse(json) as CompactSDP;
 }
 
-export async function sdpToCode(sdp: string, type: "offer" | "answer"): Promise<string> {
-  const compact = parseSDP(sdp);
-  compact.type = type;
-  return compress(compact);
+/* ── SDP Sealing (phrase-based encryption) ───────────────── */
+
+async function deriveSdpKey(phrase: string): Promise<Uint8Array> {
+  const phraseHash = await sha256(TE.encode(SDP_PHRASE_PREFIX + phrase));
+  const key = await hkdf(phraseHash, ZERO_SALT_32, SDP_SEAL_INFO, 32);
+  phraseHash.fill(0);
+  return key;
 }
 
-export async function codeToSdp(code: string, type: "offer" | "answer"): Promise<string> {
-  const compact = await decompress(code);
+/* ── Public API ──────────────────────────────────────────── */
+
+/**
+ * Encode SDP to a compact, portable code string.
+ * When `phrase` is provided, the code is AES-GCM encrypted — without the phrase
+ * the code is opaque (IPs, fingerprints, all metadata hidden).
+ */
+export async function sdpToCode(
+  sdp: string, type: "offer" | "answer", phrase?: string,
+): Promise<string> {
+  const compact = parseSDP(sdp);
+  compact.type = type;
+  const innerBytes = await compressToBytes(compact);
+
+  if (phrase) {
+    const key = await deriveSdpKey(phrase);
+    const nonce = randomBytes(12);
+    const ciphertext = await aesGcmEncrypt(key, innerBytes, nonce);
+    key.fill(0);
+    return base64urlEncode(concatBytes(new Uint8Array([FLAG_SEALED]), nonce, ciphertext));
+  }
+
+  return base64urlEncode(innerBytes);
+}
+
+/**
+ * Decode a compact code string back to SDP.
+ * If the code is sealed (encrypted), `phrase` is required — wrong phrase throws a
+ * descriptive error so the UI can surface "wrong room code" immediately.
+ */
+export async function codeToSdp(
+  code: string, type: "offer" | "answer", phrase?: string,
+): Promise<string> {
+  const data = base64urlDecode(code);
+
+  let innerBytes: Uint8Array;
+
+  if (data[0] === FLAG_SEALED) {
+    if (!phrase) {
+      throw new Error("This code is sealed with a shared phrase — enter it to connect");
+    }
+    const nonce = data.subarray(1, 13);
+    const ciphertext = data.subarray(13);
+    const key = await deriveSdpKey(phrase);
+    try {
+      innerBytes = await aesGcmDecrypt(key, ciphertext, nonce);
+    } catch {
+      key.fill(0);
+      throw new Error("Wrong shared phrase — could not unseal the connection code");
+    }
+    key.fill(0);
+  } else {
+    innerBytes = data;
+  }
+
+  const compact = await decompressFromBytes(innerBytes);
   compact.type = type;
   return reconstructSDP(compact);
 }

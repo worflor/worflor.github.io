@@ -568,8 +568,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       opts.offerCode.textContent = offerCode;
       updateControls();
     } catch (err) {
-      appendLog(`offer failed: ${err instanceof Error ? err.message : "unknown"}`);
-      handleStateChange("error", "Failed to create offer");
+      const msg = err instanceof Error ? err.message : "unknown";
+      appendLog(`offer failed: ${msg}`);
+      handleStateChange("error", msg);
     }
   }, { signal });
 
@@ -593,8 +594,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       await session.applyAnswer(code);
     } catch (err) {
-      appendLog(`answer apply failed: ${err instanceof Error ? err.message : "unknown"}`);
-      handleStateChange("error", "Failed to apply answer code");
+      const msg = err instanceof Error ? err.message : "unknown";
+      appendLog(`answer apply failed: ${msg}`);
+      handleStateChange("error", msg);
     }
   }, { signal });
 
@@ -612,8 +614,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       setBusy(false);
       updateControls();
     } catch (err) {
-      appendLog(`join failed: ${err instanceof Error ? err.message : "unknown"}`);
-      handleStateChange("error", "Failed to join channel");
+      const msg = err instanceof Error ? err.message : "unknown";
+      appendLog(`join failed: ${msg}`);
+      handleStateChange("error", msg);
     }
   }, { signal });
 
@@ -741,7 +744,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // Error retry
   opts.errorRetryBtn.addEventListener("click", resetToIdle, { signal });
 
-  /* ── Initial state ──────────────────────────────────────── */
+  /* -- Initial state ---------------------------------------- */
 
   // Optional URL param prefill for convenience; UI remains the primary control.
   if (getExternalAssistDefaultFromUrl()) {

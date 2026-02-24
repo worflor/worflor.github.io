@@ -736,9 +736,9 @@ export class WhisperLiveSession {
     this.log("gathering ICE candidates...");
     await this.waitForICE();
 
-    const code = await sdpToCode(this.pc.localDescription!.sdp, "offer");
+    const code = await sdpToCode(this.pc.localDescription!.sdp, "offer", this.sharedPhrase || undefined);
 
-    this.log(`offer code ready (${code.length} chars)`);
+    this.log(`offer code ready (${code.length} chars${this.sharedPhrase ? ", sealed" : ""})`);
     this.setState("waiting-for-answer");
 
     return code;
@@ -749,7 +749,7 @@ export class WhisperLiveSession {
     if (!this.pc) throw new Error("No connection — create offer first");
 
     this.log("applying answer code...");
-    const sdp = await codeToSdp(answerCode, "answer");
+    const sdp = await codeToSdp(answerCode, "answer", this.sharedPhrase || undefined);
     await this.pc.setRemoteDescription({ type: "answer", sdp });
     this.setState("connecting");
     this.log("connecting peer-to-peer...");
@@ -766,7 +766,7 @@ export class WhisperLiveSession {
     this.setState("answering");
     this.log("accepting offer code...");
 
-    const offerSDP = await codeToSdp(offerCode, "offer");
+    const offerSDP = await codeToSdp(offerCode, "offer", this.sharedPhrase || undefined);
 
     this.pc = new RTCPeerConnection(this.rtcConfig);
     this.setupPeerConnection(this.pc);
@@ -788,9 +788,9 @@ export class WhisperLiveSession {
     this.log("gathering ICE candidates...");
     await this.waitForICE();
 
-    const answerCode = await sdpToCode(this.pc.localDescription!.sdp, "answer");
+    const answerCode = await sdpToCode(this.pc.localDescription!.sdp, "answer", this.sharedPhrase || undefined);
 
-    this.log(`answer code ready (${answerCode.length} chars)`);
+    this.log(`answer code ready (${answerCode.length} chars${this.sharedPhrase ? ", sealed" : ""})`);
     this.setState("connecting");
     this.log("connecting peer-to-peer...");
 
