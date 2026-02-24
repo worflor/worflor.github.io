@@ -1650,26 +1650,26 @@ function parseIptcIim(view: DataView, offset: number, length: number): RawExif {
 /** Build IPTC category fields */
 function buildIptcCategory(exif: RawExif): ExifField[] {
   const fields: ExifField[] = [];
-  const mappings: Array<{ key: string; label: string }> = [
-    { key: "IptcObjectName", label: "Object Name" },
-    { key: "IptcHeadline", label: "Headline" },
-    { key: "IptcCaption", label: "Caption" },
-    { key: "IptcByline", label: "Creator" },
-    { key: "IptcBylineTitle", label: "Creator Title" },
-    { key: "IptcCredit", label: "Credit" },
-    { key: "IptcSource", label: "Source" },
-    { key: "IptcKeywords", label: "Keywords" },
-    { key: "IptcCity", label: "City" },
-    { key: "IptcProvinceState", label: "State/Province" },
-    { key: "IptcCountry", label: "Country" },
-    { key: "IptcDateCreated", label: "Date Created" },
+  const mappings: Array<{ key: string; label: string; desc: string }> = [
+    { key: "IptcObjectName", label: "Object Name", desc: "shorthand name for the content" },
+    { key: "IptcHeadline", label: "Headline", desc: "a publishable headline of the content" },
+    { key: "IptcCaption", label: "Caption", desc: "description or abstract of the content" },
+    { key: "IptcByline", label: "Creator", desc: "name of the creator of the content" },
+    { key: "IptcBylineTitle", label: "Creator Title", desc: "title of the creator" },
+    { key: "IptcCredit", label: "Credit", desc: "identifies the provider of the content" },
+    { key: "IptcSource", label: "Source", desc: "original source of the content" },
+    { key: "IptcKeywords", label: "Keywords", desc: "keywords or tags associated with the content" },
+    { key: "IptcCity", label: "City", desc: "city where content was created" },
+    { key: "IptcProvinceState", label: "State/Province", desc: "state or province where content was created" },
+    { key: "IptcCountry", label: "Country", desc: "country where content was created" },
+    { key: "IptcDateCreated", label: "Date Created", desc: "the date the content was created" },
   ];
 
-  for (const { key, label } of mappings) {
+  for (const { key, label, desc } of mappings) {
     const val = exif[key];
     if (val !== undefined && val !== null) {
       const display = Array.isArray(val) ? val.join(", ") : String(val);
-      fields.push(field(`iptc.${key.toLowerCase()}`, label, val, display));
+      fields.push(field(`iptc.${key.toLowerCase()}`, label, val, display, desc));
     }
   }
 
@@ -1683,37 +1683,32 @@ function buildXmpCategory(exif: RawExif): ExifField[] {
 
   const fields: ExifField[] = [];
 
-  // Extract common XMP tags using regex to avoid full XML parser overhead
-  // Supports both attribute and element formats
-  const extract = (tag: string, label: string) => {
-    // Try attribute: tag="value"
+  const extract = (tag: string, label: string, desc: string) => {
     let match = xmp.match(new RegExp(`${tag}="([^"]+)"`));
     if (!match) {
-      // Try element: <tag>value</tag>
       match = xmp.match(new RegExp(`<${tag}[^>]*>([^<]+)</${tag}>`));
     }
-    // Try prefixed attribute: xmp:tag="value"
     if (!match) {
       match = xmp.match(new RegExp(`[:\\s]${tag}="([^"]+)"`));
     }
 
     if (match && match[1]) {
       const val = match[1].trim();
-      fields.push(field(`xmp.${tag}`, label, val));
+      fields.push(field(`xmp.${tag}`, label, val, val, desc));
     }
   };
 
-  extract("CreatorTool", "Creator Tool");
-  extract("CreateDate", "Create Date");
-  extract("MetadataDate", "Metadata Date");
-  extract("Rating", "Rating");
-  extract("Label", "Label");
-  extract("format", "Format");
-  extract("title", "Title");
-  extract("description", "Description");
-  extract("subject", "Subject/Keywords");
-  extract("rights", "Rights/Copyright");
-  extract("UsageTerms", "Usage Terms");
+  extract("CreatorTool", "Creator Tool", "the tool used to create the original resource");
+  extract("CreateDate", "Create Date", "the date and time the resource was originally created");
+  extract("MetadataDate", "Metadata Date", "the date and time that any metadata was last changed");
+  extract("Rating", "Rating", "user-assigned rating of the resource");
+  extract("Label", "Label", "user-assigned label or category");
+  extract("format", "Format", "the MIME type of the resource");
+  extract("title", "Title", "the title of the resource in various languages");
+  extract("description", "Description", "a textual description of the resource");
+  extract("subject", "Keywords", "a list of descriptive phrases or keywords");
+  extract("rights", "Copyright", "informal rights statement, such as a copyright notice");
+  extract("UsageTerms", "Usage Terms", "textual instruction on how the resource may be used");
 
   return fields;
 }
