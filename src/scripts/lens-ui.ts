@@ -161,7 +161,6 @@ function readHandoffSource(metadata: unknown): string | null {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const EXPANSION_STATE_KEY = "theLens.categoryExpansion.v1";
-const LENS_REFRESH_FILE_KEY = "theLens.refreshFileToken.v1";
 const CATEGORY_STAGGER_MS = 80;
 const CATEGORY_REVEAL_MS = 300;
 const CATEGORY_REVEAL_OFFSET_PX = 8;
@@ -189,41 +188,6 @@ export function initLens(opts: LensUIOptions): () => void {
   let prismDraftMetadata: unknown | null = null;
   let bootRestorePending = false;
   const cleanups: Array<() => void> = [];
-
-  function saveRefreshFileToken(token: string): void {
-    try {
-      window.localStorage.setItem(LENS_REFRESH_FILE_KEY, token);
-    } catch {
-      // Ignore persistence errors.
-    }
-  }
-
-  function loadRefreshFileToken(): string | null {
-    try {
-      const token = window.localStorage.getItem(LENS_REFRESH_FILE_KEY);
-      return token && token.trim().length > 0 ? token : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function clearRefreshFileToken(): void {
-    try {
-      window.localStorage.removeItem(LENS_REFRESH_FILE_KEY);
-    } catch {
-      // Ignore persistence errors.
-    }
-  }
-
-  async function persistCurrentFileForRefresh(file: File, metadata: unknown | null): Promise<void> {
-    try {
-      if (!(await supportsFileHandoff())) return;
-      const token = await createFileHandoff(file, metadata === null ? undefined : metadata);
-      saveRefreshFileToken(token);
-    } catch {
-      // Ignore persistence errors.
-    }
-  }
 
   function on<K extends keyof HTMLElementEventMap>(
     target: EventTarget,
@@ -494,6 +458,20 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.emptyState.style.display = "none";
     opts.loadingIndicator.style.display = options?.suppressLoadingIndicator ? "none" : "";
 
+    // Clear currently rendered result so new file always replaces old cleanly.
+    clearCategoryRevealTimers();
+    hideAllPreviews();
+    opts.previewSection.style.display = "none";
+    opts.summarySection.style.display = "none";
+    opts.summaryDynamic.innerHTML = "";
+    opts.container.innerHTML = "";
+    opts.actionsBar.style.display = "none";
+    opts.actionsBar.style.opacity = "0";
+    if (actionBarTimer) {
+      clearTimeout(actionBarTimer);
+      actionBarTimer = null;
+    }
+
     // Create object URL for previews
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
     currentObjectUrl = URL.createObjectURL(file);
@@ -532,8 +510,6 @@ export function initLens(opts: LensUIOptions): () => void {
     // Render categories
     renderCategories(data);
 
-    void persistCurrentFileForRefresh(file, prismDraftMetadata);
-
     // Show action bar
     updateHandoffButtons();
     opts.actionsBar.style.display = "";
@@ -557,7 +533,6 @@ export function initLens(opts: LensUIOptions): () => void {
     currentInputFile = null;
     currentData = null;
     prismDraftMetadata = null;
-    clearRefreshFileToken();
     updateHandoffButtons();
     opts.summarySection.style.display = "none";
     opts.summaryDynamic.innerHTML = "";
@@ -901,32 +876,7 @@ export function initLens(opts: LensUIOptions): () => void {
     }
   }
 
-  async function restoreRefreshFileIfPresent(): Promise<void> {
-    if (currentInputFile) return;
-    const token = loadRefreshFileToken();
-    if (!token) return;
-
-    try {
-      const payload = await consumeFileHandoffWithRetry(token);
-      if (!payload) {
-        clearRefreshFileToken();
-        return;
-      }
-      if (destroyed || currentInputFile) return;
-      const handoffSource = payload.metadata === null ? null : readHandoffSource(payload.metadata);
-      const shouldParsePrismDraft = payload.metadata !== null && (handoffSource === null || handoffSource === "prism");
-      const draftSnapshot = shouldParsePrismDraft ? parsePrismDraftSnapshot(payload.metadata) : null;
-      await processFile(payload.file, {
-        preservePrismDraft: true,
-        prismDraftMetadata: draftSnapshot,
-        suppressLoadingIndicator: true,
-      });
-    } catch {
-      // Ignore restore failures silently.
-    }
-  }
-
-  bootRestorePending = Boolean(getHandoffTokenFromCurrentUrl() || loadRefreshFileToken());
+  bootRestorePending = Boolean(getHandoffTokenFromCurrentUrl());
   if (bootRestorePending) {
     opts.uploadZone.style.display = "none";
     opts.emptyState.style.display = "none";
@@ -936,7 +886,6 @@ export function initLens(opts: LensUIOptions): () => void {
   void (async () => {
     try {
       await consumePrismHandoffIfPresent();
-      await restoreRefreshFileIfPresent();
     } finally {
       bootRestorePending = false;
       if (destroyed || currentInputFile) return;
