@@ -656,12 +656,14 @@ export function initLens(opts: LensUIOptions): () => void {
 
   function renderCategories(data: LensData): void {
     clearCategoryRevealTimers();
-    opts.container.innerHTML = "";
+    const fragment = document.createDocumentFragment();
 
     data.categories.forEach((cat) => {
       const section = renderCategory(cat);
-      opts.container.appendChild(section);
+      fragment.appendChild(section);
     });
+
+    opts.container.replaceChildren(fragment);
   }
 
   function renderCategory(cat: ExifCategory): HTMLElement {
