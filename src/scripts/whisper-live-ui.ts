@@ -752,7 +752,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   showPhase(opts.liveSection);
-  appendLog("whisper live ready");
+  appendLog("live channel ready");
   updateControls();
 
   /* ── Teardown ───────────────────────────────────────────── */
