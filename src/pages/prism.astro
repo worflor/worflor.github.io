@@ -85,11 +85,7 @@ const seo = {
     </section>
 
     <!-- ── Input Preview (hidden until file loaded) ──────────── -->
-    <section
-      class="mt-[var(--space-sm)] content-section"
-      id="prism-input-preview"
-      style="display:none"
-    >
+    <section class="mt-[var(--space-sm)] content-section" id="prism-input-preview" style="display:none">
       <div class="prism-input-preview prism-source-strip">
         <div class="prism-source-thumb" aria-hidden="true">
           <video
@@ -636,6 +632,15 @@ const seo = {
 
   /* ── Input Preview ────────────────────────────────────────── */
 
+  .prism-input-pip {
+    position: fixed;
+    right: max(var(--space-sm), env(safe-area-inset-right));
+    bottom: calc(max(var(--space-sm), env(safe-area-inset-bottom)) + 4.6rem);
+    width: min(13rem, 38vw);
+    z-index: 35;
+    pointer-events: none;
+  }
+
   .prism-input-preview {
     border: 1px solid rgb(var(--color-text-rgb) / 0.08);
     border-radius: var(--prism-radius);
@@ -652,7 +657,7 @@ const seo = {
     display: flex;
     align-items: center;
     gap: calc(var(--space-xs) * 0.8);
-    padding: calc(var(--space-xs) * 0.5) calc(var(--space-xs) * 0.8);
+    padding: calc(var(--space-xs) * 0.35);
   }
 
   .prism-source-thumb {
@@ -681,6 +686,10 @@ const seo = {
     gap: calc(var(--space-xs) * 0.2);
   }
 
+  .prism-input-pip .prism-source-meta {
+    display: none;
+  }
+
   .prism-source-name {
     margin: 0;
     font-size: var(--text-sm);
@@ -705,6 +714,17 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.28);
   }
 
+  .prism-input-pip .prism-source-thumb {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    border-radius: calc(var(--prism-radius) * 0.72);
+  }
+
+  .prism-input-pip .prism-source-glyph {
+    font-size: calc(var(--text-sm) * 0.68);
+  }
+
   .prism-input-preview-video {
     display: block;
     width: 100%;
@@ -721,6 +741,13 @@ const seo = {
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  @media (max-width: 720px) {
+    .prism-input-pip {
+      width: min(10rem, 42vw);
+      bottom: calc(max(var(--space-xs), env(safe-area-inset-bottom)) + 4.1rem);
+    }
   }
 
   /* ── Size Warning ──────────────────────────────────────────── */

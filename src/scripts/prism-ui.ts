@@ -289,6 +289,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let outputName: string = "";
   let outputUrl: string | null = null;
   let previewUrl: string | null = null;
+  let inputPreviewUrl: string | null = null;
   let downloadUrl: string | null = null;
   let terminalOpen = false;
   let dragCounter = 0;
@@ -932,6 +933,10 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.sourceSize.textContent = "";
     opts.sourceType.textContent = "";
     hide(opts.inputPreview);
+    if (inputPreviewUrl) {
+      URL.revokeObjectURL(inputPreviewUrl);
+      inputPreviewUrl = null;
+    }
   }
 
   // ── Toast ──────────────────────────────────────────────────────────────
@@ -1232,7 +1237,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
   }
 
   // ── Run ────────────────────────────────────────────────────────────────
-
   async function run(): Promise<void> {
     const currentFile = getCurrentFile();
     const currentFileInfo = getCurrentFileInfo();
@@ -1244,7 +1248,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
       showToast("Nothing to do. Configure an operation first.");
       return;
     }
-
     const eng = ensureEngine();
 
     // Load engine if needed
@@ -1553,12 +1556,12 @@ export function initPrism(opts: PrismUIOptions): () => void {
       opts.previewImg.style.cursor = "pointer";
       opts.previewImg.setAttribute("role", "button");
       opts.previewImg.setAttribute("tabindex", "0");
-      opts.previewImg.setAttribute("title", "Tap to download");
-      opts.previewImg.onclick = () => { downloadOutput(); };
+      opts.previewImg.setAttribute("title", "Open full-size image");
+      opts.previewImg.onclick = () => { openImageViewer(); };
       opts.previewImg.onkeydown = (e: KeyboardEvent) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          downloadOutput();
+          openImageViewer();
         }
       };
       show(opts.previewImg);
@@ -1570,6 +1573,11 @@ export function initPrism(opts: PrismUIOptions): () => void {
   }
 
   // ── Download ───────────────────────────────────────────────────────────
+
+  function openImageViewer(): void {
+    if (!previewUrl) return;
+    window.open(previewUrl, "_blank", "noopener,noreferrer");
+  }
 
   function downloadOutput(): void {
     if (!outputData || !outputName) return;
@@ -1740,11 +1748,10 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   on(opts.btnRun, "click", () => {
     if (prismState === "complete" || prismState === "error") {
-      // "Run Again" / "Try Again" — reset output, return to file-loaded state
+      // "Run Again" / "Try Again" — reset output, then rerun immediately
       resetOutput();
       setState("files_loaded");
       updateQueueStatus("ready", "ready");
-      return;
     }
 
     const loadableState = isLoadableState(prismState);
@@ -1758,7 +1765,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
     if (currentEngineState === "loading") return;
 
-    run();
+    void run();
   });
 
   on(opts.btnCancel, "click", () => {
@@ -1917,6 +1924,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.inputVideo.removeAttribute("src");
     opts.inputAudio.pause();
     opts.inputAudio.removeAttribute("src");
+    if (inputPreviewUrl) URL.revokeObjectURL(inputPreviewUrl);
     revokeQueueThumbUrls();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     if (outputUrl) URL.revokeObjectURL(outputUrl);

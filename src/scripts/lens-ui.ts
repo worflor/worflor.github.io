@@ -5,6 +5,7 @@
 import { parseFile, LENS_CATEGORY_ORDER, type ExifCategory, type ExifField, type LensData } from "./lens-exif";
 import { isPrismSupportedFile } from "./prism-engine";
 import { parsePrismDraftSnapshot } from "./prism-draft";
+import { featureFlags } from "../config/features";
 import {
   buildCageHandoffUrl,
   buildPrismHandoffUrl,
@@ -418,7 +419,7 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.actionPrismBtn.disabled = !prismVisible || prismHandoffInFlight;
     opts.actionPrismBtn.setAttribute("aria-busy", prismHandoffInFlight ? "true" : "false");
 
-    const cageVisible = handoffSupported && isCageHandoffEligible();
+    const cageVisible = featureFlags.cageEnabled && handoffSupported && isCageHandoffEligible();
     opts.actionCageBtn.style.display = cageVisible ? "" : "none";
     opts.actionCageBtn.disabled = !cageVisible || cageHandoffInFlight;
     opts.actionCageBtn.setAttribute("aria-busy", cageHandoffInFlight ? "true" : "false");
@@ -442,6 +443,7 @@ export function initLens(opts: LensUIOptions): () => void {
       opts.summaryDynamic.appendChild(sep);
 
       const stat = el("div", "summary-stat");
+
       const value = el("span", "summary-value");
       value.textContent = item.value;
 
@@ -827,7 +829,7 @@ export function initLens(opts: LensUIOptions): () => void {
   });
 
   on(opts.actionCageBtn, "click", async () => {
-    if (cageHandoffInFlight || !handoffSupported || !currentData || !currentInputFile) {
+    if (!featureFlags.cageEnabled || cageHandoffInFlight || !handoffSupported || !currentData || !currentInputFile) {
       return;
     }
 

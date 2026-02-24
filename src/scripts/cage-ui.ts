@@ -27,6 +27,7 @@ export interface CageUIOptions {
   actionLensBtn: HTMLButtonElement;
   actionUploadBtn: HTMLButtonElement;
   actionClearBtn: HTMLButtonElement;
+  alphaBadge: HTMLElement;
 }
 
 type CageUIIdMap = { [K in keyof CageUIOptions]: string };
@@ -50,6 +51,7 @@ export const CAGE_UI_IDS: CageUIIdMap = {
   actionLensBtn: "cage-action-lens",
   actionUploadBtn: "cage-action-upload",
   actionClearBtn: "cage-action-clear",
+  alphaBadge: "cage-alpha-badge",
 };
 
 type ThreatSeverity = "low" | "medium" | "high";
@@ -181,11 +183,12 @@ export function resolveCageUIOptions(root: ParentNode = document): CageUIOptions
   const actionLensBtn = asButton(q(root, CAGE_UI_IDS.actionLensBtn));
   const actionUploadBtn = asButton(q(root, CAGE_UI_IDS.actionUploadBtn));
   const actionClearBtn = asButton(q(root, CAGE_UI_IDS.actionClearBtn));
+  const alphaBadge = q(root, CAGE_UI_IDS.alphaBadge);
 
   if (
     !page || !uploadZone || !fileInput || !actionsBar || !sourceName || !sourceMeta || !viewport || !threatLog ||
     !threatEmpty || !verdictScore || !verdictLabel || !verdictReason || !manifestOutput ||
-    !manifestCopyBtn || !actionRunBtn || !actionLensBtn || !actionUploadBtn || !actionClearBtn
+    !manifestCopyBtn || !actionRunBtn || !actionLensBtn || !actionUploadBtn || !actionClearBtn || !alphaBadge
   ) {
     return null;
   }
@@ -209,6 +212,7 @@ export function resolveCageUIOptions(root: ParentNode = document): CageUIOptions
     actionLensBtn,
     actionUploadBtn,
     actionClearBtn,
+    alphaBadge,
   };
 }
 
@@ -319,30 +323,30 @@ function parseCageIngressMetadata(value: unknown): CageIngressMetadata | null {
   };
 }
 
+const NON_TEXTUAL_INPUT_TYPES: ReadonlySet<string> = new Set([
+  "button",
+  "checkbox",
+  "color",
+  "date",
+  "datetime-local",
+  "file",
+  "hidden",
+  "image",
+  "month",
+  "number",
+  "radio",
+  "range",
+  "reset",
+  "submit",
+  "time",
+  "week",
+]);
+
 function isEditablePasteTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   if (target instanceof HTMLTextAreaElement) return true;
   if (target instanceof HTMLInputElement) {
-    const type = target.type.toLowerCase();
-    const nonTextual = new Set([
-      "button",
-      "checkbox",
-      "color",
-      "date",
-      "datetime-local",
-      "file",
-      "hidden",
-      "image",
-      "month",
-      "number",
-      "radio",
-      "range",
-      "reset",
-      "submit",
-      "time",
-      "week",
-    ]);
-    return !nonTextual.has(type);
+    return !NON_TEXTUAL_INPUT_TYPES.has(target.type.toLowerCase());
   }
   if ((target as HTMLElement).isContentEditable) return true;
   return Boolean(target.closest("[contenteditable='true']"));
@@ -865,6 +869,7 @@ export function initCage(opts: CageUIOptions): () => void {
   let handoffSupported = true;
   let lensHandoffInFlight = false;
   let actionBarTimer: number | undefined;
+  let copyResetTimer: number | undefined;
   const cleanups: Array<() => void> = [];
 
   function updateLensActionButton(): void {
@@ -982,7 +987,7 @@ export function initCage(opts: CageUIOptions): () => void {
     opts.verdictScore.textContent = "0";
     opts.verdictLabel.textContent = "idle";
     opts.verdictReason.textContent = "awaiting interrogation run";
-    opts.threatLog.innerHTML = "";
+    opts.threatLog.replaceChildren();
     opts.threatEmpty.style.display = "";
     opts.threatEmpty.textContent = "No events yet.";
     opts.manifestOutput.textContent = "{\n  \"requestedStrip\": [],\n  \"airGapIntercepts\": [],\n  \"airGapFrames\": [],\n  \"ghostPatches\": [],\n  \"evidenceCodes\": [],\n  \"ingress\": null\n}";
@@ -1065,7 +1070,7 @@ export function initCage(opts: CageUIOptions): () => void {
 
     opts.actionRunBtn.disabled = true;
     opts.actionRunBtn.textContent = "Running...";
-    opts.threatLog.innerHTML = "";
+    opts.threatLog.replaceChildren();
     opts.threatEmpty.style.display = "none";
 
     try {
@@ -1301,7 +1306,9 @@ export function initCage(opts: CageUIOptions): () => void {
     } catch {
       opts.manifestCopyBtn.textContent = "Failed";
     } finally {
-      setTimeout(() => {
+      if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer);
+      copyResetTimer = window.setTimeout(() => {
+        copyResetTimer = undefined;
         if (!destroyed) opts.manifestCopyBtn.textContent = "Copy";
       }, 1200);
     }
@@ -1355,6 +1362,10 @@ export function initCage(opts: CageUIOptions): () => void {
     if (actionBarTimer !== undefined) {
       window.clearTimeout(actionBarTimer);
       actionBarTimer = undefined;
+    }
+    if (copyResetTimer !== undefined) {
+      window.clearTimeout(copyResetTimer);
+      copyResetTimer = undefined;
     }
     cleanups.forEach((cleanup) => cleanup());
     cleanups.length = 0;

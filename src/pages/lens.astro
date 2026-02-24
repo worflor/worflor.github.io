@@ -761,8 +761,33 @@ const seo = {
     }
 
     .lens-summary {
-      flex-direction: column;
-      gap: calc(var(--space-xs) * 0.5);
+      flex-direction: row;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: calc(var(--space-xs) * 0.4);
+      padding-inline: calc(var(--space-sm) * 0.85);
+    }
+
+    .summary-stat {
+      flex-direction: row;
+      align-items: baseline;
+      gap: calc(var(--space-xs) * 0.2);
+    }
+
+    .summary-number {
+      font-size: calc(var(--text-2xl) * 0.88);
+    }
+
+    .summary-value {
+      font-size: calc(var(--text-base) * 0.92);
+    }
+
+    .summary-label {
+      font-size: calc(var(--text-sm) * 0.9);
+    }
+
+    .summary-separator {
+      opacity: 0.08;
     }
   }
 

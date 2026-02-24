@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "generatedAt": "2026-02-24T00:00:00.000Z",
+  "fixtures": [
+    {
+      "id": "benign-sample",
+      "file": "benign-sample.bin",
+      "size": 80,
+      "sha256": "88fe936921cf2e091880660e476336207bb59b82bdfd0e2d63fd8aa6e4aa2273",
+      "description": "Low-risk plain-text baseline payload."
+    },
+    {
+      "id": "suspect-sample",
+      "file": "suspect-sample.bin",
+      "size": 148,
+      "sha256": "f57fb4361da769e009ec541a9b458ebd0d6b55808c67a9c23152376ff1c6021b",
+      "description": "Synthetic payload with beacon strings and anti-analysis opcode markers."
+    }
+  ]
+}

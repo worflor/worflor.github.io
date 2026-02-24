@@ -295,10 +295,7 @@ function buildCountByteBody(): number[] {
     0x03, BLOCK_VOID, // loop
     ...localGet(3), ...localGet(1), 0x4f, ...brIf(1), // i >= len -> break
     ...localGet(0), ...localGet(3), 0x6a, 0x2d, 0x00, 0x00, ...localSet(5), // b = data[i]
-    ...localGet(5), ...localGet(2), 0x46, // b == target
-    0x04, BLOCK_VOID, // if
-    ...localGet(4), ...i32Const(1), 0x6a, ...localSet(4), // count++
-    0x0b, // end if
+    ...localGet(4), ...localGet(5), ...localGet(2), 0x46, 0x6a, ...localSet(4), // count += (b == target)
     ...localGet(3), ...i32Const(1), 0x6a, ...localSet(3), // i++
     ...br(0),
     0x0b, // end loop
@@ -488,6 +485,7 @@ function ensureMemoryCapacity(memory: WebAssembly.Memory, requiredBytes: number)
 class CageWasmCore {
   private runTail: Promise<void> = Promise.resolve();
   private lastPayloadLength = 0;
+  private poisoned = false;
 
   private constructor(private readonly exports: CageWasmExports) {}
 
@@ -542,8 +540,15 @@ class CageWasmCore {
     });
 
     await previous;
+    if (this.poisoned) {
+      release();
+      throw new CageWasmError("profile-failed", "profile-run", "WASM core poisoned by prior trap.");
+    }
     try {
       return await fn();
+    } catch (error) {
+      this.poisoned = true;
+      throw error;
     } finally {
       release();
     }

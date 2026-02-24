@@ -6,6 +6,8 @@
     "dev": "astro dev",
     "start": "astro dev",
     "build": "astro check && astro build",
+    "test:cage": "tsx --test tests/cage/**/*.test.ts",
+    "test:cage:watch": "tsx --test --watch tests/cage/**/*.test.ts",
     "preview": "astro preview",
     "astro": "astro"
   },
@@ -22,6 +24,7 @@
     "typescript": "^5.4.3"
   },
   "devDependencies": {
-    "@tailwindcss/typography": "^0.5.12"
+    "@tailwindcss/typography": "^0.5.12",
+    "tsx": "^4.21.0"
   }
 }
