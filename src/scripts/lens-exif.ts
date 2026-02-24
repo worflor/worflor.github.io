@@ -1686,7 +1686,18 @@ export async function parseFile(file: File): Promise<LensData> {
 
   // If we found EXIF data, build image-specific categories (original path).
   if (hasExif) {
-    return buildExifResult(exif, meta, containerFormat);
+    const exifResult = buildExifResult(exif, meta, containerFormat);
+    try {
+      const { analyzeFile } = await import("./lens-formats");
+      const fallbackResult = await analyzeFile(file, buffer);
+      const profileCategory = fallbackResult.categories.find((category) => category.id === "profile");
+      if (profileCategory && !exifResult.categories.some((category) => category.id === "profile")) {
+        exifResult.categories.push(profileCategory);
+      }
+    } catch {
+      // Ignore supplemental profile extraction failures.
+    }
+    return exifResult;
   }
 
   // No EXIF - use the universal format engine.
