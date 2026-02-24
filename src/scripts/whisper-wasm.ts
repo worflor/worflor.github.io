@@ -147,8 +147,8 @@ interface WhisperEnvelopeHeader {
 const PAGE_SIZE = 64 * 1024;
 const I32 = 0x7f;
 const BLOCK_VOID = 0x40;
-const PAYLOAD_OFFSET = 4096;
-const PAYLOAD_PADDING = 128;
+/** Carrier data starts after the histogram region in WASM linear memory. */
+const CARRIER_OFFSET = 2048 + 256 * 4; // after HISTOGRAM_OFFSET + 256 i32 bins = 3072
 
 const DEFAULT_WINDOW = 4096;
 const DEFAULT_STRIDE = 1024;
@@ -170,8 +170,9 @@ const RECEIPT_DB_NAME = "whisper.receipts";
 const RECEIPT_DB_VERSION = 1;
 const RECEIPT_STORE = "receipts";
 
-const MAX_CARRIER_BYTES = 1024 * 1024 * 1024; // 1 GiB soft cap (still may OOM in browser)
-const MAX_PAYLOAD_BYTES = 256 * 1024 * 1024; // 256 MiB
+/** Thresholds for console warnings — no hard limits, just let the browser decide. */
+const WARN_CARRIER_BYTES = 1024 * 1024 * 1024; // 1 GiB
+const WARN_PAYLOAD_BYTES = 256 * 1024 * 1024; // 256 MiB
 
 let whisperCorePromise: Promise<WhisperWasmCore> | undefined;
 const textEncoder = new TextEncoder();
@@ -876,32 +877,27 @@ function mergeCandidates(candidates: WhisperInertCandidate[], minCandidateLength
   return merged.filter((candidate) => candidate.length >= minCandidateLength);
 }
 
-function ensureMemory(core: WhisperWasmCore, minBytes: number): Uint8Array {
+/** Grow WASM memory if needed so it can hold at least `minBytes`. */
+function growMemory(core: WhisperWasmCore, minBytes: number): void {
   const memory = core.exports.memory;
   const currentBytes = memory.buffer.byteLength;
-  if (currentBytes >= minBytes) return new Uint8Array(memory.buffer);
+  if (currentBytes >= minBytes) return;
   const neededPages = Math.ceil((minBytes - currentBytes) / PAGE_SIZE);
   memory.grow(neededPages);
-  return new Uint8Array(memory.buffer);
 }
 
 /**
- * Scan a window using the WASM histogram kernel.
- * One WASM call builds the full 256-bin histogram, then JS reads zero/ff counts
- * and computes entropy from the pre-built bins. Replaces the old 2× count_byte + entropy() path.
+ * Scan a window already resident in WASM linear memory.
+ * Caller copies the full carrier once; this just slides the pointer per window.
+ * Zero per-window memcpys — plays directly into WASM's linear memory model.
  */
 function scanWindowWasm(
   core: WhisperWasmCore,
-  windowBytes: Uint8Array,
+  dataPtr: number,
+  len: number,
 ): { zeroDensity: number; ffDensity: number; windowEntropy: number } {
-  const len = windowBytes.length;
-  const requiredBytes = PAYLOAD_OFFSET + len + PAYLOAD_PADDING;
-  const view = ensureMemory(core, requiredBytes);
-  view.set(windowBytes, PAYLOAD_OFFSET);
+  core.exports.build_histogram(dataPtr, len, HISTOGRAM_OFFSET);
 
-  core.exports.build_histogram(PAYLOAD_OFFSET, len, HISTOGRAM_OFFSET);
-
-  // Read histogram directly from WASM linear memory — no copy needed.
   const histView = new DataView(core.exports.memory.buffer, HISTOGRAM_OFFSET, 1024);
   const zeroCount = histView.getUint32(0x00 * 4, true);
   const ffCount = histView.getUint32(0xff * 4, true);
@@ -945,22 +941,30 @@ export async function scanInertSpace(bytes: Uint8Array, options: WhisperScanOpti
     console.warn(`[whisper-wasm] scan fallback to JS: ${normalizeErrorMessage(error)}`);
   }
 
+  // WASM path: copy the entire carrier into linear memory once, then slide pointers.
+  // Eliminates ~N memcpys (one per window) — the carrier is contiguous, so use it that way.
+  if (core) {
+    growMemory(core, CARRIER_OFFSET + bytes.length);
+    const wasmView = new Uint8Array(core.exports.memory.buffer);
+    wasmView.set(bytes, CARRIER_OFFSET); // single copy of the full carrier
+  }
+
   const rawCandidates: WhisperInertCandidate[] = [];
   for (let offset = 0; offset < bytes.length; offset += stride) {
     const end = Math.min(bytes.length, offset + windowSize);
-    const slice = bytes.subarray(offset, end);
-    if (slice.length < minCandidateLength) continue;
+    const windowLen = end - offset;
+    if (windowLen < minCandidateLength) continue;
 
     const { zeroDensity, ffDensity, windowEntropy } = core
-      ? scanWindowWasm(core, slice)
-      : scanWindowJs(slice);
+      ? scanWindowWasm(core, CARRIER_OFFSET + offset, windowLen)
+      : scanWindowJs(bytes.subarray(offset, end));
 
     const score = scoreWindow(zeroDensity, ffDensity, windowEntropy);
     if (score < 0.44) continue;
 
     rawCandidates.push({
       offset,
-      length: slice.length,
+      length: windowLen,
       zeroDensity,
       ffDensity,
       entropy: windowEntropy,
@@ -1039,15 +1043,15 @@ function looksCryptographicallyInert(candidate: WhisperInertCandidate): boolean 
   return dense >= 0.92 && candidate.entropy <= 1.2;
 }
 
-function assertReasonableSizes(carrierBytes: Uint8Array, payloadBytes?: Uint8Array): void {
-  if (carrierBytes.length > MAX_CARRIER_BYTES) {
-    throw new Error(
-      `Carrier is too large for reliable browser-side processing (${Math.round(carrierBytes.length / (1024 * 1024))} MB).`,
+function warnLargeSizes(carrierBytes: Uint8Array, payloadBytes?: Uint8Array): void {
+  if (carrierBytes.length > WARN_CARRIER_BYTES) {
+    console.warn(
+      `[whisper] Large carrier (${Math.round(carrierBytes.length / (1024 * 1024))} MB) — may be slow or OOM in this browser.`,
     );
   }
-  if (payloadBytes && payloadBytes.length > MAX_PAYLOAD_BYTES) {
-    throw new Error(
-      `Payload is too large (${Math.round(payloadBytes.length / (1024 * 1024))} MB).`,
+  if (payloadBytes && payloadBytes.length > WARN_PAYLOAD_BYTES) {
+    console.warn(
+      `[whisper] Large payload (${Math.round(payloadBytes.length / (1024 * 1024))} MB) — may be slow or OOM in this browser.`,
     );
   }
 }
@@ -1347,7 +1351,7 @@ export class WhisperEngine {
     if (carrierBytes.length === 0) throw new Error("Carrier is empty.");
     if (payload.bytes.length === 0) throw new Error("Payload is empty.");
 
-    assertReasonableSizes(carrierBytes, payload.bytes);
+    warnLargeSizes(carrierBytes, payload.bytes);
 
     const logs: string[] = [];
     const payloadHash = await sha256(payload.bytes);
@@ -1563,7 +1567,9 @@ export class WhisperEngine {
 
     // EOF tail mode: streaming carrier hash (carrier-bound) + zero-copy output.
     const payloadBytes = new Uint8Array(await payloadFile.arrayBuffer());
-    if (payloadBytes.length > MAX_PAYLOAD_BYTES) throw new Error("Payload too large for browser-side embed.");
+    if (payloadBytes.length > WARN_PAYLOAD_BYTES) {
+      console.warn(`[whisper] Large payload (${Math.round(payloadBytes.length / (1024 * 1024))} MB) — may be slow or OOM in this browser.`);
+    }
 
     const logs: string[] = [];
     logs.push("embedFile: using EOF tail mode (streaming carrier hash)");
@@ -1704,8 +1710,8 @@ export class WhisperEngine {
     if (carrierFile.size === 0) {
       return { found: false, confidence: 0, offset: null, payload: null, scrubbedFile: null, logs: ["empty carrier"] };
     }
-    if (carrierFile.size > MAX_CARRIER_BYTES) {
-      throw new Error("Carrier is too large for reliable browser-side extraction.");
+    if (carrierFile.size > WARN_CARRIER_BYTES) {
+      console.warn(`[whisper] Large carrier (${Math.round(carrierFile.size / (1024 * 1024))} MB) — may be slow or OOM in this browser.`);
     }
 
     const logs: string[] = [];
@@ -1842,7 +1848,7 @@ export class WhisperEngine {
       return { found: false, confidence: 0, offset: null, payload: null, scrubbedCarrierBytes: null, logs: ["empty carrier"] };
     }
 
-    assertReasonableSizes(carrierBytes);
+    warnLargeSizes(carrierBytes);
 
     const logs: string[] = [];
     const locator = await deriveLocatorTag(password);

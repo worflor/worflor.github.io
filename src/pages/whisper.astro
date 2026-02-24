@@ -15,7 +15,10 @@ const seo = {
     <section
       class="mt-8 content-section whisper-intro"
     >
-      <h1 class="page-title whisper-title" id="whisper-title">Whisper</h1>
+      <div class="whisper-title-row">
+        <h1 class="page-title whisper-title" id="whisper-title">Whisper</h1>
+        <span class="whisper-alpha-badge" id="whisper-alpha-badge">ALPHA</span>
+      </div>
       <p class="whisper-tagline">carrier-bound inert-space encryption</p>
       <p class="whisper-privacy-badge">
         <span class="privacy-dot"></span>
@@ -378,11 +381,34 @@ const seo = {
     gap: calc(var(--space-xs) * 0.7);
   }
 
+    .whisper-title-row {
+      display: flex;
+      align-items: center;
+      gap: calc(var(--space-xs) * 0.7);
+    }
+
   .whisper-title {
     margin: 0;
     line-height: 1.03;
     letter-spacing: -0.018em;
   }
+
+    .whisper-alpha-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      min-height: calc(var(--touch-target) * 0.5);
+      padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
+      border-radius: calc(var(--whisper-radius) * 0.55);
+      border: 1px solid rgb(var(--chromatic-red) / 0.35);
+      background: rgb(var(--chromatic-red) / 0.1);
+      color: rgb(var(--chromatic-red));
+      font-size: calc(var(--text-sm) * 0.66);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      user-select: none;
+    }
 
   .whisper-tagline {
     margin: 0;

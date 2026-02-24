@@ -549,18 +549,6 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     try { opts.passwordInput.setSelectionRange(0, pw.length); } catch { /* ignore */ }
     flashText(opts.passwordGenButton, "Generated");
     setPasswordMeta("generated a strong password");
-
-    // Best-effort: copy immediately so it feels like a flow.
-    void (async () => {
-      try {
-        await copyToClipboard(pw);
-        flashText(opts.passwordCopyButton, "Copied");
-        setPasswordMeta("generated & copied");
-      } catch {
-        // Clipboard may be blocked; leave explicit Copy button available.
-      }
-    })();
-
     appendLog("generated password");
   }, { signal });
 
