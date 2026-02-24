@@ -1,14 +1,31 @@
-// prism-engine.ts — ffmpeg.wasm wrapper with zero npm dependencies.
-// Loads everything from CDN at runtime. Detects SharedArrayBuffer support
+// prism-engine.ts — ffmpeg.wasm wrapper.
+// Loads ffmpeg class + core assets from CDN with failover + cache.
 // and picks single-thread (baseline) or multi-thread (enhanced) automatically.
 // All state is scoped inside createEngine() for clean Astro lifecycle teardown.
 
 // ─── CDN URLs ────────────────────────────────────────────────────────────────
 
-const FFMPEG_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm";
-const UTIL_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm";
-const CORE_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
-const CORE_MT_CDN = "https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm";
+interface EngineCdnProvider {
+  name: string;
+  ffmpeg: string;
+  core: string;
+  coreMt: string;
+}
+
+const ENGINE_CDN_PROVIDERS: EngineCdnProvider[] = [
+  {
+    name: "jsDelivr",
+    ffmpeg: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm",
+    core: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm",
+    coreMt: "https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm",
+  },
+  {
+    name: "unpkg",
+    ffmpeg: "https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm",
+    core: "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm",
+    coreMt: "https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm",
+  },
+];
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -48,9 +65,16 @@ export interface ProgressEvent {
   time: number;
 }
 
+export interface LoadProgressEvent {
+  loadedBytes: number;
+  totalBytes: number;
+  ratio: number;
+}
+
 export interface EngineCallbacks {
   onStateChange?: (state: EngineState) => void;
   onProgress?: (progress: ProgressEvent) => void;
+  onLoadProgress?: (progress: LoadProgressEvent) => void;
   onLog?: (message: string) => void;
   onError?: (error: EngineError) => void;
 }
@@ -140,7 +164,7 @@ export function translateError(raw: string): string {
 
 export function canUseSharedArrayBuffer(): boolean {
   try {
-    return typeof SharedArrayBuffer !== "undefined";
+    return typeof SharedArrayBuffer !== "undefined" && globalThis.crossOriginIsolated === true;
   } catch {
     return false;
   }
@@ -160,8 +184,13 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
   let durationSec = 0;
   let startTime = 0;
   const blobUrls: string[] = [];
+  const assetBlobUrlCache = new Map<string, string>();
 
   const LOG_BUFFER = 2000;
+  const IMPORT_TIMEOUT_MS = 15000;
+  const ASSET_FETCH_TIMEOUT_MS = 60000;
+  const ENGINE_BOOT_TIMEOUT_MS = 90000;
+  const ENGINE_ASSET_CACHE = "prism-ffmpeg-assets-v1";
 
   function setState(s: EngineState): void {
     if (destroyed) return;
@@ -192,6 +221,153 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     }
   }
 
+  function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+
+      promise.then(
+        (value) => {
+          window.clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          window.clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  async function fetchEngineAsset(url: string): Promise<Response> {
+    if (typeof caches === "undefined") {
+      return fetch(url, { method: "GET", mode: "cors" });
+    }
+
+    const cache = await caches.open(ENGINE_ASSET_CACHE);
+    const cached = await cache.match(url);
+    if (cached) {
+      return cached;
+    }
+
+    const response = await fetch(url, { method: "GET", mode: "cors" });
+    if (response.ok) {
+      try {
+        await cache.put(url, response.clone());
+      } catch {
+        // cache put can fail due to quota/private mode; continue with network response
+      }
+    }
+    return response;
+  }
+
+  async function getAssetSize(url: string): Promise<number | null> {
+    try {
+      if (typeof caches !== "undefined") {
+        const cache = await caches.open(ENGINE_ASSET_CACHE);
+        const cached = await cache.match(url);
+        if (cached) {
+          const blob = await cached.blob();
+          return blob.size;
+        }
+      }
+
+      const response = await fetch(url, { method: "HEAD", mode: "cors" });
+      if (!response.ok) return null;
+      const len = response.headers.get("content-length");
+      if (!len) return null;
+      const size = parseInt(len, 10);
+      return Number.isFinite(size) && size > 0 ? size : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function createBlobUrlFromRemote(
+    url: string,
+    mimeType: string,
+    options?: { knownSize?: number | null; onChunk?: (bytes: number) => void },
+  ): Promise<string> {
+    const existing = assetBlobUrlCache.get(url);
+    if (existing) {
+      if (options?.knownSize && options.knownSize > 0) {
+        options.onChunk?.(options.knownSize);
+      }
+      return existing;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), ASSET_FETCH_TIMEOUT_MS);
+
+    try {
+      const response = await withTimeout(
+        fetchEngineAsset(url),
+        ASSET_FETCH_TIMEOUT_MS,
+        `asset request (${url})`,
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} for ${url}`);
+      }
+
+      let blob: Blob;
+      if (response.body) {
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let done = false;
+        while (!done) {
+          const next = await reader.read();
+          done = next.done;
+          if (!next.value || next.value.length === 0) continue;
+          chunks.push(next.value);
+          options?.onChunk?.(next.value.length);
+        }
+        blob = new Blob(chunks, { type: mimeType });
+      } else {
+        const buffer = await response.arrayBuffer();
+        options?.onChunk?.(buffer.byteLength);
+        blob = new Blob([buffer], { type: mimeType });
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
+      blobUrls.push(blobUrl);
+      assetBlobUrlCache.set(url, blobUrl);
+      return blobUrl;
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      throw new Error(`asset fetch failed (${url}): ${raw}`);
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  async function createPatchedClassWorkerUrl(ffmpegBaseUrl: string): Promise<string> {
+    const workerScriptUrl = `${ffmpegBaseUrl}/worker.js`;
+    const cacheKey = `${workerScriptUrl}::patched`;
+    const existing = assetBlobUrlCache.get(cacheKey);
+    if (existing) return existing;
+
+    const response = await withTimeout(
+      fetchEngineAsset(workerScriptUrl),
+      ASSET_FETCH_TIMEOUT_MS,
+      `asset request (${workerScriptUrl})`,
+    );
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} for ${workerScriptUrl}`);
+    }
+
+    const source = await response.text();
+    const patched = source
+      .replaceAll('from "./const.js"', `from "${ffmpegBaseUrl}/const.js"`)
+      .replaceAll('from "./errors.js"', `from "${ffmpegBaseUrl}/errors.js"`);
+
+    const blobUrl = URL.createObjectURL(new Blob([patched], { type: "text/javascript" }));
+    blobUrls.push(blobUrl);
+    assetBlobUrlCache.set(cacheKey, blobUrl);
+    return blobUrl;
+  }
+
   async function load(): Promise<void> {
     if (destroyed) return;
     if (state === "ready" || state === "loading") return;
@@ -200,68 +376,143 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     lastLogLines = [];
 
     try {
-      // Dynamically import from CDN — no npm dependencies
-      const ffmpegModule = await import(/* @vite-ignore */ `${FFMPEG_CDN}/index.js`);
-      const utilModule = await import(/* @vite-ignore */ `${UTIL_CDN}/index.js`);
-
-      const FFmpeg = ffmpegModule.FFmpeg;
-      const toBlobURL = utilModule.toBlobURL;
-
-      ffmpeg = new FFmpeg();
-
-      // Wire up logging — only extracts duration, does NOT emit progress
-      ffmpeg.on("log", ({ message }: { message: string }) => {
-        handleLogMessage(message);
-      });
-
-      // Progress events are the single source of truth for ratio/speed/eta
-      ffmpeg.on("progress", ({ progress, time }: { progress: number; time: number }) => {
-        if (destroyed) return;
-        const elapsed = (performance.now() - startTime) / 1000;
-        const timeSec = time / 1_000_000; // ffmpeg reports time in microseconds
-
-        // When duration is unknown (images, some formats), signal indeterminate
-        if (durationSec === 0) {
-          callbacks.onProgress?.({ ratio: -1, speed: null, eta: null, time: timeSec });
-          return;
-        }
-
-        const speed = elapsed > 0.5 && timeSec > 0 ? timeSec / elapsed : null;
-        const eta =
-          progress > 0.01 && durationSec > 0 && speed && speed > 0
-            ? (durationSec - timeSec) / speed
-            : null;
-
-        callbacks.onProgress?.({
-          ratio: Math.min(Math.max(progress, 0), 1),
-          speed: speed ? Math.round(speed * 10) / 10 : null,
-          eta: eta ? Math.round(eta) : null,
-          time: timeSec,
-        });
-      });
-
       // Detect tier and load appropriate core
       const useMultiThread = canUseSharedArrayBuffer();
       tier = useMultiThread ? "enhanced" : "baseline";
 
-      const coreCDN = useMultiThread ? CORE_MT_CDN : CORE_CDN;
+      let lastLoadError: unknown = null;
 
-      // Convert CDN URLs to blob URLs — required by ffmpeg.wasm to avoid CORS hangs
-      log(`loading ${tier} engine...`);
-      const coreURL = await toBlobURL(`${coreCDN}/ffmpeg-core.js`, "text/javascript");
-      const wasmURL = await toBlobURL(`${coreCDN}/ffmpeg-core.wasm`, "application/wasm");
-      const workerURL = useMultiThread
-        ? await toBlobURL(`${coreCDN}/ffmpeg-core.worker.js`, "text/javascript")
-        : undefined;
+      for (const provider of ENGINE_CDN_PROVIDERS) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let candidate: any = null;
+        try {
+          log(`loading ${tier} engine via ${provider.name}...`);
 
-      await ffmpeg.load({ coreURL, wasmURL, workerURL });
-      log(`engine ready (${tier})`);
+          const ffmpegModule = await withTimeout(
+            import(/* @vite-ignore */ `${provider.ffmpeg}/index.js`),
+            IMPORT_TIMEOUT_MS,
+            `${provider.name} module import`,
+          );
 
-      // Create working directories
-      await ffmpeg.createDir("/input");
-      await ffmpeg.createDir("/output");
+          const FFmpeg = ffmpegModule.FFmpeg;
+          if (typeof FFmpeg !== "function") {
+            throw new Error(`invalid FFmpeg module from ${provider.name}`);
+          }
 
-      setState("ready");
+          candidate = new FFmpeg();
+
+          candidate.on("log", ({ message }: { message: string }) => {
+            handleLogMessage(message);
+          });
+
+          candidate.on("progress", ({ progress, time }: { progress: number; time: number }) => {
+            if (destroyed) return;
+            const elapsed = (performance.now() - startTime) / 1000;
+            const timeSec = time / 1_000_000;
+
+            if (durationSec === 0) {
+              callbacks.onProgress?.({ ratio: -1, speed: null, eta: null, time: timeSec });
+              return;
+            }
+
+            const speed = elapsed > 0.5 && timeSec > 0 ? timeSec / elapsed : null;
+            const eta =
+              progress > 0.01 && durationSec > 0 && speed && speed > 0
+                ? (durationSec - timeSec) / speed
+                : null;
+
+            callbacks.onProgress?.({
+              ratio: Math.min(Math.max(progress, 0), 1),
+              speed: speed ? Math.round(speed * 10) / 10 : null,
+              eta: eta ? Math.round(eta) : null,
+              time: timeSec,
+            });
+          });
+
+          const coreCDN = useMultiThread ? provider.coreMt : provider.core;
+          log(`fetching engine assets via ${provider.name}...`);
+          const assetUrls: string[] = [
+            `${provider.ffmpeg}/worker.js`,
+            `${coreCDN}/ffmpeg-core.js`,
+            `${coreCDN}/ffmpeg-core.wasm`,
+          ];
+          if (useMultiThread) {
+            assetUrls.push(`${coreCDN}/ffmpeg-core.worker.js`);
+          }
+
+          const assetSizes = new Map<string, number | null>();
+          await Promise.all(assetUrls.map(async (assetUrl) => {
+            assetSizes.set(assetUrl, await getAssetSize(assetUrl));
+          }));
+
+          const totalBytes = assetUrls.reduce((sum, assetUrl) => sum + (assetSizes.get(assetUrl) ?? 0), 0);
+          let loadedBytes = 0;
+          const reportLoadProgress = (): void => {
+            callbacks.onLoadProgress?.({
+              loadedBytes,
+              totalBytes,
+              ratio: totalBytes > 0 ? Math.min(loadedBytes / totalBytes, 1) : 0,
+            });
+          };
+          reportLoadProgress();
+
+          const classWorkerURL = await createPatchedClassWorkerUrl(provider.ffmpeg);
+          loadedBytes += assetSizes.get(`${provider.ffmpeg}/worker.js`) ?? 0;
+          reportLoadProgress();
+
+          const coreJsUrl = `${coreCDN}/ffmpeg-core.js`;
+          const coreWasmUrl = `${coreCDN}/ffmpeg-core.wasm`;
+          const coreURL = await createBlobUrlFromRemote(coreJsUrl, "text/javascript", {
+            knownSize: assetSizes.get(coreJsUrl),
+            onChunk: (bytes) => {
+              loadedBytes += bytes;
+              reportLoadProgress();
+            },
+          });
+          const wasmURL = await createBlobUrlFromRemote(coreWasmUrl, "application/wasm", {
+            knownSize: assetSizes.get(coreWasmUrl),
+            onChunk: (bytes) => {
+              loadedBytes += bytes;
+              reportLoadProgress();
+            },
+          });
+          const workerURL = useMultiThread
+            ? await createBlobUrlFromRemote(`${coreCDN}/ffmpeg-core.worker.js`, "text/javascript", {
+                knownSize: assetSizes.get(`${coreCDN}/ffmpeg-core.worker.js`),
+                onChunk: (bytes) => {
+                  loadedBytes += bytes;
+                  reportLoadProgress();
+                },
+              })
+            : undefined;
+
+          log(`initializing engine runtime (${provider.name})...`);
+          await withTimeout(
+            candidate.load({ classWorkerURL, coreURL, wasmURL, workerURL }),
+            ENGINE_BOOT_TIMEOUT_MS,
+            `${provider.name} engine bootstrap`,
+          );
+          try { await candidate.createDir("/input"); } catch { /* may already exist */ }
+          try { await candidate.createDir("/output"); } catch { /* may already exist */ }
+
+          ffmpeg = candidate;
+          callbacks.onLoadProgress?.({ loadedBytes: totalBytes, totalBytes, ratio: 1 });
+          log(`engine ready (${tier}, ${provider.name})`);
+          setState("ready");
+          return;
+        } catch (err) {
+          lastLoadError = err;
+          const raw = err instanceof Error ? err.message : String(err);
+          log(`engine load attempt failed (${provider.name}): ${raw}`);
+          try {
+            candidate?.terminate?.();
+          } catch {
+            // best effort
+          }
+        }
+      }
+
+      throw (lastLoadError ?? new Error("No engine CDN provider succeeded"));
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       log(`engine load failed: ${raw}`);
@@ -412,7 +663,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
 
   // ─── probeFile: two-path implementation ────────────────────────────────────
   // Path A: browser <video>/<audio> element for files the browser can play.
-  // Path B: if engine is loaded, use ffmpeg -i to get deeper codec/resolution info.
+  // Path B: if engine is loaded, use native ffprobe for structured JSON probe.
 
   function probeViaBrowserElement(file: File, info: FileInfo): Promise<FileInfo> {
     return new Promise((resolve) => {
@@ -453,88 +704,71 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     });
   }
 
-  function parseFfmpegProbeOutput(stderr: string[], info: FileInfo): void {
-    for (const line of stderr) {
-      // Duration: 00:01:23.45, start: 0.000000, bitrate: 1234 kb/s
-      const durMatch = line.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
-      if (durMatch && info.duration === null) {
-        info.duration =
-          parseInt(durMatch[1]) * 3600 +
-          parseInt(durMatch[2]) * 60 +
-          parseInt(durMatch[3]) +
-          parseInt(durMatch[4]) / 100;
+  function parseFfprobeJson(json: Record<string, unknown>, info: FileInfo): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fmt = json.format as any;
+    if (fmt) {
+      if (info.duration === null && fmt.duration) {
+        const d = parseFloat(fmt.duration);
+        if (isFinite(d) && d > 0) info.duration = d;
       }
-
-      // bitrate: 1234 kb/s
-      const bitrateMatch = line.match(/bitrate:\s*(\d+)\s*kb\/s/);
-      if (bitrateMatch && info.bitrate === null) {
-        info.bitrate = parseInt(bitrateMatch[1]);
+      if (info.bitrate === null && fmt.bit_rate) {
+        const br = parseInt(fmt.bit_rate);
+        if (isFinite(br)) info.bitrate = Math.round(br / 1000);
       }
+    }
 
-      // Video stream: Stream #0:0: Video: h264 (High), yuv420p, 1920x1080 ...
-      const videoStreamMatch = line.match(/Stream.*Video:\s*([\w\d]+).*?,.*?(\d{2,5})x(\d{2,5})/);
-      if (videoStreamMatch) {
-        if (info.videoCodec === null) info.videoCodec = videoStreamMatch[1];
-        if (info.resolution === null) {
-          info.resolution = `${videoStreamMatch[2]}x${videoStreamMatch[3]}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const streams = json.streams as any[];
+    if (!Array.isArray(streams)) return;
+
+    for (const s of streams) {
+      if (s.codec_type === "video" && info.videoCodec === null) {
+        info.videoCodec = s.codec_name ?? null;
+        if (info.resolution === null && s.width && s.height) {
+          info.resolution = `${s.width}x${s.height}`;
         }
       }
-
-      // Audio stream: Stream #0:1: Audio: aac, 44100 Hz, stereo, fltp, 128 kb/s
-      const audioStreamMatch = line.match(/Stream.*Audio:\s*([\w\d]+)/);
-      if (audioStreamMatch && info.audioCodec === null) {
-        info.audioCodec = audioStreamMatch[1];
-      }
-
-      // Channels: stereo = 2, mono = 1, 5.1 = 6, etc.
-      if (line.includes("Audio:") && info.channels === null) {
-        if (/\bstereo\b/i.test(line)) info.channels = 2;
-        else if (/\bmono\b/i.test(line)) info.channels = 1;
-        else if (/\b5\.1\b/.test(line)) info.channels = 6;
-        else if (/\b7\.1\b/.test(line)) info.channels = 8;
-        else {
-          // try to grab explicit channel count like "2 channels"
-          const chMatch = line.match(/(\d+)\s+channels?/i);
-          if (chMatch) info.channels = parseInt(chMatch[1]);
+      if (s.codec_type === "audio" && info.audioCodec === null) {
+        info.audioCodec = s.codec_name ?? null;
+        if (info.channels === null && s.channels) {
+          info.channels = parseInt(s.channels);
         }
       }
     }
   }
 
-  async function probeViaFfmpeg(file: File, info: FileInfo): Promise<FileInfo> {
+  async function probeViaFfprobe(file: File, info: FileInfo): Promise<FileInfo> {
     if (!ffmpeg || state === "running" || probing) return info;
 
-    const probePath = `/probe/${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const probePath = `/probe/${safeName}`;
+    const outPath = `/probe/${safeName}.json`;
 
     probing = true;
     try {
-      // Ensure probe directory exists
       try { await ffmpeg.createDir("/probe"); } catch { /* may exist */ }
 
-      // Write file into VFS
       const data = await readFileAsUint8Array(file);
       await ffmpeg.writeFile(probePath, data);
 
-      // Capture log lines produced during probe
-      const probeLines: string[] = [];
-      const probeHandler = ({ message }: { message: string }) => {
-        probeLines.push(message);
-      };
-      ffmpeg.on("log", probeHandler);
+      const ret = await ffmpeg.ffprobe([
+        "-v", "error",
+        "-show_format", "-show_streams",
+        "-of", "json",
+        probePath,
+        "-o", outPath,
+      ]);
 
-      // Run ffmpeg -i which will fail (no output) but emit stream info to stderr
-      try {
-        await ffmpeg.exec(["-i", probePath]);
-      } catch {
-        // expected to fail — we only care about the log output
+      if (ret === 0) {
+        const raw = await ffmpeg.readFile(outPath);
+        const text = new TextDecoder().decode(raw);
+        const json = JSON.parse(text);
+        parseFfprobeJson(json, info);
       }
 
-      ffmpeg.off("log", probeHandler);
-
-      // Clean up probe file
+      try { await ffmpeg.deleteFile(outPath); } catch { /* noop */ }
       try { await ffmpeg.deleteFile(probePath); } catch { /* noop */ }
-
-      parseFfmpegProbeOutput(probeLines, info);
     } catch {
       // probe failure is non-fatal — return whatever info we have
     } finally {
@@ -562,8 +796,8 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     };
 
     if (state === "ready" && ffmpeg) {
-      // Path B: engine is available — use ffmpeg for deep probe
-      await probeViaFfmpeg(file, info);
+      // Path B: engine is available — use native ffprobe for structured probe
+      await probeViaFfprobe(file, info);
       // Fill in any gaps with browser element
       if (info.duration === null && (category === "video" || category === "audio")) {
         await probeViaBrowserElement(file, info);
@@ -597,6 +831,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       try { URL.revokeObjectURL(url); } catch { /* noop */ }
     }
     blobUrls.length = 0;
+    assetBlobUrlCache.clear();
 
     // Terminate ffmpeg
     if (ffmpeg) {

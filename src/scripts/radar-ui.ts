@@ -1055,6 +1055,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
   let destroyed = false;
   let running = false;
+  let loaded = false;
   let animationFrameId = 0;
   let bluetoothScan: BluetoothScanHandleLike | null = null;
   let bluetoothListener: ((event: Event) => void) | null = null;
@@ -2905,12 +2906,32 @@ export function initRadar(opts: RadarUIOptions): () => void {
   }
 
   function syncButtonStates(): void {
-    opts.startBtn.disabled = running;
+    if (!loaded) {
+      opts.startBtn.textContent = "Load";
+      opts.startBtn.classList.remove("action-btn--run");
+      opts.startBtn.disabled = false;
+    } else if (!running) {
+      opts.startBtn.textContent = "Run";
+      opts.startBtn.classList.add("action-btn--run");
+      opts.startBtn.disabled = false;
+    } else {
+      // keep "Run" label while active, just disable the button
+      opts.startBtn.textContent = "Run";
+      opts.startBtn.classList.add("action-btn--run");
+      opts.startBtn.disabled = true;
+    }
     opts.stopBtn.disabled = !running;
   }
 
+  function loadEngine(): void {
+    if (loaded) return;
+    loaded = true;
+    syncButtonStates();
+    pushEvent("engine loaded");
+  }
+
   function startSweep(): void {
-    if (running) return;
+    if (!loaded || running) return;
     running = true;
     scanStartedAt = Date.now();
     lastModeSecond = -1;
@@ -3018,7 +3039,7 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
   // ── Wire up ────────────────────────────────────────────────────────────
 
-  on(opts.startBtn, "click", () => startSweep());
+  on(opts.startBtn, "click", () => { if (!loaded) loadEngine(); else startSweep(); });
   on(opts.stopBtn, "click", () => stopSweep());
   on(opts.bluetoothScanBtn, "click", () => { void startBluetoothScan(); });
   on(opts.bluetoothPickBtn, "click", () => { void pickBluetoothDevice(); });

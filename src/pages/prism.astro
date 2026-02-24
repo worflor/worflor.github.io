@@ -16,7 +16,10 @@ const seo = {
       class="mt-8 content-section prism-intro prism-reveal"
       style="--reveal-delay: 0ms"
     >
-      <h1 class="page-title prism-title" id="prism-title">Prism</h1>
+      <div class="prism-title-row">
+        <h1 class="page-title prism-title" id="prism-title">Prism</h1>
+        <span class="prism-alpha-badge" id="prism-alpha-badge" style="display:none">ALPHA</span>
+      </div>
       <p class="prism-tagline">local media lab</p>
       <p class="prism-status-line">
         <span class="prism-dot" id="prism-engine-dot"></span>
@@ -268,7 +271,6 @@ const seo = {
     >
       <button class="action-btn action-btn--primary" id="prism-btn-run" type="button">Run</button>
       <button class="action-btn" id="prism-btn-cancel" type="button" style="display:none">Cancel</button>
-      <button class="action-btn" id="prism-btn-download" type="button" style="display:none">Download</button>
       <button class="action-btn" id="prism-btn-upload" type="button" style="display:none">New File</button>
       <button
         class="action-btn action-btn--icon"
@@ -832,6 +834,12 @@ const seo = {
     margin-bottom: 0;
   }
 
+  .prism-title-row {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.7);
+  }
+
   /* ── Action Bar ────────────────────────────────────────────── */
 
   .prism-actions {
@@ -931,6 +939,41 @@ const seo = {
     color: rgb(var(--chromatic-cyan));
   }
 
+  .action-btn--primary.action-btn--load {
+    --_purple: 118 80 220;
+    background: rgb(var(--_purple) / 0.12);
+    color: rgb(var(--_purple));
+  }
+
+  .action-btn--primary.action-btn--load:hover {
+    background: rgb(var(--_purple) / 0.22);
+  }
+
+  .action-btn--primary.action-btn--load.action-btn--loading {
+    position: relative;
+    overflow: hidden;
+    color: rgb(var(--color-text-rgb) / 0.9);
+    background: rgb(var(--_purple) / 0.08);
+    border: 1px solid rgb(var(--_purple) / 0.3);
+    isolation: isolate;
+  }
+
+  .action-btn--primary.action-btn--load.action-btn--loading::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      rgb(var(--_purple) / 0.12) 0%,
+      rgb(var(--_purple) / 0.2) 55%,
+      rgb(var(--_purple) / 0.32) 100%
+    );
+    transform-origin: left center;
+    transform: scaleX(var(--prism-load-ratio, 0));
+    transition: transform 120ms linear;
+    z-index: -1;
+  }
+
   .action-btn--icon {
     min-width: var(--touch-target);
     padding-inline: calc(var(--space-xs) * 0.8);
@@ -942,10 +985,31 @@ const seo = {
     flex-shrink: 0;
   }
 
+  .prism-alpha-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-height: calc(var(--touch-target) * 0.5);
+    padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
+    border-radius: calc(var(--prism-radius) * 0.55);
+    border: 1px solid rgb(var(--chromatic-red) / 0.35);
+    background: rgb(var(--chromatic-red) / 0.1);
+    color: rgb(var(--chromatic-red));
+    font-size: calc(var(--text-sm) * 0.66);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    user-select: none;
+  }
+
   /* ── Reduced Motion ────────────────────────────────────────── */
 
   @media (prefers-reduced-motion: reduce) {
     .prism-actions {
+      transition: none;
+    }
+
+    .action-btn--primary.action-btn--load.action-btn--loading::before {
       transition: none;
     }
   }
@@ -993,6 +1057,15 @@ const seo = {
 
     .action-btn--primary:active {
       background: rgb(var(--chromatic-cyan) / 0.2);
+    }
+
+    .action-btn--primary.action-btn--load:hover {
+      background: rgb(118 80 220 / 0.12);
+      color: rgb(118 80 220);
+    }
+
+    .action-btn--primary.action-btn--load:active {
+      background: rgb(118 80 220 / 0.22);
     }
   }
 </style>
@@ -1138,6 +1211,200 @@ const seo = {
     font-size: calc(var(--text-sm) * 0.9);
     color: rgb(var(--color-text-rgb) / 0.3);
     margin: 0;
+  }
+
+  /* ── Slider ─────────────────────────────────────────────── */
+
+  .prism-page .wb-slider-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .prism-page .wb-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1;
+    height: 3px;
+    border-radius: 99px;
+    background: rgb(var(--color-text-rgb) / 0.12);
+    outline: none;
+    cursor: pointer;
+    accent-color: rgb(var(--chromatic-cyan));
+  }
+
+  .prism-page .wb-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgb(var(--chromatic-cyan));
+    cursor: pointer;
+    transition: transform var(--duration-fast) var(--ease-out);
+  }
+
+  .prism-page .wb-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.25);
+  }
+
+  .prism-page .wb-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: none;
+    border-radius: 50%;
+    background: rgb(var(--chromatic-cyan));
+    cursor: pointer;
+  }
+
+  .prism-page .wb-slider-value {
+    font-size: calc(var(--text-sm) * 0.88);
+    font-variant-numeric: tabular-nums;
+    color: rgb(var(--chromatic-cyan));
+    min-width: 3.5ch;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ── Quality Pills ──────────────────────────────────────── */
+
+  .prism-page .wb-quality-pills {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.35);
+  }
+
+  .prism-page .wb-quality-pill {
+    flex: 1;
+    padding: calc(var(--space-xs) * 0.5) 0;
+    background: rgb(var(--color-text-rgb) / 0.03);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-sm);
+    color: rgb(var(--color-text-rgb) / 0.5);
+    font-family: var(--font-body);
+    font-size: calc(var(--text-sm) * 0.88);
+    cursor: pointer;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .wb-quality-pill:hover {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: rgb(var(--color-text-rgb) / 0.7);
+  }
+
+  .prism-page .wb-quality-pill--active {
+    background: rgb(var(--chromatic-cyan) / 0.1);
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    color: rgb(var(--chromatic-cyan));
+    font-weight: 600;
+  }
+
+  .prism-page .wb-quality-pill:disabled {
+    opacity: 0.35;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  /* ── Pills (generic discrete selector) ─────────────────── */
+
+  .prism-page .wb-pills {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.35);
+  }
+
+  .prism-page .wb-pills--wrap {
+    flex-wrap: wrap;
+  }
+
+  .prism-page .wb-pill {
+    flex: 1;
+    padding: calc(var(--space-xs) * 0.5) calc(var(--space-xs) * 0.7);
+    background: rgb(var(--color-text-rgb) / 0.03);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-sm);
+    color: rgb(var(--color-text-rgb) / 0.5);
+    font-family: var(--font-body);
+    font-size: calc(var(--text-sm) * 0.88);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .wb-pill:hover {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: rgb(var(--color-text-rgb) / 0.7);
+  }
+
+  .prism-page .wb-pill--active {
+    background: rgb(var(--chromatic-cyan) / 0.1);
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    color: rgb(var(--chromatic-cyan));
+    font-weight: 600;
+  }
+
+  .prism-page .wb-pill:disabled {
+    opacity: 0.35;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  /* ── FPS inline control ─────────────────────────────────── */
+
+  .prism-page .wb-fps-header {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.6);
+    flex-wrap: wrap;
+  }
+
+  .prism-page .wb-fps-unit {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.38);
+  }
+
+  .prism-page .wb-fps-input {
+    width: 4.5rem;
+    text-align: center;
+  }
+
+  /* ── Color Picker ───────────────────────────────────────── */
+
+  .prism-page .wb-color-picker-row {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.7);
+  }
+
+  .prism-page .wb-color-picker {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 2.2rem;
+    height: 2.2rem;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .prism-page .wb-color-picker::-webkit-color-swatch-wrapper {
+    padding: 0;
+  }
+
+  .prism-page .wb-color-picker::-webkit-color-swatch {
+    border: none;
+    border-radius: calc(var(--radius-sm) - 2px);
+  }
+
+  .prism-page .wb-color-picker-label {
+    font-size: calc(var(--text-sm) * 0.9);
+    font-family: var(--font-mono, monospace);
+    color: rgb(var(--color-text-rgb) / 0.45);
   }
 
   .prism-page .wb-toggle-label {

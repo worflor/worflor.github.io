@@ -12,20 +12,26 @@ import {
   type FileInfo,
   type EngineState,
   type ProgressEvent,
+  type LoadProgressEvent,
   type EngineError,
 } from "./prism-engine";
 import {
   buildLensHandoffUrl,
   clearHandoffTokenFromCurrentUrl,
   consumeFileHandoffWithRetry,
+  consumePrismQueueSessionWithRetry,
   createFileHandoff,
+  createPrismQueueSession,
   getHandoffTokenFromCurrentUrl,
   supportsFileHandoff,
 } from "./file-handoff";
 import {
+  createPrismFileSignature,
   createPrismDraftSnapshot,
   parsePrismDraftSnapshot,
+  sanitizePrismDraftValue,
   samePrismFileSignature,
+  type PrismDraftQueueRef,
   type PrismDraftModuleId,
   type PrismDraftSnapshot,
 } from "./prism-draft";
@@ -88,8 +94,8 @@ export interface PrismUIOptions {
   actionBar: HTMLElement;
   btnRun: HTMLButtonElement;
   btnCancel: HTMLButtonElement;
-  btnDownload: HTMLButtonElement;
   btnLens: HTMLButtonElement;
+  alphaBadge: HTMLElement;
   btnUpload: HTMLButtonElement;
   btnClear: HTMLButtonElement;
   sizeWarning: HTMLElement;
@@ -128,8 +134,8 @@ export const PRISM_UI_IDS: PrismUIIdMap = {
   actionBar: "prism-actions",
   btnRun: "prism-btn-run",
   btnCancel: "prism-btn-cancel",
-  btnDownload: "prism-btn-download",
   btnLens: "prism-btn-lens",
+  alphaBadge: "prism-alpha-badge",
   btnUpload: "prism-btn-upload",
   btnClear: "prism-btn-clear",
   sizeWarning: "prism-size-warning",
@@ -172,8 +178,8 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
   const actionBar = q(root, PRISM_UI_IDS.actionBar);
   const btnRun = q(root, PRISM_UI_IDS.btnRun);
   const btnCancel = q(root, PRISM_UI_IDS.btnCancel);
-  const btnDownload = q(root, PRISM_UI_IDS.btnDownload);
   const btnLens = q(root, PRISM_UI_IDS.btnLens);
+  const alphaBadge = q(root, PRISM_UI_IDS.alphaBadge);
   const btnUpload = q(root, PRISM_UI_IDS.btnUpload);
   const btnClear = q(root, PRISM_UI_IDS.btnClear);
   const sizeWarning = q(root, PRISM_UI_IDS.sizeWarning);
@@ -186,7 +192,7 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
       !previewAudio || !previewImg || !previewText || !terminalSection ||
       !terminalToggle || !terminalBody || !terminalLog || !progressSection ||
       !progressBar || !progressFill || !progressText || !engineStatus ||
-      !actionBar || !btnRun || !btnCancel || !btnDownload || !btnLens || !btnUpload ||
+      !actionBar || !btnRun || !btnCancel || !btnLens || !alphaBadge || !btnUpload ||
       !btnClear || !sizeWarning || !outputSummary || !terminalCopy) {
     return null;
   }
@@ -220,8 +226,8 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
     actionBar,
     btnRun: btnRun as HTMLButtonElement,
     btnCancel: btnCancel as HTMLButtonElement,
-    btnDownload: btnDownload as HTMLButtonElement,
     btnLens: btnLens as HTMLButtonElement,
+    alphaBadge,
     btnUpload: btnUpload as HTMLButtonElement,
     btnClear: btnClear as HTMLButtonElement,
     sizeWarning,
@@ -283,16 +289,36 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   let activeModuleId: ModuleId = "workbench";
 
-  function collectDraftSnapshot(): PrismDraftSnapshot | null {
+  async function collectDraftSnapshotForHandoff(): Promise<PrismDraftSnapshot | null> {
     const currentFile = getCurrentFile();
     if (!currentFile) return null;
 
     const moduleConfigs: Partial<Record<PrismDraftModuleId, unknown>> = {};
     for (const [id, module] of Object.entries(modules) as [ModuleId, PrismModule][]) {
       try {
-        moduleConfigs[id as PrismDraftModuleId] = module.getConfig();
+        const sanitized = sanitizePrismDraftValue(module.getConfig());
+        if (sanitized !== undefined) {
+          moduleConfigs[id as PrismDraftModuleId] = sanitized;
+        }
       } catch {
         // Ignore non-serializable module state; keep restore best-effort.
+      }
+    }
+
+    let queueRef: PrismDraftQueueRef | undefined;
+    if (fileQueue.length > 1) {
+      try {
+        const queueSessionId = await createPrismQueueSession(
+          fileQueue.map((entry) => entry.file),
+          primaryIndex,
+        );
+        queueRef = {
+          sessionId: queueSessionId,
+          primaryIndex,
+          signatures: fileQueue.map((entry) => createPrismFileSignature(entry.file)),
+        };
+      } catch {
+        showToast("full queue continuity unavailable. handing off current file only");
       }
     }
 
@@ -300,13 +326,76 @@ export function initPrism(opts: PrismUIOptions): () => void {
       currentFile,
       activeModuleId as PrismDraftModuleId,
       moduleConfigs,
+      queueRef ? { queueRef } : undefined,
     );
   }
 
-  function restoreDraftSnapshot(snapshot: PrismDraftSnapshot, file: File): void {
-    if (!samePrismFileSignature(file, snapshot.file)) return;
+  function applyPrimaryFileContext(): void {
+    const currentFile = getCurrentFile();
     const currentFileInfo = getCurrentFileInfo();
-    if (!currentFileInfo) return;
+    if (!currentFile || !currentFileInfo) return;
+
+    const warning = checkFileSize(currentFile.size, isMobileDevice());
+    if (warning === "warning") {
+      setSizeWarning("This file is very large for browser processing. It may fail on some devices.");
+    } else if (warning === "caution") {
+      setSizeWarning("Large file - processing may take a moment.");
+    } else {
+      hide(opts.sizeWarning);
+    }
+
+    showInputPreview(currentFile, currentFileInfo.category);
+    updateModuleTabVisibility(currentFileInfo.category);
+
+    for (const [id, mod] of Object.entries(modules) as [ModuleId, PrismModule][]) {
+      if (!MODULE_VISIBILITY[id].includes(currentFileInfo.category)) continue;
+      mod.configure(currentFileInfo);
+    }
+
+    const requestedModule = MODULE_VISIBILITY[activeModuleId].includes(currentFileInfo.category)
+      ? activeModuleId
+      : (Object.keys(MODULE_VISIBILITY) as ModuleId[]).find(
+          (id) => MODULE_VISIBILITY[id].includes(currentFileInfo.category),
+        ) ?? "workbench";
+    switchModule(requestedModule);
+    renderFileQueue();
+    (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
+  }
+
+  async function restoreQueueFromSnapshot(snapshot: PrismDraftSnapshot): Promise<boolean> {
+    const queueRef = snapshot.queueRef;
+    if (!queueRef) return false;
+
+    const session = await consumePrismQueueSessionWithRetry(queueRef.sessionId);
+    if (!session || session.files.length === 0) return false;
+    if (session.files.length !== queueRef.signatures.length) return false;
+    if (
+      !session.files.every((file, index) =>
+        samePrismFileSignature(file, queueRef.signatures[index]))
+    ) {
+      return false;
+    }
+
+    clearAll();
+    for (const file of session.files) {
+      await processFile(file);
+      if (destroyed) return false;
+    }
+
+    if (fileQueue.length === 0) return false;
+    primaryIndex = Math.min(
+      Math.max(0, Math.floor(session.primaryIndex)),
+      fileQueue.length - 1,
+    );
+    applyPrimaryFileContext();
+    setState("files_loaded");
+    return true;
+  }
+
+  function restoreDraftSnapshot(snapshot: PrismDraftSnapshot, file: File): boolean {
+    if (!samePrismFileSignature(file, snapshot.file)) return false;
+    const currentFileInfo = getCurrentFileInfo();
+    if (!currentFileInfo) return false;
 
     for (const [id, module] of Object.entries(modules) as [ModuleId, PrismModule][]) {
       if (!MODULE_VISIBILITY[id].includes(currentFileInfo.category)) continue;
@@ -322,7 +411,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     const requestedModule = snapshot.activeModuleId as ModuleId;
     if (MODULE_VISIBILITY[requestedModule].includes(currentFileInfo.category)) {
       switchModule(requestedModule);
-      return;
+      return true;
     }
 
     const fallback = (Object.keys(MODULE_VISIBILITY) as ModuleId[]).find(
@@ -331,6 +420,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (fallback) {
       switchModule(fallback);
     }
+    return true;
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -466,6 +556,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   function updateUI(): void {
     if (destroyed) return;
+    const hasFile = Boolean(getCurrentFile());
 
     // Upload zone: visible when idle, fully hidden when files loaded
     if (prismState === "idle") {
@@ -518,21 +609,39 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
     // ── Action bar buttons ──────────────────────────────────────────────
     // Run button: visible in files_loaded, configured, complete, error
+    // Shows "Load" in purple when engine isn't loaded yet, "Run" in cyan otherwise
+    const engineLoading = Boolean(engine && engine.state === "loading");
+    const engineLoaded = Boolean(engine && (engine.state === "ready" || engine.state === "running"));
     if (prismState === "complete") {
-      opts.btnRun.textContent = "Run Again";
+      opts.btnRun.textContent = "Run";
       opts.btnRun.style.display = "";
     } else if (prismState === "error") {
       opts.btnRun.textContent = "Try Again";
       opts.btnRun.style.display = "";
     } else if (prismState === "files_loaded" || prismState === "configured") {
-      opts.btnRun.textContent = "Run";
+      opts.btnRun.textContent = engineLoading ? "Loading..." : engineLoaded ? "Run" : "Load";
       opts.btnRun.style.display = "";
     } else {
       opts.btnRun.style.display = "none";
     }
 
+    if (!engineLoaded && (prismState === "files_loaded" || prismState === "configured")) {
+      opts.btnRun.classList.add("action-btn--load");
+    } else {
+      opts.btnRun.classList.remove("action-btn--load");
+    }
+
+    if (engineLoading && (prismState === "files_loaded" || prismState === "configured")) {
+      opts.btnRun.classList.add("action-btn--loading");
+      opts.btnRun.disabled = true;
+      opts.btnRun.setAttribute("aria-busy", "true");
+    } else {
+      opts.btnRun.classList.remove("action-btn--loading");
+      opts.btnRun.disabled = false;
+      opts.btnRun.setAttribute("aria-busy", "false");
+    }
+
     opts.btnCancel.style.display = prismState === "processing" ? "" : "none";
-    opts.btnDownload.style.display = prismState === "complete" ? "" : "none";
     const lensVisibleByState = prismState === "files_loaded" ||
       prismState === "configured" ||
       prismState === "complete" ||
@@ -540,6 +649,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.btnLens.style.display = handoffSupported && lensVisibleByState ? "" : "none";
     opts.btnLens.disabled = !handoffSupported || !getCurrentFile() || prismState === "processing" || lensHandoffInFlight;
     opts.btnLens.setAttribute("aria-busy", lensHandoffInFlight ? "true" : "false");
+    opts.alphaBadge.style.display = hasFile ? "" : "none";
 
     // Show action bar when not idle
     if (prismState === "idle") {
@@ -654,6 +764,16 @@ export function initPrism(opts: PrismUIOptions): () => void {
           opts.engineStatus.textContent = s === "ready" ? "engine ready" : s === "loading" ? "loading engine..." : s === "running" ? "processing..." : s;
           if (s === "ready") opts.engineStatus.classList.add("prism-status--ready");
           else opts.engineStatus.classList.remove("prism-status--ready");
+          if (s === "loading") {
+            opts.btnRun.style.setProperty("--prism-load-ratio", "0");
+          } else {
+            opts.btnRun.style.removeProperty("--prism-load-ratio");
+          }
+          updateUI();
+        },
+        onLoadProgress: (p: LoadProgressEvent) => {
+          if (destroyed) return;
+          opts.btnRun.style.setProperty("--prism-load-ratio", String(Math.min(Math.max(p.ratio, 0), 1)));
         },
         onProgress: (p: ProgressEvent) => {
           if (destroyed) return;
@@ -708,24 +828,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
     fileQueue.push({ file, info: fileInfo });
     if (isFirst) primaryIndex = 0;
 
-    const currentFileInfo = getCurrentFileInfo()!;
-    const currentFile = getCurrentFile()!;
-
-    // Check size (primary file)
-    if (isFirst) {
-      const warning = checkFileSize(file.size, isMobileDevice());
-      if (warning === "warning") {
-        setSizeWarning("This file is very large for browser processing. It may fail on some devices.");
-      } else if (warning === "caution") {
-        setSizeWarning("Large file \u2014 processing may take a moment.");
-      } else {
-        hide(opts.sizeWarning);
-      }
-
-      // Show input preview (primary file only)
-      showInputPreview(currentFile, currentFileInfo.category);
-    }
-
     // Update file queue display
     renderFileQueue();
 
@@ -733,18 +835,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
 
     if (isFirst) {
-      // Update module tab visibility based on file category
-      updateModuleTabVisibility(currentFileInfo.category);
-
-      // Configure ALL visible modules with file info
-      for (const [id, mod] of Object.entries(modules) as [ModuleId, PrismModule][]) {
-        if (MODULE_VISIBILITY[id].includes(currentFileInfo.category)) {
-          mod.configure(currentFileInfo);
-        }
-      }
-
-      // Render the active module
-      switchModule(activeModuleId);
+      applyPrimaryFileContext();
     }
 
     setState("files_loaded");
@@ -844,6 +935,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
   }
 
   function removeQueueItem(idx: number): void {
+    const removedPrimary = idx === primaryIndex;
     fileQueue.splice(idx, 1);
     if (fileQueue.length === 0) {
       clearAll();
@@ -852,6 +944,12 @@ export function initPrism(opts: PrismUIOptions): () => void {
     // Adjust primary index
     if (primaryIndex >= fileQueue.length) primaryIndex = 0;
     else if (idx < primaryIndex) primaryIndex--;
+
+    if (removedPrimary) {
+      applyPrimaryFileContext();
+      return;
+    }
+
     renderFileQueue();
     (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
   }
@@ -1208,15 +1306,19 @@ export function initPrism(opts: PrismUIOptions): () => void {
   });
 
   on(opts.btnCancel, "click", () => { engine?.cancel(); });
-  on(opts.btnDownload, "click", () => { downloadOutput(); });
   on(opts.btnLens, "click", async () => {
     const currentFile = getCurrentFile();
     if (!currentFile || !handoffSupported || lensHandoffInFlight) return;
     lensHandoffInFlight = true;
     updateUI();
     try {
-      const draftSnapshot = collectDraftSnapshot();
-      const token = await createFileHandoff(currentFile, draftSnapshot);
+      const draftSnapshot = await collectDraftSnapshotForHandoff();
+      let token: string;
+      try {
+        token = await createFileHandoff(currentFile, draftSnapshot ?? undefined);
+      } catch {
+        token = await createFileHandoff(currentFile);
+      }
       window.location.href = buildLensHandoffUrl(token);
     } catch {
       showToast("could not handoff file to lens");
@@ -1259,23 +1361,49 @@ export function initPrism(opts: PrismUIOptions): () => void {
   async function consumeLensHandoffIfPresent(): Promise<void> {
     const token = getHandoffTokenFromCurrentUrl();
     if (!token) return;
+    clearHandoffTokenFromCurrentUrl();
 
     try {
       const payload = await consumeFileHandoffWithRetry(token);
       if (!payload) {
-        clearHandoffTokenFromCurrentUrl();
         if (!destroyed) showToast("handoff expired or already used");
         return;
       }
       if (destroyed) return;
-      clearHandoffTokenFromCurrentUrl();
-      const draft = parsePrismDraftSnapshot(payload.metadata);
-      if (fileQueue.length > 0) {
-        clearAll();
+
+      let notice: string | null = null;
+      const hadDraftMetadata = payload.metadata !== null;
+      const draft = hadDraftMetadata ? parsePrismDraftSnapshot(payload.metadata) : null;
+      if (hadDraftMetadata && !draft) {
+        notice = "loaded file. prism draft could not be restored";
       }
-      await processFile(payload.file);
-      if (destroyed || !draft) return;
-      restoreDraftSnapshot(draft, payload.file);
+
+      let queueRestored = false;
+      if (draft?.queueRef) {
+        queueRestored = await restoreQueueFromSnapshot(draft);
+        if (!queueRestored && !notice) {
+          notice = "restored current file only. previous queue session was unavailable";
+        }
+      }
+
+      if (!queueRestored) {
+        if (fileQueue.length > 0) {
+          clearAll();
+        }
+        await processFile(payload.file);
+      }
+      if (destroyed) return;
+
+      if (draft) {
+        const restoredDraft = restoreDraftSnapshot(draft, getCurrentFile() ?? payload.file);
+        if (!restoredDraft && !notice) {
+          notice = "loaded file. draft settings did not match this file";
+        }
+      }
+
+      if (notice) {
+        showToast(notice);
+      }
     } catch {
       if (!destroyed) {
         showToast("could not load handoff from lens");

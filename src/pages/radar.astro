@@ -272,7 +272,7 @@ const seo = {
 
     <!-- ── Action Bar ─────────────────────────────────────────── -->
     <div class="radar-actions" role="group" aria-label="Radar controls">
-      <button class="action-btn" id="radar-start" type="button">Scan</button>
+      <button class="action-btn" id="radar-start" type="button">Load</button>
       <button class="action-btn" id="radar-stop" type="button">Stop</button>
       <button class="action-btn" id="radar-bt-scan" type="button"
         >BT LE Scan</button
@@ -937,6 +937,19 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.4);
     background: transparent;
     opacity: 1;
+  }
+
+  .action-btn--run {
+    color: rgb(var(--chromatic-green, 120 200 90) / 0.9);
+  }
+
+  .action-btn--run:hover {
+    background: rgb(var(--chromatic-green, 120 200 90) / 0.08);
+    color: rgb(var(--chromatic-green, 120 200 90));
+  }
+
+  .action-btn--run:disabled {
+    color: rgb(var(--chromatic-green, 120 200 90) / 0.35);
   }
 
   /* ── Hover States ────────────────────────────────────────────── */

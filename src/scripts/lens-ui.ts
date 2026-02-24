@@ -4,6 +4,7 @@
 
 import { parseFile, LENS_CATEGORY_ORDER, type ExifCategory, type ExifField, type LensData } from "./lens-exif";
 import { isPrismSupportedFile } from "./prism-engine";
+import { parsePrismDraftSnapshot } from "./prism-draft";
 import {
   buildPrismHandoffUrl,
   clearHandoffTokenFromCurrentUrl,
@@ -693,10 +694,15 @@ export function initLens(opts: LensUIOptions): () => void {
     prismHandoffInFlight = true;
     updatePrismHandoffButton();
     try {
-      const token = await createFileHandoff(
-        currentInputFile,
-        prismDraftMetadata === null ? undefined : prismDraftMetadata,
-      );
+      let token: string;
+      try {
+        token = await createFileHandoff(
+          currentInputFile,
+          prismDraftMetadata === null ? undefined : prismDraftMetadata,
+        );
+      } catch {
+        token = await createFileHandoff(currentInputFile);
+      }
       window.location.href = buildPrismHandoffUrl(token);
     } catch {
       showToast("could not handoff file to prism");
@@ -727,20 +733,24 @@ export function initLens(opts: LensUIOptions): () => void {
   async function consumePrismHandoffIfPresent(): Promise<void> {
     const token = getHandoffTokenFromCurrentUrl();
     if (!token) return;
+    clearHandoffTokenFromCurrentUrl();
 
     try {
       const payload = await consumeFileHandoffWithRetry(token);
       if (!payload) {
-        clearHandoffTokenFromCurrentUrl();
         if (!destroyed) showToast("handoff expired or already used");
         return;
       }
       if (destroyed) return;
-      clearHandoffTokenFromCurrentUrl();
+      const hadMetadata = payload.metadata !== null;
+      const draftSnapshot = hadMetadata ? parsePrismDraftSnapshot(payload.metadata) : null;
       await processFile(payload.file, {
         preservePrismDraft: true,
-        prismDraftMetadata: payload.metadata,
+        prismDraftMetadata: draftSnapshot,
       });
+      if (!destroyed && hadMetadata && !draftSnapshot) {
+        showToast("loaded file. prism draft could not be restored");
+      }
     } catch {
       if (!destroyed) showToast("could not load handoff from prism");
     }

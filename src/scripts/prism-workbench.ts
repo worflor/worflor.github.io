@@ -34,7 +34,7 @@ export interface WorkbenchConfig {
   colorSaturation: number;  // 0…3
   colorGamma: number;       // 0.1…10
   sharpenEnabled: boolean;
-  sharpenAmount: "light" | "medium" | "strong";
+  sharpenStrength: number;  // 0.1…2.0
   fadeEnabled: boolean;
   fadeInDuration: number;   // seconds
   fadeOutDuration: number;  // seconds
@@ -159,6 +159,48 @@ function createInput(id: string, type: string, value: string, placeholder?: stri
   return input;
 }
 
+function createSlider(
+  id: string,
+  min: number, max: number, step: number, value: number,
+  display: (v: number) => string,
+): { container: HTMLElement; input: HTMLInputElement } {
+  const container = el("div", "wb-slider-row");
+  const input = document.createElement("input");
+  input.type = "range";
+  input.className = "wb-slider";
+  input.id = id;
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(Math.min(max, Math.max(min, value)));
+  const valueEl = el("span", "wb-slider-value", display(parseFloat(input.value)));
+  input.addEventListener("input", () => { valueEl.textContent = display(parseFloat(input.value)); });
+  container.appendChild(input);
+  container.appendChild(valueEl);
+  return { container, input };
+}
+
+function createPills<T extends string>(
+  options: { value: T; label: string }[],
+  selected: T,
+  onChange: (value: T) => void,
+  wrap = false,
+): HTMLElement {
+  const group = el("div", wrap ? "wb-pills wb-pills--wrap" : "wb-pills");
+  for (const opt of options) {
+    const pill = el("button", `wb-pill${opt.value === selected ? " wb-pill--active" : ""}`, opt.label) as HTMLButtonElement;
+    pill.type = "button";
+    pill.dataset.value = opt.value;
+    pill.addEventListener("click", () => {
+      group.querySelectorAll(".wb-pill").forEach((p) => p.classList.remove("wb-pill--active"));
+      pill.classList.add("wb-pill--active");
+      onChange(opt.value);
+    });
+    group.appendChild(pill);
+  }
+  return group;
+}
+
 function formatDuration(sec: number | null): string {
   if (sec === null || !isFinite(sec)) return "";
   const h = Math.floor(sec / 3600);
@@ -227,7 +269,7 @@ export function createWorkbench(): WorkbenchModule {
     colorSaturation: 1,
     colorGamma: 1,
     sharpenEnabled: false,
-    sharpenAmount: "medium",
+    sharpenStrength: 1.0,
     fadeEnabled: false,
     fadeInDuration: 1,
     fadeOutDuration: 1,
@@ -297,24 +339,29 @@ export function createWorkbench(): WorkbenchModule {
     formatGroup.appendChild(formatSelect);
     body.appendChild(formatGroup);
 
-    // Quality select
+    // Quality pills
     const qualityGroup = el("div", "wb-field");
     qualityGroup.appendChild(el("label", "wb-label", "Quality"));
-    const qualityOptions = category === "image"
+    const qualityDefs: { value: WorkbenchConfig["quality"]; label: string }[] = category === "image"
       ? [
-          { value: "fast", label: "Compact (smaller file)" },
+          { value: "fast", label: "Compact" },
           { value: "balanced", label: "Balanced" },
-          { value: "quality", label: "Maximum (larger file)" },
+          { value: "quality", label: "Maximum" },
         ]
       : [
-          { value: "fast", label: "Fast (smaller file)" },
+          { value: "fast", label: "Fast" },
           { value: "balanced", label: "Balanced" },
-          { value: "quality", label: "Quality (larger file)" },
+          { value: "quality", label: "Quality" },
         ];
-    const qualitySelect = createSelect("wb-quality", qualityOptions, config.quality);
-    qualitySelect.disabled = config.specialMode !== null;
-    qualitySelect.addEventListener("change", () => { config.quality = qualitySelect.value as WorkbenchConfig["quality"]; });
-    qualityGroup.appendChild(qualitySelect);
+    const qualityPillsEl = createPills(
+      qualityDefs,
+      config.quality,
+      (v) => { config.quality = v; },
+    );
+    if (config.specialMode !== null) {
+      qualityPillsEl.querySelectorAll(".wb-pill").forEach((p) => ((p as HTMLButtonElement).disabled = true));
+    }
+    qualityGroup.appendChild(qualityPillsEl);
     body.appendChild(qualityGroup);
 
     // Resolution select (video + image)
@@ -340,6 +387,7 @@ export function createWorkbench(): WorkbenchModule {
     // FPS control (video only)
     if (category === "video") {
       const fpsRow = el("div", "wb-field");
+      const fpsHeader = el("div", "wb-fps-header");
       const fpsLabel = el("label", "wb-toggle-label");
       const fpsCheck = document.createElement("input");
       fpsCheck.type = "checkbox";
@@ -347,21 +395,21 @@ export function createWorkbench(): WorkbenchModule {
       fpsCheck.disabled = config.specialMode !== null;
       fpsCheck.addEventListener("change", () => {
         config.fpsEnabled = fpsCheck.checked;
-        fpsSelect.disabled = !fpsCheck.checked || config.specialMode !== null;
+        fpsNumInput.disabled = !fpsCheck.checked || config.specialMode !== null;
       });
       fpsLabel.appendChild(fpsCheck);
-      fpsLabel.appendChild(document.createTextNode(" Frame Rate"));
-      fpsRow.appendChild(fpsLabel);
-
-      const fpsSelect = createSelect("wb-fps", [
-        { value: "24", label: "24 fps (cinema)" },
-        { value: "25", label: "25 fps (PAL)" },
-        { value: "30", label: "30 fps (NTSC)" },
-        { value: "60", label: "60 fps (smooth)" },
-      ], String(config.fpsValue));
-      fpsSelect.disabled = !config.fpsEnabled || config.specialMode !== null;
-      fpsSelect.addEventListener("change", () => { config.fpsValue = parseInt(fpsSelect.value); });
-      fpsRow.appendChild(fpsSelect);
+      fpsLabel.appendChild(document.createTextNode(" Lock Frame Rate"));
+      fpsHeader.appendChild(fpsLabel);
+      const fpsNumInput = createInput("wb-fps", "number", String(config.fpsValue), "30");
+      fpsNumInput.min = "1";
+      fpsNumInput.max = "120";
+      fpsNumInput.step = "1";
+      fpsNumInput.className = "prism-input wb-fps-input";
+      fpsNumInput.disabled = !config.fpsEnabled || config.specialMode !== null;
+      fpsNumInput.addEventListener("change", () => { config.fpsValue = Math.max(1, Math.min(120, parseInt(fpsNumInput.value) || 30)); });
+      fpsHeader.appendChild(fpsNumInput);
+      fpsHeader.appendChild(el("span", "wb-fps-unit", "fps"));
+      fpsRow.appendChild(fpsHeader);
       body.appendChild(fpsRow);
     }
 
@@ -426,9 +474,12 @@ export function createWorkbench(): WorkbenchModule {
     const label = el("span", "wb-toggle-name", "Trim");
     header.appendChild(label);
 
-    if (config.trimEnabled && currentFile.duration !== null) {
-      const hint = el("span", "wb-toggle-hint", formatDuration(currentFile.duration));
-      header.appendChild(hint);
+    // Always show duration for context; show trim range when active
+    if (currentFile.duration !== null) {
+      const hintText = config.trimEnabled
+        ? `${config.trimStart || "0"} → ${config.trimEnd || formatDuration(currentFile.duration)}`
+        : formatDuration(currentFile.duration);
+      header.appendChild(el("span", "wb-toggle-hint", hintText));
     }
 
     row.appendChild(header);
@@ -438,7 +489,7 @@ export function createWorkbench(): WorkbenchModule {
     opts.style.display = config.trimEnabled ? "" : "none";
 
     if (currentFile.duration !== null) {
-      const durationHint = el("p", "wb-hint", `Duration: ${formatDuration(currentFile.duration)}`);
+      const durationHint = el("p", "wb-hint", `${formatDuration(currentFile.duration)} total`);
       opts.appendChild(durationHint);
     }
 
@@ -475,6 +526,9 @@ export function createWorkbench(): WorkbenchModule {
   }
 
   function renderRotateToggle(parent: HTMLElement): void {
+    const rotateLabels: Record<string, string> = {
+      "90cw": "90° CW", "90ccw": "90° CCW", "180": "180°", "hflip": "Flip H", "vflip": "Flip V",
+    };
     const row = el("div", `wb-toggle-row${config.rotateEnabled ? " wb-toggle-row--active" : ""}`);
 
     const header = el("label", "wb-toggle-header");
@@ -488,23 +542,25 @@ export function createWorkbench(): WorkbenchModule {
     });
     header.appendChild(check);
     header.appendChild(el("span", "wb-toggle-name", "Rotate / Flip"));
+    if (config.rotateEnabled) {
+      header.appendChild(el("span", "wb-toggle-hint", rotateLabels[config.rotateMode] ?? config.rotateMode));
+    }
     row.appendChild(header);
 
     const opts = el("div", "wb-toggle-opts");
     opts.style.display = config.rotateEnabled ? "" : "none";
 
-    const modeGroup = el("div", "wb-field");
-    modeGroup.appendChild(el("label", "wb-label", "Transform"));
-    const modeSelect = createSelect("wb-rotate-mode", [
-      { value: "90cw",  label: "Rotate 90\u00b0 clockwise" },
-      { value: "90ccw", label: "Rotate 90\u00b0 counter-clockwise" },
-      { value: "180",   label: "Rotate 180\u00b0" },
-      { value: "hflip", label: "Flip horizontal (mirror)" },
-      { value: "vflip", label: "Flip vertical" },
-    ], config.rotateMode);
-    modeSelect.addEventListener("change", () => { config.rotateMode = modeSelect.value as WorkbenchConfig["rotateMode"]; });
-    modeGroup.appendChild(modeSelect);
-    opts.appendChild(modeGroup);
+    opts.appendChild(createPills(
+      [
+        { value: "90cw",  label: "90° CW" },
+        { value: "90ccw", label: "90° CCW" },
+        { value: "180",   label: "180°" },
+        { value: "hflip", label: "Flip H" },
+        { value: "vflip", label: "Flip V" },
+      ] as { value: WorkbenchConfig["rotateMode"]; label: string }[],
+      config.rotateMode,
+      (v) => { config.rotateMode = v; },
+    ));
 
     row.appendChild(opts);
     parent.appendChild(row);
@@ -529,23 +585,25 @@ export function createWorkbench(): WorkbenchModule {
     });
     header.appendChild(check);
     header.appendChild(el("span", "wb-toggle-name", "Crop"));
+    if (config.cropEnabled) {
+      header.appendChild(el("span", "wb-toggle-hint", config.cropAspect));
+    }
     row.appendChild(header);
 
     const opts = el("div", "wb-toggle-opts");
     opts.style.display = config.cropEnabled ? "" : "none";
 
-    const aspectGroup = el("div", "wb-field");
-    aspectGroup.appendChild(el("label", "wb-label", "Aspect Ratio"));
-    const aspectSelect = createSelect("wb-crop-aspect", [
-      { value: "1:1",  label: "1:1 (square)" },
-      { value: "16:9", label: "16:9 (widescreen)" },
-      { value: "9:16", label: "9:16 (vertical)" },
-      { value: "4:3",  label: "4:3 (classic)" },
-      { value: "3:4",  label: "3:4 (portrait)" },
-    ], config.cropAspect);
-    aspectSelect.addEventListener("change", () => { config.cropAspect = aspectSelect.value as WorkbenchConfig["cropAspect"]; });
-    aspectGroup.appendChild(aspectSelect);
-    opts.appendChild(aspectGroup);
+    opts.appendChild(createPills(
+      [
+        { value: "16:9", label: "16:9" },
+        { value: "9:16", label: "9:16" },
+        { value: "1:1",  label: "1:1" },
+        { value: "4:3",  label: "4:3" },
+        { value: "3:4",  label: "3:4" },
+      ] as { value: WorkbenchConfig["cropAspect"]; label: string }[],
+      config.cropAspect,
+      (v) => { config.cropAspect = v; },
+    ));
 
     row.appendChild(opts);
     parent.appendChild(row);
@@ -565,20 +623,22 @@ export function createWorkbench(): WorkbenchModule {
     });
     header.appendChild(check);
     header.appendChild(el("span", "wb-toggle-name", "Deinterlace"));
+    if (config.deinterlaceEnabled) {
+      header.appendChild(el("span", "wb-toggle-hint", config.deinterlaceMode));
+    }
     row.appendChild(header);
 
     const opts = el("div", "wb-toggle-opts");
     opts.style.display = config.deinterlaceEnabled ? "" : "none";
 
-    const modeGroup = el("div", "wb-field");
-    modeGroup.appendChild(el("label", "wb-label", "Method"));
-    const modeSelect = createSelect("wb-deinterlace-mode", [
-      { value: "yadif", label: "yadif (fast)" },
-      { value: "bwdif", label: "bwdif (better quality)" },
-    ], config.deinterlaceMode);
-    modeSelect.addEventListener("change", () => { config.deinterlaceMode = modeSelect.value as WorkbenchConfig["deinterlaceMode"]; });
-    modeGroup.appendChild(modeSelect);
-    opts.appendChild(modeGroup);
+    opts.appendChild(createPills(
+      [
+        { value: "yadif", label: "yadif — fast" },
+        { value: "bwdif", label: "bwdif — quality" },
+      ] as { value: WorkbenchConfig["deinterlaceMode"]; label: string }[],
+      config.deinterlaceMode,
+      (v) => { config.deinterlaceMode = v; },
+    ));
 
     row.appendChild(opts);
     parent.appendChild(row);
@@ -602,33 +662,42 @@ export function createWorkbench(): WorkbenchModule {
       }
     });
     header.appendChild(check);
-    header.appendChild(el("span", "wb-toggle-name", "Pad (Letterbox)"));
+    header.appendChild(el("span", "wb-toggle-name", "Letterbox"));
+    if (config.padEnabled) {
+      header.appendChild(el("span", "wb-toggle-hint", config.padAspect));
+    }
     row.appendChild(header);
 
     const opts = el("div", "wb-toggle-opts");
     opts.style.display = config.padEnabled ? "" : "none";
 
-    const aspectGroup = el("div", "wb-field");
-    aspectGroup.appendChild(el("label", "wb-label", "Target Aspect"));
-    const aspectSelect = createSelect("wb-pad-aspect", [
-      { value: "16:9", label: "16:9 (widescreen)" },
-      { value: "9:16", label: "9:16 (vertical)" },
-      { value: "4:3",  label: "4:3 (classic)" },
-      { value: "3:4",  label: "3:4 (portrait)" },
-      { value: "1:1",  label: "1:1 (square)" },
-      { value: "21:9", label: "21:9 (ultrawide)" },
-    ], config.padAspect);
-    aspectSelect.addEventListener("change", () => { config.padAspect = aspectSelect.value as WorkbenchConfig["padAspect"]; });
-    aspectGroup.appendChild(aspectSelect);
-    opts.appendChild(aspectGroup);
+    opts.appendChild(createPills(
+      [
+        { value: "16:9", label: "16:9" },
+        { value: "9:16", label: "9:16" },
+        { value: "4:3",  label: "4:3" },
+        { value: "3:4",  label: "3:4" },
+        { value: "1:1",  label: "1:1" },
+        { value: "21:9", label: "21:9" },
+      ] as { value: WorkbenchConfig["padAspect"]; label: string }[],
+      config.padAspect,
+      (v) => { config.padAspect = v; },
+    ));
 
     const colorGroup = el("div", "wb-field");
-    colorGroup.appendChild(el("label", "wb-label", "Background Color"));
-    const colorInput = createInput("wb-pad-color", "text", config.padColor, "000000");
-    colorInput.addEventListener("change", () => { config.padColor = colorInput.value.replace(/^#/, ""); });
-    colorGroup.appendChild(colorInput);
-    const colorHint = el("p", "wb-hint", "Hex color without #. e.g. 000000 for black.");
-    colorGroup.appendChild(colorHint);
+    colorGroup.appendChild(el("label", "wb-label", "Background"));
+    const colorPickerRow = el("div", "wb-color-picker-row");
+    const colorPicker = document.createElement("input");
+    colorPicker.type = "color";
+    colorPicker.className = "wb-color-picker";
+    colorPicker.id = "wb-pad-color";
+    colorPicker.value = `#${config.padColor.padStart(6, "0")}`;
+    colorPicker.addEventListener("input", () => { config.padColor = colorPicker.value.slice(1); });
+    const colorLabel = el("span", "wb-color-picker-label", `#${config.padColor.padStart(6, "0")}`);
+    colorPicker.addEventListener("input", () => { colorLabel.textContent = colorPicker.value; });
+    colorPickerRow.appendChild(colorPicker);
+    colorPickerRow.appendChild(colorLabel);
+    colorGroup.appendChild(colorPickerRow);
     opts.appendChild(colorGroup);
 
     row.appendChild(opts);
@@ -649,6 +718,14 @@ export function createWorkbench(): WorkbenchModule {
     });
     header.appendChild(check);
     header.appendChild(el("span", "wb-toggle-name", "Color"));
+    if (config.colorEnabled) {
+      const parts: string[] = [];
+      if (config.colorBrightness !== 0)   parts.push(`☀ ${config.colorBrightness >= 0 ? "+" : ""}${config.colorBrightness.toFixed(2)}`);
+      if (config.colorContrast !== 1)     parts.push(`◑ ${config.colorContrast.toFixed(2)}`);
+      if (config.colorSaturation !== 1)   parts.push(`◉ ${config.colorSaturation.toFixed(2)}`);
+      if (config.colorGamma !== 1)        parts.push(`γ ${config.colorGamma.toFixed(2)}`);
+      if (parts.length > 0) header.appendChild(el("span", "wb-toggle-hint", parts.join("  ")));
+    }
     row.appendChild(header);
 
     const opts = el("div", "wb-toggle-opts");
@@ -656,46 +733,46 @@ export function createWorkbench(): WorkbenchModule {
 
     // Brightness
     const brightGroup = el("div", "wb-field");
-    brightGroup.appendChild(el("label", "wb-label", "Brightness (\u22121 to 1)"));
-    const brightInput = createInput("wb-color-brightness", "number", String(config.colorBrightness), "0");
-    brightInput.step = "0.05";
-    brightInput.min = "-1";
-    brightInput.max = "1";
-    brightInput.addEventListener("change", () => { config.colorBrightness = parseFloat(brightInput.value) || 0; });
-    brightGroup.appendChild(brightInput);
+    brightGroup.appendChild(el("label", "wb-label", "Brightness"));
+    const { container: brightSlider, input: brightInput } = createSlider(
+      "wb-color-brightness", -1, 1, 0.02, config.colorBrightness,
+      (v) => (v >= 0 ? "+" : "") + v.toFixed(2),
+    );
+    brightInput.addEventListener("input", () => { config.colorBrightness = parseFloat(brightInput.value); });
+    brightGroup.appendChild(brightSlider);
     opts.appendChild(brightGroup);
 
     // Contrast
     const contrastGroup = el("div", "wb-field");
-    contrastGroup.appendChild(el("label", "wb-label", "Contrast (0 to 2)"));
-    const contrastInput = createInput("wb-color-contrast", "number", String(config.colorContrast), "1");
-    contrastInput.step = "0.05";
-    contrastInput.min = "0";
-    contrastInput.max = "2";
-    contrastInput.addEventListener("change", () => { config.colorContrast = parseFloat(contrastInput.value) || 1; });
-    contrastGroup.appendChild(contrastInput);
+    contrastGroup.appendChild(el("label", "wb-label", "Contrast"));
+    const { container: contrastSlider, input: contrastInput } = createSlider(
+      "wb-color-contrast", 0, 2, 0.02, config.colorContrast,
+      (v) => v.toFixed(2),
+    );
+    contrastInput.addEventListener("input", () => { config.colorContrast = parseFloat(contrastInput.value); });
+    contrastGroup.appendChild(contrastSlider);
     opts.appendChild(contrastGroup);
 
     // Saturation
     const satGroup = el("div", "wb-field");
-    satGroup.appendChild(el("label", "wb-label", "Saturation (0 to 3)"));
-    const satInput = createInput("wb-color-saturation", "number", String(config.colorSaturation), "1");
-    satInput.step = "0.05";
-    satInput.min = "0";
-    satInput.max = "3";
-    satInput.addEventListener("change", () => { config.colorSaturation = parseFloat(satInput.value) || 1; });
-    satGroup.appendChild(satInput);
+    satGroup.appendChild(el("label", "wb-label", "Saturation"));
+    const { container: satSlider, input: satInput } = createSlider(
+      "wb-color-saturation", 0, 3, 0.02, config.colorSaturation,
+      (v) => v.toFixed(2),
+    );
+    satInput.addEventListener("input", () => { config.colorSaturation = parseFloat(satInput.value); });
+    satGroup.appendChild(satSlider);
     opts.appendChild(satGroup);
 
     // Gamma
     const gammaGroup = el("div", "wb-field");
-    gammaGroup.appendChild(el("label", "wb-label", "Gamma (0.1 to 10)"));
-    const gammaInput = createInput("wb-color-gamma", "number", String(config.colorGamma), "1");
-    gammaInput.step = "0.1";
-    gammaInput.min = "0.1";
-    gammaInput.max = "10";
-    gammaInput.addEventListener("change", () => { config.colorGamma = parseFloat(gammaInput.value) || 1; });
-    gammaGroup.appendChild(gammaInput);
+    gammaGroup.appendChild(el("label", "wb-label", "Gamma"));
+    const { container: gammaSlider, input: gammaInput } = createSlider(
+      "wb-color-gamma", 0.1, 4, 0.05, Math.min(config.colorGamma, 4),
+      (v) => v.toFixed(2),
+    );
+    gammaInput.addEventListener("input", () => { config.colorGamma = parseFloat(gammaInput.value); });
+    gammaGroup.appendChild(gammaSlider);
     opts.appendChild(gammaGroup);
 
     row.appendChild(opts);
@@ -716,21 +793,23 @@ export function createWorkbench(): WorkbenchModule {
     });
     header.appendChild(check);
     header.appendChild(el("span", "wb-toggle-name", "Sharpen"));
+    if (config.sharpenEnabled) {
+      header.appendChild(el("span", "wb-toggle-hint", config.sharpenStrength.toFixed(2)));
+    }
     row.appendChild(header);
 
     const opts = el("div", "wb-toggle-opts");
     opts.style.display = config.sharpenEnabled ? "" : "none";
 
-    const amountGroup = el("div", "wb-field");
-    amountGroup.appendChild(el("label", "wb-label", "Amount"));
-    const amountSelect = createSelect("wb-sharpen-amount", [
-      { value: "light",  label: "Light" },
-      { value: "medium", label: "Medium" },
-      { value: "strong", label: "Strong" },
-    ], config.sharpenAmount);
-    amountSelect.addEventListener("change", () => { config.sharpenAmount = amountSelect.value as WorkbenchConfig["sharpenAmount"]; });
-    amountGroup.appendChild(amountSelect);
-    opts.appendChild(amountGroup);
+    const strengthGroup = el("div", "wb-field");
+    strengthGroup.appendChild(el("label", "wb-label", "Strength"));
+    const { container: strengthSlider, input: strengthInput } = createSlider(
+      "wb-sharpen-strength", 0.1, 2.0, 0.05, config.sharpenStrength,
+      (v) => v.toFixed(2),
+    );
+    strengthInput.addEventListener("input", () => { config.sharpenStrength = parseFloat(strengthInput.value); });
+    strengthGroup.appendChild(strengthSlider);
+    opts.appendChild(strengthGroup);
 
     row.appendChild(opts);
     parent.appendChild(row);
@@ -750,29 +829,35 @@ export function createWorkbench(): WorkbenchModule {
     });
     header.appendChild(check);
     header.appendChild(el("span", "wb-toggle-name", "Fade"));
+    if (config.fadeEnabled) {
+      const inStr = config.fadeInDuration > 0 ? `↑${config.fadeInDuration.toFixed(1)}s` : "";
+      const outStr = config.fadeOutDuration > 0 ? `↓${config.fadeOutDuration.toFixed(1)}s` : "";
+      const fadeHint = [inStr, outStr].filter(Boolean).join("  ");
+      if (fadeHint) header.appendChild(el("span", "wb-toggle-hint", fadeHint));
+    }
     row.appendChild(header);
 
     const opts = el("div", "wb-toggle-opts");
     opts.style.display = config.fadeEnabled ? "" : "none";
 
     const inGroup = el("div", "wb-field");
-    inGroup.appendChild(el("label", "wb-label", "Fade In (seconds)"));
-    const inInput = createInput("wb-fade-in", "number", String(config.fadeInDuration), "1");
-    inInput.min = "0";
-    inInput.max = "30";
-    inInput.step = "0.5";
-    inInput.addEventListener("change", () => { config.fadeInDuration = parseFloat(inInput.value) || 0; });
-    inGroup.appendChild(inInput);
+    inGroup.appendChild(el("label", "wb-label", "Fade In"));
+    const { container: inSlider, input: inInput } = createSlider(
+      "wb-fade-in", 0, 30, 0.5, config.fadeInDuration,
+      (v) => v === 0 ? "off" : `${v.toFixed(1)}s`,
+    );
+    inInput.addEventListener("input", () => { config.fadeInDuration = parseFloat(inInput.value); });
+    inGroup.appendChild(inSlider);
     opts.appendChild(inGroup);
 
     const outGroup = el("div", "wb-field");
-    outGroup.appendChild(el("label", "wb-label", "Fade Out (seconds)"));
-    const outInput = createInput("wb-fade-out", "number", String(config.fadeOutDuration), "1");
-    outInput.min = "0";
-    outInput.max = "30";
-    outInput.step = "0.5";
-    outInput.addEventListener("change", () => { config.fadeOutDuration = parseFloat(outInput.value) || 0; });
-    outGroup.appendChild(outInput);
+    outGroup.appendChild(el("label", "wb-label", "Fade Out"));
+    const { container: outSlider, input: outInput } = createSlider(
+      "wb-fade-out", 0, 30, 0.5, config.fadeOutDuration,
+      (v) => v === 0 ? "off" : `${v.toFixed(1)}s`,
+    );
+    outInput.addEventListener("input", () => { config.fadeOutDuration = parseFloat(outInput.value); });
+    outGroup.appendChild(outSlider);
     opts.appendChild(outGroup);
 
     row.appendChild(opts);
@@ -800,12 +885,14 @@ export function createWorkbench(): WorkbenchModule {
 
     const modeGroup = el("div", "wb-field");
     modeGroup.appendChild(el("label", "wb-label", "Mode"));
-    const modeSelect = createSelect("wb-concat-mode", [
-      { value: "demuxer", label: "Fast join (same format, no re-encode)" },
-      { value: "filter",  label: "Re-encode (any mix of formats)" },
-    ], config.concatMode);
-    modeSelect.addEventListener("change", () => { config.concatMode = modeSelect.value as WorkbenchConfig["concatMode"]; });
-    modeGroup.appendChild(modeSelect);
+    modeGroup.appendChild(createPills(
+      [
+        { value: "demuxer", label: "Fast join" },
+        { value: "filter",  label: "Re-encode" },
+      ] as { value: WorkbenchConfig["concatMode"]; label: string }[],
+      config.concatMode,
+      (v) => { config.concatMode = v; },
+    ));
     opts.appendChild(modeGroup);
 
     // Warning for demuxer mode with mixed formats
@@ -870,28 +957,30 @@ export function createWorkbench(): WorkbenchModule {
     opts.appendChild(startGroup);
 
     const durGroup = el("div", "wb-field");
-    durGroup.appendChild(el("label", "wb-label", "Duration (seconds)"));
+    durGroup.appendChild(el("label", "wb-label", "Duration"));
     const durInput = createInput("wb-gif-dur", "number", String(config.gifDuration), "5");
     durInput.addEventListener("change", () => { config.gifDuration = durInput.value; });
     durGroup.appendChild(durInput);
     opts.appendChild(durGroup);
 
     const widthGroup = el("div", "wb-field");
-    widthGroup.appendChild(el("label", "wb-label", "Width (px)"));
-    const widthInput = createInput("wb-gif-width", "number", String(config.gifWidth), "480");
-    widthInput.addEventListener("change", () => { config.gifWidth = parseInt(widthInput.value) || 480; });
-    widthGroup.appendChild(widthInput);
+    widthGroup.appendChild(el("label", "wb-label", "Width"));
+    const { container: widthSliderContainer, input: widthSliderInput } = createSlider(
+      "wb-gif-width", 240, 1280, 8, config.gifWidth,
+      (v) => `${v}px`,
+    );
+    widthSliderInput.addEventListener("input", () => { config.gifWidth = parseInt(widthSliderInput.value); });
+    widthGroup.appendChild(widthSliderContainer);
     opts.appendChild(widthGroup);
 
     const fpsGroup = el("div", "wb-field");
     fpsGroup.appendChild(el("label", "wb-label", "Frame rate"));
-    const fpsSelect = createSelect("wb-gif-fps", [
-      { value: "10", label: "10 fps (small)" },
-      { value: "15", label: "15 fps (balanced)" },
-      { value: "24", label: "24 fps (smooth)" },
-    ], String(config.gifFps));
-    fpsSelect.addEventListener("change", () => { config.gifFps = parseInt(fpsSelect.value); });
-    fpsGroup.appendChild(fpsSelect);
+    const { container: fpsSlider, input: fpsInput } = createSlider(
+      "wb-gif-fps", 1, 30, 1, config.gifFps,
+      (v) => `${v} fps`,
+    );
+    fpsInput.addEventListener("input", () => { config.gifFps = parseInt(fpsInput.value); });
+    fpsGroup.appendChild(fpsSlider);
     opts.appendChild(fpsGroup);
 
     parent.appendChild(opts);
@@ -924,14 +1013,16 @@ export function createWorkbench(): WorkbenchModule {
 
     const countGroup = el("div", "wb-field");
     countGroup.style.display = config.thumbGrid ? "" : "none";
-    countGroup.appendChild(el("label", "wb-label", "Frames"));
-    const countSelect = createSelect("wb-thumb-count", [
-      { value: "4", label: "4 frames (2\u00d72)" },
-      { value: "9", label: "9 frames (3\u00d73)" },
-      { value: "16", label: "16 frames (4\u00d74)" },
-    ], String(config.thumbCount));
-    countSelect.addEventListener("change", () => { config.thumbCount = parseInt(countSelect.value); });
-    countGroup.appendChild(countSelect);
+    countGroup.appendChild(el("label", "wb-label", "Grid Size"));
+    countGroup.appendChild(createPills(
+      [
+        { value: "4",  label: "2×2" },
+        { value: "9",  label: "3×3" },
+        { value: "16", label: "4×4" },
+      ],
+      String(config.thumbCount),
+      (v) => { config.thumbCount = parseInt(v); },
+    ));
     opts.appendChild(countGroup);
 
     parent.appendChild(opts);
@@ -953,13 +1044,23 @@ export function createWorkbench(): WorkbenchModule {
 
     const qualityGroup = el("div", "wb-field");
     qualityGroup.appendChild(el("label", "wb-label", "Quality (when re-encoding)"));
-    const qualitySelect = createSelect("wb-audio-quality", [
-      { value: "fast", label: "Fast (128k)" },
-      { value: "balanced", label: "Balanced (192k)" },
-      { value: "quality", label: "Quality (320k)" },
-    ], config.quality);
-    qualitySelect.addEventListener("change", () => { config.quality = qualitySelect.value as WorkbenchConfig["quality"]; });
-    qualityGroup.appendChild(qualitySelect);
+    const audioQPills = el("div", "wb-quality-pills");
+    const audioQDefs: { value: WorkbenchConfig["quality"]; label: string; hint: string }[] = [
+      { value: "fast", label: "128k", hint: "" },
+      { value: "balanced", label: "192k", hint: "" },
+      { value: "quality", label: "320k", hint: "" },
+    ];
+    for (const opt of audioQDefs) {
+      const pill = el("button", `wb-quality-pill${config.quality === opt.value ? " wb-quality-pill--active" : ""}`, opt.label);
+      pill.type = "button";
+      pill.addEventListener("click", () => {
+        config.quality = opt.value;
+        audioQPills.querySelectorAll(".wb-quality-pill").forEach((p) => p.classList.remove("wb-quality-pill--active"));
+        pill.classList.add("wb-quality-pill--active");
+      });
+      audioQPills.appendChild(pill);
+    }
+    qualityGroup.appendChild(audioQPills);
     opts.appendChild(qualityGroup);
 
     parent.appendChild(opts);
@@ -1137,12 +1238,11 @@ export function createWorkbench(): WorkbenchModule {
 
     // 8. Sharpen (after color)
     if (config.sharpenEnabled && (category === "video" || category === "image")) {
-      const sharpenMap: Record<string, string> = {
-        light:  "unsharp=3:3:0.5",
-        medium: "unsharp=5:5:1.0",
-        strong: "unsharp=7:7:1.5",
-      };
-      vfParts.push(sharpenMap[config.sharpenAmount] || sharpenMap.medium);
+      // Map 0.1–2.0 → luma_amount 0.05–1.5, kernel size 3 for light, 5 for heavier
+      const s = config.sharpenStrength;
+      const lumaAmount = parseFloat((s * 0.75).toFixed(3));
+      const kernelSize = s <= 0.8 ? 3 : 5;
+      vfParts.push(`unsharp=${kernelSize}:${kernelSize}:${lumaAmount}`);
     }
 
     // 9. Fade — must be LAST (operates on final pixel values)
@@ -1483,9 +1583,7 @@ export function createWorkbench(): WorkbenchModule {
       ) {
         config.padAspect = nextConfig.padAspect;
       }
-      if (nextConfig.sharpenAmount === "light" || nextConfig.sharpenAmount === "medium" || nextConfig.sharpenAmount === "strong") {
-        config.sharpenAmount = nextConfig.sharpenAmount;
-      }
+      // sharpenStrength handled by setNumber below
       if (nextConfig.specialMode === null || nextConfig.specialMode === "gif" || nextConfig.specialMode === "thumbnail" || nextConfig.specialMode === "extract-audio") {
         config.specialMode = nextConfig.specialMode;
       }
@@ -1516,6 +1614,7 @@ export function createWorkbench(): WorkbenchModule {
       setNumber("colorContrast", 0, 2);
       setNumber("colorSaturation", 0, 3);
       setNumber("colorGamma", 0.1, 10);
+      setNumber("sharpenStrength", 0.1, 2.0);
       setNumber("fadeInDuration", 0, 120);
       setNumber("fadeOutDuration", 0, 120);
       setNumber("gifWidth", 16, 4096);
@@ -1570,7 +1669,7 @@ export function createWorkbench(): WorkbenchModule {
       config.colorSaturation = 1;
       config.colorGamma = 1;
       config.sharpenEnabled = false;
-      config.sharpenAmount = "medium";
+      config.sharpenStrength = 1.0;
       config.fadeEnabled = false;
       config.fadeInDuration = 1;
       config.fadeOutDuration = 1;
