@@ -272,7 +272,7 @@ const seo = {
 
     <!-- ── Action Bar ─────────────────────────────────────────── -->
     <div class="radar-actions" role="group" aria-label="Radar controls">
-      <button class="action-btn" id="radar-start" type="button">Load</button>
+      <button class="action-btn" id="radar-start" type="button">Run</button>
       <button class="action-btn" id="radar-stop" type="button">Stop</button>
       <button class="action-btn" id="radar-bt-scan" type="button"
         >BT LE Scan</button
@@ -861,7 +861,7 @@ const seo = {
     display: inline-flex;
     gap: calc(var(--space-xs) * 0.25);
     padding: calc(var(--space-xs) * 0.7);
-    background: rgb(10 10 10 / 0.8);
+    background: var(--tool-actionbar-bg);
     -webkit-backdrop-filter: blur(16px) saturate(1.2);
     backdrop-filter: blur(16px) saturate(1.2);
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
@@ -912,7 +912,7 @@ const seo = {
     (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
   ) {
     .radar-actions {
-      background: rgb(10 10 10 / 0.94);
+      background: var(--tool-actionbar-bg-fallback);
     }
   }
 
@@ -940,16 +940,16 @@ const seo = {
   }
 
   .action-btn--run {
-    color: rgb(var(--chromatic-green, 120 200 90) / 0.9);
+    color: rgb(var(--tool-action-run) / 0.9);
   }
 
   .action-btn--run:hover {
-    background: rgb(var(--chromatic-green, 120 200 90) / 0.08);
-    color: rgb(var(--chromatic-green, 120 200 90));
+    background: rgb(var(--tool-action-run) / 0.08);
+    color: rgb(var(--tool-action-run));
   }
 
   .action-btn--run:disabled {
-    color: rgb(var(--chromatic-green, 120 200 90) / 0.35);
+    color: rgb(var(--tool-action-run) / 0.35);
   }
 
   /* ── Hover States ────────────────────────────────────────────── */

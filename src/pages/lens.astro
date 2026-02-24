@@ -306,8 +306,8 @@ const seo = {
     width: 5px;
     height: 5px;
     border-radius: var(--radius-full);
-    background: #4ade80;
-    box-shadow: 0 0 6px rgba(74, 222, 128, 0.35);
+    background: rgb(var(--tool-status-success));
+    box-shadow: 0 0 6px rgb(var(--tool-status-success) / 0.35);
     flex-shrink: 0;
     animation: privacy-pulse 4s ease-in-out infinite;
   }
@@ -315,10 +315,10 @@ const seo = {
   @keyframes privacy-pulse {
     0%,
     100% {
-      box-shadow: 0 0 5px rgba(74, 222, 128, 0.3);
+      box-shadow: 0 0 5px rgb(var(--tool-status-success) / 0.3);
     }
     50% {
-      box-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+      box-shadow: 0 0 10px rgb(var(--tool-status-success) / 0.5);
     }
   }
 
@@ -627,7 +627,7 @@ const seo = {
     display: inline-flex;
     gap: calc(var(--space-xs) * 0.25);
     padding: calc(var(--space-xs) * 0.7);
-    background: rgb(10 10 10 / 0.8);
+    background: var(--tool-actionbar-bg);
     -webkit-backdrop-filter: blur(16px) saturate(1.2);
     backdrop-filter: blur(16px) saturate(1.2);
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
@@ -638,6 +638,14 @@ const seo = {
     z-index: 40;
     white-space: nowrap;
     transition: opacity var(--duration-slow) var(--ease-out);
+  }
+
+  @supports not (
+    (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+  ) {
+    .lens-actions {
+      background: var(--tool-actionbar-bg-fallback);
+    }
   }
 
   .action-btn {
@@ -952,12 +960,12 @@ const seo = {
   /* ── GPS Warning ─────────────────────────────────────────── */
 
   .lens-page .lens-gps-warning .dp-label {
-    color: #ff6b35;
+    color: rgb(var(--tool-status-warning));
   }
 
   .lens-page .lens-gps-warning .dp-value {
-    color: #ff6b35;
-    text-shadow: 0 0 6px rgba(255, 107, 53, 0.3);
+    color: rgb(var(--tool-status-warning));
+    text-shadow: 0 0 6px rgb(var(--tool-status-warning) / 0.3);
   }
 
   .lens-page .lens-gps-warning .dp-explain {
@@ -979,11 +987,11 @@ const seo = {
   /* ── GPS summary indicator ──────────────────────────────── */
 
   .lens-gps-yes {
-    color: #ff6b35 !important;
+    color: rgb(var(--tool-status-warning)) !important;
   }
 
   .lens-gps-no {
-    color: #4ade80 !important;
+    color: rgb(var(--tool-status-success)) !important;
   }
 
   /* ── Toast ───────────────────────────────────────────────── */

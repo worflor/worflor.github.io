@@ -405,7 +405,7 @@ const seo = {
     --prism-faint: rgb(var(--color-text-rgb) / 0.3);
     --prism-edge: rgb(var(--color-text-rgb) / 0.14);
     --prism-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
-    --prism-load-purple: 118 80 220;
+    --prism-load-purple: var(--tool-action-load);
     padding-bottom: calc(var(--prism-action-offset) + var(--space-lg));
   }
 
@@ -681,12 +681,12 @@ const seo = {
 
   .prism-warning {
     font-size: var(--text-sm);
-    color: #ff6b35;
+    color: rgb(var(--tool-status-warning));
     padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 1);
-    border: 1px solid rgba(255, 107, 53, 0.2);
-    border-left: 2px solid rgba(255, 107, 53, 0.5);
+    border: 1px solid rgb(var(--tool-status-warning) / 0.2);
+    border-left: 2px solid rgb(var(--tool-status-warning) / 0.5);
     border-radius: var(--prism-radius);
-    background: rgba(255, 107, 53, 0.04);
+    background: rgb(var(--tool-status-warning) / 0.04);
   }
 
   /* ── File Queue ────────────────────────────────────────────── */
@@ -957,7 +957,7 @@ const seo = {
     display: inline-flex;
     gap: calc(var(--space-xs) * 0.25);
     padding: calc(var(--space-xs) * 0.7);
-    background: rgb(10 10 10 / 0.8);
+    background: var(--tool-actionbar-bg);
     -webkit-backdrop-filter: blur(16px) saturate(1.2);
     backdrop-filter: blur(16px) saturate(1.2);
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
@@ -987,7 +987,7 @@ const seo = {
     (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
   ) {
     .prism-actions {
-      background: rgb(10 10 10 / 0.94);
+      background: var(--tool-actionbar-bg-fallback);
     }
   }
 
@@ -1037,31 +1037,30 @@ const seo = {
   }
 
   .action-btn--primary {
-    background: rgb(var(--chromatic-cyan) / 0.1);
-    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--tool-action-run) / 0.1);
+    color: rgb(var(--tool-action-run));
   }
 
   .action-btn--primary:hover {
-    background: rgb(var(--chromatic-cyan) / 0.18);
-    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--tool-action-run) / 0.18);
+    color: rgb(var(--tool-action-run));
   }
 
   .action-btn--primary.action-btn--load {
-    --_purple: 118 80 220;
-    background: rgb(var(--_purple) / 0.12);
-    color: rgb(var(--_purple));
+    background: rgb(var(--tool-action-load) / 0.12);
+    color: rgb(var(--tool-action-load));
   }
 
   .action-btn--primary.action-btn--load:hover {
-    background: rgb(var(--_purple) / 0.22);
+    background: rgb(var(--tool-action-load) / 0.22);
   }
 
   .action-btn--primary.action-btn--load.action-btn--loading {
     position: relative;
     overflow: hidden;
     color: rgb(var(--color-text-rgb) / 0.9);
-    background: rgb(var(--_purple) / 0.08);
-    border: 1px solid rgb(var(--_purple) / 0.3);
+    background: rgb(var(--tool-action-load) / 0.08);
+    border: 1px solid rgb(var(--tool-action-load) / 0.3);
     isolation: isolate;
   }
 
@@ -1071,9 +1070,9 @@ const seo = {
     inset: 0;
     background: linear-gradient(
       90deg,
-      rgb(var(--_purple) / 0.12) 0%,
-      rgb(var(--_purple) / 0.2) 55%,
-      rgb(var(--_purple) / 0.32) 100%
+      rgb(var(--tool-action-load) / 0.12) 0%,
+      rgb(var(--tool-action-load) / 0.2) 55%,
+      rgb(var(--tool-action-load) / 0.32) 100%
     );
     transform-origin: left center;
     transform: scaleX(var(--prism-load-ratio, 0));
@@ -1263,12 +1262,12 @@ const seo = {
     }
 
     .action-btn--primary.action-btn--load:hover {
-      background: rgb(118 80 220 / 0.12);
-      color: rgb(118 80 220);
+      background: rgb(var(--tool-action-load) / 0.12);
+      color: rgb(var(--tool-action-load));
     }
 
     .action-btn--primary.action-btn--load:active {
-      background: rgb(118 80 220 / 0.22);
+      background: rgb(var(--tool-action-load) / 0.22);
     }
 
     .prism-terminal-toggle:hover {
@@ -1846,14 +1845,14 @@ const seo = {
   }
 
   .prism-page .prism-queue-btn--danger {
-    color: #ff6b35;
-    border-color: rgba(255, 107, 53, 0.2);
+    color: rgb(var(--tool-status-warning));
+    border-color: rgb(var(--tool-status-warning) / 0.2);
   }
 
   .prism-page .prism-queue-btn--danger:hover {
-    color: #ff6b35;
-    border-color: rgba(255, 107, 53, 0.4);
-    background: rgba(255, 107, 53, 0.04);
+    color: rgb(var(--tool-status-warning));
+    border-color: rgb(var(--tool-status-warning) / 0.4);
+    background: rgb(var(--tool-status-warning) / 0.04);
   }
 
   /* ── Subtitle file drop zone ─────────────────────────────── */
@@ -1968,8 +1967,8 @@ const seo = {
   }
 
   .prism-page .prism-queue-status--ready {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.08);
+    color: rgb(var(--tool-status-success));
+    background: rgb(var(--tool-status-success) / 0.08);
   }
 
   .prism-page .prism-queue-status--processing {
@@ -1978,13 +1977,13 @@ const seo = {
   }
 
   .prism-page .prism-queue-status--complete {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.08);
+    color: rgb(var(--tool-status-success));
+    background: rgb(var(--tool-status-success) / 0.08);
   }
 
   .prism-page .prism-queue-status--error {
-    color: #ff6b35;
-    background: rgba(255, 107, 53, 0.08);
+    color: rgb(var(--tool-status-warning));
+    background: rgb(var(--tool-status-warning) / 0.08);
   }
 
   /* ── File Info Details ─────────────────────────────────────── */
@@ -2064,12 +2063,144 @@ const seo = {
   }
 
   .prism-page .prism-output-ratio {
-    color: #4ade80;
+    color: rgb(var(--tool-status-success));
     font-variant-numeric: tabular-nums;
   }
 
   .prism-page .prism-output-ratio--larger {
-    color: #ff6b35;
+    color: rgb(var(--tool-status-warning));
+  }
+
+  /* ── Metadata Report (Diff) ─────────────────────────────── */
+
+  .prism-page .prism-meta-report {
+    display: grid;
+    gap: var(--space-xs);
+    width: 100%;
+    margin-top: calc(var(--space-xs) * 0.5);
+    animation: prism-reveal var(--duration-slow) var(--ease-out) forwards;
+  }
+
+  .prism-page .prism-meta-summary {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.6);
+    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.8);
+    font-size: calc(var(--text-sm) * 0.85);
+    color: rgb(var(--color-text-rgb) / 0.35);
+    background: rgb(var(--color-text-rgb) / 0.015);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.04);
+    border-radius: var(--radius-sm);
+  }
+
+  .prism-page .prism-meta-level {
+    font-size: 1.1em;
+    line-height: 1;
+  }
+
+  .prism-page .prism-meta-level--full {
+    color: rgb(var(--tool-status-success));
+  }
+  .prism-page .prism-meta-level--partial {
+    color: rgb(var(--tool-status-warning));
+  }
+  .prism-page .prism-meta-level--none {
+    color: rgb(var(--color-text-rgb) / 0.2);
+  }
+
+  .prism-page .prism-meta-cat {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.05);
+    border-radius: var(--radius-lg);
+    background: rgb(var(--color-text-rgb) / 0.005);
+    overflow: hidden;
+  }
+
+  .prism-page .prism-meta-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.5);
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 1);
+    background: transparent;
+    border: none;
+    color: rgb(var(--color-text-rgb) / 0.6);
+    font-family: inherit;
+    font-size: calc(var(--text-sm) * 0.9);
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    transition: background var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .prism-meta-toggle:hover {
+    background: rgb(var(--color-text-rgb) / 0.02);
+  }
+
+  .prism-page .prism-meta-arrow {
+    font-size: 0.7em;
+    color: rgb(var(--color-text-rgb) / 0.2);
+    transition: transform var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .prism-meta-title {
+    flex: 1;
+    letter-spacing: 0.02em;
+  }
+
+  .prism-page .prism-meta-badge {
+    font-size: calc(var(--text-sm) * 0.75);
+    padding: 0.1em 0.5em;
+    border-radius: var(--radius-sm);
+    background: rgb(var(--color-text-rgb) / 0.05);
+    color: rgb(var(--color-text-rgb) / 0.4);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .prism-page .prism-meta-badge--removed {
+    background: rgb(var(--tool-status-warning) / 0.1);
+    color: rgb(var(--tool-status-warning));
+    font-weight: 600;
+  }
+
+  .prism-page .prism-meta-body {
+    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 1)
+      calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 2);
+    display: grid;
+    gap: calc(var(--space-xs) * 0.25);
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.03);
+  }
+
+  .prism-page .prism-meta-field {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    font-size: calc(var(--text-sm) * 0.85);
+    line-height: 1.4;
+  }
+
+  .prism-page .prism-meta-field-label {
+    color: rgb(var(--color-text-rgb) / 0.35);
+  }
+
+  .prism-page .prism-meta-field-value {
+    color: rgb(var(--color-text-rgb) / 0.55);
+    text-align: right;
+    word-break: break-word;
+  }
+
+  .prism-page .prism-meta-field--removed .prism-meta-field-label,
+  .prism-page .prism-meta-field--removed .prism-meta-field-value {
+    text-decoration: line-through;
+    color: rgb(var(--tool-status-warning) / 0.45);
+  }
+
+  .prism-page .prism-meta-field--surviving .prism-meta-field-label {
+    color: rgb(var(--color-text-rgb) / 0.45);
+  }
+
+  .prism-page .prism-meta-field--surviving .prism-meta-field-value {
+    color: rgb(var(--color-text-rgb) / 0.3);
+    font-style: italic;
   }
 
   /* ── Terminal Toolbar ───────────────────────────────────────── */
@@ -2131,12 +2262,12 @@ const seo = {
   /* ── Engine status ready state ─────────────────────────────── */
 
   .prism-page .prism-status--ready {
-    color: #4ade80;
+    color: rgb(var(--tool-status-success));
   }
 
   .prism-page .prism-dot:has(~ .prism-status--ready) {
-    background: #4ade80;
-    box-shadow: 0 0 6px rgba(74, 222, 128, 0.35);
+    background: rgb(var(--tool-status-success));
+    box-shadow: 0 0 6px rgb(var(--tool-status-success) / 0.35);
   }
 
   /* ── Responsive ────────────────────────────────────────────── */
@@ -2217,8 +2348,8 @@ const seo = {
     }
 
     .prism-page .prism-queue-btn--danger:hover {
-      color: #ff6b35;
-      border-color: rgba(255, 107, 53, 0.2);
+      color: rgb(var(--tool-status-warning));
+      border-color: rgb(var(--tool-status-warning) / 0.2);
       background: transparent;
     }
 

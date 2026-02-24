@@ -41,6 +41,7 @@ import { createShrubber } from "./prism-shrubber";
 import { createAudioLab } from "./prism-audio";
 import { createSubtitles } from "./prism-subtitles";
 import { createTransparency } from "./prism-transparency";
+import type { MetadataDiffResult } from "./prism-metadata-diff";
 
 // ─── Module Type ──────────────────────────────────────────────────────────────
 
@@ -56,10 +57,10 @@ interface PrismModule {
 }
 
 const MODULE_VISIBILITY: Record<ModuleId, FileInfo["category"][]> = {
-  workbench:    ["video", "audio", "image"],
-  shrubber:     ["video", "audio", "image"],
-  audio:        ["video", "audio"],
-  subtitles:    ["video", "subtitle"],
+  workbench: ["video", "audio", "image"],
+  shrubber: ["video", "audio", "image"],
+  audio: ["video", "audio"],
+  subtitles: ["video", "subtitle"],
   transparency: ["video"],
 };
 
@@ -187,13 +188,13 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
   const terminalCopy = q(root, PRISM_UI_IDS.terminalCopy);
 
   if (!page || !uploadZone || !fileInput || !inputPreview || !inputVideo ||
-      !inputAudio || !inputImg || !fileQueue || !fileQueueList ||
-      !moduleBar || !modulePanel || !previewSection || !previewVideo ||
-      !previewAudio || !previewImg || !previewText || !terminalSection ||
-      !terminalToggle || !terminalBody || !terminalLog || !progressSection ||
-      !progressBar || !progressFill || !progressText || !engineStatus ||
-      !actionBar || !btnRun || !btnCancel || !btnLens || !alphaBadge || !btnUpload ||
-      !btnClear || !sizeWarning || !outputSummary || !terminalCopy) {
+    !inputAudio || !inputImg || !fileQueue || !fileQueueList ||
+    !moduleBar || !modulePanel || !previewSection || !previewVideo ||
+    !previewAudio || !previewImg || !previewText || !terminalSection ||
+    !terminalToggle || !terminalBody || !terminalLog || !progressSection ||
+    !progressBar || !progressFill || !progressText || !engineStatus ||
+    !actionBar || !btnRun || !btnCancel || !btnLens || !alphaBadge || !btnUpload ||
+    !btnClear || !sizeWarning || !outputSummary || !terminalCopy) {
     return null;
   }
 
@@ -448,8 +449,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
     const requestedModule = MODULE_VISIBILITY[activeModuleId].includes(currentFileInfo.category)
       ? activeModuleId
       : (Object.keys(MODULE_VISIBILITY) as ModuleId[]).find(
-          (id) => MODULE_VISIBILITY[id].includes(currentFileInfo.category),
-        ) ?? "workbench";
+        (id) => MODULE_VISIBILITY[id].includes(currentFileInfo.category),
+      ) ?? "workbench";
     switchModule(requestedModule);
     renderFileQueue();
     (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
@@ -1141,6 +1142,11 @@ export function initPrism(opts: PrismUIOptions): () => void {
           triggerRunAck();
           setState("complete");
           scrollToOutputSummary();
+
+          // Fire metadata diff analysis asynchronously (non-blocking)
+          if (currentFile && outputData) {
+            runMetadataDiffAsync(currentFile, outputData, outputName);
+          }
         } catch {
           showToast("Processing completed but output file wasn't found.");
           setState("error");
@@ -1200,6 +1206,123 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
     opts.outputSummary.appendChild(row);
     show(opts.outputSummary);
+  }
+
+  // ── Metadata Diff Report ────────────────────────────────────────────────
+
+  function runMetadataDiffAsync(inputFile: File, outData: Uint8Array, outName: string): void {
+    import("./prism-metadata-diff").then(({ analyzeMetadataDiff }) => {
+      analyzeMetadataDiff(inputFile, outData, outName).then((diff) => {
+        if (destroyed || prismState !== "complete") return;
+        renderMetadataReport(diff);
+      }).catch(() => {
+        // Metadata diff is best-effort; swallow errors silently.
+      });
+    }).catch(() => {
+      // Module load failure is non-fatal.
+    });
+  }
+
+  function renderMetadataReport(diff: MetadataDiffResult): void {
+    if (diff.removedCount === 0 && diff.survivingCount === 0) return;
+
+    const report = el("div", "prism-meta-report");
+
+    // ── Summary Bar ──
+    const summary = el("div", "prism-meta-summary");
+
+    const levelClass = diff.cleanLevel === "full"
+      ? "prism-meta-level--full"
+      : diff.cleanLevel === "partial"
+        ? "prism-meta-level--partial"
+        : "prism-meta-level--none";
+
+    const indicator = el("span", `prism-meta-level ${levelClass}`);
+    indicator.textContent = diff.cleanLevel === "full" ? "●" : diff.cleanLevel === "partial" ? "◐" : "○";
+    summary.appendChild(indicator);
+
+    if (diff.removedCount > 0) {
+      const removedEl = el("span", "prism-meta-removed-count");
+      removedEl.textContent = `${diff.removedCount} field${diff.removedCount !== 1 ? "s" : ""} removed`;
+      summary.appendChild(removedEl);
+    }
+
+    if (diff.survivingCount > 0) {
+      const survivingEl = el("span", "prism-meta-surviving-count");
+      survivingEl.textContent = `${diff.survivingCount} surviving`;
+      summary.appendChild(survivingEl);
+    }
+
+    if (diff.removedCount === 0 && diff.survivingCount > 0) {
+      const noneEl = el("span", "prism-meta-removed-count");
+      noneEl.textContent = "no metadata removed";
+      summary.appendChild(noneEl);
+    }
+
+    report.appendChild(summary);
+
+    // ── Category Breakdowns ──
+    for (const cat of diff.categories) {
+      if (cat.removed.length === 0 && cat.surviving.length === 0) continue;
+
+      const section = el("div", "prism-meta-cat");
+      section.dataset.cat = cat.id;
+
+      // Toggle header
+      const toggle = el("button", "prism-meta-toggle");
+      toggle.type = "button";
+      const arrow = el("span", "prism-meta-arrow", "\u25B6");
+      const title = el("span", "prism-meta-title", cat.title);
+      const badge = el("span", "prism-meta-badge");
+      if (cat.removed.length > 0) {
+        badge.textContent = `-${cat.removed.length}`;
+        badge.classList.add("prism-meta-badge--removed");
+      } else {
+        badge.textContent = String(cat.surviving.length);
+      }
+      toggle.append(arrow, title, badge);
+      toggle.setAttribute("aria-expanded", "false");
+      section.appendChild(toggle);
+
+      // Body (collapsed by default)
+      const body = el("div", "prism-meta-body");
+      body.style.display = "none";
+
+      // Removed fields (Sorted by label)
+      const sortedRemoved = [...cat.removed].sort((a, b) => a.label.localeCompare(b.label));
+      for (const field of sortedRemoved) {
+        const row = el("div", "prism-meta-field prism-meta-field--removed");
+        const label = el("span", "prism-meta-field-label");
+        label.textContent = `\u2715 ${field.label}`; // Use a cross icon for removed
+        const value = el("span", "prism-meta-field-value", field.displayValue || String(field.value ?? ""));
+        row.append(label, value);
+        body.appendChild(row);
+      }
+
+      // Surviving fields (Sorted by label)
+      const sortedSurviving = [...cat.surviving].sort((a, b) => a.label.localeCompare(b.label));
+      for (const field of sortedSurviving) {
+        const row = el("div", "prism-meta-field prism-meta-field--surviving");
+        const label = el("span", "prism-meta-field-label", field.label);
+        const value = el("span", "prism-meta-field-value", field.displayValue || String(field.value ?? ""));
+        row.append(label, value);
+        body.appendChild(row);
+      }
+
+      section.appendChild(body);
+
+      // Toggle interaction
+      toggle.addEventListener("click", () => {
+        const expanded = body.style.display !== "none";
+        body.style.display = expanded ? "none" : "";
+        arrow.style.transform = expanded ? "rotate(0deg)" : "rotate(90deg)";
+        toggle.setAttribute("aria-expanded", String(!expanded));
+      });
+
+      report.appendChild(section);
+    }
+
+    opts.outputSummary.appendChild(report);
   }
 
   // ── Preview Output ─────────────────────────────────────────────────────
@@ -1421,7 +1544,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (loadableState && (currentEngineState === "idle" || currentEngineState === "error")) {
       const eng = ensureEngine();
       opts.engineStatus.textContent = "loading engine...";
-      void eng.load().catch(() => {});
+      void eng.load().catch(() => { });
       return;
     }
 

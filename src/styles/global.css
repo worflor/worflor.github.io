@@ -65,6 +65,14 @@
   --chromatic-offset: 1px;
   --chromatic-opacity: 0.5;
 
+  /* tool action accents (shared across Prism/Lens/Mirror/Radar) */
+  --tool-action-run: var(--chromatic-cyan);
+  --tool-action-load: 118 80 220;
+  --tool-status-success: 74 222 128;
+  --tool-status-warning: 255 107 53;
+  --tool-actionbar-bg: rgb(10 10 10 / 0.8);
+  --tool-actionbar-bg-fallback: rgb(10 10 10 / 0.94);
+
   /* pride rainbow */
   --pride-red: 228 3 3;
   --pride-orange: 255 140 0;
