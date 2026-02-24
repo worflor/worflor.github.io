@@ -788,6 +788,123 @@ function parseExifStructure(view: DataView, tiffStart: number): RawExif {
   return result;
 }
 
+const EXIF_SIG_BYTES = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00] as const;
+
+function findSignatureOffset(
+  view: DataView,
+  signature: readonly number[],
+  startOffset: number,
+): number {
+  const end = view.byteLength - signature.length;
+  for (let offset = Math.max(0, startOffset); offset <= end; offset++) {
+    if (view.getUint8(offset) !== signature[0]) continue;
+    let match = true;
+    for (let i = 1; i < signature.length; i++) {
+      if (view.getUint8(offset + i) !== signature[i]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return offset;
+  }
+  return -1;
+}
+
+function extractEmbeddedExifFromBuffer(buffer: ArrayBuffer): RawExif {
+  const view = new DataView(buffer);
+  let searchFrom = 0;
+  let best: RawExif = {};
+  const MAX_EMBEDDED_EXIF_MATCHES = 24;
+  let seen = 0;
+
+  while (seen < MAX_EMBEDDED_EXIF_MATCHES) {
+    const sigOffset = findSignatureOffset(view, EXIF_SIG_BYTES, searchFrom);
+    if (sigOffset < 0) break;
+    seen++;
+    searchFrom = sigOffset + EXIF_SIG_BYTES.length;
+
+    try {
+      const parsed = parseExifStructure(view, sigOffset + EXIF_SIG_BYTES.length);
+      if (Object.keys(parsed).length > Object.keys(best).length) {
+        best = parsed;
+      }
+    } catch {
+      // Continue scanning remaining signatures.
+    }
+  }
+
+  return best;
+}
+
+function buildExifSupplementCategories(exif: RawExif): ExifCategory[] {
+  const builders: Array<{
+    id: string;
+    title: string;
+    build: () => ExifField[];
+  }> = [
+      { id: "image", title: "IMAGE", build: () => buildImageCategory(exif) },
+      { id: "camera", title: "CAMERA", build: () => buildCameraCategory(exif) },
+      { id: "exposure", title: "EXPOSURE", build: () => buildExposureCategory(exif) },
+      { id: "focus", title: "FOCUS & FLASH", build: () => buildFocusCategory(exif) },
+      { id: "datetime", title: "DATE & TIME", build: () => buildDateTimeCategory(exif) },
+      { id: "gps", title: "GPS", build: () => buildGpsCategory(exif) },
+      { id: "iptc", title: "IPTC METADATA", build: () => buildIptcCategory(exif) },
+      { id: "xmp", title: "XMP METADATA", build: () => buildXmpCategory(exif) },
+      { id: "icc", title: "COLOR PROFILE", build: () => buildIccCategory(exif) },
+      { id: "software", title: "SOFTWARE", build: () => buildSoftwareCategory(exif) },
+      { id: "advanced", title: "ADVANCED", build: () => buildAdvancedCategory(exif) },
+    ];
+
+  const categories: ExifCategory[] = [];
+  for (const b of builders) {
+    const fields = b.build();
+    if (fields.length === 0) continue;
+    categories.push({
+      id: b.id,
+      title: b.title,
+      fields,
+      expanded: b.id === "camera",
+    });
+  }
+  return categories;
+}
+
+function mergeCategoryFields(
+  target: ExifCategory[],
+  incoming: ExifCategory[],
+): void {
+  for (const next of incoming) {
+    const existing = target.find((cat) => cat.id === next.id);
+    if (!existing) {
+      target.push(next);
+      continue;
+    }
+
+    const seen = new Set(
+      existing.fields.map((field) => `${field.label.toLowerCase()}|${field.displayValue.toLowerCase()}`),
+    );
+
+    for (const field of next.fields) {
+      const key = `${field.label.toLowerCase()}|${field.displayValue.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      existing.fields.push(field);
+    }
+  }
+}
+
+function deriveCameraName(exif: RawExif): string | null {
+  const make = typeof exif["Make"] === "string" ? exif["Make"].trim() : "";
+  const model = typeof exif["Model"] === "string" ? exif["Model"].trim() : "";
+  if (model) {
+    return make && !model.toLowerCase().startsWith(make.toLowerCase())
+      ? `${make} ${model}`
+      : model;
+  }
+  if (make) return make;
+  return null;
+}
+
 // ── Formatting Helpers ───────────────────────────────────────
 
 function formatExposureTime(val: number): string {
@@ -1590,15 +1707,28 @@ export async function parseFile(file: File): Promise<LensData> {
   // Append format-specific categories.
   categories.push(...formatResult.categories);
 
+  // Recover embedded EXIF from any container and merge into universal categories.
+  const embeddedExif = extractEmbeddedExifFromBuffer(buffer);
+  if (Object.keys(embeddedExif).length > 0) {
+    const supplement = buildExifSupplementCategories(embeddedExif);
+    if (supplement.length > 0) {
+      mergeCategoryFields(categories, supplement);
+    }
+  }
+
   const { totalFields, populatedFields } = computeFieldCounts(categories);
+  const cameraName = deriveCameraName(embeddedExif);
+  const hasGps = categories.some(
+    (c) => c.id === "gps" && c.fields.some((f) => f.id !== "gps.warning"),
+  );
 
   return {
     categories,
     totalFields,
     populatedFields,
-    hasGps: false,
-    hasExif: formatResult.categories.length > 0,
-    cameraName: null,
+    hasGps,
+    hasExif: formatResult.categories.length > 0 || Object.keys(embeddedExif).length > 0,
+    cameraName,
     fileName: meta.name,
     fileSize: meta.size,
     parsedAt: Date.now(),
