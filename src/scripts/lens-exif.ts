@@ -282,6 +282,26 @@ const RESOLUTION_UNIT_MAP: Record<number, string> = {
   3: "centimeters",
 };
 
+// ── Maker-Specific Tags ──────────────────────────────────────
+
+const NIKON_TAGS: Record<number, string> = {
+  0x0001: "MakerNoteVersion",
+  0x0002: "ISOSpeed",
+  0x0004: "Quality",
+  0x0005: "WhiteBalance",
+  0x0007: "FocusMode",
+  0x001d: "SerialNumber",
+  0x0084: "Lens",
+  0x00a7: "ShutterCount",
+};
+
+const CANON_TAGS: Record<number, string> = {
+  0x0001: "CanonSettings",
+  0x0004: "ShotInfo",
+  0x000c: "SerialNumber",
+  0x0095: "LensModel",
+};
+
 const SENSING_METHOD_MAP: Record<number, string> = {
   1: "Not defined",
   2: "One-chip color area sensor",
@@ -430,7 +450,6 @@ function parseIFD(
 
       const tagName = tagMap[tag];
       if (!tagName) continue;
-      if (tagName === "MakerNote") continue; // skip proprietary blob
 
       const typeSize = TIFF_TYPE_SIZES[type] ?? 1;
       const totalBytes = typeSize * count;
@@ -551,6 +570,7 @@ function isTiff(view: DataView): boolean {
 }
 
 const XMP_SIG = "http://ns.adobe.com/xap/1.0/\0";
+const ICC_SIG = "ICC_PROFILE\0";
 
 function parseExifFromBuffer(buffer: ArrayBuffer): RawExif {
   const view = new DataView(buffer);
@@ -580,6 +600,14 @@ function parseExifFromBuffer(buffer: ArrayBuffer): RawExif {
         // XMP?
         else if (readAscii(view, segStart, XMP_SIG.length) === XMP_SIG) {
           result["_xmp"] = readAscii(view, segStart + XMP_SIG.length, segLen - 2 - XMP_SIG.length);
+        }
+      }
+      // APP2: ICC_PROFILE
+      else if (marker === 0xffe2) {
+        if (readAscii(view, segStart, 12) === ICC_SIG) {
+          // Note: ICC segments can be split across multiple APP2 markers.
+          // For now, we take the first one or just look for basic info.
+          result["_icc"] = parseIcc(view, segStart + 14, segLen - 2 - 14);
         }
       }
       // APP13: IPTC (Photoshop IRB)
@@ -652,6 +680,14 @@ function parseExifStructure(view: DataView, tiffStart: number): RawExif {
         }
       } catch { /* ignore */ }
     }
+  }
+
+  // Handle MakerNote specifically
+  const makerNote = result["MakerNote"];
+  const make = result["Make"];
+  if (Array.isArray(makerNote) && typeof make === "string") {
+    const makerData = handleMakerNote(view, makerNote, make);
+    Object.assign(result, makerData);
   }
 
   // Remove internal pointer fields
@@ -863,7 +899,22 @@ function buildCameraCategory(exif: RawExif): ExifField[] {
       { sensitive: true }));
   }
 
-  const lens = exif["LensModel"];
+  // MakerNote specific fields
+  const shutterCount = exif["ShutterCount"];
+  if (typeof shutterCount === "number") {
+    fields.push(field("camera.shutterCount", "Shutter Count", shutterCount,
+      shutterCount.toLocaleString(),
+      "total number of times the shutter has fired",
+      { sensitive: true }));
+  }
+
+  const focusMode = exif["FocusMode"];
+  if (typeof focusMode === "string") {
+    fields.push(field("camera.focusMode", "Focus Mode", focusMode, focusMode,
+      "the camera's focus configuration"));
+  }
+
+  const lens = exif["LensModel"] || exif["Lens"];
   if (typeof lens === "string" && lens) {
     fields.push(field("camera.lens", "Lens", lens, lens.trim(),
       "the lens attached when the photo was taken"));
@@ -1488,6 +1539,7 @@ function buildExifResult(
       { id: "gps", title: "GPS", build: () => buildGpsCategory(exif) },
       { id: "iptc", title: "IPTC METADATA", build: () => buildIptcCategory(exif) },
       { id: "xmp", title: "XMP METADATA", build: () => buildXmpCategory(exif) },
+      { id: "icc", title: "COLOR PROFILE", build: () => buildIccCategory(exif) },
       { id: "software", title: "SOFTWARE", build: () => buildSoftwareCategory(exif) },
       { id: "advanced", title: "ADVANCED", build: () => buildAdvancedCategory(exif) },
     ];
@@ -1711,4 +1763,108 @@ function buildXmpCategory(exif: RawExif): ExifField[] {
   extract("UsageTerms", "Usage Terms", "textual instruction on how the resource may be used");
 
   return fields;
+}
+
+/** 
+ * Minimal ICC Profile parser for basic header info.
+ */
+function parseIcc(view: DataView, offset: number, length: number): any {
+  if (length < 84) return null;
+
+  return {
+    size: view.getUint32(offset),
+    cmm: readAscii(view, offset + 4, 4),
+    version: `${view.getUint8(offset + 8)}.${(view.getUint8(offset + 9) >> 4)}.${(view.getUint8(offset + 9) & 0x0f)}`,
+    deviceClass: readAscii(view, offset + 12, 4),
+    colorSpace: readAscii(view, offset + 16, 4),
+    connectionSpace: readAscii(view, offset + 20, 4),
+    manufacturer: readAscii(view, offset + 48, 4),
+    model: readAscii(view, offset + 52, 4),
+    renderingIntent: view.getUint32(offset + 64),
+    creator: readAscii(view, offset + 80, 4),
+  };
+}
+
+/** Build ICC Profile category fields */
+function buildIccCategory(exif: RawExif): ExifField[] {
+  const icc = exif["_icc"] as any;
+  if (!icc) return [];
+
+  const intents: Record<number, string> = {
+    0: "Perceptual",
+    1: "Relative Colorimetric",
+    2: "Saturation",
+    3: "Absolute Colorimetric",
+  };
+
+  const classes: Record<string, string> = {
+    "scnr": "Input Device (Scanner/Camera)",
+    "mntr": "Display Device (Monitor)",
+    "prtr": "Output Device (Printer)",
+    "link": "Device Link",
+    "spac": "Color Space Conversion",
+    "abst": "Abstract",
+    "nmcl": "Named Color",
+  };
+
+  const spaces: Record<string, string> = {
+    "RGB ": "RGB",
+    "CMYK": "CMYK",
+    "Gray": "Grayscale",
+    "Lab ": "L*a*b*",
+    "XYZ ": "XYZ",
+    "YCbr": "YCbCr",
+  };
+
+  const fields: ExifField[] = [
+    field("icc.version", "ICC Version", icc.version, icc.version, "version of the ICC profile specification used"),
+    field("icc.class", "Profile Class", icc.deviceClass, classes[icc.deviceClass] ?? icc.deviceClass, "the intended use of this color profile"),
+    field("icc.colorSpace", "Color Space", icc.colorSpace, spaces[icc.colorSpace] ?? icc.colorSpace, "the underlying color model"),
+    field("icc.intent", "Rendering Intent", icc.renderingIntent, intents[icc.renderingIntent] ?? String(icc.renderingIntent), "how color gamut compression is handled"),
+    field("icc.creator", "Profile Creator", icc.creator, icc.creator, "the software or organization that created the profile"),
+  ];
+
+  if (icc.manufacturer && icc.manufacturer !== "\0\0\0\0") {
+    fields.push(field("icc.manufacturer", "Manufacturer", icc.manufacturer, icc.manufacturer, "the manufacturer of the device this profile is for"));
+  }
+
+  return fields;
+}
+
+/** Proprietary MakerNote parsing for major camera brands */
+function handleMakerNote(
+  view: DataView,
+  blob: number[],
+  make: string,
+): Record<string, any> {
+  const result: Record<string, any> = {};
+  const uint8 = new Uint8Array(blob);
+  const makerView = new DataView(uint8.buffer);
+
+  try {
+    const makeLower = make.toLowerCase();
+
+    // Nikon
+    if (makeLower.includes("nikon")) {
+      const head = readAscii(makerView, 0, 5);
+      if (head === "Nikon") {
+        // Nikon v3 starts with "Nikon" + header (total 10 bytes)
+        // IFD follows at offset 10 (version 2 and 3)
+        const ifdStart = 10;
+        const le = makerView.getUint16(ifdStart) === 0x4949;
+        const ifd = parseIFD(makerView, 0, ifdStart + 8, le, NIKON_TAGS);
+        Object.assign(result, ifd);
+      }
+    }
+    // Canon
+    else if (makeLower.includes("canon")) {
+      // Canon MakerNote is usually a pure IFD at offset 0, little-endian
+      const ifd = parseIFD(makerView, 0, 0, true, CANON_TAGS);
+      Object.assign(result, ifd);
+    }
+  } catch {
+    // skip proprietary parsing if error occurs
+  }
+
+  return result;
 }

@@ -95,28 +95,26 @@ function field(
   };
 }
 
-function ascii(view: DataView, offset: number, length: number): string {
+function ascii(view: DataView, offset: number, length: number, stopAtNull: boolean = true): string {
   const end = Math.min(offset + length, view.byteLength);
   const count = end - offset;
   if (count <= 0) return "";
   // For short strings (most fourCC, field values) concat is fine.
-  // For longer strings (PDF text scans, etc.) use batch decode.
   if (count <= 64) {
     let s = "";
     for (let i = offset; i < end; i++) {
       const c = view.getUint8(i);
-      if (c === 0) break;
-      s += String.fromCharCode(c);
+      if (c === 0 && stopAtNull) break;
+      s += (c >= 32 && c < 127) ? String.fromCharCode(c) : " ";
     }
     return s;
   }
   // Batch: collect codes and convert in chunks to avoid call-stack limits
-  // String.fromCharCode.apply can fail above ~65K args on some engines
   const codes: number[] = [];
   for (let i = offset; i < end; i++) {
     const c = view.getUint8(i);
-    if (c === 0) break;
-    codes.push(c);
+    if (c === 0 && stopAtNull) break;
+    codes.push(c >= 32 && c < 127 ? c : 32);
   }
   if (codes.length <= 8192) return String.fromCharCode(...codes);
   // Chunked conversion for very large strings
@@ -127,10 +125,106 @@ function ascii(view: DataView, offset: number, length: number): string {
   return parts.join("");
 }
 
+/** Extracts bytes as a binary string (preserving all 256 values) for regex scanning */
+function binStr(view: DataView, offset: number, length: number): string {
+  const end = Math.min(offset + length, view.byteLength);
+  const count = end - offset;
+  if (count <= 0) return "";
+
+  const codes: number[] = [];
+  for (let i = offset; i < end; i++) {
+    codes.push(view.getUint8(i));
+  }
+
+  if (codes.length <= 8192) return String.fromCharCode(...codes);
+  const parts: string[] = [];
+  for (let i = 0; i < codes.length; i += 8192) {
+    parts.push(String.fromCharCode(...codes.slice(i, i + 8192)));
+  }
+  return parts.join("");
+}
+
+/** 
+ * Scans for compressed PDF object streams (/FlateDecode) and inflates them.
+ * This unlocks metadata hidden in modern PDF 1.5+ "Object Streams".
+ */
+async function inflatePdfObjects(view: DataView): Promise<string> {
+  const raw = binStr(view, 0, view.byteLength);
+  let expanded = raw;
+
+  // Find objects with /FlateDecode streams. 
+  // We prioritize /ObjStm (Object Streams) and /Metadata streams.
+  const streamRegex = /(\d+)\s+(\d+)\s+obj\s*<<([^>]*\/FlateDecode[^>]*)>>\s*stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
+  let match;
+
+  let inflates = 0;
+  const candidates: Array<{ content: string; priority: number }> = [];
+
+  while ((match = streamRegex.exec(raw)) !== null) {
+    const dict = match[3];
+    const content = match[4];
+    if (content.length < 32) continue;
+
+    let priority = 0;
+    if (dict.includes("/ObjStm")) priority = 10;
+    else if (dict.includes("/Metadata")) priority = 8;
+    else if (dict.includes("/Info")) priority = 5;
+    else if (dict.includes("/Type") && !dict.includes("/XObject")) priority = 1; // Generic descriptive objects
+
+    if (priority > 0) {
+      candidates.push({ content, priority });
+    }
+  }
+
+  // Sort by priority and take the top ones
+  candidates.sort((a, b) => b.priority - a.priority);
+
+  for (const cand of candidates.slice(0, PDF_MAX_INFLATES)) {
+    try {
+      const bytes = new Uint8Array(cand.content.length);
+      for (let i = 0; i < cand.content.length; i++) {
+        bytes[i] = cand.content.charCodeAt(i);
+      }
+
+      const ds = new DecompressionStream("deflate");
+      const writer = ds.writable.getWriter();
+      writer.write(bytes);
+      writer.close();
+
+      const reader = ds.readable.getReader();
+      let chunks = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        for (let i = 0; i < value.length; i++) {
+          chunks += String.fromCharCode(value[i]);
+        }
+      }
+
+      expanded += "\n" + chunks;
+      inflates++;
+    } catch {
+      // decompression failed, skip
+    }
+  }
+
+  return expanded;
+}
+
 function fourCC(view: DataView, offset: number): string {
   if (offset + 4 > view.byteLength) return "";
   return ascii(view, offset, 4);
 }
+
+// ── Constants ────────────────────────────────────────────────
+
+const PDF_POINTS_PER_INCH = 72;
+const PDF_INFO_SCAN_LIMIT = 4096;
+const PDF_STRING_LOOKAHEAD = 512;
+const PDF_TRAILER_LOOKAHEAD = 1024;
+const PDF_HEAD_SCAN_BYTES = 16384;
+const PDF_TAIL_SCAN_BYTES = 131072;
+const PDF_MAX_INFLATES = 8;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -146,6 +240,56 @@ function formatDuration(seconds: number): string {
   const s = Math.floor(seconds % 60);
   if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Robust PDF string decoding (handles hex, octal, and UTF-16BE) */
+function decodePdfString(raw: string): string {
+  if (!raw) return "";
+
+  // Handle Hex string: <FEFF...>
+  if (/^[0-9A-Fa-f]+$/.test(raw)) {
+    if (raw.toUpperCase().startsWith("FEFF")) {
+      let decoded = "";
+      for (let i = 4; i + 3 < raw.length; i += 4) {
+        const code = parseInt(raw.slice(i, i + 4), 16);
+        if (code > 0) decoded += String.fromCharCode(code);
+      }
+      return decoded || raw;
+    }
+    // Fallback: try decoding hex if it's long enough
+    if (raw.length >= 2) {
+      try {
+        let s = "";
+        for (let i = 0; i < raw.length; i += 2) {
+          s += String.fromCharCode(parseInt(raw.slice(i, i + 2), 16));
+        }
+        return s;
+      } catch { /* ignore */ }
+    }
+    return raw;
+  }
+
+  // Literal string: unescape PDF escapes
+  let text = raw.replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+  text = text.replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t")
+    .replace(/\\b/g, "\b")
+    .replace(/\\f/g, "\f")
+    .replace(/\\\(/g, "(")
+    .replace(/\\\)/g, ")")
+    .replace(/\\\\/g, "\\");
+
+  // Check for UTF-16BE BOM: \xFE\xFF
+  if (text.startsWith("\xFE\xFF") || text.startsWith("\u00FE\u00FF")) {
+    let decoded = "";
+    for (let i = 2; i + 1 < text.length; i += 2) {
+      decoded += String.fromCharCode((text.charCodeAt(i) << 8) | text.charCodeAt(i + 1));
+    }
+    return decoded;
+  }
+
+  return text;
 }
 
 
@@ -918,7 +1062,7 @@ function extractFlacMeta(view: DataView): ExifCategory[] {
       // Bits per sample: 5 bits at byte 12[0] + byte 13[7:4], then +1
       const bitsPerSample =
         (((view.getUint8(base + 12) & 0x01) << 4) |
-        (view.getUint8(base + 13) >> 4)) + 1;
+          (view.getUint8(base + 13) >> 4)) + 1;
 
       // Total samples: 36 bits at byte 13[3:0] + bytes 14-17
       const totalSamples =
@@ -1164,7 +1308,7 @@ function extractGifMeta(view: DataView): ExifCategory[] {
   }];
 }
 
-function extractPdfMeta(view: DataView): ExifCategory[] {
+async function extractPdfMeta(view: DataView): Promise<ExifCategory[]> {
   const fields: ExifField[] = [];
 
   // PDF version from header
@@ -1174,11 +1318,27 @@ function extractPdfMeta(view: DataView): ExifCategory[] {
     fields.push(field("pdf.version", "PDF Version", versionMatch[1]));
   }
 
-  // Scan for /Info dictionary entries
-  // We search the raw bytes for common PDF info dict keys
-  const searchRegion = Math.min(view.byteLength, 65536);
-  const textSlice = ascii(view, 0, searchRegion);
+  // 1. Locate the Info object via trailer if possible
+  // We scan the raw bytes first
+  const rawHead = binStr(view, 0, Math.min(view.byteLength, PDF_HEAD_SCAN_BYTES));
+  const rawTail = binStr(view, Math.max(0, view.byteLength - PDF_TAIL_SCAN_BYTES), PDF_TAIL_SCAN_BYTES);
+  const rawScan = rawHead + "\n---PDF-TAIL---\n" + rawTail;
 
+  let infoObjId: string | null = null;
+  const trailerIdx = rawScan.lastIndexOf("trailer");
+  if (trailerIdx >= 0) {
+    const trailerData = rawScan.slice(trailerIdx, trailerIdx + PDF_TRAILER_LOOKAHEAD);
+    const infoMatch = trailerData.match(/\/Info\s+(\d+\s+\d+\s+R)/);
+    if (infoMatch) {
+      infoObjId = infoMatch[1].replace(/\s+R$/, " obj");
+    }
+  }
+
+  // 2. High-Depth Object Inflation
+  // We inflate object streams to find metadata that might be compressed (PDF 1.5+)
+  const textSlice = await inflatePdfObjects(view);
+
+  // 3. Extract metadata from Info dictionary (targeted or global scan)
   const infoPatterns: Array<{ key: string; label: string }> = [
     { key: "/Title", label: "Title" },
     { key: "/Author", label: "Author" },
@@ -1190,64 +1350,88 @@ function extractPdfMeta(view: DataView): ExifCategory[] {
     { key: "/Keywords", label: "Keywords" },
   ];
 
-  for (const { key, label } of infoPatterns) {
-    const idx = textSlice.indexOf(key);
-    if (idx < 0) continue;
+  const seenKeys = new Set<string>();
 
-    // Try to extract value — look for (string) or <hex> or /name after key
-    let afterKey = textSlice.slice(idx + key.length, idx + key.length + 256).trimStart();
-
-    if (afterKey.startsWith("(")) {
-      // Literal string
-      const end = afterKey.indexOf(")");
-      if (end > 0) {
-        let val = afterKey.slice(1, end);
-        // PDF date format: D:YYYYMMDDHHmmSS
-        if (val.startsWith("D:")) {
-          const d = val.slice(2);
-          const formatted = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
-          val = formatted;
-        }
-        fields.push(field(`pdf.${label.toLowerCase()}`, label, val));
-      }
-    } else if (afterKey.startsWith("<")) {
-      // Hex string
-      const end = afterKey.indexOf(">");
-      if (end > 0) {
-        const hex = afterKey.slice(1, end);
-        // Try to decode as UTF-16BE if it starts with FEFF
-        if (hex.startsWith("FEFF") || hex.startsWith("feff")) {
-          let decoded = "";
-          for (let i = 4; i + 3 < hex.length; i += 4) {
-            const code = parseInt(hex.slice(i, i + 4), 16);
-            if (code > 0) decoded += String.fromCharCode(code);
-          }
-          if (decoded) fields.push(field(`pdf.${label.toLowerCase()}`, label, decoded));
-        }
-      }
+  // If we found a specific Info object, try to limit scan to it first
+  let scanRegion = textSlice;
+  if (infoObjId) {
+    const objIdx = textSlice.indexOf(infoObjId);
+    if (objIdx >= 0) {
+      scanRegion = textSlice.slice(objIdx, objIdx + PDF_INFO_SCAN_LIMIT);
     }
   }
 
-  // Count pages heuristic — /Type /Page (without trailing 's') minus /Type /Pages nodes
-  const pageMatches = textSlice.match(/\/Type\s*\/Page(?!s)\b/g);
-  if (pageMatches && pageMatches.length > 0) {
-    fields.push(
-      field("pdf.pages", "Pages", pageMatches.length, `~${pageMatches.length}`, "Estimated from internal object count"),
-    );
+  const extractFrom = (source: string) => {
+    for (const { key, label } of infoPatterns) {
+      if (seenKeys.has(label)) continue;
+
+      let idx = source.lastIndexOf(key);
+      if (idx < 0) continue;
+
+      const afterKey = source.slice(idx + key.length, idx + key.length + PDF_STRING_LOOKAHEAD).trimStart();
+      let val: string | null = null;
+
+      if (afterKey.startsWith("(")) {
+        // Balanced bracket extraction for literal strings
+        let depth = 0;
+        let end = -1;
+        for (let i = 0; i < afterKey.length; i++) {
+          if (afterKey[i] === "(" && (i === 0 || afterKey[i - 1] !== "\\")) depth++;
+          else if (afterKey[i] === ")" && (i === 0 || afterKey[i - 1] !== "\\")) {
+            depth--;
+            if (depth === 0) { { end = i; break; } }
+          }
+        }
+        if (end > 0) val = decodePdfString(afterKey.slice(1, end));
+      } else if (afterKey.startsWith("<")) {
+        const end = afterKey.indexOf(">");
+        if (end > 0) val = decodePdfString(afterKey.slice(1, end));
+      }
+
+      if (val) {
+        if (val.startsWith("D:")) {
+          const d = val.replace(/\D/g, "");
+          if (d.length >= 8) val = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+        }
+        fields.push(field(`pdf.${label.toLowerCase()}`, label, val));
+        seenKeys.add(label);
+      }
+    }
+  };
+
+  extractFrom(scanRegion);
+  if (scanRegion !== textSlice) extractFrom(textSlice); // Fallback to global scan
+
+  // 3. Structural Intelligence
+  const pageCountHeuristic = (textSlice.match(/\/Type\s*\/Page(?!s)\b/g) || []).length;
+  if (pageCountHeuristic > 0) {
+    fields.push(field("pdf.pages", "Pages", pageCountHeuristic, `~${pageCountHeuristic}`, "Estimated from internal object count"));
   }
 
-  // Check for encryption
-  if (textSlice.includes("/Encrypt")) {
-    fields.push(field("pdf.encrypted", "Encrypted", 1, "Yes"));
+  const fontCount = (textSlice.match(/\/Type\s*\/Font\b/g) || []).length;
+  if (fontCount > 0) fields.push(field("pdf.fonts", "Embedded Fonts", fontCount));
+
+  const imageCount = (textSlice.match(/\/Subtype\s*\/Image\b/g) || []).length;
+  if (imageCount > 0) fields.push(field("pdf.images", "Images", imageCount));
+
+  const mediaBoxMatch = textSlice.match(/\/MediaBox\s*\[\s*([\d\.\s\-]+)\]/);
+  if (mediaBoxMatch) {
+    const coords = mediaBoxMatch[1].trim().split(/\s+/).map(Number);
+    if (coords.length === 4) {
+      const wPt = Math.abs(coords[2] - coords[0]);
+      const hPt = Math.abs(coords[3] - coords[1]);
+      const wIn = wPt / PDF_POINTS_PER_INCH;
+      const hIn = hPt / PDF_POINTS_PER_INCH;
+      fields.push(field("pdf.pageSize", "Page Size", `${wPt}×${hPt} pts`, `${wIn.toFixed(1)}″ × ${hIn.toFixed(1)}″`));
+    }
   }
+
+  // XMP & Encryption
+  if (textSlice.indexOf("<?xpacket") >= 0) fields.push(field("pdf.xmp", "XMP Metadata", "present", "Yes"));
+  if (textSlice.includes("/Encrypt")) fields.push(field("pdf.encrypted", "Encrypted", 1, "Yes"));
 
   if (fields.length === 0) return [];
-  return [{
-    id: "document",
-    title: "DOCUMENT",
-    fields,
-    expanded: true,
-  }];
+  return [{ id: "document", title: "DOCUMENT", fields, expanded: true }];
 }
 
 function extractFontMeta(view: DataView, formatName: string): ExifCategory[] {
@@ -2124,7 +2308,33 @@ export async function analyzeFile(
       }
 
       case "pdf": {
-        categories.push(...extractPdfMeta(view));
+        // For PDFs under 4MB, read the whole thing to ensure we don't miss /Info dictionaries
+        // that are neither in the first nor last 64KB.
+        if (file.size <= 4 * 1024 * 1024) {
+          const fullSlice = await file.arrayBuffer();
+          categories.push(...(await extractPdfMeta(new DataView(fullSlice))));
+        } else {
+          const tailSize = Math.min(file.size, 128 * 1024);
+          const tailSlice = await file.slice(file.size - tailSize).arrayBuffer();
+          // Scan both beginning (header) and tail (trailer/info)
+          const headCats = await extractPdfMeta(view);
+          const tailCats = await extractPdfMeta(new DataView(tailSlice));
+
+          // Merge fields, tail usually wins for Info dicts
+          const mergedFields: ExifField[] = [];
+          const seenLabels = new Set<string>();
+          for (const c of [...tailCats, ...headCats]) {
+            for (const f of c.fields) {
+              if (!seenLabels.has(f.label)) {
+                mergedFields.push(f);
+                seenLabels.add(f.label);
+              }
+            }
+          }
+          if (mergedFields.length > 0) {
+            categories.push({ id: "document", title: "DOCUMENT", fields: mergedFields, expanded: true });
+          }
+        }
         break;
       }
 
