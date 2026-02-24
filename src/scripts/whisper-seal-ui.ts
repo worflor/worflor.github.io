@@ -10,6 +10,7 @@ import {
   getOrCreateSealIdentity,
   getExistingSealIdentity,
   isSealCodeValid,
+  normalizeSealCodeInput,
   sealMessage,
   unsealMessage,
   buildSealUrl,
@@ -18,6 +19,14 @@ import {
   COMPUTE_MIN_DISPLAY_MS,
   type SealPayload,
 } from "./whisper-seal";
+import {
+  createQrDetector,
+  decodeWs2FromImage,
+  getQrCameraConstraints,
+  getQrScanIntervalMs,
+  getQrScannerCapability,
+  renderSealQrToCanvas,
+} from "./whisper-seal-qr";
 import {
   q,
   asInput,
@@ -42,9 +51,17 @@ export interface WhisperSealUIOptions {
   /* My Seal button (in carrier toggle row) */
   mySealBtn: HTMLButtonElement;
   mySealInline: HTMLElement;
+  mySealInlinePanel: HTMLElement;
 
   /* Inline compose fields */
   recipientSealInput: HTMLInputElement;
+  recipientQrScanBtn: HTMLButtonElement;
+  recipientQrImageBtn: HTMLButtonElement;
+  recipientQrFileInput: HTMLInputElement;
+  recipientQrStopBtn: HTMLButtonElement;
+  recipientQrPanel: HTMLElement;
+  recipientQrStatus: HTMLElement;
+  recipientQrVideo: HTMLVideoElement;
   sealValidation: HTMLElement;
   messageInput: HTMLTextAreaElement;
   charCount: HTMLElement;
@@ -69,6 +86,8 @@ export interface WhisperSealUIOptions {
   /* Overlay: my seal */
   mySealPhase: HTMLElement;
   sealCode: HTMLElement;
+  sealQrCanvas: HTMLCanvasElement;
+  sealQrStatus: HTMLElement;
   sealCopyBtn: HTMLButtonElement;
   sealBackBtn: HTMLButtonElement;
 
@@ -101,7 +120,15 @@ export const WHISPER_SEAL_IDS = {
   overlay: "ws-overlay",
   mySealBtn: "ws-my-seal-btn",
   mySealInline: "ws-my-seal-inline",
+  mySealInlinePanel: "ws-my-seal-inline-panel",
   recipientSealInput: "ws-recipient-seal",
+  recipientQrScanBtn: "ws-recipient-qr-scan",
+  recipientQrImageBtn: "ws-recipient-qr-image",
+  recipientQrFileInput: "ws-recipient-qr-file",
+  recipientQrStopBtn: "ws-recipient-qr-stop",
+  recipientQrPanel: "ws-recipient-qr-panel",
+  recipientQrStatus: "ws-recipient-qr-status",
+  recipientQrVideo: "ws-recipient-qr-video",
   sealValidation: "ws-seal-validation",
   messageInput: "ws-message",
   charCount: "ws-char-count",
@@ -120,6 +147,8 @@ export const WHISPER_SEAL_IDS = {
   computingPhase: "ws-computing-phase",
   mySealPhase: "ws-my-seal-phase",
   sealCode: "ws-seal-code",
+  sealQrCanvas: "ws-seal-qr-canvas",
+  sealQrStatus: "ws-seal-qr-status",
   sealCopyBtn: "ws-seal-copy",
   sealBackBtn: "ws-seal-back",
   resultPhase: "ws-result-phase",
@@ -161,8 +190,16 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
 
   const mySealBtn = asButton(q(root, IDS.mySealBtn));
   const mySealInline = q(root, IDS.mySealInline);
+  const mySealInlinePanel = q(root, IDS.mySealInlinePanel);
 
   const recipientSealInput = asInput(q(root, IDS.recipientSealInput));
+  const recipientQrScanBtn = asButton(q(root, IDS.recipientQrScanBtn));
+  const recipientQrImageBtn = asButton(q(root, IDS.recipientQrImageBtn));
+  const recipientQrFileInput = asInput(q(root, IDS.recipientQrFileInput));
+  const recipientQrStopBtn = asButton(q(root, IDS.recipientQrStopBtn));
+  const recipientQrPanel = q(root, IDS.recipientQrPanel);
+  const recipientQrStatus = q(root, IDS.recipientQrStatus);
+  const recipientQrVideo = root.querySelector<HTMLVideoElement>(`#${IDS.recipientQrVideo}`);
   const sealValidation = q(root, IDS.sealValidation);
   const messageInput = root.querySelector<HTMLTextAreaElement>(`#${IDS.messageInput}`);
   const charCount = q(root, IDS.charCount);
@@ -182,6 +219,8 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
   const computingPhase = q(root, IDS.computingPhase);
   const mySealPhase = q(root, IDS.mySealPhase);
   const sealCode = q(root, IDS.sealCode);
+  const sealQrCanvas = root.querySelector<HTMLCanvasElement>(`#${IDS.sealQrCanvas}`);
+  const sealQrStatus = q(root, IDS.sealQrStatus);
   const sealCopyBtn = asButton(q(root, IDS.sealCopyBtn));
   const sealBackBtn = asButton(q(root, IDS.sealBackBtn));
 
@@ -209,14 +248,16 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
 
   if (
     !page || !logOutput || !logDot ||
-    !overlay || !soloPanel || !mySealBtn || !mySealInline ||
-    !recipientSealInput || !sealValidation ||
+    !overlay || !soloPanel || !mySealBtn || !mySealInline || !mySealInlinePanel ||
+    !recipientSealInput || !recipientQrScanBtn || !recipientQrImageBtn ||
+    !recipientQrFileInput || !recipientQrStopBtn || !recipientQrPanel || !recipientQrStatus || !recipientQrVideo ||
+    !sealValidation ||
     !messageInput || !charCount || !extraPasswordInput ||
     !extraPwGenBtn || !extraPwCopyBtn || !expiryGroup ||
     !expiryCustomWrap || !expiryCustomVal || !expiryCustomUnit ||
     !sealItBtn ||
     !sealedResultWrap || !sealedUrlInline || !sealedResultInfo || !sealedResultWarning ||
-    !computingPhase || !mySealPhase || !sealCode || !sealCopyBtn || !sealBackBtn ||
+    !computingPhase || !mySealPhase || !sealCode || !sealQrCanvas || !sealQrStatus || !sealCopyBtn || !sealBackBtn ||
     !resultPhase || !sealedUrl || !urlCopyBtn || !resultSealTarget ||
     !resultExpiryText || !resultUrlWarning || !resultDoneBtn ||
     !unsealPhase || !unsealProgress || !unsealSuccess || !decryptedMessage ||
@@ -229,14 +270,16 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
 
   return {
     page, logOutput, logDot,
-    overlay, soloPanel, mySealBtn, mySealInline,
-    recipientSealInput, sealValidation,
+    overlay, soloPanel, mySealBtn, mySealInline, mySealInlinePanel,
+    recipientSealInput, recipientQrScanBtn, recipientQrImageBtn,
+    recipientQrFileInput, recipientQrStopBtn, recipientQrPanel, recipientQrStatus, recipientQrVideo,
+    sealValidation,
     messageInput, charCount, extraPasswordInput,
     extraPwGenBtn, extraPwCopyBtn, expiryGroup,
     expiryCustomWrap, expiryCustomVal, expiryCustomUnit,
     sealItBtn,
     sealedResultWrap, sealedUrlInline, sealedResultInfo, sealedResultWarning,
-    computingPhase, mySealPhase, sealCode, sealCopyBtn, sealBackBtn,
+    computingPhase, mySealPhase, sealCode, sealQrCanvas, sealQrStatus, sealCopyBtn, sealBackBtn,
     resultPhase, sealedUrl, urlCopyBtn, resultSealTarget,
     resultExpiryText, resultUrlWarning, resultDoneBtn,
     unsealPhase, unsealProgress, unsealSuccess, decryptedMessage,
@@ -249,10 +292,6 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
 /* ── Helpers ──────────────────────────────────────────────── */
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-function normalizeSealCodeInput(value: string): string {
-  return value.replace(/\s+/g, "").trim();
-}
 
 function compactSealCode(code: string): string {
   if (code.length <= 34) return code;
@@ -279,6 +318,173 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   let busy = false;
   let pendingPayload: SealPayload | null = null;
   let mySealPublicCode = "";
+  let qrScanRaf = 0;
+  let qrStream: MediaStream | null = null;
+  let qrScanActive = false;
+  let qrLastFrameAt = 0;
+  let qrSupported = false;
+  let pageObserver: MutationObserver | null = null;
+
+  const setRecipientQrStatus = (text: string): void => {
+    opts.recipientQrStatus.textContent = text;
+  };
+
+  function setRecipientQrUiState(scanning: boolean): void {
+    opts.recipientQrScanBtn.disabled = scanning || !qrSupported;
+    opts.recipientQrImageBtn.disabled = scanning;
+    opts.recipientQrStopBtn.style.display = scanning ? "" : "none";
+  }
+
+  function syncMySealInlinePanelState(): void {
+    const expanded = opts.mySealInlinePanel.style.display !== "none";
+    opts.mySealBtn.setAttribute("aria-expanded", String(expanded));
+    opts.mySealBtn.setAttribute("aria-pressed", String(expanded));
+    opts.mySealBtn.classList.toggle("ws-my-seal-btn--active", expanded);
+    opts.mySealBtn.title = expanded ? "Hide your WS2 QR" : "Show your WS2 QR";
+  }
+
+  function isSealInlineActiveMode(): boolean {
+    return opts.page.dataset.mode === "embed" && opts.page.dataset.carrier === "url";
+  }
+
+  function syncSealInlineVisibility(): void {
+    if (isSealInlineActiveMode()) return;
+    opts.mySealInlinePanel.style.display = "none";
+    syncMySealInlinePanelState();
+    if (qrScanActive) stopRecipientQrScan("cancelled");
+  }
+
+  function setRecipientFromCandidate(rawValue: string, source: "camera" | "image"): boolean {
+    const normalized = normalizeSealCodeInput(rawValue);
+    if (!normalized || !isSealCodeValid(normalized)) {
+      setRecipientQrStatus("Invalid WS2 key.");
+      log(`qr ${source} scanned: invalid payload (not WS2)`);
+      return false;
+    }
+
+    opts.recipientSealInput.value = normalized;
+    syncCompose();
+    setRecipientQrStatus("WS2 key loaded.");
+    log(`qr ${source} scanned: ws2 key accepted`);
+    opts.messageInput.focus();
+    return true;
+  }
+
+  function stopRecipientQrScan(reason: "accepted" | "cancelled" | "error" | "teardown" = "cancelled"): void {
+    if (qrScanRaf) {
+      cancelAnimationFrame(qrScanRaf);
+      qrScanRaf = 0;
+    }
+
+    qrScanActive = false;
+    qrLastFrameAt = 0;
+
+    if (qrStream) {
+      for (const track of qrStream.getTracks()) track.stop();
+      qrStream = null;
+    }
+
+    opts.recipientQrVideo.pause();
+    opts.recipientQrVideo.srcObject = null;
+    opts.recipientQrPanel.style.display = "none";
+    setRecipientQrUiState(false);
+
+    if (reason === "cancelled") {
+      setRecipientQrStatus("");
+      log("qr camera scan cancelled");
+    }
+    if (reason === "error") log("qr camera scan stopped due to error");
+  }
+
+  async function scanRecipientFromImage(file: File): Promise<void> {
+    const decoded = await decodeWs2FromImage(file);
+    if (!decoded) {
+      setRecipientQrStatus("No WS2 key found.");
+      log("qr image scan: no ws2 key decoded");
+      return;
+    }
+
+    if (setRecipientFromCandidate(decoded.rawValue, "image")) {
+      log(`qr image scan fallback used: ${decoded.method}`);
+      return;
+    }
+
+    setRecipientQrStatus("Invalid WS2 key.");
+    log(`qr image scan rejected after decode (${decoded.method})`);
+  }
+
+  async function startRecipientQrScan(): Promise<void> {
+    if (qrScanActive) return;
+
+    const capability = await getQrScannerCapability();
+    if (!capability.supported) {
+      setRecipientQrStatus("Camera unavailable.");
+      log("qr camera scan unavailable: native qr detector unsupported");
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setRecipientQrStatus("Camera unavailable.");
+      log("qr camera scan unavailable: getUserMedia not supported");
+      return;
+    }
+
+    const detector = await createQrDetector();
+    if (!detector) {
+      setRecipientQrStatus("Camera unavailable.");
+      log("qr camera scan unavailable: detector init failed");
+      return;
+    }
+
+    try {
+      qrStream = await navigator.mediaDevices.getUserMedia({
+        video: getQrCameraConstraints(),
+        audio: false,
+      });
+
+      opts.recipientQrVideo.srcObject = qrStream;
+      await opts.recipientQrVideo.play();
+
+      qrScanActive = true;
+      opts.recipientQrPanel.style.display = "";
+      setRecipientQrUiState(true);
+      setRecipientQrStatus("Scanning…");
+      log("qr camera scan started");
+
+      const loop = async (at: number): Promise<void> => {
+        if (!qrScanActive || aborted()) return;
+        if (at - qrLastFrameAt < getQrScanIntervalMs()) {
+          qrScanRaf = requestAnimationFrame((t) => { void loop(t); });
+          return;
+        }
+
+        qrLastFrameAt = at;
+        try {
+          const detections = await detector.detect(opts.recipientQrVideo);
+          for (const detection of detections) {
+            if (!detection.rawValue) continue;
+            if (setRecipientFromCandidate(detection.rawValue, "camera")) {
+              stopRecipientQrScan("accepted");
+              return;
+            }
+          }
+        } catch {
+          stopRecipientQrScan("error");
+          setRecipientQrStatus("Scan failed.");
+          return;
+        }
+
+        qrScanRaf = requestAnimationFrame((t) => { void loop(t); });
+      };
+
+      qrScanRaf = requestAnimationFrame((t) => { void loop(t); });
+    } catch (e) {
+      stopRecipientQrScan("error");
+      const msg = e instanceof Error ? e.message : "camera permission denied";
+      setRecipientQrStatus("Camera unavailable.");
+      log(`qr camera scan failed: ${msg}`);
+    }
+  }
 
   /** Guard: true if this instance has been torn down. */
   function aborted(): boolean { return signal.aborted; }
@@ -369,6 +575,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     opts.sealValidation.textContent = "";
     delete opts.sealValidation.dataset.valid;
     opts.sealedResultWrap.style.display = "none";
+    if (qrScanActive) stopRecipientQrScan("cancelled");
     syncCharCount();
     syncCompose();
   }
@@ -401,9 +608,19 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       mySealPublicCode = identity.code;
 
       opts.sealCode.textContent = identity.code;
+      try {
+        renderSealQrToCanvas(opts.sealQrCanvas, identity.code);
+        opts.sealQrStatus.textContent = "QR encodes the full WS2 public key exactly.";
+        log("ws2 qr generated for local seal");
+      } catch {
+        opts.sealQrStatus.textContent = "QR preview unavailable in this browser.";
+        log("ws2 qr generation unavailable");
+      }
       opts.mySealInline.textContent = formatInlineSealPreview(identity.code);
       opts.mySealInline.style.display = "";
       opts.mySealInline.title = "WS2 public key preview — click to copy full code";
+      opts.mySealInlinePanel.style.display = "";
+      syncMySealInlinePanelState();
       log("seal identity ready: ws2 public key copied");
       // Stop shimmer, fire copy pulse
       opts.mySealBtn.classList.remove("ws-computing");
@@ -570,7 +787,16 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   /* ── Event Listeners ──────────────────────────────────── */
 
   // My Seal button
-  opts.mySealBtn.addEventListener("click", () => generateSeal(), { signal });
+  opts.mySealBtn.addEventListener("click", () => {
+    if (mySealPublicCode) {
+      const nextVisible = opts.mySealInlinePanel.style.display === "none";
+      opts.mySealInlinePanel.style.display = nextVisible ? "" : "none";
+      syncMySealInlinePanelState();
+      log(nextVisible ? "my seal qr shown" : "my seal qr hidden");
+      return;
+    }
+    void generateSeal();
+  }, { signal });
 
   // Inline seal code — click to copy with pulse
   function copySealInline(): void {
@@ -588,7 +814,28 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   // My Seal overlay — copy & back (kept for unseal flow)
   opts.sealCopyBtn.addEventListener("click", () => safeCopy(mySealPublicCode, opts.sealCopyBtn), { signal });
-  opts.sealBackBtn.addEventListener("click", hideOverlay, { signal });
+  opts.sealBackBtn.addEventListener("click", () => {
+    hideOverlay();
+    log("my seal view closed");
+  }, { signal });
+
+  // Recipient WS2 QR helpers
+  opts.recipientQrScanBtn.addEventListener("click", () => { void startRecipientQrScan(); }, { signal });
+  opts.recipientQrImageBtn.addEventListener("click", () => opts.recipientQrFileInput.click(), { signal });
+  opts.recipientQrStopBtn.addEventListener("click", () => stopRecipientQrScan("cancelled"), { signal });
+  opts.recipientQrFileInput.addEventListener("change", () => {
+    const file = opts.recipientQrFileInput.files?.[0];
+    opts.recipientQrFileInput.value = "";
+    if (!file) {
+      log("qr image selection cancelled");
+      return;
+    }
+    void scanRecipientFromImage(file).catch((e) => {
+      const msg = e instanceof Error ? e.message : "unknown";
+      setRecipientQrStatus("Scan failed.");
+      log(`qr image scan failed: ${msg}`);
+    });
+  }, { signal });
 
   // Compose — live validation
   opts.recipientSealInput.addEventListener("input", () => {
@@ -664,6 +911,27 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   /* ── Boot ─────────────────────────────────────────────── */
 
+  setRecipientQrUiState(false);
+
+  void getQrScannerCapability().then((capability) => {
+    if (aborted()) return;
+    qrSupported = capability.supported;
+    setRecipientQrUiState(false);
+    setRecipientQrStatus("");
+    opts.recipientQrScanBtn.title = capability.supported
+      ? "Scan WS2 key from camera"
+      : "Camera QR scan unavailable";
+    opts.recipientQrImageBtn.title = "Load QR image";
+    if (!capability.supported) log(capability.reason ?? "camera qr scan unavailable");
+  });
+
+  pageObserver = new MutationObserver(() => {
+    syncSealInlineVisibility();
+  });
+  pageObserver.observe(opts.page, { attributes: true, attributeFilter: ["data-mode", "data-carrier"] });
+  syncMySealInlinePanelState();
+  syncSealInlineVisibility();
+
   // If URL contains a #ws2: fragment, jump straight to unseal
   const autoPayload = parseSealFragment();
   if (autoPayload) {
@@ -676,6 +944,9 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   return () => {
     ac.abort();
+    stopRecipientQrScan("teardown");
+    pageObserver?.disconnect();
+    pageObserver = null;
     cleanupLogger();
     // Reset overlay state so next init starts clean
     hideOverlay();

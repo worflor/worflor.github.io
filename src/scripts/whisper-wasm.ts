@@ -1,8 +1,8 @@
 export interface WhisperInertCandidate {
   offset: number;
   length: number;
-  zeroDensity: number;
-  ffDensity: number;
+  dominantDensity: number;
+  dominantByte: number;
   entropy: number;
   score: number;
   kind: "padding" | "gap";
@@ -164,6 +164,7 @@ const HEADER_VERSION = 2;
 const HEADER_FLAGS = 0;
 const FLAG_RECEIPT_REQUIRED = 1 << 0;
 const FLAG_RECEIPT_LOCALKEY = 1 << 1;
+const FLAG_COMPRESSED = 1 << 2;
 const ENVELOPE_AAD_CONTEXT = "whisper-envelope-v2";
 const LOCATOR_CONTEXT = "whisper-locator-v2";
 const KDF_CONTEXT = "whisper-kdf-v2";
@@ -245,7 +246,8 @@ async function verifyEnvelopeCipher(
     );
   }
 
-  const packed = unpackPayload(new Uint8Array(packedPlain));
+  const decompressed = await maybeDecompress(new Uint8Array(packedPlain), header.flags);
+  const packed = unpackPayload(decompressed);
   const hashHex = toHex(await sha256(packed.payload));
   if (hashHex !== expectedPayloadHashHex) {
     throw new Error("verify: payload hash mismatch");
@@ -812,39 +814,27 @@ async function initWhisperCore(): Promise<WhisperWasmCore> {
   return promise;
 }
 
-/** Shannon entropy from a raw byte buffer (JS fallback when WASM unavailable). */
-function entropy(bytes: Uint8Array): number {
-  if (bytes.length === 0) return 0;
-  const bins = new Uint32Array(256);
-  for (let i = 0; i < bytes.length; i++) bins[bytes[i]]++;
-  let h = 0;
-  for (let i = 0; i < 256; i++) {
-    if (bins[i] === 0) continue;
-    const p = bins[i] / bytes.length;
-    h -= p * Math.log2(p);
-  }
-  return h;
-}
-
-/** Shannon entropy from a pre-built 256-bin histogram (from WASM build_histogram). */
-function entropyFromHistogram(histView: DataView, totalBytes: number): number {
-  if (totalBytes === 0) return 0;
+/** Single-pass: entropy + dominant byte from a pre-built 256-bin histogram. One loop, 256 reads. */
+function analyzeHistogram(histView: DataView, totalBytes: number): { dominantByte: number; dominantDensity: number; entropy: number } {
+  if (totalBytes === 0) return { dominantByte: 0, dominantDensity: 0, entropy: 0 };
+  let maxCount = 0;
+  let maxBin = 0;
   let h = 0;
   for (let i = 0; i < 256; i++) {
     const count = histView.getUint32(i * 4, true);
     if (count === 0) continue;
+    if (count > maxCount) { maxCount = count; maxBin = i; }
     const p = count / totalBytes;
     h -= p * Math.log2(p);
   }
-  return h;
+  return { dominantByte: maxBin, dominantDensity: maxCount / totalBytes, entropy: h };
 }
 
-function scoreWindow(zeroDensity: number, ffDensity: number, windowEntropy: number): number {
-  const dense = Math.max(zeroDensity, ffDensity);
-  // Quadratic falloff: entropy 0-1 is fine, 1-3 is the discrimination zone, >4 kills score.
-  // Old linear formula (windowEntropy/8) was too lenient in the 2-6 range.
-  const entropyPenalty = Math.min(1, (windowEntropy * windowEntropy) / 16);
-  return dense * 0.7 + (1 - entropyPenalty) * 0.3;
+function scoreWindow(dominantDensity: number, windowEntropy: number): number {
+  // Use dominant byte density — subsumes the old max(zero,ff) check and catches 0x20, 0x80, 0xCC, etc.
+  // Relaxed entropy penalty divisor (25 vs 16): entropy 3.0 gives penalty 0.36 instead of 0.56.
+  const entropyPenalty = Math.min(1, (windowEntropy * windowEntropy) / 25);
+  return dominantDensity * 0.65 + (1 - entropyPenalty) * 0.35;
 }
 
 function mergeCandidates(candidates: WhisperInertCandidate[], minCandidateLength: number): WhisperInertCandidate[] {
@@ -866,8 +856,8 @@ function mergeCandidates(candidates: WhisperInertCandidate[], minCandidateLength
       const curWeight = current.length;
       const weightTotal = prevWeight + curWeight;
       prev.length = combinedLen;
-      prev.zeroDensity = (prev.zeroDensity * prevWeight + current.zeroDensity * curWeight) / weightTotal;
-      prev.ffDensity = (prev.ffDensity * prevWeight + current.ffDensity * curWeight) / weightTotal;
+      prev.dominantDensity = (prev.dominantDensity * prevWeight + current.dominantDensity * curWeight) / weightTotal;
+      if (curWeight > prevWeight) prev.dominantByte = current.dominantByte;
       prev.entropy = (prev.entropy * prevWeight + current.entropy * curWeight) / weightTotal;
       prev.score = Math.max(prev.score, current.score);
       prev.kind = prev.score >= 0.7 ? "padding" : "gap";
@@ -898,34 +888,33 @@ function scanWindowWasm(
   core: WhisperWasmCore,
   dataPtr: number,
   len: number,
-): { zeroDensity: number; ffDensity: number; windowEntropy: number } {
+): { dominantDensity: number; dominantByte: number; windowEntropy: number } {
   core.exports.build_histogram(dataPtr, len, HISTOGRAM_OFFSET);
-
   const histView = new DataView(core.exports.memory.buffer, HISTOGRAM_OFFSET, 1024);
-  const zeroCount = histView.getUint32(0x00 * 4, true);
-  const ffCount = histView.getUint32(0xff * 4, true);
-
-  return {
-    zeroDensity: zeroCount / len,
-    ffDensity: ffCount / len,
-    windowEntropy: entropyFromHistogram(histView, len),
-  };
+  const { dominantByte, dominantDensity, entropy } = analyzeHistogram(histView, len);
+  return { dominantDensity, dominantByte, windowEntropy: entropy };
 }
 
-/** JS fallback: count + entropy without WASM. */
-function scanWindowJs(windowBytes: Uint8Array): { zeroDensity: number; ffDensity: number; windowEntropy: number } {
+/** JS fallback: single-pass histogram → density + entropy without WASM. */
+function scanWindowJs(windowBytes: Uint8Array): { dominantDensity: number; dominantByte: number; windowEntropy: number } {
   const len = windowBytes.length;
-  let zeroCount = 0;
-  let ffCount = 0;
-  for (let i = 0; i < len; i++) {
-    const b = windowBytes[i];
-    if (b === 0x00) zeroCount++;
-    else if (b === 0xff) ffCount++;
+  if (len === 0) return { dominantDensity: 0, dominantByte: 0, windowEntropy: 0 };
+  const bins = new Uint32Array(256);
+  for (let i = 0; i < len; i++) bins[windowBytes[i]]++;
+  let maxCount = 0;
+  let maxBin = 0;
+  let h = 0;
+  for (let i = 0; i < 256; i++) {
+    const c = bins[i];
+    if (c === 0) continue;
+    if (c > maxCount) { maxCount = c; maxBin = i; }
+    const p = c / len;
+    h -= p * Math.log2(p);
   }
   return {
-    zeroDensity: zeroCount / len,
-    ffDensity: ffCount / len,
-    windowEntropy: entropy(windowBytes),
+    dominantDensity: maxCount / len,
+    dominantByte: maxBin,
+    windowEntropy: h,
   };
 }
 
@@ -958,18 +947,18 @@ export async function scanInertSpace(bytes: Uint8Array, options: WhisperScanOpti
     const windowLen = end - offset;
     if (windowLen < minCandidateLength) continue;
 
-    const { zeroDensity, ffDensity, windowEntropy } = core
+    const { dominantDensity, dominantByte, windowEntropy } = core
       ? scanWindowWasm(core, CARRIER_OFFSET + offset, windowLen)
       : scanWindowJs(bytes.subarray(offset, end));
 
-    const score = scoreWindow(zeroDensity, ffDensity, windowEntropy);
-    if (score < 0.44) continue;
+    const score = scoreWindow(dominantDensity, windowEntropy);
+    if (score < 0.38) continue;
 
     rawCandidates.push({
       offset,
       length: windowLen,
-      zeroDensity,
-      ffDensity,
+      dominantDensity,
+      dominantByte,
       entropy: windowEntropy,
       score,
       kind: score >= 0.7 ? "padding" : "gap",
@@ -1042,8 +1031,14 @@ export async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 function looksCryptographicallyInert(candidate: WhisperInertCandidate): boolean {
-  const dense = Math.max(candidate.zeroDensity, candidate.ffDensity);
-  return dense >= 0.92 && candidate.entropy <= 1.2;
+  const dense = candidate.dominantDensity;
+  // Tier 1: Near-perfect fill (very safe) — any entropy, any length.
+  if (dense >= 0.95) return true;
+  // Tier 2: Partial fill / alignment padding / WAV silence — moderate entropy.
+  if (dense >= 0.85 && candidate.entropy <= 2.5) return true;
+  // Tier 3: Large noisy padding in PDFs, ISOs, databases — requires >= 8 KiB.
+  if (dense >= 0.70 && candidate.entropy <= 3.0 && candidate.length >= 8192) return true;
+  return false;
 }
 
 function warnLargeSizes(carrierBytes: Uint8Array, payloadBytes?: Uint8Array): void {
@@ -1057,6 +1052,65 @@ function warnLargeSizes(carrierBytes: Uint8Array, payloadBytes?: Uint8Array): vo
       `[whisper] Large payload (${Math.round(payloadBytes.length / (1024 * 1024))} MB) — may be slow or OOM in this browser.`,
     );
   }
+}
+
+/** Compress bytes using DEFLATE via CompressionStream API. */
+async function deflateBytes(data: Uint8Array): Promise<Uint8Array> {
+  const cs = new CompressionStream("deflate");
+  const writer = cs.writable.getWriter();
+  writer.write(data);
+  writer.close();
+  const reader = cs.readable.getReader();
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(totalLen);
+  let off = 0;
+  for (const chunk of chunks) { out.set(chunk, off); off += chunk.length; }
+  return out;
+}
+
+/** Decompress DEFLATE-compressed bytes via DecompressionStream API. */
+async function inflateBytes(data: Uint8Array): Promise<Uint8Array> {
+  const ds = new DecompressionStream("deflate");
+  const writer = ds.writable.getWriter();
+  writer.write(data);
+  writer.close();
+  const reader = ds.readable.getReader();
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(totalLen);
+  let off = 0;
+  for (const chunk of chunks) { out.set(chunk, off); off += chunk.length; }
+  return out;
+}
+
+/** Compress if CompressionStream is available and saves >= 5%. Returns { data, compressed }. */
+async function maybeCompress(data: Uint8Array): Promise<{ data: Uint8Array; compressed: boolean }> {
+  if (typeof CompressionStream === "undefined") return { data, compressed: false };
+  try {
+    const deflated = await deflateBytes(data);
+    // Only use if compression saves at least 5%.
+    if (deflated.length < data.length * 0.95) return { data: deflated, compressed: true };
+    return { data, compressed: false };
+  } catch {
+    return { data, compressed: false };
+  }
+}
+
+/** Decompress if FLAG_COMPRESSED is set. */
+async function maybeDecompress(data: Uint8Array, flags: number): Promise<Uint8Array> {
+  if ((flags & FLAG_COMPRESSED) === 0) return data;
+  return inflateBytes(data);
 }
 
 function packPayload(input: WhisperPayloadInput, payloadHashHex: string): Uint8Array {
@@ -1179,11 +1233,18 @@ async function deriveLayerNoncesAsync(baseNonce: Uint8Array): Promise<{ inner: U
   };
 }
 
-async function hashExcludingRegion(bytes: Uint8Array, offset: number, length: number): Promise<Uint8Array> {
+/** Hash carrier bytes excluding a region — zero-copy via incremental Sha256. */
+function hashExcludingRegion(bytes: Uint8Array, offset: number, length: number): Uint8Array {
   const start = Math.max(0, Math.min(offset, bytes.length));
   const end = Math.max(start, Math.min(offset + length, bytes.length));
-  if (end <= start) return sha256(bytes);
-  return sha256(concatBytes(bytes.subarray(0, start), bytes.subarray(end)));
+  const hasher = new Sha256();
+  if (end <= start) {
+    hasher.update(bytes);
+  } else {
+    hasher.update(bytes.subarray(0, start));
+    hasher.update(bytes.subarray(end));
+  }
+  return hasher.digest();
 }
 
 function buildHeader(
@@ -1294,25 +1355,51 @@ function findSubsequence(haystack: Uint8Array, needle: Uint8Array): number[] {
   return hits;
 }
 
+/** Count trailing zero bits — used to detect power-of-2 alignment. */
+function trailingZeros(n: number): number {
+  if (n === 0) return 32;
+  let count = 0;
+  let v = n | 0;
+  while ((v & 1) === 0) { count++; v >>>= 1; }
+  return count;
+}
+
 function findEmbedCandidate(
   candidates: WhisperInertCandidate[],
   envelopeLength: number,
   carrierLength: number,
 ): WhisperInertCandidate | null {
-  // Prefer the deepest/highest scoring candidate to reduce the chance of touching structural bytes.
-  const sorted = candidates
-    .filter((candidate) => looksCryptographicallyInert(candidate) && candidate.length >= envelopeLength)
-    .sort((a, b) => (b.score - a.score) || (b.offset - a.offset) || (b.length - a.length));
+  const viable = candidates.filter((c) => {
+    if (!looksCryptographicallyInert(c)) return false;
+    if (c.length < envelopeLength) return false;
+    // Hard floor: never embed in the first 512 bytes.
+    if (c.offset < 512) return false;
+    if (c.offset + envelopeLength > carrierLength) return false;
+    return true;
+  });
 
-  for (const candidate of sorted) {
-    // Avoid embedding extremely close to the beginning — most formats keep critical structures early.
-    if (candidate.offset < 4096) continue;
-    // Avoid embedding beyond carrier bounds.
-    if (candidate.offset + envelopeLength > carrierLength) continue;
-    return candidate;
-  }
+  if (viable.length === 0) return null;
 
-  return null;
+  // Composite ranking: higher is better.
+  const ranked = viable.map((c) => {
+    // Base score (0-10 range).
+    let rank = c.score * 10;
+    // Size margin bonus: prefer regions much larger than the envelope (capped at 4x).
+    const sizeRatio = Math.min(4, c.length / envelopeLength);
+    rank += sizeRatio * 0.5;
+    // Depth bonus: prefer deeper offsets (further from critical header structures).
+    const depthNorm = Math.min(1, c.offset / carrierLength);
+    rank += depthNorm * 2;
+    // Soft penalty for offsets < 4096 (instead of old hard cutoff).
+    if (c.offset < 4096) rank -= 2 * (1 - c.offset / 4096);
+    // Alignment bonus: prefer power-of-2-aligned offsets (format padding boundaries).
+    const tz = trailingZeros(c.offset);
+    rank += Math.min(2, tz * 0.2);
+    return { candidate: c, rank };
+  });
+
+  ranked.sort((a, b) => b.rank - a.rank);
+  return ranked[0].candidate;
 }
 
 function clueMatches(clueRaw: string | undefined, sourceName: string, payload: WhisperExtractPayload): boolean {
@@ -1360,17 +1447,18 @@ export class WhisperEngine {
     const payloadHash = await sha256(payload.bytes);
     const payloadHashHex = toHex(payloadHash);
     const packed = packPayload(payload, payloadHashHex);
+    const { data: packedFinal, compressed: didCompress } = await maybeCompress(packed);
     const locator = await deriveLocatorTag(password);
 
     const onlyHere = options.onlyDecodeHere === true;
     // Portable mode: 1x GCM tag. Local-key mode: 2x tags (inner+outer).
-    const cipherLength = onlyHere ? (packed.length + 32) : (packed.length + 16);
+    const cipherLength = onlyHere ? (packedFinal.length + 32) : (packedFinal.length + 16);
     const envelopeLength = LOCATOR_LEN + HEADER_LEN + cipherLength;
 
     const preferInert = options.preferInertSpace !== false;
     const maxCandidates = Math.max(1, options.maxCandidates ?? DEFAULT_MAX_CANDIDATES);
 
-    logs.push(`payload packed: ${packed.length} bytes`);
+    logs.push(`payload packed: ${packed.length} bytes${didCompress ? ` (compressed to ${packedFinal.length})` : ""}`);
     logs.push(`envelope target length: ${envelopeLength} bytes`);
 
     const candidates = preferInert
@@ -1393,7 +1481,7 @@ export class WhisperEngine {
     if (selected) logs.push(`embed mode: inert-slot @ ${offset}`);
     else logs.push("embed mode: eof-tail fallback");
 
-    const immutableHash = await hashExcludingRegion(carrierBytes, offset, envelopeLength);
+    const immutableHash = hashExcludingRegion(carrierBytes, offset, envelopeLength);
     const bindDigest = immutableHash.subarray(0, 16);
     const salt = randomBytes(16);
     const nonce = randomBytes(12);
@@ -1405,6 +1493,7 @@ export class WhisperEngine {
 
     let headerFlags = HEADER_FLAGS;
     if (onlyHere) headerFlags |= FLAG_RECEIPT_REQUIRED;
+    if (didCompress) headerFlags |= FLAG_COMPRESSED;
 
     // Build header once (flags might be updated after we know which local lock method we used).
     let header = buildHeader(headerFlags & 0xff, manifestLength, cipherLength, offset, envelopeLength, salt, nonce, bindDigest);
@@ -1436,7 +1525,7 @@ export class WhisperEngine {
     const innerCipherBuf = await crypto.subtle.encrypt(
       { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aadInner) },
       baseKey,
-      toArrayBuffer(packed),
+      toArrayBuffer(packedFinal),
     );
     const innerCipher = new Uint8Array(innerCipherBuf);
 
@@ -1456,7 +1545,7 @@ export class WhisperEngine {
       const cipherBuffer = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aad) },
         key,
-        toArrayBuffer(packed),
+        toArrayBuffer(packedFinal),
       );
       finalCipher = new Uint8Array(cipherBuffer);
     } else {
@@ -1490,7 +1579,7 @@ export class WhisperEngine {
       const parsed = parseHeader(headerBytes);
       if (!parsed) throw new Error("verify: failed to parse header");
       const cipherBytes = outputBytes.subarray(cipherStart, cipherEnd);
-      const immutableHashVerify = await hashExcludingRegion(outputBytes, offset, envelope.length);
+      const immutableHashVerify = hashExcludingRegion(outputBytes, offset, envelope.length);
       await verifyEnvelopeCipher(
         password,
         locator,
@@ -1593,10 +1682,12 @@ export class WhisperEngine {
       },
       payloadHashHex,
     );
+    const { data: packedFinal, compressed: didCompress } = await maybeCompress(packed);
+    if (didCompress) logs.push(`compressed: ${packed.length} -> ${packedFinal.length} bytes`);
 
     const locator = await deriveLocatorTag(password);
     const onlyHere = options.onlyDecodeHere === true;
-    const cipherLength = onlyHere ? (packed.length + 32) : (packed.length + 16);
+    const cipherLength = onlyHere ? (packedFinal.length + 32) : (packedFinal.length + 16);
     const envelopeLength = LOCATOR_LEN + HEADER_LEN + cipherLength;
     const offset = carrierFile.size;
 
@@ -1610,6 +1701,7 @@ export class WhisperEngine {
     const manifestLength = readU32(packed, 0);
     let headerFlags = HEADER_FLAGS;
     if (onlyHere) headerFlags |= FLAG_RECEIPT_REQUIRED;
+    if (didCompress) headerFlags |= FLAG_COMPRESSED;
     let header = buildHeader(headerFlags & 0xff, manifestLength, cipherLength, offset, envelopeLength, salt, nonce, bindDigest);
 
     const receiptId = onlyHere ? await deriveReceiptId(locator, header) : null;
@@ -1638,7 +1730,7 @@ export class WhisperEngine {
     const innerCipherBuf = await crypto.subtle.encrypt(
       { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aadInner) },
       baseKey,
-      toArrayBuffer(packed),
+      toArrayBuffer(packedFinal),
     );
     const innerCipher = new Uint8Array(innerCipherBuf);
 
@@ -1657,7 +1749,7 @@ export class WhisperEngine {
       const cipherBuffer = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aad) },
         key,
-        toArrayBuffer(packed),
+        toArrayBuffer(packedFinal),
       );
       finalCipher = new Uint8Array(cipherBuffer);
     } else {
@@ -1807,7 +1899,8 @@ export class WhisperEngine {
           );
         }
 
-        const packed = unpackPayload(new Uint8Array(packedPlain));
+        const decompressed = await maybeDecompress(new Uint8Array(packedPlain), header.flags);
+        const packed = unpackPayload(decompressed);
         const hashHex = toHex(await sha256(packed.payload));
 
         const payload: WhisperExtractPayload = {
@@ -1884,7 +1977,7 @@ export class WhisperEngine {
       const cipherEnd = cipherStart + header.cipherLength;
       if (cipherEnd > carrierBytes.length) continue;
 
-      const immutableHash = await hashExcludingRegion(carrierBytes, hit, expectedEnvelopeLength);
+      const immutableHash = hashExcludingRegion(carrierBytes, hit, expectedEnvelopeLength);
       const bindDigest = immutableHash.subarray(0, 16);
       if (!bytesEqual(bindDigest, header.bindDigest)) {
         logs.push(`hit ${hit}: carrier bind mismatch`);
@@ -1941,7 +2034,8 @@ export class WhisperEngine {
           );
         }
 
-        const packed = unpackPayload(new Uint8Array(packedPlain));
+        const decompressed = await maybeDecompress(new Uint8Array(packedPlain), header.flags);
+        const packed = unpackPayload(decompressed);
         const hashHex = toHex(await sha256(packed.payload));
 
         const payload: WhisperExtractPayload = {

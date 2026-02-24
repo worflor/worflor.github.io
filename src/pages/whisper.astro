@@ -154,8 +154,14 @@ const seo = {
                 <input type="radio" name="ws-carrier-type" value="url" class="ws-carrier-radio" />
                 <span class="ws-carrier-label">URL (Seal)</span>
               </label>
-              <button id="ws-my-seal-btn" type="button" class="whisper-mini-btn ws-my-seal-btn">My Seal</button>
+              <button id="ws-my-seal-btn" type="button" class="whisper-mini-btn ws-my-seal-btn" aria-expanded="false" aria-pressed="false" title="Show your WS2 QR">My Seal</button>
               <span id="ws-my-seal-inline" class="ws-my-seal-inline" style="display:none" role="button" tabindex="0" title="Click to copy"></span>
+            </div>
+            <div id="ws-my-seal-inline-panel" class="ws-my-seal-inline-panel" style="display:none">
+              <div class="ws-seal-qr-wrap">
+                <canvas id="ws-seal-qr-canvas" class="ws-seal-qr-canvas" data-qr-size="180" aria-label="QR code for your full WS2 public key"></canvas>
+                <p id="ws-seal-qr-status" class="ws-seal-hint">QR encodes the full WS2 public key exactly.</p>
+              </div>
             </div>
           </div>
 
@@ -165,7 +171,16 @@ const seo = {
               <span class="whisper-field-label">recipient's seal</span>
               <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
             </label>
-            <span class="whisper-field-hint ws-seal-input-hint">Use the full WS2 public key value.</span>
+            <div class="ws-recipient-tools" role="group" aria-label="Recipient seal QR tools">
+              <button id="ws-recipient-qr-scan" type="button" class="whisper-mini-btn">Scan QR</button>
+              <button id="ws-recipient-qr-image" type="button" class="whisper-mini-btn">Image</button>
+              <button id="ws-recipient-qr-stop" type="button" class="whisper-mini-btn" style="display:none">Stop</button>
+              <input id="ws-recipient-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
+            </div>
+            <div id="ws-recipient-qr-panel" class="ws-recipient-qr-panel" style="display:none">
+              <video id="ws-recipient-qr-video" class="ws-recipient-qr-video" playsinline muted></video>
+            </div>
+            <span id="ws-recipient-qr-status" class="whisper-field-hint ws-recipient-qr-status"></span>
             <span id="ws-seal-validation" class="ws-seal-validation"></span>
 
             <label class="whisper-field" for="ws-message">
@@ -548,6 +563,10 @@ const seo = {
             <h3 class="whisper-panel-title">Your WS2 Public Seal</h3>
             <div class="ws-seal-code-wrap">
               <span id="ws-seal-code" class="ws-seal-code"></span>
+            </div>
+            <div class="ws-seal-qr-wrap">
+              <canvas id="ws-seal-qr-canvas-overlay" class="ws-seal-qr-canvas" data-qr-size="220" aria-label="QR code for your full WS2 public key"></canvas>
+              <p id="ws-seal-qr-status-overlay" class="ws-seal-hint">QR encodes the full WS2 public key exactly.</p>
             </div>
             <p class="ws-seal-hint">Share this full WS2 code to receive messages.</p>
             <p class="ws-seal-hint">Only the browser profile with the matching private key can open messages sealed to this key.</p>
@@ -1367,7 +1386,8 @@ const seo = {
 
   /* My Seal button + inline code only when carrier=url */
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-btn,
-  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline { display: none; }
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline,
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline-panel { display: none; }
 
   /* Password tools (generate/copy) only in embed mode */
   .whisper-page:not([data-mode="embed"]) .whisper-password-tools { display: none; }
@@ -2378,6 +2398,24 @@ const seo = {
       border-color var(--duration-normal) var(--ease-out);
   }
 
+  .ws-my-seal-btn {
+    position: relative;
+  }
+
+  .ws-my-seal-btn::after {
+    content: "";
+    width: 0.38rem;
+    height: 0.38rem;
+    border-radius: var(--radius-full);
+    margin-left: 0.36rem;
+    background: rgb(var(--chromatic-cyan) / 0.22);
+    transition: background var(--duration-normal) var(--ease-out);
+  }
+
+  .ws-my-seal-btn.ws-my-seal-btn--active::after {
+    background: rgb(var(--chromatic-cyan));
+  }
+
   .ws-my-seal-inline:hover {
     background: rgb(var(--chromatic-cyan) / 0.12);
     border-color: rgb(var(--chromatic-cyan) / 0.35);
@@ -2499,6 +2537,33 @@ const seo = {
     line-height: 1.5;
   }
 
+  .ws-seal-qr-wrap {
+    display: grid;
+    justify-items: center;
+    gap: calc(var(--space-xs) * 0.6);
+    margin: 0 0 var(--space-sm);
+  }
+
+  .ws-my-seal-inline-panel {
+    margin-top: calc(var(--space-xs) * 0.55);
+    padding: calc(var(--space-xs) * 0.6);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    background: rgb(var(--chromatic-cyan) / 0.03);
+  }
+
+  .ws-my-seal-inline-panel .ws-seal-qr-wrap {
+    margin: 0;
+  }
+
+  .ws-seal-qr-canvas {
+    border-radius: calc(var(--whisper-radius) * 0.65);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
+    background: rgb(var(--color-bg-rgb));
+    max-width: min(220px, 100%);
+    height: auto;
+  }
+
   .ws-seal-actions,
   .ws-compose-actions,
   .ws-unseal-actions {
@@ -2549,6 +2614,38 @@ const seo = {
   .ws-seal-input-hint {
     display: block;
     margin-top: calc(var(--space-xs) * -0.45);
+  }
+
+  .ws-recipient-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.45);
+    margin-top: calc(var(--space-xs) * -0.45);
+  }
+
+  .ws-recipient-qr-panel {
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    background: rgb(var(--chromatic-cyan) / 0.04);
+    padding: calc(var(--space-xs) * 0.45);
+    margin-top: calc(var(--space-xs) * -0.35);
+  }
+
+  .ws-recipient-qr-video {
+    width: 100%;
+    max-height: 16rem;
+    border-radius: calc(var(--whisper-radius) * 0.45);
+    background: rgb(var(--color-bg-rgb));
+    object-fit: cover;
+  }
+
+  .ws-recipient-qr-status {
+    display: block;
+    margin-top: calc(var(--space-xs) * -0.35);
+  }
+
+  .ws-recipient-qr-status:empty {
+    display: none;
   }
 
   .ws-seal-validation[data-valid="true"] { color: rgb(var(--tool-status-success)); }

@@ -121,8 +121,12 @@ export async function computeFingerprint(): Promise<Uint8Array> {
 
 /* ── Seal Code Helpers ───────────────────────────────────── */
 
+export function normalizeSealCodeInput(code: string): string {
+  return code.replace(/\s+/g, "").trim();
+}
+
 function normalizeSealCode(code: string): string {
-  return code.trim();
+  return normalizeSealCodeInput(code);
 }
 
 export function sealPublicKeyToCode(publicKeyRaw: Uint8Array): string {
