@@ -1684,27 +1684,10 @@ export async function parseFile(file: File): Promise<LensData> {
 
   const hasExif = Object.keys(exif).length > 0;
 
-  // If we found EXIF data, build image-specific categories (original path).
-  if (hasExif) {
-    const exifResult = buildExifResult(exif, meta, containerFormat);
-    try {
-      const { analyzeFile } = await import("./lens-formats");
-      const fallbackResult = await analyzeFile(file, buffer);
-      const profileCategory = fallbackResult.categories.find((category) => category.id === "profile");
-      if (profileCategory && !exifResult.categories.some((category) => category.id === "profile")) {
-        exifResult.categories.push(profileCategory);
-      }
-    } catch {
-      // Ignore supplemental profile extraction failures.
-    }
-    return exifResult;
-  }
-
-  // No EXIF - use the universal format engine.
+  // Unified metadata pipeline: always run universal analyzer once,
+  // then augment with EXIF capabilities when available.
   const { analyzeFile } = await import("./lens-formats");
-  let formatResult = await analyzeFile(file, buffer);
-
-  // Full-buffer parsing is already the deepest capability path.
+  const formatResult = await analyzeFile(file, buffer);
 
   // Build FILE category (always present).
   const fileFields = buildFileCategory(meta);
@@ -1715,39 +1698,67 @@ export async function parseFile(file: File): Promise<LensData> {
     expanded: true,
   }];
 
-  // Append format-specific categories.
-  categories.push(...formatResult.categories);
+  let metadataExif: RawExif | null = null;
 
-  // Recover embedded EXIF from any container and merge into universal categories.
-  const embeddedExif = extractEmbeddedExifFromBuffer(buffer);
-  if (Object.keys(embeddedExif).length > 0) {
-    const supplement = buildExifSupplementCategories(embeddedExif);
+  if (hasExif) {
+    metadataExif = exif;
+    const supplement = buildExifSupplementCategories(exif);
     if (supplement.length > 0) {
       mergeCategoryFields(categories, supplement);
+    }
+
+    const profileCategory = formatResult.categories.find((category) => category.id === "profile");
+    if (profileCategory) {
+      categories.push(profileCategory);
+    }
+  } else {
+    categories.push(...formatResult.categories);
+
+    const embeddedExif = extractEmbeddedExifFromBuffer(buffer);
+    if (Object.keys(embeddedExif).length > 0) {
+      metadataExif = embeddedExif;
+      const supplement = buildExifSupplementCategories(embeddedExif);
+      if (supplement.length > 0) {
+        mergeCategoryFields(categories, supplement);
+      }
     }
   }
 
   const { totalFields, populatedFields } = computeFieldCounts(categories);
-  const cameraName = deriveCameraName(embeddedExif);
+  const cameraName = metadataExif ? deriveCameraName(metadataExif) : null;
   const hasGps = categories.some(
     (c) => c.id === "gps" && c.fields.some((f) => f.id !== "gps.warning"),
   );
+
+  const resolvedFormatName = hasExif
+    ? (containerFormat ?? (meta.type === "image/jpeg" || meta.type === "image/jpg" ? "JPEG" : "TIFF"))
+    : formatResult.formatName;
+  const resolvedFormatFamily = hasExif
+    ? (resolvedFormatName === "JPEG" ? "jpeg" : "tiff")
+    : formatResult.formatFamily;
+  const resolvedPreviewType = hasExif ? "image" : formatResult.previewType;
+  const resolvedSummary = hasExif
+    ? [
+      { label: "camera", value: cameraName ?? "none" },
+      { label: "GPS", value: hasGps ? "yes" : "no" },
+    ]
+    : formatResult.summary;
 
   return {
     categories,
     totalFields,
     populatedFields,
     hasGps,
-    hasExif: formatResult.categories.length > 0 || Object.keys(embeddedExif).length > 0,
+    hasExif: hasExif || metadataExif !== null || formatResult.categories.length > 0,
     cameraName,
     fileName: meta.name,
     fileSize: meta.size,
     parsedAt: Date.now(),
-    formatFamily: formatResult.formatFamily,
-    formatName: formatResult.formatName,
-    previewType: formatResult.previewType,
-    textPreview: formatResult.textPreview,
-    summaryItems: formatResult.summary,
+    formatFamily: resolvedFormatFamily,
+    formatName: resolvedFormatName,
+    previewType: resolvedPreviewType,
+    textPreview: hasExif ? undefined : formatResult.textPreview,
+    summaryItems: resolvedSummary,
   };
 }
 /** Build result for files with EXIF data (JPEG/TIFF — the original path) */

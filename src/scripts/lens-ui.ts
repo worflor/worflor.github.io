@@ -162,8 +162,6 @@ function readHandoffSource(metadata: unknown): string | null {
 
 const EXPANSION_STATE_KEY = "theLens.categoryExpansion.v1";
 const LENS_REFRESH_FILE_KEY = "theLens.refreshFileToken.v1";
-const CATEGORY_STAGGER_MS = 80;
-const CATEGORY_REVEAL_MS = 300;
 const CATEGORY_REVEAL_OFFSET_PX = 8;
 const ACTION_BAR_FADE_MS = 300;
 const TOAST_VISIBLE_MS = 2200;
@@ -659,24 +657,9 @@ export function initLens(opts: LensUIOptions): () => void {
   function renderCategories(data: LensData): void {
     clearCategoryRevealTimers();
     opts.container.innerHTML = "";
-    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    data.categories.forEach((cat, index) => {
+    data.categories.forEach((cat) => {
       const section = renderCategory(cat);
-
-      if (!prefersReducedMotion) {
-        section.style.opacity = "0";
-        section.style.transform = `translateY(${CATEGORY_REVEAL_OFFSET_PX}px)`;
-        const revealTimer = setTimeout(() => {
-          categoryRevealTimers.delete(revealTimer);
-          if (destroyed || !section.isConnected) return;
-          section.style.transition = `opacity ${CATEGORY_REVEAL_MS}ms ease, transform ${CATEGORY_REVEAL_MS}ms ease`;
-          section.style.opacity = "1";
-          section.style.transform = "translateY(0)";
-        }, CATEGORY_STAGGER_MS * index);
-        categoryRevealTimers.add(revealTimer);
-      }
-
       opts.container.appendChild(section);
     });
   }
