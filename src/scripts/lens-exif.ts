@@ -632,17 +632,41 @@ function parseExifFromBuffer(buffer: ArrayBuffer): RawExif {
 
   if (isJpeg(view)) {
     let offset = 2;
-    const MAX_SEGMENTS = 128;
+    const MAX_SEGMENTS = 1024;
     let segments = 0;
 
-    while (offset + 4 < view.byteLength && segments < MAX_SEGMENTS) {
-      const marker = view.getUint16(offset);
-      if ((marker & 0xff00) !== 0xff00) break;
-      if (marker === 0xffda) break; // SOS
+    while (offset + 1 < view.byteLength && segments < MAX_SEGMENTS) {
+      // Find marker prefix (skip non-marker padding/noise safely).
+      while (offset < view.byteLength && view.getUint8(offset) !== 0xff) {
+        offset++;
+      }
+      if (offset + 1 >= view.byteLength) break;
 
-      const segLen = view.getUint16(offset + 2);
+      // Skip fill bytes 0xFF..0xFF
+      while (offset + 1 < view.byteLength && view.getUint8(offset + 1) === 0xff) {
+        offset++;
+      }
+      if (offset + 1 >= view.byteLength) break;
+
+      const marker = (0xff << 8) | view.getUint8(offset + 1);
+      offset += 2;
+
+      // End of image or start of scan: no more metadata segments.
+      if (marker === 0xffd9 || marker === 0xffda) break;
+
+      // Standalone markers without segment length.
+      if (
+        marker === 0xff01 || // TEM
+        (marker >= 0xffd0 && marker <= 0xffd7) // RST0..RST7
+      ) {
+        continue;
+      }
+
+      if (offset + 2 > view.byteLength) break;
+      const segLen = view.getUint16(offset);
       if (segLen < 2) break;
-      const segStart = offset + 4;
+      const segStart = offset + 2;
+      if (segStart + (segLen - 2) > view.byteLength) break;
 
       // APP1: EXIF or XMP
       if (marker === 0xffe1) {
@@ -672,7 +696,7 @@ function parseExifFromBuffer(buffer: ArrayBuffer): RawExif {
         }
       }
 
-      offset += 2 + segLen;
+      offset += segLen;
       segments++;
     }
   } else if (isTiff(view)) {
@@ -1507,6 +1531,27 @@ function detectExifContainerFormat(
 
 const INITIAL_LENS_READ_BYTES = 262144;
 const EXTENDED_EXIF_READ_BYTES = 1048576;
+const DEEP_LENS_READ_BYTES = 4194304;
+
+function metadataRichness(categories: ExifCategory[]): number {
+  let score = 0;
+  for (const category of categories) {
+    if (
+      category.id === "file" ||
+      category.id === "structure" ||
+      category.id === "integrity" ||
+      category.id === "profile"
+    ) {
+      continue;
+    }
+    score += category.fields.length;
+  }
+  return score;
+}
+
+function hasMeaningfulMetadata(categories: ExifCategory[]): boolean {
+  return metadataRichness(categories) > 0;
+}
 
 export async function parseFile(file: File): Promise<LensData> {
   const meta: FileMetadata = {
@@ -1530,16 +1575,23 @@ export async function parseFile(file: File): Promise<LensData> {
       // Parsing failed - fallback to universal analyzer.
     }
 
-    // Some files store EXIF farther into APP segments; retry with a larger window.
+    // Some files store metadata farther into JPEG segments; progressively deepen reads.
     if (Object.keys(exif).length === 0 && file.size > readSize) {
-      const extendedReadSize = Math.min(file.size, EXTENDED_EXIF_READ_BYTES);
-      if (extendedReadSize > readSize) {
-        readSize = extendedReadSize;
+      const readCandidates = [
+        Math.min(file.size, EXTENDED_EXIF_READ_BYTES),
+        Math.min(file.size, DEEP_LENS_READ_BYTES),
+        file.size,
+      ];
+
+      for (const candidateSize of readCandidates) {
+        if (candidateSize <= readSize) continue;
+        readSize = candidateSize;
         try {
           buffer = await file.slice(0, readSize).arrayBuffer();
           exif = parseExifFromBuffer(buffer);
+          if (Object.keys(exif).length > 0) break;
         } catch {
-          // Keep fallback path active.
+          // Continue attempting deeper reads.
         }
       }
     }
@@ -1554,7 +1606,41 @@ export async function parseFile(file: File): Promise<LensData> {
 
   // No EXIF - use the universal format engine.
   const { analyzeFile } = await import("./lens-formats");
-  const formatResult = await analyzeFile(file, buffer);
+  let formatResult = await analyzeFile(file, buffer);
+
+  // Capability-first fallback: if results are mostly structural/profile-only,
+  // progressively increase read depth to discover deeper metadata blocks.
+  if (!hasMeaningfulMetadata(formatResult.categories) && file.size > readSize) {
+    const readCandidates = [
+      Math.min(file.size, EXTENDED_EXIF_READ_BYTES),
+      Math.min(file.size, DEEP_LENS_READ_BYTES),
+      file.size,
+    ];
+    let bestResult = formatResult;
+    let bestScore = metadataRichness(formatResult.categories);
+
+    for (const candidateSize of readCandidates) {
+      if (candidateSize <= readSize) continue;
+      try {
+        readSize = candidateSize;
+        buffer = await file.slice(0, readSize).arrayBuffer();
+        const nextResult = await analyzeFile(file, buffer);
+        const nextScore = metadataRichness(nextResult.categories);
+        if (nextScore > bestScore) {
+          bestResult = nextResult;
+          bestScore = nextScore;
+        }
+        if (hasMeaningfulMetadata(nextResult.categories)) {
+          bestResult = nextResult;
+          break;
+        }
+      } catch {
+        // Keep best-so-far result.
+      }
+    }
+
+    formatResult = bestResult;
+  }
 
   // Build FILE category (always present).
   const fileFields = buildFileCategory(meta);
