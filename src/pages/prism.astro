@@ -375,6 +375,7 @@ const seo = {
     --prism-faint: rgb(var(--color-text-rgb) / 0.3);
     --prism-edge: rgb(var(--color-text-rgb) / 0.14);
     --prism-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
+    --prism-load-purple: 118 80 220;
     padding-bottom: calc(var(--prism-action-offset) + var(--space-lg));
   }
 
@@ -436,6 +437,51 @@ const seo = {
     background: rgb(var(--color-text-rgb) / 0.2);
     flex-shrink: 0;
     transition: background var(--duration-slow) var(--ease-out), box-shadow var(--duration-slow) var(--ease-out);
+  }
+
+  .prism-page .prism-status--idle {
+    color: rgb(var(--color-text-rgb) / 0.46);
+  }
+
+  .prism-page .prism-status--loading {
+    color: rgb(var(--prism-load-purple));
+    text-shadow: 0 0 10px rgb(var(--prism-load-purple) / 0.16);
+  }
+
+  .prism-page .prism-status--running {
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  .prism-page .prism-status--error {
+    color: rgb(var(--chromatic-red));
+  }
+
+  .prism-page .prism-dot:has(~ .prism-status--loading) {
+    background: rgb(var(--prism-load-purple));
+    box-shadow: 0 0 8px rgb(var(--prism-load-purple) / 0.45);
+    animation: prism-dot-pulse 1.6s ease-in-out infinite;
+  }
+
+  .prism-page .prism-dot:has(~ .prism-status--running) {
+    background: rgb(var(--chromatic-cyan));
+    box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.35);
+  }
+
+  .prism-page .prism-dot:has(~ .prism-status--error) {
+    background: rgb(var(--chromatic-red));
+    box-shadow: 0 0 6px rgb(var(--chromatic-red) / 0.35);
+  }
+
+  @keyframes prism-dot-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+      box-shadow: 0 0 5px rgb(var(--prism-load-purple) / 0.3);
+    }
+    50% {
+      transform: scale(1.2);
+      box-shadow: 0 0 10px rgb(var(--prism-load-purple) / 0.6);
+    }
   }
 
 
@@ -1007,6 +1053,11 @@ const seo = {
   @media (prefers-reduced-motion: reduce) {
     .prism-actions {
       transition: none;
+    }
+
+    .prism-page .prism-dot:has(~ .prism-status--loading) {
+      animation: none;
+      transform: none;
     }
 
     .action-btn--primary.action-btn--load.action-btn--loading::before {
@@ -1788,6 +1839,24 @@ const seo = {
     background: rgb(var(--color-text-rgb) / 0.015);
   }
 
+  .prism-page .prism-output-info--download {
+    cursor: pointer;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .prism-output-info--download:hover {
+    border-color: rgb(var(--chromatic-cyan) / 0.28);
+    background: rgb(var(--chromatic-cyan) / 0.06);
+  }
+
+  .prism-page .prism-output-info--download:focus-visible {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    outline-offset: 1px;
+  }
+
   .prism-page .prism-output-name {
     font-weight: 600;
     color: var(--color-text);
@@ -1804,6 +1873,19 @@ const seo = {
 
   .prism-page .prism-output-ratio--larger {
     color: #ff6b35;
+  }
+
+  .prism-page .prism-output-hint {
+    margin-left: auto;
+    font-size: calc(var(--text-sm) * 0.86);
+    color: rgb(var(--color-text-rgb) / 0.36);
+  }
+
+  @media (max-width: 560px) {
+    .prism-page .prism-output-hint {
+      width: 100%;
+      margin-left: 0;
+    }
   }
 
   /* ── Terminal Toolbar ───────────────────────────────────────── */

@@ -121,6 +121,8 @@ export interface PrismEngine {
   createOutputUrl(data: Uint8Array, mimeType: string): string;
   /** Return the last n log lines, useful for error reporting */
   getLastLogs(n: number): string[];
+  /** Swap event callbacks without recreating the engine */
+  setCallbacks(callbacks: EngineCallbacks): void;
   /** Destroy the engine and free all resources */
   destroy(): void;
 }
@@ -173,6 +175,7 @@ export function canUseSharedArrayBuffer(): boolean {
 // ─── Engine Factory ──────────────────────────────────────────────────────────
 
 export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
+  let activeCallbacks: EngineCallbacks = callbacks;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let ffmpeg: any = null;
   let state: EngineState = "idle";
@@ -195,14 +198,14 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
   function setState(s: EngineState): void {
     if (destroyed) return;
     state = s;
-    callbacks.onStateChange?.(s);
+    activeCallbacks.onStateChange?.(s);
   }
 
   function log(msg: string): void {
     if (destroyed) return;
     lastLogLines.push(msg);
     if (lastLogLines.length > LOG_BUFFER) lastLogLines.shift();
-    callbacks.onLog?.(msg);
+    activeCallbacks.onLog?.(msg);
   }
 
   // Log handler: extract duration for ETA calculation and forward to terminal.
@@ -411,7 +414,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
             const timeSec = time / 1_000_000;
 
             if (durationSec === 0) {
-              callbacks.onProgress?.({ ratio: -1, speed: null, eta: null, time: timeSec });
+              activeCallbacks.onProgress?.({ ratio: -1, speed: null, eta: null, time: timeSec });
               return;
             }
 
@@ -421,7 +424,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
                 ? (durationSec - timeSec) / speed
                 : null;
 
-            callbacks.onProgress?.({
+            activeCallbacks.onProgress?.({
               ratio: Math.min(Math.max(progress, 0), 1),
               speed: speed ? Math.round(speed * 10) / 10 : null,
               eta: eta ? Math.round(eta) : null,
@@ -448,7 +451,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
           const totalBytes = assetUrls.reduce((sum, assetUrl) => sum + (assetSizes.get(assetUrl) ?? 0), 0);
           let loadedBytes = 0;
           const reportLoadProgress = (): void => {
-            callbacks.onLoadProgress?.({
+            activeCallbacks.onLoadProgress?.({
               loadedBytes,
               totalBytes,
               ratio: totalBytes > 0 ? Math.min(loadedBytes / totalBytes, 1) : 0,
@@ -496,7 +499,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
           try { await candidate.createDir("/output"); } catch { /* may already exist */ }
 
           ffmpeg = candidate;
-          callbacks.onLoadProgress?.({ loadedBytes: totalBytes, totalBytes, ratio: 1 });
+          activeCallbacks.onLoadProgress?.({ loadedBytes: totalBytes, totalBytes, ratio: 1 });
           log(`engine ready (${tier}, ${provider.name})`);
           setState("ready");
           return;
@@ -517,7 +520,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       const raw = err instanceof Error ? err.message : String(err);
       log(`engine load failed: ${raw}`);
       setState("error");
-      callbacks.onError?.({
+      activeCallbacks.onError?.({
         message: "Failed to load the processing engine. Check your internet connection and try again.",
         raw,
         code: "load_failed",
@@ -530,7 +533,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
 
     if (state === "running" || probing) {
       const err = new Error("already running");
-      callbacks.onError?.({
+      activeCallbacks.onError?.({
         message: translateError("already running"),
         raw: err.message,
         code: "exec_failed",
@@ -556,7 +559,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       if (ret !== 0) {
         const raw = lastLogLines.slice(-10).join("\n");
         setState("ready");
-        callbacks.onError?.({
+        activeCallbacks.onError?.({
           message: translateError(raw),
           raw,
           code: "exec_failed",
@@ -573,7 +576,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       if (raw.includes("abort") || raw.includes("terminated") || cancelling) {
         // State will be set by cancel() after terminate completes
         if (!cancelling) setState("ready");
-        callbacks.onError?.({
+        activeCallbacks.onError?.({
           message: "Operation cancelled.",
           raw,
           code: "cancelled",
@@ -583,13 +586,17 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
 
       log(`exec error: ${raw}`);
       setState("error");
-      callbacks.onError?.({
+      activeCallbacks.onError?.({
         message: translateError(raw),
         raw,
         code: raw.includes("memory") || raw.includes("OOM") ? "oom" : "exec_failed",
       });
       return -1;
     }
+  }
+
+  function setCallbacks(nextCallbacks: EngineCallbacks): void {
+    activeCallbacks = nextCallbacks;
   }
 
   async function writeFile(path: string, data: Uint8Array): Promise<void> {
@@ -856,6 +863,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     probeFile,
     createOutputUrl,
     getLastLogs,
+    setCallbacks,
     destroy,
   };
 }

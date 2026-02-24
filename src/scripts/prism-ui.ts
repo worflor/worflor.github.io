@@ -245,6 +245,11 @@ type PrismState = "idle" | "files_loaded" | "configured" | "processing" | "compl
 const ACTION_BAR_FADE_MS = 350;
 const TOAST_VISIBLE_MS = 2500;
 const TOAST_EXIT_MS = 300;
+const PRISM_WARM_ENGINE_KEY = "__prismWarmEngine";
+
+type PrismWarmWindow = Window & {
+  [PRISM_WARM_ENGINE_KEY]?: PrismEngine;
+};
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 
@@ -288,6 +293,87 @@ export function initPrism(opts: PrismUIOptions): () => void {
   };
 
   let activeModuleId: ModuleId = "workbench";
+
+  function setEngineStatusClass(state: EngineState): void {
+    opts.engineStatus.classList.remove(
+      "prism-status--idle",
+      "prism-status--loading",
+      "prism-status--running",
+      "prism-status--ready",
+      "prism-status--error",
+    );
+
+    if (state === "ready") {
+      opts.engineStatus.classList.add("prism-status--ready");
+      return;
+    }
+    if (state === "loading") {
+      opts.engineStatus.classList.add("prism-status--loading");
+      return;
+    }
+    if (state === "running") {
+      opts.engineStatus.classList.add("prism-status--running");
+      return;
+    }
+    if (state === "error") {
+      opts.engineStatus.classList.add("prism-status--error");
+      return;
+    }
+    opts.engineStatus.classList.add("prism-status--idle");
+  }
+
+  function createEngineCallbacks(): EngineCallbacks {
+    return {
+      onStateChange: (s: EngineState) => {
+        if (destroyed) return;
+        opts.engineStatus.textContent = s === "ready" ? "engine ready" : s === "loading" ? "loading engine..." : s === "running" ? "processing..." : s;
+        setEngineStatusClass(s);
+        if (s === "loading") {
+          opts.btnRun.style.setProperty("--prism-load-ratio", "0");
+        } else {
+          opts.btnRun.style.removeProperty("--prism-load-ratio");
+        }
+        updateUI();
+      },
+      onLoadProgress: (p: LoadProgressEvent) => {
+        if (destroyed) return;
+        opts.btnRun.style.setProperty("--prism-load-ratio", String(Math.min(Math.max(p.ratio, 0), 1)));
+      },
+      onProgress: (p: ProgressEvent) => {
+        if (destroyed) return;
+        if (p.ratio === -1) {
+          // Indeterminate: unknown duration (images, etc.)
+          opts.progressFill.classList.add("prism-progress-fill--indeterminate");
+          opts.progressFill.style.width = "";
+          opts.progressText.textContent = "Processing…";
+          return;
+        }
+        opts.progressFill.classList.remove("prism-progress-fill--indeterminate");
+        const pct = Math.round(p.ratio * 100);
+        opts.progressFill.style.width = `${pct}%`;
+        let text = `${pct}%`;
+        if (p.speed !== null) text += ` · ${p.speed}x`;
+        if (p.eta !== null) text += ` · ~${p.eta}s left`;
+        opts.progressText.textContent = text;
+      },
+      onLog: (msg: string) => {
+        if (destroyed) return;
+        opts.terminalLog.textContent += msg + "\n";
+        opts.terminalLog.scrollTop = opts.terminalLog.scrollHeight;
+      },
+      onError: (err: EngineError) => {
+        if (destroyed) return;
+        if (err.code === "cancelled") {
+          showToast("Cancelled.");
+          setState("files_loaded");
+          return;
+        }
+        showToast(err.message);
+        if (!terminalOpen) toggleTerminal();
+        setState("error");
+      },
+    };
+  }
 
   async function collectDraftSnapshotForHandoff(): Promise<PrismDraftSnapshot | null> {
     const currentFile = getCurrentFile();
@@ -686,6 +772,12 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.previewAudio.pause();
     opts.previewAudio.removeAttribute("src");
     opts.previewImg.removeAttribute("src");
+    opts.previewImg.removeAttribute("role");
+    opts.previewImg.removeAttribute("tabindex");
+    opts.previewImg.removeAttribute("title");
+    opts.previewImg.style.cursor = "default";
+    opts.previewImg.onclick = null;
+    opts.previewImg.onkeydown = null;
     opts.previewText.textContent = "";
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
@@ -758,57 +850,15 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   function ensureEngine(): PrismEngine {
     if (!engine) {
-      engine = createEngine({
-        onStateChange: (s: EngineState) => {
-          if (destroyed) return;
-          opts.engineStatus.textContent = s === "ready" ? "engine ready" : s === "loading" ? "loading engine..." : s === "running" ? "processing..." : s;
-          if (s === "ready") opts.engineStatus.classList.add("prism-status--ready");
-          else opts.engineStatus.classList.remove("prism-status--ready");
-          if (s === "loading") {
-            opts.btnRun.style.setProperty("--prism-load-ratio", "0");
-          } else {
-            opts.btnRun.style.removeProperty("--prism-load-ratio");
-          }
-          updateUI();
-        },
-        onLoadProgress: (p: LoadProgressEvent) => {
-          if (destroyed) return;
-          opts.btnRun.style.setProperty("--prism-load-ratio", String(Math.min(Math.max(p.ratio, 0), 1)));
-        },
-        onProgress: (p: ProgressEvent) => {
-          if (destroyed) return;
-          if (p.ratio === -1) {
-            // Indeterminate: unknown duration (images, etc.)
-            opts.progressFill.classList.add("prism-progress-fill--indeterminate");
-            opts.progressFill.style.width = "";
-            opts.progressText.textContent = "Processing\u2026";
-            return;
-          }
-          opts.progressFill.classList.remove("prism-progress-fill--indeterminate");
-          const pct = Math.round(p.ratio * 100);
-          opts.progressFill.style.width = `${pct}%`;
-          let text = `${pct}%`;
-          if (p.speed !== null) text += ` \u00b7 ${p.speed}x`;
-          if (p.eta !== null) text += ` \u00b7 ~${p.eta}s left`;
-          opts.progressText.textContent = text;
-        },
-        onLog: (msg: string) => {
-          if (destroyed) return;
-          opts.terminalLog.textContent += msg + "\n";
-          opts.terminalLog.scrollTop = opts.terminalLog.scrollHeight;
-        },
-        onError: (err: EngineError) => {
-          if (destroyed) return;
-          if (err.code === "cancelled") {
-            showToast("Cancelled.");
-            setState("files_loaded");
-            return;
-          }
-          showToast(err.message);
-          if (!terminalOpen) toggleTerminal();
-          setState("error");
-        },
-      });
+      const prismWindow = window as PrismWarmWindow;
+      const warmEngine = prismWindow[PRISM_WARM_ENGINE_KEY] ?? null;
+      if (warmEngine) {
+        warmEngine.setCallbacks(createEngineCallbacks());
+        engine = warmEngine;
+      } else {
+        engine = createEngine(createEngineCallbacks());
+        prismWindow[PRISM_WARM_ENGINE_KEY] = engine;
+      }
     }
     return engine;
   }
@@ -1079,6 +1129,18 @@ export function initPrism(opts: PrismUIOptions): () => void {
   function renderOutputSummary(data: Uint8Array, name: string): void {
     opts.outputSummary.innerHTML = "";
     const row = el("div", "prism-output-info");
+    row.classList.add("prism-output-info--download");
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
+    row.setAttribute("title", "Download output");
+    row.setAttribute("aria-label", `Download ${name}`);
+    row.addEventListener("click", () => { downloadOutput(); });
+    row.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        downloadOutput();
+      }
+    });
 
     row.appendChild(el("span", "prism-output-name", name));
     row.appendChild(el("span", "prism-output-size", formatSize(data.byteLength)));
@@ -1100,6 +1162,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
         row.appendChild(ratioEl);
       }
     }
+
+    row.appendChild(el("span", "prism-output-hint", "Tap result to save"));
 
     opts.outputSummary.appendChild(row);
     show(opts.outputSummary);
@@ -1125,6 +1189,17 @@ export function initPrism(opts: PrismUIOptions): () => void {
       show(opts.previewAudio);
     } else if (mime.startsWith("image/")) {
       opts.previewImg.src = previewUrl;
+      opts.previewImg.style.cursor = "pointer";
+      opts.previewImg.setAttribute("role", "button");
+      opts.previewImg.setAttribute("tabindex", "0");
+      opts.previewImg.setAttribute("title", "Tap to download");
+      opts.previewImg.onclick = () => { downloadOutput(); };
+      opts.previewImg.onkeydown = (e: KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          downloadOutput();
+        }
+      };
       show(opts.previewImg);
     } else if (mime.startsWith("text/") || ext === "srt" || ext === "ass" || ext === "ssa" || ext === "vtt") {
       const text = new TextDecoder().decode(data);
@@ -1433,7 +1508,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (toastTimer) clearTimeout(toastTimer);
     const toast = document.querySelector(".prism-toast");
     if (toast) toast.remove();
-    engine?.destroy();
+    engine?.setCallbacks({});
     engine = null;
     cleanups.forEach((fn) => fn());
     cleanups.length = 0;
