@@ -178,12 +178,11 @@ export const projectsPageContent: ProjectPageContent = {
   subtitle: "some endeavours.",
   projects: [
     {
-      title: "Minecraft Server Maintainer",
-      description: "<1MB, written in Java 21<br>Handles Vanilla, Plugins, Datapacks, and Mods<br>Running, restarting, updating, validating, backing up, and on top of that it's reliable.",
-      image: "/images/mc-server-maintainer.webp",
+      title: "Whisper",
+      description: "Steganography and encrypted communication, entirely in the browser.<br>Hide data in images, talk peer-to-peer, derive shared secrets.<br>No servers, no accounts, no trace.",
+      image: "/images/whisper.webp",
       year: "2026",
-      url: "https://github.com/worflor/minecraft-server-maintainer",
-      github: "worflor/minecraft-server-maintainer",
+      url: "/whisper",
     },
     {
       title: "What Do You Mean? - Mod/Tool",
@@ -191,6 +190,14 @@ export const projectsPageContent: ProjectPageContent = {
       image: "/images/wdym-cover.webp",
       year: "2026",
       url: "/blog/wdym",
+    },
+    {
+      title: "Minecraft Server Maintainer",
+      description: "<1MB, written in Java 21<br>Handles Vanilla, Plugins, Datapacks, and Mods<br>Running, restarting, updating, validating, backing up, and on top of that it's reliable.",
+      image: "/images/mc-server-maintainer.webp",
+      year: "2026",
+      url: "https://github.com/worflor/minecraft-server-maintainer",
+      github: "worflor/minecraft-server-maintainer",
     },
     /*
 

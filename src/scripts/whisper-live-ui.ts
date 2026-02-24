@@ -374,10 +374,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const rtcConfig = externalAssist ? WHISPER_LIVE_RTC_PUBLIC_STUN : WHISPER_LIVE_RTC_LOCAL_ONLY;
 
     if (externalAssist) {
-      appendLog("external assist (stun) enabled. helps with connection setup across networks.");
-      appendLog("note: it can expose network metadata and adds setup attack surface. messages remain end to end encrypted.");
+      appendLog("external assist enabled. helps connect across different networks");
+      appendLog("note: may expose network metadata during setup. messages remain end-to-end encrypted");
     } else {
-      appendLog("ICE: local-only (no STUN/TURN). If connection fails across networks, enable external assist (STUN) before creating/joining.");
+      appendLog("local-only mode. if connecting across networks fails, enable external assist first");
     }
 
     return new WhisperLiveSession({
@@ -473,7 +473,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         } else {
           addChatMessage({
             type: "system", direction: "system",
-            text: "session established \u2014 messages are end-to-end encrypted",
+            text: "session established, messages are end-to-end encrypted",
             timestamp: Date.now(),
           });
         }
@@ -485,7 +485,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (secret) {
           opts.silentSecret.textContent = secret;
         }
-        updateStatus("shared secret derived \u2014 use as Whisper password");
+        updateStatus("shared secret derived. use as Whisper password");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -494,7 +494,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "recovering":
         showPhase(opts.chatSection);
-        updateStatus("connection interrupted \u2014 recovering...");
+        updateStatus("connection interrupted, recovering...");
         setLogActive(true);
         opts.chatSendBtn.disabled = true;
         opts.chatFileBtn.disabled = true;

@@ -29,12 +29,12 @@ const htmlDescription = parseMarkdown(description);
     />
   </div>
   <div class="flex flex-col justify-start flex-1 min-w-[14rem]">
-    <div class="flex items-center gap-1 mb-2">
-      <p class="font-medium">{title}</p>
-      <span class="opacity-60 tabular-nums">· {year}</span>
+    <div class="flex items-baseline gap-1 mb-2 flex-wrap">
+      <p class="font-medium min-w-0">{title}</p>
+      <span class="opacity-60 tabular-nums shrink-0 whitespace-nowrap">· {year}</span>
       {github && (
         <span
-          class="github-stars opacity-60 tabular-nums items-center gap-0.5 hidden"
+          class="github-stars opacity-60 tabular-nums shrink-0 whitespace-nowrap items-center gap-0.5 hidden"
           data-repo={github}
         >
           · <svg class="w-3.5 h-3.5 inline" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> <span class="star-count"></span>

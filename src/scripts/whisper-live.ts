@@ -716,7 +716,7 @@ export class WhisperLiveSession {
     this.sharedPhrase = sharedPhrase ?? "";
     this.isOfferer = true;
     this.setState("offering");
-    this.log("creating WebRTC offer...");
+    this.log("creating offer...");
 
     this.pc = new RTCPeerConnection(this.rtcConfig);
 
@@ -733,12 +733,12 @@ export class WhisperLiveSession {
     await this.pc.setLocalDescription(offer);
 
     // Wait for ICE gathering
-    this.log("gathering ICE candidates...");
+    this.log("gathering network candidates...");
     await this.waitForICE();
 
     const code = await sdpToCode(this.pc.localDescription!.sdp, "offer", this.sharedPhrase || undefined);
 
-    this.log(`offer code ready (${code.length} chars${this.sharedPhrase ? ", sealed" : ""})`);
+    this.log(`offer code ready${this.sharedPhrase ? " (sealed)" : ""}`);
     this.setState("waiting-for-answer");
 
     return code;
@@ -746,7 +746,7 @@ export class WhisperLiveSession {
 
   /** Peer A: apply the answer code from Peer B. */
   async applyAnswer(answerCode: string): Promise<void> {
-    if (!this.pc) throw new Error("No connection — create offer first");
+    if (!this.pc) throw new Error("No connection, create offer first");
 
     this.log("applying answer code...");
     const sdp = await codeToSdp(answerCode, "answer", this.sharedPhrase || undefined);
@@ -785,12 +785,12 @@ export class WhisperLiveSession {
     await this.pc.setLocalDescription(answer);
 
     // Wait for ICE
-    this.log("gathering ICE candidates...");
+    this.log("gathering network candidates...");
     await this.waitForICE();
 
     const answerCode = await sdpToCode(this.pc.localDescription!.sdp, "answer", this.sharedPhrase || undefined);
 
-    this.log(`answer code ready (${answerCode.length} chars${this.sharedPhrase ? ", sealed" : ""})`);
+    this.log(`answer code ready${this.sharedPhrase ? " (sealed)" : ""}`);
     this.setState("connecting");
     this.log("connecting peer-to-peer...");
 
@@ -817,7 +817,7 @@ export class WhisperLiveSession {
       };
 
       const timer = setTimeout(() => {
-        this.log("ICE gathering timed out, proceeding with available candidates");
+        this.log("candidate gathering timed out, proceeding with what we have");
         done();
       }, ICE_GATHER_TIMEOUT);
 
@@ -837,36 +837,36 @@ export class WhisperLiveSession {
         if (this._state === "live" || this._state === "silent") {
           this.stateBeforeRecovery = this._state;
           this.setState("recovering");
-          this.log("ICE disconnected — attempting recovery...");
+          this.log("connection interrupted, attempting recovery...");
           this.recoveryTimer = setTimeout(() => {
             this.recoveryTimer = null;
             if (this._state === "recovering") {
-              this.log("recovery timeout — peer unreachable");
+              this.log("recovery timeout, peer unreachable");
               this.setState("disconnected");
               this.cleanupConnection();
             }
           }, HEARTBEAT_TIMEOUT);
         } else if (this._state !== "recovering") {
           // Pre-live states: no recovery, just log
-          this.log("ICE disconnected (pre-live)");
+          this.log("connection interrupted during setup");
         }
       } else if (s === "failed") {
         // During active sessions, attempt one ICE restart before giving up
         if ((this._state === "live" || this._state === "silent" || this._state === "recovering") && !this.iceRestartAttempted) {
           this.iceRestartAttempted = true;
-          this.log("ICE failed — attempting ICE restart...");
+          this.log("connection failed, attempting restart...");
           if (this._state !== "recovering") {
             this.stateBeforeRecovery = this._state as "live" | "silent";
             this.setState("recovering");
           }
           this.attemptIceRestart(pc);
         } else {
-          this.log("ICE connection failed — could not reach peer");
-          this.setState("error", "Connection failed — peer may be unreachable");
+          this.log("connection failed, could not reach peer");
+          this.setState("error", "Connection failed, peer may be unreachable");
           this.cleanupConnection();
         }
       } else if (s === "connected" || s === "completed") {
-        this.log(`ICE: ${s}`);
+        this.log(s === "completed" ? "connection established" : "connected to peer");
         this.iceRestartAttempted = false;
         this.dropExternalAssist(pc);
         // Recover from transient disruption
@@ -889,7 +889,7 @@ export class WhisperLiveSession {
       if (s === "failed") {
         // If we're already recovering (ICE restart in flight), let the ICE handler manage it
         if (this._state === "recovering") return;
-        this.log("peer connection failed");
+        this.log("connection to peer failed");
         this.setState("error", "Connection failed");
         this.cleanupConnection();
       }
@@ -907,16 +907,16 @@ export class WhisperLiveSession {
       // Offerer: create new offer with iceRestart flag
       pc.createOffer({ iceRestart: true })
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() => this.log("ICE restart offer set"))
+        .then(() => this.log("restart offer sent"))
         .catch((err) => {
-          this.log(`ICE restart failed: ${err instanceof Error ? err.message : "unknown"}`);
+          this.log(`restart failed: ${err instanceof Error ? err.message : "unknown"}`);
           this.setState("disconnected");
           this.cleanupConnection();
         });
     } else {
       // Answerer: restartIce() signals the browser to expect a new offer
       pc.restartIce();
-      this.log("ICE restart requested (answerer)");
+      this.log("restart requested, waiting for path to recover");
     }
   }
 
@@ -927,7 +927,7 @@ export class WhisperLiveSession {
     dc.bufferedAmountLowThreshold = BUFFERED_AMOUNT_LOW;
 
     dc.onopen = () => {
-      this.log("data channel open — starting key exchange");
+      this.log("secure channel open, starting key exchange");
       // Establishment is complete at this point (DTLS/SCTP ready). If external assist was
       // enabled, drop it now so the rest of the session stays local-only.
       if (this.pc) this.dropExternalAssist(this.pc);
@@ -936,7 +936,7 @@ export class WhisperLiveSession {
       this.handshakeTimer = setTimeout(() => {
         this.handshakeTimer = null;
         if (this._state === "handshaking" || this._state === "verifying") {
-          this.log("handshake timeout — key exchange took too long");
+          this.log("handshake timeout, key exchange took too long");
           this.setState("error", "Handshake timed out");
           this.cleanupConnection();
         }
@@ -956,7 +956,7 @@ export class WhisperLiveSession {
 
     dc.onerror = (event) => {
       const msg = (event as ErrorEvent).message ?? "unknown";
-      this.log(`data channel error: ${msg}`);
+      this.log(`channel error: ${msg}`);
       // During setup phases, treat as fatal; during live, let heartbeat handle it
       if (this._state === "handshaking" || this._state === "connecting") {
         this.setState("error", `Connection error: ${msg}`);
@@ -995,11 +995,11 @@ export class WhisperLiveSession {
       );
 
       const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
-      this.log(`sending public key (${pubKeyRaw.length}B)`);
+      this.log("sending public key");
 
       // Send our public key
       if (!this.dc || this.dc.readyState !== "open") {
-        this.log("key exchange aborted — data channel not available");
+        this.log("key exchange aborted, channel not available");
         return;
       }
       const msg = new Uint8Array(1 + pubKeyRaw.length);
@@ -1017,7 +1017,7 @@ export class WhisperLiveSession {
 
   private async handleKeyExchangeMessage(peerPubKeyRaw: Uint8Array): Promise<void> {
     if (this._state !== "handshaking") {
-      this.log("ignoring key exchange message — not in handshaking state");
+      this.log("ignoring key exchange message, not in handshaking state");
       return;
     }
     try {
@@ -1093,7 +1093,7 @@ export class WhisperLiveSession {
 
   private async handleRatchetInit(peerRatchetPubKey: Uint8Array): Promise<void> {
     if (this._state !== "handshaking" && this._state !== "verifying") {
-      this.log("ignoring ratchet init — not in handshaking/verifying state");
+      this.log("ignoring ratchet init, not in expected state");
       return;
     }
     if (!this.sharedSecret) return;
@@ -1109,14 +1109,14 @@ export class WhisperLiveSession {
         rMsg[0] = 0x11;
         rMsg.set(this.ratchetState.dhSelf.publicKey, 1);
         this.dc.send(rMsg);
-        this.log("double ratchet initialized (receiver) — sent ratchet key back");
+        this.log("encryption ratchet initialized, keys exchanged");
       }
     } else {
       // Offerer receives answerer's ratchet public key.
       // Perform the first DH ratchet step so the offerer has send and receive chains.
       if (this.ratchetState) {
         await dhRatchetStep(this.ratchetState, peerRatchetPubKey);
-        this.log("double ratchet initialized (offerer) — received peer ratchet key");
+        this.log("encryption ratchet initialized, received peer key");
       }
     }
   }
@@ -1145,8 +1145,8 @@ export class WhisperLiveSession {
         this.log("peer confirmed fingerprint");
         break;
       case 0x31: // Fingerprint rejected
-        this.log("peer rejected fingerprint — aborting");
-        this.setState("error", "Peer rejected fingerprint — possible interception");
+        this.log("peer rejected fingerprint, aborting");
+        this.setState("error", "Peer rejected fingerprint, possible interception");
         this.cleanupConnection();
         break;
       case 0x40: // Ping — peer is alive, reply with pong
@@ -1172,7 +1172,7 @@ export class WhisperLiveSession {
     }
 
     if (complete.length < HEADER_SIZE + 16) { // header + minimum AES-GCM tag
-      this.log("received message too short — dropped");
+      this.log("received message too short, dropped");
       return;
     }
 
@@ -1218,8 +1218,8 @@ export class WhisperLiveSession {
         // If a DH ratchet step was performed and decrypt still fails, the ratchet
         // is structurally broken (mismatched keys). Deterministic — disconnect.
         if (didDHRatchet) {
-          this.log("decrypt failed after DH ratchet — ratchet structurally broken, disconnecting");
-          this.setState("error", "Encryption desync — session cannot recover");
+          this.log("decryption failed, encryption state unrecoverable. disconnecting");
+          this.setState("error", "Encryption desync, session cannot recover");
           this.cleanupConnection();
           return;
         }
@@ -1343,9 +1343,9 @@ export class WhisperLiveSession {
         timestamp: Date.now(),
       });
 
-      this.log(`sent dressed file (${fileName} embedded in carrier)`);
+      this.log(`sent ${fileName} (embedded in carrier)`);
     } catch (err) {
-      this.log(`dressed mode failed, falling back to naked: ${err instanceof Error ? err.message : "unknown"}`);
+      this.log(`steganography failed, sending directly: ${err instanceof Error ? err.message : "unknown"}`);
       const plaintext = encodeFilePlaintext(fileName, fileType, fileBytes);
       await this.encryptAndSend(plaintext, 0x01);
       this.onMessage({
@@ -1377,7 +1377,7 @@ export class WhisperLiveSession {
 
     // Ensure we have a sending chain
     if (!this.ratchetState.chainKeySend) {
-      throw new Error("No sending chain — ratchet not fully initialized");
+      throw new Error("No sending chain, ratchet not fully initialized");
     }
 
     // Derive message key from sending chain
@@ -1431,7 +1431,7 @@ export class WhisperLiveSession {
 
     // Notify peer
     this.dc?.send(new Uint8Array([0x30]));
-    this.log("fingerprint confirmed — session is live");
+    this.log("fingerprint confirmed, session is live");
     this.startHeartbeat();
 
     if (this.transportMode === "silent") {
@@ -1445,8 +1445,8 @@ export class WhisperLiveSession {
     if (this._state !== "verifying") return;
 
     this.dc?.send(new Uint8Array([0x31]));
-    this.log("fingerprint rejected — aborting connection");
-    this.setState("error", "Fingerprint mismatch — possible interception");
+    this.log("fingerprint rejected, aborting connection");
+    this.setState("error", "Fingerprint mismatch, possible interception");
     this.cleanupConnection();
   }
 
@@ -1454,7 +1454,7 @@ export class WhisperLiveSession {
 
   setTransport(mode: TransportMode): void {
     this.transportMode = mode;
-    this.log(`transport mode: ${mode}`);
+    this.log(`switched to ${mode} mode`);
 
     if (mode === "silent" && this._state === "live") {
       this.setState("silent");
@@ -1472,7 +1472,7 @@ export class WhisperLiveSession {
   /* ── Teardown ───────────────────────────────────────────── */
 
   disconnect(): void {
-    this.log("disconnecting — wiping session keys");
+    this.log("disconnecting, clearing session");
     this.setState("disconnected");
     this.cleanupConnection();
   }
@@ -1488,7 +1488,7 @@ export class WhisperLiveSession {
     this.heartbeatCheck = setInterval(() => {
       if (this._state === "recovering" || this._destroyed) return;
       if (Date.now() - this.lastPongReceived > HEARTBEAT_TIMEOUT) {
-        this.log("heartbeat timeout — peer unresponsive");
+        this.log("heartbeat timeout, peer unresponsive");
         this.setState("disconnected");
         this.cleanupConnection();
       }
