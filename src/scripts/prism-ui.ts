@@ -1132,7 +1132,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
     row.classList.add("prism-output-info--download");
     row.setAttribute("role", "button");
     row.setAttribute("tabindex", "0");
-    row.setAttribute("title", "Download output");
     row.setAttribute("aria-label", `Download ${name}`);
     row.addEventListener("click", () => { downloadOutput(); });
     row.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -1162,8 +1161,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
         row.appendChild(ratioEl);
       }
     }
-
-    row.appendChild(el("span", "prism-output-hint", "Tap result to save"));
 
     opts.outputSummary.appendChild(row);
     show(opts.outputSummary);
