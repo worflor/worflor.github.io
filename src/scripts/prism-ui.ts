@@ -11,6 +11,7 @@ import {
   type PrismEngine,
   type FileInfo,
   type EngineState,
+  type EngineCallbacks,
   type ProgressEvent,
   type LoadProgressEvent,
   type EngineError,
