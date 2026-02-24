@@ -448,6 +448,18 @@ function readAscii(
   return str.trim();
 }
 
+function matchesAsciiSignature(
+  view: DataView,
+  offset: number,
+  signature: string,
+): boolean {
+  if (offset < 0 || offset + signature.length > view.byteLength) return false;
+  for (let i = 0; i < signature.length; i++) {
+    if (view.getUint8(offset + i) !== (signature.charCodeAt(i) & 0xff)) return false;
+  }
+  return true;
+}
+
 /**
  * Parse UserComment (UNDEFINED type, starts with 8-byte charset prefix).
  * Common prefixes: "ASCII\0\0\0", "UNICODE\0", "\0\0\0\0\0\0\0\0" (undefined).
@@ -671,18 +683,18 @@ function parseExifFromBuffer(buffer: ArrayBuffer): RawExif {
       // APP1: EXIF or XMP
       if (marker === 0xffe1) {
         // EXIF?
-        if (readAscii(view, segStart, 6) === "Exif\0\0") {
+        if (matchesAsciiSignature(view, segStart, "Exif\0\0")) {
           const exifData = parseExifStructure(view, segStart + 6);
           Object.assign(result, exifData);
         }
         // XMP?
-        else if (readAscii(view, segStart, XMP_SIG.length) === XMP_SIG) {
+        else if (matchesAsciiSignature(view, segStart, XMP_SIG)) {
           result["_xmp"] = readAscii(view, segStart + XMP_SIG.length, segLen - 2 - XMP_SIG.length);
         }
       }
       // APP2: ICC_PROFILE
       else if (marker === 0xffe2) {
-        if (readAscii(view, segStart, 12) === ICC_SIG) {
+        if (matchesAsciiSignature(view, segStart, ICC_SIG)) {
           // Note: ICC segments can be split across multiple APP2 markers.
           // For now, we take the first one or just look for basic info.
           result["_icc"] = parseIcc(view, segStart + 14, segLen - 2 - 14);
@@ -1529,30 +1541,6 @@ function detectExifContainerFormat(
   return null;
 }
 
-const INITIAL_LENS_READ_BYTES = 262144;
-const EXTENDED_EXIF_READ_BYTES = 1048576;
-const DEEP_LENS_READ_BYTES = 4194304;
-
-function metadataRichness(categories: ExifCategory[]): number {
-  let score = 0;
-  for (const category of categories) {
-    if (
-      category.id === "file" ||
-      category.id === "structure" ||
-      category.id === "integrity" ||
-      category.id === "profile"
-    ) {
-      continue;
-    }
-    score += category.fields.length;
-  }
-  return score;
-}
-
-function hasMeaningfulMetadata(categories: ExifCategory[]): boolean {
-  return metadataRichness(categories) > 0;
-}
-
 export async function parseFile(file: File): Promise<LensData> {
   const meta: FileMetadata = {
     name: file.name,
@@ -1561,9 +1549,8 @@ export async function parseFile(file: File): Promise<LensData> {
     lastModified: file.lastModified,
   };
 
-  // Start with a small read for fast universal detection.
-  let readSize = Math.min(file.size, INITIAL_LENS_READ_BYTES);
-  let buffer = await file.slice(0, readSize).arrayBuffer();
+  // Parse against full local file buffer (no Lens read-size caps).
+  let buffer = await file.arrayBuffer();
   const containerFormat = detectExifContainerFormat(buffer, meta.type);
 
   // Parse EXIF only for JPEG/TIFF containers.
@@ -1575,26 +1562,7 @@ export async function parseFile(file: File): Promise<LensData> {
       // Parsing failed - fallback to universal analyzer.
     }
 
-    // Some files store metadata farther into JPEG segments; progressively deepen reads.
-    if (Object.keys(exif).length === 0 && file.size > readSize) {
-      const readCandidates = [
-        Math.min(file.size, EXTENDED_EXIF_READ_BYTES),
-        Math.min(file.size, DEEP_LENS_READ_BYTES),
-        file.size,
-      ];
-
-      for (const candidateSize of readCandidates) {
-        if (candidateSize <= readSize) continue;
-        readSize = candidateSize;
-        try {
-          buffer = await file.slice(0, readSize).arrayBuffer();
-          exif = parseExifFromBuffer(buffer);
-          if (Object.keys(exif).length > 0) break;
-        } catch {
-          // Continue attempting deeper reads.
-        }
-      }
-    }
+    // Full buffer is already loaded; no additional depth retries needed.
   }
 
   const hasExif = Object.keys(exif).length > 0;
@@ -1608,39 +1576,7 @@ export async function parseFile(file: File): Promise<LensData> {
   const { analyzeFile } = await import("./lens-formats");
   let formatResult = await analyzeFile(file, buffer);
 
-  // Capability-first fallback: if results are mostly structural/profile-only,
-  // progressively increase read depth to discover deeper metadata blocks.
-  if (!hasMeaningfulMetadata(formatResult.categories) && file.size > readSize) {
-    const readCandidates = [
-      Math.min(file.size, EXTENDED_EXIF_READ_BYTES),
-      Math.min(file.size, DEEP_LENS_READ_BYTES),
-      file.size,
-    ];
-    let bestResult = formatResult;
-    let bestScore = metadataRichness(formatResult.categories);
-
-    for (const candidateSize of readCandidates) {
-      if (candidateSize <= readSize) continue;
-      try {
-        readSize = candidateSize;
-        buffer = await file.slice(0, readSize).arrayBuffer();
-        const nextResult = await analyzeFile(file, buffer);
-        const nextScore = metadataRichness(nextResult.categories);
-        if (nextScore > bestScore) {
-          bestResult = nextResult;
-          bestScore = nextScore;
-        }
-        if (hasMeaningfulMetadata(nextResult.categories)) {
-          bestResult = nextResult;
-          break;
-        }
-      } catch {
-        // Keep best-so-far result.
-      }
-    }
-
-    formatResult = bestResult;
-  }
+  // Full-buffer parsing is already the deepest capability path.
 
   // Build FILE category (always present).
   const fileFields = buildFileCategory(meta);
