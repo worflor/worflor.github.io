@@ -14,6 +14,8 @@ import {
   fileToBytes,
   copyToClipboard,
   flashText,
+  appendToLog,
+  setLogDotActive,
 } from "./whisper-ui-helpers";
 
 /* ── Interface & IDs ───────────────────────────────────── */
@@ -241,9 +243,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   }
 
   function appendLog(line: string): void {
-    const ts = new Date().toISOString().slice(11, 19);
-    opts.logOutput.textContent += `[${ts}] ${line}\n`;
-    opts.logOutput.scrollTop = opts.logOutput.scrollHeight;
+    appendToLog(opts.logOutput, line);
   }
 
   function clearLog(): void {
@@ -251,7 +251,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   }
 
   function setLogActive(active: boolean): void {
-    opts.logDot.classList.toggle("whisper-log-active", active);
+    setLogDotActive(opts.logDot, active);
   }
 
   /* ── Download & result helpers ───────────────────────── */
@@ -331,7 +331,8 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   function canRun(): boolean {
     if (busy) return false;
-    if (activeMode === MODE_LIVE) return false; // Live mode has its own flow
+    if (activeMode === MODE_LIVE) return false;
+    if (activeMode === MODE_EMBED && isCarrierUrl()) return false;
     const pw = hasPassword();
     switch (activeMode) {
       case MODE_EMBED: return hasCarrier() && hasPayload() && pw;
@@ -343,7 +344,8 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   /* ── Sync all button states ──────────────────────────── */
 
   function syncState(): void {
-    if (activeMode === MODE_LIVE) return; // Live mode manages its own UI
+    if (activeMode === MODE_LIVE) return;
+    if (activeMode === MODE_EMBED && isCarrierUrl()) return;
 
     // Run button: label reflects mode, disabled until prerequisites met
     opts.runButton.textContent = MODE_LABELS[activeMode];
@@ -364,7 +366,12 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   function syncGuidance(): void {
     if (busy) { opts.statusLine.classList.remove("whisper-status--ready"); return; }
-    if (activeMode === MODE_LIVE) return; // Live mode manages its own status
+    if (activeMode === MODE_LIVE) return;
+    if (activeMode === MODE_EMBED && isCarrierUrl()) {
+      updateStatus("seal mode — compose below");
+      opts.statusLine.classList.remove("whisper-status--ready");
+      return;
+    }
     let ready = false;
     switch (activeMode) {
       case MODE_EMBED:
@@ -386,16 +393,26 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   /* ── Mode ────────────────────────────────────────────── */
 
+  function isCarrierUrl(): boolean {
+    return opts.page.dataset.carrier === "url";
+  }
+
   function setMode(mode: WhisperMode): void {
     activeMode = mode;
     opts.page.dataset.mode = mode;
+
+    // Clear carrier-url when leaving embed — prevents stale state
+    if (mode !== MODE_EMBED) {
+      delete opts.page.dataset.carrier;
+    }
+
     syncOpTitle();
     opts.modeButtons.forEach((btn) => {
       const active = btn.dataset.whisperMode === mode;
       btn.classList.toggle("whisper-mode-btn--active", active);
       btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
-    if (mode === MODE_LIVE) {
+    if (mode === MODE_LIVE || (mode === MODE_EMBED && isCarrierUrl())) {
       hideActionsBar();
     } else {
       opts.passwordInput.placeholder = mode === MODE_EMBED ? "password to encrypt" : "password to decrypt";
@@ -550,6 +567,21 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     setMode(mode);
   }, { signal }));
 
+  /* ── Carrier type toggle (embed: file vs url/seal) ──── */
+
+  const carrierRadios = opts.page.querySelectorAll<HTMLInputElement>('input[name="ws-carrier-type"]');
+  carrierRadios.forEach((radio) => radio.addEventListener("change", () => {
+    if (radio.value === "url") {
+      opts.page.dataset.carrier = "url";
+      hideActionsBar();
+    } else {
+      delete opts.page.dataset.carrier;
+      opts.passwordInput.placeholder = "password to encrypt";
+      if (hasCarrier()) showActionsBar();
+    }
+    refreshUI();
+  }, { signal }));
+
   /* ── Busy state ──────────────────────────────────────── */
 
   function setBusy(isBusy: boolean): void {
@@ -562,9 +594,15 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     syncState();
   }
 
+  let flashRunTimer: ReturnType<typeof setTimeout> | null = null;
+
   function flashRunAck(): void {
     opts.runButton.classList.add("action-btn--ran");
-    setTimeout(() => opts.runButton.classList.remove("action-btn--ran"), 1000);
+    if (flashRunTimer !== null) clearTimeout(flashRunTimer);
+    flashRunTimer = setTimeout(() => {
+      opts.runButton.classList.remove("action-btn--ran");
+      flashRunTimer = null;
+    }, 1000);
   }
 
   /* ── Operations ──────────────────────────────────────── */
@@ -730,6 +768,8 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   return () => {
     ac.abort();
     if (fadeTimer !== null) clearTimeout(fadeTimer);
+    if (passwordMetaTimer !== null) clearTimeout(passwordMetaTimer);
+    if (flashRunTimer !== null) clearTimeout(flashRunTimer);
     clearDownloads();
   };
 }

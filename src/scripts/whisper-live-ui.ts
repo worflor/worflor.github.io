@@ -22,6 +22,8 @@ import {
   formatSize,
   copyToClipboard,
   flashText,
+  appendToLog,
+  setLogDotActive,
 } from "./whisper-ui-helpers";
 
 /* ── Interface & IDs ──────────────────────────────────────── */
@@ -254,13 +256,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Log ──────────────────────────────────────────────── */
 
   function appendLog(line: string): void {
-    const ts = new Date().toISOString().slice(11, 19);
-    opts.logOutput.textContent += `[${ts}] ${line}\n`;
-    opts.logOutput.scrollTop = opts.logOutput.scrollHeight;
+    appendToLog(opts.logOutput, line);
   }
 
   function setLogActive(active: boolean): void {
-    opts.logDot.classList.toggle("whisper-log-active", active);
+    setLogDotActive(opts.logDot, active);
   }
 
   function updateStatus(text: string): void {

@@ -142,6 +142,54 @@ const seo = {
             <span class="whisper-panel-mode" id="whisper-status-line">drop a carrier file to begin</span>
           </div>
 
+          <!-- Carrier type toggle (embed mode only) -->
+          <div class="whisper-field whisper-field--embed ws-carrier-toggle-wrap">
+            <span class="whisper-field-label">carrier</span>
+            <div class="ws-carrier-toggle" role="radiogroup" aria-label="Carrier type">
+              <label class="ws-carrier-opt">
+                <input type="radio" name="ws-carrier-type" value="file" checked class="ws-carrier-radio" />
+                <span class="ws-carrier-label">File</span>
+              </label>
+              <label class="ws-carrier-opt">
+                <input type="radio" name="ws-carrier-type" value="url" class="ws-carrier-radio" />
+                <span class="ws-carrier-label">URL (Seal)</span>
+              </label>
+              <button id="ws-my-seal-btn" type="button" class="whisper-mini-btn ws-my-seal-btn">My Seal</button>
+            </div>
+          </div>
+
+          <!-- Seal compose fields (visibility driven by CSS) -->
+          <div class="ws-seal-fields" id="ws-seal-fields">
+            <label class="whisper-field" for="ws-recipient-seal">
+              <span class="whisper-field-label">recipient's seal</span>
+              <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="e.g. AURORA-7F3" autocomplete="off" spellcheck="false" />
+            </label>
+            <span id="ws-seal-validation" class="ws-seal-validation"></span>
+
+            <label class="whisper-field" for="ws-message">
+              <span class="whisper-field-label">your message</span>
+              <textarea id="ws-message" class="whisper-input ws-textarea" rows="6" placeholder="type your secret message..." maxlength="48000"></textarea>
+            </label>
+            <span id="ws-char-count" class="ws-char-count">0 / 48,000</span>
+
+            <label class="whisper-field" for="ws-extra-password">
+              <span class="whisper-field-label">extra password <span class="whisper-field-hint">(optional — recipient must know it too)</span></span>
+              <input id="ws-extra-password" type="password" class="whisper-input" placeholder="additional passphrase" autocomplete="off" />
+            </label>
+
+            <div class="whisper-field">
+              <span class="whisper-field-label">expires after</span>
+              <select id="ws-expiry" class="whisper-input ws-select">
+                <option value="3600000">1 hour</option>
+                <option value="86400000" selected>24 hours</option>
+                <option value="604800000">7 days</option>
+                <option value="0">never</option>
+              </select>
+            </div>
+
+            <button id="ws-seal-it" type="button" class="whisper-mini-btn wl-primary" disabled>Seal it</button>
+          </div>
+
           <!-- Hunt multi-file input -->
           <label class="whisper-field whisper-field--hunt" for="whisper-hunt-carrier-input">
             <span class="whisper-field-label">carrier files <span class="whisper-field-hint">(hunt mode)</span></span>
@@ -430,6 +478,99 @@ const seo = {
           </div>
         </div>
       </div>
+
+      <!-- Seal overlay panels (computing, my-seal, result, unseal) -->
+      <div class="ws-overlay" id="ws-overlay" style="display:none">
+        <!-- Computing fingerprint -->
+        <div class="ws-overlay-panel" id="ws-computing-phase" style="display:none">
+          <div class="whisper-panel ws-computing-panel">
+            <div class="wl-spinner" aria-hidden="true"></div>
+            <p class="ws-computing-text">computing your browser seal...</p>
+          </div>
+        </div>
+
+        <!-- My seal — display seal code -->
+        <div class="ws-overlay-panel" id="ws-my-seal-phase" style="display:none">
+          <div class="whisper-panel ws-seal-display-panel">
+            <h3 class="whisper-panel-title">Your Seal</h3>
+            <div class="ws-seal-code-wrap">
+              <span id="ws-seal-code" class="ws-seal-code"></span>
+            </div>
+            <p class="ws-seal-hint">Share this code with someone who wants to send you a sealed message. Only THIS browser can open messages sealed to this code.</p>
+            <div class="ws-seal-actions">
+              <button id="ws-seal-copy" type="button" class="whisper-mini-btn wl-primary">Copy seal</button>
+              <button id="ws-seal-back" type="button" class="whisper-mini-btn">Done</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sealed URL ready -->
+        <div class="ws-overlay-panel" id="ws-result-phase" style="display:none">
+          <div class="whisper-panel ws-result-panel">
+            <h3 class="whisper-panel-title">Message Sealed</h3>
+
+            <div class="ws-url-display-wrap">
+              <pre id="ws-sealed-url" class="wl-code-display ws-url-display"></pre>
+              <button id="ws-url-copy" type="button" class="whisper-mini-btn">Copy URL</button>
+            </div>
+
+            <div class="ws-result-checks">
+              <p class="ws-check"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> Only <strong id="ws-result-seal-target"></strong> can open this</p>
+              <p class="ws-check"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> <span id="ws-result-expiry-text">Expires in 24 hours</span></p>
+              <p class="ws-check"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> No data stored anywhere</p>
+            </div>
+
+            <p id="ws-result-url-warning" class="ws-result-url-length-warning" style="display:none"></p>
+            <p class="ws-result-warning">Once you leave this page, this URL cannot be recovered.</p>
+
+            <button id="ws-result-done" type="button" class="whisper-mini-btn">Done</button>
+          </div>
+        </div>
+
+        <!-- Unsealing (auto-triggered by URL fragment) -->
+        <div class="ws-overlay-panel" id="ws-unseal-phase" style="display:none">
+          <div class="whisper-panel ws-unseal-panel">
+            <div id="ws-unseal-progress" class="ws-unseal-progress">
+              <div class="wl-spinner" aria-hidden="true"></div>
+              <p class="ws-computing-text">checking your seal...</p>
+            </div>
+
+            <div id="ws-unseal-success" style="display:none">
+              <h3 class="whisper-panel-title">Sealed Message</h3>
+              <div class="ws-message-display">
+                <pre id="ws-decrypted-message" class="ws-decrypted-text"></pre>
+              </div>
+              <p class="ws-unseal-meta"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> Decrypted with your seal. This message will not be stored.</p>
+              <div class="ws-unseal-actions">
+                <button id="ws-msg-copy" type="button" class="whisper-mini-btn wl-primary">Copy content</button>
+                <button id="ws-unseal-done" type="button" class="whisper-mini-btn">Close</button>
+              </div>
+            </div>
+
+            <div id="ws-unseal-fail" style="display:none">
+              <h3 class="whisper-panel-title">Cannot Open</h3>
+              <p class="ws-fail-text">This message was sealed for a different browser.</p>
+              <p class="ws-fail-detail">Only the intended recipient can decrypt this message. If you ARE the recipient, make sure you're using the same browser you generated your seal with.</p>
+              <button id="ws-fail-back" type="button" class="whisper-mini-btn">Back</button>
+            </div>
+
+            <div id="ws-unseal-expired" style="display:none">
+              <h3 class="whisper-panel-title">Expired</h3>
+              <p class="ws-fail-text">This sealed message has expired and can no longer be opened.</p>
+              <button id="ws-expired-back" type="button" class="whisper-mini-btn">Back</button>
+            </div>
+
+            <div id="ws-unseal-password" style="display:none">
+              <h3 class="whisper-panel-title">Password Required</h3>
+              <p class="ws-fail-detail">This sealed message requires an additional password.</p>
+              <label class="whisper-field" for="ws-unseal-pw-input">
+                <input id="ws-unseal-pw-input" type="password" class="whisper-input" placeholder="enter password" autocomplete="off" />
+              </label>
+              <button id="ws-unseal-pw-submit" type="button" class="whisper-mini-btn wl-primary">Decrypt</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ── Progress Bar ─────────────────────────────────────── -->
@@ -535,6 +676,7 @@ const seo = {
   <script>
     import { initWhisper, resolveWhisperUIOptions } from "../scripts/whisper-ui";
     import { initWhisperLive, resolveWhisperLiveUIOptions } from "../scripts/whisper-live-ui";
+    import { initWhisperSeal, resolveWhisperSealUIOptions } from "../scripts/whisper-seal-ui";
 
     const WHISPER_LIFECYCLE_KEY = "__whisperLifecycle";
     type WhisperLifecycle = {
@@ -545,6 +687,7 @@ const seo = {
 
     let cleanupWhisper: (() => void) | null = null;
     let cleanupLive: (() => void) | null = null;
+    let cleanupSeal: (() => void) | null = null;
     const whisperWindow = window as unknown as Record<string, WhisperLifecycle | undefined>;
 
     function boot() {
@@ -553,6 +696,8 @@ const seo = {
       if (whisperOptions) cleanupWhisper = initWhisper(whisperOptions);
       const liveOptions = resolveWhisperLiveUIOptions(document);
       if (liveOptions) cleanupLive = initWhisperLive(liveOptions);
+      const sealOptions = resolveWhisperSealUIOptions(document);
+      if (sealOptions) cleanupSeal = initWhisperSeal(sealOptions);
     }
 
     function teardown() {
@@ -560,6 +705,8 @@ const seo = {
       cleanupWhisper = null;
       cleanupLive?.();
       cleanupLive = null;
+      cleanupSeal?.();
+      cleanupSeal = null;
     }
 
     function detachLifecycle() {
@@ -1129,7 +1276,7 @@ const seo = {
     display: none;
   }
 
-  /* Solo vs live: the operation panel section holds both, only one shows */
+  /* Solo vs live: operation panels — only the active mode shows */
   .whisper-page[data-mode="embed"] .whisper-op-live,
   .whisper-page[data-mode="extract"] .whisper-op-live,
   .whisper-page[data-mode="hunt"] .whisper-op-live {
@@ -1149,6 +1296,28 @@ const seo = {
   .whisper-page[data-mode="live"] #whisper-actions {
     display: none;
   }
+
+  /* Carrier toggle: only visible in embed mode */
+  .whisper-page:not([data-mode="embed"]) .ws-carrier-toggle-wrap { display: none; }
+
+  /* When carrier=url: hide file-specific embed fields and upload zone */
+  .whisper-page[data-mode="embed"][data-carrier="url"] .whisper-field--embed:not(.ws-carrier-toggle-wrap) { display: none; }
+  .whisper-page[data-mode="embed"][data-carrier="url"] #whisper-upload-zone { display: none; }
+
+  /* When carrier=file (default): hide seal fields */
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-seal-fields { display: none; }
+
+  /* Seal fields hidden in non-embed modes */
+  .whisper-page:not([data-mode="embed"]) .ws-seal-fields { display: none; }
+
+  /* My Seal button only when carrier=url */
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-btn { display: none; }
+
+  /* Overlay hides solo panel when active (JS-managed via style) */
+  .ws-overlay { display: grid; gap: var(--space-sm); }
+
+  /* Hide overlay in live mode */
+  .whisper-page[data-mode="live"] .ws-overlay { display: none; }
 
   /* ── Progress ──────────────────────────────────────────── */
   .whisper-progress {
@@ -2100,5 +2269,212 @@ const seo = {
       background: rgb(var(--chromatic-cyan) / 0.08);
       border-color: rgb(var(--chromatic-cyan) / 0.3);
     }
+  }
+
+  /* ═══════════════════════════════════════════════════════
+     Whisper Seal — Inline & Overlay Styles
+     ═══════════════════════════════════════════════════════ */
+
+  /* Carrier toggle (pill control matching Live transport toggle) */
+  .ws-carrier-toggle {
+    display: inline-flex;
+    gap: calc(var(--space-xs) * 0.8);
+    align-items: center;
+  }
+
+  .ws-carrier-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.5);
+    cursor: pointer;
+  }
+
+  .ws-carrier-radio {
+    width: 0.85rem;
+    height: 0.85rem;
+    accent-color: rgb(var(--chromatic-cyan));
+  }
+
+  .ws-carrier-label {
+    white-space: nowrap;
+  }
+
+  /* Seal fields container */
+  .ws-seal-fields {
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  /* Overlay panel wrapper */
+  .ws-overlay-panel {
+    display: none;
+  }
+
+  /* Seal code display — big, monospace, prominent */
+  .ws-seal-code {
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    color: rgb(var(--chromatic-cyan));
+    display: block;
+    text-align: center;
+    padding: var(--space-md) 0;
+  }
+
+  .ws-seal-code-wrap {
+    background: rgb(var(--chromatic-cyan) / 0.06);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    margin: var(--space-sm) 0;
+  }
+
+  .ws-seal-hint {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.44);
+    line-height: 1.5;
+  }
+
+  .ws-seal-actions,
+  .ws-compose-actions,
+  .ws-unseal-actions {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+  }
+
+  /* Computing panel (centered spinner + text) */
+  .ws-computing-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-lg);
+  }
+
+  .ws-computing-text {
+    margin: 0;
+    color: var(--whisper-muted);
+    font-size: var(--text-sm);
+    letter-spacing: 0.02em;
+  }
+
+  /* Textarea for message composition */
+  .ws-textarea {
+    resize: vertical;
+    min-height: 8rem;
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--text-sm);
+  }
+
+  /* Character counter */
+  .ws-char-count {
+    font-size: calc(var(--text-sm) * 0.85);
+    color: rgb(var(--color-text-rgb) / 0.35);
+    text-align: right;
+    display: block;
+    margin-top: calc(var(--space-xs) * -0.5);
+  }
+
+  /* Seal validation indicator */
+  .ws-seal-validation {
+    font-size: calc(var(--text-sm) * 0.88);
+    margin-top: calc(var(--space-xs) * -0.5);
+    min-height: 1.25em;
+  }
+  .ws-seal-validation[data-valid="true"] { color: rgb(var(--tool-status-success)); }
+  .ws-seal-validation[data-valid="false"] { color: rgb(var(--chromatic-red)); }
+
+  /* Select dropdown */
+  .ws-select {
+    appearance: auto;
+    cursor: pointer;
+  }
+
+  /* URL display (truncated with scroll) */
+  .ws-url-display {
+    word-break: break-all;
+    max-height: 6rem;
+    overflow-y: auto;
+  }
+
+  .ws-url-display-wrap {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+    align-items: stretch;
+  }
+
+  /* Result checks list */
+  .ws-result-checks { margin: var(--space-sm) 0; }
+  .ws-check {
+    font-size: var(--text-sm);
+    margin: var(--space-xs) 0;
+    color: rgb(var(--color-text-rgb) / 0.55);
+  }
+  .ws-check-icon { color: rgb(var(--tool-status-success)); margin-right: 0.3em; }
+
+  /* Warning text */
+  .ws-result-warning {
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--chromatic-amber, 234 179 8));
+    font-style: italic;
+    margin-top: var(--space-sm);
+  }
+
+  .ws-result-url-length-warning {
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--chromatic-amber, 234 179 8));
+    background: rgb(var(--chromatic-amber, 234 179 8) / 0.06);
+    border: 1px solid rgb(var(--chromatic-amber, 234 179 8) / 0.2);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    padding: calc(var(--space-xs) * 0.7) var(--space-sm);
+    margin: var(--space-xs) 0 0;
+    line-height: 1.5;
+  }
+
+  /* Decrypted message display */
+  .ws-decrypted-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--text-sm);
+    padding: var(--space-md);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    border: 1px solid var(--whisper-edge);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    max-height: 20rem;
+    overflow-y: auto;
+    margin: 0;
+  }
+
+  .ws-unseal-meta {
+    margin: var(--space-sm) 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.44);
+  }
+
+  /* Unseal progress (centered spinner) */
+  .ws-unseal-progress {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-lg);
+  }
+
+  /* Failure text */
+  .ws-fail-text {
+    font-size: var(--text-base);
+    margin: 0 0 var(--space-xs);
+    color: rgb(var(--color-text-rgb) / 0.72);
+  }
+
+  .ws-fail-detail {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.44);
+    margin: 0 0 var(--space-md);
+    line-height: 1.5;
   }
 </style>

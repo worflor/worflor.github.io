@@ -56,6 +56,47 @@ export async function copyToClipboard(text: string): Promise<void> {
   }
 }
 
+/* ── Shared Logging ──────────────────────────────────────── */
+
+/** Format a timestamp as `HH:MM:SS` in local time. */
+function logTimestamp(): string {
+  return new Date().toISOString().slice(11, 19);
+}
+
+/** Append a timestamped line to a shared log `<pre>` and auto-scroll. */
+export function appendToLog(logOutput: HTMLPreElement, line: string): void {
+  logOutput.textContent += `[${logTimestamp()}] ${line}\n`;
+  logOutput.scrollTop = logOutput.scrollHeight;
+}
+
+/** Toggle the activity indicator dot on/off. */
+export function setLogDotActive(logDot: HTMLElement, active: boolean): void {
+  logDot.classList.toggle("whisper-log-active", active);
+}
+
+/**
+ * Returns a `log()` function that writes to the shared log output,
+ * flashes the log dot for `dimMs`, and auto-clears it.
+ * The returned cleanup function cancels any pending dim timer.
+ */
+export function createLogger(
+  logOutput: HTMLPreElement,
+  logDot: HTMLElement,
+  dimMs = 2000,
+): { log: (msg: string) => void; cleanup: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  function log(msg: string): void {
+    appendToLog(logOutput, msg);
+    setLogDotActive(logDot, true);
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => { setLogDotActive(logDot, false); timer = null; }, dimMs);
+  }
+  function cleanup(): void {
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+  }
+  return { log, cleanup };
+}
+
 export function flashText(el: HTMLElement, temp: string, ms = 900): () => void {
   const prev = el.textContent ?? "";
   el.textContent = temp;
