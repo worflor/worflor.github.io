@@ -401,8 +401,15 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     activeMode = mode;
     opts.page.dataset.mode = mode;
 
-    // Clear carrier-url when leaving embed — prevents stale state
-    if (mode !== MODE_EMBED) {
+    // Sync carrier attribute with radio state
+    if (mode === MODE_EMBED) {
+      const urlRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="url"]');
+      if (urlRadio?.checked) {
+        opts.page.dataset.carrier = "url";
+      } else {
+        delete opts.page.dataset.carrier;
+      }
+    } else {
       delete opts.page.dataset.carrier;
     }
 

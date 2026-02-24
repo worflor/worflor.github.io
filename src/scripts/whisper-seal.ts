@@ -297,5 +297,14 @@ const EXPIRY_LABELS: Record<string, string> = {
 };
 
 export function expiryLabel(ms: number | string): string {
-  return EXPIRY_LABELS[String(ms)] ?? `${ms}ms`;
+  const key = String(ms);
+  if (EXPIRY_LABELS[key]) return EXPIRY_LABELS[key];
+  const n = typeof ms === "number" ? ms : parseInt(ms, 10);
+  if (Number.isNaN(n) || n <= 0) return "never";
+  const mins = Math.round(n / 60_000);
+  if (mins < 60) return `${mins} min`;
+  const hrs = Math.round(n / 3_600_000);
+  if (hrs < 48) return `${hrs} hour${hrs === 1 ? "" : "s"}`;
+  const days = Math.round(n / 86_400_000);
+  return `${days} day${days === 1 ? "" : "s"}`;
 }

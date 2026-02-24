@@ -155,6 +155,7 @@ const seo = {
                 <span class="ws-carrier-label">URL (Seal)</span>
               </label>
               <button id="ws-my-seal-btn" type="button" class="whisper-mini-btn ws-my-seal-btn">My Seal</button>
+              <span id="ws-my-seal-inline" class="ws-my-seal-inline" style="display:none" role="button" tabindex="0" title="Click to copy"></span>
             </div>
           </div>
 
@@ -174,17 +175,59 @@ const seo = {
 
             <label class="whisper-field" for="ws-extra-password">
               <span class="whisper-field-label">extra password <span class="whisper-field-hint">(optional — recipient must know it too)</span></span>
-              <input id="ws-extra-password" type="password" class="whisper-input" placeholder="additional passphrase" autocomplete="off" />
+              <div class="whisper-password-row">
+                <input id="ws-extra-password" type="password" class="whisper-input whisper-password-input" placeholder="additional passphrase" autocomplete="off" />
+                <div class="whisper-password-tools ws-extra-pw-tools" role="group" aria-label="Password tools">
+                  <button
+                    id="ws-extra-pw-gen"
+                    class="whisper-mini-btn"
+                    type="button"
+                    aria-label="Generate a strong random password"
+                    title="Generate"
+                  >Generate</button>
+                  <button
+                    id="ws-extra-pw-copy"
+                    class="whisper-mini-btn"
+                    type="button"
+                    aria-label="Copy password to clipboard"
+                    title="Copy"
+                  >Copy</button>
+                </div>
+              </div>
             </label>
 
             <div class="whisper-field">
               <span class="whisper-field-label">expires after</span>
-              <select id="ws-expiry" class="whisper-input ws-select">
-                <option value="3600000">1 hour</option>
-                <option value="86400000" selected>24 hours</option>
-                <option value="604800000">7 days</option>
-                <option value="0">never</option>
-              </select>
+              <div class="ws-expiry-pills" id="ws-expiry" role="radiogroup" aria-label="Expiry duration">
+                <label class="ws-expiry-pill">
+                  <input type="radio" name="ws-expiry" value="3600000" class="ws-expiry-radio" />
+                  <span class="ws-expiry-pill-label">1h</span>
+                </label>
+                <label class="ws-expiry-pill">
+                  <input type="radio" name="ws-expiry" value="86400000" class="ws-expiry-radio" checked />
+                  <span class="ws-expiry-pill-label">24h</span>
+                </label>
+                <label class="ws-expiry-pill">
+                  <input type="radio" name="ws-expiry" value="604800000" class="ws-expiry-radio" />
+                  <span class="ws-expiry-pill-label">7d</span>
+                </label>
+                <label class="ws-expiry-pill">
+                  <input type="radio" name="ws-expiry" value="0" class="ws-expiry-radio" />
+                  <span class="ws-expiry-pill-label">never</span>
+                </label>
+                <label class="ws-expiry-pill">
+                  <input type="radio" name="ws-expiry" value="custom" class="ws-expiry-radio" />
+                  <span class="ws-expiry-pill-label">custom</span>
+                </label>
+                <div id="ws-expiry-custom" class="ws-expiry-custom">
+                  <input id="ws-expiry-custom-val" type="number" class="whisper-input ws-expiry-custom-input" min="1" value="12" tabindex="-1" />
+                  <select id="ws-expiry-custom-unit" class="whisper-input ws-select ws-expiry-custom-unit" tabindex="-1">
+                    <option value="60000">min</option>
+                    <option value="3600000" selected>hr</option>
+                    <option value="86400000">days</option>
+                  </select>
+                </div>
+              </div>
             </div>
 
             <button id="ws-seal-it" type="button" class="whisper-mini-btn wl-primary" disabled>Seal it</button>
@@ -208,8 +251,8 @@ const seo = {
             </div>
           </label>
 
-          <!-- Password -->
-          <label class="whisper-field" for="whisper-password-input">
+          <!-- Password (file-based modes) -->
+          <label class="whisper-field whisper-field--file-password" for="whisper-password-input">
             <span class="whisper-field-label">password</span>
             <div class="whisper-password-row">
               <input
@@ -1300,9 +1343,10 @@ const seo = {
   /* Carrier toggle: only visible in embed mode */
   .whisper-page:not([data-mode="embed"]) .ws-carrier-toggle-wrap { display: none; }
 
-  /* When carrier=url: hide file-specific embed fields and upload zone */
+  /* When carrier=url: hide file-specific embed fields, upload zone, and file password */
   .whisper-page[data-mode="embed"][data-carrier="url"] .whisper-field--embed:not(.ws-carrier-toggle-wrap) { display: none; }
   .whisper-page[data-mode="embed"][data-carrier="url"] #whisper-upload-zone { display: none; }
+  .whisper-page[data-mode="embed"][data-carrier="url"] .whisper-field--file-password { display: none; }
 
   /* When carrier=file (default): hide seal fields */
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-seal-fields { display: none; }
@@ -1312,6 +1356,9 @@ const seo = {
 
   /* My Seal button only when carrier=url */
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-btn { display: none; }
+
+  /* Password tools (generate/copy) only in embed mode */
+  .whisper-page:not([data-mode="embed"]) .whisper-password-tools { display: none; }
 
   /* Overlay hides solo panel when active (JS-managed via style) */
   .ws-overlay { display: grid; gap: var(--space-sm); }
@@ -2301,6 +2348,34 @@ const seo = {
     white-space: nowrap;
   }
 
+  /* Inline seal code (next to My Seal button) */
+  .ws-my-seal-inline {
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: calc(var(--text-sm) * 0.92);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--chromatic-cyan) / 0.06);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
+    border-radius: calc(var(--whisper-radius) * 0.5);
+    padding: 0.25em 0.55em;
+    cursor: pointer;
+    user-select: all;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
+  }
+
+  .ws-my-seal-inline:hover {
+    background: rgb(var(--chromatic-cyan) / 0.12);
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+  }
+
+  .ws-my-seal-inline:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.15);
+  }
+
   /* Seal fields container */
   .ws-seal-fields {
     display: grid;
@@ -2392,6 +2467,99 @@ const seo = {
     appearance: auto;
     cursor: pointer;
   }
+
+  /* Expiry pill toggle row */
+  .ws-expiry-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.35);
+    align-items: center;
+  }
+
+  .ws-expiry-pill {
+    display: inline-flex;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .ws-expiry-radio {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .ws-expiry-pill-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: calc(var(--text-sm) * 0.88);
+    font-family: var(--font-body);
+    color: rgb(var(--color-text-rgb) / 0.44);
+    padding: 0.3em 0.65em;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: calc(var(--whisper-radius) * 0.5);
+    background: transparent;
+    transition:
+      color var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .ws-expiry-pill-label:hover {
+    color: rgb(var(--color-text-rgb) / 0.6);
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+    background: rgb(var(--color-text-rgb) / 0.03);
+  }
+
+  .ws-expiry-radio:checked + .ws-expiry-pill-label {
+    color: rgb(var(--chromatic-cyan));
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+    background: rgb(var(--chromatic-cyan) / 0.06);
+  }
+
+  .ws-expiry-radio:focus-visible + .ws-expiry-pill-label {
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
+  }
+
+  /* Custom expiry fields — always visible, dimmed when inactive */
+  .ws-expiry-custom {
+    display: inline-flex;
+    gap: calc(var(--space-xs) * 0.3);
+    align-items: center;
+    opacity: 0.28;
+    pointer-events: none;
+    transition: opacity var(--duration-normal) var(--ease-out);
+  }
+
+  .ws-expiry-custom.ws-expiry-custom--active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .ws-expiry-custom-input {
+    width: 3.2rem;
+    text-align: center;
+    padding: 0.25em 0.3em;
+    font-size: calc(var(--text-sm) * 0.88);
+    border-radius: calc(var(--whisper-radius) * 0.5);
+  }
+
+  .ws-expiry-custom-unit {
+    font-size: calc(var(--text-sm) * 0.88);
+    padding: 0.25em 0.2em;
+    border-radius: calc(var(--whisper-radius) * 0.5);
+    min-width: 0;
+  }
+
+  /* hide number input spinners */
+  .ws-expiry-custom-input::-webkit-inner-spin-button,
+  .ws-expiry-custom-input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .ws-expiry-custom-input { -moz-appearance: textfield; }
 
   /* URL display (truncated with scroll) */
   .ws-url-display {
