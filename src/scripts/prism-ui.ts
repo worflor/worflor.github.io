@@ -271,7 +271,6 @@ const TOAST_EXIT_MS = 300;
 const RUN_ACK_MS = 1200;
 const PRISM_WARM_ENGINE_KEY = "__prismWarmEngine";
 const PRISM_REFRESH_FILE_KEY = "prism.refreshFileToken.v1";
-const PRISM_ENGINE_READY_KEY = "prism.engineReady.v1";
 
 type PrismWarmWindow = Window & {
   [PRISM_WARM_ENGINE_KEY]?: PrismEngine;
@@ -335,26 +334,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
       saveRefreshFileToken(token);
     } catch {
       // Ignore persistence errors.
-    }
-  }
-
-  function setPersistedEngineReady(ready: boolean): void {
-    try {
-      if (ready) {
-        window.localStorage.setItem(PRISM_ENGINE_READY_KEY, "1");
-      } else {
-        window.localStorage.removeItem(PRISM_ENGINE_READY_KEY);
-      }
-    } catch {
-      // Ignore persistence errors.
-    }
-  }
-
-  function isPersistedEngineReady(): boolean {
-    try {
-      return window.localStorage.getItem(PRISM_ENGINE_READY_KEY) === "1";
-    } catch {
-      return false;
     }
   }
 
@@ -451,9 +430,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
       onStateChange: (s: EngineState) => {
         if (destroyed) return;
         opts.engineStatus.textContent = s === "ready" ? "engine ready" : s === "loading" ? "loading engine..." : s === "running" ? "processing..." : s;
-        if (s === "ready") {
-          setPersistedEngineReady(true);
-        }
         setEngineStatusClass(s);
         if (s === "loading") {
           opts.btnRun.style.setProperty("--prism-load-ratio", "0");
@@ -979,17 +955,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
       }
     }
     return engine;
-  }
-
-  async function warmEngineFromPersistence(): Promise<void> {
-    if (!isPersistedEngineReady()) return;
-    const eng = ensureEngine();
-    if (eng.state === "ready" || eng.state === "loading" || eng.state === "running") return;
-    try {
-      await eng.load();
-    } catch {
-      // Keep manual load path available; don't interrupt UI with extra errors.
-    }
   }
 
   // ── File Handling ──────────────────────────────────────────────────────
@@ -1823,7 +1788,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
   }
 
   void initLensHandoffSupport();
-  void warmEngineFromPersistence();
 
   async function consumeLensHandoffIfPresent(): Promise<void> {
     const token = getHandoffTokenFromCurrentUrl();

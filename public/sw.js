@@ -1,6 +1,6 @@
 // woflo.dev Service Worker — zero dependencies, pure Web Standards
 // Bump this to bust all caches on deploy
-var CACHE = 'woflo-v1';
+var CACHE = 'woflo-v2';
 
 var SHELL = [
   '/offline',

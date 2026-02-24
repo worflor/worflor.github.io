@@ -252,7 +252,7 @@ async function verifyEnvelopeCipher(
   }
 }
 
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+export function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   // Provide an exact ArrayBuffer containing only [byteOffset, byteOffset+byteLength).
   // This keeps runtime fast for “owning” buffers (offset=0,len=bufLen) and satisfies
   // DOM typings that require ArrayBuffer-backed BufferSource.
@@ -981,7 +981,7 @@ export async function scanInertSpace(bytes: Uint8Array, options: WhisperScanOpti
     .slice(0, maxCandidates);
 }
 
-function concatBytes(...parts: Uint8Array[]): Uint8Array {
+export function concatBytes(...parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, chunk) => sum + chunk.length, 0);
   const out = new Uint8Array(total);
   let offset = 0;
@@ -1024,19 +1024,19 @@ const HEX_LUT = /*#__PURE__*/ (() => {
   return t;
 })();
 
-function toHex(bytes: Uint8Array): string {
+export function toHex(bytes: Uint8Array): string {
   let out = "";
   for (let i = 0; i < bytes.length; i++) out += HEX_LUT[bytes[i]];
   return out;
 }
 
-function randomBytes(length: number): Uint8Array {
+export function randomBytes(length: number): Uint8Array {
   const out = new Uint8Array(length);
   crypto.getRandomValues(out);
   return out;
 }
 
-async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
+export async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   const digest = await crypto.subtle.digest("SHA-256", toArrayBuffer(bytes));
   return new Uint8Array(digest);
 }

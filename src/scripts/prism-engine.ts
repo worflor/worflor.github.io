@@ -27,6 +27,63 @@ const ENGINE_CDN_PROVIDERS: EngineCdnProvider[] = [
   },
 ];
 
+export const PRISM_ENGINE_ASSET_CACHE = "prism-ffmpeg-assets-v1";
+
+function getEngineAssetUrlsForProvider(provider: EngineCdnProvider, useMultiThread: boolean): string[] {
+  const coreCDN = useMultiThread ? provider.coreMt : provider.core;
+  const assetUrls: string[] = [
+    `${provider.ffmpeg}/worker.js`,
+    `${coreCDN}/ffmpeg-core.js`,
+    `${coreCDN}/ffmpeg-core.wasm`,
+  ];
+  if (useMultiThread) assetUrls.push(`${coreCDN}/ffmpeg-core.worker.js`);
+  return assetUrls;
+}
+
+async function isEngineProviderFullyCached(provider: EngineCdnProvider, useMultiThread: boolean): Promise<boolean> {
+  if (typeof caches === "undefined") return false;
+  try {
+    const cache = await caches.open(PRISM_ENGINE_ASSET_CACHE);
+    const urls = getEngineAssetUrlsForProvider(provider, useMultiThread);
+    const matches = await Promise.all(urls.map((url) => cache.match(url)));
+    return matches.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
+async function getPreferredEngineProviders(useMultiThread: boolean): Promise<EngineCdnProvider[]> {
+  if (typeof caches === "undefined") return ENGINE_CDN_PROVIDERS;
+  try {
+    const warmFlags = await Promise.all(
+      ENGINE_CDN_PROVIDERS.map(async (provider) => ({
+        provider,
+        warm: await isEngineProviderFullyCached(provider, useMultiThread),
+      })),
+    );
+
+    const warmProviders = warmFlags.filter((p) => p.warm).map((p) => p.provider);
+    if (warmProviders.length === 0) return ENGINE_CDN_PROVIDERS;
+    const coldProviders = warmFlags.filter((p) => !p.warm).map((p) => p.provider);
+    return [...warmProviders, ...coldProviders];
+  } catch {
+    return ENGINE_CDN_PROVIDERS;
+  }
+}
+
+/**
+ * Returns true only if *all* ffmpeg core assets required for this browser tier are already present in CacheStorage.
+ * This is used to decide whether Prism should auto-warm the engine without triggering a CDN download.
+ */
+export async function arePrismEngineAssetsCached(): Promise<boolean> {
+  const useMultiThread = canUseSharedArrayBuffer();
+  for (const provider of ENGINE_CDN_PROVIDERS) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await isEngineProviderFullyCached(provider, useMultiThread)) return true;
+  }
+  return false;
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type EngineTier = "baseline" | "enhanced";
@@ -193,7 +250,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
   const IMPORT_TIMEOUT_MS = 15000;
   const ASSET_FETCH_TIMEOUT_MS = 60000;
   const ENGINE_BOOT_TIMEOUT_MS = 90000;
-  const ENGINE_ASSET_CACHE = "prism-ffmpeg-assets-v1";
+  const ENGINE_ASSET_CACHE = PRISM_ENGINE_ASSET_CACHE;
 
   function setState(s: EngineState): void {
     if (destroyed) return;
@@ -326,7 +383,14 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
           chunks.push(next.value);
           options?.onChunk?.(next.value.length);
         }
-        blob = new Blob(chunks, { type: mimeType });
+        // TS DOM lib typing is strict about BlobPart requiring ArrayBuffer-backed views.
+        // Convert chunks to ArrayBuffer to avoid Uint8Array<ArrayBufferLike> incompatibility.
+        const parts = chunks.map((chunk) => {
+          const copy = new Uint8Array(chunk.byteLength);
+          copy.set(chunk);
+          return copy.buffer;
+        });
+        blob = new Blob(parts, { type: mimeType });
       } else {
         const buffer = await response.arrayBuffer();
         options?.onChunk?.(buffer.byteLength);
@@ -383,9 +447,11 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       const useMultiThread = canUseSharedArrayBuffer();
       tier = useMultiThread ? "enhanced" : "baseline";
 
+      const providerOrder = await getPreferredEngineProviders(useMultiThread);
+
       let lastLoadError: unknown = null;
 
-      for (const provider of ENGINE_CDN_PROVIDERS) {
+      for (const provider of providerOrder) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let candidate: any = null;
         try {
@@ -711,35 +777,51 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     });
   }
 
-  function parseFfprobeJson(json: Record<string, unknown>, info: FileInfo): void {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const fmt = json.format as any;
-    if (fmt) {
-      if (info.duration === null && fmt.duration) {
-        const d = parseFloat(fmt.duration);
+  function parseProbeLogOutput(logText: string, info: FileInfo): void {
+    // Duration: 00:05:23.45, bitrate: 1234 kb/s
+    if (info.duration === null) {
+      const durMatch = logText.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+      if (durMatch) {
+        const d = parseInt(durMatch[1]) * 3600 + parseInt(durMatch[2]) * 60 + parseInt(durMatch[3]) + parseInt(durMatch[4]) / 100;
         if (isFinite(d) && d > 0) info.duration = d;
-      }
-      if (info.bitrate === null && fmt.bit_rate) {
-        const br = parseInt(fmt.bit_rate);
-        if (isFinite(br)) info.bitrate = Math.round(br / 1000);
       }
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const streams = json.streams as any[];
-    if (!Array.isArray(streams)) return;
+    if (info.bitrate === null) {
+      const brMatch = logText.match(/bitrate:\s*(\d+)\s*kb\/s/);
+      if (brMatch) {
+        info.bitrate = parseInt(brMatch[1]);
+      }
+    }
 
-    for (const s of streams) {
-      if (s.codec_type === "video" && info.videoCodec === null) {
-        info.videoCodec = s.codec_name ?? null;
-        if (info.resolution === null && s.width && s.height) {
-          info.resolution = `${s.width}x${s.height}`;
+    // Video stream: "Stream #0:0: Video: h264 ..., 1920x1080, ..."
+    const videoLine = logText.match(/Stream\s+#\d+:\d+.*?Video:\s*(\w+)[^\n]*/);
+    if (videoLine) {
+      if (info.videoCodec === null) {
+        info.videoCodec = videoLine[1];
+      }
+      if (info.resolution === null) {
+        const resMatch = videoLine[0].match(/\b(\d{2,5})x(\d{2,5})\b/);
+        if (resMatch) {
+          info.resolution = `${resMatch[1]}x${resMatch[2]}`;
         }
       }
-      if (s.codec_type === "audio" && info.audioCodec === null) {
-        info.audioCodec = s.codec_name ?? null;
-        if (info.channels === null && s.channels) {
-          info.channels = parseInt(s.channels);
+    }
+
+    // Audio stream: "Stream #0:1: Audio: aac ..., 44100 Hz, stereo, ..."
+    const audioLine = logText.match(/Stream\s+#\d+:\d+.*?Audio:\s*(\w+)[^\n]*/);
+    if (audioLine) {
+      if (info.audioCodec === null) {
+        info.audioCodec = audioLine[1];
+      }
+      if (info.channels === null) {
+        const chMatch = audioLine[0].match(/\b(mono|stereo|5\.1|7\.1)\b|(\d+)\s*channels/i);
+        if (chMatch) {
+          if (chMatch[1] === "mono") info.channels = 1;
+          else if (chMatch[1] === "stereo") info.channels = 2;
+          else if (chMatch[1] === "5.1") info.channels = 6;
+          else if (chMatch[1] === "7.1") info.channels = 8;
+          else if (chMatch[2]) info.channels = parseInt(chMatch[2]);
         }
       }
     }
@@ -750,7 +832,6 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
 
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
     const probePath = `/probe/${safeName}`;
-    const outPath = `/probe/${safeName}.json`;
 
     probing = true;
     try {
@@ -759,22 +840,13 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       const data = await readFileAsUint8Array(file);
       await ffmpeg.writeFile(probePath, data);
 
-      const ret = await ffmpeg.ffprobe([
-        "-v", "error",
-        "-show_format", "-show_streams",
-        "-of", "json",
-        probePath,
-        "-o", outPath,
-      ]);
+      // ffmpeg.wasm has no ffprobe — run `ffmpeg -i` to extract stream info from log output
+      const logBefore = lastLogLines.length;
+      await ffmpeg.exec(["-i", probePath]);
 
-      if (ret === 0) {
-        const raw = await ffmpeg.readFile(outPath);
-        const text = new TextDecoder().decode(raw);
-        const json = JSON.parse(text);
-        parseFfprobeJson(json, info);
-      }
+      const probeOutput = lastLogLines.slice(logBefore).join("\n");
+      parseProbeLogOutput(probeOutput, info);
 
-      try { await ffmpeg.deleteFile(outPath); } catch { /* noop */ }
       try { await ffmpeg.deleteFile(probePath); } catch { /* noop */ }
     } catch {
       // probe failure is non-fatal — return whatever info we have
@@ -818,7 +890,9 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
   }
 
   function createOutputUrl(data: Uint8Array, mimeType: string): string {
-    const blob = new Blob([data], { type: mimeType });
+    const copy = new Uint8Array(data.byteLength);
+    copy.set(data);
+    const blob = new Blob([copy.buffer], { type: mimeType });
     const url = URL.createObjectURL(blob);
     blobUrls.push(url);
     return url;

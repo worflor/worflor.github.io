@@ -4,6 +4,17 @@ import {
   type WhisperHuntMatch,
   type WhisperExtractPayload,
 } from "./whisper-wasm";
+import {
+  q,
+  asInput,
+  asButton,
+  asPre,
+  clearNode,
+  formatSize,
+  fileToBytes,
+  copyToClipboard,
+  flashText,
+} from "./whisper-ui-helpers";
 
 /* ── Interface & IDs ───────────────────────────────────── */
 
@@ -75,51 +86,21 @@ export const WHISPER_UI_IDS = {
 const MODE_EMBED = "embed";
 const MODE_EXTRACT = "extract";
 const MODE_HUNT = "hunt";
-type WhisperMode = typeof MODE_EMBED | typeof MODE_EXTRACT | typeof MODE_HUNT;
+const MODE_LIVE = "live";
+type WhisperMode = typeof MODE_EMBED | typeof MODE_EXTRACT | typeof MODE_HUNT | typeof MODE_LIVE;
 
 const ACTION_BAR_FADE_MS = 200;
 const MODE_LABELS: Record<WhisperMode, string> = {
   [MODE_EMBED]: "Embed",
   [MODE_EXTRACT]: "Extract",
   [MODE_HUNT]: "Hunt",
+  [MODE_LIVE]: "Live",
 };
-
 
 /* ── DOM Helpers ───────────────────────────────────────── */
 
-function q(root: ParentNode, id: string): HTMLElement | null {
-  return root.querySelector<HTMLElement>(`#${id}`);
-}
-
-function asInput(node: HTMLElement | null): HTMLInputElement | null {
-  return node instanceof HTMLInputElement ? node : null;
-}
-
-function asButton(node: HTMLElement | null): HTMLButtonElement | null {
-  return node instanceof HTMLButtonElement ? node : null;
-}
-
-function asPre(node: HTMLElement | null): HTMLPreElement | null {
-  return node instanceof HTMLPreElement ? node : null;
-}
-
-function clearNode(node: HTMLElement): void {
-  while (node.firstChild) node.removeChild(node.firstChild);
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
-
-async function fileToBytes(file: File): Promise<Uint8Array> {
-  return new Uint8Array(await file.arrayBuffer());
-}
-
 function isMode(value: string | undefined): value is WhisperMode {
-  return value === MODE_EMBED || value === MODE_EXTRACT || value === MODE_HUNT;
+  return value === MODE_EMBED || value === MODE_EXTRACT || value === MODE_HUNT || value === MODE_LIVE;
 }
 
 function readSingleFile(input: HTMLInputElement): File | null {
@@ -143,38 +124,6 @@ function generateUuidPassword(): string {
     return uuidV4FromRandom(bytes);
   }
   throw new Error("Secure random unavailable.");
-}
-
-async function copyToClipboard(text: string): Promise<void> {
-  if (!text) throw new Error("Nothing to copy.");
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  // Fallback (older browsers / insecure context): temporary textarea + execCommand.
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.setAttribute("readonly", "");
-  ta.style.position = "fixed";
-  ta.style.top = "-1000px";
-  ta.style.left = "-1000px";
-  document.body.appendChild(ta);
-  try {
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand("copy");
-    if (!ok) throw new Error("Copy failed.");
-  } finally {
-    document.body.removeChild(ta);
-  }
-}
-
-function flashText(el: HTMLElement, temp: string, ms = 900): () => void {
-  const prev = el.textContent ?? "";
-  el.textContent = temp;
-  const t = window.setTimeout(() => { el.textContent = prev; }, ms);
-  return () => { window.clearTimeout(t); el.textContent = prev; };
 }
 
 /* ── Resolve ───────────────────────────────────────────── */
@@ -382,6 +331,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   function canRun(): boolean {
     if (busy) return false;
+    if (activeMode === MODE_LIVE) return false; // Live mode has its own flow
     const pw = hasPassword();
     switch (activeMode) {
       case MODE_EMBED: return hasCarrier() && hasPayload() && pw;
@@ -393,6 +343,8 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   /* ── Sync all button states ──────────────────────────── */
 
   function syncState(): void {
+    if (activeMode === MODE_LIVE) return; // Live mode manages its own UI
+
     // Run button: label reflects mode, disabled until prerequisites met
     opts.runButton.textContent = MODE_LABELS[activeMode];
     opts.runButton.disabled = !canRun();
@@ -412,6 +364,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   function syncGuidance(): void {
     if (busy) { opts.statusLine.classList.remove("whisper-status--ready"); return; }
+    if (activeMode === MODE_LIVE) return; // Live mode manages its own status
     let ready = false;
     switch (activeMode) {
       case MODE_EMBED:
@@ -442,7 +395,11 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
       btn.classList.toggle("whisper-mode-btn--active", active);
       btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
-    opts.passwordInput.placeholder = mode === MODE_EMBED ? "password to encrypt" : "password to decrypt";
+    if (mode === MODE_LIVE) {
+      hideActionsBar();
+    } else {
+      opts.passwordInput.placeholder = mode === MODE_EMBED ? "password to encrypt" : "password to decrypt";
+    }
     refreshUI();
   }
 

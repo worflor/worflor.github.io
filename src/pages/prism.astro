@@ -459,7 +459,13 @@ const seo = {
   }
 
   .prism-page .prism-status--idle {
-    color: rgb(var(--color-text-rgb) / 0.46);
+    color: rgb(var(--color-text-rgb) / 0.28);
+  }
+
+  /* Ensure the status text itself stays in the secondary tone when idle/default.
+     Uses :not(...) so state classes can still recolor (loading/running/ready/error). */
+  .prism-status-line #prism-engine-status:not(.prism-status--loading):not(.prism-status--running):not(.prism-status--ready):not(.prism-status--error) {
+    color: rgb(var(--color-text-rgb) / 0.28) !important;
   }
 
   .prism-page .prism-status--loading {

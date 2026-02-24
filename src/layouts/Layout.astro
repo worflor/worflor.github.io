@@ -145,7 +145,11 @@ const { seo } = Astro.props;
     <meta name="theme-color" content="#0A0A0A" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/site.webmanifest" />
-    <script is:inline>if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js');</script>
+    {import.meta.env.PROD && (
+      <script is:inline>
+        if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+      </script>
+    )}
     <link rel="preconnect" href="https://formsubmit.co" crossorigin />
     <meta name="generator" content={Astro.generator} />
     <title>{seo.title}</title>
@@ -161,6 +165,30 @@ const { seo } = Astro.props;
     <meta name="twitter:description" content={seo.description} />
     <meta name="twitter:image" content={`${Astro.url.origin}${seo.image}`} />
     <ClientRouter />
+
+    {!import.meta.env.PROD && (
+      <script is:inline>
+        (function () {
+          try {
+            if (!('serviceWorker' in navigator)) return;
+            if (sessionStorage.getItem('__swCleared') === '1') return;
+            navigator.serviceWorker.getRegistrations().then(function (regs) {
+              if (!regs || regs.length === 0) return;
+              sessionStorage.setItem('__swCleared', '1');
+              regs.forEach(function (r) { try { r.unregister(); } catch (e) {} });
+              if ('caches' in window) {
+                caches.keys().then(function (keys) {
+                  keys.forEach(function (k) { try { caches.delete(k); } catch (e) {} });
+                });
+              }
+              // One refresh to ensure we’re not running stale cached assets.
+              setTimeout(function () { location.reload(); }, 50);
+            });
+          } catch (e) {}
+        })();
+      </script>
+    )}
+
     <script type="application/ld+json" set:html={JSON.stringify({
       "@context": "https://schema.org",
       "@type": "Person",
