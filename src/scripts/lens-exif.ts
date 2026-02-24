@@ -463,8 +463,8 @@ function parseIFD(
           value = count === 1
             ? view.getUint8(valueOffset)
             : Array.from({ length: Math.min(count, 32) }, (_, j) =>
-                view.getUint8(valueOffset + j),
-              );
+              view.getUint8(valueOffset + j),
+            );
           break;
 
         case TIFF_ASCII:
@@ -485,8 +485,8 @@ function parseIFD(
           value = count === 1
             ? view.getUint32(valueOffset, le)
             : Array.from({ length: Math.min(count, 32) }, (_, j) =>
-                view.getUint32(valueOffset + j * 4, le),
-              );
+              view.getUint32(valueOffset + j * 4, le),
+            );
           break;
 
         case TIFF_RATIONAL:
@@ -513,8 +513,8 @@ function parseIFD(
           value = count === 1
             ? view.getInt32(valueOffset, le)
             : Array.from({ length: Math.min(count, 32) }, (_, j) =>
-                view.getInt32(valueOffset + j * 4, le),
-              );
+              view.getInt32(valueOffset + j * 4, le),
+            );
           break;
 
         case TIFF_UNDEFINED:
@@ -537,33 +537,6 @@ function parseIFD(
   return result;
 }
 
-function findApp1(view: DataView): number {
-  // JPEG starts with 0xFFD8
-  if (view.getUint16(0) !== 0xffd8) return -1;
-
-  let offset = 2;
-  // APP1 always appears early in JPEG (before scan data).
-  // Cap iterations to avoid runaway scanning on malformed files.
-  let segments = 0;
-  const MAX_SEGMENTS = 64;
-
-  while (offset + 4 < view.byteLength && segments < MAX_SEGMENTS) {
-    const marker = view.getUint16(offset);
-    if (marker === 0xffe1) return offset; // APP1
-    if ((marker & 0xff00) !== 0xff00) return -1; // not a valid marker
-    // Stop at SOS (Start of Scan) — APP1 is always before this
-    if (marker === 0xffda) return -1;
-
-    const segLen = view.getUint16(offset + 2);
-    if (segLen < 2) return -1; // invalid segment length
-    const nextOffset = offset + 2 + segLen;
-    if (nextOffset <= offset) return -1; // overflow guard
-    offset = nextOffset;
-    segments++;
-  }
-
-  return -1;
-}
 
 function isJpeg(view: DataView): boolean {
   return view.byteLength >= 2 && view.getUint16(0) === 0xffd8;
@@ -577,35 +550,57 @@ function isTiff(view: DataView): boolean {
   return view.getUint16(2, le) === 0x002a;
 }
 
+const XMP_SIG = "http://ns.adobe.com/xap/1.0/\0";
+
 function parseExifFromBuffer(buffer: ArrayBuffer): RawExif {
   const view = new DataView(buffer);
-  let tiffStart: number;
+  const result: RawExif = {};
 
   if (isJpeg(view)) {
-    const app1Offset = findApp1(view);
-    if (app1Offset < 0) return {};
+    let offset = 2;
+    const MAX_SEGMENTS = 128;
+    let segments = 0;
 
-    // APP1: marker(2) + length(2) + "Exif\0\0"(6) → TIFF header
-    const exifHeaderOffset = app1Offset + 4;
-    if (exifHeaderOffset + 6 > view.byteLength) return {};
+    while (offset + 4 < view.byteLength && segments < MAX_SEGMENTS) {
+      const marker = view.getUint16(offset);
+      if ((marker & 0xff00) !== 0xff00) break;
+      if (marker === 0xffda) break; // SOS
 
-    // Verify "Exif\0\0" signature
-    if (
-      view.getUint8(exifHeaderOffset) !== 0x45 ||
-      view.getUint8(exifHeaderOffset + 1) !== 0x78 ||
-      view.getUint8(exifHeaderOffset + 2) !== 0x69 ||
-      view.getUint8(exifHeaderOffset + 3) !== 0x66
-    ) {
-      return {};
+      const segLen = view.getUint16(offset + 2);
+      if (segLen < 2) break;
+      const segStart = offset + 4;
+
+      // APP1: EXIF or XMP
+      if (marker === 0xffe1) {
+        // EXIF?
+        if (readAscii(view, segStart, 6) === "Exif\0\0") {
+          const exifData = parseExifStructure(view, segStart + 6);
+          Object.assign(result, exifData);
+        }
+        // XMP?
+        else if (readAscii(view, segStart, XMP_SIG.length) === XMP_SIG) {
+          result["_xmp"] = readAscii(view, segStart + XMP_SIG.length, segLen - 2 - XMP_SIG.length);
+        }
+      }
+      // APP13: IPTC (Photoshop IRB)
+      else if (marker === 0xffed) {
+        if (readAscii(view, segStart, 13) === "Photoshop 3.0") {
+          const iptcData = parseIptc(view, segStart, segLen - 2);
+          Object.assign(result, iptcData);
+        }
+      }
+
+      offset += 2 + segLen;
+      segments++;
     }
-
-    tiffStart = exifHeaderOffset + 6;
   } else if (isTiff(view)) {
-    tiffStart = 0;
-  } else {
-    return {};
+    Object.assign(result, parseExifStructure(view, 0));
   }
 
+  return result;
+}
+
+function parseExifStructure(view: DataView, tiffStart: number): RawExif {
   if (tiffStart + 8 > view.byteLength) return {};
 
   // Determine byte order
@@ -641,23 +636,21 @@ function parseExifFromBuffer(buffer: ArrayBuffer): RawExif {
 
   // Follow IFD1 (thumbnail IFD) for additional metadata
   const ifd0AbsStart = tiffStart + ifd0Offset;
-  if (ifd0AbsStart + 2 > view.byteLength) return result;
-  const ifd0EntryCount = view.getUint16(ifd0AbsStart, le);
-  const ifd0AbsEnd = ifd0AbsStart + 2 + ifd0EntryCount * 12;
-  if (ifd0AbsEnd + 4 <= view.byteLength) {
-    try {
-      const ifd1Offset = view.getUint32(ifd0AbsEnd, le);
-      if (ifd1Offset > 0 && tiffStart + ifd1Offset < view.byteLength) {
-        const ifd1 = parseIFD(view, tiffStart, ifd1Offset, le, IFD_TAGS);
-        // Only take IFD1 fields not already in IFD0
-        for (const [key, val] of Object.entries(ifd1)) {
-          if (!(key in result) && key !== "ExifIFDPointer" && key !== "GPSInfoIFDPointer") {
-            result[key] = val;
+  if (ifd0AbsStart + 2 <= view.byteLength) {
+    const ifd0EntryCount = view.getUint16(ifd0AbsStart, le);
+    const ifd0AbsEnd = ifd0AbsStart + 2 + ifd0EntryCount * 12;
+    if (ifd0AbsEnd + 4 <= view.byteLength) {
+      try {
+        const ifd1Offset = view.getUint32(ifd0AbsEnd, le);
+        if (ifd1Offset > 0 && tiffStart + ifd1Offset < view.byteLength) {
+          const ifd1 = parseIFD(view, tiffStart, ifd1Offset, le, IFD_TAGS);
+          for (const [key, val] of Object.entries(ifd1)) {
+            if (!(key in result) && key !== "ExifIFDPointer" && key !== "GPSInfoIFDPointer") {
+              result[key] = val;
+            }
           }
         }
-      }
-    } catch {
-      // IFD1 is optional, ignore errors
+      } catch { /* ignore */ }
     }
   }
 
@@ -1486,16 +1479,18 @@ function buildExifResult(
     title: string;
     build: () => ExifField[];
   }> = [
-    { id: "file", title: "FILE", build: () => buildFileCategory(meta) },
-    { id: "image", title: "IMAGE", build: () => buildImageCategory(exif) },
-    { id: "camera", title: "CAMERA", build: () => buildCameraCategory(exif) },
-    { id: "exposure", title: "EXPOSURE", build: () => buildExposureCategory(exif) },
-    { id: "focus", title: "FOCUS & FLASH", build: () => buildFocusCategory(exif) },
-    { id: "datetime", title: "DATE & TIME", build: () => buildDateTimeCategory(exif) },
-    { id: "gps", title: "GPS", build: () => buildGpsCategory(exif) },
-    { id: "software", title: "SOFTWARE", build: () => buildSoftwareCategory(exif) },
-    { id: "advanced", title: "ADVANCED", build: () => buildAdvancedCategory(exif) },
-  ];
+      { id: "file", title: "FILE", build: () => buildFileCategory(meta) },
+      { id: "image", title: "IMAGE", build: () => buildImageCategory(exif) },
+      { id: "camera", title: "CAMERA", build: () => buildCameraCategory(exif) },
+      { id: "exposure", title: "EXPOSURE", build: () => buildExposureCategory(exif) },
+      { id: "focus", title: "FOCUS & FLASH", build: () => buildFocusCategory(exif) },
+      { id: "datetime", title: "DATE & TIME", build: () => buildDateTimeCategory(exif) },
+      { id: "gps", title: "GPS", build: () => buildGpsCategory(exif) },
+      { id: "iptc", title: "IPTC METADATA", build: () => buildIptcCategory(exif) },
+      { id: "xmp", title: "XMP METADATA", build: () => buildXmpCategory(exif) },
+      { id: "software", title: "SOFTWARE", build: () => buildSoftwareCategory(exif) },
+      { id: "advanced", title: "ADVANCED", build: () => buildAdvancedCategory(exif) },
+    ];
 
   const categories: ExifCategory[] = [];
   let totalFields = 0;
@@ -1554,4 +1549,171 @@ function buildExifResult(
       { label: "GPS", value: hasGps ? "yes" : "no" },
     ],
   };
+}
+
+/**
+ * Minimal IPTC/IIM parser for Photoshop APP13 segments.
+ */
+function parseIptc(view: DataView, offset: number, length: number): RawExif {
+  const result: RawExif = {};
+  let pos = offset;
+  const end = offset + length;
+
+  // Skip "Photoshop 3.0\0"
+  pos += 14;
+
+  while (pos + 12 < end) {
+    const sig = readAscii(view, pos, 4);
+    if (sig !== "8BIM") {
+      pos++;
+      continue;
+    }
+    pos += 4;
+
+    const type = view.getUint16(pos);
+    pos += 2;
+
+    // Skip resource name (Pascal string, padded to even)
+    const nameLen = view.getUint8(pos);
+    pos += 1 + nameLen;
+    if (pos % 2 !== 0) pos++;
+
+    if (pos + 4 > end) break;
+    const dataSize = view.getUint32(pos);
+    pos += 4;
+
+    // IPTC is type 0x0404
+    if (type === 0x0404) {
+      const iptcData = parseIptcIim(view, pos, dataSize);
+      Object.assign(result, iptcData);
+    }
+
+    pos += dataSize;
+    if (pos % 2 !== 0) pos++;
+  }
+
+  return result;
+}
+
+const IPTC_TAGS: Record<number, string> = {
+  120: "IptcCaption",
+  105: "IptcHeadline",
+  80: "IptcByline",
+  85: "IptcBylineTitle",
+  110: "IptcCredit",
+  115: "IptcSource",
+  5: "IptcObjectName",
+  15: "IptcCategory",
+  20: "IptcSupplementalCategories",
+  25: "IptcKeywords",
+  90: "IptcCity",
+  92: "IptcSublocation",
+  95: "IptcProvinceState",
+  101: "IptcCountry",
+  103: "IptcOriginalTransmissionReference",
+  55: "IptcDateCreated",
+  60: "IptcTimeCreated",
+};
+
+function parseIptcIim(view: DataView, offset: number, length: number): RawExif {
+  const result: RawExif = {};
+  let pos = offset;
+  const end = offset + length;
+
+  while (pos + 5 < end) {
+    if (view.getUint8(pos) !== 0x1c) {
+      pos++;
+      continue;
+    }
+    const record = view.getUint8(pos + 1);
+    const dataset = view.getUint8(pos + 2);
+    const size = view.getUint16(pos + 3);
+    pos += 5;
+
+    if (record === 2 && pos + size <= end) {
+      const tagName = IPTC_TAGS[dataset];
+      if (tagName) {
+        const val = readAscii(view, pos, size).trim();
+        if (tagName === "IptcKeywords") {
+          if (!result[tagName]) result[tagName] = [];
+          (result[tagName] as any).push(val);
+        } else {
+          result[tagName] = val;
+        }
+      }
+    }
+    pos += size;
+  }
+  return result;
+}
+
+/** Build IPTC category fields */
+function buildIptcCategory(exif: RawExif): ExifField[] {
+  const fields: ExifField[] = [];
+  const mappings: Array<{ key: string; label: string }> = [
+    { key: "IptcObjectName", label: "Object Name" },
+    { key: "IptcHeadline", label: "Headline" },
+    { key: "IptcCaption", label: "Caption" },
+    { key: "IptcByline", label: "Creator" },
+    { key: "IptcBylineTitle", label: "Creator Title" },
+    { key: "IptcCredit", label: "Credit" },
+    { key: "IptcSource", label: "Source" },
+    { key: "IptcKeywords", label: "Keywords" },
+    { key: "IptcCity", label: "City" },
+    { key: "IptcProvinceState", label: "State/Province" },
+    { key: "IptcCountry", label: "Country" },
+    { key: "IptcDateCreated", label: "Date Created" },
+  ];
+
+  for (const { key, label } of mappings) {
+    const val = exif[key];
+    if (val !== undefined && val !== null) {
+      const display = Array.isArray(val) ? val.join(", ") : String(val);
+      fields.push(field(`iptc.${key.toLowerCase()}`, label, val, display));
+    }
+  }
+
+  return fields;
+}
+
+/** Build XMP category fields (Regex-based extraction for common tags) */
+function buildXmpCategory(exif: RawExif): ExifField[] {
+  const xmp = exif["_xmp"];
+  if (typeof xmp !== "string" || !xmp) return [];
+
+  const fields: ExifField[] = [];
+
+  // Extract common XMP tags using regex to avoid full XML parser overhead
+  // Supports both attribute and element formats
+  const extract = (tag: string, label: string) => {
+    // Try attribute: tag="value"
+    let match = xmp.match(new RegExp(`${tag}="([^"]+)"`));
+    if (!match) {
+      // Try element: <tag>value</tag>
+      match = xmp.match(new RegExp(`<${tag}[^>]*>([^<]+)</${tag}>`));
+    }
+    // Try prefixed attribute: xmp:tag="value"
+    if (!match) {
+      match = xmp.match(new RegExp(`[:\\s]${tag}="([^"]+)"`));
+    }
+
+    if (match && match[1]) {
+      const val = match[1].trim();
+      fields.push(field(`xmp.${tag}`, label, val));
+    }
+  };
+
+  extract("CreatorTool", "Creator Tool");
+  extract("CreateDate", "Create Date");
+  extract("MetadataDate", "Metadata Date");
+  extract("Rating", "Rating");
+  extract("Label", "Label");
+  extract("format", "Format");
+  extract("title", "Title");
+  extract("description", "Description");
+  extract("subject", "Subject/Keywords");
+  extract("rights", "Rights/Copyright");
+  extract("UsageTerms", "Usage Terms");
+
+  return fields;
 }
