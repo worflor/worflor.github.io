@@ -19,6 +19,7 @@ export interface WhisperUIOptions {
   passwordCopyButton: HTMLButtonElement;
   passwordMeta: HTMLElement;
   onlyDecodeHereInput: HTMLInputElement;
+  allowTailFallbackInput: HTMLInputElement;
   clueInput: HTMLInputElement;
   runButton: HTMLButtonElement;
   uploadButton: HTMLButtonElement;
@@ -48,6 +49,7 @@ export const WHISPER_UI_IDS = {
   passwordCopyButton: "whisper-password-copy",
   passwordMeta: "whisper-password-meta",
   onlyDecodeHereInput: "whisper-only-decode-here",
+  allowTailFallbackInput: "whisper-allow-tail-fallback",
   clueInput: "whisper-clue-input",
   runButton: "whisper-action-run",
   uploadButton: "whisper-action-upload",
@@ -185,6 +187,7 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
   const passwordCopyButton = asButton(q(root, WHISPER_UI_IDS.passwordCopyButton));
   const passwordMeta = q(root, WHISPER_UI_IDS.passwordMeta);
   const onlyDecodeHereInput = asInput(q(root, WHISPER_UI_IDS.onlyDecodeHereInput));
+  const allowTailFallbackInput = asInput(q(root, WHISPER_UI_IDS.allowTailFallbackInput));
   const clueInput = asInput(q(root, WHISPER_UI_IDS.clueInput));
   const runButton = asButton(q(root, WHISPER_UI_IDS.runButton));
   const uploadButton = asButton(q(root, WHISPER_UI_IDS.uploadButton));
@@ -205,7 +208,7 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
 
   if (
     !page || !uploadZone || !carrierInput || !huntCarrierInput || !payloadInput ||
-    !passwordInput || !passwordGenButton || !passwordCopyButton || !passwordMeta || !onlyDecodeHereInput || !clueInput || !runButton || !uploadButton || !clearButton ||
+    !passwordInput || !passwordGenButton || !passwordCopyButton || !passwordMeta || !onlyDecodeHereInput || !allowTailFallbackInput || !clueInput || !runButton || !uploadButton || !clearButton ||
     !actionsBar || !statusLine || !logOutput || !logDot || !results || !downloadArea ||
     !progressSection || !progressFill ||
     !uploadText || !uploadMeta || !huntLabel || !payloadLabel || modeButtons.length === 0
@@ -215,7 +218,7 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
 
   return {
     page, modeButtons, uploadZone, carrierInput, huntCarrierInput, payloadInput,
-    passwordInput, passwordGenButton, passwordCopyButton, passwordMeta, onlyDecodeHereInput, clueInput, runButton, uploadButton, clearButton, actionsBar,
+    passwordInput, passwordGenButton, passwordCopyButton, passwordMeta, onlyDecodeHereInput, allowTailFallbackInput, clueInput, runButton, uploadButton, clearButton, actionsBar,
     statusLine, logOutput, logDot, results, downloadArea, progressSection, progressFill,
     uploadText, uploadMeta,
     huntLabel, payloadLabel,
@@ -532,6 +535,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   // Password typing affects canRun
   opts.passwordInput.addEventListener("input", () => { syncState(); syncGuidance(); }, { signal });
   opts.onlyDecodeHereInput.addEventListener("change", () => { syncState(); syncGuidance(); }, { signal });
+  opts.allowTailFallbackInput.addEventListener("change", () => { syncState(); syncGuidance(); }, { signal });
 
   opts.passwordGenButton.addEventListener("click", () => {
     let pw = "";
@@ -610,7 +614,12 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
         carrier,
         payloadFile,
         password,
-        { preferInertSpace: true, maxCandidates: 28, onlyDecodeHere: opts.onlyDecodeHereInput.checked },
+        {
+          preferInertSpace: true,
+          maxCandidates: 28,
+          onlyDecodeHere: opts.onlyDecodeHereInput.checked,
+          allowTailFallback: opts.allowTailFallbackInput.checked,
+        },
       );
 
       result.logs.forEach((line) => appendLog(line));

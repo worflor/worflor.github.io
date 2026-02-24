@@ -27,6 +27,8 @@ export interface WhisperEmbedOptions {
   maxCandidates?: number;
   /** When true, payload can only be decrypted on this browser profile (local IndexedDB receipt required). */
   onlyDecodeHere?: boolean;
+  /** When false, embedding will fail if no inert-slot fits (no EOF tail fallback). Default: true. */
+  allowTailFallback?: boolean;
 }
 
 export interface WhisperEnvelopeInfo {
@@ -1384,6 +1386,10 @@ export class WhisperEngine {
     const offset = selected ? selected.offset : carrierBytes.length;
     const mode: WhisperEnvelopeInfo["mode"] = selected ? "inert-slot" : "eof-tail";
 
+    if (!selected && options.allowTailFallback === false) {
+      throw new Error("No inert slot fits (tail fallback disabled). Try a different carrier or enable tail fallback.");
+    }
+
     if (selected) logs.push(`embed mode: inert-slot @ ${offset}`);
     else logs.push("embed mode: eof-tail fallback");
 
@@ -1562,6 +1568,10 @@ export class WhisperEngine {
         envelope: result.envelope,
         logs: result.logs,
       };
+    }
+
+    if (options.allowTailFallback === false) {
+      throw new Error("Tail fallback is disabled, but this carrier is too large for inert-slot embedding in streaming mode.");
     }
 
     // EOF tail mode: streaming carrier hash (carrier-bound) + zero-copy output.
