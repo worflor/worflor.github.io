@@ -151,6 +151,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
   let tier: EngineTier | null = null;
   let destroyed = false;
   let cancelling = false;
+  let probing = false;
   let lastLogLines: string[] = [];
   let durationSec = 0;
   let startTime = 0;
@@ -268,7 +269,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
   async function exec(args: string[]): Promise<number> {
     if (destroyed) return -1;
 
-    if (state === "running") {
+    if (state === "running" || probing) {
       const err = new Error("already running");
       callbacks.onError?.({
         message: translateError("already running"),
@@ -383,9 +384,6 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     cancelling = true;
     log("cancelling...");
 
-    // Set state to loading — load() will follow immediately after terminate
-    setState("loading");
-
     const instanceToTerminate = ffmpeg;
     ffmpeg = null;
 
@@ -396,6 +394,9 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
     }
 
     cancelling = false;
+
+    // Reset to idle so load() guard allows re-entry (it skips "ready" and "loading")
+    setState("idle");
 
     // Reload engine for next use
     await load();
@@ -493,10 +494,11 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
   }
 
   async function probeViaFfmpeg(file: File, info: FileInfo): Promise<FileInfo> {
-    if (!ffmpeg || state === "running") return info;
+    if (!ffmpeg || state === "running" || probing) return info;
 
     const probePath = `/probe/${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
 
+    probing = true;
     try {
       // Ensure probe directory exists
       try { await ffmpeg.createDir("/probe"); } catch { /* may exist */ }
@@ -527,6 +529,8 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       parseFfmpegProbeOutput(probeLines, info);
     } catch {
       // probe failure is non-fatal — return whatever info we have
+    } finally {
+      probing = false;
     }
 
     return info;

@@ -3,6 +3,14 @@
 // state is scoped inside initLens() so Astro lifecycle produces a clean tear-down.
 
 import { parseFile, LENS_CATEGORY_ORDER, type ExifCategory, type ExifField, type LensData } from "./lens-exif";
+import {
+  buildPrismHandoffUrl,
+  clearHandoffTokenFromCurrentUrl,
+  consumeFileHandoffWithRetry,
+  createFileHandoff,
+  getHandoffTokenFromCurrentUrl,
+  supportsFileHandoff,
+} from "./file-handoff";
 
 // ─── Options ──────────────────────────────────────────────────────────────────
 
@@ -20,6 +28,7 @@ export interface LensUIOptions {
   summaryDynamic: HTMLElement;
   actionsBar: HTMLElement;
   actionCopyBtn: HTMLButtonElement;
+  actionPrismBtn: HTMLButtonElement;
   actionUploadBtn: HTMLButtonElement;
   loadingIndicator: HTMLElement;
   emptyState: HTMLElement;
@@ -41,6 +50,7 @@ export const LENS_UI_IDS: LensUIIdMap = {
   summaryDynamic: "lens-summary-dynamic",
   actionsBar: "lens-actions",
   actionCopyBtn: "lens-action-copy",
+  actionPrismBtn: "lens-action-prism",
   actionUploadBtn: "lens-action-upload",
   loadingIndicator: "lens-loading",
   emptyState: "lens-empty-state",
@@ -94,6 +104,7 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
   const summaryDynamic = queryById(root, LENS_UI_IDS.summaryDynamic);
   const actionsBar = queryById(root, LENS_UI_IDS.actionsBar);
   const actionCopyBtn = queryButtonById(root, LENS_UI_IDS.actionCopyBtn);
+  const actionPrismBtn = queryButtonById(root, LENS_UI_IDS.actionPrismBtn);
   const actionUploadBtn = queryButtonById(root, LENS_UI_IDS.actionUploadBtn);
   const loadingIndicator = queryById(root, LENS_UI_IDS.loadingIndicator);
   const emptyState = queryById(root, LENS_UI_IDS.emptyState);
@@ -103,6 +114,7 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
     !previewImg || !previewAudio || !previewVideo || !previewText ||
     !summarySection || !summaryFields || !summaryDynamic ||
     !actionsBar || !actionCopyBtn ||
+    !actionPrismBtn ||
     !actionUploadBtn || !loadingIndicator || !emptyState
   ) {
     return null;
@@ -112,7 +124,7 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
     container, uploadZone, fileInput, previewSection,
     previewImg, previewAudio, previewVideo, previewText,
     summarySection, summaryFields, summaryDynamic,
-    actionsBar, actionCopyBtn, actionUploadBtn,
+    actionsBar, actionCopyBtn, actionPrismBtn, actionUploadBtn,
     loadingIndicator, emptyState,
   };
 }
@@ -145,12 +157,15 @@ const TOAST_EXIT_MS = 300;
 export function initLens(opts: LensUIOptions): () => void {
   let destroyed = false;
   let currentData: LensData | null = null;
+  let currentInputFile: File | null = null;
   let currentObjectUrl: string | null = null;
   let expansionState = loadExpansionState();
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let actionBarTimer: ReturnType<typeof setTimeout> | null = null;
   const categoryRevealTimers = new Set<ReturnType<typeof setTimeout>>();
   let generation = 0; // monotonic counter to discard stale async results
+  let prismHandoffInFlight = false;
+  let handoffSupported = true;
   const cleanups: Array<() => void> = [];
 
   function on<K extends keyof HTMLElementEventMap>(
@@ -286,6 +301,19 @@ export function initLens(opts: LensUIOptions): () => void {
     }
   }
 
+  function isPrismHandoffEligible(data: LensData | null): boolean {
+    if (!data) return false;
+    return data.previewType === "image" || data.previewType === "audio" || data.previewType === "video";
+  }
+
+  function updatePrismHandoffButton(data: LensData | null): void {
+    const isEligible = isPrismHandoffEligible(data) && currentInputFile !== null;
+    const isVisible = handoffSupported && isEligible;
+    opts.actionPrismBtn.style.display = isVisible ? "" : "none";
+    opts.actionPrismBtn.disabled = !isVisible || prismHandoffInFlight;
+    opts.actionPrismBtn.setAttribute("aria-busy", prismHandoffInFlight ? "true" : "false");
+  }
+
   // ── Summary rendering ─────────────────────────────────
 
   function renderSummary(data: LensData): void {
@@ -332,6 +360,7 @@ export function initLens(opts: LensUIOptions): () => void {
       showToast("empty file");
       return;
     }
+    currentInputFile = file;
 
     // If already processing, cancel the old run by bumping generation
     const thisGen = ++generation;
@@ -380,6 +409,7 @@ export function initLens(opts: LensUIOptions): () => void {
     renderCategories(data);
 
     // Show action bar
+    updatePrismHandoffButton(data);
     opts.actionsBar.style.display = "";
     requestAnimationFrame(() => {
       opts.actionsBar.style.opacity = "1";
@@ -398,7 +428,9 @@ export function initLens(opts: LensUIOptions): () => void {
       URL.revokeObjectURL(currentObjectUrl);
       currentObjectUrl = null;
     }
+    currentInputFile = null;
     currentData = null;
+    updatePrismHandoffButton(null);
     opts.summarySection.style.display = "none";
     opts.summaryDynamic.innerHTML = "";
     opts.emptyState.style.display = "none";
@@ -640,6 +672,26 @@ export function initLens(opts: LensUIOptions): () => void {
     }
   });
 
+  // ── Open in Prism ────────────────────────────────────────────────
+
+  on(opts.actionPrismBtn, "click", async () => {
+    if (prismHandoffInFlight || !handoffSupported || !currentData || !currentInputFile || !isPrismHandoffEligible(currentData)) {
+      return;
+    }
+
+    prismHandoffInFlight = true;
+    updatePrismHandoffButton(currentData);
+    try {
+      const token = await createFileHandoff(currentInputFile, "lens");
+      window.location.href = buildPrismHandoffUrl(token);
+    } catch {
+      showToast("could not handoff file to prism");
+    } finally {
+      prismHandoffInFlight = false;
+      if (!destroyed) updatePrismHandoffButton(currentData);
+    }
+  });
+
   // ── Upload new ────────────────────────────────────────
 
   on(opts.actionUploadBtn, "click", () => {
@@ -647,6 +699,37 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.fileInput.value = "";
     opts.fileInput.click();
   });
+
+  updatePrismHandoffButton(null);
+
+  async function initPrismHandoffSupport(): Promise<void> {
+    handoffSupported = await supportsFileHandoff();
+    if (destroyed) return;
+    updatePrismHandoffButton(currentData);
+  }
+
+  void initPrismHandoffSupport();
+
+  async function consumePrismHandoffIfPresent(): Promise<void> {
+    const token = getHandoffTokenFromCurrentUrl();
+    if (!token) return;
+
+    try {
+      const file = await consumeFileHandoffWithRetry(token);
+      if (!file) {
+        clearHandoffTokenFromCurrentUrl();
+        if (!destroyed) showToast("handoff expired or already used");
+        return;
+      }
+      if (destroyed) return;
+      clearHandoffTokenFromCurrentUrl();
+      await processFile(file);
+    } catch {
+      if (!destroyed) showToast("could not load handoff from prism");
+    }
+  }
+
+  void consumePrismHandoffIfPresent();
 
   // ── Toast ─────────────────────────────────────────────
 

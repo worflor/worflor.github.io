@@ -64,6 +64,12 @@ function createInput(id: string, type: string, value: string, placeholder?: stri
   return input;
 }
 
+/** Escape a VFS path for use inside ffmpeg's subtitles= filter argument. */
+function escapeSubtitlePath(path: string): string {
+  // The subtitles filter uses libass which treats : [ ] ' \ as special
+  return path.replace(/([\\':[\]])/g, "\\$1");
+}
+
 function readFileAsUint8Array(file: File): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -325,8 +331,8 @@ export function createSubtitles(): SubtitleModule {
       const subFileName = subFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const subPath = `/input/${subFileName}`;
 
-      // Use force_style for font size and margin
-      const vf = `subtitles=${subPath}:force_style='FontSize=${config.fontSize},MarginV=${config.marginV}'`;
+      // Use force_style for font size and margin; escape path for libass
+      const vf = `subtitles=${escapeSubtitlePath(subPath)}:force_style='FontSize=${config.fontSize},MarginV=${config.marginV}'`;
 
       const args = ["-i", inputPath, "-vf", vf, ...codecArgs, "-y", outputPath];
 
@@ -340,8 +346,8 @@ export function createSubtitles(): SubtitleModule {
       };
     }
 
-    // Embedded subtitles
-    const vf = `subtitles=${inputPath}:force_style='FontSize=${config.fontSize},MarginV=${config.marginV}'`;
+    // Embedded subtitles — escape path for libass
+    const vf = `subtitles=${escapeSubtitlePath(inputPath)}:force_style='FontSize=${config.fontSize},MarginV=${config.marginV}'`;
     const args = ["-i", inputPath, "-vf", vf, ...codecArgs, "-y", outputPath];
 
     return { args, outputName };

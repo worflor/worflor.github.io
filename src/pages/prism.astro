@@ -268,6 +268,32 @@ const seo = {
       <button class="action-btn action-btn--primary" id="prism-btn-run" type="button">Run</button>
       <button class="action-btn" id="prism-btn-cancel" type="button" style="display:none">Cancel</button>
       <button class="action-btn" id="prism-btn-download" type="button" style="display:none">Download</button>
+      <button
+        class="action-btn action-btn--icon"
+        id="prism-btn-lens"
+        type="button"
+        style="display:none"
+        aria-label="Open in Lens"
+        title="Open in Lens"
+      >
+        <svg
+          class="lens-handoff-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="10"></circle>
+          <circle cx="12" cy="12" r="4"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line>
+          <line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line>
+          <line x1="21" y1="12" x2="23" y2="12"></line>
+        </svg>
+      </button>
       <button class="action-btn" id="prism-btn-upload" type="button" style="display:none">New File</button>
       <button class="action-btn" id="prism-btn-clear" type="button">Clear</button>
     </div>
@@ -902,6 +928,17 @@ const seo = {
   .action-btn--primary:hover {
     background: rgb(var(--chromatic-cyan) / 0.18);
     color: rgb(var(--chromatic-cyan));
+  }
+
+  .action-btn--icon {
+    min-width: var(--touch-target);
+    padding-inline: calc(var(--space-xs) * 0.8);
+  }
+
+  .lens-handoff-icon {
+    width: 1.05rem;
+    height: 1.05rem;
+    flex-shrink: 0;
   }
 
   /* ── Reduced Motion ────────────────────────────────────────── */

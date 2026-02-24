@@ -14,6 +14,14 @@ import {
   type ProgressEvent,
   type EngineError,
 } from "./prism-engine";
+import {
+  buildLensHandoffUrl,
+  clearHandoffTokenFromCurrentUrl,
+  consumeFileHandoffWithRetry,
+  createFileHandoff,
+  getHandoffTokenFromCurrentUrl,
+  supportsFileHandoff,
+} from "./file-handoff";
 
 import { createWorkbench } from "./prism-workbench";
 import { createShrubber } from "./prism-shrubber";
@@ -73,6 +81,7 @@ export interface PrismUIOptions {
   btnRun: HTMLButtonElement;
   btnCancel: HTMLButtonElement;
   btnDownload: HTMLButtonElement;
+  btnLens: HTMLButtonElement;
   btnUpload: HTMLButtonElement;
   btnClear: HTMLButtonElement;
   sizeWarning: HTMLElement;
@@ -112,6 +121,7 @@ export const PRISM_UI_IDS: PrismUIIdMap = {
   btnRun: "prism-btn-run",
   btnCancel: "prism-btn-cancel",
   btnDownload: "prism-btn-download",
+  btnLens: "prism-btn-lens",
   btnUpload: "prism-btn-upload",
   btnClear: "prism-btn-clear",
   sizeWarning: "prism-size-warning",
@@ -155,6 +165,7 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
   const btnRun = q(root, PRISM_UI_IDS.btnRun);
   const btnCancel = q(root, PRISM_UI_IDS.btnCancel);
   const btnDownload = q(root, PRISM_UI_IDS.btnDownload);
+  const btnLens = q(root, PRISM_UI_IDS.btnLens);
   const btnUpload = q(root, PRISM_UI_IDS.btnUpload);
   const btnClear = q(root, PRISM_UI_IDS.btnClear);
   const sizeWarning = q(root, PRISM_UI_IDS.sizeWarning);
@@ -167,7 +178,7 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
       !previewAudio || !previewImg || !previewText || !terminalSection ||
       !terminalToggle || !terminalBody || !terminalLog || !progressSection ||
       !progressBar || !progressFill || !progressText || !engineStatus ||
-      !actionBar || !btnRun || !btnCancel || !btnDownload || !btnUpload ||
+      !actionBar || !btnRun || !btnCancel || !btnDownload || !btnLens || !btnUpload ||
       !btnClear || !sizeWarning || !outputSummary || !terminalCopy) {
     return null;
   }
@@ -202,6 +213,7 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
     btnRun: btnRun as HTMLButtonElement,
     btnCancel: btnCancel as HTMLButtonElement,
     btnDownload: btnDownload as HTMLButtonElement,
+    btnLens: btnLens as HTMLButtonElement,
     btnUpload: btnUpload as HTMLButtonElement,
     btnClear: btnClear as HTMLButtonElement,
     sizeWarning,
@@ -237,6 +249,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let terminalOpen = false;
   let dragCounter = 0;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  let lensHandoffInFlight = false;
+  let handoffSupported = true;
   const cleanups: Array<() => void> = [];
 
   // ── Module Registry ─────────────────────────────────────────────────────
@@ -451,6 +465,13 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
     opts.btnCancel.style.display = prismState === "processing" ? "" : "none";
     opts.btnDownload.style.display = prismState === "complete" ? "" : "none";
+    const lensVisibleByState = prismState === "files_loaded" ||
+      prismState === "configured" ||
+      prismState === "complete" ||
+      prismState === "error";
+    opts.btnLens.style.display = handoffSupported && lensVisibleByState ? "" : "none";
+    opts.btnLens.disabled = !handoffSupported || !currentFile || prismState === "processing" || lensHandoffInFlight;
+    opts.btnLens.setAttribute("aria-busy", lensHandoffInFlight ? "true" : "false");
 
     // Show action bar when not idle
     if (prismState === "idle") {
@@ -1013,6 +1034,20 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   on(opts.btnCancel, "click", () => { engine?.cancel(); });
   on(opts.btnDownload, "click", () => { downloadOutput(); });
+  on(opts.btnLens, "click", async () => {
+    if (!currentFile || !handoffSupported || lensHandoffInFlight) return;
+    lensHandoffInFlight = true;
+    updateUI();
+    try {
+      const token = await createFileHandoff(currentFile, "prism");
+      window.location.href = buildLensHandoffUrl(token);
+    } catch {
+      showToast("could not handoff file to lens");
+    } finally {
+      lensHandoffInFlight = false;
+      if (!destroyed) updateUI();
+    }
+  });
   on(opts.btnUpload, "click", () => { opts.fileInput.click(); });
   on(opts.btnClear, "click", () => { clearAll(); });
 
@@ -1035,6 +1070,37 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   setState("idle");
   hide(opts.terminalBody);
+
+  async function initLensHandoffSupport(): Promise<void> {
+    handoffSupported = await supportsFileHandoff();
+    if (destroyed) return;
+    updateUI();
+  }
+
+  void initLensHandoffSupport();
+
+  async function consumeLensHandoffIfPresent(): Promise<void> {
+    const token = getHandoffTokenFromCurrentUrl();
+    if (!token) return;
+
+    try {
+      const file = await consumeFileHandoffWithRetry(token);
+      if (!file) {
+        clearHandoffTokenFromCurrentUrl();
+        if (!destroyed) showToast("handoff expired or already used");
+        return;
+      }
+      if (destroyed) return;
+      clearHandoffTokenFromCurrentUrl();
+      await processFile(file);
+    } catch {
+      if (!destroyed) {
+        showToast("could not load handoff from lens");
+      }
+    }
+  }
+
+  void consumeLensHandoffIfPresent();
 
   // ── Cleanup ────────────────────────────────────────────────────────────
 

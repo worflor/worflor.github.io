@@ -155,6 +155,27 @@ export function createShrubber(): ShrubberModule {
     return { args, outputName };
   }
 
+  /** Map audio container extension to a safe codec for re-encoding. */
+  function getDeepCleanAudioArgs(ext: string): { outExt: string; codecArgs: string[] } {
+    const map: Record<string, { outExt: string; codec: string; lossy: boolean }> = {
+      flac: { outExt: "flac", codec: "flac", lossy: false },
+      wav:  { outExt: "wav",  codec: "pcm_s16le", lossy: false },
+      mp3:  { outExt: "mp3",  codec: "libmp3lame", lossy: true },
+      ogg:  { outExt: "ogg",  codec: "libvorbis", lossy: true },
+      opus: { outExt: "opus", codec: "libopus", lossy: true },
+      m4a:  { outExt: "m4a",  codec: "aac", lossy: true },
+      aac:  { outExt: "m4a",  codec: "aac", lossy: true },
+      wma:  { outExt: "mp3",  codec: "libmp3lame", lossy: true },
+      aiff: { outExt: "wav",  codec: "pcm_s16le", lossy: false },
+      ape:  { outExt: "flac", codec: "flac", lossy: false },
+      wv:   { outExt: "flac", codec: "flac", lossy: false },
+    };
+    const entry = map[ext.toLowerCase()] || { outExt: "m4a", codec: "aac", lossy: true };
+    const args = ["-c:a", entry.codec];
+    if (entry.lossy) args.push("-b:a", "192k");
+    return { outExt: entry.outExt, codecArgs: args };
+  }
+
   function buildDeepClean(inputPath: string, baseName: string, ext: string): { args: string[]; outputName: string } {
     if (!currentFile) return { args: [], outputName: "" };
 
@@ -170,9 +191,10 @@ export function createShrubber(): ShrubberModule {
     }
 
     if (category === "audio") {
-      const outputName = `${baseName}_deep.${ext}`;
+      const { outExt, codecArgs } = getDeepCleanAudioArgs(ext);
+      const outputName = `${baseName}_deep.${outExt}`;
       const outputPath = `/output/${outputName}`;
-      const args = ["-i", inputPath, "-map_metadata", "-1", "-map", "0:a?", "-c:a", "aac", "-b:a", "192k", "-y", outputPath];
+      const args = ["-i", inputPath, "-map_metadata", "-1", "-map", "0:a?", ...codecArgs, "-y", outputPath];
       return { args, outputName };
     }
 

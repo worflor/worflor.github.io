@@ -173,6 +173,29 @@ const seo = {
     <!-- Actions (hidden until file loaded) -->
     <div class="lens-actions" id="lens-actions" style="display:none;opacity:0">
       <button class="action-btn" id="lens-action-copy">Copy All</button>
+      <button
+        class="action-btn action-btn--icon"
+        id="lens-action-prism"
+        style="display:none"
+        aria-label="Open in Prism"
+        title="Open in Prism"
+      >
+        <svg
+          class="prism-handoff-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5" />
+          <line x1="12" y1="2" x2="12" y2="22" />
+          <line x1="2" y1="8.5" x2="22" y2="8.5" />
+          <line x1="2" y1="15.5" x2="22" y2="15.5" />
+        </svg>
+      </button>
       <button class="action-btn" id="lens-action-upload">Upload New</button>
     </div>
   </div>
@@ -634,6 +657,20 @@ const seo = {
 
   .action-btn:active {
     background: rgb(var(--color-text-rgb) / 0.1);
+  }
+
+  .action-btn--icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: calc(var(--space-xs) * 4.4);
+    padding: calc(var(--space-xs) * 0.8);
+  }
+
+  .prism-handoff-icon {
+    width: 1.05rem;
+    height: 1.05rem;
+    flex-shrink: 0;
   }
 
   /* ── Reduced Motion ─────────────────────────────────────── */

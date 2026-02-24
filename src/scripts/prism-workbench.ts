@@ -88,7 +88,7 @@ const RESOLUTION_OPTIONS: { label: string; value: string; height: number | null 
 const QUALITY_CRF: Record<string, Record<string, number>> = {
   libx264:       { fast: 28, balanced: 23, quality: 18 },
   "libvpx-vp9":  { fast: 38, balanced: 33, quality: 28 },
-  libvpx:        { fast: 10, balanced: 7, quality: 4 },
+  libvpx:        { fast: 20, balanced: 10, quality: 4 },
 };
 
 const AUDIO_BITRATE: Record<string, string> = {
@@ -745,6 +745,9 @@ export function createWorkbench(): WorkbenchModule {
 
     // ── Image conversion ──────────────────────────────────────────────
     if (category === "image") {
+      // Limit to a single frame to prevent multi-frame output
+      args.push("-frames:v", "1");
+
       if (fileExt === "jpg" || fileExt === "jpeg") {
         const q = config.quality === "fast" ? "10" : config.quality === "quality" ? "2" : "5";
         args.push("-q:v", q);
@@ -770,7 +773,7 @@ export function createWorkbench(): WorkbenchModule {
         if (fmt.vcodec === "libvpx-vp9") {
           args.push("-crf", String(crf), "-b:v", "0");
         } else if (fmt.vcodec === "libvpx") {
-          args.push("-qmin", String(crf), "-qmax", String(crf + 5), "-b:v", "0");
+          args.push("-qmin", String(crf), "-qmax", String(crf + 13), "-b:v", "0");
         } else {
           args.push("-crf", String(crf));
         }
@@ -884,11 +887,19 @@ export function createWorkbench(): WorkbenchModule {
 
     const args = ["-i", inputPath];
 
-    if (fmtDef.acodec === "copy") {
+    // Stream-copy only when the source codec matches the expected input
+    const canCopy = fmtDef.acodec === "copy" &&
+      fmtDef.streamCopyFrom &&
+      currentFile.audioCodec !== null &&
+      fmtDef.streamCopyFrom.includes(currentFile.audioCodec.toLowerCase());
+
+    if (canCopy) {
       args.push("-vn", "-c:a", "copy");
     } else {
-      args.push("-vn", "-c:a", fmtDef.acodec);
-      if (fmtDef.acodec === "libmp3lame" || fmtDef.acodec === "aac" || fmtDef.acodec === "libvorbis" || fmtDef.acodec === "libopus") {
+      // Fall back to re-encoding with the appropriate codec
+      const codec = fmtDef.acodec === "copy" ? "aac" : fmtDef.acodec;
+      args.push("-vn", "-c:a", codec);
+      if (codec === "libmp3lame" || codec === "aac" || codec === "libvorbis" || codec === "libopus") {
         args.push("-b:a", AUDIO_BITRATE[config.quality] || "192k");
       }
     }
