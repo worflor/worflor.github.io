@@ -6,6 +6,7 @@ import { parseFile, LENS_CATEGORY_ORDER, type ExifCategory, type ExifField, type
 import { isPrismSupportedFile } from "./prism-engine";
 import { parsePrismDraftSnapshot } from "./prism-draft";
 import {
+  buildCageHandoffUrl,
   buildPrismHandoffUrl,
   clearHandoffTokenFromCurrentUrl,
   consumeFileHandoffWithRetry,
@@ -31,6 +32,7 @@ export interface LensUIOptions {
   actionsBar: HTMLElement;
   actionCopyBtn: HTMLButtonElement;
   actionPrismBtn: HTMLButtonElement;
+  actionCageBtn: HTMLButtonElement;
   actionUploadBtn: HTMLButtonElement;
   loadingIndicator: HTMLElement;
   emptyState: HTMLElement;
@@ -53,6 +55,7 @@ export const LENS_UI_IDS: LensUIIdMap = {
   actionsBar: "lens-actions",
   actionCopyBtn: "lens-action-copy",
   actionPrismBtn: "lens-action-prism",
+  actionCageBtn: "lens-action-cage",
   actionUploadBtn: "lens-action-upload",
   loadingIndicator: "lens-loading",
   emptyState: "lens-empty-state",
@@ -107,6 +110,7 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
   const actionsBar = queryById(root, LENS_UI_IDS.actionsBar);
   const actionCopyBtn = queryButtonById(root, LENS_UI_IDS.actionCopyBtn);
   const actionPrismBtn = queryButtonById(root, LENS_UI_IDS.actionPrismBtn);
+  const actionCageBtn = queryButtonById(root, LENS_UI_IDS.actionCageBtn);
   const actionUploadBtn = queryButtonById(root, LENS_UI_IDS.actionUploadBtn);
   const loadingIndicator = queryById(root, LENS_UI_IDS.loadingIndicator);
   const emptyState = queryById(root, LENS_UI_IDS.emptyState);
@@ -117,6 +121,7 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
     !summarySection || !summaryFields || !summaryDynamic ||
     !actionsBar || !actionCopyBtn ||
     !actionPrismBtn ||
+    !actionCageBtn ||
     !actionUploadBtn || !loadingIndicator || !emptyState
   ) {
     return null;
@@ -126,7 +131,7 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
     container, uploadZone, fileInput, previewSection,
     previewImg, previewAudio, previewVideo, previewText,
     summarySection, summaryFields, summaryDynamic,
-    actionsBar, actionCopyBtn, actionPrismBtn, actionUploadBtn,
+    actionsBar, actionCopyBtn, actionPrismBtn, actionCageBtn, actionUploadBtn,
     loadingIndicator, emptyState,
   };
 }
@@ -144,6 +149,14 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return e;
 }
 
+function readHandoffSource(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>).source;
+  if (typeof value !== "string") return null;
+  const source = value.trim().toLowerCase();
+  return source.length > 0 ? source : null;
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const EXPANSION_STATE_KEY = "theLens.categoryExpansion.v1";
@@ -154,6 +167,8 @@ const CATEGORY_REVEAL_OFFSET_PX = 8;
 const ACTION_BAR_FADE_MS = 300;
 const TOAST_VISIBLE_MS = 2200;
 const TOAST_EXIT_MS = 300;
+const CAGE_AMBER_MIN_SCORE = 25;
+const CAGE_RED_MIN_SCORE = 55;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -168,8 +183,10 @@ export function initLens(opts: LensUIOptions): () => void {
   const categoryRevealTimers = new Set<ReturnType<typeof setTimeout>>();
   let generation = 0; // monotonic counter to discard stale async results
   let prismHandoffInFlight = false;
+  let cageHandoffInFlight = false;
   let handoffSupported = true;
   let prismDraftMetadata: unknown | null = null;
+  let bootRestorePending = false;
   const cleanups: Array<() => void> = [];
 
   function saveRefreshFileToken(token: string): void {
@@ -345,12 +362,66 @@ export function initLens(opts: LensUIOptions): () => void {
     return isPrismSupportedFile(currentInputFile);
   }
 
-  function updatePrismHandoffButton(): void {
+  function computeCageRisk(): { score: number; level: "green" | "amber" | "red"; reasons: string[] } {
+    if (!currentData || !currentInputFile) {
+      return { score: 0, level: "green", reasons: [] };
+    }
+
+    let score = 0;
+    const reasons = new Set<string>();
+    const name = currentInputFile.name.toLowerCase();
+    const highRiskExt = /(\.exe|\.dll|\.scr|\.bat|\.cmd|\.ps1|\.vbs|\.js|\.jar|\.hta|\.wsf|\.lnk)$/i;
+    const mediumRiskExt = /(\.docm|\.xlsm|\.pptm|\.iso|\.img|\.apk|\.msi|\.chm)$/i;
+
+    if (highRiskExt.test(name)) {
+      score += 40;
+      reasons.add("executable or script extension");
+    } else if (mediumRiskExt.test(name)) {
+      score += 24;
+      reasons.add("macro-capable or installer container extension");
+    }
+
+    const suspiciousToken = /(macro|vba|shell|powershell|autorun|active.?x|javascript|script|command|payload|beacon|stream|embedded|download|invoke|base64|url|ip|dns|c2|encrypted|obfuscat)/i;
+
+    for (const category of currentData.categories) {
+      for (const field of category.fields) {
+        const haystack = `${field.id} ${field.label} ${field.displayValue}`.toLowerCase();
+        if (!suspiciousToken.test(haystack)) continue;
+        score += 8;
+        reasons.add(`${category.title}: ${field.label}`);
+        if (score >= 90) break;
+      }
+      if (score >= 90) break;
+    }
+
+    if (currentData.formatFamily.toLowerCase() === "zip") {
+      score += 8;
+      reasons.add("container format with nested payload potential");
+    }
+
+    const level = score >= CAGE_RED_MIN_SCORE ? "red" : score >= CAGE_AMBER_MIN_SCORE ? "amber" : "green";
+    return {
+      score: Math.min(100, score),
+      level,
+      reasons: Array.from(reasons).slice(0, 6),
+    };
+  }
+
+  function isCageHandoffEligible(): boolean {
+    return Boolean(currentInputFile && currentData);
+  }
+
+  function updateHandoffButtons(): void {
     const isEligible = isPrismHandoffEligible();
-    const isVisible = handoffSupported && isEligible;
-    opts.actionPrismBtn.style.display = isVisible ? "" : "none";
-    opts.actionPrismBtn.disabled = !isVisible || prismHandoffInFlight;
+    const prismVisible = handoffSupported && isEligible;
+    opts.actionPrismBtn.style.display = prismVisible ? "" : "none";
+    opts.actionPrismBtn.disabled = !prismVisible || prismHandoffInFlight;
     opts.actionPrismBtn.setAttribute("aria-busy", prismHandoffInFlight ? "true" : "false");
+
+    const cageVisible = handoffSupported && isCageHandoffEligible();
+    opts.actionCageBtn.style.display = cageVisible ? "" : "none";
+    opts.actionCageBtn.disabled = !cageVisible || cageHandoffInFlight;
+    opts.actionCageBtn.setAttribute("aria-busy", cageHandoffInFlight ? "true" : "false");
   }
 
   // ── Summary rendering ─────────────────────────────────
@@ -395,7 +466,11 @@ export function initLens(opts: LensUIOptions): () => void {
 
   async function processFile(
     file: File,
-    options?: { preservePrismDraft?: boolean; prismDraftMetadata?: unknown | null },
+    options?: {
+      preservePrismDraft?: boolean;
+      prismDraftMetadata?: unknown | null;
+      suppressLoadingIndicator?: boolean;
+    },
   ): Promise<void> {
     if (destroyed) return;
     if (file.size === 0) {
@@ -415,7 +490,7 @@ export function initLens(opts: LensUIOptions): () => void {
     // Hide upload zone, show loading
     opts.uploadZone.style.display = "none";
     opts.emptyState.style.display = "none";
-    opts.loadingIndicator.style.display = "";
+    opts.loadingIndicator.style.display = options?.suppressLoadingIndicator ? "none" : "";
 
     // Create object URL for previews
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
@@ -458,7 +533,7 @@ export function initLens(opts: LensUIOptions): () => void {
     void persistCurrentFileForRefresh(file, prismDraftMetadata);
 
     // Show action bar
-    updatePrismHandoffButton();
+    updateHandoffButtons();
     opts.actionsBar.style.display = "";
     requestAnimationFrame(() => {
       opts.actionsBar.style.opacity = "1";
@@ -481,7 +556,7 @@ export function initLens(opts: LensUIOptions): () => void {
     currentData = null;
     prismDraftMetadata = null;
     clearRefreshFileToken();
-    updatePrismHandoffButton();
+    updateHandoffButtons();
     opts.summarySection.style.display = "none";
     opts.summaryDynamic.innerHTML = "";
     opts.emptyState.style.display = "none";
@@ -731,7 +806,7 @@ export function initLens(opts: LensUIOptions): () => void {
     }
 
     prismHandoffInFlight = true;
-    updatePrismHandoffButton();
+    updateHandoffButtons();
     try {
       let token: string;
       try {
@@ -747,7 +822,31 @@ export function initLens(opts: LensUIOptions): () => void {
       showToast("could not handoff file to prism");
     } finally {
       prismHandoffInFlight = false;
-      if (!destroyed) updatePrismHandoffButton();
+      if (!destroyed) updateHandoffButtons();
+    }
+  });
+
+  on(opts.actionCageBtn, "click", async () => {
+    if (cageHandoffInFlight || !handoffSupported || !currentData || !currentInputFile) {
+      return;
+    }
+
+    cageHandoffInFlight = true;
+    updateHandoffButtons();
+    try {
+      const risk = computeCageRisk();
+      const token = await createFileHandoff(currentInputFile, {
+        source: "lens",
+        risk,
+        summary: currentData.summaryItems,
+        generatedAt: new Date().toISOString(),
+      });
+      window.location.href = buildCageHandoffUrl(token);
+    } catch {
+      showToast("could not throw file in the cage");
+    } finally {
+      cageHandoffInFlight = false;
+      if (!destroyed) updateHandoffButtons();
     }
   });
 
@@ -759,12 +858,12 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.fileInput.click();
   });
 
-  updatePrismHandoffButton();
+  updateHandoffButtons();
 
   async function initPrismHandoffSupport(): Promise<void> {
     handoffSupported = await supportsFileHandoff();
     if (destroyed) return;
-    updatePrismHandoffButton();
+    updateHandoffButtons();
   }
 
   void initPrismHandoffSupport();
@@ -782,16 +881,21 @@ export function initLens(opts: LensUIOptions): () => void {
       }
       if (destroyed) return;
       const hadMetadata = payload.metadata !== null;
-      const draftSnapshot = hadMetadata ? parsePrismDraftSnapshot(payload.metadata) : null;
+      const handoffSource = hadMetadata ? readHandoffSource(payload.metadata) : null;
+      const shouldParsePrismDraft = hadMetadata && (handoffSource === null || handoffSource === "prism");
+      const draftSnapshot = shouldParsePrismDraft ? parsePrismDraftSnapshot(payload.metadata) : null;
       await processFile(payload.file, {
         preservePrismDraft: true,
         prismDraftMetadata: draftSnapshot,
+        suppressLoadingIndicator: true,
       });
-      if (!destroyed && hadMetadata && !draftSnapshot) {
+      if (!destroyed && handoffSource === "cage") {
+        showToast("loaded file from cage");
+      } else if (!destroyed && shouldParsePrismDraft && !draftSnapshot) {
         showToast("loaded file. prism draft could not be restored");
       }
     } catch {
-      if (!destroyed) showToast("could not load handoff from prism");
+      if (!destroyed) showToast("could not load handoff file");
     }
   }
 
@@ -807,19 +911,37 @@ export function initLens(opts: LensUIOptions): () => void {
         return;
       }
       if (destroyed || currentInputFile) return;
-      const draftSnapshot = payload.metadata === null ? null : parsePrismDraftSnapshot(payload.metadata);
+      const handoffSource = payload.metadata === null ? null : readHandoffSource(payload.metadata);
+      const shouldParsePrismDraft = payload.metadata !== null && (handoffSource === null || handoffSource === "prism");
+      const draftSnapshot = shouldParsePrismDraft ? parsePrismDraftSnapshot(payload.metadata) : null;
       await processFile(payload.file, {
         preservePrismDraft: true,
         prismDraftMetadata: draftSnapshot,
+        suppressLoadingIndicator: true,
       });
     } catch {
       // Ignore restore failures silently.
     }
   }
 
+  bootRestorePending = Boolean(getHandoffTokenFromCurrentUrl() || loadRefreshFileToken());
+  if (bootRestorePending) {
+    opts.uploadZone.style.display = "none";
+    opts.emptyState.style.display = "none";
+    opts.loadingIndicator.style.display = "none";
+  }
+
   void (async () => {
-    await consumePrismHandoffIfPresent();
-    await restoreRefreshFileIfPresent();
+    try {
+      await consumePrismHandoffIfPresent();
+      await restoreRefreshFileIfPresent();
+    } finally {
+      bootRestorePending = false;
+      if (destroyed || currentInputFile) return;
+      opts.loadingIndicator.style.display = "none";
+      opts.uploadZone.style.display = "";
+      opts.emptyState.style.display = "none";
+    }
   })();
 
   // ── Toast ─────────────────────────────────────────────

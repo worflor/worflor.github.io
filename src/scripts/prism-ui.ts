@@ -271,6 +271,7 @@ const TOAST_EXIT_MS = 300;
 const RUN_ACK_MS = 1200;
 const PRISM_WARM_ENGINE_KEY = "__prismWarmEngine";
 const PRISM_REFRESH_FILE_KEY = "prism.refreshFileToken.v1";
+const PRISM_ENGINE_READY_KEY = "prism.engineReady.v1";
 
 type PrismWarmWindow = Window & {
   [PRISM_WARM_ENGINE_KEY]?: PrismEngine;
@@ -296,6 +297,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let runAckActive = false;
   let lensHandoffInFlight = false;
   let handoffSupported = true;
+  let bootRestorePending = false;
+  const vfsInputSignatures = new Map<string, string>();
   const queueThumbUrls = new Set<string>();
   const cleanups: Array<() => void> = [];
 
@@ -334,6 +337,26 @@ export function initPrism(opts: PrismUIOptions): () => void {
     }
   }
 
+  function setPersistedEngineReady(ready: boolean): void {
+    try {
+      if (ready) {
+        window.localStorage.setItem(PRISM_ENGINE_READY_KEY, "1");
+      } else {
+        window.localStorage.removeItem(PRISM_ENGINE_READY_KEY);
+      }
+    } catch {
+      // Ignore persistence errors.
+    }
+  }
+
+  function isPersistedEngineReady(): boolean {
+    try {
+      return window.localStorage.getItem(PRISM_ENGINE_READY_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
   // ── File Queue Accessors ───────────────────────────────────────────────
 
   function getCurrentFile(): File | null {
@@ -342,6 +365,44 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   function getCurrentFileInfo(): FileInfo | null {
     return fileQueue.length > 0 ? fileQueue[primaryIndex].info : null;
+  }
+
+  function getFileSignature(file: File): string {
+    return `${file.name}:${file.size}:${file.lastModified}`;
+  }
+
+  async function ensureInputInVfs(eng: PrismEngine, file: File, name: string): Promise<void> {
+    const path = `/input/${name}`;
+    const signature = getFileSignature(file);
+    if (vfsInputSignatures.get(path) === signature) return;
+
+    const data = await readFileAsUint8Array(file);
+    if (destroyed) return;
+    await eng.writeFile(path, data);
+    vfsInputSignatures.set(path, signature);
+  }
+
+  async function removeCachedInput(path: string): Promise<void> {
+    vfsInputSignatures.delete(path);
+    if (!engine || engine.state === "idle" || engine.state === "loading" || engine.state === "running") return;
+    try {
+      await engine.deleteFile(path);
+    } catch {
+      // best-effort cleanup
+    }
+  }
+
+  async function clearCachedInputs(): Promise<void> {
+    const cachedPaths = Array.from(vfsInputSignatures.keys());
+    vfsInputSignatures.clear();
+    if (!engine || engine.state === "idle" || engine.state === "loading" || engine.state === "running") return;
+    for (const path of cachedPaths) {
+      try {
+        await engine.deleteFile(path);
+      } catch {
+        // best-effort cleanup
+      }
+    }
   }
 
   // ── Module Registry ─────────────────────────────────────────────────────
@@ -389,6 +450,9 @@ export function initPrism(opts: PrismUIOptions): () => void {
       onStateChange: (s: EngineState) => {
         if (destroyed) return;
         opts.engineStatus.textContent = s === "ready" ? "engine ready" : s === "loading" ? "loading engine..." : s === "running" ? "processing..." : s;
+        if (s === "ready") {
+          setPersistedEngineReady(true);
+        }
         setEngineStatusClass(s);
         if (s === "loading") {
           opts.btnRun.style.setProperty("--prism-load-ratio", "0");
@@ -709,7 +773,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
     // Upload zone: visible when idle, fully hidden when files loaded
     if (prismState === "idle") {
-      show(opts.uploadZone);
+      if (bootRestorePending) hide(opts.uploadZone);
+      else show(opts.uploadZone);
       hideInputPreview();
       hide(opts.btnUpload);
     } else {
@@ -911,6 +976,17 @@ export function initPrism(opts: PrismUIOptions): () => void {
     return engine;
   }
 
+  async function warmEngineFromPersistence(): Promise<void> {
+    if (!isPersistedEngineReady()) return;
+    const eng = ensureEngine();
+    if (eng.state === "ready" || eng.state === "loading" || eng.state === "running") return;
+    try {
+      await eng.load();
+    } catch {
+      // Keep manual load path available; don't interrupt UI with extra errors.
+    }
+  }
+
   // ── File Handling ──────────────────────────────────────────────────────
 
   async function processFile(file: File): Promise<void> {
@@ -1070,6 +1146,10 @@ export function initPrism(opts: PrismUIOptions): () => void {
   }
 
   function removeQueueItem(idx: number): void {
+    const removed = fileQueue[idx];
+    if (removed) {
+      void removeCachedInput(`/input/${removed.info.name}`);
+    }
     const removedPrimary = idx === primaryIndex;
     fileQueue.splice(idx, 1);
     if (fileQueue.length === 0) {
@@ -1140,6 +1220,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   async function cleanupVFS(eng: PrismEngine, inputNames: string[], keepOutput?: string): Promise<void> {
     for (const name of inputNames) {
+      vfsInputSignatures.delete(`/input/${name}`);
       try { await eng.deleteFile(`/input/${name}`); } catch { /* non-fatal */ }
     }
     try {
@@ -1177,24 +1258,18 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.terminalLog.textContent = "";
 
     const isMultiFile = !!(result as { multiFile?: boolean }).multiFile;
-    const writtenInputNames: string[] = [];
+    const transientInputNames: string[] = [];
 
     try {
       if (isMultiFile) {
-        // Write ALL queue files to VFS
+        // Ensure ALL queue files are available in VFS (skip unchanged files)
         for (const entry of fileQueue) {
-          const data = await readFileAsUint8Array(entry.file);
-          if (destroyed) return;
-          await eng.writeFile(`/input/${entry.info.name}`, data);
-          writtenInputNames.push(entry.info.name);
+          await ensureInputInVfs(eng, entry.file, entry.info.name);
           if (destroyed) return;
         }
       } else {
-        // Write only the primary input file to VFS
-        const data = await readFileAsUint8Array(currentFile);
-        if (destroyed) return;
-        await eng.writeFile(`/input/${currentFile.name}`, data);
-        writtenInputNames.push(currentFile.name);
+        // Ensure only the primary input file is available in VFS
+        await ensureInputInVfs(eng, currentFile, currentFile.name);
         if (destroyed) return;
       }
 
@@ -1236,14 +1311,14 @@ export function initPrism(opts: PrismUIOptions): () => void {
       // ret !== 0: engine's onError callback already fired and set state to error
 
       // Cleanup VFS — also remove concat manifest if present
-      if (isMultiFile) writtenInputNames.push("concat_list.txt");
-      await cleanupVFS(eng, writtenInputNames, ret === 0 ? result.outputName : undefined);
+      if (isMultiFile) transientInputNames.push("concat_list.txt");
+      await cleanupVFS(eng, transientInputNames, ret === 0 ? result.outputName : undefined);
     } catch (err) {
       if (destroyed) return;
       showToast("An unexpected error occurred.");
       setState("error");
       // Clean up VFS after unexpected errors
-      await cleanupVFS(eng, writtenInputNames);
+      await cleanupVFS(eng, transientInputNames);
     }
   }
 
@@ -1526,6 +1601,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
   function clearAll(): void {
     fileQueue = [];
     primaryIndex = 0;
+    void clearCachedInputs();
     revokeQueueThumbUrls();
     clearRefreshFileToken();
     if (outputUrl) { URL.revokeObjectURL(outputUrl); outputUrl = null; }
@@ -1685,7 +1761,10 @@ export function initPrism(opts: PrismUIOptions): () => void {
     run();
   });
 
-  on(opts.btnCancel, "click", () => { engine?.cancel(); });
+  on(opts.btnCancel, "click", () => {
+    vfsInputSignatures.clear();
+    void engine?.cancel();
+  });
   on(opts.btnLens, "click", async () => {
     const currentFile = getCurrentFile();
     if (!currentFile || !handoffSupported || lensHandoffInFlight) return;
@@ -1737,6 +1816,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
   }
 
   void initLensHandoffSupport();
+  void warmEngineFromPersistence();
 
   async function consumeLensHandoffIfPresent(): Promise<void> {
     const token = getHandoffTokenFromCurrentUrl();
@@ -1809,9 +1889,19 @@ export function initPrism(opts: PrismUIOptions): () => void {
     }
   }
 
+  bootRestorePending = Boolean(getHandoffTokenFromCurrentUrl() || loadRefreshFileToken());
+  if (bootRestorePending) {
+    updateUI();
+  }
+
   void (async () => {
-    await consumeLensHandoffIfPresent();
-    await restoreRefreshFileIfPresent();
+    try {
+      await consumeLensHandoffIfPresent();
+      await restoreRefreshFileIfPresent();
+    } finally {
+      bootRestorePending = false;
+      if (!destroyed) updateUI();
+    }
   })();
 
   // ── Cleanup ────────────────────────────────────────────────────────────

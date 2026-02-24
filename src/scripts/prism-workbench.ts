@@ -9,8 +9,10 @@ import type { FileInfo } from "./prism-engine";
 export interface WorkbenchConfig {
   // Output
   outputFormat: string;
-  quality: "fast" | "balanced" | "quality";
-  resolution: string; // "original" | "1080p" | "720p" | "480p" | "360p"
+  quality: "compact" | "low" | "original" | "high" | "maximum";
+  resolution: "original" | "1080p" | "720p" | "480p" | "360p" | "custom";
+  customWidth: number;
+  customHeight: number;
   // FPS
   fpsEnabled: boolean;
   fpsValue: number; // 24 | 25 | 30 | 60
@@ -33,8 +35,14 @@ export interface WorkbenchConfig {
   colorContrast: number;    // 0…2
   colorSaturation: number;  // 0…3
   colorGamma: number;       // 0.1…10
+  denoiseEnabled: boolean;
+  denoiseStrength: number;  // 0.5…6.0
+  debandEnabled: boolean;
+  debandStrength: number;   // 0.5…3.0
   sharpenEnabled: boolean;
   sharpenStrength: number;  // 0.1…2.0
+  vignetteEnabled: boolean;
+  vignetteIntensity: number; // 0.1…1.0
   fadeEnabled: boolean;
   fadeInDuration: number;   // seconds
   fadeOutDuration: number;  // seconds
@@ -108,17 +116,27 @@ const RESOLUTION_OPTIONS: { label: string; value: string; height: number | null 
   { label: "360p", value: "360p", height: 360 },
 ];
 
-const QUALITY_CRF: Record<string, Record<string, number>> = {
-  libx264:       { fast: 28, balanced: 23, quality: 18 },
-  libx265:       { fast: 32, balanced: 28, quality: 22 },
-  "libvpx-vp9":  { fast: 38, balanced: 33, quality: 28 },
-  libvpx:        { fast: 20, balanced: 10, quality: 4 },
+const QUALITY_CRF: Record<string, Record<WorkbenchConfig["quality"], number>> = {
+  libx264:       { compact: 30, low: 26, original: 23, high: 20, maximum: 18 },
+  libx265:       { compact: 34, low: 31, original: 28, high: 25, maximum: 22 },
+  "libvpx-vp9":  { compact: 42, low: 37, original: 33, high: 30, maximum: 27 },
+  libvpx:        { compact: 28, low: 20, original: 12, high: 7, maximum: 4 },
 };
 
-const AUDIO_BITRATE: Record<string, string> = {
-  fast: "128k",
-  balanced: "192k",
-  quality: "320k",
+const AUDIO_BITRATE: Record<WorkbenchConfig["quality"], string> = {
+  compact: "128k",
+  low: "160k",
+  original: "192k",
+  high: "256k",
+  maximum: "320k",
+};
+
+const VIDEO_PRESET: Record<WorkbenchConfig["quality"], "veryfast" | "fast" | "medium" | "slow" | "slower"> = {
+  compact: "veryfast",
+  low: "fast",
+  original: "medium",
+  high: "slow",
+  maximum: "slower",
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -246,8 +264,10 @@ export function createWorkbench(): WorkbenchModule {
 
   const config: WorkbenchConfig = {
     outputFormat: "mp4",
-    quality: "balanced",
+    quality: "original",
     resolution: "original",
+    customWidth: 1920,
+    customHeight: 1080,
     fpsEnabled: false,
     fpsValue: 30,
     trimEnabled: false,
@@ -268,8 +288,14 @@ export function createWorkbench(): WorkbenchModule {
     colorContrast: 1,
     colorSaturation: 1,
     colorGamma: 1,
+    denoiseEnabled: false,
+    denoiseStrength: 1.5,
+    debandEnabled: false,
+    debandStrength: 1.0,
     sharpenEnabled: false,
     sharpenStrength: 1.0,
+    vignetteEnabled: false,
+    vignetteIntensity: 0.35,
     fadeEnabled: false,
     fadeInDuration: 1,
     fadeOutDuration: 1,
@@ -342,17 +368,13 @@ export function createWorkbench(): WorkbenchModule {
     // Quality pills
     const qualityGroup = el("div", "wb-field");
     qualityGroup.appendChild(el("label", "wb-label", "Quality"));
-    const qualityDefs: { value: WorkbenchConfig["quality"]; label: string }[] = category === "image"
-      ? [
-          { value: "fast", label: "Compact" },
-          { value: "balanced", label: "Balanced" },
-          { value: "quality", label: "Maximum" },
-        ]
-      : [
-          { value: "fast", label: "Fast" },
-          { value: "balanced", label: "Balanced" },
-          { value: "quality", label: "Quality" },
-        ];
+    const qualityDefs: { value: WorkbenchConfig["quality"]; label: string }[] = [
+      { value: "compact", label: "Compact" },
+      { value: "low", label: "Low" },
+      { value: "original", label: "Original" },
+      { value: "high", label: "High" },
+      { value: "maximum", label: "Maximum" },
+    ];
     const qualityPillsEl = createPills(
       qualityDefs,
       config.quality,
@@ -364,23 +386,70 @@ export function createWorkbench(): WorkbenchModule {
     qualityGroup.appendChild(qualityPillsEl);
     body.appendChild(qualityGroup);
 
-    // Resolution select (video + image)
+    // Resolution pills + custom dimensions (video + image)
     if (showResolution) {
       const resolutionGroup = el("div", "wb-field");
       resolutionGroup.appendChild(el("label", "wb-label", "Resolution"));
-      const resolutionSelect = createSelect(
-        "wb-resolution",
-        RESOLUTION_OPTIONS.map((r) => ({
-          value: r.value,
-          label: r.value === "original" && currentFile?.resolution
-            ? `Original (${currentFile.resolution})`
-            : r.label,
-        })),
+
+      const resolutionDefs: { value: WorkbenchConfig["resolution"]; label: string }[] = [
+        {
+          value: "original",
+          label: currentFile?.resolution ? `Original (${currentFile.resolution})` : "Original",
+        },
+        { value: "1080p", label: "1080p" },
+        { value: "720p", label: "720p" },
+        { value: "480p", label: "480p" },
+        { value: "360p", label: "360p" },
+        { value: "custom", label: "Custom" },
+      ];
+
+      const resolutionPills = createPills(
+        resolutionDefs,
         config.resolution,
+        (value) => {
+          config.resolution = value;
+          customRow.style.display = value === "custom" ? "" : "none";
+        },
+        true,
       );
-      resolutionSelect.disabled = config.specialMode !== null;
-      resolutionSelect.addEventListener("change", () => { config.resolution = resolutionSelect.value; });
-      resolutionGroup.appendChild(resolutionSelect);
+      if (config.specialMode !== null) {
+        resolutionPills.querySelectorAll(".wb-pill").forEach((p) => ((p as HTMLButtonElement).disabled = true));
+      }
+      resolutionGroup.appendChild(resolutionPills);
+
+      const customRow = el("div", "wb-field wb-field--row");
+      customRow.style.display = config.resolution === "custom" ? "" : "none";
+
+      const widthWrap = el("div", "wb-field");
+      widthWrap.appendChild(el("label", "wb-label", "Width"));
+      const widthInput = createInput("wb-resolution-width", "number", String(config.customWidth), "1920");
+      widthInput.min = "16";
+      widthInput.max = "8192";
+      widthInput.step = "1";
+      widthInput.disabled = config.specialMode !== null;
+      widthInput.addEventListener("change", () => {
+        config.customWidth = Math.max(16, Math.min(8192, Math.round(parseFloat(widthInput.value) || 1920)));
+        widthInput.value = String(config.customWidth);
+      });
+      widthWrap.appendChild(widthInput);
+
+      const heightWrap = el("div", "wb-field");
+      heightWrap.appendChild(el("label", "wb-label", "Height"));
+      const heightInput = createInput("wb-resolution-height", "number", String(config.customHeight), "1080");
+      heightInput.min = "16";
+      heightInput.max = "8192";
+      heightInput.step = "1";
+      heightInput.disabled = config.specialMode !== null;
+      heightInput.addEventListener("change", () => {
+        config.customHeight = Math.max(16, Math.min(8192, Math.round(parseFloat(heightInput.value) || 1080)));
+        heightInput.value = String(config.customHeight);
+      });
+      heightWrap.appendChild(heightInput);
+
+      customRow.appendChild(widthWrap);
+      customRow.appendChild(heightWrap);
+      resolutionGroup.appendChild(customRow);
+
       body.appendChild(resolutionGroup);
     }
 
@@ -429,7 +498,10 @@ export function createWorkbench(): WorkbenchModule {
     const hasCrop = category === "video" || category === "image";
     const hasPad = category === "video" || category === "image";
     const hasColor = category === "video" || category === "image";
+    const hasDenoise = category === "video" || category === "image";
+    const hasDeband = category === "video" || category === "image";
     const hasSharpen = category === "video" || category === "image";
+    const hasVignette = category === "video" || category === "image";
     const hasFade = category === "video";
 
     if (!hasTrim && !hasRotate && !hasCrop) return;
@@ -438,14 +510,17 @@ export function createWorkbench(): WorkbenchModule {
     const title = el("div", "wb-section-title", "Adjustments");
     section.appendChild(title);
 
-    // Render order: Trim → Deinterlace → Rotate → Crop → Pad → Color → Sharpen → Fade
+    // Render order: Trim → Deinterlace → Rotate → Crop → Pad → Color → Denoise → Deband → Sharpen → Vignette → Fade
     if (hasTrim) renderTrimToggle(section);
     if (hasDeinterlace) renderDeinterlaceToggle(section);
     if (hasRotate) renderRotateToggle(section);
     if (hasCrop) renderCropToggle(section);
     if (hasPad) renderPadToggle(section);
     if (hasColor) renderColorToggle(section);
+    if (hasDenoise) renderDenoiseToggle(section);
+    if (hasDeband) renderDebandToggle(section);
     if (hasSharpen) renderSharpenToggle(section);
+    if (hasVignette) renderVignetteToggle(section);
     if (hasFade) renderFadeToggle(section);
 
     // Concat toggle (only when 2+ files in queue)
@@ -815,6 +890,114 @@ export function createWorkbench(): WorkbenchModule {
     parent.appendChild(row);
   }
 
+  function renderDenoiseToggle(parent: HTMLElement): void {
+    const row = el("div", `wb-toggle-row${config.denoiseEnabled ? " wb-toggle-row--active" : ""}`);
+
+    const header = el("label", "wb-toggle-header");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = config.denoiseEnabled;
+    check.addEventListener("change", () => {
+      config.denoiseEnabled = check.checked;
+      row.classList.toggle("wb-toggle-row--active", check.checked);
+      opts.style.display = check.checked ? "" : "none";
+    });
+    header.appendChild(check);
+    header.appendChild(el("span", "wb-toggle-name", "Denoise"));
+    if (config.denoiseEnabled) {
+      header.appendChild(el("span", "wb-toggle-hint", config.denoiseStrength.toFixed(1)));
+    }
+    row.appendChild(header);
+
+    const opts = el("div", "wb-toggle-opts");
+    opts.style.display = config.denoiseEnabled ? "" : "none";
+
+    const strengthGroup = el("div", "wb-field");
+    strengthGroup.appendChild(el("label", "wb-label", "Strength"));
+    const { container: strengthSlider, input: strengthInput } = createSlider(
+      "wb-denoise-strength", 0.5, 6.0, 0.1, config.denoiseStrength,
+      (v) => v.toFixed(1),
+    );
+    strengthInput.addEventListener("input", () => { config.denoiseStrength = parseFloat(strengthInput.value); });
+    strengthGroup.appendChild(strengthSlider);
+    opts.appendChild(strengthGroup);
+
+    row.appendChild(opts);
+    parent.appendChild(row);
+  }
+
+  function renderDebandToggle(parent: HTMLElement): void {
+    const row = el("div", `wb-toggle-row${config.debandEnabled ? " wb-toggle-row--active" : ""}`);
+
+    const header = el("label", "wb-toggle-header");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = config.debandEnabled;
+    check.addEventListener("change", () => {
+      config.debandEnabled = check.checked;
+      row.classList.toggle("wb-toggle-row--active", check.checked);
+      opts.style.display = check.checked ? "" : "none";
+    });
+    header.appendChild(check);
+    header.appendChild(el("span", "wb-toggle-name", "Deband"));
+    if (config.debandEnabled) {
+      header.appendChild(el("span", "wb-toggle-hint", config.debandStrength.toFixed(1)));
+    }
+    row.appendChild(header);
+
+    const opts = el("div", "wb-toggle-opts");
+    opts.style.display = config.debandEnabled ? "" : "none";
+
+    const strengthGroup = el("div", "wb-field");
+    strengthGroup.appendChild(el("label", "wb-label", "Strength"));
+    const { container: strengthSlider, input: strengthInput } = createSlider(
+      "wb-deband-strength", 0.5, 3.0, 0.1, config.debandStrength,
+      (v) => v.toFixed(1),
+    );
+    strengthInput.addEventListener("input", () => { config.debandStrength = parseFloat(strengthInput.value); });
+    strengthGroup.appendChild(strengthSlider);
+    opts.appendChild(strengthGroup);
+
+    row.appendChild(opts);
+    parent.appendChild(row);
+  }
+
+  function renderVignetteToggle(parent: HTMLElement): void {
+    const row = el("div", `wb-toggle-row${config.vignetteEnabled ? " wb-toggle-row--active" : ""}`);
+
+    const header = el("label", "wb-toggle-header");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = config.vignetteEnabled;
+    check.addEventListener("change", () => {
+      config.vignetteEnabled = check.checked;
+      row.classList.toggle("wb-toggle-row--active", check.checked);
+      opts.style.display = check.checked ? "" : "none";
+    });
+    header.appendChild(check);
+    header.appendChild(el("span", "wb-toggle-name", "Vignette"));
+    if (config.vignetteEnabled) {
+      header.appendChild(el("span", "wb-toggle-hint", config.vignetteIntensity.toFixed(2)));
+    }
+    row.appendChild(header);
+
+    const opts = el("div", "wb-toggle-opts");
+    opts.style.display = config.vignetteEnabled ? "" : "none";
+
+    const intensityGroup = el("div", "wb-field");
+    intensityGroup.appendChild(el("label", "wb-label", "Intensity"));
+    const { container: intensitySlider, input: intensityInput } = createSlider(
+      "wb-vignette-intensity", 0.1, 1.0, 0.05, config.vignetteIntensity,
+      (v) => v.toFixed(2),
+    );
+    intensityInput.addEventListener("input", () => { config.vignetteIntensity = parseFloat(intensityInput.value); });
+    intensityGroup.appendChild(intensitySlider);
+    opts.appendChild(intensityGroup);
+
+    row.appendChild(opts);
+    parent.appendChild(row);
+  }
+
   function renderFadeToggle(parent: HTMLElement): void {
     const row = el("div", `wb-toggle-row${config.fadeEnabled ? " wb-toggle-row--active" : ""}`);
 
@@ -1046,9 +1229,11 @@ export function createWorkbench(): WorkbenchModule {
     qualityGroup.appendChild(el("label", "wb-label", "Quality (when re-encoding)"));
     const audioQPills = el("div", "wb-quality-pills");
     const audioQDefs: { value: WorkbenchConfig["quality"]; label: string; hint: string }[] = [
-      { value: "fast", label: "128k", hint: "" },
-      { value: "balanced", label: "192k", hint: "" },
-      { value: "quality", label: "320k", hint: "" },
+      { value: "compact", label: "128k", hint: "" },
+      { value: "low", label: "160k", hint: "" },
+      { value: "original", label: "192k", hint: "" },
+      { value: "high", label: "256k", hint: "" },
+      { value: "maximum", label: "320k", hint: "" },
     ];
     for (const opt of audioQDefs) {
       const pill = el("button", `wb-quality-pill${config.quality === opt.value ? " wb-quality-pill--active" : ""}`, opt.label);
@@ -1104,7 +1289,10 @@ export function createWorkbench(): WorkbenchModule {
     if (config.cropEnabled) suffixParts.push("cropped");
     if (config.padEnabled) suffixParts.push("padded");
     if (config.colorEnabled) suffixParts.push("color");
+    if (config.denoiseEnabled) suffixParts.push("denoise");
+    if (config.debandEnabled) suffixParts.push("deband");
     if (config.sharpenEnabled) suffixParts.push("sharp");
+    if (config.vignetteEnabled) suffixParts.push("vignette");
     if (config.fadeEnabled) suffixParts.push("faded");
     if (config.fpsEnabled) suffixParts.push(`${config.fpsValue}fps`);
     const suffix = suffixParts.length > 0 ? `_${suffixParts.join("_")}` : "";
@@ -1119,14 +1307,14 @@ export function createWorkbench(): WorkbenchModule {
     // No-change fast path: same format, no adjustments — stream-copy everything
     const noChanges = !config.trimEnabled && !config.rotateEnabled && !config.cropEnabled &&
       !config.deinterlaceEnabled && !config.padEnabled && !config.colorEnabled &&
-      !config.sharpenEnabled && !config.fadeEnabled && !config.fpsEnabled &&
+      !config.denoiseEnabled && !config.debandEnabled && !config.sharpenEnabled && !config.vignetteEnabled && !config.fadeEnabled && !config.fpsEnabled &&
       config.resolution === "original" && sameFormat;
     if (noChanges) {
       return { args: ["-i", inputPath, "-c", "copy", "-y", outputPath], outputName };
     }
 
     const hasVisualFilters = config.rotateEnabled || config.cropEnabled || config.deinterlaceEnabled ||
-      config.padEnabled || config.colorEnabled || config.sharpenEnabled ||
+      config.padEnabled || config.colorEnabled || config.denoiseEnabled || config.debandEnabled || config.sharpenEnabled || config.vignetteEnabled ||
       config.fadeEnabled || config.fpsEnabled || config.resolution !== "original";
 
     const trimOnly = config.trimEnabled && !hasVisualFilters &&
@@ -1199,9 +1387,21 @@ export function createWorkbench(): WorkbenchModule {
     }
 
     // 4. Resolution scaling
-    const resOpt = RESOLUTION_OPTIONS.find((r) => r.value === config.resolution);
-    if (resOpt && resOpt.height !== null && (category === "video" || category === "image")) {
-      vfParts.push(`scale=-2:${resOpt.height}`);
+    if (config.resolution === "custom" && (category === "video" || category === "image")) {
+      const width = Math.max(16, Math.min(8192, Math.round(config.customWidth || 1920)));
+      const height = Math.max(16, Math.min(8192, Math.round(config.customHeight || 1080)));
+      if (category === "video") {
+        const evenW = width % 2 === 0 ? width : width - 1;
+        const evenH = height % 2 === 0 ? height : height - 1;
+        vfParts.push(`scale=${Math.max(16, evenW)}:${Math.max(16, evenH)}`);
+      } else {
+        vfParts.push(`scale=${width}:${height}`);
+      }
+    } else {
+      const resOpt = RESOLUTION_OPTIONS.find((r) => r.value === config.resolution);
+      if (resOpt && resOpt.height !== null && (category === "video" || category === "image")) {
+        vfParts.push(`scale=-2:${resOpt.height}`);
+      }
     }
 
     // 5. FPS (after scale)
@@ -1236,7 +1436,25 @@ export function createWorkbench(): WorkbenchModule {
       }
     }
 
-    // 8. Sharpen (after color)
+    // 8. Denoise (after color, before sharpen)
+    if (config.denoiseEnabled && (category === "video" || category === "image")) {
+      const s = Math.max(0.5, Math.min(6, config.denoiseStrength));
+      const lumaSpatial = s.toFixed(2);
+      const chromaSpatial = (s * 0.75).toFixed(2);
+      const lumaTmp = (s * 1.5).toFixed(2);
+      const chromaTmp = (s * 1.125).toFixed(2);
+      vfParts.push(`hqdn3d=${lumaSpatial}:${chromaSpatial}:${lumaTmp}:${chromaTmp}`);
+    }
+
+    // 9. Deband (after denoise)
+    if (config.debandEnabled && (category === "video" || category === "image")) {
+      const s = Math.max(0.5, Math.min(3, config.debandStrength));
+      const threshold = (0.012 * s).toFixed(4);
+      const range = Math.round(10 + s * 4);
+      vfParts.push(`deband=1thr=${threshold}:2thr=${threshold}:3thr=${threshold}:4thr=${threshold}:range=${range}`);
+    }
+
+    // 10. Sharpen (after denoise/deband)
     if (config.sharpenEnabled && (category === "video" || category === "image")) {
       // Map 0.1–2.0 → luma_amount 0.05–1.5, kernel size 3 for light, 5 for heavier
       const s = config.sharpenStrength;
@@ -1245,7 +1463,14 @@ export function createWorkbench(): WorkbenchModule {
       vfParts.push(`unsharp=${kernelSize}:${kernelSize}:${lumaAmount}`);
     }
 
-    // 9. Fade — must be LAST (operates on final pixel values)
+    // 11. Vignette (late-stage look)
+    if (config.vignetteEnabled && (category === "video" || category === "image")) {
+      const intensity = Math.max(0.1, Math.min(1, config.vignetteIntensity));
+      const angle = (0.4 + intensity * 2.6).toFixed(2);
+      vfParts.push(`vignette=angle=${angle}`);
+    }
+
+    // 12. Fade — must be LAST (operates on final pixel values)
     if (config.fadeEnabled && category === "video") {
       if (config.fadeInDuration > 0) {
         vfParts.push(`fade=t=in:d=${config.fadeInDuration}`);
@@ -1274,11 +1499,27 @@ export function createWorkbench(): WorkbenchModule {
       args.push("-frames:v", "1");
 
       if (fileExt === "jpg" || fileExt === "jpeg") {
-        const q = config.quality === "fast" ? "10" : config.quality === "quality" ? "2" : "5";
+        const q = config.quality === "compact"
+          ? "12"
+          : config.quality === "low"
+            ? "8"
+            : config.quality === "original"
+              ? "5"
+              : config.quality === "high"
+                ? "3"
+                : "2";
         args.push("-q:v", q);
       }
       if (fileExt === "webp") {
-        const q = config.quality === "fast" ? "50" : config.quality === "quality" ? "95" : "80";
+        const q = config.quality === "compact"
+          ? "45"
+          : config.quality === "low"
+            ? "65"
+            : config.quality === "original"
+              ? "80"
+              : config.quality === "high"
+                ? "90"
+                : "95";
         args.push("-quality", q);
       }
       if (fileExt === "png") {
@@ -1305,7 +1546,7 @@ export function createWorkbench(): WorkbenchModule {
       }
 
       if (fmt.vcodec === "libx264" || fmt.vcodec === "libx265") {
-        const preset = config.quality === "fast" ? "veryfast" : config.quality === "quality" ? "slow" : "medium";
+        const preset = VIDEO_PRESET[config.quality] || "medium";
         args.push("-preset", preset);
       }
     }
@@ -1512,7 +1753,10 @@ export function createWorkbench(): WorkbenchModule {
       config.cropEnabled = false;
       config.padEnabled = false;
       config.colorEnabled = false;
+      config.denoiseEnabled = false;
+      config.debandEnabled = false;
       config.sharpenEnabled = false;
+      config.vignetteEnabled = false;
       config.fadeEnabled = false;
       config.fpsEnabled = false;
       config.concatEnabled = false;
@@ -1541,7 +1785,16 @@ export function createWorkbench(): WorkbenchModule {
       };
 
       if (typeof nextConfig.outputFormat === "string") config.outputFormat = nextConfig.outputFormat;
-      if (typeof nextConfig.resolution === "string") config.resolution = nextConfig.resolution;
+      if (
+        nextConfig.resolution === "original" ||
+        nextConfig.resolution === "1080p" ||
+        nextConfig.resolution === "720p" ||
+        nextConfig.resolution === "480p" ||
+        nextConfig.resolution === "360p" ||
+        nextConfig.resolution === "custom"
+      ) {
+        config.resolution = nextConfig.resolution;
+      }
       if (typeof nextConfig.trimStart === "string") config.trimStart = nextConfig.trimStart;
       if (typeof nextConfig.trimEnd === "string") config.trimEnd = nextConfig.trimEnd;
       if (typeof nextConfig.gifStart === "string") config.gifStart = nextConfig.gifStart;
@@ -1549,7 +1802,13 @@ export function createWorkbench(): WorkbenchModule {
       if (typeof nextConfig.thumbTime === "string") config.thumbTime = nextConfig.thumbTime;
       if (typeof nextConfig.audioFormat === "string") config.audioFormat = nextConfig.audioFormat;
 
-      if (nextConfig.quality === "fast" || nextConfig.quality === "balanced" || nextConfig.quality === "quality") {
+      if (
+        nextConfig.quality === "compact" ||
+        nextConfig.quality === "low" ||
+        nextConfig.quality === "original" ||
+        nextConfig.quality === "high" ||
+        nextConfig.quality === "maximum"
+      ) {
         config.quality = nextConfig.quality;
       }
       if (nextConfig.deinterlaceMode === "yadif" || nextConfig.deinterlaceMode === "bwdif") {
@@ -1604,17 +1863,25 @@ export function createWorkbench(): WorkbenchModule {
       setBool("cropEnabled");
       setBool("padEnabled");
       setBool("colorEnabled");
+      setBool("denoiseEnabled");
+      setBool("debandEnabled");
       setBool("sharpenEnabled");
+      setBool("vignetteEnabled");
       setBool("fadeEnabled");
       setBool("thumbGrid");
       setBool("concatEnabled");
 
       setNumber("fpsValue", 1, 240);
+      setNumber("customWidth", 16, 8192);
+      setNumber("customHeight", 16, 8192);
       setNumber("colorBrightness", -1, 1);
       setNumber("colorContrast", 0, 2);
       setNumber("colorSaturation", 0, 3);
       setNumber("colorGamma", 0.1, 10);
+      setNumber("denoiseStrength", 0.5, 6.0);
+      setNumber("debandStrength", 0.5, 3.0);
       setNumber("sharpenStrength", 0.1, 2.0);
+      setNumber("vignetteIntensity", 0.1, 1.0);
       setNumber("fadeInDuration", 0, 120);
       setNumber("fadeOutDuration", 0, 120);
       setNumber("gifWidth", 16, 4096);
@@ -1646,8 +1913,10 @@ export function createWorkbench(): WorkbenchModule {
       currentFile = null;
       fileQueueRef = [];
       config.outputFormat = "mp4";
-      config.quality = "balanced";
+      config.quality = "original";
       config.resolution = "original";
+      config.customWidth = 1920;
+      config.customHeight = 1080;
       config.fpsEnabled = false;
       config.fpsValue = 30;
       config.trimEnabled = false;
@@ -1668,8 +1937,14 @@ export function createWorkbench(): WorkbenchModule {
       config.colorContrast = 1;
       config.colorSaturation = 1;
       config.colorGamma = 1;
+      config.denoiseEnabled = false;
+      config.denoiseStrength = 1.5;
+      config.debandEnabled = false;
+      config.debandStrength = 1.0;
       config.sharpenEnabled = false;
       config.sharpenStrength = 1.0;
+      config.vignetteEnabled = false;
+      config.vignetteIntensity = 0.35;
       config.fadeEnabled = false;
       config.fadeInDuration = 1;
       config.fadeOutDuration = 1;

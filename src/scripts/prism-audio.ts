@@ -29,6 +29,15 @@ export interface AudioConfig {
   compAttack: number;       // ms
   compRelease: number;      // ms
   compMakeup: number;       // dB
+  // Limiter
+  limiterEnabled: boolean;
+  limiterCeiling: number;   // dBFS, -9 to 0
+  // Noise Gate
+  gateEnabled: boolean;
+  gateThreshold: number;    // dBFS, -80 to -10
+  gateRatio: number;        // 1 to 20
+  gateAttack: number;       // ms
+  gateRelease: number;      // ms
   // Loudness (mode selector preserves old Normalize/Dynamic/Volume)
   loudnessEnabled: boolean;
   loudnessMode: "normalize" | "dynaudnorm" | "volume";
@@ -129,6 +138,13 @@ export function createAudioLab(): AudioModule {
     compAttack: 20,
     compRelease: 250,
     compMakeup: 0,
+    limiterEnabled: false,
+    limiterCeiling: -1,
+    gateEnabled: false,
+    gateThreshold: -45,
+    gateRatio: 8,
+    gateAttack: 10,
+    gateRelease: 120,
     loudnessEnabled: false,
     loudnessMode: "normalize",
     targetLoudness: -14,
@@ -161,6 +177,8 @@ export function createAudioLab(): AudioModule {
     renderFreqToggle(section);
     renderEqToggle(section);
     renderCompToggle(section);
+    renderLimiterToggle(section);
+    renderGateToggle(section);
     renderLoudnessToggle(section);
     renderSpeedToggle(section);
     renderFadeToggle(section);
@@ -380,6 +398,85 @@ export function createAudioLab(): AudioModule {
     }));
   }
 
+  function renderLimiterToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Limiter", config.limiterEnabled, (v) => { config.limiterEnabled = v; }, (opts) => {
+      opts.appendChild(el("p", "al-hint",
+        "Prevents clipping by limiting peaks to a ceiling. Useful after compression or loudness changes."));
+
+      const ceilingGroup = el("div", "al-field");
+      ceilingGroup.appendChild(el("label", "al-label", "Ceiling (dBFS)"));
+      const ceilingInput = createInput("al-limiter-ceiling", "number", String(config.limiterCeiling), "-1");
+      ceilingInput.min = "-9";
+      ceilingInput.max = "0";
+      ceilingInput.step = "0.5";
+      ceilingInput.addEventListener("change", () => {
+        const value = parseFloat(ceilingInput.value);
+        config.limiterCeiling = Number.isFinite(value) ? Math.min(0, Math.max(-9, value)) : -1;
+      });
+      ceilingGroup.appendChild(ceilingInput);
+      opts.appendChild(ceilingGroup);
+    }));
+  }
+
+  function renderGateToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Noise Gate", config.gateEnabled, (v) => { config.gateEnabled = v; }, (opts) => {
+      opts.appendChild(el("p", "al-hint",
+        "Reduces low-level background noise between phrases by attenuating signals below a threshold."));
+
+      const thresholdGroup = el("div", "al-field");
+      thresholdGroup.appendChild(el("label", "al-label", "Threshold (dBFS)"));
+      const thresholdInput = createInput("al-gate-threshold", "number", String(config.gateThreshold), "-45");
+      thresholdInput.min = "-80";
+      thresholdInput.max = "-10";
+      thresholdInput.step = "1";
+      thresholdInput.addEventListener("change", () => {
+        const value = parseFloat(thresholdInput.value);
+        config.gateThreshold = Number.isFinite(value) ? Math.min(-10, Math.max(-80, value)) : -45;
+      });
+      thresholdGroup.appendChild(thresholdInput);
+      opts.appendChild(thresholdGroup);
+
+      const ratioGroup = el("div", "al-field");
+      ratioGroup.appendChild(el("label", "al-label", "Ratio"));
+      const ratioInput = createInput("al-gate-ratio", "number", String(config.gateRatio), "8");
+      ratioInput.min = "1";
+      ratioInput.max = "20";
+      ratioInput.step = "0.5";
+      ratioInput.addEventListener("change", () => {
+        const value = parseFloat(ratioInput.value);
+        config.gateRatio = Number.isFinite(value) ? Math.min(20, Math.max(1, value)) : 8;
+      });
+      ratioGroup.appendChild(ratioInput);
+      opts.appendChild(ratioGroup);
+
+      const attackGroup = el("div", "al-field");
+      attackGroup.appendChild(el("label", "al-label", "Attack (ms)"));
+      const attackInput = createInput("al-gate-attack", "number", String(config.gateAttack), "10");
+      attackInput.min = "0.1";
+      attackInput.max = "1000";
+      attackInput.step = "1";
+      attackInput.addEventListener("change", () => {
+        const value = parseFloat(attackInput.value);
+        config.gateAttack = Number.isFinite(value) ? Math.min(1000, Math.max(0.1, value)) : 10;
+      });
+      attackGroup.appendChild(attackInput);
+      opts.appendChild(attackGroup);
+
+      const releaseGroup = el("div", "al-field");
+      releaseGroup.appendChild(el("label", "al-label", "Release (ms)"));
+      const releaseInput = createInput("al-gate-release", "number", String(config.gateRelease), "120");
+      releaseInput.min = "1";
+      releaseInput.max = "4000";
+      releaseInput.step = "1";
+      releaseInput.addEventListener("change", () => {
+        const value = parseFloat(releaseInput.value);
+        config.gateRelease = Number.isFinite(value) ? Math.min(4000, Math.max(1, value)) : 120;
+      });
+      releaseGroup.appendChild(releaseInput);
+      opts.appendChild(releaseGroup);
+    }));
+  }
+
   function renderSpeedToggle(parent: HTMLElement): void {
     parent.appendChild(makeToggleRow("Speed", config.speedEnabled, (v) => { config.speedEnabled = v; }, (opts) => {
       opts.appendChild(el("p", "al-hint",
@@ -519,7 +616,25 @@ export function createAudioLab(): AudioModule {
       suffixParts.push("compressed");
     }
 
-    // 5. Loudness
+    // 5. Limiter
+    if (config.limiterEnabled) {
+      const ceilingDb = Math.min(0, Math.max(-9, config.limiterCeiling));
+      const linear = Math.pow(10, ceilingDb / 20);
+      afParts.push(`alimiter=limit=${linear.toFixed(4)}`);
+      suffixParts.push("limited");
+    }
+
+    // 6. Noise Gate
+    if (config.gateEnabled) {
+      const thresholdLinear = Math.pow(10, Math.min(-10, Math.max(-80, config.gateThreshold)) / 20);
+      const ratio = Math.min(20, Math.max(1, config.gateRatio));
+      const attack = Math.min(1000, Math.max(0.1, config.gateAttack));
+      const release = Math.min(4000, Math.max(1, config.gateRelease));
+      afParts.push(`agate=threshold=${thresholdLinear.toFixed(6)}:ratio=${ratio.toFixed(2)}:attack=${attack}:release=${release}`);
+      suffixParts.push("gated");
+    }
+
+    // 7. Loudness
     if (config.loudnessEnabled) {
       if (config.loudnessMode === "normalize") {
         afParts.push(`loudnorm=I=${config.targetLoudness}:TP=${config.targetPeak}:LRA=11`);
@@ -537,7 +652,7 @@ export function createAudioLab(): AudioModule {
       }
     }
 
-    // 6. Speed
+    // 8. Speed
     if (config.speedEnabled && config.speedFactor !== 1.0) {
       let factor = Math.max(0.5, Math.min(config.speedFactor, 2.0));
       const atempoFilters: string[] = [];
@@ -554,7 +669,7 @@ export function createAudioLab(): AudioModule {
       suffixParts.push("speed");
     }
 
-    // 7. Fade
+    // 9. Fade
     if (config.fadeEnabled) {
       if (config.fadeInDuration > 0) {
         afParts.push(`afade=t=in:d=${config.fadeInDuration}`);
@@ -567,7 +682,7 @@ export function createAudioLab(): AudioModule {
       suffixParts.push("faded");
     }
 
-    // 8. Silence Trim
+    // 10. Silence Trim
     if (config.silenceEnabled) {
       const d = config.silenceMinDuration;
       const t = config.silenceThreshold;
@@ -631,6 +746,8 @@ export function createAudioLab(): AudioModule {
       setBool("freqEnabled");
       setBool("eqEnabled");
       setBool("compEnabled");
+      setBool("limiterEnabled");
+      setBool("gateEnabled");
       setBool("loudnessEnabled");
       setBool("speedEnabled");
       setBool("fadeEnabled");
@@ -651,6 +768,11 @@ export function createAudioLab(): AudioModule {
       setNumber("compAttack", 0.01, 2000);
       setNumber("compRelease", 1, 9000);
       setNumber("compMakeup", 0, 30);
+      setNumber("limiterCeiling", -9, 0);
+      setNumber("gateThreshold", -80, -10);
+      setNumber("gateRatio", 1, 20);
+      setNumber("gateAttack", 0.1, 1000);
+      setNumber("gateRelease", 1, 4000);
       setNumber("targetLoudness", -30, 0);
       setNumber("targetPeak", -10, 0);
       setNumber("frameLength", 10, 8000);
@@ -709,6 +831,13 @@ export function createAudioLab(): AudioModule {
       config.compAttack = 20;
       config.compRelease = 250;
       config.compMakeup = 0;
+      config.limiterEnabled = false;
+      config.limiterCeiling = -1;
+      config.gateEnabled = false;
+      config.gateThreshold = -45;
+      config.gateRatio = 8;
+      config.gateAttack = 10;
+      config.gateRelease = 120;
       config.loudnessEnabled = false;
       config.loudnessMode = "normalize";
       config.targetLoudness = -14;

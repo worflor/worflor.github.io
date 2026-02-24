@@ -418,28 +418,10 @@ const seo = {
     padding-bottom: calc(var(--prism-action-offset) + var(--space-lg));
   }
 
-  /* ── Staggered reveal ──────────────────────────────────────── */
-
-  @keyframes prism-fade-up {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
+  /* ── Static sections (no reveal bump-in) ───────────────────── */
 
   .prism-reveal {
-    animation: prism-fade-up 0.4s var(--ease-out) both;
-    animation-delay: var(--reveal-delay, 0ms);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .prism-reveal {
-      animation: none;
-    }
+    animation: none;
   }
 
   /* ── Header ──────────────────────────────────────────────── */
