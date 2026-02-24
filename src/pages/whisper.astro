@@ -222,24 +222,22 @@ const seo = {
       <div class="whisper-insights">
         <h2 class="insights-title">what does this do?</h2>
         <p class="insights-text">
-          whisper scans a carrier file for inert regions — padding bytes,
-          alignment gaps, format-specific dead zones — and writes an encrypted
-          payload directly into that space. the carrier still looks and
-          behaves like itself. nothing is appended unless no slot fits.
+          whisper takes a normal file (your "carrier") and tucks a second file
+          inside the boring parts most formats already have: padding, gaps,
+          dead space. the carrier should still open/play/render like it did
+          before. if there isn’t enough room, it falls back to attaching a
+          small tail.
         </p>
         <p class="insights-text">
-          encryption is carrier-bound: the key derivation uses a hash of the
-          carrier excluding the embedded region. move the payload to a
-          different file and decryption fails by design. tamper with the
-          carrier and the key changes. no external metadata, no headers to
-          spot, no side-channel.
+          it’s also intentionally "fragile": if you edit the carrier, re-save
+          it, recompress it, or try to move the hidden data somewhere else,
+          it won’t decrypt anymore. that’s the point — the payload is bound to
+          that exact file.
         </p>
         <p class="insights-text">
-          everything runs in your browser. files never leave your device.
-          the inert-space scanner uses a wasm-accelerated byte-density
-          heuristic. encryption is aes-256-gcm via web crypto with pbkdf2
-          key stretching. hunt mode scans multiple files in sequence,
-          filtering by name or hash prefix.
+          everything runs locally in your browser. nothing gets uploaded.
+          extract pulls the payload back out, and hunt is just “do that, but
+          across a bunch of files until something unlocks”.
         </p>
       </div>
     </section>
