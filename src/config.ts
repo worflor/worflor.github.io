@@ -178,20 +178,6 @@ export const projectsPageContent: ProjectPageContent = {
   subtitle: "some endeavours.",
   projects: [
     {
-      title: "Whisper - Carrier-Bound Stealth Embedder",
-      description: "Format-agnostic inert-space scanner with local encrypted embed/extract/hunt workflows.<br>Carrier-bound keying means tampered carriers fail decryption by design.",
-      image: "/images/social-card.png",
-      year: "2026",
-      url: "/whisper",
-    },
-    {
-      title: "Radar - Local Signal Minimap",
-      description: "Browser-native recon surface for local Bluetooth, network path telemetry, and live radio bridge feeds.<br>Pure client-side rendering with raw minimap sweep and event stream.",
-      image: "/images/social-card.png",
-      year: "2026",
-      url: "/radar",
-    },
-    {
       title: "Minecraft Server Maintainer",
       description: "<1MB, written in Java 21<br>Handles Vanilla, Plugins, Datapacks, and Mods<br>Running, restarting, updating, validating, backing up, and on top of that it's reliable.",
       image: "/images/mc-server-maintainer.webp",
