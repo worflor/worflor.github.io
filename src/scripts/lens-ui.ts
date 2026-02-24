@@ -265,7 +265,7 @@ export function initLens(opts: LensUIOptions): () => void {
       const label = el("span", "summary-label");
       label.textContent = item.label;
 
-      stat.append(value, label);
+      stat.append(value, " ", label);
       opts.summaryDynamic.appendChild(stat);
     }
 

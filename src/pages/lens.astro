@@ -34,18 +34,28 @@ const seo = {
         aria-label="Upload a file to inspect its metadata"
       >
         <div class="upload-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/>
-            <circle cx="12" cy="12" r="4"/>
-            <line x1="12" y1="1" x2="12" y2="3"/>
-            <line x1="12" y1="21" x2="12" y2="23"/>
-            <line x1="1" y1="12" x2="3" y2="12"/>
-            <line x1="21" y1="12" x2="23" y2="12"/>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="10"></circle>
+            <circle cx="12" cy="12" r="4"></circle>
+            <line x1="12" y1="1" x2="12" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="23"></line>
+            <line x1="1" y1="12" x2="3" y2="12"></line>
+            <line x1="21" y1="12" x2="23" y2="12"></line>
           </svg>
         </div>
         <p class="upload-text">drop a file here</p>
         <p class="upload-subtext">or click / paste to browse</p>
-        <p class="upload-formats">JPEG &middot; TIFF &middot; RAW &middot; PNG &middot; HEIC &middot; any file</p>
+        <p class="upload-formats">
+          JPEG &middot; TIFF &middot; RAW &middot; PNG &middot; HEIC &middot;
+          any file
+        </p>
         <input
           type="file"
           id="lens-file-input"
@@ -86,21 +96,19 @@ const seo = {
           class="lens-preview-audio"
           controls
           preload="metadata"
-          style="display:none"
-        ></audio>
+          style="display:none"></audio>
         <video
           id="lens-preview-video"
           class="lens-preview-video"
           controls
           playsinline
           preload="metadata"
-          style="display:none"
-        ></video>
+          style="display:none"></video>
         <pre
           id="lens-preview-text"
           class="lens-preview-text"
-          style="display:none"
-        ></pre>
+          style="display:none">
+        </pre>
       </div>
     </section>
 
@@ -113,7 +121,7 @@ const seo = {
       <div class="lens-summary">
         <div class="summary-stat">
           <span class="summary-number" id="lens-summary-fields">0</span>
-          <span class="summary-label">fields found</span>
+          <span class="summary-label">&nbsp;fields found</span>
         </div>
         <div id="lens-summary-dynamic"></div>
       </div>
@@ -128,8 +136,8 @@ const seo = {
       <div class="lens-no-exif">
         <p class="no-exif-text">no embedded metadata found</p>
         <p class="no-exif-subtext">
-          this file doesn't contain recognized metadata structures.
-          file info is still shown below.
+          this file doesn't contain recognized metadata structures. file info is
+          still shown below.
         </p>
       </div>
     </section>
@@ -150,15 +158,14 @@ const seo = {
           file has encoding patterns worth understanding.
         </p>
         <p class="insights-text">
-          nothing here ever leaves your browser. the file is read locally,
-          its bytes are walked structure-by-structure, and everything is
-          displayed right here. no servers, no uploads, no tracking.
+          nothing here ever leaves your browser. the file is read locally, its
+          bytes are walked structure-by-structure, and everything is displayed
+          right here. no servers, no uploads, no tracking.
         </p>
         <p class="insights-text">
-          the lens reads container formats (RIFF, ISOBMFF, ZIP), embedded
-          tags (EXIF, ID3, PNG text chunks), and falls back to heuristic
-          analysis for anything it doesn't recognize. drop any file to
-          see what it finds.
+          the lens reads container formats (RIFF, ISOBMFF, ZIP), embedded tags
+          (EXIF, ID3, PNG text chunks), and falls back to heuristic analysis for
+          anything it doesn't recognize. drop any file to see what it finds.
         </p>
       </div>
     </section>
@@ -228,7 +235,11 @@ const seo = {
       if (typeof prev.teardown === "function") prev.teardown();
     }
 
-    lensWindow[LENS_LIFECYCLE_KEY] = { boot, teardown, detach: detachLifecycle };
+    lensWindow[LENS_LIFECYCLE_KEY] = {
+      boot,
+      teardown,
+      detach: detachLifecycle,
+    };
 
     boot();
     attachLifecycle();
@@ -274,8 +285,13 @@ const seo = {
   }
 
   @keyframes privacy-pulse {
-    0%, 100% { box-shadow: 0 0 5px rgba(74, 222, 128, 0.3); }
-    50% { box-shadow: 0 0 10px rgba(74, 222, 128, 0.5); }
+    0%,
+    100% {
+      box-shadow: 0 0 5px rgba(74, 222, 128, 0.3);
+    }
+    50% {
+      box-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+    }
   }
 
   /* ── Upload Zone ────────────────────────────────────────── */
@@ -287,12 +303,11 @@ const seo = {
     padding: var(--space-xl) var(--space-md);
     text-align: center;
     cursor: pointer;
-    background:
-      linear-gradient(
-        180deg,
-        rgb(var(--color-text-rgb) / 0.012) 0%,
-        transparent 60%
-      );
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-text-rgb) / 0.012) 0%,
+      transparent 60%
+    );
     box-shadow: var(--edge-highlight);
     transition:
       border-color var(--duration-slow) var(--ease-spring),
@@ -303,25 +318,23 @@ const seo = {
   .lens-upload-zone:hover,
   .lens-upload-zone:global(.lens-drop-active) {
     border-color: rgb(var(--chromatic-cyan) / 0.35);
-    background:
-      linear-gradient(
-        180deg,
-        rgb(var(--chromatic-cyan) / 0.03) 0%,
-        rgb(var(--chromatic-cyan) / 0.008) 50%,
-        transparent 100%
-      );
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.03) 0%,
+      rgb(var(--chromatic-cyan) / 0.008) 50%,
+      transparent 100%
+    );
     box-shadow: var(--edge-highlight);
   }
 
   .lens-upload-zone:active {
     border-color: rgb(var(--chromatic-cyan) / 0.5);
-    background:
-      linear-gradient(
-        180deg,
-        rgb(var(--chromatic-cyan) / 0.05) 0%,
-        rgb(var(--chromatic-cyan) / 0.015) 50%,
-        transparent 100%
-      );
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.05) 0%,
+      rgb(var(--chromatic-cyan) / 0.015) 50%,
+      transparent 100%
+    );
   }
 
   .lens-upload-zone:focus-visible {
@@ -399,7 +412,9 @@ const seo = {
   }
 
   @keyframes lens-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .lens-loading-text {
@@ -414,12 +429,11 @@ const seo = {
     border: 1px solid rgb(var(--color-text-rgb) / 0.08);
     border-radius: var(--radius-lg);
     overflow: hidden;
-    background:
-      linear-gradient(
-        180deg,
-        rgb(var(--color-text-rgb) / 0.02) 0%,
-        rgb(var(--color-text-rgb) / 0.008) 100%
-      );
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-text-rgb) / 0.02) 0%,
+      rgb(var(--color-text-rgb) / 0.008) 100%
+    );
     box-shadow: var(--edge-highlight);
   }
 
@@ -447,7 +461,8 @@ const seo = {
   .lens-preview-text {
     margin: 0;
     padding: var(--space-sm) var(--space-md);
-    font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family:
+      "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
     font-size: calc(var(--text-sm) * 0.9);
     line-height: 1.65;
     color: rgb(var(--color-text-rgb) / 0.6);
@@ -463,20 +478,20 @@ const seo = {
   .lens-summary {
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     border-radius: var(--radius-lg);
-    padding: var(--space-md) var(--space-md) calc(var(--space-sm) + var(--space-xs) * 0.2);
+    padding: var(--space-md) var(--space-md)
+      calc(var(--space-sm) + var(--space-xs) * 0.2);
     text-align: center;
     display: flex;
     align-items: baseline;
     justify-content: center;
     flex-wrap: wrap;
     gap: var(--space-sm);
-    background:
-      linear-gradient(
-        180deg,
-        rgb(var(--color-text-rgb) / 0.02) 0%,
-        rgb(var(--color-text-rgb) / 0.006) 55%,
-        transparent 100%
-      );
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-text-rgb) / 0.02) 0%,
+      rgb(var(--color-text-rgb) / 0.006) 55%,
+      transparent 100%
+    );
     box-shadow: var(--edge-highlight);
   }
 
@@ -525,12 +540,11 @@ const seo = {
     border-left: 2px solid rgb(var(--color-text-rgb) / 0.12);
     border-radius: var(--radius-lg);
     padding: var(--space-md);
-    background:
-      linear-gradient(
-        135deg,
-        rgb(var(--color-text-rgb) / 0.01) 0%,
-        transparent 40%
-      );
+    background: linear-gradient(
+      135deg,
+      rgb(var(--color-text-rgb) / 0.01) 0%,
+      transparent 40%
+    );
   }
 
   .no-exif-text {
@@ -847,7 +861,10 @@ const seo = {
 
   .lens-toast {
     position: fixed;
-    bottom: calc(var(--space-sm) + var(--touch-target) + var(--space-sm) + env(safe-area-inset-bottom, 0px));
+    bottom: calc(
+      var(--space-sm) + var(--touch-target) + var(--space-sm) +
+        env(safe-area-inset-bottom, 0px)
+    );
     left: 50%;
     transform: translateX(-50%) translateY(8px);
     background: rgb(var(--color-text-rgb) / 0.06);
