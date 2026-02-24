@@ -90,26 +90,35 @@ const seo = {
       id="prism-input-preview"
       style="display:none"
     >
-      <div class="prism-input-preview">
-        <video
-          id="prism-input-video"
-          class="prism-input-preview-video"
-          controls
-          playsinline
-          preload="metadata"
-          style="display:none"></video>
-        <audio
-          id="prism-input-audio"
-          class="prism-input-preview-audio"
-          controls
-          preload="metadata"
-          style="display:none"></audio>
-        <img
-          id="prism-input-img"
-          alt="Input file preview"
-          class="prism-input-preview-img"
-          style="display:none"
-        />
+      <div class="prism-input-preview prism-source-strip">
+        <div class="prism-source-thumb" aria-hidden="true">
+          <video
+            id="prism-input-video"
+            class="prism-input-preview-video"
+            playsinline
+            preload="metadata"
+            style="display:none"></video>
+          <audio
+            id="prism-input-audio"
+            class="prism-input-preview-audio"
+            preload="metadata"
+            style="display:none"></audio>
+          <img
+            id="prism-input-img"
+            alt="Input file thumbnail"
+            class="prism-input-preview-img"
+            style="display:none"
+          />
+          <span id="prism-input-glyph" class="prism-source-glyph">FILE</span>
+        </div>
+        <div class="prism-source-meta">
+          <p id="prism-source-name" class="prism-source-name"></p>
+          <p class="prism-source-subline">
+            <span id="prism-source-size"></span>
+            <span class="prism-source-dot" aria-hidden="true">•</span>
+            <span id="prism-source-type"></span>
+          </p>
+        </div>
       </div>
     </section>
 
@@ -657,24 +666,79 @@ const seo = {
     box-shadow: var(--edge-highlight);
   }
 
+  .prism-source-strip {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.8);
+    padding: calc(var(--space-xs) * 0.5) calc(var(--space-xs) * 0.8);
+  }
+
+  .prism-source-thumb {
+    width: clamp(2.5rem, 2rem + 1vw, 3rem);
+    height: clamp(2.5rem, 2rem + 1vw, 3rem);
+    border-radius: calc(var(--prism-radius) * 0.8);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    background: rgb(var(--color-text-rgb) / 0.03);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    flex: 0 0 auto;
+  }
+
+  .prism-source-glyph {
+    font-size: calc(var(--text-sm) * 0.78);
+    color: rgb(var(--color-text-rgb) / 0.45);
+    letter-spacing: 0.04em;
+    font-weight: 600;
+  }
+
+  .prism-source-meta {
+    min-width: 0;
+    display: grid;
+    gap: calc(var(--space-xs) * 0.2);
+  }
+
+  .prism-source-name {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.88);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .prism-source-subline {
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.35);
+    font-size: calc(var(--text-sm) * 0.86);
+    color: rgb(var(--color-text-rgb) / 0.5);
+    text-transform: lowercase;
+  }
+
+  .prism-source-dot {
+    color: rgb(var(--color-text-rgb) / 0.28);
+  }
+
   .prism-input-preview-video {
     display: block;
-    max-width: 100%;
-    max-height: clamp(14rem, 12rem + 8vw, 22rem);
-    margin: 0 auto;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
   .prism-input-preview-audio {
-    width: 100%;
-    padding: var(--space-sm) var(--space-md);
+    display: none;
   }
 
   .prism-input-preview-img {
     display: block;
-    max-width: 100%;
-    max-height: clamp(14rem, 12rem + 8vw, 22rem);
-    margin: 0 auto;
-    object-fit: contain;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
   /* ── Size Warning ──────────────────────────────────────────── */
@@ -1162,9 +1226,13 @@ const seo = {
       display: none;
     }
 
-    .prism-input-preview-video,
-    .prism-input-preview-img {
-      max-height: clamp(10rem, 9rem + 6vw, 16rem);
+    .prism-source-strip {
+      padding: calc(var(--space-xs) * 0.45) calc(var(--space-xs) * 0.7);
+    }
+
+    .prism-source-thumb {
+      width: 2.3rem;
+      height: 2.3rem;
     }
 
     .prism-tabs {
@@ -1941,6 +2009,30 @@ const seo = {
       );
   }
 
+  .prism-page .prism-queue-thumb {
+    width: 2rem;
+    height: 2rem;
+    border-radius: calc(var(--radius-lg) * 0.7);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    background: rgb(var(--color-text-rgb) / 0.03);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    overflow: hidden;
+    color: rgb(var(--color-text-rgb) / 0.45);
+    font-size: calc(var(--text-sm) * 0.72);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  .prism-page .prism-queue-thumb-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
   .prism-page .prism-queue-name {
     font-weight: 600;
     color: var(--color-text);
@@ -2069,6 +2161,14 @@ const seo = {
 
   .prism-page .prism-output-ratio--larger {
     color: rgb(var(--tool-status-warning));
+  }
+
+  .prism-page .prism-output-badge {
+    padding: 0.12em 0.55em;
+    border-radius: var(--radius-sm);
+    font-size: calc(var(--text-sm) * 0.8);
+    color: rgb(var(--color-text-rgb) / 0.58);
+    background: rgb(var(--color-text-rgb) / 0.08);
   }
 
   /* ── Metadata Report (Diff) ─────────────────────────────── */

@@ -147,6 +147,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const EXPANSION_STATE_KEY = "theLens.categoryExpansion.v1";
+const LENS_REFRESH_FILE_KEY = "theLens.refreshFileToken.v1";
 const CATEGORY_STAGGER_MS = 80;
 const CATEGORY_REVEAL_MS = 300;
 const CATEGORY_REVEAL_OFFSET_PX = 8;
@@ -170,6 +171,41 @@ export function initLens(opts: LensUIOptions): () => void {
   let handoffSupported = true;
   let prismDraftMetadata: unknown | null = null;
   const cleanups: Array<() => void> = [];
+
+  function saveRefreshFileToken(token: string): void {
+    try {
+      window.localStorage.setItem(LENS_REFRESH_FILE_KEY, token);
+    } catch {
+      // Ignore persistence errors.
+    }
+  }
+
+  function loadRefreshFileToken(): string | null {
+    try {
+      const token = window.localStorage.getItem(LENS_REFRESH_FILE_KEY);
+      return token && token.trim().length > 0 ? token : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function clearRefreshFileToken(): void {
+    try {
+      window.localStorage.removeItem(LENS_REFRESH_FILE_KEY);
+    } catch {
+      // Ignore persistence errors.
+    }
+  }
+
+  async function persistCurrentFileForRefresh(file: File, metadata: unknown | null): Promise<void> {
+    try {
+      if (!(await supportsFileHandoff())) return;
+      const token = await createFileHandoff(file, metadata === null ? undefined : metadata);
+      saveRefreshFileToken(token);
+    } catch {
+      // Ignore persistence errors.
+    }
+  }
 
   function on<K extends keyof HTMLElementEventMap>(
     target: EventTarget,
@@ -419,6 +455,8 @@ export function initLens(opts: LensUIOptions): () => void {
     // Render categories
     renderCategories(data);
 
+    void persistCurrentFileForRefresh(file, prismDraftMetadata);
+
     // Show action bar
     updatePrismHandoffButton();
     opts.actionsBar.style.display = "";
@@ -442,6 +480,7 @@ export function initLens(opts: LensUIOptions): () => void {
     currentInputFile = null;
     currentData = null;
     prismDraftMetadata = null;
+    clearRefreshFileToken();
     updatePrismHandoffButton();
     opts.summarySection.style.display = "none";
     opts.summaryDynamic.innerHTML = "";
@@ -756,7 +795,32 @@ export function initLens(opts: LensUIOptions): () => void {
     }
   }
 
-  void consumePrismHandoffIfPresent();
+  async function restoreRefreshFileIfPresent(): Promise<void> {
+    if (currentInputFile) return;
+    const token = loadRefreshFileToken();
+    if (!token) return;
+
+    try {
+      const payload = await consumeFileHandoffWithRetry(token);
+      if (!payload) {
+        clearRefreshFileToken();
+        return;
+      }
+      if (destroyed || currentInputFile) return;
+      const draftSnapshot = payload.metadata === null ? null : parsePrismDraftSnapshot(payload.metadata);
+      await processFile(payload.file, {
+        preservePrismDraft: true,
+        prismDraftMetadata: draftSnapshot,
+      });
+    } catch {
+      // Ignore restore failures silently.
+    }
+  }
+
+  void (async () => {
+    await consumePrismHandoffIfPresent();
+    await restoreRefreshFileIfPresent();
+  })();
 
   // ── Toast ─────────────────────────────────────────────
 

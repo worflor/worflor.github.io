@@ -74,6 +74,10 @@ export interface PrismUIOptions {
   inputVideo: HTMLVideoElement;
   inputAudio: HTMLAudioElement;
   inputImg: HTMLImageElement;
+  inputGlyph: HTMLElement;
+  sourceName: HTMLElement;
+  sourceSize: HTMLElement;
+  sourceType: HTMLElement;
   fileQueue: HTMLElement;
   fileQueueList: HTMLElement;
   moduleBar: HTMLElement;
@@ -114,6 +118,10 @@ export const PRISM_UI_IDS: PrismUIIdMap = {
   inputVideo: "prism-input-video",
   inputAudio: "prism-input-audio",
   inputImg: "prism-input-img",
+  inputGlyph: "prism-input-glyph",
+  sourceName: "prism-source-name",
+  sourceSize: "prism-source-size",
+  sourceType: "prism-source-type",
   fileQueue: "prism-file-queue",
   fileQueueList: "prism-file-queue-list",
   moduleBar: "prism-module-bar",
@@ -158,6 +166,10 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
   const inputVideo = q(root, PRISM_UI_IDS.inputVideo);
   const inputAudio = q(root, PRISM_UI_IDS.inputAudio);
   const inputImg = q(root, PRISM_UI_IDS.inputImg);
+  const inputGlyph = q(root, PRISM_UI_IDS.inputGlyph);
+  const sourceName = q(root, PRISM_UI_IDS.sourceName);
+  const sourceSize = q(root, PRISM_UI_IDS.sourceSize);
+  const sourceType = q(root, PRISM_UI_IDS.sourceType);
   const fileQueue = q(root, PRISM_UI_IDS.fileQueue);
   const fileQueueList = q(root, PRISM_UI_IDS.fileQueueList);
   const moduleBar = q(root, PRISM_UI_IDS.moduleBar);
@@ -188,7 +200,8 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
   const terminalCopy = q(root, PRISM_UI_IDS.terminalCopy);
 
   if (!page || !uploadZone || !fileInput || !inputPreview || !inputVideo ||
-    !inputAudio || !inputImg || !fileQueue || !fileQueueList ||
+    !inputAudio || !inputImg || !inputGlyph || !sourceName || !sourceSize || !sourceType ||
+    !fileQueue || !fileQueueList ||
     !moduleBar || !modulePanel || !previewSection || !previewVideo ||
     !previewAudio || !previewImg || !previewText || !terminalSection ||
     !terminalToggle || !terminalBody || !terminalLog || !progressSection ||
@@ -206,6 +219,10 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
     inputVideo: inputVideo as HTMLVideoElement,
     inputAudio: inputAudio as HTMLAudioElement,
     inputImg: inputImg as HTMLImageElement,
+    inputGlyph,
+    sourceName,
+    sourceSize,
+    sourceType,
     fileQueue,
     fileQueueList,
     moduleBar,
@@ -252,6 +269,7 @@ const TOAST_VISIBLE_MS = 2500;
 const TOAST_EXIT_MS = 300;
 const RUN_ACK_MS = 1200;
 const PRISM_WARM_ENGINE_KEY = "__prismWarmEngine";
+const PRISM_REFRESH_FILE_KEY = "prism.refreshFileToken.v1";
 
 type PrismWarmWindow = Window & {
   [PRISM_WARM_ENGINE_KEY]?: PrismEngine;
@@ -269,7 +287,6 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let outputName: string = "";
   let outputUrl: string | null = null;
   let previewUrl: string | null = null;
-  let inputBlobUrl: string | null = null;
   let downloadUrl: string | null = null;
   let terminalOpen = false;
   let dragCounter = 0;
@@ -278,7 +295,43 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let runAckActive = false;
   let lensHandoffInFlight = false;
   let handoffSupported = true;
+  const queueThumbUrls = new Set<string>();
   const cleanups: Array<() => void> = [];
+
+  function saveRefreshFileToken(token: string): void {
+    try {
+      window.localStorage.setItem(PRISM_REFRESH_FILE_KEY, token);
+    } catch {
+      // Ignore persistence errors.
+    }
+  }
+
+  function loadRefreshFileToken(): string | null {
+    try {
+      const token = window.localStorage.getItem(PRISM_REFRESH_FILE_KEY);
+      return token && token.trim().length > 0 ? token : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function clearRefreshFileToken(): void {
+    try {
+      window.localStorage.removeItem(PRISM_REFRESH_FILE_KEY);
+    } catch {
+      // Ignore persistence errors.
+    }
+  }
+
+  async function persistCurrentFileForRefresh(file: File): Promise<void> {
+    try {
+      if (!(await supportsFileHandoff())) return;
+      const token = await createFileHandoff(file);
+      saveRefreshFileToken(token);
+    } catch {
+      // Ignore persistence errors.
+    }
+  }
 
   // ── File Queue Accessors ───────────────────────────────────────────────
 
@@ -438,7 +491,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
       hide(opts.sizeWarning);
     }
 
-    showInputPreview(currentFile, currentFileInfo.category);
+    hideInputPreview();
     updateModuleTabVisibility(currentFileInfo.category);
 
     for (const [id, mod] of Object.entries(modules) as [ModuleId, PrismModule][]) {
@@ -454,6 +507,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     switchModule(requestedModule);
     renderFileQueue();
     (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
+    void persistCurrentFileForRefresh(currentFile);
   }
 
   async function restoreQueueFromSnapshot(snapshot: PrismDraftSnapshot): Promise<boolean> {
@@ -801,34 +855,17 @@ export function initPrism(opts: PrismUIOptions): () => void {
     hide(opts.inputVideo);
     hide(opts.inputAudio);
     hide(opts.inputImg);
+    show(opts.inputGlyph);
     opts.inputVideo.pause();
     opts.inputVideo.removeAttribute("src");
     opts.inputAudio.pause();
     opts.inputAudio.removeAttribute("src");
     opts.inputImg.removeAttribute("src");
+    opts.inputGlyph.textContent = "FILE";
+    opts.sourceName.textContent = "";
+    opts.sourceSize.textContent = "";
+    opts.sourceType.textContent = "";
     hide(opts.inputPreview);
-    if (inputBlobUrl) {
-      URL.revokeObjectURL(inputBlobUrl);
-      inputBlobUrl = null;
-    }
-  }
-
-  function showInputPreview(file: File, category: FileInfo["category"]): void {
-    hideInputPreview();
-    inputBlobUrl = URL.createObjectURL(file);
-
-    if (category === "video") {
-      opts.inputVideo.src = inputBlobUrl;
-      show(opts.inputVideo);
-    } else if (category === "audio") {
-      opts.inputAudio.src = inputBlobUrl;
-      show(opts.inputAudio);
-    } else if (category === "image") {
-      opts.inputImg.src = inputBlobUrl;
-      show(opts.inputImg);
-    }
-
-    show(opts.inputPreview);
   }
 
   // ── Toast ──────────────────────────────────────────────────────────────
@@ -902,13 +939,42 @@ export function initPrism(opts: PrismUIOptions): () => void {
   }
 
   function renderFileQueue(): void {
+    revokeQueueThumbUrls();
     opts.fileQueueList.innerHTML = "";
     if (fileQueue.length === 0) return;
 
     for (let idx = 0; idx < fileQueue.length; idx++) {
-      const { info } = fileQueue[idx];
+      const { info, file } = fileQueue[idx];
       const isPrimary = idx === primaryIndex;
       const row = el("div", `prism-queue-item${isPrimary ? " prism-queue-item--primary" : ""}`);
+
+      const thumb = el("span", "prism-queue-thumb");
+      if (info.category === "image") {
+        const thumbImg = el("img", "prism-queue-thumb-img") as HTMLImageElement;
+        thumbImg.alt = "";
+        thumbImg.setAttribute("aria-hidden", "true");
+        const thumbUrl = URL.createObjectURL(file);
+        queueThumbUrls.add(thumbUrl);
+        thumbImg.onload = () => {
+          URL.revokeObjectURL(thumbUrl);
+          queueThumbUrls.delete(thumbUrl);
+        };
+        thumbImg.onerror = () => {
+          URL.revokeObjectURL(thumbUrl);
+          queueThumbUrls.delete(thumbUrl);
+        };
+        thumbImg.src = thumbUrl;
+        thumb.appendChild(thumbImg);
+      } else {
+        thumb.textContent = info.category === "video"
+          ? "VID"
+          : info.category === "audio"
+            ? "AUD"
+            : info.category === "subtitle"
+              ? "SUB"
+              : "FILE";
+      }
+      row.appendChild(thumb);
 
       // Top row: name, duration, size, category, status
       const nameEl = el("span", "prism-queue-name", info.name);
@@ -980,6 +1046,14 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
       opts.fileQueueList.appendChild(row);
     }
+  }
+
+  function revokeQueueThumbUrls(): void {
+    if (queueThumbUrls.size === 0) return;
+    for (const url of queueThumbUrls) {
+      URL.revokeObjectURL(url);
+    }
+    queueThumbUrls.clear();
   }
 
   function moveQueueItem(from: number, to: number): void {
@@ -1138,7 +1212,13 @@ export function initPrism(opts: PrismUIOptions): () => void {
         try {
           outputData = await eng.readFile(`/output/${result.outputName}`);
           outputName = result.outputName;
-          showOutputPreview(outputData, outputName);
+          const visualUnchanged = await isVisualOutputUnchanged(
+            currentFile,
+            currentFileInfo,
+            outputData,
+            outputName,
+          );
+          showOutputPreview(outputData, outputName, visualUnchanged);
           triggerRunAck();
           setState("complete");
           scrollToOutputSummary();
@@ -1168,7 +1248,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   // ── Output Summary ──────────────────────────────────────────────────────
 
-  function renderOutputSummary(data: Uint8Array, name: string): void {
+  function renderOutputSummary(data: Uint8Array, name: string, visualUnchanged = false): void {
     opts.outputSummary.innerHTML = "";
     const row = el("div", "prism-output-info");
     row.classList.add("prism-output-info--download");
@@ -1204,8 +1284,57 @@ export function initPrism(opts: PrismUIOptions): () => void {
       }
     }
 
+    if (visualUnchanged) {
+      const unchangedBadge = el("span", "prism-output-badge", "No visual change");
+      row.appendChild(unchangedBadge);
+    }
+
     opts.outputSummary.appendChild(row);
     show(opts.outputSummary);
+  }
+
+  async function getImageDimensions(blob: Blob): Promise<{ width: number; height: number } | null> {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        const dims = { width: image.naturalWidth, height: image.naturalHeight };
+        URL.revokeObjectURL(url);
+        resolve(dims);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      image.src = url;
+    });
+  }
+
+  async function isVisualOutputUnchanged(
+    inputFile: File,
+    inputInfo: FileInfo,
+    output: Uint8Array,
+    outputFileName: string,
+  ): Promise<boolean> {
+    if (inputInfo.category !== "image") return false;
+    const outputExt = outputFileName.split(".").pop()?.toLowerCase() || "";
+    const outputMime = mimeForExtension(outputExt);
+    if (!outputMime.startsWith("image/")) return false;
+    if (inputFile.size !== output.byteLength) return false;
+
+    const inputBytes = await readFileAsUint8Array(inputFile);
+    if (inputBytes.length !== output.length) return false;
+    for (let i = 0; i < inputBytes.length; i++) {
+      if (inputBytes[i] !== output[i]) return false;
+    }
+
+    const [inputDims, outputDims] = await Promise.all([
+      getImageDimensions(inputFile),
+      getImageDimensions(new Blob([output], { type: outputMime })),
+    ]);
+    if (!inputDims || !outputDims) return false;
+
+    return inputDims.width === outputDims.width && inputDims.height === outputDims.height;
   }
 
   // ── Metadata Diff Report ────────────────────────────────────────────────
@@ -1327,10 +1456,10 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   // ── Preview Output ─────────────────────────────────────────────────────
 
-  function showOutputPreview(data: Uint8Array, name: string): void {
+  function showOutputPreview(data: Uint8Array, name: string, visualUnchanged = false): void {
     hideAllPreviews();
     show(opts.previewSection);
-    renderOutputSummary(data, name);
+    renderOutputSummary(data, name, visualUnchanged);
 
     const ext = name.split(".").pop()?.toLowerCase() || "";
     const mime = mimeForExtension(ext);
@@ -1396,6 +1525,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
   function clearAll(): void {
     fileQueue = [];
     primaryIndex = 0;
+    revokeQueueThumbUrls();
+    clearRefreshFileToken();
     if (outputUrl) { URL.revokeObjectURL(outputUrl); outputUrl = null; }
     if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
     outputData = null;
@@ -1659,7 +1790,28 @@ export function initPrism(opts: PrismUIOptions): () => void {
     }
   }
 
-  void consumeLensHandoffIfPresent();
+  async function restoreRefreshFileIfPresent(): Promise<void> {
+    if (fileQueue.length > 0) return;
+    const token = loadRefreshFileToken();
+    if (!token) return;
+
+    try {
+      const payload = await consumeFileHandoffWithRetry(token);
+      if (!payload) {
+        clearRefreshFileToken();
+        return;
+      }
+      if (destroyed || fileQueue.length > 0) return;
+      await processFile(payload.file);
+    } catch {
+      // Ignore restore failures silently.
+    }
+  }
+
+  void (async () => {
+    await consumeLensHandoffIfPresent();
+    await restoreRefreshFileIfPresent();
+  })();
 
   // ── Cleanup ────────────────────────────────────────────────────────────
 
@@ -1674,7 +1826,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.inputVideo.removeAttribute("src");
     opts.inputAudio.pause();
     opts.inputAudio.removeAttribute("src");
-    if (inputBlobUrl) URL.revokeObjectURL(inputBlobUrl);
+    revokeQueueThumbUrls();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     if (outputUrl) URL.revokeObjectURL(outputUrl);
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
