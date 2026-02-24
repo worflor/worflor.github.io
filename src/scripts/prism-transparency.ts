@@ -23,6 +23,7 @@ export interface TransparencyModule {
   configure(file: FileInfo): void;
   build(): { args: string[]; outputName: string } | null;
   getConfig(): TransparencyConfig;
+  setConfig(config: unknown): void;
   reset(): void;
 }
 
@@ -50,6 +51,10 @@ function createSelect(id: string, options: { value: string; label: string }[], s
     select.appendChild(o);
   }
   return select;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 // ─── Module ──────────────────────────────────────────────────────────────────
@@ -301,6 +306,34 @@ export function createTransparency(): TransparencyModule {
     build,
 
     getConfig(): TransparencyConfig { return { ...config }; },
+
+    setConfig(nextConfig: unknown): void {
+      if (!isRecord(nextConfig)) return;
+
+      if (typeof nextConfig.action === "string") {
+        const action = nextConfig.action;
+        if (action === "motion-vectors" || action === "frame-types" || action === "waveform" || action === "histogram") {
+          config.action = action;
+        }
+      }
+      if (typeof nextConfig.mvForward === "boolean") config.mvForward = nextConfig.mvForward;
+      if (typeof nextConfig.mvBackward === "boolean") config.mvBackward = nextConfig.mvBackward;
+
+      if (nextConfig.waveformMode === "column" || nextConfig.waveformMode === "row") {
+        config.waveformMode = nextConfig.waveformMode;
+      }
+      if (nextConfig.waveformEnvelope === "none" || nextConfig.waveformEnvelope === "instant" || nextConfig.waveformEnvelope === "peak") {
+        config.waveformEnvelope = nextConfig.waveformEnvelope;
+      }
+
+      if (container) {
+        container.innerHTML = "";
+        renderActionTabs(container);
+        panelEl = el("div", "trans-panel");
+        container.appendChild(panelEl);
+        renderPanel();
+      }
+    },
 
     reset(): void {
       currentFile = null;

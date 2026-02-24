@@ -25,6 +25,7 @@ export interface SubtitleModule {
   configure(file: FileInfo): void;
   build(): { args: string[]; outputName: string; prepare?: (engine: PrismEngine) => Promise<void> } | null;
   getConfig(): SubtitleConfig;
+  setConfig(config: unknown): void;
   reset(): void;
 }
 
@@ -83,6 +84,10 @@ function readFileAsUint8Array(file: File): Promise<Uint8Array> {
     reader.onerror = () => reject(reader.error);
     reader.readAsArrayBuffer(file);
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 // ─── Module ──────────────────────────────────────────────────────────────────
@@ -388,6 +393,53 @@ export function createSubtitles(): SubtitleModule {
     build,
 
     getConfig(): SubtitleConfig { return { ...config, externalSubFile: config.externalSubFile }; },
+
+    setConfig(nextConfig: unknown): void {
+      if (!isRecord(nextConfig)) return;
+
+      const currentCategory = currentFile?.category ?? null;
+      const allowedActions = currentCategory
+        ? ACTIONS.filter((a) => a.forCategory.includes(currentCategory)).map((a) => a.id)
+        : ACTIONS.map((a) => a.id);
+      if (typeof nextConfig.action === "string") {
+        const requested = nextConfig.action as SubtitleAction;
+        if (allowedActions.includes(requested)) {
+          config.action = requested;
+        }
+      }
+
+      if (typeof nextConfig.trackIndex === "number" && Number.isFinite(nextConfig.trackIndex)) {
+        config.trackIndex = Math.max(0, Math.floor(nextConfig.trackIndex));
+      }
+
+      if (nextConfig.extractFormat === "srt" || nextConfig.extractFormat === "vtt" || nextConfig.extractFormat === "ass") {
+        config.extractFormat = nextConfig.extractFormat;
+      }
+      if (nextConfig.convertFormat === "srt" || nextConfig.convertFormat === "vtt" || nextConfig.convertFormat === "ass") {
+        config.convertFormat = nextConfig.convertFormat;
+      }
+
+      if (typeof nextConfig.fontSize === "number" && Number.isFinite(nextConfig.fontSize)) {
+        config.fontSize = Math.max(8, Math.round(nextConfig.fontSize));
+      }
+      if (typeof nextConfig.marginV === "number" && Number.isFinite(nextConfig.marginV)) {
+        config.marginV = Math.max(0, Math.round(nextConfig.marginV));
+      }
+      if (nextConfig.burnSource === "embedded" || nextConfig.burnSource === "external") {
+        config.burnSource = nextConfig.burnSource;
+      }
+      if (nextConfig.externalSubFile instanceof File || nextConfig.externalSubFile === null) {
+        config.externalSubFile = nextConfig.externalSubFile;
+      }
+
+      if (container) {
+        container.innerHTML = "";
+        renderActionTabs(container);
+        panelEl = el("div", "sub-panel");
+        container.appendChild(panelEl);
+        renderPanel();
+      }
+    },
 
     reset(): void {
       currentFile = null;

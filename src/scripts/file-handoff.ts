@@ -15,8 +15,13 @@ let handoffSupportCheck: Promise<boolean> | null = null;
 interface FileHandoffRecord {
   id: string;
   file: File;
+  metadata?: unknown;
   createdAt: number;
-  source: string;
+}
+
+export interface FileHandoffPayload {
+  file: File;
+  metadata: unknown | null;
 }
 
 function toRequestPromise<T>(request: IDBRequest<T>): Promise<T> {
@@ -122,7 +127,7 @@ async function clearAllEntries(db: IDBDatabase): Promise<void> {
   await waitForTransaction(tx);
 }
 
-export async function createFileHandoff(file: File, source: string = "lens"): Promise<string> {
+export async function createFileHandoff(file: File, metadata?: unknown): Promise<string> {
   const db = await openHandoffDb();
   try {
     // Free stale data first to maximize success for large files.
@@ -132,8 +137,8 @@ export async function createFileHandoff(file: File, source: string = "lens"): Pr
     const record: FileHandoffRecord = {
       id,
       file,
+      metadata,
       createdAt: Date.now(),
-      source,
     };
 
     const putRecord = async (): Promise<void> => {
@@ -157,7 +162,7 @@ export async function createFileHandoff(file: File, source: string = "lens"): Pr
   }
 }
 
-export async function consumeFileHandoff(id: string): Promise<File | null> {
+export async function consumeFileHandoff(id: string): Promise<FileHandoffPayload | null> {
   const key = id.trim();
   if (!key) return null;
 
@@ -171,7 +176,10 @@ export async function consumeFileHandoff(id: string): Promise<File | null> {
 
     if (!record || !(record.file instanceof File)) return null;
     if (Date.now() - record.createdAt > HANDOFF_MAX_AGE_MS) return null;
-    return record.file;
+    return {
+      file: record.file,
+      metadata: record.metadata ?? null,
+    };
   } finally {
     db.close();
   }
@@ -181,7 +189,7 @@ export async function consumeFileHandoffWithRetry(
   id: string,
   retries: number = HANDOFF_CONSUME_RETRIES,
   retryDelayMs: number = HANDOFF_CONSUME_RETRY_DELAY_MS,
-): Promise<File | null> {
+): Promise<FileHandoffPayload | null> {
   const key = id.trim();
   if (!key) return null;
 
@@ -190,9 +198,9 @@ export async function consumeFileHandoffWithRetry(
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const file = await consumeFileHandoff(key);
+      const payload = await consumeFileHandoff(key);
       sawReadResult = true;
-      if (file) return file;
+      if (payload) return payload;
     } catch (err) {
       lastError = err;
     }
@@ -206,25 +214,24 @@ export async function consumeFileHandoffWithRetry(
   return null;
 }
 
-export function supportsFileHandoff(): Promise<boolean> {
-  if (handoffSupportCheck) return handoffSupportCheck;
+export async function supportsFileHandoff(): Promise<boolean> {
+  if (!handoffSupportCheck) {
+    handoffSupportCheck = (async () => {
+      try {
+        const db = await openHandoffDb();
+        db.close();
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+  }
 
-  handoffSupportCheck = (async () => {
-    try {
-      const db = await openHandoffDb();
-      db.close();
-      return true;
-    } catch {
-      return false;
-    }
-  })();
-
-  return handoffSupportCheck.then((supported) => {
-    if (!supported) {
-      handoffSupportCheck = null;
-    }
-    return supported;
-  });
+  const supported = await handoffSupportCheck;
+  if (!supported) {
+    handoffSupportCheck = null;
+  }
+  return supported;
 }
 
 export function buildPrismHandoffUrl(token: string): string {

@@ -52,6 +52,7 @@ const seo = {
           id="prism-file-input"
           class="sr-only"
           aria-hidden="true"
+          multiple
           accept="video/*,audio/*,image/*,.srt,.ass,.ssa,.vtt,.sub,.mkv,.webm,.flac,.ogg,.opus"
         />
       </div>
@@ -268,13 +269,14 @@ const seo = {
       <button class="action-btn action-btn--primary" id="prism-btn-run" type="button">Run</button>
       <button class="action-btn" id="prism-btn-cancel" type="button" style="display:none">Cancel</button>
       <button class="action-btn" id="prism-btn-download" type="button" style="display:none">Download</button>
+      <button class="action-btn" id="prism-btn-upload" type="button" style="display:none">New File</button>
       <button
         class="action-btn action-btn--icon"
         id="prism-btn-lens"
         type="button"
         style="display:none"
-        aria-label="Open in Lens"
-        title="Open in Lens"
+        aria-label="View in Lens"
+        title="View in Lens"
       >
         <svg
           class="lens-handoff-icon"
@@ -294,7 +296,6 @@ const seo = {
           <line x1="21" y1="12" x2="23" y2="12"></line>
         </svg>
       </button>
-      <button class="action-btn" id="prism-btn-upload" type="button" style="display:none">New File</button>
       <button class="action-btn" id="prism-btn-clear" type="button">Clear</button>
     </div>
   </div>
@@ -1265,6 +1266,114 @@ const seo = {
     accent-color: rgb(var(--chromatic-cyan));
     width: 0.95rem;
     height: 0.95rem;
+  }
+
+  /* ── Audio Lab Toggle Rows ──────────────────────────────── */
+
+  .prism-page .al-section {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-left: 2px solid rgb(var(--chromatic-cyan) / 0.18);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm) var(--space-sm);
+    margin-bottom: var(--space-sm);
+  }
+
+  .prism-page .al-section-title {
+    font-size: calc(var(--text-sm) * 0.85);
+    font-weight: 600;
+    color: rgb(var(--color-text-rgb) / 0.38);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: calc(var(--space-xs) * 0.8);
+  }
+
+  .prism-page .al-toggle-row {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    border-radius: var(--radius-sm);
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.8);
+    margin-bottom: calc(var(--space-xs) * 0.3);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .al-toggle-row--active {
+    border-color: rgb(var(--chromatic-cyan) / 0.18);
+    background: rgb(var(--chromatic-cyan) / 0.02);
+  }
+
+  .prism-page .al-toggle-header {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.5);
+    cursor: pointer;
+    min-height: calc(var(--touch-target) * 0.75);
+  }
+
+  .prism-page .al-toggle-header input[type="checkbox"] {
+    accent-color: rgb(var(--chromatic-cyan));
+    width: 0.95rem;
+    height: 0.95rem;
+    flex-shrink: 0;
+  }
+
+  .prism-page .al-toggle-name {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: rgb(var(--color-text-rgb) / 0.6);
+  }
+
+  .prism-page .al-toggle-row--active .al-toggle-name {
+    color: rgb(var(--color-text-rgb) / 0.85);
+  }
+
+  .prism-page .al-toggle-opts {
+    padding: calc(var(--space-xs) * 0.6) 0 0 calc(0.95rem + var(--space-xs) * 0.5);
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  /* ── Queue Actions (multi-file) ────────────────────────── */
+
+  .prism-page .prism-queue-item--primary {
+    border-color: rgb(var(--chromatic-cyan) / 0.2);
+    background: rgb(var(--chromatic-cyan) / 0.02);
+  }
+
+  .prism-page .prism-queue-actions {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.3);
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .prism-page .prism-queue-btn {
+    background: transparent;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--radius-sm);
+    color: rgb(var(--color-text-rgb) / 0.4);
+    font-family: var(--font-body);
+    font-size: calc(var(--text-sm) * 0.8);
+    padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.5);
+    cursor: pointer;
+    min-height: calc(var(--touch-target) * 0.6);
+    transition: color var(--duration-normal) var(--ease-out), border-color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .prism-queue-btn:hover {
+    color: rgb(var(--color-text-rgb) / 0.7);
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+  }
+
+  .prism-page .prism-queue-btn--danger {
+    color: #ff6b35;
+    border-color: rgba(255, 107, 53, 0.2);
+  }
+
+  .prism-page .prism-queue-btn--danger:hover {
+    color: #ff6b35;
+    border-color: rgba(255, 107, 53, 0.4);
+    background: rgba(255, 107, 53, 0.04);
   }
 
   /* ── Subtitle file drop zone ─────────────────────────────── */

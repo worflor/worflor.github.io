@@ -1,24 +1,57 @@
-// prism-audio.ts — The Audio Lab module: loudness normalization, dynamic normalization, volume, speed.
+// prism-audio.ts — The Audio Lab module: composable audio processing pipeline.
+// 8 toggle sections that chain into a single -af argument.
 
 import type { FileInfo } from "./prism-engine";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type AudioAction = "normalize" | "dynaudnorm" | "volume" | "speed";
-
 export interface AudioConfig {
-  action: AudioAction;
-  // Normalize (EBU R128)
-  targetLoudness: number; // dB, e.g. -14
-  targetPeak: number;     // dB, e.g. -1
-  // Dynamic Audio Normalization
-  frameLength: number;    // ms, e.g. 150
-  gaussianSize: number;   // odd integer, e.g. 15
-  // Volume
-  volumeValue: string;    // e.g. "1.5" or "3dB"
+  // Noise Reduction
+  noiseEnabled: boolean;
+  noiseAmount: number;      // 10–97
+  noiseFloor: number;       // -80 to -20
+  // Frequency Filter
+  freqEnabled: boolean;
+  freqLowCut: number;      // Hz
+  freqHighCut: number;      // Hz
+  // EQ (3-band)
+  eqEnabled: boolean;
+  eqLowFreq: number;
+  eqLowGain: number;       // ±12 dB
+  eqMidFreq: number;
+  eqMidGain: number;
+  eqHighFreq: number;
+  eqHighGain: number;
+  // Compressor
+  compEnabled: boolean;
+  compThreshold: number;    // dB
+  compRatio: number;
+  compAttack: number;       // ms
+  compRelease: number;      // ms
+  compMakeup: number;       // dB
+  // Loudness (mode selector preserves old Normalize/Dynamic/Volume)
+  loudnessEnabled: boolean;
+  loudnessMode: "normalize" | "dynaudnorm" | "volume";
+  // Normalize params
+  targetLoudness: number;
+  targetPeak: number;
+  // Dynamic params
+  frameLength: number;
+  gaussianSize: number;
+  // Volume params
+  volumeValue: string;
   volumeUnit: "multiplier" | "dB";
   // Speed
-  speedFactor: number;    // 0.5–2.0
+  speedEnabled: boolean;
+  speedFactor: number;      // 0.5–2.0
+  // Fade
+  fadeEnabled: boolean;
+  fadeInDuration: number;   // seconds
+  fadeOutDuration: number;  // seconds
+  // Silence Trim
+  silenceEnabled: boolean;
+  silenceThreshold: string; // dB string e.g. "-30dB"
+  silenceMinDuration: number; // seconds
 }
 
 export interface AudioModule {
@@ -26,6 +59,7 @@ export interface AudioModule {
   configure(file: FileInfo): void;
   build(): { args: string[]; outputName: string } | null;
   getConfig(): AudioConfig;
+  setConfig(config: unknown): void;
   reset(): void;
 }
 
@@ -65,201 +99,365 @@ function createInput(id: string, type: string, value: string, placeholder?: stri
   return input;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 // ─── Module ──────────────────────────────────────────────────────────────────
 
 export function createAudioLab(): AudioModule {
   let currentFile: FileInfo | null = null;
   let container: HTMLElement | null = null;
-  let actionTabsEl: HTMLElement | null = null;
-  let panelEl: HTMLElement | null = null;
 
   const config: AudioConfig = {
-    action: "normalize",
+    noiseEnabled: false,
+    noiseAmount: 30,
+    noiseFloor: -50,
+    freqEnabled: false,
+    freqLowCut: 80,
+    freqHighCut: 16000,
+    eqEnabled: false,
+    eqLowFreq: 100,
+    eqLowGain: 0,
+    eqMidFreq: 1000,
+    eqMidGain: 0,
+    eqHighFreq: 8000,
+    eqHighGain: 0,
+    compEnabled: false,
+    compThreshold: -20,
+    compRatio: 4,
+    compAttack: 20,
+    compRelease: 250,
+    compMakeup: 0,
+    loudnessEnabled: false,
+    loudnessMode: "normalize",
     targetLoudness: -14,
     targetPeak: -1,
     frameLength: 150,
     gaussianSize: 15,
     volumeValue: "1.0",
     volumeUnit: "multiplier",
+    speedEnabled: false,
     speedFactor: 1.0,
+    fadeEnabled: false,
+    fadeInDuration: 1,
+    fadeOutDuration: 1,
+    silenceEnabled: false,
+    silenceThreshold: "-30dB",
+    silenceMinDuration: 0.5,
   };
 
-  const ACTIONS: { id: AudioAction; label: string }[] = [
-    { id: "normalize",   label: "Normalize" },
-    { id: "dynaudnorm",  label: "Dynamic" },
-    { id: "volume",      label: "Volume" },
-    { id: "speed",       label: "Speed" },
-  ];
+  // ── Render ──────────────────────────────────────────────────────────────
 
-  // ── Action Tabs ──────────────────────────────────────────────────────────
+  function renderAll(): void {
+    if (!container) return;
+    container.innerHTML = "";
 
-  function renderActionTabs(parent: HTMLElement): void {
-    actionTabsEl = el("div", "al-action-tabs");
+    const section = el("div", "al-section");
+    const title = el("div", "al-section-title", "Audio Pipeline");
+    section.appendChild(title);
 
-    for (const action of ACTIONS) {
-      const btn = el("button", "al-tab", action.label);
-      btn.dataset.action = action.id;
-      if (action.id === config.action) btn.classList.add("al-tab--active");
+    renderNoiseToggle(section);
+    renderFreqToggle(section);
+    renderEqToggle(section);
+    renderCompToggle(section);
+    renderLoudnessToggle(section);
+    renderSpeedToggle(section);
+    renderFadeToggle(section);
+    renderSilenceToggle(section);
 
-      btn.addEventListener("click", () => {
-        config.action = action.id;
-        actionTabsEl?.querySelectorAll(".al-tab").forEach((t) => t.classList.remove("al-tab--active"));
-        btn.classList.add("al-tab--active");
-        renderPanel();
-      });
-
-      actionTabsEl.appendChild(btn);
-    }
-
-    parent.appendChild(actionTabsEl);
+    container.appendChild(section);
   }
 
-  // ── Panels ───────────────────────────────────────────────────────────────
+  // ── Toggle helpers ─────────────────────────────────────────────────────
 
-  function renderPanel(): void {
-    if (!panelEl) return;
-    panelEl.innerHTML = "";
+  function makeToggleRow(
+    label: string,
+    enabled: boolean,
+    onToggle: (checked: boolean) => void,
+    renderOpts: (opts: HTMLElement) => void,
+  ): HTMLElement {
+    const row = el("div", `al-toggle-row${enabled ? " al-toggle-row--active" : ""}`);
 
-    switch (config.action) {
-      case "normalize":   renderNormalizePanel(panelEl); break;
-      case "dynaudnorm":  renderDynaudnormPanel(panelEl); break;
-      case "volume":      renderVolumePanel(panelEl); break;
-      case "speed":       renderSpeedPanel(panelEl); break;
-    }
-  }
-
-  function renderNormalizePanel(parent: HTMLElement): void {
-    parent.appendChild(el("p", "al-hint",
-      "EBU R128 loudness normalization. Analyzes the entire file and applies a uniform gain to match the target loudness. Best for music and podcasts."));
-
-    // Target loudness
-    const loudGroup = el("div", "al-field");
-    loudGroup.appendChild(el("label", "al-label", "Target Loudness (LUFS)"));
-    const loudInput = createInput("al-loudness", "number", String(config.targetLoudness), "-14");
-    loudInput.min = "-30";
-    loudInput.max = "0";
-    loudInput.step = "1";
-    loudInput.addEventListener("change", () => { config.targetLoudness = parseFloat(loudInput.value) || -14; });
-    loudGroup.appendChild(loudInput);
-    parent.appendChild(loudGroup);
-
-    // Target peak
-    const peakGroup = el("div", "al-field");
-    peakGroup.appendChild(el("label", "al-label", "True Peak (dBTP)"));
-    const peakInput = createInput("al-peak", "number", String(config.targetPeak), "-1");
-    peakInput.min = "-10";
-    peakInput.max = "0";
-    peakInput.step = "0.5";
-    peakInput.addEventListener("change", () => { config.targetPeak = parseFloat(peakInput.value) || -1; });
-    peakGroup.appendChild(peakInput);
-    parent.appendChild(peakGroup);
-  }
-
-  function renderDynaudnormPanel(parent: HTMLElement): void {
-    parent.appendChild(el("p", "al-hint",
-      "Dynamic audio normalization — adjusts gain on a per-frame basis for real-time leveling. Good for dialogue or content with varying loudness."));
-
-    // Frame length
-    const frameGroup = el("div", "al-field");
-    frameGroup.appendChild(el("label", "al-label", "Frame Length (ms)"));
-    const frameInput = createInput("al-frame", "number", String(config.frameLength), "150");
-    frameInput.min = "10";
-    frameInput.max = "8000";
-    frameInput.step = "10";
-    frameInput.addEventListener("change", () => { config.frameLength = parseInt(frameInput.value) || 150; });
-    frameGroup.appendChild(frameInput);
-    parent.appendChild(frameGroup);
-
-    // Gaussian window size
-    const gaussGroup = el("div", "al-field");
-    gaussGroup.appendChild(el("label", "al-label", "Gaussian Window Size"));
-    const gaussSelect = createSelect("al-gauss", [
-      { value: "3",  label: "3 (responsive)" },
-      { value: "7",  label: "7" },
-      { value: "15", label: "15 (balanced)" },
-      { value: "31", label: "31 (smooth)" },
-    ], String(config.gaussianSize));
-    gaussSelect.addEventListener("change", () => { config.gaussianSize = parseInt(gaussSelect.value); });
-    gaussGroup.appendChild(gaussSelect);
-    parent.appendChild(gaussGroup);
-  }
-
-  function renderVolumePanel(parent: HTMLElement): void {
-    parent.appendChild(el("p", "al-hint",
-      "Simple volume adjustment. Multiply or add a fixed gain to the entire audio track."));
-
-    // Unit select
-    const unitGroup = el("div", "al-field");
-    unitGroup.appendChild(el("label", "al-label", "Mode"));
-    const unitSelect = createSelect("al-vol-unit", [
-      { value: "multiplier", label: "Multiplier (e.g. 1.5x)" },
-      { value: "dB",         label: "Decibels (e.g. +3dB)" },
-    ], config.volumeUnit);
-    unitSelect.addEventListener("change", () => {
-      config.volumeUnit = unitSelect.value as "multiplier" | "dB";
-      // Update placeholder
-      volInput.placeholder = config.volumeUnit === "dB" ? "3" : "1.5";
+    const header = el("label", "al-toggle-header");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = enabled;
+    check.addEventListener("change", () => {
+      onToggle(check.checked);
+      row.classList.toggle("al-toggle-row--active", check.checked);
+      opts.style.display = check.checked ? "" : "none";
     });
-    unitGroup.appendChild(unitSelect);
-    parent.appendChild(unitGroup);
+    header.appendChild(check);
+    header.appendChild(el("span", "al-toggle-name", label));
+    row.appendChild(header);
 
-    // Value
-    const volGroup = el("div", "al-field");
-    const volLabel = config.volumeUnit === "dB" ? "Value (0 = no change)" : "Value (1.0 = no change)";
-    volGroup.appendChild(el("label", "al-label", volLabel));
-    const volInput = createInput("al-vol-value", "text", config.volumeValue, config.volumeUnit === "dB" ? "0" : "1.0");
-    volInput.addEventListener("change", () => { config.volumeValue = volInput.value; });
-    volGroup.appendChild(volInput);
-    parent.appendChild(volGroup);
+    const opts = el("div", "al-toggle-opts");
+    opts.style.display = enabled ? "" : "none";
+    renderOpts(opts);
+    row.appendChild(opts);
+
+    return row;
   }
 
-  function renderSpeedPanel(parent: HTMLElement): void {
-    parent.appendChild(el("p", "al-hint",
-      "Change playback speed without pitch shifting. Uses the atempo filter. Range: 0.5x to 2.0x per pass (can be chained for extreme values)."));
+  // ── Section Renderers ──────────────────────────────────────────────────
 
-    // Speed factor
-    const speedGroup = el("div", "al-field");
-    speedGroup.appendChild(el("label", "al-label", "Speed Factor"));
-    const speedSelect = createSelect("al-speed", [
-      { value: "0.5",  label: "0.5x (half speed)" },
-      { value: "0.75", label: "0.75x" },
-      { value: "1",    label: "1.0x (original)" },
-      { value: "1.25", label: "1.25x" },
-      { value: "1.5",  label: "1.5x" },
-      { value: "1.75", label: "1.75x" },
-      { value: "2.0",  label: "2.0x (double speed)" },
-    ], String(config.speedFactor));
-    speedSelect.addEventListener("change", () => { config.speedFactor = parseFloat(speedSelect.value) || 1.0; });
-    speedGroup.appendChild(speedSelect);
-    parent.appendChild(speedGroup);
+  function renderNoiseToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Noise Reduction", config.noiseEnabled, (v) => { config.noiseEnabled = v; }, (opts) => {
+      const amountGroup = el("div", "al-field");
+      amountGroup.appendChild(el("label", "al-label", "Amount (10\u201397)"));
+      const amountInput = createInput("al-noise-amount", "number", String(config.noiseAmount), "30");
+      amountInput.min = "10"; amountInput.max = "97"; amountInput.step = "1";
+      amountInput.addEventListener("change", () => { config.noiseAmount = parseInt(amountInput.value) || 30; });
+      amountGroup.appendChild(amountInput);
+      opts.appendChild(amountGroup);
+
+      const floorGroup = el("div", "al-field");
+      floorGroup.appendChild(el("label", "al-label", "Noise Floor (dB)"));
+      const floorInput = createInput("al-noise-floor", "number", String(config.noiseFloor), "-50");
+      floorInput.min = "-80"; floorInput.max = "-20"; floorInput.step = "1";
+      floorInput.addEventListener("change", () => { config.noiseFloor = parseInt(floorInput.value) || -50; });
+      floorGroup.appendChild(floorInput);
+      opts.appendChild(floorGroup);
+    }));
+  }
+
+  function renderFreqToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Frequency Filter", config.freqEnabled, (v) => { config.freqEnabled = v; }, (opts) => {
+      const lowGroup = el("div", "al-field");
+      lowGroup.appendChild(el("label", "al-label", "Low Cut (Hz)"));
+      const lowInput = createInput("al-freq-low", "number", String(config.freqLowCut), "80");
+      lowInput.min = "20"; lowInput.max = "2000"; lowInput.step = "10";
+      lowInput.addEventListener("change", () => { config.freqLowCut = parseInt(lowInput.value) || 80; });
+      lowGroup.appendChild(lowInput);
+      opts.appendChild(lowGroup);
+
+      const highGroup = el("div", "al-field");
+      highGroup.appendChild(el("label", "al-label", "High Cut (Hz)"));
+      const highInput = createInput("al-freq-high", "number", String(config.freqHighCut), "16000");
+      highInput.min = "2000"; highInput.max = "22000"; highInput.step = "100";
+      highInput.addEventListener("change", () => { config.freqHighCut = parseInt(highInput.value) || 16000; });
+      highGroup.appendChild(highInput);
+      opts.appendChild(highGroup);
+    }));
+  }
+
+  function renderEqToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("EQ (3-Band)", config.eqEnabled, (v) => { config.eqEnabled = v; }, (opts) => {
+      const bands: { label: string; freqKey: "eqLowFreq" | "eqMidFreq" | "eqHighFreq"; gainKey: "eqLowGain" | "eqMidGain" | "eqHighGain"; defFreq: number; defGain: number }[] = [
+        { label: "Low", freqKey: "eqLowFreq", gainKey: "eqLowGain", defFreq: 100, defGain: 0 },
+        { label: "Mid", freqKey: "eqMidFreq", gainKey: "eqMidGain", defFreq: 1000, defGain: 0 },
+        { label: "High", freqKey: "eqHighFreq", gainKey: "eqHighGain", defFreq: 8000, defGain: 0 },
+      ];
+
+      for (const band of bands) {
+        const freqGroup = el("div", "al-field");
+        freqGroup.appendChild(el("label", "al-label", `${band.label} Freq (Hz)`));
+        const freqInput = createInput(`al-eq-${band.label.toLowerCase()}-freq`, "number", String(config[band.freqKey]), String(band.defFreq));
+        freqInput.min = "20"; freqInput.max = "20000"; freqInput.step = "10";
+        freqInput.addEventListener("change", () => { (config[band.freqKey] as number) = parseInt(freqInput.value) || band.defFreq; });
+        freqGroup.appendChild(freqInput);
+        opts.appendChild(freqGroup);
+
+        const gainGroup = el("div", "al-field");
+        gainGroup.appendChild(el("label", "al-label", `${band.label} Gain (dB)`));
+        const gainInput = createInput(`al-eq-${band.label.toLowerCase()}-gain`, "number", String(config[band.gainKey]), "0");
+        gainInput.min = "-12"; gainInput.max = "12"; gainInput.step = "0.5";
+        gainInput.addEventListener("change", () => { (config[band.gainKey] as number) = parseFloat(gainInput.value) || 0; });
+        gainGroup.appendChild(gainInput);
+        opts.appendChild(gainGroup);
+      }
+    }));
+  }
+
+  function renderCompToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Compressor", config.compEnabled, (v) => { config.compEnabled = v; }, (opts) => {
+      const fields: { label: string; key: keyof AudioConfig; def: number; min: string; max: string; step: string; placeholder: string }[] = [
+        { label: "Threshold (dB)", key: "compThreshold", def: -20, min: "-60", max: "0", step: "1", placeholder: "-20" },
+        { label: "Ratio", key: "compRatio", def: 4, min: "1", max: "20", step: "0.5", placeholder: "4" },
+        { label: "Attack (ms)", key: "compAttack", def: 20, min: "0.01", max: "2000", step: "1", placeholder: "20" },
+        { label: "Release (ms)", key: "compRelease", def: 250, min: "1", max: "9000", step: "10", placeholder: "250" },
+        { label: "Makeup Gain (dB)", key: "compMakeup", def: 0, min: "0", max: "30", step: "0.5", placeholder: "0" },
+      ];
+
+      for (const f of fields) {
+        const group = el("div", "al-field");
+        group.appendChild(el("label", "al-label", f.label));
+        const input = createInput(`al-comp-${f.key}`, "number", String(config[f.key]), f.placeholder);
+        input.min = f.min; input.max = f.max; input.step = f.step;
+        input.addEventListener("change", () => { (config[f.key] as number) = parseFloat(input.value) || f.def; });
+        group.appendChild(input);
+        opts.appendChild(group);
+      }
+    }));
+  }
+
+  function renderLoudnessToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Loudness", config.loudnessEnabled, (v) => { config.loudnessEnabled = v; }, (opts) => {
+      // Mode selector
+      const modeGroup = el("div", "al-field");
+      modeGroup.appendChild(el("label", "al-label", "Mode"));
+      const modeSelect = createSelect("al-loudness-mode", [
+        { value: "normalize", label: "Normalize (EBU R128)" },
+        { value: "dynaudnorm", label: "Dynamic Normalization" },
+        { value: "volume", label: "Volume Adjustment" },
+      ], config.loudnessMode);
+      modeSelect.addEventListener("change", () => {
+        config.loudnessMode = modeSelect.value as AudioConfig["loudnessMode"];
+        renderAll();
+      });
+      modeGroup.appendChild(modeSelect);
+      opts.appendChild(modeGroup);
+
+      // Conditionally render params based on mode
+      if (config.loudnessMode === "normalize") {
+        opts.appendChild(el("p", "al-hint",
+          "EBU R128 loudness normalization. Analyzes the entire file and applies a uniform gain."));
+
+        const loudGroup = el("div", "al-field");
+        loudGroup.appendChild(el("label", "al-label", "Target Loudness (LUFS)"));
+        const loudInput = createInput("al-loudness", "number", String(config.targetLoudness), "-14");
+        loudInput.min = "-30"; loudInput.max = "0"; loudInput.step = "1";
+        loudInput.addEventListener("change", () => { config.targetLoudness = parseFloat(loudInput.value) || -14; });
+        loudGroup.appendChild(loudInput);
+        opts.appendChild(loudGroup);
+
+        const peakGroup = el("div", "al-field");
+        peakGroup.appendChild(el("label", "al-label", "True Peak (dBTP)"));
+        const peakInput = createInput("al-peak", "number", String(config.targetPeak), "-1");
+        peakInput.min = "-10"; peakInput.max = "0"; peakInput.step = "0.5";
+        peakInput.addEventListener("change", () => { config.targetPeak = parseFloat(peakInput.value) || -1; });
+        peakGroup.appendChild(peakInput);
+        opts.appendChild(peakGroup);
+      } else if (config.loudnessMode === "dynaudnorm") {
+        opts.appendChild(el("p", "al-hint",
+          "Per-frame gain adjustment for real-time leveling. Good for dialogue."));
+
+        const frameGroup = el("div", "al-field");
+        frameGroup.appendChild(el("label", "al-label", "Frame Length (ms)"));
+        const frameInput = createInput("al-frame", "number", String(config.frameLength), "150");
+        frameInput.min = "10"; frameInput.max = "8000"; frameInput.step = "10";
+        frameInput.addEventListener("change", () => { config.frameLength = parseInt(frameInput.value) || 150; });
+        frameGroup.appendChild(frameInput);
+        opts.appendChild(frameGroup);
+
+        const gaussGroup = el("div", "al-field");
+        gaussGroup.appendChild(el("label", "al-label", "Gaussian Window Size"));
+        const gaussSelect = createSelect("al-gauss", [
+          { value: "3",  label: "3 (responsive)" },
+          { value: "7",  label: "7" },
+          { value: "15", label: "15 (balanced)" },
+          { value: "31", label: "31 (smooth)" },
+        ], String(config.gaussianSize));
+        gaussSelect.addEventListener("change", () => { config.gaussianSize = parseInt(gaussSelect.value); });
+        gaussGroup.appendChild(gaussSelect);
+        opts.appendChild(gaussGroup);
+      } else if (config.loudnessMode === "volume") {
+        opts.appendChild(el("p", "al-hint",
+          "Simple volume adjustment — multiply or add a fixed gain."));
+
+        const unitGroup = el("div", "al-field");
+        unitGroup.appendChild(el("label", "al-label", "Mode"));
+        const unitSelect = createSelect("al-vol-unit", [
+          { value: "multiplier", label: "Multiplier (e.g. 1.5x)" },
+          { value: "dB",         label: "Decibels (e.g. +3dB)" },
+        ], config.volumeUnit);
+        unitSelect.addEventListener("change", () => {
+          config.volumeUnit = unitSelect.value as "multiplier" | "dB";
+          volInput.placeholder = config.volumeUnit === "dB" ? "0" : "1.0";
+        });
+        unitGroup.appendChild(unitSelect);
+        opts.appendChild(unitGroup);
+
+        const volGroup = el("div", "al-field");
+        const volLabel = config.volumeUnit === "dB" ? "Value (0 = no change)" : "Value (1.0 = no change)";
+        volGroup.appendChild(el("label", "al-label", volLabel));
+        const volInput = createInput("al-vol-value", "text", config.volumeValue, config.volumeUnit === "dB" ? "0" : "1.0");
+        volInput.addEventListener("change", () => { config.volumeValue = volInput.value; });
+        volGroup.appendChild(volInput);
+        opts.appendChild(volGroup);
+      }
+    }));
+  }
+
+  function renderSpeedToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Speed", config.speedEnabled, (v) => { config.speedEnabled = v; }, (opts) => {
+      opts.appendChild(el("p", "al-hint",
+        "Change playback speed without pitch shifting. Range: 0.5x to 2.0x."));
+
+      const speedGroup = el("div", "al-field");
+      speedGroup.appendChild(el("label", "al-label", "Speed Factor"));
+      const speedSelect = createSelect("al-speed", [
+        { value: "0.5",  label: "0.5x (half speed)" },
+        { value: "0.75", label: "0.75x" },
+        { value: "1",    label: "1.0x (original)" },
+        { value: "1.25", label: "1.25x" },
+        { value: "1.5",  label: "1.5x" },
+        { value: "1.75", label: "1.75x" },
+        { value: "2.0",  label: "2.0x (double speed)" },
+      ], String(config.speedFactor));
+      speedSelect.addEventListener("change", () => { config.speedFactor = parseFloat(speedSelect.value) || 1.0; });
+      speedGroup.appendChild(speedSelect);
+      opts.appendChild(speedGroup);
+    }));
+  }
+
+  function renderFadeToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Fade", config.fadeEnabled, (v) => { config.fadeEnabled = v; }, (opts) => {
+      const inGroup = el("div", "al-field");
+      inGroup.appendChild(el("label", "al-label", "Fade In (seconds)"));
+      const inInput = createInput("al-fade-in", "number", String(config.fadeInDuration), "1");
+      inInput.min = "0"; inInput.max = "30"; inInput.step = "0.5";
+      inInput.addEventListener("change", () => { config.fadeInDuration = parseFloat(inInput.value) || 0; });
+      inGroup.appendChild(inInput);
+      opts.appendChild(inGroup);
+
+      const outGroup = el("div", "al-field");
+      outGroup.appendChild(el("label", "al-label", "Fade Out (seconds)"));
+      const outInput = createInput("al-fade-out", "number", String(config.fadeOutDuration), "1");
+      outInput.min = "0"; outInput.max = "30"; outInput.step = "0.5";
+      outInput.addEventListener("change", () => { config.fadeOutDuration = parseFloat(outInput.value) || 0; });
+      outGroup.appendChild(outInput);
+      opts.appendChild(outGroup);
+    }));
+  }
+
+  function renderSilenceToggle(parent: HTMLElement): void {
+    parent.appendChild(makeToggleRow("Silence Trim", config.silenceEnabled, (v) => { config.silenceEnabled = v; }, (opts) => {
+      opts.appendChild(el("p", "al-hint",
+        "Remove leading and trailing silence from the audio."));
+
+      const threshGroup = el("div", "al-field");
+      threshGroup.appendChild(el("label", "al-label", "Threshold"));
+      const threshSelect = createSelect("al-silence-thresh", [
+        { value: "-50dB", label: "-50 dB (quiet rooms)" },
+        { value: "-40dB", label: "-40 dB (normal)" },
+        { value: "-30dB", label: "-30 dB (aggressive)" },
+        { value: "-20dB", label: "-20 dB (very aggressive)" },
+      ], config.silenceThreshold);
+      threshSelect.addEventListener("change", () => { config.silenceThreshold = threshSelect.value; });
+      threshGroup.appendChild(threshSelect);
+      opts.appendChild(threshGroup);
+
+      const durGroup = el("div", "al-field");
+      durGroup.appendChild(el("label", "al-label", "Min Silence Duration (seconds)"));
+      const durInput = createInput("al-silence-dur", "number", String(config.silenceMinDuration), "0.5");
+      durInput.min = "0.1"; durInput.max = "10"; durInput.step = "0.1";
+      durInput.addEventListener("change", () => { config.silenceMinDuration = parseFloat(durInput.value) || 0.5; });
+      durGroup.appendChild(durInput);
+      opts.appendChild(durGroup);
+    }));
   }
 
   // ── Build ffmpeg command ─────────────────────────────────────────────────
 
-  function build(): { args: string[]; outputName: string } | null {
-    if (!currentFile) return null;
-
-    const inputPath = `/input/${currentFile.name}`;
-    const baseName = currentFile.name.replace(/\.[^.]+$/, "");
-    const isVideo = currentFile.category === "video";
-
-    switch (config.action) {
-      case "normalize":   return buildNormalize(inputPath, baseName, isVideo);
-      case "dynaudnorm":  return buildDynaudnorm(inputPath, baseName, isVideo);
-      case "volume":      return buildVolume(inputPath, baseName, isVideo);
-      case "speed":       return buildSpeed(inputPath, baseName, isVideo);
-    }
-  }
-
   function getOutputExt(isVideo: boolean): string {
     if (isVideo) return "mp4";
     const ext = currentFile?.name.split(".").pop()?.toLowerCase() || "mp3";
-    // For audio, try to keep the same container; fall back to m4a for AAC output
     if (["mp3", "wav", "flac", "ogg", "opus", "m4a"].includes(ext)) return ext;
     return "m4a";
   }
 
-  /** Map output extension to the appropriate audio codec + optional bitrate. */
   function getAudioCodecArgs(ext: string, isVideo: boolean): string[] {
     if (isVideo) return ["-c:a", "aac", "-b:a", "192k"];
     const codecMap: Record<string, { codec: string; lossy: boolean }> = {
@@ -276,82 +474,118 @@ export function createAudioLab(): AudioModule {
     return args;
   }
 
-  function buildNormalize(inputPath: string, baseName: string, isVideo: boolean): { args: string[]; outputName: string } {
-    const ext = getOutputExt(isVideo);
-    const outputName = `${baseName}_normalized.${ext}`;
-    const outputPath = `/output/${outputName}`;
+  function build(): { args: string[]; outputName: string } | null {
+    if (!currentFile) return null;
 
-    const af = `loudnorm=I=${config.targetLoudness}:TP=${config.targetPeak}:LRA=11`;
+    const inputPath = `/input/${currentFile.name}`;
+    const baseName = currentFile.name.replace(/\.[^.]+$/, "");
+    const isVideo = currentFile.category === "video";
 
-    const args = ["-i", inputPath];
-    if (isVideo) args.push("-c:v", "copy");
-    args.push("-af", af, ...getAudioCodecArgs(ext, isVideo));
-    if (ext === "mp4") args.push("-movflags", "+faststart");
-    args.push("-y", outputPath);
+    // Build -af chain: iterate enabled sections in pipeline order
+    const afParts: string[] = [];
+    const suffixParts: string[] = [];
 
-    return { args, outputName };
-  }
-
-  function buildDynaudnorm(inputPath: string, baseName: string, isVideo: boolean): { args: string[]; outputName: string } {
-    const ext = getOutputExt(isVideo);
-    const outputName = `${baseName}_dynorm.${ext}`;
-    const outputPath = `/output/${outputName}`;
-
-    const af = `dynaudnorm=f=${config.frameLength}:g=${config.gaussianSize}`;
-
-    const args = ["-i", inputPath];
-    if (isVideo) args.push("-c:v", "copy");
-    args.push("-af", af, ...getAudioCodecArgs(ext, isVideo));
-    if (ext === "mp4") args.push("-movflags", "+faststart");
-    args.push("-y", outputPath);
-
-    return { args, outputName };
-  }
-
-  function buildVolume(inputPath: string, baseName: string, isVideo: boolean): { args: string[]; outputName: string } {
-    const ext = getOutputExt(isVideo);
-    const outputName = `${baseName}_volume.${ext}`;
-    const outputPath = `/output/${outputName}`;
-
-    let volVal = config.volumeValue.trim();
-    if (config.volumeUnit === "dB" && !volVal.endsWith("dB")) {
-      volVal = `${volVal}dB`;
+    // 1. Noise Reduction
+    if (config.noiseEnabled) {
+      afParts.push(`afftdn=nr=${config.noiseAmount}:nf=${config.noiseFloor}`);
+      suffixParts.push("denoised");
     }
 
-    const args = ["-i", inputPath];
-    if (isVideo) args.push("-c:v", "copy");
-    args.push("-af", `volume=${volVal}`, ...getAudioCodecArgs(ext, isVideo));
-    if (ext === "mp4") args.push("-movflags", "+faststart");
-    args.push("-y", outputPath);
+    // 2. Frequency Filter
+    if (config.freqEnabled) {
+      afParts.push(`highpass=f=${config.freqLowCut}`);
+      afParts.push(`lowpass=f=${config.freqHighCut}`);
+      suffixParts.push("filtered");
+    }
 
-    return { args, outputName };
-  }
+    // 3. EQ
+    if (config.eqEnabled) {
+      const bands = [
+        { freq: config.eqLowFreq, gain: config.eqLowGain },
+        { freq: config.eqMidFreq, gain: config.eqMidGain },
+        { freq: config.eqHighFreq, gain: config.eqHighGain },
+      ];
+      for (const b of bands) {
+        if (b.gain !== 0) {
+          afParts.push(`equalizer=f=${b.freq}:t=h:w=200:g=${b.gain}`);
+        }
+      }
+      suffixParts.push("eq");
+    }
 
-  function buildSpeed(inputPath: string, baseName: string, isVideo: boolean): { args: string[]; outputName: string } {
+    // 4. Compressor
+    if (config.compEnabled) {
+      afParts.push(`acompressor=threshold=${config.compThreshold / 1000}:ratio=${config.compRatio}:attack=${config.compAttack}:release=${config.compRelease}:makeup=${config.compMakeup}`);
+      suffixParts.push("compressed");
+    }
+
+    // 5. Loudness
+    if (config.loudnessEnabled) {
+      if (config.loudnessMode === "normalize") {
+        afParts.push(`loudnorm=I=${config.targetLoudness}:TP=${config.targetPeak}:LRA=11`);
+        suffixParts.push("normalized");
+      } else if (config.loudnessMode === "dynaudnorm") {
+        afParts.push(`dynaudnorm=f=${config.frameLength}:g=${config.gaussianSize}`);
+        suffixParts.push("dynorm");
+      } else if (config.loudnessMode === "volume") {
+        let volVal = config.volumeValue.trim();
+        if (config.volumeUnit === "dB" && !volVal.endsWith("dB")) {
+          volVal = `${volVal}dB`;
+        }
+        afParts.push(`volume=${volVal}`);
+        suffixParts.push("volume");
+      }
+    }
+
+    // 6. Speed
+    if (config.speedEnabled && config.speedFactor !== 1.0) {
+      let factor = Math.max(0.5, Math.min(config.speedFactor, 2.0));
+      const atempoFilters: string[] = [];
+      while (factor > 2.0) {
+        atempoFilters.push("atempo=2.0");
+        factor /= 2.0;
+      }
+      while (factor < 0.5) {
+        atempoFilters.push("atempo=0.5");
+        factor /= 0.5;
+      }
+      atempoFilters.push(`atempo=${factor}`);
+      afParts.push(...atempoFilters);
+      suffixParts.push("speed");
+    }
+
+    // 7. Fade
+    if (config.fadeEnabled) {
+      if (config.fadeInDuration > 0) {
+        afParts.push(`afade=t=in:d=${config.fadeInDuration}`);
+      }
+      if (config.fadeOutDuration > 0) {
+        const totalDuration = currentFile.duration ?? 0;
+        const fadeOutStart = Math.max(0, totalDuration - config.fadeOutDuration);
+        afParts.push(`afade=t=out:st=${fadeOutStart}:d=${config.fadeOutDuration}`);
+      }
+      suffixParts.push("faded");
+    }
+
+    // 8. Silence Trim
+    if (config.silenceEnabled) {
+      const d = config.silenceMinDuration;
+      const t = config.silenceThreshold;
+      afParts.push(`silenceremove=start_periods=1:start_duration=${d}:start_threshold=${t}:stop_periods=1:stop_duration=${d}:stop_threshold=${t}`);
+      suffixParts.push("trimmed");
+    }
+
+    // Nothing enabled
+    if (afParts.length === 0) return null;
+
     const ext = getOutputExt(isVideo);
-    const outputName = `${baseName}_speed.${ext}`;
+    const suffix = suffixParts.length > 0 ? `_${suffixParts.join("_")}` : "";
+    const outputName = `${baseName}${suffix}.${ext}`;
     const outputPath = `/output/${outputName}`;
 
-    // atempo only supports 0.5–2.0 per filter instance; chain for extreme values
-    let factor = Math.max(0.5, Math.min(config.speedFactor, 2.0));
-    const atempoFilters: string[] = [];
-
-    // In case we ever need chaining (future expansion)
-    while (factor > 2.0) {
-      atempoFilters.push("atempo=2.0");
-      factor /= 2.0;
-    }
-    while (factor < 0.5) {
-      atempoFilters.push("atempo=0.5");
-      factor /= 0.5;
-    }
-    atempoFilters.push(`atempo=${factor}`);
-
-    const af = atempoFilters.join(",");
-
     const args = ["-i", inputPath];
     if (isVideo) args.push("-c:v", "copy");
-    args.push("-af", af, ...getAudioCodecArgs(ext, isVideo));
+    args.push("-af", afParts.join(","), ...getAudioCodecArgs(ext, isVideo));
     if (ext === "mp4") args.push("-movflags", "+faststart");
     args.push("-y", outputPath);
 
@@ -364,20 +598,14 @@ export function createAudioLab(): AudioModule {
     render(target: HTMLElement): void {
       container = target;
       container.innerHTML = "";
-      renderActionTabs(container);
-      panelEl = el("div", "al-panel");
-      container.appendChild(panelEl);
-      renderPanel();
+      renderAll();
     },
 
     configure(file: FileInfo): void {
       currentFile = file;
       if (container) {
         container.innerHTML = "";
-        renderActionTabs(container);
-        panelEl = el("div", "al-panel");
-        container.appendChild(panelEl);
-        renderPanel();
+        renderAll();
       }
     },
 
@@ -385,17 +613,119 @@ export function createAudioLab(): AudioModule {
 
     getConfig(): AudioConfig { return { ...config }; },
 
+    setConfig(nextConfig: unknown): void {
+      if (!isRecord(nextConfig)) return;
+
+      const setBool = (key: keyof AudioConfig): void => {
+        if (typeof nextConfig[key] === "boolean") {
+          (config[key] as boolean) = nextConfig[key] as boolean;
+        }
+      };
+      const setNumber = (key: keyof AudioConfig, min: number, max: number): void => {
+        const value = nextConfig[key];
+        if (typeof value !== "number" || !Number.isFinite(value)) return;
+        (config[key] as number) = Math.min(max, Math.max(min, value));
+      };
+
+      setBool("noiseEnabled");
+      setBool("freqEnabled");
+      setBool("eqEnabled");
+      setBool("compEnabled");
+      setBool("loudnessEnabled");
+      setBool("speedEnabled");
+      setBool("fadeEnabled");
+      setBool("silenceEnabled");
+
+      setNumber("noiseAmount", 10, 97);
+      setNumber("noiseFloor", -80, -20);
+      setNumber("freqLowCut", 20, 2000);
+      setNumber("freqHighCut", 2000, 22000);
+      setNumber("eqLowFreq", 20, 20000);
+      setNumber("eqLowGain", -12, 12);
+      setNumber("eqMidFreq", 20, 20000);
+      setNumber("eqMidGain", -12, 12);
+      setNumber("eqHighFreq", 20, 20000);
+      setNumber("eqHighGain", -12, 12);
+      setNumber("compThreshold", -60, 0);
+      setNumber("compRatio", 1, 20);
+      setNumber("compAttack", 0.01, 2000);
+      setNumber("compRelease", 1, 9000);
+      setNumber("compMakeup", 0, 30);
+      setNumber("targetLoudness", -30, 0);
+      setNumber("targetPeak", -10, 0);
+      setNumber("frameLength", 10, 8000);
+      setNumber("speedFactor", 0.5, 2);
+      setNumber("fadeInDuration", 0, 30);
+      setNumber("fadeOutDuration", 0, 30);
+      setNumber("silenceMinDuration", 0.1, 10);
+
+      if (typeof nextConfig.gaussianSize === "number" && Number.isFinite(nextConfig.gaussianSize)) {
+        const rounded = Math.round(nextConfig.gaussianSize);
+        if (rounded === 3 || rounded === 7 || rounded === 15 || rounded === 31) {
+          config.gaussianSize = rounded;
+        }
+      }
+
+      if (nextConfig.loudnessMode === "normalize" || nextConfig.loudnessMode === "dynaudnorm" || nextConfig.loudnessMode === "volume") {
+        config.loudnessMode = nextConfig.loudnessMode;
+      }
+
+      if (nextConfig.volumeUnit === "multiplier" || nextConfig.volumeUnit === "dB") {
+        config.volumeUnit = nextConfig.volumeUnit;
+      }
+      if (typeof nextConfig.volumeValue === "string") {
+        const cleaned = nextConfig.volumeValue.trim();
+        if (cleaned) config.volumeValue = cleaned;
+      }
+      if (typeof nextConfig.silenceThreshold === "string") {
+        const cleaned = nextConfig.silenceThreshold.trim();
+        if (cleaned) config.silenceThreshold = cleaned;
+      }
+
+      if (container) {
+        container.innerHTML = "";
+        renderAll();
+      }
+    },
+
     reset(): void {
       currentFile = null;
-      config.action = "normalize";
+      config.noiseEnabled = false;
+      config.noiseAmount = 30;
+      config.noiseFloor = -50;
+      config.freqEnabled = false;
+      config.freqLowCut = 80;
+      config.freqHighCut = 16000;
+      config.eqEnabled = false;
+      config.eqLowFreq = 100;
+      config.eqLowGain = 0;
+      config.eqMidFreq = 1000;
+      config.eqMidGain = 0;
+      config.eqHighFreq = 8000;
+      config.eqHighGain = 0;
+      config.compEnabled = false;
+      config.compThreshold = -20;
+      config.compRatio = 4;
+      config.compAttack = 20;
+      config.compRelease = 250;
+      config.compMakeup = 0;
+      config.loudnessEnabled = false;
+      config.loudnessMode = "normalize";
       config.targetLoudness = -14;
       config.targetPeak = -1;
       config.frameLength = 150;
       config.gaussianSize = 15;
       config.volumeValue = "1.0";
       config.volumeUnit = "multiplier";
+      config.speedEnabled = false;
       config.speedFactor = 1.0;
-      if (panelEl) panelEl.innerHTML = "";
+      config.fadeEnabled = false;
+      config.fadeInDuration = 1;
+      config.fadeOutDuration = 1;
+      config.silenceEnabled = false;
+      config.silenceThreshold = "-30dB";
+      config.silenceMinDuration = 0.5;
+      if (container) container.innerHTML = "";
     },
   };
 }

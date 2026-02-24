@@ -17,6 +17,7 @@ export interface ShrubberModule {
   configure(file: FileInfo): void;
   build(): { args: string[]; outputName: string } | null;
   getConfig(): ShrubberConfig;
+  setConfig(config: unknown): void;
   reset(): void;
 }
 
@@ -31,6 +32,10 @@ function el<K extends keyof HTMLElementTagNameMap>(
   if (cls) e.className = cls;
   if (text) e.textContent = text;
   return e;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 // ─── Module ──────────────────────────────────────────────────────────────────
@@ -250,6 +255,33 @@ export function createShrubber(): ShrubberModule {
     build,
 
     getConfig(): ShrubberConfig { return { ...config }; },
+
+    setConfig(nextConfig: unknown): void {
+      if (!isRecord(nextConfig)) return;
+
+      if (typeof nextConfig.keepAudio === "boolean") {
+        config.keepAudio = nextConfig.keepAudio;
+      }
+
+      if (typeof nextConfig.action === "string") {
+        const requested = nextConfig.action as ShrubberAction;
+        const currentCategory = currentFile?.category ?? null;
+        const allowed = currentCategory
+          ? ACTIONS.filter((a) => a.forCategory.includes(currentCategory)).map((a) => a.id)
+          : ACTIONS.map((a) => a.id);
+        if (allowed.includes(requested)) {
+          config.action = requested;
+        }
+      }
+
+      if (container) {
+        container.innerHTML = "";
+        renderActionTabs(container);
+        panelEl = el("div", "shrub-panel");
+        container.appendChild(panelEl);
+        renderPanel();
+      }
+    },
 
     reset(): void {
       currentFile = null;

@@ -121,6 +121,10 @@ export function detectCategory(file: File): FileInfo["category"] {
   return "unknown";
 }
 
+export function isPrismSupportedFile(file: File): boolean {
+  return detectCategory(file) !== "unknown";
+}
+
 export function translateError(raw: string): string {
   if (raw.includes("moov atom not found")) return "This file appears to be incomplete or corrupted. Try downloading it again.";
   if (raw.includes("Invalid data found when processing input")) return "Prism couldn't read this file. It might be in a format that isn't supported.";

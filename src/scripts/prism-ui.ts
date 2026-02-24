@@ -22,8 +22,15 @@ import {
   getHandoffTokenFromCurrentUrl,
   supportsFileHandoff,
 } from "./file-handoff";
+import {
+  createPrismDraftSnapshot,
+  parsePrismDraftSnapshot,
+  samePrismFileSignature,
+  type PrismDraftModuleId,
+  type PrismDraftSnapshot,
+} from "./prism-draft";
 
-import { createWorkbench } from "./prism-workbench";
+import { createWorkbench, type WorkbenchModule } from "./prism-workbench";
 import { createShrubber } from "./prism-shrubber";
 import { createAudioLab } from "./prism-audio";
 import { createSubtitles } from "./prism-subtitles";
@@ -38,6 +45,7 @@ interface PrismModule {
   configure(file: FileInfo): void;
   build(): { args: string[]; outputName: string; prepare?: (engine: PrismEngine) => Promise<void> } | null;
   getConfig(): unknown;
+  setConfig?(config: unknown): void;
   reset(): void;
 }
 
@@ -238,8 +246,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let destroyed = false;
   let prismState: PrismState = "idle";
   let engine: PrismEngine | null = null;
-  let currentFile: File | null = null;
-  let currentFileInfo: FileInfo | null = null;
+  let fileQueue: { file: File; info: FileInfo }[] = [];
+  let primaryIndex: number = 0;
   let outputData: Uint8Array | null = null;
   let outputName: string = "";
   let outputUrl: string | null = null;
@@ -253,6 +261,16 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let handoffSupported = true;
   const cleanups: Array<() => void> = [];
 
+  // ── File Queue Accessors ───────────────────────────────────────────────
+
+  function getCurrentFile(): File | null {
+    return fileQueue.length > 0 ? fileQueue[primaryIndex].file : null;
+  }
+
+  function getCurrentFileInfo(): FileInfo | null {
+    return fileQueue.length > 0 ? fileQueue[primaryIndex].info : null;
+  }
+
   // ── Module Registry ─────────────────────────────────────────────────────
 
   const modules: Record<ModuleId, PrismModule> = {
@@ -264,6 +282,56 @@ export function initPrism(opts: PrismUIOptions): () => void {
   };
 
   let activeModuleId: ModuleId = "workbench";
+
+  function collectDraftSnapshot(): PrismDraftSnapshot | null {
+    const currentFile = getCurrentFile();
+    if (!currentFile) return null;
+
+    const moduleConfigs: Partial<Record<PrismDraftModuleId, unknown>> = {};
+    for (const [id, module] of Object.entries(modules) as [ModuleId, PrismModule][]) {
+      try {
+        moduleConfigs[id as PrismDraftModuleId] = module.getConfig();
+      } catch {
+        // Ignore non-serializable module state; keep restore best-effort.
+      }
+    }
+
+    return createPrismDraftSnapshot(
+      currentFile,
+      activeModuleId as PrismDraftModuleId,
+      moduleConfigs,
+    );
+  }
+
+  function restoreDraftSnapshot(snapshot: PrismDraftSnapshot, file: File): void {
+    if (!samePrismFileSignature(file, snapshot.file)) return;
+    const currentFileInfo = getCurrentFileInfo();
+    if (!currentFileInfo) return;
+
+    for (const [id, module] of Object.entries(modules) as [ModuleId, PrismModule][]) {
+      if (!MODULE_VISIBILITY[id].includes(currentFileInfo.category)) continue;
+      const savedConfig = snapshot.modules[id as PrismDraftModuleId];
+      if (savedConfig === undefined || typeof module.setConfig !== "function") continue;
+      try {
+        module.setConfig(savedConfig);
+      } catch {
+        // Keep restore resilient even if one module rejects stale config.
+      }
+    }
+
+    const requestedModule = snapshot.activeModuleId as ModuleId;
+    if (MODULE_VISIBILITY[requestedModule].includes(currentFileInfo.category)) {
+      switchModule(requestedModule);
+      return;
+    }
+
+    const fallback = (Object.keys(MODULE_VISIBILITY) as ModuleId[]).find(
+      (id) => MODULE_VISIBILITY[id].includes(currentFileInfo.category),
+    );
+    if (fallback) {
+      switchModule(fallback);
+    }
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -470,7 +538,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
       prismState === "complete" ||
       prismState === "error";
     opts.btnLens.style.display = handoffSupported && lensVisibleByState ? "" : "none";
-    opts.btnLens.disabled = !handoffSupported || !currentFile || prismState === "processing" || lensHandoffInFlight;
+    opts.btnLens.disabled = !handoffSupported || !getCurrentFile() || prismState === "processing" || lensHandoffInFlight;
     opts.btnLens.setAttribute("aria-busy", lensHandoffInFlight ? "true" : "false");
 
     // Show action bar when not idle
@@ -630,88 +698,162 @@ export function initPrism(opts: PrismUIOptions): () => void {
   async function processFile(file: File): Promise<void> {
     if (destroyed) return;
 
-    currentFile = file;
     const eng = ensureEngine();
 
     // Probe the file
-    currentFileInfo = await eng.probeFile(file);
+    const fileInfo = await eng.probeFile(file);
 
-    // Check size
-    const warning = checkFileSize(file.size, isMobileDevice());
-    if (warning === "warning") {
-      setSizeWarning("This file is very large for browser processing. It may fail on some devices.");
-    } else if (warning === "caution") {
-      setSizeWarning("Large file \u2014 processing may take a moment.");
-    } else {
-      hide(opts.sizeWarning);
+    // Append to queue (first file becomes primary)
+    const isFirst = fileQueue.length === 0;
+    fileQueue.push({ file, info: fileInfo });
+    if (isFirst) primaryIndex = 0;
+
+    const currentFileInfo = getCurrentFileInfo()!;
+    const currentFile = getCurrentFile()!;
+
+    // Check size (primary file)
+    if (isFirst) {
+      const warning = checkFileSize(file.size, isMobileDevice());
+      if (warning === "warning") {
+        setSizeWarning("This file is very large for browser processing. It may fail on some devices.");
+      } else if (warning === "caution") {
+        setSizeWarning("Large file \u2014 processing may take a moment.");
+      } else {
+        hide(opts.sizeWarning);
+      }
+
+      // Show input preview (primary file only)
+      showInputPreview(currentFile, currentFileInfo.category);
     }
-
-    // Show input preview
-    showInputPreview(file, currentFileInfo.category);
 
     // Update file queue display
     renderFileQueue();
 
-    // Update module tab visibility based on file category
-    updateModuleTabVisibility(currentFileInfo.category);
+    // Notify workbench of file queue changes
+    (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
 
-    // Configure ALL visible modules with file info
-    for (const [id, mod] of Object.entries(modules) as [ModuleId, PrismModule][]) {
-      if (MODULE_VISIBILITY[id].includes(currentFileInfo.category)) {
-        mod.configure(currentFileInfo);
+    if (isFirst) {
+      // Update module tab visibility based on file category
+      updateModuleTabVisibility(currentFileInfo.category);
+
+      // Configure ALL visible modules with file info
+      for (const [id, mod] of Object.entries(modules) as [ModuleId, PrismModule][]) {
+        if (MODULE_VISIBILITY[id].includes(currentFileInfo.category)) {
+          mod.configure(currentFileInfo);
+        }
       }
-    }
 
-    // Render the active module
-    switchModule(activeModuleId);
+      // Render the active module
+      switchModule(activeModuleId);
+    }
 
     setState("files_loaded");
   }
 
   function renderFileQueue(): void {
     opts.fileQueueList.innerHTML = "";
-    if (!currentFileInfo) return;
+    if (fileQueue.length === 0) return;
 
-    const info = currentFileInfo;
-    const row = el("div", "prism-queue-item");
+    for (let idx = 0; idx < fileQueue.length; idx++) {
+      const { info } = fileQueue[idx];
+      const isPrimary = idx === primaryIndex;
+      const row = el("div", `prism-queue-item${isPrimary ? " prism-queue-item--primary" : ""}`);
 
-    // Top row: name, duration, size, category, status
-    const nameEl = el("span", "prism-queue-name", info.name);
-    const sizeEl = el("span", "prism-queue-size", info.sizeLabel);
-    const categoryEl = el("span", "prism-queue-category", info.category);
+      // Top row: name, duration, size, category, status
+      const nameEl = el("span", "prism-queue-name", info.name);
+      const sizeEl = el("span", "prism-queue-size", info.sizeLabel);
+      const categoryEl = el("span", "prism-queue-category", info.category);
 
-    const durationEl = info.duration !== null
-      ? el("span", "prism-queue-duration", formatDuration(info.duration))
-      : null;
+      const durationEl = info.duration !== null
+        ? el("span", "prism-queue-duration", formatDuration(info.duration))
+        : null;
 
-    const statusEl = el("span", "prism-queue-status prism-queue-status--ready", "ready");
+      row.appendChild(nameEl);
+      if (durationEl) row.appendChild(durationEl);
+      row.appendChild(sizeEl);
+      row.appendChild(categoryEl);
 
-    row.appendChild(nameEl);
-    if (durationEl) row.appendChild(durationEl);
-    row.appendChild(sizeEl);
-    row.appendChild(categoryEl);
-    row.appendChild(statusEl);
+      // Queue actions (only when 2+ files)
+      if (fileQueue.length >= 2) {
+        const actions = el("div", "prism-queue-actions");
 
-    // Details row: codec, resolution, bitrate, channels (from probe)
-    const details: string[] = [];
-    if (info.resolution) details.push(info.resolution);
-    if (info.videoCodec) details.push(info.videoCodec);
-    if (info.audioCodec) details.push(info.audioCodec);
-    if (info.channels !== null) {
-      const chLabel = info.channels === 1 ? "mono" : info.channels === 2 ? "stereo" : info.channels === 6 ? "5.1" : info.channels === 8 ? "7.1" : `${info.channels}ch`;
-      details.push(chLabel);
-    }
-    if (info.bitrate !== null) details.push(`${info.bitrate} kbps`);
+        if (idx > 0) {
+          const upBtn = el("button", "prism-queue-btn", "\u2191");
+          upBtn.type = "button";
+          upBtn.title = "Move up";
+          const capturedIdx = idx;
+          upBtn.addEventListener("click", () => { moveQueueItem(capturedIdx, capturedIdx - 1); });
+          actions.appendChild(upBtn);
+        }
 
-    if (details.length > 0) {
-      const detailsRow = el("div", "prism-queue-details");
-      for (const d of details) {
-        detailsRow.appendChild(el("span", "prism-detail", d));
+        if (idx < fileQueue.length - 1) {
+          const downBtn = el("button", "prism-queue-btn", "\u2193");
+          downBtn.type = "button";
+          downBtn.title = "Move down";
+          const capturedIdx = idx;
+          downBtn.addEventListener("click", () => { moveQueueItem(capturedIdx, capturedIdx + 1); });
+          actions.appendChild(downBtn);
+        }
+
+        const removeBtn = el("button", "prism-queue-btn prism-queue-btn--danger", "\u00d7");
+        removeBtn.type = "button";
+        removeBtn.title = "Remove";
+        const capturedIdx = idx;
+        removeBtn.addEventListener("click", () => { removeQueueItem(capturedIdx); });
+        actions.appendChild(removeBtn);
+
+        row.appendChild(actions);
       }
-      row.appendChild(detailsRow);
-    }
 
-    opts.fileQueueList.appendChild(row);
+      const statusEl = el("span", "prism-queue-status prism-queue-status--ready", "ready");
+      row.appendChild(statusEl);
+
+      // Details row: codec, resolution, bitrate, channels (from probe)
+      const details: string[] = [];
+      if (info.resolution) details.push(info.resolution);
+      if (info.videoCodec) details.push(info.videoCodec);
+      if (info.audioCodec) details.push(info.audioCodec);
+      if (info.channels !== null) {
+        const chLabel = info.channels === 1 ? "mono" : info.channels === 2 ? "stereo" : info.channels === 6 ? "5.1" : info.channels === 8 ? "7.1" : `${info.channels}ch`;
+        details.push(chLabel);
+      }
+      if (info.bitrate !== null) details.push(`${info.bitrate} kbps`);
+
+      if (details.length > 0) {
+        const detailsRow = el("div", "prism-queue-details");
+        for (const d of details) {
+          detailsRow.appendChild(el("span", "prism-detail", d));
+        }
+        row.appendChild(detailsRow);
+      }
+
+      opts.fileQueueList.appendChild(row);
+    }
+  }
+
+  function moveQueueItem(from: number, to: number): void {
+    if (to < 0 || to >= fileQueue.length) return;
+    const item = fileQueue.splice(from, 1)[0];
+    fileQueue.splice(to, 0, item);
+    // Adjust primary index
+    if (primaryIndex === from) primaryIndex = to;
+    else if (from < primaryIndex && to >= primaryIndex) primaryIndex--;
+    else if (from > primaryIndex && to <= primaryIndex) primaryIndex++;
+    renderFileQueue();
+    (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
+  }
+
+  function removeQueueItem(idx: number): void {
+    fileQueue.splice(idx, 1);
+    if (fileQueue.length === 0) {
+      clearAll();
+      return;
+    }
+    // Adjust primary index
+    if (primaryIndex >= fileQueue.length) primaryIndex = 0;
+    else if (idx < primaryIndex) primaryIndex--;
+    renderFileQueue();
+    (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
   }
 
   function formatDuration(sec: number | null): string {
@@ -730,15 +872,17 @@ export function initPrism(opts: PrismUIOptions): () => void {
     hideAllPreviews();
     opts.terminalLog.textContent = "";
     // Re-render active module panel (settings are preserved)
-    if (currentFileInfo) {
+    if (getCurrentFileInfo()) {
       modules[activeModuleId].render(opts.modulePanel);
     }
   }
 
   // ── VFS Cleanup ──────────────────────────────────────────────────────
 
-  async function cleanupVFS(eng: PrismEngine, inputName: string, keepOutput?: string): Promise<void> {
-    try { await eng.deleteFile(`/input/${inputName}`); } catch { /* non-fatal */ }
+  async function cleanupVFS(eng: PrismEngine, inputNames: string[], keepOutput?: string): Promise<void> {
+    for (const name of inputNames) {
+      try { await eng.deleteFile(`/input/${name}`); } catch { /* non-fatal */ }
+    }
     try {
       const files = await eng.listDir("/output");
       for (const f of files) {
@@ -750,6 +894,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
   // ── Run ────────────────────────────────────────────────────────────────
 
   async function run(): Promise<void> {
+    const currentFile = getCurrentFile();
+    const currentFileInfo = getCurrentFileInfo();
     if (destroyed || !currentFile || !currentFileInfo) return;
 
     const activeModule = modules[activeModuleId];
@@ -771,14 +917,29 @@ export function initPrism(opts: PrismUIOptions): () => void {
     setState("processing");
     opts.terminalLog.textContent = "";
 
-    try {
-      // Write input file to VFS
-      const data = await readFileAsUint8Array(currentFile);
-      if (destroyed) return;
-      await eng.writeFile(`/input/${currentFile.name}`, data);
-      if (destroyed) return;
+    const isMultiFile = !!(result as { multiFile?: boolean }).multiFile;
+    const writtenInputNames: string[] = [];
 
-      // Run prepare hook if the module needs to write extra files (e.g., subtitle burn)
+    try {
+      if (isMultiFile) {
+        // Write ALL queue files to VFS
+        for (const entry of fileQueue) {
+          const data = await readFileAsUint8Array(entry.file);
+          if (destroyed) return;
+          await eng.writeFile(`/input/${entry.info.name}`, data);
+          writtenInputNames.push(entry.info.name);
+          if (destroyed) return;
+        }
+      } else {
+        // Write only the primary input file to VFS
+        const data = await readFileAsUint8Array(currentFile);
+        if (destroyed) return;
+        await eng.writeFile(`/input/${currentFile.name}`, data);
+        writtenInputNames.push(currentFile.name);
+        if (destroyed) return;
+      }
+
+      // Run prepare hook if the module needs to write extra files (e.g., subtitle burn, concat manifest)
       if (result.prepare) {
         await result.prepare(eng);
         if (destroyed) return;
@@ -803,16 +964,15 @@ export function initPrism(opts: PrismUIOptions): () => void {
       }
       // ret !== 0: engine's onError callback already fired and set state to error
 
-      // Cleanup VFS (success keeps the output file; error cleans everything)
-      await cleanupVFS(eng, currentFile.name, ret === 0 ? result.outputName : undefined);
+      // Cleanup VFS — also remove concat manifest if present
+      if (isMultiFile) writtenInputNames.push("concat_list.txt");
+      await cleanupVFS(eng, writtenInputNames, ret === 0 ? result.outputName : undefined);
     } catch (err) {
       if (destroyed) return;
       showToast("An unexpected error occurred.");
       setState("error");
       // Clean up VFS after unexpected errors
-      if (currentFile) {
-        await cleanupVFS(eng, currentFile.name);
-      }
+      await cleanupVFS(eng, writtenInputNames);
     }
   }
 
@@ -826,8 +986,9 @@ export function initPrism(opts: PrismUIOptions): () => void {
     row.appendChild(el("span", "prism-output-size", formatSize(data.byteLength)));
 
     // Compression ratio vs input
-    if (currentFileInfo) {
-      const inputSize = currentFileInfo.size;
+    const cfi = getCurrentFileInfo();
+    if (cfi) {
+      const inputSize = cfi.size;
       const outputSize = data.byteLength;
       if (inputSize > 0 && outputSize !== inputSize) {
         const ratio = ((1 - outputSize / inputSize) * 100);
@@ -904,8 +1065,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
   // ── Clear ──────────────────────────────────────────────────────────────
 
   function clearAll(): void {
-    currentFile = null;
-    currentFileInfo = null;
+    fileQueue = [];
+    primaryIndex = 0;
     if (outputUrl) { URL.revokeObjectURL(outputUrl); outputUrl = null; }
     if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
     outputData = null;
@@ -964,8 +1125,12 @@ export function initPrism(opts: PrismUIOptions): () => void {
     e.preventDefault();
     dragCounter = 0;
     opts.uploadZone.classList.remove("prism-drop-active");
-    const file = e.dataTransfer?.files[0];
-    if (file) processFile(file);
+    const files = e.dataTransfer?.files;
+    if (files) {
+      for (let i = 0; i < files.length; i++) {
+        processFile(files[i]);
+      }
+    }
   });
 
   on(opts.uploadZone, "click", () => {
@@ -980,8 +1145,12 @@ export function initPrism(opts: PrismUIOptions): () => void {
   });
 
   on(opts.fileInput, "change", () => {
-    const file = opts.fileInput.files?.[0];
-    if (file) processFile(file);
+    const files = opts.fileInput.files;
+    if (files) {
+      for (let i = 0; i < files.length; i++) {
+        processFile(files[i]);
+      }
+    }
     opts.fileInput.value = "";
   });
 
@@ -994,16 +1163,22 @@ export function initPrism(opts: PrismUIOptions): () => void {
     e.preventDefault();
     dragCounter = 0;
     opts.uploadZone.classList.remove("prism-drop-active");
-    const file = e.dataTransfer?.files[0];
-    if (file) processFile(file);
+    const files = e.dataTransfer?.files;
+    if (files) {
+      for (let i = 0; i < files.length; i++) {
+        processFile(files[i]);
+      }
+    }
   });
 
   // Global paste
   on(document, "paste", (e: ClipboardEvent) => {
-    const file = e.clipboardData?.files[0];
-    if (file) {
+    const files = e.clipboardData?.files;
+    if (files && files.length > 0) {
       e.preventDefault();
-      processFile(file);
+      for (let i = 0; i < files.length; i++) {
+        processFile(files[i]);
+      }
     }
   });
 
@@ -1035,11 +1210,13 @@ export function initPrism(opts: PrismUIOptions): () => void {
   on(opts.btnCancel, "click", () => { engine?.cancel(); });
   on(opts.btnDownload, "click", () => { downloadOutput(); });
   on(opts.btnLens, "click", async () => {
+    const currentFile = getCurrentFile();
     if (!currentFile || !handoffSupported || lensHandoffInFlight) return;
     lensHandoffInFlight = true;
     updateUI();
     try {
-      const token = await createFileHandoff(currentFile, "prism");
+      const draftSnapshot = collectDraftSnapshot();
+      const token = await createFileHandoff(currentFile, draftSnapshot);
       window.location.href = buildLensHandoffUrl(token);
     } catch {
       showToast("could not handoff file to lens");
@@ -1084,15 +1261,21 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (!token) return;
 
     try {
-      const file = await consumeFileHandoffWithRetry(token);
-      if (!file) {
+      const payload = await consumeFileHandoffWithRetry(token);
+      if (!payload) {
         clearHandoffTokenFromCurrentUrl();
         if (!destroyed) showToast("handoff expired or already used");
         return;
       }
       if (destroyed) return;
       clearHandoffTokenFromCurrentUrl();
-      await processFile(file);
+      const draft = parsePrismDraftSnapshot(payload.metadata);
+      if (fileQueue.length > 0) {
+        clearAll();
+      }
+      await processFile(payload.file);
+      if (destroyed || !draft) return;
+      restoreDraftSnapshot(draft, payload.file);
     } catch {
       if (!destroyed) {
         showToast("could not load handoff from lens");
