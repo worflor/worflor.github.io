@@ -1,0 +1,1474 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+const seo = {
+  title: "Prism | woflo",
+  description:
+    "A client-side media lab. Convert, trim, analyze, and clean media files — everything runs in your browser. No uploads, no servers.",
+  image: "/images/social-card.png",
+};
+---
+
+<Layout seo={seo}>
+  <div class="prism-page" id="prism-page">
+    <!-- ── Hero ──────────────────────────────────────────────── -->
+    <section
+      class="mt-8 content-section prism-intro prism-reveal"
+      style="--reveal-delay: 0ms"
+    >
+      <h1 class="page-title prism-title" id="prism-title">Prism</h1>
+      <p class="prism-tagline">local media lab</p>
+      <p class="prism-status-line">
+        <span class="prism-dot" id="prism-engine-dot"></span>
+        <span id="prism-engine-status">engine idle</span>
+      </p>
+    </section>
+
+    <!-- ── Upload Zone ───────────────────────────────────────── -->
+    <section
+      class="mt-[var(--space-md)] content-section prism-reveal"
+      style="--reveal-delay: 80ms"
+    >
+      <div
+        class="prism-upload-zone"
+        id="prism-upload-zone"
+        role="button"
+        tabindex="0"
+        aria-label="Upload a file to process"
+      >
+        <div class="upload-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5" />
+            <line x1="12" y1="2" x2="12" y2="22" />
+            <line x1="2" y1="8.5" x2="22" y2="8.5" />
+            <line x1="2" y1="15.5" x2="22" y2="15.5" />
+          </svg>
+        </div>
+        <p class="upload-text">drop a file here</p>
+        <p class="upload-subtext">or click / paste to browse</p>
+        <p class="upload-formats">video &middot; audio &middot; image &middot; subtitle</p>
+        <input
+          type="file"
+          id="prism-file-input"
+          class="sr-only"
+          aria-hidden="true"
+          accept="video/*,audio/*,image/*,.srt,.ass,.ssa,.vtt,.sub,.mkv,.webm,.flac,.ogg,.opus"
+        />
+      </div>
+    </section>
+
+    <!-- ── Size Warning (hidden) ─────────────────────────────── -->
+    <section
+      class="mt-[var(--space-xs)] content-section"
+      id="prism-size-warning"
+      style="display:none"
+      aria-live="polite"
+    >
+      <div class="prism-warning"></div>
+    </section>
+
+    <!-- ── Input Preview (hidden until file loaded) ──────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+      id="prism-input-preview"
+      style="display:none"
+    >
+      <div class="prism-input-preview">
+        <video
+          id="prism-input-video"
+          class="prism-input-preview-video"
+          controls
+          playsinline
+          preload="metadata"
+          style="display:none"
+        ></video>
+        <audio
+          id="prism-input-audio"
+          class="prism-input-preview-audio"
+          controls
+          preload="metadata"
+          style="display:none"
+        ></audio>
+        <img
+          id="prism-input-img"
+          alt="Input file preview"
+          class="prism-input-preview-img"
+          style="display:none"
+        />
+      </div>
+    </section>
+
+    <!-- ── File Queue (hidden until file loaded) ─────────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+      id="prism-file-queue"
+      style="display:none"
+    >
+      <div class="prism-queue" id="prism-file-queue-list"></div>
+    </section>
+
+    <!-- ── Module Tab Bar (hidden until file loaded) ─────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+      id="prism-module-bar"
+      style="display:none"
+    >
+      <div class="prism-tabs" role="tablist" aria-label="Processing modules">
+        <button
+          class="prism-tab prism-tab--active"
+          role="tab"
+          aria-selected="true"
+          data-module="workbench"
+        >Workbench</button>
+        <button
+          class="prism-tab"
+          role="tab"
+          aria-selected="false"
+          data-module="shrubber"
+        >Shrubber</button>
+        <button
+          class="prism-tab"
+          role="tab"
+          aria-selected="false"
+          data-module="audio"
+        >Audio Lab</button>
+        <button
+          class="prism-tab"
+          role="tab"
+          aria-selected="false"
+          data-module="subtitles"
+        >Subtitles</button>
+        <button
+          class="prism-tab"
+          role="tab"
+          aria-selected="false"
+          data-module="transparency"
+        >Transparency</button>
+      </div>
+    </section>
+
+    <!-- ── Module Panel (populated by JS) ────────────────────── -->
+    <section
+      class="mt-[var(--space-xs)] content-section"
+      id="prism-module-panel"
+      style="display:none"
+    >
+    </section>
+
+    <!-- ── Progress (hidden until processing) ────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+      id="prism-progress-section"
+      style="display:none"
+      aria-live="polite"
+    >
+      <div class="prism-progress" id="prism-progress-bar">
+        <div class="prism-progress-fill" id="prism-progress-fill"></div>
+      </div>
+      <p class="prism-progress-text" id="prism-progress-text"></p>
+    </section>
+
+    <!-- ── Output Summary (hidden until complete) ────────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+      id="prism-output-summary"
+      style="display:none"
+    >
+    </section>
+
+    <!-- ── Preview (hidden until complete) ───────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+      id="prism-preview-section"
+      style="display:none"
+    >
+      <div class="prism-preview">
+        <video
+          id="prism-preview-video"
+          class="prism-preview-video"
+          controls
+          playsinline
+          preload="metadata"
+          style="display:none"
+        ></video>
+        <audio
+          id="prism-preview-audio"
+          class="prism-preview-audio"
+          controls
+          preload="metadata"
+          style="display:none"
+        ></audio>
+        <img
+          id="prism-preview-img"
+          alt="Output preview"
+          class="prism-preview-img"
+          style="display:none"
+        />
+        <pre
+          id="prism-preview-text"
+          class="prism-preview-text"
+          style="display:none"
+        ></pre>
+      </div>
+    </section>
+
+    <!-- ── Terminal Mirror (collapsed) ───────────────────────── -->
+    <section
+      class="mt-[var(--space-sm)] content-section"
+      id="prism-terminal-section"
+    >
+      <button
+        class="prism-terminal-toggle"
+        id="prism-terminal-toggle"
+        aria-expanded="false"
+        aria-controls="prism-terminal-body"
+      >&#9656; Terminal</button>
+      <div
+        class="prism-terminal-body"
+        id="prism-terminal-body"
+        style="display:none"
+      >
+        <div class="prism-terminal-toolbar">
+          <button class="prism-terminal-copy" id="prism-terminal-copy" type="button" title="Copy command">Copy</button>
+        </div>
+        <pre class="prism-terminal-log" id="prism-terminal-log"></pre>
+      </div>
+    </section>
+
+    <!-- ── Insights ──────────────────────────────────────────── -->
+    <section
+      class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section prism-reveal"
+      style="--reveal-delay: 160ms"
+    >
+      <div class="prism-insights">
+        <h2 class="insights-title">what can Prism do?</h2>
+        <p class="insights-text">
+          convert, trim, rotate, crop, and extract from video, audio, and
+          images. strip metadata and re-encode for privacy. normalize
+          loudness, adjust volume and speed. extract, convert, and burn
+          subtitles. visualize motion vectors, frame types, waveforms, and
+          color histograms.
+        </p>
+        <p class="insights-text">
+          everything runs in your browser using WebAssembly. the processing
+          engine loads on demand &mdash; about 25 MB on first use, cached after that.
+          no servers, no uploads, no tracking.
+        </p>
+      </div>
+    </section>
+
+    <!-- ── Action Bar ────────────────────────────────────────── -->
+    <div
+      class="prism-actions"
+      id="prism-actions"
+      role="group"
+      aria-label="Prism controls"
+      style="display:none;opacity:0"
+    >
+      <button class="action-btn action-btn--primary" id="prism-btn-run" type="button">Run</button>
+      <button class="action-btn" id="prism-btn-cancel" type="button" style="display:none">Cancel</button>
+      <button class="action-btn" id="prism-btn-download" type="button" style="display:none">Download</button>
+      <button class="action-btn" id="prism-btn-upload" type="button" style="display:none">New File</button>
+      <button class="action-btn" id="prism-btn-clear" type="button">Clear</button>
+    </div>
+  </div>
+
+  <script>
+    import { initPrism, resolvePrismUIOptions } from "../scripts/prism-ui";
+
+    const PRISM_LIFECYCLE_KEY = "__prismLifecycle";
+    type PrismLifecycle = {
+      boot: () => void;
+      teardown: () => void;
+      detach?: () => void;
+    };
+    let cleanupPrism: (() => void) | null = null;
+    const prismWindow = window as unknown as Record<
+      string,
+      PrismLifecycle | undefined
+    >;
+
+    function boot() {
+      teardown();
+      const prismOptions = resolvePrismUIOptions(document);
+      if (prismOptions) cleanupPrism = initPrism(prismOptions);
+    }
+
+    function teardown() {
+      cleanupPrism?.();
+      cleanupPrism = null;
+    }
+
+    function detachLifecycle() {
+      document.removeEventListener("astro:after-swap", boot);
+      document.removeEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    function handleBeforeSwap() {
+      teardown();
+      detachLifecycle();
+      const current = prismWindow[PRISM_LIFECYCLE_KEY];
+      if (current?.boot === boot) delete prismWindow[PRISM_LIFECYCLE_KEY];
+    }
+
+    function attachLifecycle() {
+      document.addEventListener("astro:after-swap", boot);
+      document.addEventListener("astro:before-swap", handleBeforeSwap);
+    }
+
+    const prev = prismWindow[PRISM_LIFECYCLE_KEY];
+    if (prev) {
+      if (prev.detach) prev.detach();
+      else {
+        document.removeEventListener("astro:after-swap", prev.boot);
+        document.removeEventListener("astro:before-swap", prev.teardown);
+      }
+      prev.teardown?.();
+    }
+
+    prismWindow[PRISM_LIFECYCLE_KEY] = {
+      boot,
+      teardown,
+      detach: detachLifecycle,
+    };
+
+    boot();
+    attachLifecycle();
+  </script>
+</Layout>
+
+<style>
+  /* ── Prism Page ──────────────────────────────────────────── */
+
+  .prism-page {
+    --prism-radius: var(--radius-lg);
+    --prism-muted: rgb(var(--color-text-rgb) / 0.58);
+    --prism-faint: rgb(var(--color-text-rgb) / 0.3);
+    --prism-edge: rgb(var(--color-text-rgb) / 0.14);
+    --prism-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
+    padding-bottom: calc(var(--prism-action-offset) + var(--space-lg));
+  }
+
+  /* ── Staggered reveal ──────────────────────────────────────── */
+
+  @keyframes prism-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .prism-reveal {
+    animation: prism-fade-up 0.4s var(--ease-out) both;
+    animation-delay: var(--reveal-delay, 0ms);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .prism-reveal {
+      animation: none;
+    }
+  }
+
+  /* ── Header ──────────────────────────────────────────────── */
+
+  .prism-intro {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.7);
+  }
+
+  .prism-title {
+    margin: 0;
+    line-height: 1.03;
+    letter-spacing: -0.018em;
+  }
+
+  .prism-tagline {
+    margin: 0;
+    color: var(--prism-muted);
+  }
+
+  .prism-status-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.28);
+    margin: calc(var(--space-xs) * 0.3) 0 0;
+  }
+
+  .prism-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: var(--radius-full);
+    background: rgb(var(--color-text-rgb) / 0.2);
+    flex-shrink: 0;
+    transition: background var(--duration-slow) var(--ease-out), box-shadow var(--duration-slow) var(--ease-out);
+  }
+
+
+  /* ── Upload Zone ───────────────────────────────────────────── */
+
+  .prism-upload-zone {
+    position: relative;
+    border: 2px dashed rgb(var(--color-text-rgb) / 0.12);
+    border-radius: var(--prism-radius);
+    padding: var(--space-xl) var(--space-md);
+    text-align: center;
+    cursor: pointer;
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-text-rgb) / 0.012) 0%,
+      transparent 60%
+    );
+    box-shadow: var(--edge-highlight);
+    transition:
+      border-color var(--duration-slow) var(--ease-spring),
+      background var(--duration-slow) var(--ease-spring),
+      box-shadow var(--duration-slow) var(--ease-spring),
+      padding var(--duration-slow) var(--ease-spring);
+  }
+
+  .prism-upload-zone:hover,
+  .prism-upload-zone:global(.prism-drop-active) {
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.03) 0%,
+      rgb(var(--chromatic-cyan) / 0.008) 50%,
+      transparent 100%
+    );
+    box-shadow: var(--edge-highlight);
+  }
+
+  .prism-upload-zone:active {
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.05) 0%,
+      rgb(var(--chromatic-cyan) / 0.015) 50%,
+      transparent 100%
+    );
+  }
+
+  .prism-upload-zone:focus-visible {
+    border-color: rgb(var(--chromatic-cyan) / 0.45);
+    box-shadow:
+      var(--edge-highlight),
+      0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
+    outline: none;
+  }
+
+  /* Compact mode after file loaded */
+  .prism-upload-zone:global(.prism-upload-zone--compact) {
+    padding: var(--space-sm) var(--space-md);
+    border-style: solid;
+    border-width: 1px;
+    border-color: rgb(var(--color-text-rgb) / 0.08);
+  }
+
+  .prism-upload-zone:global(.prism-upload-zone--compact) .upload-icon,
+  .prism-upload-zone:global(.prism-upload-zone--compact) .upload-formats {
+    display: none;
+  }
+
+  .prism-upload-zone:global(.prism-upload-zone--compact) .upload-text {
+    font-size: var(--text-sm);
+    margin: 0;
+  }
+
+  .prism-upload-zone:global(.prism-upload-zone--compact) .upload-subtext {
+    display: none;
+  }
+
+  .upload-icon {
+    position: absolute;
+    top: calc(var(--space-sm) * 1.2);
+    left: calc(var(--space-sm) * 1.2);
+    width: var(--space-xl);
+    height: var(--space-xl);
+    color: rgb(var(--color-text-rgb) / 0.14);
+    line-height: 0;
+    transition:
+      color var(--duration-slow) var(--ease-spring),
+      transform var(--duration-slow) var(--ease-spring);
+  }
+
+  .prism-upload-zone:hover .upload-icon {
+    color: rgb(var(--chromatic-cyan) / 0.4);
+    transform: scale(1.06);
+  }
+
+  .prism-upload-zone:active .upload-icon {
+    transform: scale(0.94);
+  }
+
+  .upload-text {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    margin: 0 0 calc(var(--space-xs) * 0.3);
+    color: rgb(var(--color-text-rgb) / 0.6);
+    transition: color var(--duration-slow) var(--ease-out);
+  }
+
+  .prism-upload-zone:hover .upload-text {
+    color: rgb(var(--color-text-rgb) / 0.8);
+  }
+
+  .upload-subtext {
+    font-size: var(--text-sm);
+    margin: 0 0 var(--space-sm);
+    color: rgb(var(--color-text-rgb) / 0.28);
+  }
+
+  .upload-formats {
+    font-size: calc(var(--text-sm) * 0.85);
+    margin: 0;
+    color: rgb(var(--color-text-rgb) / 0.15);
+    letter-spacing: 0.06em;
+  }
+
+  /* ── Input Preview ────────────────────────────────────────── */
+
+  .prism-input-preview {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--prism-radius);
+    overflow: hidden;
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-text-rgb) / 0.02) 0%,
+      rgb(var(--color-text-rgb) / 0.008) 100%
+    );
+    box-shadow: var(--edge-highlight);
+  }
+
+  .prism-input-preview-video {
+    display: block;
+    max-width: 100%;
+    max-height: clamp(14rem, 12rem + 8vw, 22rem);
+    margin: 0 auto;
+  }
+
+  .prism-input-preview-audio {
+    width: 100%;
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  .prism-input-preview-img {
+    display: block;
+    max-width: 100%;
+    max-height: clamp(14rem, 12rem + 8vw, 22rem);
+    margin: 0 auto;
+    object-fit: contain;
+  }
+
+  /* ── Size Warning ──────────────────────────────────────────── */
+
+  .prism-warning {
+    font-size: var(--text-sm);
+    color: #ff6b35;
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 1);
+    border: 1px solid rgba(255, 107, 53, 0.2);
+    border-left: 2px solid rgba(255, 107, 53, 0.5);
+    border-radius: var(--prism-radius);
+    background: rgba(255, 107, 53, 0.04);
+  }
+
+  /* ── File Queue ────────────────────────────────────────────── */
+
+  .prism-queue {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.4);
+  }
+
+  /* ── Module Tabs ───────────────────────────────────────────── */
+
+  .prism-tabs {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.3);
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .prism-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .prism-tab {
+    padding: calc(var(--space-xs) * 0.7) calc(var(--space-xs) * 1.3);
+    background: transparent;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--prism-radius);
+    color: var(--prism-muted);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    min-height: var(--touch-target);
+    display: inline-flex;
+    align-items: center;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-tab:hover:not(:disabled) {
+    background: rgb(var(--color-text-rgb) / 0.04);
+    border-color: rgb(var(--color-text-rgb) / 0.18);
+    color: var(--color-text);
+  }
+
+  .prism-tab:global(.prism-tab--active) {
+    background: rgb(var(--chromatic-cyan) / 0.06);
+    border-color: rgb(var(--chromatic-cyan) / 0.2);
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  .prism-tab:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .prism-tab:focus-visible {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    outline-offset: 1px;
+  }
+
+  /* ── Progress Bar ──────────────────────────────────────────── */
+
+  .prism-progress {
+    height: 4px;
+    background: rgb(var(--color-text-rgb) / 0.06);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .prism-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: rgb(var(--chromatic-cyan));
+    border-radius: 2px;
+    transition: width 0.3s linear;
+  }
+
+  .prism-progress-fill:global(.prism-progress-fill--indeterminate) {
+    width: 100% !important;
+    animation: prism-progress-pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes prism-progress-pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  .prism-progress-text {
+    margin: calc(var(--space-xs) * 0.5) 0 0;
+    font-size: calc(var(--text-sm) * 0.9);
+    color: var(--prism-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Preview ───────────────────────────────────────────────── */
+
+  .prism-preview {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--prism-radius);
+    overflow: hidden;
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-text-rgb) / 0.02) 0%,
+      rgb(var(--color-text-rgb) / 0.008) 100%
+    );
+    box-shadow: var(--edge-highlight);
+  }
+
+  .prism-preview-video {
+    display: block;
+    max-width: 100%;
+    max-height: clamp(14rem, 12rem + 8vw, 22rem);
+    margin: 0 auto;
+  }
+
+  .prism-preview-audio {
+    width: 100%;
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  .prism-preview-img {
+    display: block;
+    max-width: 100%;
+    max-height: clamp(14rem, 12rem + 8vw, 22rem);
+    margin: 0 auto;
+    object-fit: contain;
+  }
+
+  .prism-preview-text {
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: calc(var(--text-sm) * 0.9);
+    line-height: 1.65;
+    color: rgb(var(--color-text-rgb) / 0.6);
+    max-height: clamp(14rem, 12rem + 8vw, 24rem);
+    overflow: auto;
+    white-space: pre;
+    tab-size: 4;
+    -moz-tab-size: 4;
+  }
+
+  /* ── Terminal Mirror ───────────────────────────────────────── */
+
+  .prism-terminal-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1);
+    background: transparent;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    border-radius: var(--prism-radius);
+    color: rgb(var(--color-text-rgb) / 0.3);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    text-align: left;
+    min-height: var(--touch-target);
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-terminal-toggle:hover {
+    background: rgb(var(--color-text-rgb) / 0.02);
+    border-color: rgb(var(--color-text-rgb) / 0.12);
+    color: var(--prism-muted);
+  }
+
+  .prism-terminal-toggle:focus-visible {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    outline-offset: 1px;
+  }
+
+  .prism-terminal-body {
+    margin-top: calc(var(--space-xs) * 0.5);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    border-radius: var(--prism-radius);
+    background: rgb(var(--color-text-rgb) / 0.015);
+    overflow: hidden;
+  }
+
+  .prism-terminal-log {
+    margin: 0;
+    padding: var(--space-sm);
+    font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: calc(var(--text-sm) * 0.85);
+    line-height: 1.6;
+    color: rgb(var(--color-text-rgb) / 0.45);
+    max-height: 16rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  /* ── Insights ──────────────────────────────────────────────── */
+
+  .prism-insights {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-left: 2px solid rgb(var(--chromatic-cyan) / 0.18);
+    border-radius: var(--prism-radius);
+    padding: var(--space-md);
+    box-shadow: var(--edge-highlight);
+  }
+
+  .insights-title {
+    font-size: var(--text-lg);
+    font-weight: 700;
+    margin-bottom: var(--space-sm);
+    letter-spacing: -0.01em;
+  }
+
+  .insights-text {
+    font-size: var(--text-sm);
+    opacity: 0.38;
+    line-height: 1.75;
+    margin-bottom: calc(var(--space-sm) * 0.85);
+  }
+
+  .insights-text:last-of-type {
+    margin-bottom: 0;
+  }
+
+  /* ── Action Bar ────────────────────────────────────────────── */
+
+  .prism-actions {
+    position: fixed;
+    bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    gap: calc(var(--space-xs) * 0.25);
+    padding: calc(var(--space-xs) * 0.7);
+    background: rgb(10 10 10 / 0.8);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+    backdrop-filter: blur(16px) saturate(1.2);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--prism-radius);
+    box-shadow:
+      var(--edge-highlight),
+      0 4px 20px rgba(0, 0, 0, 0.25);
+    z-index: 40;
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    max-width: min(
+      var(--content-width),
+      calc(100vw - 2 * clamp(0.75rem, 4vw, 1.5rem))
+    );
+    transition: opacity var(--duration-slow) var(--ease-out);
+  }
+
+  .prism-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  @supports not (
+    (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+  ) {
+    .prism-actions {
+      background: rgb(10 10 10 / 0.94);
+    }
+  }
+
+  .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-height: var(--touch-target);
+    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
+    background: transparent;
+    border: none;
+    border-radius: calc(var(--prism-radius) * 0.625);
+    color: var(--color-text-muted);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .action-btn:hover {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: var(--color-text);
+  }
+
+  .action-btn:active {
+    background: rgb(var(--color-text-rgb) / 0.1);
+  }
+
+  .action-btn:focus-visible {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    outline-offset: 1px;
+    color: var(--color-text);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .action-btn:disabled {
+    cursor: not-allowed;
+    color: rgb(var(--color-text-rgb) / 0.4);
+    background: transparent;
+    opacity: 1;
+  }
+
+  .action-btn--primary {
+    background: rgb(var(--chromatic-cyan) / 0.1);
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  .action-btn--primary:hover {
+    background: rgb(var(--chromatic-cyan) / 0.18);
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  /* ── Reduced Motion ────────────────────────────────────────── */
+
+  @media (prefers-reduced-motion: reduce) {
+    .prism-actions {
+      transition: none;
+    }
+  }
+
+  /* ── Mobile ────────────────────────────────────────────────── */
+
+  @media (max-width: 520px) {
+    .prism-tabs {
+      gap: calc(var(--space-xs) * 0.2);
+    }
+
+    .prism-tab {
+      font-size: calc(var(--text-sm) * 0.9);
+      padding-inline: calc(var(--space-xs) * 0.9);
+    }
+
+    .prism-actions {
+      gap: calc(var(--space-xs) * 0.18);
+      padding: calc(var(--space-xs) * 0.6);
+    }
+
+    .action-btn {
+      font-size: calc(var(--text-sm) * 0.9);
+      padding-inline: calc(var(--space-xs) * 1);
+    }
+  }
+
+  /* ── Hover: touch devices ──────────────────────────────────── */
+
+  @media (hover: none) {
+    .action-btn:hover {
+      background: transparent;
+      color: var(--color-text-muted);
+    }
+
+    .action-btn:active {
+      background: rgb(var(--color-text-rgb) / 0.1);
+      color: var(--color-text);
+    }
+
+    .action-btn--primary:hover {
+      background: rgb(var(--chromatic-cyan) / 0.1);
+      color: rgb(var(--chromatic-cyan));
+    }
+
+    .action-btn--primary:active {
+      background: rgb(var(--chromatic-cyan) / 0.2);
+    }
+  }
+</style>
+
+<style is:global>
+  /* ── Workbench Module (dynamic DOM) ──────────────────────── */
+
+  .prism-page .wb-section {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-left: 2px solid rgb(var(--chromatic-cyan) / 0.18);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm) var(--space-sm);
+    margin-bottom: var(--space-sm);
+    transition: opacity var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .wb-section--dimmed {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+
+  .prism-page .wb-section-title {
+    font-size: calc(var(--text-sm) * 0.85);
+    font-weight: 600;
+    color: rgb(var(--color-text-rgb) / 0.38);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: calc(var(--space-xs) * 0.8);
+  }
+
+  .prism-page .wb-panel {
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  /* ── Toggle Rows (Adjustments) ──────────────────────────── */
+
+  .prism-page .wb-toggle-row {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    border-radius: var(--radius-sm);
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.8);
+    margin-bottom: calc(var(--space-xs) * 0.3);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .wb-toggle-row--active {
+    border-color: rgb(var(--chromatic-cyan) / 0.18);
+    background: rgb(var(--chromatic-cyan) / 0.02);
+  }
+
+  .prism-page .wb-toggle-header {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.5);
+    cursor: pointer;
+    min-height: calc(var(--touch-target) * 0.75);
+  }
+
+  .prism-page .wb-toggle-header input[type="checkbox"] {
+    accent-color: rgb(var(--chromatic-cyan));
+    width: 0.95rem;
+    height: 0.95rem;
+    flex-shrink: 0;
+  }
+
+  .prism-page .wb-toggle-name {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: rgb(var(--color-text-rgb) / 0.6);
+  }
+
+  .prism-page .wb-toggle-row--active .wb-toggle-name {
+    color: rgb(var(--color-text-rgb) / 0.85);
+  }
+
+  .prism-page .wb-toggle-hint {
+    font-size: calc(var(--text-sm) * 0.85);
+    color: rgb(var(--color-text-rgb) / 0.28);
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .prism-page .wb-toggle-opts {
+    padding: calc(var(--space-xs) * 0.6) 0 0 calc(0.95rem + var(--space-xs) * 0.5);
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  /* ── Special Output Buttons ─────────────────────────────── */
+
+  .prism-page .wb-special-row {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.3);
+    margin-bottom: var(--space-sm);
+  }
+
+  .prism-page .wb-special-btn {
+    padding: calc(var(--space-xs) * 0.55) calc(var(--space-xs) * 1.1);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-lg);
+    color: rgb(var(--color-text-rgb) / 0.5);
+    font-family: var(--font-body);
+    font-size: calc(var(--text-sm) * 0.9);
+    cursor: pointer;
+    min-height: calc(var(--touch-target) * 0.85);
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .wb-special-btn:hover {
+    background: rgb(var(--color-text-rgb) / 0.04);
+    color: rgb(var(--color-text-rgb) / 0.7);
+  }
+
+  .prism-page .wb-special-btn--active {
+    background: rgb(var(--chromatic-cyan) / 0.08);
+    border-color: rgb(var(--chromatic-cyan) / 0.25);
+    color: rgb(var(--chromatic-cyan));
+    font-weight: 600;
+  }
+
+  .prism-page .wb-field {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.4);
+  }
+
+  .prism-page .wb-field--row {
+    gap: calc(var(--space-xs) * 0.3);
+  }
+
+  .prism-page .wb-label {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.55);
+    font-weight: 500;
+  }
+
+  .prism-page .wb-hint {
+    font-size: calc(var(--text-sm) * 0.9);
+    color: rgb(var(--color-text-rgb) / 0.3);
+    margin: 0;
+  }
+
+  .prism-page .wb-toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.5);
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.6);
+    cursor: pointer;
+    min-height: calc(var(--touch-target) * 0.8);
+  }
+
+  .prism-page .wb-toggle-label input[type="checkbox"] {
+    accent-color: rgb(var(--chromatic-cyan));
+    width: 0.95rem;
+    height: 0.95rem;
+  }
+
+  /* ── Shared Module Styles (shrubber, audio lab, subtitles, transparency) ── */
+
+  .prism-page .shrub-action-tabs,
+  .prism-page .al-action-tabs,
+  .prism-page .sub-action-tabs,
+  .prism-page .trans-action-tabs {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.3);
+    margin-bottom: var(--space-sm);
+  }
+
+  .prism-page .shrub-tab,
+  .prism-page .al-tab,
+  .prism-page .sub-tab,
+  .prism-page .trans-tab {
+    padding: calc(var(--space-xs) * 0.55) calc(var(--space-xs) * 1.1);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-lg);
+    color: rgb(var(--color-text-rgb) / 0.5);
+    font-family: var(--font-body);
+    font-size: calc(var(--text-sm) * 0.9);
+    cursor: pointer;
+    min-height: calc(var(--touch-target) * 0.85);
+    transition:
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .shrub-tab:hover,
+  .prism-page .al-tab:hover,
+  .prism-page .sub-tab:hover,
+  .prism-page .trans-tab:hover {
+    background: rgb(var(--color-text-rgb) / 0.04);
+    color: rgb(var(--color-text-rgb) / 0.7);
+  }
+
+  .prism-page .shrub-tab.shrub-tab--active,
+  .prism-page .al-tab.al-tab--active,
+  .prism-page .sub-tab.sub-tab--active,
+  .prism-page .trans-tab.trans-tab--active {
+    background: rgb(var(--color-text-rgb) / 0.05);
+    border-color: rgb(var(--color-text-rgb) / 0.18);
+    color: var(--color-text);
+    font-weight: 600;
+  }
+
+  .prism-page .shrub-panel,
+  .prism-page .al-panel,
+  .prism-page .sub-panel,
+  .prism-page .trans-panel {
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  .prism-page .shrub-field,
+  .prism-page .al-field,
+  .prism-page .sub-field,
+  .prism-page .trans-field {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.4);
+  }
+
+  .prism-page .shrub-field--row,
+  .prism-page .al-field--row,
+  .prism-page .sub-field--row,
+  .prism-page .trans-field--row {
+    gap: calc(var(--space-xs) * 0.3);
+  }
+
+  .prism-page .shrub-label,
+  .prism-page .al-label,
+  .prism-page .sub-label,
+  .prism-page .trans-label {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.55);
+    font-weight: 500;
+  }
+
+  .prism-page .shrub-hint,
+  .prism-page .al-hint,
+  .prism-page .sub-hint,
+  .prism-page .trans-hint {
+    font-size: calc(var(--text-sm) * 0.9);
+    color: rgb(var(--color-text-rgb) / 0.3);
+    margin: 0;
+    line-height: 1.65;
+  }
+
+  .prism-page .shrub-toggle-label,
+  .prism-page .al-toggle-label,
+  .prism-page .sub-toggle-label,
+  .prism-page .trans-toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.5);
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.6);
+    cursor: pointer;
+    min-height: calc(var(--touch-target) * 0.8);
+  }
+
+  .prism-page .shrub-toggle-label input[type="checkbox"],
+  .prism-page .al-toggle-label input[type="checkbox"],
+  .prism-page .sub-toggle-label input[type="checkbox"],
+  .prism-page .trans-toggle-label input[type="checkbox"] {
+    accent-color: rgb(var(--chromatic-cyan));
+    width: 0.95rem;
+    height: 0.95rem;
+  }
+
+  /* ── Subtitle file drop zone ─────────────────────────────── */
+
+  .prism-page .sub-file-drop {
+    border: 2px dashed rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm) var(--space-md);
+    text-align: center;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .sub-file-drop:hover {
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    background: rgb(var(--chromatic-cyan) / 0.02);
+  }
+
+  .prism-page .prism-select,
+  .prism-page .prism-input {
+    width: 100%;
+    background: rgb(var(--color-text-rgb) / 0.025);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.16);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    min-height: calc(var(--touch-target) * 0.85);
+    padding: calc(var(--space-xs) * 0.55) calc(var(--space-xs) * 0.72);
+    font: inherit;
+    font-size: var(--text-sm);
+    line-height: 1.2;
+    appearance: none;
+    -webkit-appearance: none;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .prism-select:focus-visible,
+  .prism-page .prism-input:focus-visible {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.42);
+    outline-offset: 1px;
+    border-color: rgb(var(--chromatic-cyan) / 0.25);
+  }
+
+  .prism-page .prism-select:disabled,
+  .prism-page .prism-input:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* ── File Queue Items ──────────────────────────────────────── */
+
+  .prism-page .prism-queue-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: calc(var(--space-xs) * 0.7) calc(var(--space-xs) * 1);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-lg);
+    background: rgb(var(--color-text-rgb) / 0.015);
+    font-size: var(--text-sm);
+    flex-wrap: wrap;
+  }
+
+  .prism-page .prism-queue-name {
+    font-weight: 600;
+    color: var(--color-text);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .prism-page .prism-queue-size,
+  .prism-page .prism-queue-duration,
+  .prism-page .prism-queue-category {
+    color: rgb(var(--color-text-rgb) / 0.4);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  .prism-page .prism-queue-status {
+    padding: 0.1em 0.5em;
+    border-radius: var(--radius-sm);
+    font-size: calc(var(--text-sm) * 0.85);
+    flex-shrink: 0;
+  }
+
+  .prism-page .prism-queue-status--ready {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.08);
+  }
+
+  .prism-page .prism-queue-status--processing {
+    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .prism-page .prism-queue-status--complete {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.08);
+  }
+
+  .prism-page .prism-queue-status--error {
+    color: #ff6b35;
+    background: rgba(255, 107, 53, 0.08);
+  }
+
+  /* ── File Info Details ─────────────────────────────────────── */
+
+  .prism-page .prism-queue-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.8);
+    width: 100%;
+    padding-top: calc(var(--space-xs) * 0.3);
+  }
+
+  .prism-page .prism-detail {
+    font-size: calc(var(--text-sm) * 0.85);
+    color: rgb(var(--color-text-rgb) / 0.3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .prism-page .prism-detail-label {
+    color: rgb(var(--color-text-rgb) / 0.18);
+    margin-right: 0.25em;
+  }
+
+  /* ── Output Summary ─────────────────────────────────────────── */
+
+  .prism-page .prism-output-info {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.5) calc(var(--space-xs) * 1.2);
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.5);
+    padding: calc(var(--space-xs) * 0.7) calc(var(--space-xs) * 1);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-lg);
+    background: rgb(var(--color-text-rgb) / 0.015);
+  }
+
+  .prism-page .prism-output-name {
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .prism-page .prism-output-size {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .prism-page .prism-output-ratio {
+    color: #4ade80;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .prism-page .prism-output-ratio--larger {
+    color: #ff6b35;
+  }
+
+  /* ── Terminal Toolbar ───────────────────────────────────────── */
+
+  .prism-page .prism-terminal-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.6);
+    border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.04);
+  }
+
+  .prism-page .prism-terminal-copy {
+    background: transparent;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--radius-sm);
+    color: rgb(var(--color-text-rgb) / 0.35);
+    font-family: var(--font-body);
+    font-size: calc(var(--text-sm) * 0.8);
+    padding: calc(var(--space-xs) * 0.25) calc(var(--space-xs) * 0.6);
+    cursor: pointer;
+    transition: color var(--duration-normal) var(--ease-out), border-color var(--duration-normal) var(--ease-out);
+  }
+
+  .prism-page .prism-terminal-copy:hover {
+    color: rgb(var(--color-text-rgb) / 0.6);
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+  }
+
+  /* ── Toast ─────────────────────────────────────────────────── */
+
+  .prism-toast {
+    position: fixed;
+    bottom: calc(
+      var(--space-sm) + var(--touch-target) + var(--space-sm) +
+        env(safe-area-inset-bottom, 0px)
+    );
+    left: 50%;
+    transform: translateX(-50%) translateY(8px);
+    background: rgb(var(--color-text-rgb) / 0.06);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    color: var(--color-text);
+    padding: calc(var(--space-xs) * 0.9) calc(var(--space-sm) * 1.1);
+    border-radius: var(--radius-lg);
+    font-family: var(--font-body);
+    font-size: var(--text-sm);
+    opacity: 0;
+    transition:
+      opacity var(--duration-slow) var(--ease-out),
+      transform var(--duration-slow) var(--ease-spring);
+    z-index: 200;
+    pointer-events: none;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  }
+
+  /* ── Engine status ready state ─────────────────────────────── */
+
+  .prism-page .prism-status--ready {
+    color: #4ade80;
+  }
+
+  .prism-page .prism-dot:has(~ .prism-status--ready) {
+    background: #4ade80;
+    box-shadow: 0 0 6px rgba(74, 222, 128, 0.35);
+  }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+
+  @media (max-width: 640px) {
+    .prism-page .prism-queue-item {
+      font-size: calc(var(--text-sm) * 0.9);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .prism-toast {
+      transition: none;
+    }
+  }
+</style>

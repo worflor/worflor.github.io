@@ -149,6 +149,7 @@ export function initLens(opts: LensUIOptions): () => void {
   let expansionState = loadExpansionState();
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let actionBarTimer: ReturnType<typeof setTimeout> | null = null;
+  const categoryRevealTimers = new Set<ReturnType<typeof setTimeout>>();
   let generation = 0; // monotonic counter to discard stale async results
   const cleanups: Array<() => void> = [];
 
@@ -160,6 +161,57 @@ export function initLens(opts: LensUIOptions): () => void {
   ): void {
     target.addEventListener(event, handler as EventListener, options);
     cleanups.push(() => target.removeEventListener(event, handler as EventListener, options));
+  }
+
+  function clearCategoryRevealTimers(): void {
+    for (const timer of categoryRevealTimers) {
+      clearTimeout(timer);
+    }
+    categoryRevealTimers.clear();
+  }
+
+  function isEditablePasteTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    if (target instanceof HTMLTextAreaElement) return true;
+    if (target instanceof HTMLInputElement) {
+      const type = target.type.toLowerCase();
+      const nonTextual = new Set([
+        "button",
+        "checkbox",
+        "color",
+        "date",
+        "datetime-local",
+        "file",
+        "hidden",
+        "image",
+        "month",
+        "number",
+        "radio",
+        "range",
+        "reset",
+        "submit",
+        "time",
+        "week",
+      ]);
+      return !nonTextual.has(type);
+    }
+    if ((target as HTMLElement).isContentEditable) return true;
+    return Boolean(target.closest("[contenteditable='true']"));
+  }
+
+  function shouldHandleClipboardFilePaste(event: ClipboardEvent): boolean {
+    if (isEditablePasteTarget(event.target)) return false;
+
+    const lensRoot = opts.uploadZone.closest(".lens-page");
+    if (!lensRoot) return true;
+
+    const target = event.target;
+    if (target instanceof Node && lensRoot.contains(target)) return true;
+
+    const active = document.activeElement;
+    if (active instanceof Node && lensRoot.contains(active)) return true;
+
+    return false;
   }
 
   // ── Preview management ────────────────────────────────
@@ -335,6 +387,8 @@ export function initLens(opts: LensUIOptions): () => void {
   }
 
   function resetToUpload(): void {
+    clearCategoryRevealTimers();
+
     // Stop all previews and clear sources first (before revoking URL)
     hideAllPreviews();
     opts.previewSection.style.display = "none";
@@ -411,6 +465,8 @@ export function initLens(opts: LensUIOptions): () => void {
   // ── Clipboard paste ─────────────────────────────────────
 
   on(document, "paste", (e) => {
+    if (!shouldHandleClipboardFilePaste(e as ClipboardEvent)) return;
+
     const clipboard = (e as ClipboardEvent).clipboardData;
     if (!clipboard) return;
     const items = clipboard.items;
@@ -427,6 +483,7 @@ export function initLens(opts: LensUIOptions): () => void {
   // ── Category rendering ────────────────────────────────
 
   function renderCategories(data: LensData): void {
+    clearCategoryRevealTimers();
     opts.container.innerHTML = "";
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -436,12 +493,14 @@ export function initLens(opts: LensUIOptions): () => void {
       if (!prefersReducedMotion) {
         section.style.opacity = "0";
         section.style.transform = `translateY(${CATEGORY_REVEAL_OFFSET_PX}px)`;
-        setTimeout(() => {
-          if (destroyed) return;
+        const revealTimer = setTimeout(() => {
+          categoryRevealTimers.delete(revealTimer);
+          if (destroyed || !section.isConnected) return;
           section.style.transition = `opacity ${CATEGORY_REVEAL_MS}ms ease, transform ${CATEGORY_REVEAL_MS}ms ease`;
           section.style.opacity = "1";
           section.style.transform = "translateY(0)";
         }, CATEGORY_STAGGER_MS * index);
+        categoryRevealTimers.add(revealTimer);
       }
 
       opts.container.appendChild(section);
@@ -652,6 +711,7 @@ export function initLens(opts: LensUIOptions): () => void {
 
   return () => {
     destroyed = true;
+    clearCategoryRevealTimers();
     // Clean up media elements
     opts.previewAudio.pause();
     opts.previewAudio.removeAttribute("src");

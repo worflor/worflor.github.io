@@ -54,6 +54,59 @@ export interface FileMetadata {
 
 // ── EXIF Tag Maps ────────────────────────────────────────────
 
+interface LensFieldCounts {
+  totalFields: number;
+  populatedFields: number;
+}
+
+function normalizeCountText(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function countKey(field: ExifField): string {
+  return `${normalizeCountText(field.label)}|${normalizeCountText(field.displayValue)}`;
+}
+
+function shouldCountAsPopulated(field: ExifField): boolean {
+  return field.value !== null && field.id !== "gps.warning";
+}
+
+function isCountDuplicate(existingCategories: Set<string> | undefined, categoryId: string): boolean {
+  if (!existingCategories) return false;
+  // Always drop exact repeats in the same category.
+  if (existingCategories.has(categoryId)) return true;
+  // Deduplicate overlap between PROFILE and any other category.
+  return categoryId === "profile" || existingCategories.has("profile");
+}
+
+function computeFieldCounts(categories: ExifCategory[]): LensFieldCounts {
+  let totalFields = 0;
+  let populatedFields = 0;
+  const seenTotal = new Map<string, Set<string>>();
+  const seenPopulated = new Map<string, Set<string>>();
+
+  for (const category of categories) {
+    for (const f of category.fields) {
+      const key = countKey(f);
+
+      const totalCategories = seenTotal.get(key);
+      const totalDuplicate = isCountDuplicate(totalCategories, category.id);
+      if (totalCategories) totalCategories.add(category.id);
+      else seenTotal.set(key, new Set([category.id]));
+      if (!totalDuplicate) totalFields++;
+
+      if (!shouldCountAsPopulated(f)) continue;
+      const populatedCategories = seenPopulated.get(key);
+      const populatedDuplicate = isCountDuplicate(populatedCategories, category.id);
+      if (populatedCategories) populatedCategories.add(category.id);
+      else seenPopulated.set(key, new Set([category.id]));
+      if (!populatedDuplicate) populatedFields++;
+    }
+  }
+
+  return { totalFields, populatedFields };
+}
+
 const IFD_TAGS: Record<number, string> = {
   0x00fe: "NewSubfileType",
   0x0100: "ImageWidth",
@@ -686,7 +739,7 @@ function parseExifStructure(view: DataView, tiffStart: number): RawExif {
   const makerNote = result["MakerNote"];
   const make = result["Make"];
   if (Array.isArray(makerNote) && typeof make === "string") {
-    const makerData = handleMakerNote(view, makerNote, make);
+    const makerData = handleMakerNote(makerNote, make);
     Object.assign(result, makerData);
   }
 
@@ -1415,9 +1468,12 @@ export const LENS_CATEGORY_ORDER = [
   { id: "image", title: "IMAGE" },
   { id: "audio", title: "AUDIO" },
   { id: "video", title: "VIDEO" },
-  { id: "content", title: "CONTENT" },
   { id: "document", title: "DOCUMENT" },
+  { id: "content", title: "CONTENT" },
   { id: "structure", title: "STRUCTURE" },
+  { id: "iptc", title: "IPTC METADATA" },
+  { id: "xmp", title: "XMP METADATA" },
+  { id: "icc", title: "COLOR PROFILE" },
   { id: "metadata", title: "METADATA" },
   { id: "camera", title: "CAMERA" },
   { id: "exposure", title: "EXPOSURE" },
@@ -1426,6 +1482,8 @@ export const LENS_CATEGORY_ORDER = [
   { id: "gps", title: "GPS" },
   { id: "software", title: "SOFTWARE" },
   { id: "advanced", title: "ADVANCED" },
+  { id: "integrity", title: "INTEGRITY" },
+  { id: "profile", title: "PROFILE" },
 ] as const;
 
 // ── Main Entry Point ─────────────────────────────────────────
@@ -1446,6 +1504,9 @@ function detectExifContainerFormat(
   return null;
 }
 
+const INITIAL_LENS_READ_BYTES = 262144;
+const EXTENDED_EXIF_READ_BYTES = 1048576;
+
 export async function parseFile(file: File): Promise<LensData> {
   const meta: FileMetadata = {
     name: file.name,
@@ -1454,33 +1515,47 @@ export async function parseFile(file: File): Promise<LensData> {
     lastModified: file.lastModified,
   };
 
-  // Read only the first 256KB — EXIF is always at the beginning,
-  // but some cameras write large MakerNote blocks before GPS data
-  const readSize = Math.min(file.size, 262144);
-  const slice = file.slice(0, readSize);
-  const buffer = await slice.arrayBuffer();
+  // Start with a small read for fast universal detection.
+  let readSize = Math.min(file.size, INITIAL_LENS_READ_BYTES);
+  let buffer = await file.slice(0, readSize).arrayBuffer();
   const containerFormat = detectExifContainerFormat(buffer, meta.type);
 
-  // Try EXIF parsing first (JPEG/TIFF)
+  // Parse EXIF only for JPEG/TIFF containers.
   let exif: RawExif = {};
-  try {
-    exif = parseExifFromBuffer(buffer);
-  } catch {
-    // Parsing failed — we'll still show file metadata
+  if (containerFormat) {
+    try {
+      exif = parseExifFromBuffer(buffer);
+    } catch {
+      // Parsing failed - fallback to universal analyzer.
+    }
+
+    // Some files store EXIF farther into APP segments; retry with a larger window.
+    if (Object.keys(exif).length === 0 && file.size > readSize) {
+      const extendedReadSize = Math.min(file.size, EXTENDED_EXIF_READ_BYTES);
+      if (extendedReadSize > readSize) {
+        readSize = extendedReadSize;
+        try {
+          buffer = await file.slice(0, readSize).arrayBuffer();
+          exif = parseExifFromBuffer(buffer);
+        } catch {
+          // Keep fallback path active.
+        }
+      }
+    }
   }
 
   const hasExif = Object.keys(exif).length > 0;
 
-  // If we found EXIF data, build image-specific categories (original path)
+  // If we found EXIF data, build image-specific categories (original path).
   if (hasExif) {
     return buildExifResult(exif, meta, containerFormat);
   }
 
-  // No EXIF — use the universal format engine
+  // No EXIF - use the universal format engine.
   const { analyzeFile } = await import("./lens-formats");
   const formatResult = await analyzeFile(file, buffer);
 
-  // Build FILE category (always present)
+  // Build FILE category (always present).
   const fileFields = buildFileCategory(meta);
   const categories: ExifCategory[] = [{
     id: "file",
@@ -1489,17 +1564,10 @@ export async function parseFile(file: File): Promise<LensData> {
     expanded: true,
   }];
 
-  // Append format-specific categories
+  // Append format-specific categories.
   categories.push(...formatResult.categories);
 
-  let totalFields = 0;
-  let populatedFields = 0;
-  for (const cat of categories) {
-    totalFields += cat.fields.length;
-    populatedFields += cat.fields.filter(
-      (f) => f.value !== null && f.id !== "gps.warning",
-    ).length;
-  }
+  const { totalFields, populatedFields } = computeFieldCounts(categories);
 
   return {
     categories,
@@ -1518,7 +1586,6 @@ export async function parseFile(file: File): Promise<LensData> {
     summaryItems: formatResult.summary,
   };
 }
-
 /** Build result for files with EXIF data (JPEG/TIFF — the original path) */
 function buildExifResult(
   exif: RawExif,
@@ -1545,8 +1612,6 @@ function buildExifResult(
     ];
 
   const categories: ExifCategory[] = [];
-  let totalFields = 0;
-  let populatedFields = 0;
 
   for (const b of builders) {
     const fields = b.build();
@@ -1557,12 +1622,10 @@ function buildExifResult(
         fields,
         expanded: b.id === "file" || b.id === "camera",
       });
-      totalFields += fields.length;
-      populatedFields += fields.filter(
-        (f) => f.value !== null && f.id !== "gps.warning",
-      ).length;
     }
   }
+
+  const { totalFields, populatedFields } = computeFieldCounts(categories);
 
   // Determine camera name
   const make = typeof exif["Make"] === "string" ? exif["Make"].trim() : "";
@@ -1833,7 +1896,6 @@ function buildIccCategory(exif: RawExif): ExifField[] {
 
 /** Proprietary MakerNote parsing for major camera brands */
 function handleMakerNote(
-  view: DataView,
   blob: number[],
   make: string,
 ): Record<string, any> {
@@ -1868,3 +1930,4 @@ function handleMakerNote(
 
   return result;
 }
+

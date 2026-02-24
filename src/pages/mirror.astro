@@ -24,7 +24,6 @@ const seo = {
     <!-- Score -->
     <section class="mt-[var(--space-md)] content-section">
       <div class="mirror-score">
-
         <div class="score-numbers tabular-nums">
           <span class="score-exposed"
             ><span id="score-exposed-count">0</span><span class="score-unit">
@@ -47,7 +46,8 @@ const seo = {
           your fingerprint: <code id="fingerprint">--------</code>
         </div>
         <div class="score-subtitle">
-          built from your most identifying signals. different browser, different hash.
+          built from your most identifying signals. different browser, different
+          hash.
         </div>
       </div>
     </section>
@@ -60,23 +60,25 @@ const seo = {
     <!-- Insights -->
     <section class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section">
       <div class="mirror-insights">
-        <h2 class="insights-title">Are you stalking me..? D:</h2>
+        <h2 class="insights-title">are you stalking me..? D:</h2>
         <p class="insights-text">
-          not particicularly, but none of this asked for your permission. no popups, no
-          prompts... just browsers doing browser things. did you know any website can call these the moment you
-          land on their page? silently...
+          not particicularly, but none of this asked for your permission. no
+          popups, no prompts... just browsers doing browser things. did you know
+          any website can call these the moment you land on their page?
+          silently...
         </p>
         <p class="insights-text">
-          the canvas and audio fingerprints aren't just demos. they're
-          real tracking techniques. your browser renders things <em>slightly</em>
+          the canvas and audio fingerprints aren't just demos. they're real
+          tracking techniques. your browser renders things <em>slightly</em>
           differently than everyone else's, and that difference alone can build a
           unique ID without cookies. combine that with your IP, timezone, GPU, and
           screen size... and you're as unique as they come!
-          <br />the ones <span class="sensitive-indicator">&bull;</span>marked are the worst offenders.
+          <br />the ones <span class="sensitive-indicator">&bull;</span>marked
+          are the worst offenders.
         </p>
         <p class="insights-text">
-          privacy browsers help (Firefox, Brave). tracking protection helps. VPNs
-          help. when something shows a &ldquo;-&rdquo; up there, that's
+          privacy browsers help (Firefox, Brave). tracking protection helps.
+          VPNs help. when something shows a &ldquo;-&rdquo; up there, that's
           your browser doing its job :]
         </p>
       </div>
@@ -95,9 +97,16 @@ const seo = {
     import { initMirror, resolveMirrorUIOptions } from "../scripts/mirror-ui";
 
     const MIRROR_LIFECYCLE_KEY = "__digitalMirrorLifecycle";
-    type MirrorLifecycle = { boot: () => void; teardown: () => void; detach?: () => void };
+    type MirrorLifecycle = {
+      boot: () => void;
+      teardown: () => void;
+      detach?: () => void;
+    };
     let cleanupMirror: (() => void) | null = null;
-    const mirrorWindow = window as unknown as Record<string, MirrorLifecycle | undefined>;
+    const mirrorWindow = window as unknown as Record<
+      string,
+      MirrorLifecycle | undefined
+    >;
 
     function boot() {
       teardown();
@@ -140,7 +149,11 @@ const seo = {
       prev.teardown?.();
     }
 
-    mirrorWindow[MIRROR_LIFECYCLE_KEY] = { boot, teardown, detach: detachLifecycle };
+    mirrorWindow[MIRROR_LIFECYCLE_KEY] = {
+      boot,
+      teardown,
+      detach: detachLifecycle,
+    };
 
     boot();
     attachLifecycle();
@@ -154,9 +167,13 @@ const seo = {
     --mirror-duration-fill: calc(var(--duration-slow) * 4);
     --mirror-duration-counter: calc(var(--duration-slow) * 2);
     --mirror-duration-point-highlight: calc(var(--duration-slow) * 5);
-    --mirror-duration-toast-visible: calc((var(--duration-slow) * 7) + var(--duration-fast));
+    --mirror-duration-toast-visible: calc(
+      (var(--duration-slow) * 7) + var(--duration-fast)
+    );
     --mirror-duration-toast-exit: var(--duration-slow);
-    --mirror-duration-breadcrumb-lock: calc((var(--duration-slow) * 2) + (var(--duration-fast) * 2));
+    --mirror-duration-breadcrumb-lock: calc(
+      (var(--duration-slow) * 2) + (var(--duration-fast) * 2)
+    );
     --mirror-duration-breadcrumb-type: 35ms;
     --mirror-duration-breadcrumb-clear: 20ms;
     --mirror-layout-offset: var(--space-xs);
@@ -227,18 +244,17 @@ const seo = {
   .mirror-score {
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
     border-radius: var(--radius-lg);
-    padding: var(--space-md) var(--space-md) calc(var(--space-sm) + var(--mirror-space-2xs));
+    padding: var(--space-md) var(--space-md)
+      calc(var(--space-sm) + var(--mirror-space-2xs));
     text-align: center;
-    background:
-      linear-gradient(
-        180deg,
-        rgb(var(--color-text-rgb) / 0.018) 0%,
-        rgb(var(--color-text-rgb) / 0.006) 62%,
-        transparent 100%
-      );
+    background: linear-gradient(
+      180deg,
+      rgb(var(--color-text-rgb) / 0.018) 0%,
+      rgb(var(--color-text-rgb) / 0.006) 62%,
+      transparent 100%
+    );
     box-shadow: var(--edge-highlight);
   }
-
 
   .score-numbers {
     display: flex;
@@ -313,7 +329,7 @@ const seo = {
     top: 0;
     height: 100%;
     width: 0%;
-    background: rgb(var(--chromatic-red) / 0.10);
+    background: rgb(var(--chromatic-red) / 0.1);
     border-radius: var(--mirror-radius-xs);
     transition: width var(--mirror-duration-fill) var(--ease-spring);
   }
@@ -357,12 +373,11 @@ const seo = {
     border-left: 2px solid rgb(var(--chromatic-cyan) / 0.2);
     border-radius: var(--radius-lg);
     padding: var(--space-md);
-    background:
-      linear-gradient(
-        135deg,
-        rgb(var(--chromatic-cyan) / 0.012) 0%,
-        transparent 40%
-      );
+    background: linear-gradient(
+      135deg,
+      rgb(var(--chromatic-cyan) / 0.012) 0%,
+      transparent 40%
+    );
     box-shadow: var(--edge-highlight);
   }
 
@@ -492,7 +507,7 @@ const seo = {
 
     .action-btn {
       font-size: calc(var(--text-sm) * 0.9);
-      padding-inline: calc(var(--space-xs) * 1.0);
+      padding-inline: calc(var(--space-xs) * 1);
     }
   }
 </style>
@@ -521,7 +536,9 @@ const seo = {
     background-image: var(--surface-sheen);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
-    box-shadow: var(--edge-highlight), 0 8px 32px rgb(0 0 0 / 0.5);
+    box-shadow:
+      var(--edge-highlight),
+      0 8px 32px rgb(0 0 0 / 0.5);
     font-family: var(--font-body);
     font-size: calc(var(--text-sm) * 0.9);
     font-weight: 400;
@@ -576,9 +593,7 @@ const seo = {
     letter-spacing: var(--mirror-text-track-wide);
     text-transform: uppercase;
     color: rgb(var(--color-text-rgb) / var(--opacity-subtle));
-    padding:
-      calc(var(--space-xs) * 0.4)
-      calc(var(--space-xs) * 0.9)
+    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.9)
       calc(var(--space-xs) * 0.7);
   }
 
@@ -962,34 +977,84 @@ const seo = {
     border-color: rgb(var(--chip-rgb) / 0.31);
   }
 
-  .dp-detail-chip[data-chip-tint="source_network"] { --chip-rgb: 110 140 172; }
-  .dp-detail-chip[data-chip-tint="source_network_api"] { --chip-rgb: 106 145 176; }
-  .dp-detail-chip[data-chip-tint="source_active_probe"] { --chip-rgb: 98 162 181; }
-  .dp-detail-chip[data-chip-tint="source_navigator"] { --chip-rgb: 126 141 165; }
-  .dp-detail-chip[data-chip-tint="source_screen_window"] { --chip-rgb: 134 146 159; }
-  .dp-detail-chip[data-chip-tint="source_webgl"] { --chip-rgb: 157 138 108; }
-  .dp-detail-chip[data-chip-tint="source_media_query"] { --chip-rgb: 121 148 132; }
-  .dp-detail-chip[data-chip-tint="source_runtime"] { --chip-rgb: 127 151 139; }
-  .dp-detail-chip[data-chip-tint="source_media_api"] { --chip-rgb: 106 154 142; }
-  .dp-detail-chip[data-chip-tint="source_storage"] { --chip-rgb: 143 126 160; }
-  .dp-detail-chip[data-chip-tint="source_permissions"] { --chip-rgb: 163 122 111; }
-  .dp-detail-chip[data-chip-tint="source_feature_check"] { --chip-rgb: 118 150 167; }
-  .dp-detail-chip[data-chip-tint="source_performance_api"] { --chip-rgb: 144 136 112; }
-  .dp-detail-chip[data-chip-tint="source_intl_date"] { --chip-rgb: 135 151 112; }
-  .dp-detail-chip[data-chip-tint="source_document"] { --chip-rgb: 138 134 155; }
-  .dp-detail-chip[data-chip-tint="source_css"] { --chip-rgb: 118 146 168; }
+  .dp-detail-chip[data-chip-tint="source_network"] {
+    --chip-rgb: 110 140 172;
+  }
+  .dp-detail-chip[data-chip-tint="source_network_api"] {
+    --chip-rgb: 106 145 176;
+  }
+  .dp-detail-chip[data-chip-tint="source_active_probe"] {
+    --chip-rgb: 98 162 181;
+  }
+  .dp-detail-chip[data-chip-tint="source_navigator"] {
+    --chip-rgb: 126 141 165;
+  }
+  .dp-detail-chip[data-chip-tint="source_screen_window"] {
+    --chip-rgb: 134 146 159;
+  }
+  .dp-detail-chip[data-chip-tint="source_webgl"] {
+    --chip-rgb: 157 138 108;
+  }
+  .dp-detail-chip[data-chip-tint="source_media_query"] {
+    --chip-rgb: 121 148 132;
+  }
+  .dp-detail-chip[data-chip-tint="source_runtime"] {
+    --chip-rgb: 127 151 139;
+  }
+  .dp-detail-chip[data-chip-tint="source_media_api"] {
+    --chip-rgb: 106 154 142;
+  }
+  .dp-detail-chip[data-chip-tint="source_storage"] {
+    --chip-rgb: 143 126 160;
+  }
+  .dp-detail-chip[data-chip-tint="source_permissions"] {
+    --chip-rgb: 163 122 111;
+  }
+  .dp-detail-chip[data-chip-tint="source_feature_check"] {
+    --chip-rgb: 118 150 167;
+  }
+  .dp-detail-chip[data-chip-tint="source_performance_api"] {
+    --chip-rgb: 144 136 112;
+  }
+  .dp-detail-chip[data-chip-tint="source_intl_date"] {
+    --chip-rgb: 135 151 112;
+  }
+  .dp-detail-chip[data-chip-tint="source_document"] {
+    --chip-rgb: 138 134 155;
+  }
+  .dp-detail-chip[data-chip-tint="source_css"] {
+    --chip-rgb: 118 146 168;
+  }
 
-  .dp-detail-chip[data-chip-tint="confidence_high"] { --chip-rgb: 119 157 127; }
-  .dp-detail-chip[data-chip-tint="confidence_medium"] { --chip-rgb: 166 146 104; }
-  .dp-detail-chip[data-chip-tint="confidence_low"] { --chip-rgb: 164 119 124; }
+  .dp-detail-chip[data-chip-tint="confidence_high"] {
+    --chip-rgb: 119 157 127;
+  }
+  .dp-detail-chip[data-chip-tint="confidence_medium"] {
+    --chip-rgb: 166 146 104;
+  }
+  .dp-detail-chip[data-chip-tint="confidence_low"] {
+    --chip-rgb: 164 119 124;
+  }
 
-  .dp-detail-chip[data-chip-tint="stability_stable"] { --chip-rgb: 121 137 156; }
-  .dp-detail-chip[data-chip-tint="stability_session"] { --chip-rgb: 149 133 118; }
-  .dp-detail-chip[data-chip-tint="stability_live"] { --chip-rgb: 104 166 178; }
+  .dp-detail-chip[data-chip-tint="stability_stable"] {
+    --chip-rgb: 121 137 156;
+  }
+  .dp-detail-chip[data-chip-tint="stability_session"] {
+    --chip-rgb: 149 133 118;
+  }
+  .dp-detail-chip[data-chip-tint="stability_live"] {
+    --chip-rgb: 104 166 178;
+  }
 
-  .dp-detail-chip[data-chip-tint="action_interactive"] { --chip-rgb: 96 170 190; }
-  .dp-detail-chip[data-chip-tint="tier_core"] { --chip-rgb: var(--mirror-tier-core-rgb); }
-  .dp-detail-chip[data-chip-tint="tier_context"] { --chip-rgb: var(--mirror-tier-context-rgb); }
+  .dp-detail-chip[data-chip-tint="action_interactive"] {
+    --chip-rgb: 96 170 190;
+  }
+  .dp-detail-chip[data-chip-tint="tier_core"] {
+    --chip-rgb: var(--mirror-tier-core-rgb);
+  }
+  .dp-detail-chip[data-chip-tint="tier_context"] {
+    --chip-rgb: var(--mirror-tier-context-rgb);
+  }
   .dp-detail-chip[data-chip-tint="tier_deep"] {
     --chip-rgb: var(--mirror-tier-deep-rgb);
     border-style: dashed;
@@ -1077,13 +1142,17 @@ const seo = {
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
   }
 
-/* ── Toast ──────────────────────────────────────────────── */
+  /* ── Toast ──────────────────────────────────────────────── */
 
   .mirror-toast {
     position: fixed;
-    bottom: calc(var(--touch-target) + (var(--space-sm) * 2) + env(safe-area-inset-bottom, 0px));
+    bottom: calc(
+      var(--touch-target) + (var(--space-sm) * 2) +
+        env(safe-area-inset-bottom, 0px)
+    );
     left: 50%;
-    transform: translateX(-50%) translateY(var(--mirror-toast-offset, var(--space-xs)));
+    transform: translateX(-50%)
+      translateY(var(--mirror-toast-offset, var(--space-xs)));
     background: rgb(var(--color-text-rgb) / 0.06);
     border: 1px solid rgb(var(--color-text-rgb) / 0.06);
     -webkit-backdrop-filter: blur(16px);
