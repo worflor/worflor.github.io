@@ -2455,17 +2455,14 @@ const seo = {
     animation: ws-copy-pulse 0.7s ease-out;
   }
 
-  /* Reject pulse — red flash for invalid/denied actions */
+  /* Reject pulse — red flash for invalid actions (matches ws-copy-pulse pattern) */
   @keyframes ws-reject-pulse {
-    0%   { background: rgb(var(--chromatic-red) / 0.25); color: rgb(var(--chromatic-red)); }
-    100% { background: transparent; }
+    0%   { background: rgb(var(--chromatic-red) / 0.25); border-color: rgb(var(--chromatic-red) / 0.5); }
+    100% { background: transparent; border-color: rgb(var(--color-text-rgb) / 0.14); }
   }
 
-  .ws-reject-pulse,
-  .whisper-password-tools .ws-reject-pulse {
-    animation: ws-reject-pulse 0.7s ease-out;
-    background: transparent;
-    color: rgb(var(--chromatic-red));
+  .ws-reject-pulse {
+    animation: ws-reject-pulse 0.7s ease-out !important;
   }
 
   /* Computing shimmer — repeating border glow while working */

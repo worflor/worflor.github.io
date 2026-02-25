@@ -101,7 +101,7 @@ const MODE_LABELS: Record<WhisperMode, string> = {
 
 /* ── DOM Helpers ───────────────────────────────────────── */
 
-function isMode(value: string | undefined): value is WhisperMode {
+function isMode(value: string | null | undefined): value is WhisperMode {
   return value === MODE_EMBED || value === MODE_EXTRACT || value === MODE_HUNT || value === MODE_LIVE;
 }
 
@@ -186,7 +186,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   const engine = new WhisperEngine();
   const savedMode = sessionStorage.getItem("whisper-mode");
   const savedCarrier = sessionStorage.getItem("whisper-carrier");
-  let activeMode: WhisperMode = isMode(savedMode ?? undefined) ? (savedMode as WhisperMode) : MODE_EMBED;
+  let activeMode: WhisperMode = isMode(savedMode) ? savedMode : MODE_EMBED;
   let busy = false;
   let actionBarVisible = false;
   let fadeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -399,24 +399,26 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     return opts.page.dataset.carrier === "url";
   }
 
+  function syncCarrier(isUrl: boolean): void {
+    if (isUrl) {
+      opts.page.dataset.carrier = "url";
+      sessionStorage.setItem("whisper-carrier", "url");
+    } else {
+      delete opts.page.dataset.carrier;
+      sessionStorage.removeItem("whisper-carrier");
+    }
+  }
+
   function setMode(mode: WhisperMode): void {
     activeMode = mode;
     opts.page.dataset.mode = mode;
     sessionStorage.setItem("whisper-mode", mode);
 
-    // Sync carrier attribute with radio state
     if (mode === MODE_EMBED) {
       const urlRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="url"]');
-      if (urlRadio?.checked) {
-        opts.page.dataset.carrier = "url";
-        sessionStorage.setItem("whisper-carrier", "url");
-      } else {
-        delete opts.page.dataset.carrier;
-        sessionStorage.removeItem("whisper-carrier");
-      }
+      syncCarrier(!!urlRadio?.checked);
     } else {
-      delete opts.page.dataset.carrier;
-      sessionStorage.removeItem("whisper-carrier");
+      syncCarrier(false);
     }
 
     syncOpTitle();
@@ -584,13 +586,10 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   const carrierRadios = opts.page.querySelectorAll<HTMLInputElement>('input[name="ws-carrier-type"]');
   carrierRadios.forEach((radio) => radio.addEventListener("change", () => {
-    if (radio.value === "url") {
-      opts.page.dataset.carrier = "url";
-      sessionStorage.setItem("whisper-carrier", "url");
+    syncCarrier(radio.value === "url");
+    if (isCarrierUrl()) {
       hideActionsBar();
     } else {
-      delete opts.page.dataset.carrier;
-      sessionStorage.removeItem("whisper-carrier");
       opts.passwordInput.placeholder = "password to encrypt";
       if (hasCarrier()) showActionsBar();
     }

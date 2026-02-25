@@ -542,13 +542,13 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   function ensureEmbedUrlMode(): void {
     opts.page.dataset.mode = "embed";
     opts.page.dataset.carrier = "url";
-    // Sync mode buttons (scoped to page, not document)
+    sessionStorage.setItem("whisper-mode", "embed");
+    sessionStorage.setItem("whisper-carrier", "url");
     opts.page.querySelectorAll<HTMLButtonElement>("[data-whisper-mode]").forEach((btn) => {
       const active = btn.dataset.whisperMode === "embed";
       btn.classList.toggle("whisper-mode-btn--active", active);
       btn.setAttribute("aria-pressed", String(active));
     });
-    // Sync carrier radio
     const urlRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="url"]');
     if (urlRadio) urlRadio.checked = true;
   }
