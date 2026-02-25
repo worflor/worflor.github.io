@@ -25,11 +25,37 @@ import {
   TE,
   TD,
   hkdf,
-  kdfChainDirect,
   aesGcmEncrypt,
   aesGcmDecrypt,
 } from "./whisper-live-crypto";
 import { sdpToCode, codeToSdp } from "./whisper-live-sdp";
+
+import {
+  type RatchetState,
+  generateDHKeyPair,
+  dhRatchetStep,
+  initRatchetAsOfferer,
+  initRatchetAsReceiver,
+  kdfChain,
+  skipMessageKeys,
+  trySkippedKey,
+} from "./whisper-live-ratchet";
+
+import {
+  HEADER_SIZE,
+  buildHeader,
+  parseHeader,
+  encodeFilePlaintext,
+  decodeFilePlaintext,
+} from "./whisper-live-wire";
+
+import {
+  BUFFERED_AMOUNT_LOW,
+  chunkMessagePrefixed,
+  ChunkAssembler,
+} from "./whisper-live-chunking";
+
+import { createMinimalPNGCarrier } from "./whisper-live-carrier";
 
 /* ═══════════════════════════════════════════════════════════════════
    Types
@@ -72,7 +98,7 @@ export interface WhisperLiveCallbacks {
 export interface WhisperLiveSessionOptions {
   /**
    * RTCPeerConnection configuration.
-   * Default is “local-only” (no STUN/TURN) to avoid any external network assist.
+   * Default is "local-only" (no STUN/TURN) to avoid any external network assist.
    */
   rtcConfig?: RTCConfiguration;
 
@@ -157,7 +183,6 @@ const FINGERPRINT_EMOJI = [
 
 /* Pre-encoded constants — avoids per-call TextEncoder allocations */
 const FP_PREFIX = TE.encode("whisper-fp-v1");
-const KDF_INFO_RATCHET = TE.encode("whisper-ratchet");
 const PHRASE_PREFIX = "whisper-phrase|";
 const PHRASE_KDF_INFO = TE.encode("whisper-live-keyed");
 const ZERO_SALT_32 = new Uint8Array(32);
@@ -167,408 +192,6 @@ async function deriveFingerprint(sharedSecret: Uint8Array): Promise<string> {
   return Array.from(hash.subarray(0, 4))
     .map((b) => FINGERPRINT_EMOJI[b % FINGERPRINT_EMOJI.length])
     .join("");
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   Double Ratchet
-   ═══════════════════════════════════════════════════════════════════
-   Signal Protocol Double Ratchet algorithm.
-
-   Root chain: initialized from ECDH shared secret.
-   DH ratchet: new P-256 keypair per sending turn.
-   Symmetric ratchet: HMAC-SHA256 chain per direction.
-   Message keys: derived from chain, used once then discarded.
-   ═══════════════════════════════════════════════════════════════════ */
-
-const MAX_SKIP = 256;  // max skipped message keys to store
-
-interface RatchetKeyPair {
-  publicKey: Uint8Array;    // raw 65-byte uncompressed P-256 point
-  privateKey: CryptoKey;    // non-extractable ECDH private key
-}
-
-interface RatchetState {
-  /** Root key — 32 bytes, ratcheted with each DH exchange */
-  rootKey: Uint8Array;
-
-  /** Our current DH ratchet keypair */
-  dhSelf: RatchetKeyPair;
-
-  /** Peer's current DH ratchet public key (raw bytes) */
-  dhPeer: Uint8Array | null;
-
-  /** Cached hex of dhPeer — avoids recomputing toHex(dhPeer) per message */
-  dhPeerHex: string;
-
-  /** Sending chain key */
-  chainKeySend: Uint8Array | null;
-
-  /** Receiving chain key */
-  chainKeyRecv: Uint8Array | null;
-
-  /** Number of messages sent in current sending chain */
-  nSend: number;
-
-  /** Number of messages received in current receiving chain */
-  nRecv: number;
-
-  /** Previous sending chain length (for header) */
-  prevChainLength: number;
-
-  /** Skipped message keys for out-of-order delivery — Map<"pubHex:nr", messageKey> */
-  skippedKeys: Map<string, Uint8Array>;
-}
-
-async function generateDHKeyPair(): Promise<RatchetKeyPair> {
-  const pair = await crypto.subtle.generateKey(
-    { name: "ECDH", namedCurve: "P-256" },
-    false,
-    ["deriveBits"],
-  );
-  const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  return { publicKey: pubRaw, privateKey: pair.privateKey };
-}
-
-async function dhExchange(privateKey: CryptoKey, peerPublicRaw: Uint8Array): Promise<Uint8Array> {
-  const peerKey = await crypto.subtle.importKey(
-    "raw", toArrayBuffer(peerPublicRaw), { name: "ECDH", namedCurve: "P-256" }, false, [],
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: "ECDH", public: peerKey }, privateKey, 256,
-  );
-  return new Uint8Array(bits);
-}
-
-/** KDF for root chain ratchet: HKDF(rootKey, dhOutput) → [newRootKey, newChainKey] */
-async function kdfRootChain(
-  rootKey: Uint8Array, dhOutput: Uint8Array,
-): Promise<[Uint8Array, Uint8Array]> {
-  const derived = await hkdf(dhOutput, rootKey, KDF_INFO_RATCHET, 64);
-  return [derived.subarray(0, 32), derived.subarray(32, 64)];
-}
-
-/** KDF for symmetric chain ratchet: chainKey → [newChainKey, messageKey] */
-const kdfChain = kdfChainDirect;
-
-/** Initialize ratchet state — called by the person who received the first message (answerer). */
-async function initRatchetAsReceiver(
-  sharedSecret: Uint8Array,
-  peerPublicKey: Uint8Array,
-): Promise<RatchetState> {
-  const dhSelf = await generateDHKeyPair();
-  const dhOutput = await dhExchange(dhSelf.privateKey, peerPublicKey);
-  const [rootKey, chainKeySend] = await kdfRootChain(sharedSecret, dhOutput);
-  dhOutput.fill(0); // wipe DH output
-  sharedSecret.fill(0); // wipe initial shared secret (now in rootKey)
-
-  return {
-    rootKey,
-    dhSelf,
-    dhPeer: peerPublicKey,
-    dhPeerHex: toHex(peerPublicKey),
-    chainKeySend,
-    chainKeyRecv: null,
-    nSend: 0,
-    nRecv: 0,
-    prevChainLength: 0,
-    skippedKeys: new Map(),
-  };
-}
-
-/** Initialize ratchet state — called by the person who sent the first message (offerer). */
-async function initRatchetAsOfferer(
-  sharedSecret: Uint8Array, dhSelf: RatchetKeyPair,
-): Promise<RatchetState> {
-  return {
-    rootKey: sharedSecret,
-    dhSelf,
-    dhPeer: null,
-    dhPeerHex: "",
-    chainKeySend: null,
-    chainKeyRecv: null,
-    nSend: 0,
-    nRecv: 0,
-    prevChainLength: 0,
-    skippedKeys: new Map(),
-  };
-}
-
-/** Perform a DH ratchet step when receiving a new public key from peer. */
-async function dhRatchetStep(state: RatchetState, peerPublicKey: Uint8Array): Promise<void> {
-  state.prevChainLength = state.nSend;
-  state.nSend = 0;
-  state.nRecv = 0;
-
-  // Wipe old peer key before replacing
-  if (state.dhPeer) state.dhPeer.fill(0);
-  state.dhPeer = peerPublicKey;
-  state.dhPeerHex = toHex(peerPublicKey);
-
-  // Wipe old chain keys before replacing
-  if (state.chainKeyRecv) state.chainKeyRecv.fill(0);
-  if (state.chainKeySend) state.chainKeySend.fill(0);
-
-  // Derive receiving chain
-  const dhRecv = await dhExchange(state.dhSelf.privateKey, peerPublicKey);
-  const oldRootKey1 = state.rootKey;
-  const [rootKey1, chainKeyRecv] = await kdfRootChain(state.rootKey, dhRecv);
-  dhRecv.fill(0); // wipe DH output
-  oldRootKey1.fill(0); // wipe old root key
-  state.rootKey = rootKey1;
-  state.chainKeyRecv = chainKeyRecv;
-
-  // Generate new DH keypair and derive sending chain
-  const oldDhSelf = state.dhSelf;
-  state.dhSelf = await generateDHKeyPair();
-  oldDhSelf.publicKey.fill(0); // wipe old DH public key
-  const dhSend = await dhExchange(state.dhSelf.privateKey, peerPublicKey);
-  const intermediateRootKey = state.rootKey;
-  const [rootKey2, chainKeySend] = await kdfRootChain(state.rootKey, dhSend);
-  dhSend.fill(0); // wipe DH output
-  intermediateRootKey.fill(0); // wipe intermediate root key
-  state.rootKey = rootKey2;
-  state.chainKeySend = chainKeySend;
-}
-
-/** Skip message keys for out-of-order delivery. */
-async function skipMessageKeys(state: RatchetState, until: number): Promise<void> {
-  if (!state.chainKeyRecv) return;
-  if (until - state.nRecv > MAX_SKIP) throw new Error("Too many skipped messages");
-  const pubHex = state.dhPeerHex;
-
-  while (state.nRecv < until) {
-    const oldChainKey = state.chainKeyRecv!;
-    const [newChainKey, mk] = await kdfChain(oldChainKey);
-    oldChainKey.fill(0); // wipe old chain key
-    state.chainKeyRecv = newChainKey;
-    state.skippedKeys.set(`${pubHex}:${state.nRecv}`, mk);
-    state.nRecv++;
-
-    // Evict oldest entries if over limit (Map preserves insertion order)
-    if (state.skippedKeys.size > MAX_SKIP * 2) {
-      const excess = state.skippedKeys.size - MAX_SKIP;
-      const iter = state.skippedKeys.keys();
-      for (let i = 0; i < excess; i++) {
-        const k = iter.next().value;
-        if (k !== undefined) {
-          // Zero skipped keys before eviction (item 7)
-          const evicted = state.skippedKeys.get(k);
-          if (evicted) evicted.fill(0);
-          state.skippedKeys.delete(k);
-        }
-      }
-    }
-  }
-}
-
-/** Try to find a skipped message key. Returns and removes it if found. O(1) Map lookup. */
-function trySkippedKey(
-  state: RatchetState, pubKeyHex: string, nr: number,
-): Uint8Array | null {
-  const key = `${pubKeyHex}:${nr}`;
-  const mk = state.skippedKeys.get(key);
-  if (!mk) return null;
-  state.skippedKeys.delete(key);
-  return mk;
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   Message Wire Format
-   ═══════════════════════════════════════════════════════════════════
-   Header:
-     [0]      flags (1B): bit0 = isFile
-     [1..65]  ratchet public key (65B, uncompressed P-256)
-     [66..69] message counter (4B LE)
-     [70..73] previous chain length (4B LE)
-     [74..85] nonce (12B)
-   Payload:
-     [86..]   AES-256-GCM ciphertext (includes 16B auth tag)
-
-   For file messages, the plaintext is:
-     [0..3]   filename length (4B LE)
-     [4..4+N] filename (UTF-8)
-     [4+N..]  file type (null-terminated) + file bytes
-   ═══════════════════════════════════════════════════════════════════ */
-
-const HEADER_SIZE = 86;
-
-function buildHeader(
-  flags: number, pubKey: Uint8Array, counter: number, prevChainLen: number, nonce: Uint8Array,
-): Uint8Array {
-  const header = new Uint8Array(HEADER_SIZE);
-  const view = new DataView(header.buffer);
-  header[0] = flags;
-  header.set(pubKey, 1);
-  view.setUint32(66, counter, true);
-  view.setUint32(70, prevChainLen, true);
-  header.set(nonce, 74);
-  return header;
-}
-
-function parseHeader(data: Uint8Array): {
-  flags: number;
-  pubKey: Uint8Array;
-  counter: number;
-  prevChainLen: number;
-  nonce: Uint8Array;
-  ciphertext: Uint8Array;
-} {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  return {
-    flags: data[0],
-    pubKey: data.subarray(1, 66),
-    counter: view.getUint32(66, true),
-    prevChainLen: view.getUint32(70, true),
-    nonce: data.subarray(74, 86),
-    ciphertext: data.subarray(86),
-  };
-}
-
-function encodeFilePlaintext(fileName: string, fileType: string, fileBytes: Uint8Array): Uint8Array {
-  const nameBytes = TE.encode(fileName);
-  const typeBytes = TE.encode(fileType);
-  const buf = new Uint8Array(4 + nameBytes.length + typeBytes.length + 1 + fileBytes.length);
-  const view = new DataView(buf.buffer);
-  view.setUint32(0, nameBytes.length, true);
-  buf.set(nameBytes, 4);
-  buf.set(typeBytes, 4 + nameBytes.length);
-  buf[4 + nameBytes.length + typeBytes.length] = 0; // null terminator for type
-  buf.set(fileBytes, 4 + nameBytes.length + typeBytes.length + 1);
-  return buf;
-}
-
-/** Strip path separators, control chars, and null bytes from a filename. */
-function sanitizeFileName(name: string): string {
-  // Remove path separators and null bytes, then strip control characters (U+0000–U+001F, U+007F)
-  return name.replace(/[/\\]/g, "_").replace(/[\x00-\x1f\x7f]/g, "") || "file";
-}
-
-function decodeFilePlaintext(data: Uint8Array): { fileName: string; fileType: string; fileBytes: Uint8Array } {
-  if (data.length < 5) throw new Error("file payload too short");
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const nameLen = view.getUint32(0, true);
-  if (nameLen > data.length - 4) throw new Error("file name length exceeds payload");
-  const fileName = sanitizeFileName(TD.decode(data.subarray(4, 4 + nameLen)));
-  // Find null terminator after name
-  let typeEnd = 4 + nameLen;
-  while (typeEnd < data.length && data[typeEnd] !== 0) typeEnd++;
-  const fileType = TD.decode(data.subarray(4 + nameLen, typeEnd));
-  const fileBytes = data.subarray(typeEnd + 1);
-  return { fileName, fileType, fileBytes };
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   File Chunking for DataChannel
-   ═══════════════════════════════════════════════════════════════════
-   WebRTC DataChannels have message size limits (~256KB typically,
-   but 16KB is the safe max for interoperability). We chunk large
-   messages and reassemble on the other side.
-
-   Chunk format:
-     [0]      chunk type (0x01 = start, 0x02 = continue, 0x03 = end, 0x04 = single)
-     [1..4]   total message length (4B LE, only in start chunk)
-     [5..]    chunk data
-   ═══════════════════════════════════════════════════════════════════ */
-
-const CHUNK_SIZE = 15_360; // 15KB payload per chunk (under 16KB DataChannel limit)
-const CHUNK_START = 0x01;
-const CHUNK_CONTINUE = 0x02;
-const CHUNK_END = 0x03;
-const CHUNK_SINGLE = 0x04;
-const BUFFERED_AMOUNT_LOW = 64 * 1024;    // 64 KB backpressure threshold
-const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
-const HEARTBEAT_TIMEOUT  = 45_000;        // drop peer after 45s silence
-
-/**
- * Chunk a message for DataChannel transport, baking in a wire prefix byte
- * at position [0] of each chunk. This avoids a second allocation + copy
- * in encryptAndSend — chunks are ready to send directly.
- */
-function chunkMessagePrefixed(data: Uint8Array, prefix: number): Uint8Array[] {
-  if (data.length <= CHUNK_SIZE) {
-    const chunk = new Uint8Array(2 + data.length);
-    chunk[0] = prefix;
-    chunk[1] = CHUNK_SINGLE;
-    chunk.set(data, 2);
-    return [chunk];
-  }
-
-  const chunks: Uint8Array[] = [];
-  let offset = 0;
-
-  // Start chunk: prefix + type + total length (4B) + payload
-  const startPayload = Math.min(CHUNK_SIZE - 4, data.length);
-  const startChunk = new Uint8Array(6 + startPayload);
-  startChunk[0] = prefix;
-  startChunk[1] = CHUNK_START;
-  new DataView(startChunk.buffer).setUint32(2, data.length, true);
-  startChunk.set(data.subarray(0, startPayload), 6);
-  chunks.push(startChunk);
-  offset = startPayload;
-
-  // Continue / end chunks
-  while (offset < data.length) {
-    const remaining = data.length - offset;
-    const payloadSize = Math.min(CHUNK_SIZE, remaining);
-    const isLast = offset + payloadSize >= data.length;
-
-    const chunk = new Uint8Array(2 + payloadSize);
-    chunk[0] = prefix;
-    chunk[1] = isLast ? CHUNK_END : CHUNK_CONTINUE;
-    chunk.set(data.subarray(offset, offset + payloadSize), 2);
-    chunks.push(chunk);
-    offset += payloadSize;
-  }
-
-  return chunks;
-}
-
-class ChunkAssembler {
-  private chunks: Uint8Array[] = [];
-  private receiving = false;
-
-  /** Feed a chunk. Returns the complete message when all chunks received, or null if incomplete. */
-  feed(chunk: Uint8Array): Uint8Array | null {
-    const type = chunk[0];
-
-    if (type === CHUNK_SINGLE) {
-      return chunk.subarray(1);
-    }
-
-    if (type === CHUNK_START) {
-      // Don't pre-allocate from peer-declared totalLength — just start collecting
-      this.reset();
-      this.receiving = true;
-      const payload = chunk.subarray(5); // skip type(1) + totalLength(4)
-      if (payload.length > 0) this.chunks.push(payload.slice());
-      return null;
-    }
-
-    if ((type === CHUNK_CONTINUE || type === CHUNK_END) && this.receiving) {
-      const payload = chunk.subarray(1);
-      if (payload.length > 0) this.chunks.push(payload.slice());
-
-      if (type === CHUNK_END) {
-        // Concatenate all collected payloads — bounded by what peer actually sent
-        const parts = this.chunks;
-        this.reset();
-        if (parts.length === 1) return parts[0];
-        let total = 0;
-        for (const p of parts) total += p.length;
-        const result = new Uint8Array(total);
-        let offset = 0;
-        for (const p of parts) { result.set(p, offset); offset += p.length; }
-        return result;
-      }
-    }
-
-    return null;
-  }
-
-  reset(): void {
-    this.chunks = [];
-    this.receiving = false;
-  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -594,6 +217,9 @@ export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
 
 // Timeout for ICE gathering (ms)
 const ICE_GATHER_TIMEOUT = 8000;
+
+const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
+const HEARTBEAT_TIMEOUT  = 45_000;        // drop peer after 45s silence
 
 const VALID_TRANSITIONS: Record<LiveState, readonly LiveState[]> = {
   "idle":               ["offering", "answering", "error"],
@@ -1559,124 +1185,4 @@ export class WhisperLiveSession {
     // Wipe ephemeral key if still present (interrupted handshake)
     this.ephPrivateKey = null;
   }
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   Minimal PNG Carrier (for Dressed mode)
-   ═══════════════════════════════════════════════════════════════════
-   Creates a small 8x8 transparent PNG as a carrier for dressed messages.
-   This is used when the user doesn't provide their own carrier file.
-   ═══════════════════════════════════════════════════════════════════ */
-
-function createMinimalPNGCarrier(): Uint8Array {
-  // 8x8 RGBA transparent PNG
-  // Pre-built minimal valid PNG bytes
-  const header = new Uint8Array([
-    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-  ]);
-
-  // IHDR chunk: 8x8, 8-bit RGBA
-  const ihdr = pngChunk("IHDR", (() => {
-    const data = new Uint8Array(13);
-    const view = new DataView(data.buffer);
-    view.setUint32(0, 8); // width
-    view.setUint32(4, 8); // height
-    data[8] = 8;  // bit depth
-    data[9] = 6;  // color type (RGBA)
-    data[10] = 0; // compression
-    data[11] = 0; // filter
-    data[12] = 0; // interlace
-    return data;
-  })());
-
-  // IDAT chunk: 8 rows of 8 pixels, all zero (transparent)
-  // Each row: filter byte (0) + 32 bytes (8 pixels * 4 channels)
-  const rawData = new Uint8Array(8 * (1 + 8 * 4)); // all zeros = transparent
-
-  // Compress with deflate (store block, no compression for simplicity)
-  const deflated = deflateStore(rawData);
-
-  const idat = pngChunk("IDAT", deflated);
-  const iend = pngChunk("IEND", new Uint8Array(0));
-
-  return concatBytes(header, ihdr, idat, iend);
-}
-
-function pngChunk(type: string, data: Uint8Array): Uint8Array {
-  const typeBytes = TE.encode(type);
-  const chunk = new Uint8Array(4 + 4 + data.length + 4);
-  const view = new DataView(chunk.buffer);
-
-  // Length
-  view.setUint32(0, data.length);
-
-  // Type
-  chunk.set(typeBytes, 4);
-
-  // Data
-  chunk.set(data, 8);
-
-  // CRC32 over type + data
-  const crc = crc32(chunk.subarray(4, 8 + data.length));
-  view.setUint32(8 + data.length, crc);
-
-  return chunk;
-}
-
-function deflateStore(data: Uint8Array): Uint8Array {
-  // Zlib wrapper with store (no compression) deflate blocks
-  // Header: CMF=0x78, FLG=0x01
-  const maxBlock = 65535;
-  const blocks: Uint8Array[] = [];
-  let offset = 0;
-
-  while (offset < data.length) {
-    const remaining = data.length - offset;
-    const blockSize = Math.min(maxBlock, remaining);
-    const isLast = offset + blockSize >= data.length;
-
-    const blockHeader = new Uint8Array(5);
-    blockHeader[0] = isLast ? 0x01 : 0x00;
-    blockHeader[1] = blockSize & 0xFF;
-    blockHeader[2] = (blockSize >> 8) & 0xFF;
-    blockHeader[3] = ~blockSize & 0xFF;
-    blockHeader[4] = (~blockSize >> 8) & 0xFF;
-
-    blocks.push(blockHeader);
-    blocks.push(data.subarray(offset, offset + blockSize));
-    offset += blockSize;
-  }
-
-  // Adler-32 checksum
-  let a = 1, b = 0;
-  for (let i = 0; i < data.length; i++) {
-    a = (a + data[i]) % 65521;
-    b = (b + a) % 65521;
-  }
-  const adler = new Uint8Array(4);
-  const adlerView = new DataView(adler.buffer);
-  adlerView.setUint32(0, (b << 16) | a);
-
-  return concatBytes(new Uint8Array([0x78, 0x01]), ...blocks, adler);
-}
-
-// CRC32 lookup table
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) {
-      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    }
-    table[n] = c;
-  }
-  return table;
-})();
-
-function crc32(data: Uint8Array): number {
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < data.length; i++) {
-    crc = CRC_TABLE[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xFFFFFFFF) >>> 0;
 }
