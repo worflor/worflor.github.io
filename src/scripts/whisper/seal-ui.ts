@@ -672,7 +672,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     busy = true;
     opts.mySealBtn.disabled = true;
     opts.mySealBtn.classList.add("ws-computing");
-    log("loading your seal identity...");
+    log("loading local key...");
 
     try {
       await delay(COMPUTE_MIN_DISPLAY_MS);
@@ -694,7 +694,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       opts.mySealInline.title = "WS2 public key preview — click to copy full code";
       opts.mySealInlinePanel.style.display = "";
       syncMySealInlinePanelState();
-      log("seal identity ready");
+      log(`key loaded: ${compactSealCode(identity.code)}`);
       // Stop shimmer, fire copy pulse
       opts.mySealBtn.classList.remove("ws-computing");
       copyToClipboard(identity.code).then(() => {
@@ -770,7 +770,8 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     pendingPayload = payload;
     showOverlay(opts.unsealPhase);
     showUnsealSub(opts.unsealProgress);
-    log("checking sealed message (ws2)...");
+    const sealId = payload.rf ? payload.rf.slice(0, 8) : "unknown";
+    log(`checking seal ${sealId}...`);
 
     try {
       const identity = await getExistingSealIdentity();
@@ -780,9 +781,9 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
         opts.mySealInline.textContent = formatInlineSealPreview(identity.code);
         opts.mySealInline.style.display = "";
         opts.mySealInline.title = "WS2 public key preview — click to copy full code";
-        log(`local identity: ${compactSealCode(identity.code)}`);
+        log(`local key: ${compactSealCode(identity.code)}`);
       } else {
-        log("no local seal identity found");
+        log("no local key found");
       }
 
       const result = await unsealMessage(payload, password);
@@ -796,7 +797,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       if (result.ok) {
         opts.decryptedMessage.textContent = result.message;
         showUnsealSub(opts.unsealSuccess);
-        log("message decrypted successfully");
+        log("decrypted");
         pendingPayload = null;
         opts.msgCopyBtn.focus();
         return;
@@ -805,28 +806,28 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       switch (result.reason) {
         case "expired":
           showUnsealSub(opts.unsealExpired);
-          log("sealed message has expired");
+          log("expired");
           pendingPayload = null;
           break;
         case "password-needed":
           showUnsealSub(opts.unsealPassword);
-          log("additional password required");
+          log("shared phrase required");
           opts.unsealPwInput.value = "";
           opts.unsealPwInput.focus();
           break;
         case "wrong-seal":
           showUnsealSub(opts.unsealFail);
-          log("identity mismatch: no matching private key for this message");
+          log("wrong seal. this message is for a different browser");
           pendingPayload = null;
           break;
         case "identity-missing":
           showUnsealSub(opts.unsealFail);
-          log("cannot decrypt: local seal identity is missing in this browser profile");
+          log("no local key in this browser");
           pendingPayload = null;
           break;
         case "decrypt-failed":
           showUnsealSub(opts.unsealFail);
-          log("decryption failed — wrong browser or corrupted payload");
+          log("decryption failed. wrong browser or corrupted");
           pendingPayload = null;
           break;
       }
@@ -1043,7 +1044,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
         pendingPayload = null;
       }
       ensureEmbedUrlMode();
-      log("sealed url detected (ws2)");
+      log("sealed message found in url");
       runUnseal(payload);
     }
   }
