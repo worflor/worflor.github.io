@@ -975,8 +975,9 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (pw) await safeCopy(pw, opts.extraPwCopyBtn, "Copied!");
   }, { signal });
 
-  // Expiry — toggle custom fields on radio change
+  // Expiry — toggle custom fields on radio change + sync initial state
   opts.expiryGroup.addEventListener("change", syncExpiryCustom, { signal });
+  syncExpiryCustom();
 
   // Enter on seal input → focus message
   opts.recipientSealInput.addEventListener("keydown", (e) => {
