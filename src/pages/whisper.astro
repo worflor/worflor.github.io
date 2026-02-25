@@ -2967,6 +2967,9 @@ const seo = {
   }
 
   .wl-chat-compose {
+    --wl-activity: 0;
+    --wl-velocity: 0;
+    --wl-flow: 50%;
     display: flex;
     gap: calc(var(--space-xs) * 0.4);
     align-items: stretch;
@@ -2980,10 +2983,82 @@ const seo = {
         rgb(var(--color-text-rgb) / 0.008) 100%
       ),
       rgb(10 10 10 / 0.94);
+    transition:
+      border-top-color var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      filter var(--duration-fast) linear;
+    transform: translateZ(0);
+    filter: saturate(calc(1 + (var(--wl-activity) * 0.24)));
   }
 
   .wl-chat-compose:focus-within {
     border-top-color: rgb(var(--chromatic-cyan) / 0.28);
+  }
+
+  .wl-chat-compose[data-intent="idle"] {
+    border-top-color: rgb(var(--color-text-rgb) / 0.12);
+    box-shadow: none;
+  }
+
+  .wl-chat-compose[data-intent="connecting"] {
+    border-top-color: rgb(var(--tool-action-load) / 0.44);
+    box-shadow: inset 0 1px 0 rgb(var(--tool-action-load) / 0.18);
+  }
+
+  .wl-chat-compose[data-intent="ready"] {
+    border-top-color: rgb(var(--chromatic-cyan) / 0.34);
+    box-shadow: inset 0 1px 0 rgb(var(--chromatic-cyan) / 0.14);
+  }
+
+  .wl-chat-compose[data-intent="typing"] {
+    border-top-color: rgb(var(--chromatic-cyan) / 0.5);
+    box-shadow:
+      inset 0 1px 0 rgb(var(--chromatic-cyan) / 0.18),
+      0 -1px 0 rgb(var(--chromatic-cyan) / 0.22);
+    background:
+      linear-gradient(
+        110deg,
+        rgb(var(--chromatic-cyan) / calc(0.025 + (var(--wl-activity) * 0.06))) 0%,
+        rgb(var(--tool-action-load) / calc(0.02 + (var(--wl-activity) * 0.05))) var(--wl-flow),
+        rgb(var(--chromatic-cyan) / calc(0.025 + (var(--wl-activity) * 0.06))) 100%
+      ),
+      linear-gradient(
+        180deg,
+        rgb(var(--color-text-rgb) / 0.02) 0%,
+        rgb(var(--color-text-rgb) / 0.008) 100%
+      ),
+      rgb(10 10 10 / 0.94);
+    background-size: calc(100% + (var(--wl-velocity) * 110%)) 100%, 100% 100%, 100% 100%;
+    background-position: calc((var(--wl-flow) - 50%) * 0.2) 0, 0 0, 0 0;
+    transition:
+      border-top-color var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out),
+      background-size 80ms linear,
+      background-position 90ms linear,
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .wl-chat-compose[data-intent="drop"] {
+    border-top-color: rgb(var(--tool-status-success) / 0.52);
+    box-shadow:
+      inset 0 1px 0 rgb(var(--tool-status-success) / 0.2),
+      0 -1px 0 rgb(var(--tool-status-success) / 0.24);
+  }
+
+  .wl-chat-compose[data-intent="sending"] {
+    border-top-color: rgb(var(--tool-action-load) / 0.52);
+    animation: wl-intent-sending 580ms cubic-bezier(0.2, 0.85, 0.25, 1);
+  }
+
+  .wl-chat-compose[data-intent="success"] {
+    border-top-color: rgb(var(--tool-status-success) / 0.6);
+    animation: wl-intent-success 860ms cubic-bezier(0.17, 0.8, 0.22, 1);
+  }
+
+  .wl-chat-compose[data-intent="error"] {
+    border-top-color: rgb(var(--chromatic-red) / 0.58);
+    animation: wl-intent-error 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) 2;
   }
 
   .wl-chat-text-input {
@@ -2994,6 +3069,33 @@ const seo = {
     padding: 0.52rem 0.72rem;
     border-radius: calc(var(--whisper-radius) * 0.5);
     border-color: rgb(var(--color-text-rgb) / 0.14);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      outline-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      transform 120ms linear;
+  }
+
+  .wl-chat-compose[data-intent="connecting"] .wl-chat-text-input {
+    border-color: rgb(var(--tool-action-load) / 0.28);
+  }
+
+  .wl-chat-compose[data-intent="ready"] .wl-chat-text-input,
+  .wl-chat-compose[data-intent="typing"] .wl-chat-text-input {
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+  }
+
+  .wl-chat-compose[data-intent="typing"] .wl-chat-text-input {
+    transform: translateY(calc(var(--wl-activity) * -0.35px)) scaleY(calc(1 + (var(--wl-velocity) * 0.01)));
+  }
+
+  .wl-chat-compose[data-intent="drop"] .wl-chat-text-input,
+  .wl-chat-compose[data-intent="success"] .wl-chat-text-input {
+    border-color: rgb(var(--tool-status-success) / 0.38);
+  }
+
+  .wl-chat-compose[data-intent="error"] .wl-chat-text-input {
+    border-color: rgb(var(--chromatic-red) / 0.42);
   }
 
   .wl-chat-input-has-value .wl-chat-send-btn {
@@ -3012,6 +3114,36 @@ const seo = {
     color: rgb(var(--chromatic-cyan));
     box-shadow: 0 0 12px rgb(var(--chromatic-cyan) / 0.1);
     opacity: 0.86;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out),
+      opacity var(--duration-normal) var(--ease-out),
+      transform 120ms linear;
+  }
+
+  .wl-chat-compose[data-intent="typing"] .wl-chat-send-btn {
+    transform: translateY(calc(var(--wl-activity) * -0.6px)) scale(calc(1 + (var(--wl-velocity) * 0.018)));
+  }
+
+  .wl-chat-compose[data-intent="connecting"] .wl-chat-send-btn,
+  .wl-chat-compose[data-intent="sending"] .wl-chat-send-btn {
+    border-color: rgb(var(--tool-action-load) / 0.44);
+    background: rgb(var(--tool-action-load) / 0.15);
+    color: rgb(var(--tool-action-load));
+  }
+
+  .wl-chat-compose[data-intent="success"] .wl-chat-send-btn,
+  .wl-chat-compose[data-intent="drop"] .wl-chat-send-btn {
+    border-color: rgb(var(--tool-status-success) / 0.5);
+    background: rgb(var(--tool-status-success) / 0.14);
+    color: rgb(var(--tool-status-success));
+  }
+
+  .wl-chat-compose[data-intent="error"] .wl-chat-send-btn {
+    border-color: rgb(var(--chromatic-red) / 0.5);
+    background: rgb(var(--chromatic-red) / 0.12);
+    color: rgb(var(--chromatic-red));
   }
 
   .wl-chat-send-btn:hover {
@@ -3033,11 +3165,62 @@ const seo = {
     border-color: rgb(var(--color-text-rgb) / 0.18);
   }
 
+
+
  
 
   .wl-file-icon {
     width: 1rem;
     height: 1rem;
+  }
+
+  @keyframes wl-intent-sending {
+    0% {
+      border-top-color: rgb(var(--tool-action-load) / 0.34);
+      box-shadow: inset 0 1px 0 rgb(var(--tool-action-load) / 0.12);
+    }
+    55% {
+      border-top-color: rgb(var(--tool-action-load) / 0.66);
+      box-shadow: inset 0 1px 0 rgb(var(--tool-action-load) / 0.28);
+    }
+    100% {
+      border-top-color: rgb(var(--tool-action-load) / 0.52);
+      box-shadow: inset 0 1px 0 rgb(var(--tool-action-load) / 0.18);
+    }
+  }
+
+  @keyframes wl-intent-success {
+    0% {
+      border-top-color: rgb(var(--tool-status-success) / 0.28);
+      box-shadow: inset 0 1px 0 rgb(var(--tool-status-success) / 0.1);
+    }
+    45% {
+      border-top-color: rgb(var(--tool-status-success) / 0.72);
+      box-shadow: inset 0 1px 0 rgb(var(--tool-status-success) / 0.34);
+    }
+    100% {
+      border-top-color: rgb(var(--tool-status-success) / 0.6);
+      box-shadow: inset 0 1px 0 rgb(var(--tool-status-success) / 0.2);
+    }
+  }
+
+  @keyframes wl-intent-error {
+    0% { transform: translateX(0); }
+    25% { transform: translateX(-1px); }
+    50% { transform: translateX(1px); }
+    100% { transform: translateX(0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wl-chat-compose,
+    .wl-chat-text-input,
+    .wl-chat-send-btn {
+      animation: none !important;
+      transition-duration: 0ms !important;
+      transform: none !important;
+      background-size: 100% 100%, 100% 100%, 100% 100% !important;
+      background-position: 0 0, 0 0, 0 0 !important;
+    }
   }
 
   /* ── Silent mode ─────────────────────────────────────────── */

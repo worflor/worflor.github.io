@@ -14,12 +14,12 @@ import { TE, hkdf } from "./live-crypto";
 
 /* ── API ──────────────────────────────────────────────────── */
 
-export interface TrackerSignalResult {
+interface TrackerSignalResult {
   role: "offerer" | "answerer";
   peerAnswerCode?: string; // present when role === "offerer"
 }
 
-export interface TrackerSignalCallbacks {
+interface TrackerSignalCallbacks {
   onStatus: (msg: string) => void;
   onLog: (msg: string) => void;
 }

@@ -89,19 +89,24 @@ function parseSDP(sdp: string): CompactSDP {
         const candidateType = parts[7];
         if ((SUPPORTED_PROTOCOLS as readonly string[]).includes(protocol) &&
             (SUPPORTED_TYPES as readonly string[]).includes(candidateType)) {
+          const priority = parseInt(parts[3], 10);
+          const port = parseInt(parts[5], 10);
+          if (!Number.isFinite(priority) || !Number.isFinite(port)) continue;
           const c: CompactCandidate = {
             foundation: parts[0],
             protocol: protocol as CompactCandidate["protocol"],
-            priority: parseInt(parts[3], 10),
+            priority,
             ip: parts[4],
-            port: parseInt(parts[5], 10),
+            port,
             type: candidateType as CompactCandidate["type"],
           };
-          // Capture raddr/rport for srflx/prflx/relay candidates
           const raddrIdx = parts.indexOf("raddr");
           const rportIdx = parts.indexOf("rport");
           if (raddrIdx !== -1 && raddrIdx + 1 < parts.length) c.raddr = parts[raddrIdx + 1];
-          if (rportIdx !== -1 && rportIdx + 1 < parts.length) c.rport = parseInt(parts[rportIdx + 1], 10);
+          if (rportIdx !== -1 && rportIdx + 1 < parts.length) {
+            const rp = parseInt(parts[rportIdx + 1], 10);
+            if (Number.isFinite(rp)) c.rport = rp;
+          }
           candidates.push(c);
         }
       }
@@ -182,7 +187,19 @@ function validateCompactSDP(obj: unknown): CompactSDP {
     throw new Error("SDP missing required fields");
   }
   if (!Array.isArray(o.candidates)) throw new Error("SDP missing candidates");
-  return o as unknown as CompactSDP;
+  for (const c of o.candidates) {
+    if (!c || typeof c !== "object") throw new Error("Invalid candidate entry");
+    const cc = c as Record<string, unknown>;
+    if (typeof cc.foundation !== "string" || typeof cc.protocol !== "string" ||
+        typeof cc.priority !== "number" || typeof cc.ip !== "string" ||
+        typeof cc.port !== "number" || typeof cc.type !== "string") {
+      throw new Error("Candidate missing required fields");
+    }
+    if (!Number.isFinite(cc.priority) || !Number.isFinite(cc.port)) {
+      throw new Error("Candidate has non-finite numeric field");
+    }
+  }
+  return obj as CompactSDP;
 }
 
 async function decompressFromBytes(data: Uint8Array): Promise<CompactSDP> {

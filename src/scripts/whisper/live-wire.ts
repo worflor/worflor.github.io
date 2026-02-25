@@ -88,7 +88,7 @@ export function encodeFilePlaintext(fileName: string, fileType: string, fileByte
 }
 
 /** Strip path separators, control chars, and null bytes from a filename. */
-export function sanitizeFileName(name: string): string {
+function sanitizeFileName(name: string): string {
   // Remove path separators and null bytes, then strip control characters (U+0000–U+001F, U+007F)
   return name.replace(/[/\\]/g, "_").replace(/[\x00-\x1f\x7f]/g, "") || "file";
 }
@@ -101,11 +101,12 @@ export function decodeFilePlaintext(data: Uint8Array): { fileName: string; fileT
   if (nameLen > data.length - nameStart) throw new Error("file name length exceeds payload");
 
   const typeStart = nameStart + nameLen;
+  if (typeStart > data.length) throw new Error("file name extends past payload");
   const fileName = sanitizeFileName(TD.decode(data.subarray(nameStart, typeStart)));
-  // Find null terminator after name
   let typeEnd = typeStart;
   while (typeEnd < data.length && data[typeEnd] !== 0) typeEnd++;
   const fileType = TD.decode(data.subarray(typeStart, typeEnd));
-  const fileBytes = data.subarray(typeEnd + 1);
+  const fileStart = Math.min(typeEnd + 1, data.length);
+  const fileBytes = data.subarray(fileStart);
   return { fileName, fileType, fileBytes };
 }

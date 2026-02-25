@@ -25,6 +25,7 @@ import {
   TE,
   TD,
   hkdf,
+  kdfChainDirect,
   aesGcmEncrypt,
   aesGcmDecrypt,
 } from "./live-crypto";
@@ -36,7 +37,6 @@ import {
   dhRatchetStep,
   initRatchetAsOfferer,
   initRatchetAsReceiver,
-  kdfChain,
   skipMessageKeys,
   trySkippedKey,
 } from "./live-ratchet";
@@ -350,7 +350,15 @@ export class WhisperLiveSession {
   private rtcConfig: RTCConfiguration;
 
   constructor(callbacks: WhisperLiveCallbacks, options: WhisperLiveSessionOptions = {}) {
-    Object.assign(this, callbacks);
+    this.onStateChange = callbacks.onStateChange;
+    this.onFingerprint = callbacks.onFingerprint;
+    this.onMessage = callbacks.onMessage;
+    this.onLog = callbacks.onLog;
+    this.onRawDecrypted = callbacks.onRawDecrypted;
+    this.onPeerTyping = callbacks.onPeerTyping;
+    this.onAck = callbacks.onAck;
+    this.onSendProgress = callbacks.onSendProgress;
+    this.onConnectionStats = callbacks.onConnectionStats;
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
     this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
     this.autoConfirm = options.autoConfirmFingerprint ?? false;
@@ -560,7 +568,9 @@ export class WhisperLiveSession {
         this.onLog(`ICE still ${s}, waiting for peer...`);
         const rd = this.pc.remoteDescription;
         if (rd) {
-          this.pc.setRemoteDescription(rd).catch(() => {});
+          this.pc.setRemoteDescription(rd).catch((e) => {
+            this.onLog(`ICE re-arm failed: ${e instanceof Error ? e.message : "unknown"}`);
+          });
         }
       }
     }, 8_000);
@@ -969,7 +979,7 @@ export class WhisperLiveSession {
 
         if (!this.ratchetState.chainKeyRecv) throw new Error("No receiving chain key");
         const oldRecvChainKey = this.ratchetState.chainKeyRecv;
-        const [newChainKey, mk] = await kdfChain(oldRecvChainKey);
+        const [newChainKey, mk] = await kdfChainDirect(oldRecvChainKey);
         oldRecvChainKey.fill(0); // wipe old chain key
         this.ratchetState.chainKeyRecv = newChainKey;
         this.ratchetState.nRecv++;
@@ -1177,7 +1187,7 @@ export class WhisperLiveSession {
     }
 
     const oldSendChainKey = this.ratchetState.chainKeySend;
-    const [newChainKey, messageKey] = await kdfChain(oldSendChainKey);
+    const [newChainKey, messageKey] = await kdfChainDirect(oldSendChainKey);
     oldSendChainKey.fill(0); // wipe old chain key
     this.ratchetState.chainKeySend = newChainKey;
 
@@ -1198,6 +1208,9 @@ export class WhisperLiveSession {
 
     const wireMessage = concatBytes(header, ciphertext);
 
+    if (this.ratchetState.nSend >= 0xFFFFFFFF) {
+      throw new Error("Message counter exhausted — session must be restarted");
+    }
     this.ratchetState.nSend++;
 
     const chunks = chunkMessagePrefixed(wireMessage, LIVE_MSG.ENCRYPTED);

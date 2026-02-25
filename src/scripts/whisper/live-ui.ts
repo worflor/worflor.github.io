@@ -120,7 +120,7 @@ export interface WhisperLiveUIOptions {
   relayConnectBtn?: HTMLButtonElement;
 }
 
-export const WHISPER_LIVE_IDS = {
+const WHISPER_LIVE_IDS = {
   liveSection: "wl-idle-phase",
   createBtn: "wl-create",
   joinInput: "wl-join-input",
@@ -301,6 +301,75 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const originalTitle = document.title;
   let unreadCount = 0;
   let hasFocus = document.hasFocus();
+  type ComposeIntent = "idle" | "connecting" | "ready" | "typing" | "sending" | "success" | "error" | "drop";
+  const chatCompose = opts.chatInput.closest<HTMLElement>(".wl-chat-compose");
+  let composeIntentTimer: ReturnType<typeof setTimeout> | null = null;
+  let composeIntentOverride: ComposeIntent | null = null;
+  let composeActivity = 0;
+  let composeActivityTarget = 0;
+  let composeActivityVelocity = 0;
+  let composeActivityRaf = 0;
+  let composeActivityLastTick = 0;
+  let composeFlow = 0;
+  let currentLiveState: LiveState = "idle";
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function syncComposeActivityVar(): void {
+    if (!chatCompose) return;
+    chatCompose.style.setProperty("--wl-activity", composeActivity.toFixed(3));
+    chatCompose.style.setProperty("--wl-velocity", Math.min(1, Math.abs(composeActivityVelocity) * 0.18).toFixed(3));
+    chatCompose.style.setProperty("--wl-flow", `${(((Math.sin(composeFlow) + 1) * 0.5) * 100).toFixed(2)}%`);
+  }
+
+  function stepComposeActivity(ts: number): void {
+    const rawDt = composeActivityLastTick ? (ts - composeActivityLastTick) / 1000 : 0;
+    const dt = Math.min(0.04, Math.max(0.001, rawDt || (1 / 60)));
+    composeActivityLastTick = ts;
+
+    // Exponentially decay target energy so motion naturally settles.
+    composeActivityTarget *= Math.exp(-dt * 2.6);
+
+    // 2nd-order spring dynamics (mass-spring-damper).
+    const omega = 13;   // natural frequency
+    const zeta = 0.72;  // damping ratio (under-damped, pleasant overshoot)
+    const accel = (omega * omega * (composeActivityTarget - composeActivity))
+      - (2 * zeta * omega * composeActivityVelocity);
+
+    composeActivityVelocity += accel * dt;
+    composeActivity += composeActivityVelocity * dt;
+    composeActivity = Math.max(0, Math.min(1, composeActivity));
+
+    // Procedural phase progression tied to current energy.
+    composeFlow += dt * (2.4 + (composeActivity * 6.2));
+    syncComposeActivityVar();
+
+    if (
+      composeActivity > 0.006
+      || composeActivityTarget > 0.006
+      || Math.abs(composeActivityVelocity) > 0.006
+    ) {
+      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
+      return;
+    }
+
+    composeActivity = 0;
+    composeActivityTarget = 0;
+    composeActivityVelocity = 0;
+    syncComposeActivityVar();
+    composeActivityRaf = 0;
+    composeActivityLastTick = 0;
+  }
+
+  function exciteComposeActivity(boost: number): void {
+    if (!chatCompose || reduceMotion) return;
+    const b = Math.max(0, Math.min(1, boost));
+    composeActivityTarget = Math.min(1, composeActivityTarget + b);
+    composeActivityVelocity += b * 2.25;
+    syncComposeActivityVar();
+    if (!composeActivityRaf) {
+      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
+    }
+  }
 
   type QrScanStopReason = "accepted" | "cancelled" | "error" | "teardown";
   const qrScanSession: {
@@ -331,16 +400,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.errorSection,
   ];
 
-  function showPhase(el: HTMLElement): void {
-    if (qrScanSession.active && el !== opts.liveSection) {
-      stopJoinQrScan("cancelled");
-    }
+  function applyPhaseVisibility(el: HTMLElement): void {
     for (const phase of allPhases) {
       phase.style.display = phase === el ? "" : "none";
     }
     if (liveSurface) {
       liveSurface.classList.toggle("wl-connected", el === opts.chatSection);
     }
+  }
+
+  function showPhase(el: HTMLElement): void {
+    if (qrScanSession.active && el !== opts.liveSection) {
+      stopJoinQrScan("cancelled");
+    }
+
+    applyPhaseVisibility(el);
   }
 
   function pulsePasteState(ok: boolean): void {
@@ -573,6 +647,44 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.liveStatusLine.classList.remove("whisper-status--ready");
   }
 
+  function syncComposeIntent(): void {
+    if (!chatCompose) return;
+    if (composeIntentOverride) {
+      chatCompose.dataset.intent = composeIntentOverride;
+      return;
+    }
+
+    const hasText = opts.chatInput.value.trim().length > 0;
+    let intent: ComposeIntent = "idle";
+
+    if (opts.chatSection.style.display === "none") intent = "idle";
+    else if (opts.chatMessages.classList.contains("wl-chat-drop-active")) intent = "drop";
+    else if (
+      busy
+      || currentLiveState === "offering"
+      || currentLiveState === "answering"
+      || currentLiveState === "connecting"
+      || currentLiveState === "handshaking"
+      || currentLiveState === "recovering"
+      || currentLiveState === "verifying"
+    ) intent = "connecting";
+    else if (currentLiveState === "error") intent = "error";
+    else if (currentLiveState === "live") intent = hasText ? "typing" : "ready";
+
+    chatCompose.dataset.intent = intent;
+  }
+
+  function pulseComposeIntent(intent: ComposeIntent, ms: number): void {
+    composeIntentOverride = intent;
+    syncComposeIntent();
+    if (composeIntentTimer) clearTimeout(composeIntentTimer);
+    composeIntentTimer = setTimeout(() => {
+      composeIntentOverride = null;
+      composeIntentTimer = null;
+      syncComposeIntent();
+    }, ms);
+  }
+
   function setBusy(next: boolean): void {
     busy = next;
     updateControls();
@@ -631,6 +743,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.rejectBtn.disabled = busy || !hasSession;
     opts.disconnectBtn.disabled = busy || (!hasSession && !chatVisible);
     opts.silentDisconnectBtn.disabled = busy || !hasSession;
+    syncComposeIntent();
   }
 
   /* ── Tab title / unread ───────────────────────────────── */
@@ -660,6 +773,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Reset auto-clear timer
     if (peerTypingTimer) clearTimeout(peerTypingTimer);
     peerTypingTimer = setTimeout(hidePeerTyping, TYPING_DISPLAY_TIMEOUT);
+    exciteComposeActivity(0.18);
   }
 
   function hidePeerTyping(): void {
@@ -672,6 +786,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (typingSendTimer || !session) return;
     session.sendTyping();
     typingSendTimer = setTimeout(() => { typingSendTimer = null; }, TYPING_SEND_DEBOUNCE);
+    exciteComposeActivity(0.22);
   }
 
   /* ── Smart scroll ──────────────────────────────────────── */
@@ -798,6 +913,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
     }
 
+    currentLiveState = state;
+
     const wasRecovering = previousState === "recovering";
     previousState = state;
 
@@ -911,6 +1028,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     for (const el of [opts.joinInput, opts.answerInput, opts.phraseInput, opts.chatInput]) el.value = "";
     if (manualPhraseInput) manualPhraseInput.value = "";
     skippedIceCandidates = 0;
+    currentLiveState = "idle";
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
     showPhase(opts.liveSection);
@@ -1199,10 +1317,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!text || !session) return;
     opts.chatInput.value = "";
     updateControls();
+    pulseComposeIntent("sending", 500);
+    exciteComposeActivity(0.45);
     try {
       await session.sendText(text);
+      pulseComposeIntent("success", 700);
+      exciteComposeActivity(0.35);
     } catch (err) {
       appendLog(`send failed: ${errMsg(err)}`);
+      pulseComposeIntent("error", 1100);
+      exciteComposeActivity(0.4);
     }
   };
 
@@ -1226,11 +1350,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   enterSubmit(opts.answerInput, opts.answerApplyBtn);
   opts.chatInput.addEventListener("input", () => { updateControls(); emitTyping(); }, { signal });
 
-  const chatCompose = opts.chatInput.closest(".wl-chat-compose");
   if (chatCompose) {
+    chatCompose.style.setProperty("--wl-activity", "0");
     const syncComposeState = () => {
       const hasValue = opts.chatInput.value.trim().length > 0;
       chatCompose.classList.toggle("wl-chat-input-has-value", hasValue);
+      syncComposeIntent();
+      if (hasValue) exciteComposeActivity(0.12);
     };
     syncComposeState();
     opts.chatInput.addEventListener("input", syncComposeState, { signal });
@@ -1292,21 +1418,29 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   opts.chatMessages.addEventListener("dragover", (e) => {
     e.preventDefault();
     opts.chatMessages.classList.add("wl-chat-drop-active");
+    syncComposeIntent();
+    exciteComposeActivity(0.2);
   }, { signal });
 
   opts.chatMessages.addEventListener("dragleave", () => {
     opts.chatMessages.classList.remove("wl-chat-drop-active");
+    syncComposeIntent();
   }, { signal });
 
   opts.chatMessages.addEventListener("drop", async (e) => {
     e.preventDefault();
     opts.chatMessages.classList.remove("wl-chat-drop-active");
+    syncComposeIntent();
     const file = (e as DragEvent).dataTransfer?.files?.[0];
     if (!file || !session) return;
     try {
       await session.sendFile(file);
+      pulseComposeIntent("success", 700);
+      exciteComposeActivity(0.36);
     } catch (err) {
       appendLog(`file send failed: ${errMsg(err)}`);
+      pulseComposeIntent("error", 1100);
+      exciteComposeActivity(0.42);
     }
   }, { signal });
 
@@ -1413,6 +1547,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
     if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
+    if (composeIntentTimer) { clearTimeout(composeIntentTimer); composeIntentTimer = null; }
+    if (composeActivityRaf) { cancelAnimationFrame(composeActivityRaf); composeActivityRaf = 0; }
     document.title = originalTitle;
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.clear();

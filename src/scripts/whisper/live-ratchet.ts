@@ -15,13 +15,13 @@ import { hkdf, kdfChainDirect } from "./live-crypto";
 /** Pre-encoded constant — avoids per-call TextEncoder allocations */
 const KDF_INFO_RATCHET = new TextEncoder().encode("whisper-ratchet");
 
-export const MAX_SKIP = 256;  // max skipped message keys to store
+const MAX_SKIP = 256;  // max skipped message keys to store
 
 function skippedKeyId(pubHex: string, nr: number): string {
   return `${pubHex}:${nr}`;
 }
 
-export interface RatchetKeyPair {
+interface RatchetKeyPair {
   publicKey: Uint8Array;    // raw 65-byte uncompressed P-256 point
   privateKey: CryptoKey;    // non-extractable ECDH private key
 }
@@ -68,7 +68,7 @@ export async function generateDHKeyPair(): Promise<RatchetKeyPair> {
   return { publicKey: pubRaw, privateKey: pair.privateKey };
 }
 
-export async function dhExchange(privateKey: CryptoKey, peerPublicRaw: Uint8Array): Promise<Uint8Array> {
+async function dhExchange(privateKey: CryptoKey, peerPublicRaw: Uint8Array): Promise<Uint8Array> {
   const peerKey = await crypto.subtle.importKey(
     "raw", toArrayBuffer(peerPublicRaw), { name: "ECDH", namedCurve: "P-256" }, false, [],
   );
@@ -79,15 +79,13 @@ export async function dhExchange(privateKey: CryptoKey, peerPublicRaw: Uint8Arra
 }
 
 /** KDF for root chain ratchet: HKDF(rootKey, dhOutput) → [newRootKey, newChainKey] */
-export async function kdfRootChain(
+async function kdfRootChain(
   rootKey: Uint8Array, dhOutput: Uint8Array,
 ): Promise<[Uint8Array, Uint8Array]> {
   const derived = await hkdf(dhOutput, rootKey, KDF_INFO_RATCHET, 64);
   return [derived.subarray(0, 32), derived.subarray(32, 64)];
 }
 
-/** KDF for symmetric chain ratchet: chainKey → [newChainKey, messageKey] */
-export const kdfChain = kdfChainDirect;
 
 /** Initialize ratchet state — called by the person who received the first message (answerer). */
 export async function initRatchetAsReceiver(
@@ -173,7 +171,7 @@ export async function skipMessageKeys(state: RatchetState, until: number): Promi
 
   while (state.nRecv < until) {
     const oldChainKey = state.chainKeyRecv!;
-    const [newChainKey, mk] = await kdfChain(oldChainKey);
+    const [newChainKey, mk] = await kdfChainDirect(oldChainKey);
     oldChainKey.fill(0);
     state.chainKeyRecv = newChainKey;
     state.skippedKeys.set(skippedKeyId(pubHex, state.nRecv), mk);

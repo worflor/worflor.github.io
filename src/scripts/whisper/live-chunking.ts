@@ -11,11 +11,11 @@
  *   [5..]    chunk data
  */
 
-export const CHUNK_SIZE = 15_360; // 15KB payload per chunk (under 16KB DataChannel limit)
-export const CHUNK_START = 0x01;
-export const CHUNK_CONTINUE = 0x02;
-export const CHUNK_END = 0x03;
-export const CHUNK_SINGLE = 0x04;
+const CHUNK_SIZE = 15_360; // 15KB payload per chunk (under 16KB DataChannel limit)
+const CHUNK_START = 0x01;
+const CHUNK_CONTINUE = 0x02;
+const CHUNK_END = 0x03;
+const CHUNK_SINGLE = 0x04;
 export const BUFFERED_AMOUNT_LOW = 64 * 1024;    // 64 KB backpressure threshold
 
 const START_TOTAL_LENGTH_BYTES = 4;
