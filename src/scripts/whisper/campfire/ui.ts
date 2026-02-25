@@ -634,7 +634,6 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   /* ── Initial state ──────────────────────────────────────── */
 
   showPhase(opts.idleSection);
-  appendLog("campfire ready");
   updateControls();
 
   /* ── Teardown ────────────────────────────────────────────── */

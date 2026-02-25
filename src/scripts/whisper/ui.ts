@@ -189,6 +189,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   let activeMode: WhisperMode = isMode(savedMode) ? savedMode : MODE_EMBED;
   let busy = false;
   let actionBarVisible = false;
+  let liveLoggedReady = false;
   let fadeTimer: ReturnType<typeof setTimeout> | null = null;
   const releaseUrls = new Set<string>();
   const ac = new AbortController();
@@ -427,7 +428,13 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
       btn.classList.toggle("whisper-mode-btn--active", active);
       btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
-    if (mode === MODE_LIVE || (mode === MODE_EMBED && isCarrierUrl())) {
+    if (mode === MODE_LIVE) {
+      if (!liveLoggedReady) {
+        liveLoggedReady = true;
+        appendLog("live ready");
+      }
+      hideActionsBar();
+    } else if (mode === MODE_EMBED && isCarrierUrl()) {
       hideActionsBar();
     } else {
       opts.passwordInput.placeholder = mode === MODE_EMBED ? "password to encrypt" : "password to decrypt";

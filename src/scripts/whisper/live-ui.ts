@@ -1164,7 +1164,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   });
 
   showPhase(opts.liveSection);
-  appendLog("live channel ready");
   setOfferQrExpanded(false);
   setAnswerQrExpanded(false);
   updateControls();
