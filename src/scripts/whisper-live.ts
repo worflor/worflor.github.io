@@ -540,13 +540,16 @@ export class WhisperLiveSession {
             this.setState("recovering");
           }
           this.attemptIceRestart(pc);
-        } else if (this._state === "connecting" && !this.isOfferer && !this.connectingGraceDone) {
-          // Answerer: host hasn't applied our answer yet. Wait patiently.
+        } else if (!this.isOfferer && !this.connectingGraceDone &&
+                   (this._state === "connecting" || this._state === "answering" || this._state === "waiting-for-answer")) {
+          // Answerer: host hasn't applied our answer yet, or we're still generating it.
+          // ICE fails fast because the other side hasn't set up yet. Wait patiently.
           this.connectingGraceDone = true;
           this.log("waiting for host to complete the handshake...");
           this.connectingGraceTimer = setTimeout(() => {
             this.connectingGraceTimer = null;
-            if (this._state === "connecting" && pc.iceConnectionState === "failed") {
+            if (pc.iceConnectionState === "failed" &&
+                this._state !== "live" && this._state !== "silent" && this._state !== "disconnected" && this._state !== "error") {
               this.log("connection failed, could not reach peer");
               this.setState("error", "Connection failed, peer may be unreachable");
               this.cleanupConnection();
