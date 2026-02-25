@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { CageWasmProfile } from "../../src/scripts/cage-wasm";
+import type { CageWasmProfile } from "../../src/scripts/cage/wasm";
 
 const MAX_PROFILE_BYTES = 8 * 1024 * 1024;
 const VM_TRACE_MAX_STEPS = 240_000;

@@ -7,7 +7,7 @@ import {
   getLastCageWasmRuntimeInfo,
   profileBytesWithWasm,
   type CageWasmProfile,
-} from "../../src/scripts/cage-wasm";
+} from "../../src/scripts/cage/wasm";
 import {
   buildChallengeVectors,
   loadFixtures,
