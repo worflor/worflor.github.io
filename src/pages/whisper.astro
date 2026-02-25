@@ -2359,9 +2359,11 @@ const seo = {
 
   /* Carrier toggle (pill control matching Live transport toggle) */
   .ws-carrier-toggle {
-    display: inline-flex;
+    display: flex;
+    flex-wrap: wrap;
     gap: calc(var(--space-xs) * 0.8);
     align-items: center;
+    min-width: 0;
   }
 
   .ws-carrier-opt {
@@ -2538,6 +2540,7 @@ const seo = {
     border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
     border-radius: calc(var(--whisper-radius) * 0.75);
     margin: var(--space-sm) 0;
+    padding: 0 var(--space-sm);
     min-width: 0;
     overflow: hidden;
   }
@@ -2554,6 +2557,8 @@ const seo = {
     justify-items: center;
     gap: calc(var(--space-xs) * 0.6);
     margin: 0 0 var(--space-sm);
+    min-width: 0;
+    max-width: 100%;
   }
 
   .ws-my-seal-inline-panel {
@@ -2562,6 +2567,8 @@ const seo = {
     border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
     border-radius: calc(var(--whisper-radius) * 0.55);
     background: rgb(var(--chromatic-cyan) / 0.03);
+    min-width: 0;
+    overflow: hidden;
   }
 
   .ws-my-seal-inline-panel .ws-seal-qr-wrap {
@@ -2572,8 +2579,10 @@ const seo = {
     border-radius: calc(var(--whisper-radius) * 0.65);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
     background: rgb(var(--color-bg-rgb));
-    max-width: min(220px, 100%);
+    max-width: 100%;
+    width: min(220px, 100%);
     height: auto;
+    box-sizing: border-box;
   }
 
   .ws-seal-actions,
