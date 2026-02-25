@@ -3,6 +3,7 @@ import { qrcodegen } from "./_qrcodegen_ref";
 const QR_QUIET_ZONE_MODULES = 4;
 const QR_SCAN_INTERVAL_MS = 180;
 const QR_CAMERA_MAX_DIM = 960;
+const QR_SAVEABLE_IMG_CLASS = "ws-seal-qr-image";
 
 interface DetectedQr {
   rawValue?: string;
@@ -78,6 +79,25 @@ function extractWs2FromBytes(bytes: Uint8Array): string | null {
   }
 
   return null;
+}
+
+function ensureQrSaveableImage(canvas: HTMLCanvasElement): HTMLImageElement {
+  const targetId = `${canvas.id}--img`;
+  const parent = canvas.parentElement;
+  if (!parent) throw new Error("Canvas parent unavailable");
+
+  const existing = document.getElementById(targetId);
+  if (existing instanceof HTMLImageElement && parent.contains(existing)) return existing;
+
+  const img = document.createElement("img");
+  img.id = targetId;
+  img.className = `${canvas.className} ${QR_SAVEABLE_IMG_CLASS}`.trim();
+  img.alt = canvas.getAttribute("aria-label") || "QR code";
+  img.decoding = "async";
+  img.loading = "eager";
+  img.referrerPolicy = "no-referrer";
+  parent.insertBefore(img, canvas.nextSibling);
+  return img;
 }
 
 export interface QrScannerCapability {
@@ -216,6 +236,16 @@ export function renderSealQrToCanvas(canvas: HTMLCanvasElement, ws2Code: string)
       const ph = Math.ceil(moduleSize);
       ctx.fillRect(px, py, pw, ph);
     }
+  }
+
+  try {
+    const img = ensureQrSaveableImage(canvas);
+    img.src = canvas.toDataURL("image/png");
+    img.style.width = canvas.style.width;
+    img.style.height = canvas.style.height;
+    canvas.style.display = "none";
+  } catch {
+    canvas.style.display = "";
   }
 }
 

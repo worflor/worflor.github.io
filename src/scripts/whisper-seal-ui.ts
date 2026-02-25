@@ -341,6 +341,10 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     opts.recipientQrStatus.textContent = text;
   };
 
+  const logQr = (event: string): void => {
+    log(`qr: ${event}`);
+  };
+
   function setRecipientQrUiState(scanning: boolean): void {
     opts.recipientQrScanBtn.disabled = scanning || !qrSupported;
     opts.recipientQrImageBtn.disabled = scanning;
@@ -370,14 +374,14 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     const normalized = normalizeSealCodeInput(rawValue);
     if (!normalized || !isSealCodeValid(normalized)) {
       setRecipientQrStatus("Invalid WS2 key.");
-      log(`qr ${source} scanned: invalid payload (not WS2)`);
+      logQr(`${source} invalid ws2 key`);
       return false;
     }
 
     opts.recipientSealInput.value = normalized;
     syncCompose();
     setRecipientQrStatus("WS2 key loaded.");
-    log(`qr ${source} scanned: ws2 key accepted`);
+    logQr(`${source} loaded ws2 key`);
     opts.messageInput.focus();
     return true;
   }
@@ -405,9 +409,8 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
     if (reason === "cancelled") {
       setRecipientQrStatus("");
-      log("qr camera scan cancelled");
     }
-    if (reason === "error") log("qr camera scan stopped due to error");
+    if (reason === "error") logQr("camera stopped after error");
   }
 
   async function scanRecipientFromImage(file: File): Promise<void> {
@@ -415,17 +418,15 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (aborted()) return;
     if (!decoded) {
       setRecipientQrStatus("No WS2 key found.");
-      log("qr image scan: no ws2 key decoded");
+      logQr("image no ws2 key found");
       return;
     }
 
     if (setRecipientFromCandidate(decoded.rawValue, "image")) {
-      log(`qr image scan fallback used: ${decoded.method}`);
       return;
     }
 
     setRecipientQrStatus("Invalid WS2 key.");
-    log(`qr image scan rejected after decode (${decoded.method})`);
   }
 
   async function startRecipientQrScan(): Promise<void> {
@@ -437,13 +438,13 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (aborted() || runId !== qrScanSession.runId) return;
     if (!capability.supported) {
       setRecipientQrStatus("Camera unavailable.");
-      log("qr camera scan unavailable: native qr detector unsupported");
+      logQr(`camera unavailable (${capability.reason ?? "unsupported"})`);
       return;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setRecipientQrStatus("Camera unavailable.");
-      log("qr camera scan unavailable: getUserMedia not supported");
+      logQr("camera unavailable (getUserMedia unsupported)");
       return;
     }
 
@@ -451,7 +452,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (aborted() || runId !== qrScanSession.runId) return;
     if (!detector) {
       setRecipientQrStatus("Camera unavailable.");
-      log("qr camera scan unavailable: detector init failed");
+      logQr("camera unavailable (detector init failed)");
       return;
     }
 
@@ -478,7 +479,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       opts.recipientQrPanel.style.display = "";
       setRecipientQrUiState(true);
       setRecipientQrStatus("Scanning…");
-      log("qr camera scan started");
+      logQr("camera scan started");
 
       const loop = async (at: number): Promise<void> => {
         if (!qrScanSession.active || aborted() || runId !== qrScanSession.runId) return;
@@ -512,7 +513,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       stopRecipientQrScan("error");
       const msg = e instanceof Error ? e.message : "camera permission denied";
       setRecipientQrStatus("Camera unavailable.");
-      log(`qr camera scan failed: ${msg}`);
+      logQr(`camera failed (${msg})`);
     }
   }
 
@@ -641,17 +642,16 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       try {
         renderSealQrToCanvas(opts.sealQrCanvas, identity.code);
         opts.sealQrStatus.textContent = "QR encodes the full WS2 public key exactly.";
-        log("ws2 qr generated for local seal");
       } catch {
         opts.sealQrStatus.textContent = "QR preview unavailable in this browser.";
-        log("ws2 qr generation unavailable");
+        log("qr preview unavailable");
       }
       opts.mySealInline.textContent = formatInlineSealPreview(identity.code);
       opts.mySealInline.style.display = "";
       opts.mySealInline.title = "WS2 public key preview — click to copy full code";
       opts.mySealInlinePanel.style.display = "";
       syncMySealInlinePanelState();
-      log("seal identity ready: ws2 public key copied");
+      log("seal identity ready");
       // Stop shimmer, fire copy pulse
       opts.mySealBtn.classList.remove("ws-computing");
       copyToClipboard(identity.code).then(() => {
@@ -822,7 +822,6 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       const nextVisible = opts.mySealInlinePanel.style.display === "none";
       opts.mySealInlinePanel.style.display = nextVisible ? "" : "none";
       syncMySealInlinePanelState();
-      log(nextVisible ? "my seal qr shown" : "my seal qr hidden");
       return;
     }
     void generateSeal();
@@ -846,7 +845,6 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   opts.sealCopyBtn.addEventListener("click", () => safeCopy(mySealPublicCode, opts.sealCopyBtn), { signal });
   opts.sealBackBtn.addEventListener("click", () => {
     hideOverlay();
-    log("my seal view closed");
   }, { signal });
 
   // Recipient WS2 QR helpers
@@ -856,14 +854,11 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   opts.recipientQrFileInput.addEventListener("change", () => {
     const file = opts.recipientQrFileInput.files?.[0];
     opts.recipientQrFileInput.value = "";
-    if (!file) {
-      log("qr image selection cancelled");
-      return;
-    }
+    if (!file) return;
     void scanRecipientFromImage(file).catch((e) => {
       const msg = e instanceof Error ? e.message : "unknown";
       setRecipientQrStatus("Scan failed.");
-      log(`qr image scan failed: ${msg}`);
+      logQr(`image scan failed (${msg})`);
     });
   }, { signal });
 

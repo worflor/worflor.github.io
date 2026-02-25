@@ -1115,6 +1115,8 @@ const seo = {
     padding: var(--space-sm);
     background: var(--whisper-surface);
     box-shadow: var(--edge-highlight);
+    min-width: 0;
+    overflow: hidden;
   }
 
   .whisper-panel-header {
@@ -1200,6 +1202,7 @@ const seo = {
     display: flex;
     gap: calc(var(--space-xs) * 0.5);
     align-items: stretch;
+    min-width: 0;
   }
 
   .whisper-password-input {
@@ -1393,7 +1396,7 @@ const seo = {
   .whisper-page:not([data-mode="embed"]) .whisper-password-tools { display: none; }
 
   /* Overlay hides solo panel when active (JS-managed via style) */
-  .ws-overlay { display: grid; gap: var(--space-sm); }
+  .ws-overlay { display: grid; gap: var(--space-sm); min-width: 0; }
 
   /* Hide overlay in live mode */
   .whisper-page[data-mode="live"] .ws-overlay { display: none; }
@@ -2393,6 +2396,9 @@ const seo = {
     padding: 0.25em 0.55em;
     cursor: pointer;
     user-select: all;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     transition:
       background var(--duration-normal) var(--ease-out),
       border-color var(--duration-normal) var(--ease-out);
@@ -2471,6 +2477,7 @@ const seo = {
     margin: 0;
     word-break: break-all;
     white-space: pre-wrap;
+    max-width: 100%;
     max-height: 5rem;
     overflow-y: auto;
     cursor: pointer;
@@ -2514,13 +2521,16 @@ const seo = {
   /* Seal code display — big, monospace, prominent */
   .ws-seal-code {
     font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
-    font-size: 2rem;
+    font-size: clamp(0.7rem, 3.8vw, 2rem);
     font-weight: 700;
     letter-spacing: 0.15em;
     color: rgb(var(--chromatic-cyan));
     display: block;
     text-align: center;
     padding: var(--space-md) 0;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    max-width: 100%;
   }
 
   .ws-seal-code-wrap {
@@ -2528,6 +2538,8 @@ const seo = {
     border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
     border-radius: calc(var(--whisper-radius) * 0.75);
     margin: var(--space-sm) 0;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .ws-seal-hint {
@@ -2761,6 +2773,7 @@ const seo = {
     display: flex;
     gap: calc(var(--space-xs) * 0.5);
     align-items: stretch;
+    min-width: 0;
   }
 
   /* Result checks list */
@@ -2795,12 +2808,14 @@ const seo = {
   .ws-decrypted-text {
     white-space: pre-wrap;
     word-break: break-word;
+    overflow-wrap: anywhere;
     font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
     font-size: var(--text-sm);
     padding: var(--space-md);
     background: rgb(var(--color-text-rgb) / 0.02);
     border: 1px solid var(--whisper-edge);
     border-radius: calc(var(--whisper-radius) * 0.75);
+    max-width: 100%;
     max-height: 20rem;
     overflow-y: auto;
     margin: 0;
