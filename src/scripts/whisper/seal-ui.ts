@@ -1029,6 +1029,12 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   pageObserver = new MutationObserver(() => {
     syncSealInlineVisibility();
+    // Hide seal overlay when user switches modes (e.g. away from an expired/fail screen)
+    if (opts.overlay.style.display !== "none") {
+      hideOverlay();
+      busy = false;
+      pendingPayload = null;
+    }
   });
   pageObserver.observe(opts.page, { attributes: true, attributeFilter: ["data-mode", "data-carrier"] });
   syncMySealInlinePanelState();
