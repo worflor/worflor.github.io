@@ -607,7 +607,7 @@ export class WhisperLiveSession {
 
       if (s === "disconnected") {
         if (this.isLiveState()) {
-          this.stateBeforeRecovery = this._state;
+          this.stateBeforeRecovery = this._state as "live" | "silent";
           this.setState("recovering");
           this.onLog("connection interrupted, attempting recovery...");
           this.recoveryTimer = setTimeout(() => {
