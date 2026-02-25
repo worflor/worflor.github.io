@@ -388,44 +388,31 @@ const seo = {
         <!-- Phase: idle — create or join -->
         <div class="wl-phase" id="wl-idle-phase">
           <p class="wl-phase-lede">create to start a channel, or join with someone else's offer code. shared phrase is optional, only set one if you both already agreed on it.</p>
-          <div class="wl-grid">
-            <div class="whisper-panel wl-card">
-              <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Create</h3>
-                <span class="whisper-panel-mode">start a new channel</span>
+          <div class="whisper-panel wl-actions-panel">
+            <div class="wl-actions-row">
+              <div class="wl-action-create">
+                <span class="wl-action-label">Create</span>
+                <button id="wl-create" type="button" class="whisper-mini-btn wl-primary">Create channel</button>
               </div>
-              <p class="wl-inline-hint">you make the offer, then wait for one reply code.</p>
-              <button id="wl-create" type="button" class="whisper-mini-btn wl-primary">Create channel</button>
-            </div>
-
-            <div class="whisper-panel wl-card">
-              <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Join</h3>
-                <span class="whisper-panel-mode">paste an offer code</span>
+              <span class="wl-actions-divider" aria-hidden="true"></span>
+              <div class="wl-action-join">
+                <span class="wl-action-label">Join</span>
+                <div class="wl-join-row">
+                  <input id="wl-join-input" type="text" class="whisper-input wl-code-input" placeholder="offer code" autocomplete="off" spellcheck="false" />
+                  <button id="wl-join" type="button" class="whisper-mini-btn">Join</button>
+                </div>
+                <div class="wl-join-tools" role="group" aria-label="Join code helpers">
+                  <button id="wl-join-paste" type="button" class="whisper-mini-btn">Paste</button>
+                  <button id="wl-join-qr-scan" type="button" class="whisper-mini-btn">Scan QR</button>
+                  <button id="wl-join-qr-image" type="button" class="whisper-mini-btn">Image</button>
+                  <button id="wl-join-qr-stop" type="button" class="whisper-mini-btn" style="display:none">Stop</button>
+                  <input id="wl-join-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
+                </div>
+                <div id="wl-join-qr-panel" class="wl-join-qr-panel" style="display:none">
+                  <video id="wl-join-qr-video" class="wl-join-qr-video" playsinline muted></video>
+                </div>
+                <span id="wl-join-qr-status" class="whisper-field-hint wl-join-qr-status"></span>
               </div>
-              <p class="wl-inline-hint">paste, scan, or import an offer code to generate your answer.</p>
-              <div class="wl-join-row">
-                <input
-                  id="wl-join-input"
-                  type="text"
-                  class="whisper-input wl-code-input"
-                  placeholder="offer code"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <button id="wl-join" type="button" class="whisper-mini-btn">Join</button>
-              </div>
-              <div class="wl-join-tools" role="group" aria-label="Join code helpers">
-                <button id="wl-join-paste" type="button" class="whisper-mini-btn">Paste</button>
-                <button id="wl-join-qr-scan" type="button" class="whisper-mini-btn">Scan QR</button>
-                <button id="wl-join-qr-image" type="button" class="whisper-mini-btn">Image</button>
-                <button id="wl-join-qr-stop" type="button" class="whisper-mini-btn" style="display:none">Stop</button>
-                <input id="wl-join-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
-              </div>
-              <div id="wl-join-qr-panel" class="wl-join-qr-panel" style="display:none">
-                <video id="wl-join-qr-video" class="wl-join-qr-video" playsinline muted></video>
-              </div>
-              <span id="wl-join-qr-status" class="whisper-field-hint wl-join-qr-status"></span>
             </div>
           </div>
 
@@ -614,32 +601,19 @@ const seo = {
         <!-- Campfire: idle -->
         <div class="wl-phase" id="cf-idle-phase" style="display:none">
           <p class="wl-phase-lede">encrypted group chat, peer-to-peer. one person creates the room and shares the code. everyone connects directly, no server in the middle.</p>
-          <div class="wl-grid">
-            <div class="whisper-panel wl-card">
-              <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Create</h3>
-                <span class="whisper-panel-mode">start a new room</span>
+          <div class="whisper-panel wl-actions-panel">
+            <div class="wl-actions-row">
+              <div class="wl-action-create">
+                <span class="wl-action-label">Create</span>
+                <button id="cf-create" type="button" class="whisper-mini-btn wl-primary">Create room</button>
               </div>
-              <p class="wl-inline-hint">you host the room. others join using your code.</p>
-              <button id="cf-create" type="button" class="whisper-mini-btn wl-primary">Create room</button>
-            </div>
-
-            <div class="whisper-panel wl-card">
-              <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Join</h3>
-                <span class="whisper-panel-mode">paste a room code</span>
-              </div>
-              <p class="wl-inline-hint">got a code? paste it here to join the room.</p>
-              <div class="wl-join-row">
-                <input
-                  id="cf-join-input"
-                  type="text"
-                  class="whisper-input wl-code-input"
-                  placeholder="room code"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <button id="cf-join" type="button" class="whisper-mini-btn">Join</button>
+              <span class="wl-actions-divider" aria-hidden="true"></span>
+              <div class="wl-action-join">
+                <span class="wl-action-label">Join</span>
+                <div class="wl-join-row">
+                  <input id="cf-join-input" type="text" class="whisper-input wl-code-input" placeholder="room code" autocomplete="off" spellcheck="false" />
+                  <button id="cf-join" type="button" class="whisper-mini-btn">Join</button>
+                </div>
               </div>
             </div>
           </div>
@@ -2311,9 +2285,82 @@ const seo = {
     align-content: start;
   }
 
+  .wl-actions-panel {
+    gap: calc(var(--space-xs) * 0.5);
+  }
+
+  .wl-actions-row {
+    display: flex;
+    align-items: end;
+    gap: var(--space-sm);
+  }
+
+  .wl-action-label {
+    display: block;
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.52);
+    letter-spacing: 0.02em;
+    margin-bottom: calc(var(--space-xs) * 0.35);
+  }
+
+  .wl-action-create {
+    flex: 0 0 auto;
+  }
+
+  .wl-action-create .wl-primary {
+    white-space: nowrap;
+  }
+
+  .wl-action-join {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wl-actions-divider {
+    width: 1px;
+    align-self: stretch;
+    background: var(--whisper-edge);
+    flex: 0 0 1px;
+  }
+
+  @media (max-width: 520px) {
+    .wl-actions-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .wl-actions-divider {
+      width: 100%;
+      height: 1px;
+    }
+  }
+
   .wl-phrase-panel {
     display: grid;
     gap: calc(var(--space-xs) * 0.75) var(--space-sm);
+    padding: calc(var(--space-sm) * 0.7);
+  }
+
+  .wl-phrase-panel .whisper-field-label {
+    font-size: calc(var(--text-sm) * 0.88);
+  }
+
+  .wl-phrase-panel .whisper-input {
+    min-height: 2.1rem;
+    padding: 0.35rem 0.6rem;
+    font-size: calc(var(--text-sm) * 0.92);
+  }
+
+  .wl-phrase-panel .whisper-toggle {
+    min-height: 2.1rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .wl-phrase-panel .whisper-toggle-text {
+    font-size: calc(var(--text-sm) * 0.88);
+  }
+
+  .wl-phrase-panel .whisper-field-hint {
+    font-size: calc(var(--text-sm) * 0.8);
   }
 
   @media (min-width: 860px) {
