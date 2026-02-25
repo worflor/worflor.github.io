@@ -2181,11 +2181,18 @@ const seo = {
     align-items: center;
     gap: 0.5em;
     min-width: 0;
+    overflow: hidden;
     padding: calc(var(--space-xs) * 0.5) calc(var(--space-xs) * 0.75);
     border-radius: calc(var(--whisper-radius) * 0.75);
     border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     background: rgb(var(--color-text-rgb) / 0.018);
     color: rgb(var(--color-text-rgb) / 0.62);
+  }
+
+  .wl-status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .wl-status-dot {
@@ -3399,11 +3406,12 @@ const seo = {
   /* Sub-mode toggle (1:1 vs Campfire) */
   .cf-live-mode-toggle {
     display: flex;
+    flex-shrink: 0;
     gap: 0;
     border: 1px solid var(--whisper-edge);
     border-radius: calc(var(--whisper-radius) * 0.5);
     overflow: hidden;
-    max-width: 100%;
+    white-space: nowrap;
   }
 
   .cf-mode-opt {
@@ -3420,11 +3428,12 @@ const seo = {
   .cf-mode-label {
     display: flex;
     align-items: center;
-    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.8);
-    font-size: calc(var(--text-sm) * 0.85);
+    padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
+    font-size: calc(var(--text-sm) * 0.82);
     color: var(--whisper-muted);
     transition: background 0.15s, color 0.15s;
     user-select: none;
+    white-space: nowrap;
   }
 
   .cf-mode-radio:checked + .cf-mode-label {
