@@ -17,6 +17,10 @@ const KDF_INFO_RATCHET = new TextEncoder().encode("whisper-ratchet");
 
 export const MAX_SKIP = 256;  // max skipped message keys to store
 
+function skippedKeyId(pubHex: string, nr: number): string {
+  return `${pubHex}:${nr}`;
+}
+
 export interface RatchetKeyPair {
   publicKey: Uint8Array;    // raw 65-byte uncompressed P-256 point
   privateKey: CryptoKey;    // non-extractable ECDH private key
@@ -176,7 +180,7 @@ export async function skipMessageKeys(state: RatchetState, until: number): Promi
     const [newChainKey, mk] = await kdfChain(oldChainKey);
     oldChainKey.fill(0); // wipe old chain key
     state.chainKeyRecv = newChainKey;
-    state.skippedKeys.set(`${pubHex}:${state.nRecv}`, mk);
+    state.skippedKeys.set(skippedKeyId(pubHex, state.nRecv), mk);
     state.nRecv++;
 
     // Evict oldest entries if over limit (Map preserves insertion order)
@@ -200,7 +204,7 @@ export async function skipMessageKeys(state: RatchetState, until: number): Promi
 export function trySkippedKey(
   state: RatchetState, pubKeyHex: string, nr: number,
 ): Uint8Array | null {
-  const key = `${pubKeyHex}:${nr}`;
+  const key = skippedKeyId(pubKeyHex, nr);
   const mk = state.skippedKeys.get(key);
   if (!mk) return null;
   state.skippedKeys.delete(key);

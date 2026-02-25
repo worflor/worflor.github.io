@@ -230,6 +230,25 @@ const ICE_GATHER_TIMEOUT = 8000;
 const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
 const HEARTBEAT_TIMEOUT  = 45_000;        // drop peer after 45s silence
 
+const LIVE_MSG = {
+  KEY_EXCHANGE: 0x10,
+  RATCHET_INIT: 0x11,
+  ENCRYPTED: 0x20,
+  FINGERPRINT_CONFIRMED: 0x30,
+  FINGERPRINT_REJECTED: 0x31,
+  PING: 0x40,
+  PONG: 0x41,
+} as const;
+
+const LIVE_FLAG = {
+  FILE: 0x01,
+  CAMPFIRE: 0x02,
+} as const;
+
+function errorMessage(err: unknown, fallback = "unknown"): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
 const VALID_TRANSITIONS: Record<LiveState, readonly LiveState[]> = {
   "idle":               ["offering", "answering", "error"],
   "offering":           ["waiting-for-answer", "error", "disconnected"],
@@ -328,7 +347,7 @@ export class WhisperLiveSession {
       pc.setConfiguration({ ...current, iceServers: [] });
       this.log("external assist disabled. continuing local-only");
     } catch (err) {
-      this.log(`external assist disable failed: ${err instanceof Error ? err.message : "unknown"}`);
+      this.log(`external assist disable failed: ${errorMessage(err)}`);
     }
   }
 
@@ -346,6 +365,19 @@ export class WhisperLiveSession {
 
   private log(line: string): void {
     this.onLog(line);
+  }
+
+  private sendControlByte(type: number): void {
+    if (this.dc?.readyState !== "open") return;
+    this.dc.send(new Uint8Array([type]));
+  }
+
+  private sendPrefixed(type: number, payload: Uint8Array): void {
+    if (this.dc?.readyState !== "open") return;
+    const msg = new Uint8Array(1 + payload.length);
+    msg[0] = type;
+    msg.set(payload, 1);
+    this.dc.send(msg);
   }
 
   /* ── Offer/Answer Lifecycle ─────────────────────────────── */
@@ -550,7 +582,7 @@ export class WhisperLiveSession {
         .then((offer) => pc.setLocalDescription(offer))
         .then(() => this.log("restart offer sent"))
         .catch((err) => {
-          this.log(`restart failed: ${err instanceof Error ? err.message : "unknown"}`);
+          this.log(`restart failed: ${errorMessage(err)}`);
           this.setState("disconnected");
           this.cleanupConnection();
         });
@@ -618,13 +650,13 @@ export class WhisperLiveSession {
   /**
    * ECDH key exchange over the DataChannel.
    * Protocol:
-   *   [0x10] + publicKey (65B)                → key exchange message
-   *   [0x11] + ratchetPubKey (65B)            → ratchet init (offerer sends initial DH pubkey)
-   *   [0x20] + encryptedMessage               → encrypted chat message
-   *   [0x30]                                   → fingerprint confirmed
-   *   [0x31]                                   → fingerprint rejected
-   *   [0x40]                                   → ping (heartbeat)
-   *   [0x41]                                   → pong (heartbeat reply)
+  *   [LIVE_MSG.KEY_EXCHANGE] + publicKey (65B)     → key exchange message
+  *   [LIVE_MSG.RATCHET_INIT] + ratchetPubKey (65B) → ratchet init (offerer sends initial DH pubkey)
+  *   [LIVE_MSG.ENCRYPTED] + encryptedMessage        → encrypted chat message
+  *   [LIVE_MSG.FINGERPRINT_CONFIRMED]               → fingerprint confirmed
+  *   [LIVE_MSG.FINGERPRINT_REJECTED]                → fingerprint rejected
+  *   [LIVE_MSG.PING]                                → ping (heartbeat)
+  *   [LIVE_MSG.PONG]                                → pong (heartbeat reply)
    */
   private async performKeyExchange(): Promise<void> {
     try {
@@ -643,15 +675,12 @@ export class WhisperLiveSession {
         this.log("key exchange aborted, channel not available");
         return;
       }
-      const msg = new Uint8Array(1 + pubKeyRaw.length);
-      msg[0] = 0x10;
-      msg.set(pubKeyRaw, 1);
-      this.dc.send(msg);
+      this.sendPrefixed(LIVE_MSG.KEY_EXCHANGE, pubKeyRaw);
 
       // Store private key for derivation when peer's key arrives
       this.ephPrivateKey = keyPair.privateKey;
     } catch (err) {
-      this.log(`key exchange failed: ${err instanceof Error ? err.message : "unknown error"}`);
+      this.log(`key exchange failed: ${errorMessage(err, "unknown error")}`);
       this.setState("error", "Key exchange failed");
     }
   }
@@ -716,14 +745,11 @@ export class WhisperLiveSession {
 
         // Send our initial ratchet public key
         if (this.dc && this.dc.readyState === "open") {
-          const rMsg = new Uint8Array(1 + dhSelf.publicKey.length);
-          rMsg[0] = 0x11;
-          rMsg.set(dhSelf.publicKey, 1);
-          this.dc.send(rMsg);
+          this.sendPrefixed(LIVE_MSG.RATCHET_INIT, dhSelf.publicKey);
           this.log("sent initial ratchet key");
         }
       }
-      // Answerer waits for 0x11 from the offerer
+      // Answerer waits for RATCHET_INIT from the offerer
 
       this.setState("verifying");
 
@@ -732,7 +758,7 @@ export class WhisperLiveSession {
         this.confirmFingerprint();
       }
     } catch (err) {
-      this.log(`key derivation failed: ${err instanceof Error ? err.message : "unknown error"}`);
+      this.log(`key derivation failed: ${errorMessage(err, "unknown error")}`);
       this.setState("error", "Key derivation failed");
     }
   }
@@ -751,10 +777,7 @@ export class WhisperLiveSession {
 
       // Send our ratchet public key back so the offerer can derive their receive chain.
       if (this.dc && this.dc.readyState === "open") {
-        const rMsg = new Uint8Array(1 + this.ratchetState.dhSelf.publicKey.length);
-        rMsg[0] = 0x11;
-        rMsg.set(this.ratchetState.dhSelf.publicKey, 1);
-        this.dc.send(rMsg);
+        this.sendPrefixed(LIVE_MSG.RATCHET_INIT, this.ratchetState.dhSelf.publicKey);
         this.log("encryption ratchet initialized, keys exchanged");
       }
     } else {
@@ -778,28 +801,28 @@ export class WhisperLiveSession {
     const type = bytes[0];
 
     switch (type) {
-      case 0x10: // Key exchange
+      case LIVE_MSG.KEY_EXCHANGE: // Key exchange
         await this.handleKeyExchangeMessage(bytes.subarray(1));
         break;
-      case 0x11: // Ratchet init
+      case LIVE_MSG.RATCHET_INIT: // Ratchet init
         await this.handleRatchetInit(bytes.subarray(1));
         break;
-      case 0x20: // Encrypted message
+      case LIVE_MSG.ENCRYPTED: // Encrypted message
         await this.handleEncryptedMessage(bytes.subarray(1));
         break;
-      case 0x30: // Fingerprint confirmed
+      case LIVE_MSG.FINGERPRINT_CONFIRMED: // Fingerprint confirmed
         this.log("peer confirmed fingerprint");
         break;
-      case 0x31: // Fingerprint rejected
+      case LIVE_MSG.FINGERPRINT_REJECTED: // Fingerprint rejected
         this.log("peer rejected fingerprint, aborting");
         this.setState("error", "Peer rejected fingerprint, possible interception");
         this.cleanupConnection();
         break;
-      case 0x40: // Ping — peer is alive, reply with pong
+      case LIVE_MSG.PING: // Ping — peer is alive, reply with pong
         this.lastPongReceived = Date.now();
-        this.dc?.send(new Uint8Array([0x41]));
+        this.sendControlByte(LIVE_MSG.PONG);
         break;
-      case 0x41: // Pong — peer acknowledged our ping
+      case LIVE_MSG.PONG: // Pong — peer acknowledged our ping
         this.lastPongReceived = Date.now();
         break;
       default:
@@ -873,8 +896,8 @@ export class WhisperLiveSession {
       }
       messageKey.fill(0); // wipe message key after use
 
-      const isCampfire = (header.flags & 0x02) !== 0;
-      const isFile = (header.flags & 0x01) !== 0;
+      const isCampfire = (header.flags & LIVE_FLAG.CAMPFIRE) !== 0;
+      const isFile = (header.flags & LIVE_FLAG.FILE) !== 0;
 
       // Campfire messages: delegate to raw callback instead of processing as text/file
       if (isCampfire && this.onRawDecrypted) {
@@ -902,7 +925,7 @@ export class WhisperLiveSession {
         });
       }
     } catch (err) {
-      this.log(`decrypt failed: ${err instanceof Error ? err.message : "unknown"}`);
+      this.log(`decrypt failed: ${errorMessage(err)}`);
     }
   }
 
@@ -911,7 +934,7 @@ export class WhisperLiveSession {
   /** Enqueue a send job — serializes through sendQueue so ratchet state is never concurrent. */
   private enqueueSend(job: () => Promise<void>): Promise<void> {
     const wrapped = () => job().catch((err) => {
-      this.log(`send failed: ${err instanceof Error ? err.message : "unknown"}`);
+      this.log(`send failed: ${errorMessage(err)}`);
     });
     this.sendQueue = this.sendQueue.then(wrapped);
     return this.sendQueue;
@@ -941,7 +964,7 @@ export class WhisperLiveSession {
       }
 
       const plaintext = encodeFilePlaintext(file.name, file.type, fileBytes);
-      await this.encryptAndSend(plaintext, 0x01);
+      await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
       this.onMessage({
         type: "file", direction: "self",
         fileName: file.name, fileSize: fileBytes.length, fileType: file.type,
@@ -998,7 +1021,7 @@ export class WhisperLiveSession {
       // Send the dressed carrier as a file message
       const dressedBytes = new Uint8Array(await result.outputFile.arrayBuffer());
       const plaintext = encodeFilePlaintext(result.outputName, result.outputType, dressedBytes);
-      await this.encryptAndSend(plaintext, 0x01);
+      await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
 
       this.onMessage({
         type: "file",
@@ -1011,9 +1034,9 @@ export class WhisperLiveSession {
 
       this.log(`sent ${fileName} (embedded in carrier)`);
     } catch (err) {
-      this.log(`steganography failed, sending directly: ${err instanceof Error ? err.message : "unknown"}`);
+      this.log(`steganography failed, sending directly: ${errorMessage(err)}`);
       const plaintext = encodeFilePlaintext(fileName, fileType, fileBytes);
-      await this.encryptAndSend(plaintext, 0x01);
+      await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
       this.onMessage({
         type: "file", direction: "self",
         fileName, fileSize: fileBytes.length, fileType,
@@ -1075,7 +1098,7 @@ export class WhisperLiveSession {
     this.ratchetState.nSend++;
 
     // Chunk (with 0x20 prefix baked in) and send with backpressure
-    const chunks = chunkMessagePrefixed(wireMessage, 0x20);
+    const chunks = chunkMessagePrefixed(wireMessage, LIVE_MSG.ENCRYPTED);
     for (const chunk of chunks) {
       if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
         try { await this.waitForDrain(); } catch { return; } // channel closed during drain
@@ -1096,7 +1119,7 @@ export class WhisperLiveSession {
     if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
 
     // Notify peer
-    this.dc?.send(new Uint8Array([0x30]));
+    this.sendControlByte(LIVE_MSG.FINGERPRINT_CONFIRMED);
     this.log("fingerprint confirmed, session is live");
     this.startHeartbeat();
 
@@ -1110,7 +1133,7 @@ export class WhisperLiveSession {
   rejectFingerprint(): void {
     if (this._state !== "verifying") return;
 
-    this.dc?.send(new Uint8Array([0x31]));
+    this.sendControlByte(LIVE_MSG.FINGERPRINT_REJECTED);
     this.log("fingerprint rejected, aborting connection");
     this.setState("error", "Fingerprint mismatch, possible interception");
     this.cleanupConnection();
@@ -1149,7 +1172,7 @@ export class WhisperLiveSession {
     this.stopHeartbeat();
     this.lastPongReceived = Date.now();
     this.heartbeatSend = setInterval(() => {
-      if (this.dc?.readyState === "open") this.dc.send(new Uint8Array([0x40]));
+      this.sendControlByte(LIVE_MSG.PING);
     }, HEARTBEAT_INTERVAL);
     this.heartbeatCheck = setInterval(() => {
       if (this._state === "recovering" || this._destroyed) return;

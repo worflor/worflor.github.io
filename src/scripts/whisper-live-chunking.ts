@@ -18,6 +18,11 @@ export const CHUNK_END = 0x03;
 export const CHUNK_SINGLE = 0x04;
 export const BUFFERED_AMOUNT_LOW = 64 * 1024;    // 64 KB backpressure threshold
 
+const START_TOTAL_LENGTH_BYTES = 4;
+const SINGLE_DATA_OFFSET = 1;
+const START_DATA_OFFSET = 5;
+const CONT_DATA_OFFSET = 1;
+
 /**
  * Chunk a message for DataChannel transport, baking in a wire prefix byte
  * at position [0] of each chunk. This avoids a second allocation + copy
@@ -36,7 +41,7 @@ export function chunkMessagePrefixed(data: Uint8Array, prefix: number): Uint8Arr
   let offset = 0;
 
   // Start chunk: prefix + type + total length (4B) + payload
-  const startPayload = Math.min(CHUNK_SIZE - 4, data.length);
+  const startPayload = Math.min(CHUNK_SIZE - START_TOTAL_LENGTH_BYTES, data.length);
   const startChunk = new Uint8Array(6 + startPayload);
   startChunk[0] = prefix;
   startChunk[1] = CHUNK_START;
@@ -71,20 +76,20 @@ export class ChunkAssembler {
     const type = chunk[0];
 
     if (type === CHUNK_SINGLE) {
-      return chunk.subarray(1);
+      return chunk.subarray(SINGLE_DATA_OFFSET);
     }
 
     if (type === CHUNK_START) {
       // Don't pre-allocate from peer-declared totalLength — just start collecting
       this.reset();
       this.receiving = true;
-      const payload = chunk.subarray(5); // skip type(1) + totalLength(4)
+      const payload = chunk.subarray(START_DATA_OFFSET); // skip type(1) + totalLength(4)
       if (payload.length > 0) this.chunks.push(payload.slice());
       return null;
     }
 
     if ((type === CHUNK_CONTINUE || type === CHUNK_END) && this.receiving) {
-      const payload = chunk.subarray(1);
+      const payload = chunk.subarray(CONT_DATA_OFFSET);
       if (payload.length > 0) this.chunks.push(payload.slice());
 
       if (type === CHUNK_END) {

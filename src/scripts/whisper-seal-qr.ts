@@ -5,6 +5,23 @@ const QR_SCAN_INTERVAL_MS = 180;
 const QR_CAMERA_MAX_DIM = 960;
 const QR_SAVEABLE_IMG_CLASS = "ws-seal-qr-image";
 
+const ASCII = {
+  ZERO: 0x30,
+  NINE: 0x39,
+  UPPER_A: 0x41,
+  UPPER_Z: 0x5a,
+  LOWER_A: 0x61,
+  LOWER_Z: 0x7a,
+  UNDERSCORE: 0x5f,
+  HYPHEN: 0x2d,
+  UPPER_W: 0x57,
+  LOWER_W: 0x77,
+  UPPER_S: 0x53,
+  LOWER_S: 0x73,
+  TWO: 0x32,
+  COLON: 0x3a,
+} as const;
+
 interface DetectedQr {
   rawValue?: string;
 }
@@ -48,24 +65,17 @@ function extractWs2FromText(text: string): string | null {
 }
 
 function extractWs2FromBytes(bytes: Uint8Array): string | null {
-  const upperW = 0x57;
-  const lowerW = 0x77;
-  const upperS = 0x53;
-  const lowerS = 0x73;
-  const two = 0x32;
-  const colon = 0x3a;
-
   const isCodeByte = (b: number): boolean =>
-    (b >= 0x30 && b <= 0x39) ||
-    (b >= 0x41 && b <= 0x5a) ||
-    (b >= 0x61 && b <= 0x7a) ||
-    b === 0x5f || b === 0x2d;
+    (b >= ASCII.ZERO && b <= ASCII.NINE) ||
+    (b >= ASCII.UPPER_A && b <= ASCII.UPPER_Z) ||
+    (b >= ASCII.LOWER_A && b <= ASCII.LOWER_Z) ||
+    b === ASCII.UNDERSCORE || b === ASCII.HYPHEN;
 
   for (let i = 0; i + 4 < bytes.length; i++) {
     const b0 = bytes[i];
     const b1 = bytes[i + 1];
-    if (!((b0 === upperW || b0 === lowerW) && (b1 === upperS || b1 === lowerS))) continue;
-    if (bytes[i + 2] !== two || bytes[i + 3] !== colon) continue;
+    if (!((b0 === ASCII.UPPER_W || b0 === ASCII.LOWER_W) && (b1 === ASCII.UPPER_S || b1 === ASCII.LOWER_S))) continue;
+    if (bytes[i + 2] !== ASCII.TWO || bytes[i + 3] !== ASCII.COLON) continue;
 
     let j = i + 4;
     while (j < bytes.length && isCodeByte(bytes[j])) j++;

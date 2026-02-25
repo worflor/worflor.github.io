@@ -17,6 +17,21 @@ const FLAG_RAW  = 0x00;
 const FLAG_GZIP = 0x01;
 const FLAG_SEALED = 0x02;
 
+type CompactSdpSetup = CompactSDP["setup"];
+type CompactCandidateProtocol = CompactCandidate["protocol"];
+type CompactCandidateType = CompactCandidate["type"];
+
+const SUPPORTED_CANDIDATE_PROTOCOLS: readonly CompactCandidateProtocol[] = ["udp", "tcp"];
+const SUPPORTED_CANDIDATE_TYPES: readonly CompactCandidateType[] = ["host", "srflx", "prflx", "relay"];
+
+function isSupportedCandidateProtocol(value: string): value is CompactCandidateProtocol {
+  return (SUPPORTED_CANDIDATE_PROTOCOLS as readonly string[]).includes(value);
+}
+
+function isSupportedCandidateType(value: string): value is CompactCandidateType {
+  return (SUPPORTED_CANDIDATE_TYPES as readonly string[]).includes(value);
+}
+
 /* ── Types ───────────────────────────────────────────────── */
 
 interface CompactSDP {
@@ -35,6 +50,8 @@ interface CompactCandidate {
   ip: string;
   port: number;
   type: "host" | "srflx" | "prflx" | "relay";
+  raddr?: string;
+  rport?: number;
 }
 
 /* ── Base64url ───────────────────────────────────────────── */
@@ -71,22 +88,32 @@ function parseSDP(sdp: string): CompactSDP {
       const parts = line.slice(14).split(" ");
       if (parts.length >= 2) fingerprint = parts[1].replace(/:/g, "").toLowerCase();
     }
-    else if (line.startsWith("a=setup:")) setup = line.slice(8) as CompactSDP["setup"];
+    else if (line.startsWith("a=setup:")) {
+      const value = line.slice(8);
+      if (value === "active" || value === "passive" || value === "actpass") {
+        setup = value as CompactSdpSetup;
+      }
+    }
     else if (line.startsWith("a=candidate:")) {
       const parts = line.slice(12).split(" ");
       if (parts.length >= 8) {
         const protocol = parts[2].toLowerCase();
         const candidateType = parts[7];
-        if ((protocol === "udp" || protocol === "tcp") &&
-          (candidateType === "host" || candidateType === "srflx" || candidateType === "prflx" || candidateType === "relay")) {
-          candidates.push({
+        if (isSupportedCandidateProtocol(protocol) && isSupportedCandidateType(candidateType)) {
+          const c: CompactCandidate = {
             foundation: parts[0],
-            protocol: protocol as "udp" | "tcp",
+            protocol,
             priority: parseInt(parts[3], 10),
             ip: parts[4],
             port: parseInt(parts[5], 10),
-            type: candidateType as CompactCandidate["type"],
-          });
+            type: candidateType,
+          };
+          // Capture raddr/rport for srflx/prflx/relay candidates
+          const raddrIdx = parts.indexOf("raddr");
+          const rportIdx = parts.indexOf("rport");
+          if (raddrIdx !== -1 && raddrIdx + 1 < parts.length) c.raddr = parts[raddrIdx + 1];
+          if (rportIdx !== -1 && rportIdx + 1 < parts.length) c.rport = parseInt(parts[rportIdx + 1], 10);
+          candidates.push(c);
         }
       }
     }
@@ -118,9 +145,9 @@ function reconstructSDP(compact: CompactSDP): string {
   ];
 
   for (const c of compact.candidates) {
-    lines.push(
-      `a=candidate:${c.foundation} 1 ${c.protocol} ${c.priority} ${c.ip} ${c.port} typ ${c.type}`,
-    );
+    let line = `a=candidate:${c.foundation} 1 ${c.protocol} ${c.priority} ${c.ip} ${c.port} typ ${c.type}`;
+    if (c.raddr != null && c.rport != null) line += ` raddr ${c.raddr} rport ${c.rport}`;
+    lines.push(line);
   }
 
   lines.push("");

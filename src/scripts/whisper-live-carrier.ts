@@ -8,6 +8,19 @@
 import { concatBytes } from "./whisper-wasm";
 import { TE } from "./whisper-live-crypto";
 
+const PNG_WIDTH = 8;
+const PNG_HEIGHT = 8;
+const PNG_CHANNELS = 4;
+const PNG_BIT_DEPTH = 8;
+const PNG_COLOR_TYPE_RGBA = 6;
+const PNG_COMPRESSION_DEFLATE = 0;
+const PNG_FILTER_ADAPTIVE = 0;
+const PNG_INTERLACE_NONE = 0;
+
+const ZLIB_CMF = 0x78;
+const ZLIB_FLG = 0x01;
+const ADLER_MOD = 65521;
+
 export function createMinimalPNGCarrier(): Uint8Array {
   // 8x8 RGBA transparent PNG
   // Pre-built minimal valid PNG bytes
@@ -19,19 +32,19 @@ export function createMinimalPNGCarrier(): Uint8Array {
   const ihdr = pngChunk("IHDR", (() => {
     const data = new Uint8Array(13);
     const view = new DataView(data.buffer);
-    view.setUint32(0, 8); // width
-    view.setUint32(4, 8); // height
-    data[8] = 8;  // bit depth
-    data[9] = 6;  // color type (RGBA)
-    data[10] = 0; // compression
-    data[11] = 0; // filter
-    data[12] = 0; // interlace
+    view.setUint32(0, PNG_WIDTH); // width
+    view.setUint32(4, PNG_HEIGHT); // height
+    data[8] = PNG_BIT_DEPTH;
+    data[9] = PNG_COLOR_TYPE_RGBA;
+    data[10] = PNG_COMPRESSION_DEFLATE;
+    data[11] = PNG_FILTER_ADAPTIVE;
+    data[12] = PNG_INTERLACE_NONE;
     return data;
   })());
 
   // IDAT chunk: 8 rows of 8 pixels, all zero (transparent)
   // Each row: filter byte (0) + 32 bytes (8 pixels * 4 channels)
-  const rawData = new Uint8Array(8 * (1 + 8 * 4)); // all zeros = transparent
+  const rawData = new Uint8Array(PNG_HEIGHT * (1 + PNG_WIDTH * PNG_CHANNELS)); // all zeros = transparent
 
   // Compress with deflate (store block, no compression for simplicity)
   const deflated = deflateStore(rawData);
@@ -90,14 +103,14 @@ function deflateStore(data: Uint8Array): Uint8Array {
   // Adler-32 checksum
   let a = 1, b = 0;
   for (let i = 0; i < data.length; i++) {
-    a = (a + data[i]) % 65521;
-    b = (b + a) % 65521;
+    a = (a + data[i]) % ADLER_MOD;
+    b = (b + a) % ADLER_MOD;
   }
   const adler = new Uint8Array(4);
   const adlerView = new DataView(adler.buffer);
   adlerView.setUint32(0, (b << 16) | a);
 
-  return concatBytes(new Uint8Array([0x78, 0x01]), ...blocks, adler);
+  return concatBytes(new Uint8Array([ZLIB_CMF, ZLIB_FLG]), ...blocks, adler);
 }
 
 // CRC32 lookup table

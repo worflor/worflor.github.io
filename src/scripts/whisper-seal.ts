@@ -3,13 +3,20 @@
 // Local private identity key is fingerprint-protected at rest in IndexedDB.
 
 import { sha256, randomBytes, toArrayBuffer } from "./whisper-wasm";
-import { hkdf, aesGcmEncrypt, aesGcmDecrypt, TE } from "./whisper-live-crypto";
+import { hkdf, aesGcmEncrypt, aesGcmDecrypt, TE, TD } from "./whisper-live-crypto";
 
 const WS2_PREFIX = "WS2:";
 const WS2_DB_NAME = "whisper-seal";
 const WS2_DB_VERSION = 2;
 const WS2_DB_STORE = "identity";
 const WS2_DB_KEY = "default";
+const P256_PUBLIC_KEY_LEN = 65;
+const P256_UNCOMPRESSED_PREFIX = 0x04;
+
+const HKDF_INFO_IDENTITY_WRAP = TE.encode("whisper-seal-v2-identity-wrap");
+const HKDF_INFO_WRAP = TE.encode("whisper-seal-v2-wrap");
+const HKDF_INFO_PASSWORD = TE.encode("whisper-seal-v2-pw");
+const HKDF_INFO_MESSAGE = TE.encode("whisper-seal-v2-message");
 
 /** Minimum time (ms) to hold spinner for "My Seal" generation UX. */
 export const COMPUTE_MIN_DISPLAY_MS = 600;
@@ -142,7 +149,7 @@ export function parseSealPublicCode(code: string): Uint8Array | null {
 
   try {
     const raw = b64urlDecode(encoded);
-    if (raw.length !== 65 || raw[0] !== 0x04) return null;
+    if (raw.length !== P256_PUBLIC_KEY_LEN || raw[0] !== P256_UNCOMPRESSED_PREFIX) return null;
     return raw;
   } catch {
     return null;
@@ -202,7 +209,7 @@ function getIdentityWrapAad(publicKeyRaw: Uint8Array): Uint8Array {
 }
 
 async function deriveIdentityWrapKey(fingerprintHash: Uint8Array, salt: Uint8Array): Promise<Uint8Array> {
-  return hkdf(fingerprintHash, salt, TE.encode("whisper-seal-v2-identity-wrap"), 32);
+  return hkdf(fingerprintHash, salt, HKDF_INFO_IDENTITY_WRAP, 32);
 }
 
 async function loadIdentityStoredFromDb(): Promise<SealIdentityStored | null> {
@@ -446,7 +453,7 @@ export async function sealMessage(
 
     const ks = randomBytes(16);
     const kn = randomBytes(12);
-    wrapKey = await hkdf(shared, ks, TE.encode("whisper-seal-v2-wrap"), 32);
+    wrapKey = await hkdf(shared, ks, HKDF_INFO_WRAP, 32);
 
     contentKey = randomBytes(32);
     messageKey = contentKey;
@@ -459,8 +466,8 @@ export async function sealMessage(
     if (extraPassword) {
       pwSalt = randomBytes(16);
       const pwHash = await sha256(TE.encode(extraPassword));
-      const pwKey = await hkdf(pwHash, pwSalt, TE.encode("whisper-seal-v2-pw"), 32);
-      messageKey = await hkdf(contentKey, pwKey, TE.encode("whisper-seal-v2-message"), 32);
+      const pwKey = await hkdf(pwHash, pwSalt, HKDF_INFO_PASSWORD, 32);
+      messageKey = await hkdf(contentKey, pwKey, HKDF_INFO_MESSAGE, 32);
       pwHash.fill(0);
       pwKey.fill(0);
     }
@@ -531,7 +538,9 @@ export async function unsealMessage(payload: SealPayload, extraPassword?: string
 
   try {
     const peerEpk = b64urlDecode(payload.epk);
-    if (peerEpk.length !== 65 || peerEpk[0] !== 0x04) throw new Error("invalid ephemeral key");
+    if (peerEpk.length !== P256_PUBLIC_KEY_LEN || peerEpk[0] !== P256_UNCOMPRESSED_PREFIX) {
+      throw new Error("invalid ephemeral key");
+    }
 
     shared = await deriveEcdh(identity.privateKey, peerEpk);
 
@@ -540,7 +549,7 @@ export async function unsealMessage(payload: SealPayload, extraPassword?: string
     const kn = b64urlDecode(payload.kn);
     if (kn.length !== 12) throw new Error("invalid wrap nonce");
 
-    wrapKey = await hkdf(shared, ks, TE.encode("whisper-seal-v2-wrap"), 32);
+    wrapKey = await hkdf(shared, ks, HKDF_INFO_WRAP, 32);
     const wrapped = b64urlDecode(payload.k);
     const aadWrap = buildAADv2("wrap", payload.rf, payload.t, payload.p);
     contentKey = await aesGcmDecrypt(wrapKey, wrapped, kn, aadWrap);
@@ -550,8 +559,8 @@ export async function unsealMessage(payload: SealPayload, extraPassword?: string
       if (!payload.ps) throw new Error("missing password salt");
       const ps = b64urlDecode(payload.ps);
       const pwHash = await sha256(TE.encode(extraPassword ?? ""));
-      const pwKey = await hkdf(pwHash, ps, TE.encode("whisper-seal-v2-pw"), 32);
-      messageKey = await hkdf(contentKey, pwKey, TE.encode("whisper-seal-v2-message"), 32);
+      const pwKey = await hkdf(pwHash, ps, HKDF_INFO_PASSWORD, 32);
+      messageKey = await hkdf(contentKey, pwKey, HKDF_INFO_MESSAGE, 32);
       pwHash.fill(0);
       pwKey.fill(0);
     }
@@ -562,7 +571,7 @@ export async function unsealMessage(payload: SealPayload, extraPassword?: string
     const aadMsg = buildAADv2("msg", payload.rf, payload.t, payload.p);
     const plaintext = await aesGcmDecrypt(messageKey, c, n, aadMsg);
 
-    return { ok: true, message: new TextDecoder().decode(plaintext) };
+    return { ok: true, message: TD.decode(plaintext) };
   } catch {
     return { ok: false, reason: "decrypt-failed" };
   } finally {
@@ -581,7 +590,7 @@ export function encodeSealPayload(payload: SealPayload): string {
 
 export function decodeSealPayload(encoded: string): SealPayload | null {
   try {
-    const json = new TextDecoder().decode(b64urlDecode(encoded));
+    const json = TD.decode(b64urlDecode(encoded));
     const obj = JSON.parse(json);
 
     if (obj?.v !== 2) return null;
