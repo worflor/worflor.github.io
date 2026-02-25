@@ -327,7 +327,8 @@ function populateStatusMeta(container: HTMLElement, payload: SealPayload): void 
       const hrs = Math.round(rem / 3_600_000);
       const days = Math.round(rem / 86_400_000);
       const secs = Math.ceil(rem / 1_000);
-      const remText = days > 1 ? `${days}d` : hrs > 0 ? `${hrs}h` : mins > 0 ? `${mins}m` : `${secs}s`;
+      const minsFloor = Math.floor(rem / 60_000);
+      const remText = days > 1 ? `${days}d` : hrs > 0 ? `${hrs}h` : minsFloor > 0 ? `${minsFloor}m` : `${secs}s`;
       parts.push(`expires in ${remText}`);
     }
     parts.push(d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
