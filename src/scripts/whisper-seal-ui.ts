@@ -753,7 +753,6 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
         showUnsealSub(opts.unsealSuccess);
         log("message decrypted successfully");
         pendingPayload = null;
-        history.replaceState(null, "", window.location.pathname);
         opts.msgCopyBtn.focus();
         return;
       }
@@ -985,6 +984,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   // If URL contains a #ws2: fragment, jump straight to unseal
   const autoPayload = parseSealFragment();
   if (autoPayload) {
+    history.replaceState(null, "", window.location.pathname);
     ensureEmbedUrlMode();
     log("sealed url detected (ws2)");
     runUnseal(autoPayload);
