@@ -1,3 +1,6 @@
+import { computeFingerprint } from "./seal";
+import { hkdf, aesGcmEncrypt, aesGcmDecrypt } from "./live-crypto";
+
 export interface WhisperInertCandidate {
   offset: number;
   length: number;
@@ -25,7 +28,7 @@ export interface WhisperPayloadInput {
 export interface WhisperEmbedOptions {
   preferInertSpace?: boolean;
   maxCandidates?: number;
-  /** When true, payload can only be decrypted on this browser profile (local IndexedDB receipt required). */
+  /** When true, payload can only be decrypted on this browser (fingerprint-derived lock key required). */
   onlyDecodeHere?: boolean;
   /** When false, embedding will fail if no inert-slot fits (no EOF tail fallback). Default: true. */
   allowTailFallback?: boolean;
@@ -163,16 +166,11 @@ const HEADER_LEN = 64;
 const HEADER_VERSION = 2;
 const HEADER_FLAGS = 0;
 const FLAG_RECEIPT_REQUIRED = 1 << 0;
-const FLAG_RECEIPT_LOCALKEY = 1 << 1;
 const FLAG_COMPRESSED = 1 << 2;
 const ENVELOPE_AAD_CONTEXT = "whisper-envelope-v2";
 const LOCATOR_CONTEXT = "whisper-locator-v2";
 const KDF_CONTEXT = "whisper-kdf-v2";
 const PBKDF2_ITERATIONS = 310_000;
-
-const RECEIPT_DB_NAME = "whisper.receipts";
-const RECEIPT_DB_VERSION = 1;
-const RECEIPT_STORE = "receipts";
 
 /** Thresholds for console warnings — no hard limits, just let the browser decide. */
 const WARN_CARRIER_BYTES = 1024 * 1024 * 1024; // 1 GiB
@@ -182,6 +180,15 @@ let whisperCorePromise: Promise<WhisperWasmCore> | undefined;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
+const HKDF_INFO_LOCAL_LOCK = textEncoder.encode("whisper-local-lock-v1");
+
+async function deriveFingerprintLockKey(salt: Uint8Array): Promise<Uint8Array> {
+  const fp = await computeFingerprint();
+  const key = await hkdf(fp, salt, HKDF_INFO_LOCAL_LOCK, 32);
+  fp.fill(0);
+  return key;
+}
+
 async function verifyEnvelopeCipher(
   password: string,
   locator: Uint8Array,
@@ -190,8 +197,7 @@ async function verifyEnvelopeCipher(
   cipherBytes: Uint8Array,
   immutableHash: Uint8Array,
   expectedPayloadHashHex: string,
-  receiptKeyHint: CryptoKey | null,
-  receiptSecretHint: Uint8Array | null,
+  fingerprintLockKey: Uint8Array | null,
 ): Promise<void> {
   const bindDigest = immutableHash.subarray(0, 16);
   if (!bytesEqual(bindDigest, header.bindDigest)) {
@@ -199,52 +205,22 @@ async function verifyEnvelopeCipher(
   }
 
   const needsReceipt = (header.flags & FLAG_RECEIPT_REQUIRED) !== 0;
-  const localKeyMode = (header.flags & FLAG_RECEIPT_LOCALKEY) !== 0;
   const { inner: nonceInner, outer: nonceOuter } = await deriveLayerNoncesAsync(header.nonce);
 
   let innerCipherBytes = cipherBytes;
-  if (needsReceipt && localKeyMode) {
-    let localKey = receiptKeyHint;
-    if (!localKey) {
-      const receiptId = await deriveReceiptId(locator, headerBytes);
-      localKey = await getReceiptKey(receiptId);
-    }
-    if (!localKey) throw new Error("verify: local lock key missing");
-
+  if (needsReceipt) {
+    if (!fingerprintLockKey) throw new Error("verify: fingerprint lock key missing");
     const aadOuter = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|outer`));
-    const outerPlainBuf = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: toArrayBuffer(nonceOuter), additionalData: toArrayBuffer(aadOuter) },
-      localKey,
-      toArrayBuffer(innerCipherBytes),
-    );
-    innerCipherBytes = new Uint8Array(outerPlainBuf);
+    innerCipherBytes = await aesGcmDecrypt(fingerprintLockKey, cipherBytes, nonceOuter, aadOuter);
   }
 
-  let packedPlain: ArrayBuffer;
-  if (needsReceipt && !localKeyMode) {
-    let receiptSecret = receiptSecretHint;
-    if (!receiptSecret) {
-      const receiptId = await deriveReceiptId(locator, headerBytes);
-      receiptSecret = await getReceipt(receiptId);
-    }
-    if (!receiptSecret) throw new Error("verify: local lock receipt missing");
-
-    const key = await deriveAesKeyWithReceipt(password, immutableHash, header.salt, receiptSecret);
-    const aad = concatBytes(locator, headerBytes, textEncoder.encode(ENVELOPE_AAD_CONTEXT));
-    packedPlain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aad) },
-      key,
-      toArrayBuffer(innerCipherBytes),
-    );
-  } else {
-    const key = await deriveAesKey(password, immutableHash, header.salt);
-    const aadInner = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|inner`));
-    packedPlain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aadInner) },
-      key,
-      toArrayBuffer(innerCipherBytes),
-    );
-  }
+  const key = await deriveAesKey(password, immutableHash, header.salt);
+  const aadInner = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|inner`));
+  const packedPlain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aadInner) },
+    key,
+    toArrayBuffer(innerCipherBytes),
+  );
 
   const decompressed = await maybeDecompress(new Uint8Array(packedPlain), header.flags);
   const packed = unpackPayload(decompressed);
@@ -265,117 +241,6 @@ export function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   }
   const copy = new Uint8Array(bytes);
   return copy.buffer;
-}
-
-type WhisperReceiptRecord = {
-  id: string;
-  secret?: ArrayBuffer;
-  key?: CryptoKey;
-  createdAt: string;
-};
-
-function openReceiptDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === "undefined") {
-      reject(new Error("IndexedDB unavailable."));
-      return;
-    }
-
-    const req = indexedDB.open(RECEIPT_DB_NAME, RECEIPT_DB_VERSION);
-    req.onerror = () => reject(req.error ?? new Error("Failed to open receipt DB."));
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(RECEIPT_STORE)) {
-        db.createObjectStore(RECEIPT_STORE, { keyPath: "id" });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-  });
-}
-
-async function putReceipt(id: string, secretBytes: Uint8Array): Promise<void> {
-  const db = await openReceiptDb();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(RECEIPT_STORE, "readwrite");
-      tx.onabort = () => reject(tx.error ?? new Error("Receipt write aborted."));
-      tx.onerror = () => reject(tx.error ?? new Error("Receipt write failed."));
-      tx.oncomplete = () => resolve();
-
-      const store = tx.objectStore(RECEIPT_STORE);
-      const record: WhisperReceiptRecord = {
-        id,
-        secret: toArrayBuffer(secretBytes),
-        createdAt: new Date().toISOString(),
-      };
-      store.put(record);
-    });
-  } finally {
-    db.close();
-  }
-}
-
-async function putReceiptKey(id: string, key: CryptoKey): Promise<void> {
-  const db = await openReceiptDb();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(RECEIPT_STORE, "readwrite");
-      tx.onabort = () => reject(tx.error ?? new Error("Receipt key write aborted."));
-      tx.onerror = () => reject(tx.error ?? new Error("Receipt key write failed."));
-      tx.oncomplete = () => resolve();
-
-      const store = tx.objectStore(RECEIPT_STORE);
-      const record: WhisperReceiptRecord = {
-        id,
-        key,
-        createdAt: new Date().toISOString(),
-      };
-      store.put(record);
-    });
-  } finally {
-    db.close();
-  }
-}
-
-async function getReceipt(id: string): Promise<Uint8Array | null> {
-  const db = await openReceiptDb();
-  try {
-    const record = await new Promise<WhisperReceiptRecord | null>((resolve, reject) => {
-      const tx = db.transaction(RECEIPT_STORE, "readonly");
-      tx.onabort = () => reject(tx.error ?? new Error("Receipt read aborted."));
-      tx.onerror = () => reject(tx.error ?? new Error("Receipt read failed."));
-
-      const store = tx.objectStore(RECEIPT_STORE);
-      const req = store.get(id);
-      req.onerror = () => reject(req.error ?? new Error("Receipt read failed."));
-      req.onsuccess = () => resolve((req.result as WhisperReceiptRecord | undefined) ?? null);
-    });
-    if (!record?.secret) return null;
-    return new Uint8Array(record.secret);
-  } finally {
-    db.close();
-  }
-}
-
-async function getReceiptKey(id: string): Promise<CryptoKey | null> {
-  const db = await openReceiptDb();
-  try {
-    const record = await new Promise<WhisperReceiptRecord | null>((resolve, reject) => {
-      const tx = db.transaction(RECEIPT_STORE, "readonly");
-      tx.onabort = () => reject(tx.error ?? new Error("Receipt key read aborted."));
-      tx.onerror = () => reject(tx.error ?? new Error("Receipt key read failed."));
-
-      const store = tx.objectStore(RECEIPT_STORE);
-      const req = store.get(id);
-      req.onerror = () => reject(req.error ?? new Error("Receipt key read failed."));
-      req.onsuccess = () => resolve((req.result as WhisperReceiptRecord | undefined) ?? null);
-    });
-    const key = record?.key;
-    if (!key) return null;
-    return key;
-  } finally {
-    db.close();
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1183,47 +1048,6 @@ async function deriveAesKey(password: string, immutableHash: Uint8Array, salt: U
   );
 }
 
-async function deriveAesKeyWithReceipt(
-  password: string,
-  immutableHash: Uint8Array,
-  salt: Uint8Array,
-  receiptSecret: Uint8Array | null,
-): Promise<CryptoKey> {
-  if (!receiptSecret || receiptSecret.length === 0) {
-    return deriveAesKey(password, immutableHash, salt);
-  }
-
-  const base = await crypto.subtle.importKey(
-    "raw",
-    toArrayBuffer(textEncoder.encode(password)),
-    "PBKDF2",
-    false,
-    ["deriveBits", "deriveKey"],
-  );
-
-  // Receipt secret becomes an additional salt component; password cracking alone is insufficient.
-  const fullSalt = concatBytes(textEncoder.encode(KDF_CONTEXT), immutableHash, salt, receiptSecret);
-  return crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      hash: "SHA-256",
-      iterations: PBKDF2_ITERATIONS,
-      salt: toArrayBuffer(fullSalt),
-    },
-    base,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"],
-  );
-}
-
-async function deriveReceiptId(locator: Uint8Array, header: Uint8Array): Promise<string> {
-  const material = concatBytes(locator, header, textEncoder.encode("whisper-receipt-id-v1"));
-  const digest = await sha256(material);
-  // 16 bytes is plenty; keeps IDs short.
-  return toHex(digest.subarray(0, 16));
-}
-
 async function deriveLayerNoncesAsync(baseNonce: Uint8Array): Promise<{ inner: Uint8Array; outer: Uint8Array }> {
   const innerHash = await sha256(concatBytes(textEncoder.encode("whisper-nonce-inner"), baseNonce));
   const outerHash = await sha256(concatBytes(textEncoder.encode("whisper-nonce-outer"), baseNonce));
@@ -1486,36 +1310,18 @@ export class WhisperEngine {
     const salt = randomBytes(16);
     const nonce = randomBytes(12);
 
-    let receiptSecret: Uint8Array | null = null;
-    let receiptKey: CryptoKey | null = null;
-
     const manifestLength = readU32(packed, 0);
 
     let headerFlags = HEADER_FLAGS;
     if (onlyHere) headerFlags |= FLAG_RECEIPT_REQUIRED;
     if (didCompress) headerFlags |= FLAG_COMPRESSED;
 
-    // Build header once (flags might be updated after we know which local lock method we used).
-    let header = buildHeader(headerFlags & 0xff, manifestLength, cipherLength, offset, envelopeLength, salt, nonce, bindDigest);
+    const header = buildHeader(headerFlags & 0xff, manifestLength, cipherLength, offset, envelopeLength, salt, nonce, bindDigest);
 
-    const receiptId = onlyHere ? await deriveReceiptId(locator, header) : null;
-    if (onlyHere && receiptId) {
-      // Prefer non-extractable local CryptoKey (harder to reverse). Fall back to secret bytes if necessary.
-      try {
-        receiptKey = await crypto.subtle.generateKey(
-          { name: "AES-GCM", length: 256 },
-          false,
-          ["encrypt", "decrypt"],
-        );
-        await putReceiptKey(receiptId, receiptKey);
-        headerFlags |= FLAG_RECEIPT_LOCALKEY;
-        header = buildHeader(headerFlags & 0xff, manifestLength, cipherLength, offset, envelopeLength, salt, nonce, bindDigest);
-        logs.push(`receipt: stored local key lock (${receiptId})`);
-      } catch {
-        receiptSecret = randomBytes(32);
-        await putReceipt(receiptId, receiptSecret);
-        logs.push(`receipt: stored local secret lock (${receiptId})`);
-      }
+    let fpKey: Uint8Array | null = null;
+    if (onlyHere) {
+      fpKey = await deriveFingerprintLockKey(salt);
+      logs.push("fingerprint lock: derived key");
     }
 
     const baseKey = await deriveAesKey(password, immutableHash, salt);
@@ -1530,26 +1336,10 @@ export class WhisperEngine {
     const innerCipher = new Uint8Array(innerCipherBuf);
 
     let finalCipher: Uint8Array;
-    if (receiptKey) {
+    if (fpKey) {
       const aadOuter = concatBytes(locator, header, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|outer`));
-      const outerCipherBuf = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: toArrayBuffer(nonceOuter), additionalData: toArrayBuffer(aadOuter) },
-        receiptKey,
-        innerCipher,
-      );
-      finalCipher = new Uint8Array(outerCipherBuf);
-    } else if (receiptSecret) {
-      // Fallback: single-layer, receipt secret included in PBKDF2 salt.
-      const key = await deriveAesKeyWithReceipt(password, immutableHash, salt, receiptSecret);
-      const aad = concatBytes(locator, header, textEncoder.encode(ENVELOPE_AAD_CONTEXT));
-      const cipherBuffer = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aad) },
-        key,
-        toArrayBuffer(packedFinal),
-      );
-      finalCipher = new Uint8Array(cipherBuffer);
+      finalCipher = await aesGcmEncrypt(fpKey, innerCipher, nonceOuter, aadOuter);
     } else {
-      // Portable mode: single-layer.
       finalCipher = innerCipher;
     }
 
@@ -1588,13 +1378,14 @@ export class WhisperEngine {
         cipherBytes,
         immutableHashVerify,
         payloadHashHex,
-        receiptKey,
-        receiptSecret,
+        fpKey,
       );
       logs.push("verify: ok");
     } catch (e) {
       logs.push(`verify: failed (${e instanceof Error ? e.message : "unknown"})`);
       throw e;
+    } finally {
+      fpKey?.fill(0);
     }
 
     const outputName = carrierName.replace(/(\.[^.]+)?$/, ".whisper$1");
@@ -1696,31 +1487,16 @@ export class WhisperEngine {
     const salt = randomBytes(16);
     const nonce = randomBytes(12);
 
-    let receiptSecret: Uint8Array | null = null;
-    let receiptKey: CryptoKey | null = null;
     const manifestLength = readU32(packed, 0);
     let headerFlags = HEADER_FLAGS;
     if (onlyHere) headerFlags |= FLAG_RECEIPT_REQUIRED;
     if (didCompress) headerFlags |= FLAG_COMPRESSED;
-    let header = buildHeader(headerFlags & 0xff, manifestLength, cipherLength, offset, envelopeLength, salt, nonce, bindDigest);
+    const header = buildHeader(headerFlags & 0xff, manifestLength, cipherLength, offset, envelopeLength, salt, nonce, bindDigest);
 
-    const receiptId = onlyHere ? await deriveReceiptId(locator, header) : null;
-    if (onlyHere && receiptId) {
-      try {
-        receiptKey = await crypto.subtle.generateKey(
-          { name: "AES-GCM", length: 256 },
-          false,
-          ["encrypt", "decrypt"],
-        );
-        await putReceiptKey(receiptId, receiptKey);
-        headerFlags |= FLAG_RECEIPT_LOCALKEY;
-        header = buildHeader(headerFlags & 0xff, manifestLength, cipherLength, offset, envelopeLength, salt, nonce, bindDigest);
-        logs.push(`receipt: stored local key lock (${receiptId})`);
-      } catch {
-        receiptSecret = randomBytes(32);
-        await putReceipt(receiptId, receiptSecret);
-        logs.push(`receipt: stored local secret lock (${receiptId})`);
-      }
+    let fpKey: Uint8Array | null = null;
+    if (onlyHere) {
+      fpKey = await deriveFingerprintLockKey(salt);
+      logs.push("fingerprint lock: derived key");
     }
 
     const baseKey = await deriveAesKey(password, immutableHash, salt);
@@ -1735,23 +1511,9 @@ export class WhisperEngine {
     const innerCipher = new Uint8Array(innerCipherBuf);
 
     let finalCipher: Uint8Array;
-    if (receiptKey) {
+    if (fpKey) {
       const aadOuter = concatBytes(locator, header, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|outer`));
-      const outerCipherBuf = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: toArrayBuffer(nonceOuter), additionalData: toArrayBuffer(aadOuter) },
-        receiptKey,
-        innerCipher,
-      );
-      finalCipher = new Uint8Array(outerCipherBuf);
-    } else if (receiptSecret) {
-      const key = await deriveAesKeyWithReceipt(password, immutableHash, salt, receiptSecret);
-      const aad = concatBytes(locator, header, textEncoder.encode(ENVELOPE_AAD_CONTEXT));
-      const cipherBuffer = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aad) },
-        key,
-        toArrayBuffer(packedFinal),
-      );
-      finalCipher = new Uint8Array(cipherBuffer);
+      finalCipher = await aesGcmEncrypt(fpKey, innerCipher, nonceOuter, aadOuter);
     } else {
       finalCipher = innerCipher;
     }
@@ -1774,13 +1536,14 @@ export class WhisperEngine {
         finalCipher,
         immutableHash,
         payloadHashHex,
-        receiptKey,
-        receiptSecret,
+        fpKey,
       );
       logs.push("verify: ok");
     } catch (e) {
       logs.push(`verify: failed (${e instanceof Error ? e.message : "unknown"})`);
       throw e;
+    } finally {
+      fpKey?.fill(0);
     }
 
     return {
@@ -1852,52 +1615,30 @@ export class WhisperEngine {
         const cipherBytes = new Uint8Array(cipherBuf);
 
         const needsReceipt = (header.flags & FLAG_RECEIPT_REQUIRED) !== 0;
-        const localKeyMode = (header.flags & FLAG_RECEIPT_LOCALKEY) !== 0;
         const { inner: nonceInner, outer: nonceOuter } = await deriveLayerNoncesAsync(header.nonce);
 
         let innerCipherBytes = cipherBytes;
-        if (needsReceipt && localKeyMode) {
-          const receiptId = await deriveReceiptId(locator, headerBytes);
-          const localKey = await getReceiptKey(receiptId);
-          if (!localKey) {
-            logs.push(`hit ${hit}: local lock key missing (different browser/device)`);
+        if (needsReceipt) {
+          let fpKey: Uint8Array | undefined;
+          try {
+            fpKey = await deriveFingerprintLockKey(header.salt);
+            const aadOuter = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|outer`));
+            innerCipherBytes = await aesGcmDecrypt(fpKey, cipherBytes, nonceOuter, aadOuter);
+          } catch {
+            logs.push(`hit ${hit}: fingerprint lock mismatch (different browser/device)`);
             continue;
+          } finally {
+            fpKey?.fill(0);
           }
-
-          const aadOuter = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|outer`));
-          const outerPlainBuf = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: toArrayBuffer(nonceOuter), additionalData: toArrayBuffer(aadOuter) },
-            localKey,
-            cipherBuf,
-          );
-          innerCipherBytes = new Uint8Array(outerPlainBuf);
         }
 
-        let packedPlain: ArrayBuffer;
-        if (needsReceipt && !localKeyMode) {
-          const receiptId = await deriveReceiptId(locator, headerBytes);
-          const secret = await getReceipt(receiptId);
-          if (!secret) {
-            logs.push(`hit ${hit}: local lock receipt missing (different browser/device)`);
-            continue;
-          }
-
-          const key = await deriveAesKeyWithReceipt(password, immutableHash, header.salt, secret);
-          const aad = concatBytes(locator, headerBytes, textEncoder.encode(ENVELOPE_AAD_CONTEXT));
-          packedPlain = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aad) },
-            key,
-            toArrayBuffer(innerCipherBytes),
-          );
-        } else {
-          const key = await deriveAesKey(password, immutableHash, header.salt);
-          const aadInner = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|inner`));
-          packedPlain = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aadInner) },
-            key,
-            toArrayBuffer(innerCipherBytes),
-          );
-        }
+        const key = await deriveAesKey(password, immutableHash, header.salt);
+        const aadInner = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|inner`));
+        const packedPlain = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aadInner) },
+          key,
+          toArrayBuffer(innerCipherBytes),
+        );
 
         const decompressed = await maybeDecompress(new Uint8Array(packedPlain), header.flags);
         const packed = unpackPayload(decompressed);
@@ -1989,50 +1730,30 @@ export class WhisperEngine {
         const cipherBytes = carrierBytes.subarray(cipherStart, cipherEnd);
 
         const needsReceipt = (header.flags & FLAG_RECEIPT_REQUIRED) !== 0;
-        const localKeyMode = (header.flags & FLAG_RECEIPT_LOCALKEY) !== 0;
         const { inner: nonceInner, outer: nonceOuter } = await deriveLayerNoncesAsync(header.nonce);
 
         let innerCipherBytes = cipherBytes;
-        if (needsReceipt && localKeyMode) {
-          const receiptId = await deriveReceiptId(locator, headerBytes);
-          const localKey = await getReceiptKey(receiptId);
-          if (!localKey) {
-            logs.push(`hit ${hit}: local lock key missing (different browser/device)`);
+        if (needsReceipt) {
+          let fpKey: Uint8Array | undefined;
+          try {
+            fpKey = await deriveFingerprintLockKey(header.salt);
+            const aadOuter = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|outer`));
+            innerCipherBytes = await aesGcmDecrypt(fpKey, cipherBytes, nonceOuter, aadOuter);
+          } catch {
+            logs.push(`hit ${hit}: fingerprint lock mismatch (different browser/device)`);
             continue;
+          } finally {
+            fpKey?.fill(0);
           }
-          const aadOuter = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|outer`));
-          const outerPlainBuf = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: toArrayBuffer(nonceOuter), additionalData: toArrayBuffer(aadOuter) },
-            localKey,
-            toArrayBuffer(innerCipherBytes),
-          );
-          innerCipherBytes = new Uint8Array(outerPlainBuf);
         }
 
-        let packedPlain: ArrayBuffer;
-        if (needsReceipt && !localKeyMode) {
-          const receiptId = await deriveReceiptId(locator, headerBytes);
-          const secret = await getReceipt(receiptId);
-          if (!secret) {
-            logs.push(`hit ${hit}: local lock receipt missing (different browser/device)`);
-            continue;
-          }
-          const key = await deriveAesKeyWithReceipt(password, immutableHash, header.salt, secret);
-          const aad = concatBytes(locator, headerBytes, textEncoder.encode(ENVELOPE_AAD_CONTEXT));
-          packedPlain = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aad) },
-            key,
-            toArrayBuffer(innerCipherBytes),
-          );
-        } else {
-          const key = await deriveAesKey(password, immutableHash, header.salt);
-          const aadInner = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|inner`));
-          packedPlain = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aadInner) },
-            key,
-            toArrayBuffer(innerCipherBytes),
-          );
-        }
+        const key = await deriveAesKey(password, immutableHash, header.salt);
+        const aadInner = concatBytes(locator, headerBytes, textEncoder.encode(`${ENVELOPE_AAD_CONTEXT}|inner`));
+        const packedPlain = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: toArrayBuffer(nonceInner), additionalData: toArrayBuffer(aadInner) },
+          key,
+          toArrayBuffer(innerCipherBytes),
+        );
 
         const decompressed = await maybeDecompress(new Uint8Array(packedPlain), header.flags);
         const packed = unpackPayload(decompressed);
