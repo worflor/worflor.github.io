@@ -200,7 +200,7 @@ const seo = {
             <span id="ws-char-count" class="ws-char-count">0 / 48,000</span>
 
             <label class="whisper-field ws-url-only" for="ws-extra-password">
-              <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(only if you've agreed on one)</span></span>
+              <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(optional)</span></span>
               <input id="ws-extra-password" type="password" class="whisper-input" placeholder="a short phrase between friends" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" />
             </label>
 
@@ -2534,16 +2534,6 @@ const seo = {
     user-select: none;
   }
 
-  @media (max-width: 520px) {
-    .wl-actions-row {
-      flex-direction: column;
-      align-items: stretch;
-    }
-    .wl-actions-divider {
-      width: 100%;
-      height: 1px;
-    }
-  }
 
   /* wl-phrase-panel still used by campfire */
   .wl-phrase-panel {
