@@ -1039,6 +1039,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     updateControls();
   }
 
+  function handleExternalResetRequest(event: Event): void {
+    const custom = event as CustomEvent<{ reason?: string }>;
+    if (opts.page.dataset.mode !== "live") return;
+    if (busy) return;
+
+    const alreadyAtLanding = !session && opts.liveSection.style.display !== "none";
+    if (alreadyAtLanding) return;
+
+    resetToIdle();
+  }
+
   /* ── Relay assist ────────────────────────────────────────── */
 
   let relayAbort: AbortController | null = null;
@@ -1063,7 +1074,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       relayPanel.style.display = "";
       manualPanel.style.display = "none";
       modeSwitchBtn.textContent = "or connect manually";
-      if (idleLede) idleLede.textContent = "type the same phrase on both sides and connect. that's it.";
+      if (idleLede) idleLede.textContent = "type the same phrase on both sides and connect at the same time. that's it.";
       opts.externalAssistToggle.checked = true;
       updateControls();
     } else {
@@ -1491,6 +1502,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   window.addEventListener("focus", () => { hasFocus = true; clearUnread(); }, { signal });
   window.addEventListener("blur", () => { hasFocus = false; }, { signal });
+  window.addEventListener("whisper-live-reset-request", handleExternalResetRequest as EventListener, { signal });
 
   /* -- Initial state ---------------------------------------- */
 

@@ -648,6 +648,17 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   opts.uploadButton.addEventListener("click", openCarrierPicker, { signal });
 
+  function toggleEmbedCarrierOnReselect(): void {
+    const fileRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="file"]');
+    const urlRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="url"]');
+    if (!fileRadio || !urlRadio) return;
+
+    const next = isCarrierUrl() ? fileRadio : urlRadio;
+    if (next.checked) return;
+    next.checked = true;
+    next.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
   /* ── Mode switching ──────────────────────────────────── */
 
   opts.modeButtons.forEach((button) => button.addEventListener("click", (event: Event) => {
@@ -655,6 +666,28 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     if (!(target instanceof HTMLButtonElement)) return;
     const mode = target.dataset.whisperMode;
     if (!isMode(mode)) return;
+
+    if (mode === activeMode) {
+      if (busy) return;
+
+      if (mode === MODE_LIVE) {
+        window.dispatchEvent(new CustomEvent("whisper-live-reset-request", {
+          detail: { reason: "mode-reselect" },
+        }));
+        updateStatus("ready to connect");
+        refreshUI();
+        return;
+      }
+
+      if (mode === MODE_EMBED) {
+        toggleEmbedCarrierOnReselect();
+        return;
+      }
+
+      opts.clearButton.click();
+      return;
+    }
+
     setMode(mode);
   }, { signal }));
 
