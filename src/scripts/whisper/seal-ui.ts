@@ -473,7 +473,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (isUnstableMode()) {
       return "tied to session identity, so preserve browser fingerprint.";
     }
-    return "encodes the full WS2 public key exactly.";
+    return "tied to the browser's unique fingerprint - keep the environment stable.";
   }
 
   function setRecipientFromCandidate(rawValue: string, source: "camera" | "image"): boolean {

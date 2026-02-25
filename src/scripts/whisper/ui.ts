@@ -117,6 +117,12 @@ function readSingleFile(input: HTMLInputElement): File | null {
   return input.files?.[0] ?? null;
 }
 
+function toDataTransfer(files: FileList | File[]): DataTransfer {
+  const dt = new DataTransfer();
+  Array.from(files).forEach((file) => dt.items.add(file));
+  return dt;
+}
+
 function textToFile(text: string): File {
   return new File([text], "message.txt", { type: "text/plain;charset=utf-8" });
 }
@@ -393,7 +399,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     if (busy) { opts.statusLine.classList.remove("whisper-status--ready"); return; }
     if (activeMode === MODE_LIVE) return;
     if (activeMode === MODE_EMBED && isCarrierUrl()) {
-      updateStatus("steganography seal — compose below");
+      updateStatus("steganography seal - compose below");
       opts.statusLine.classList.remove("whisper-status--ready");
       return;
     }
@@ -499,9 +505,52 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     opts.uploadMeta.textContent = `${carrierMeta}${payloadMeta}`;
   }
 
+  function updateHuntUploadInfo(files: FileList | null | undefined): void {
+    const count = files?.length ?? 0;
+    if (count <= 0) {
+      opts.uploadText.textContent = "drop carrier files here";
+      opts.uploadMeta.textContent = "";
+      return;
+    }
+
+    opts.uploadText.textContent = `${count} carrier file${count === 1 ? "" : "s"} selected`;
+    const totalSize = Array.from(files ?? []).reduce((sum, file) => sum + file.size, 0);
+    opts.uploadMeta.textContent = `${formatSize(totalSize)} total`;
+  }
+
+  function syncUploadZoneForMode(): void {
+    if (activeMode === MODE_HUNT) {
+      updateHuntUploadInfo(opts.huntCarrierInput.files);
+      if (hasHuntFiles()) {
+        compactUploadZone();
+        showActionsBar();
+      } else {
+        expandUploadZone();
+        hideActionsBar();
+      }
+      return;
+    }
+
+    const file = readSingleFile(opts.carrierInput);
+    updateUploadInfo(file);
+    if (file) {
+      compactUploadZone();
+      showActionsBar();
+    } else {
+      expandUploadZone();
+      hideActionsBar();
+    }
+  }
+
   /* ── Upload zone interactions ────────────────────────── */
 
-  const openCarrierPicker = () => opts.carrierInput.click();
+  const openCarrierPicker = () => {
+    if (activeMode === MODE_HUNT) {
+      opts.huntCarrierInput.click();
+      return;
+    }
+    opts.carrierInput.click();
+  };
 
   opts.uploadZone.addEventListener("click", openCarrierPicker, { signal });
   opts.uploadZone.addEventListener("keydown", (e) => {
@@ -520,10 +569,15 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     opts.uploadZone.classList.remove("whisper-drop-active");
     const files = (e as DragEvent).dataTransfer?.files;
     if (files && files.length > 0) {
-      const dt = new DataTransfer();
-      dt.items.add(files[0]);
-      opts.carrierInput.files = dt.files;
-      opts.carrierInput.dispatchEvent(new Event("change", { bubbles: true }));
+      if (activeMode === MODE_HUNT) {
+        opts.huntCarrierInput.files = toDataTransfer(files).files;
+        opts.huntCarrierInput.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        const dt = new DataTransfer();
+        dt.items.add(files[0]);
+        opts.carrierInput.files = dt.files;
+        opts.carrierInput.dispatchEvent(new Event("change", { bubbles: true }));
+      }
     }
   }, { signal });
 
@@ -539,8 +593,13 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
       e.preventDefault();
       const dt = new DataTransfer();
       dt.items.add(file);
-      opts.carrierInput.files = dt.files;
-      opts.carrierInput.dispatchEvent(new Event("change", { bubbles: true }));
+      if (activeMode === MODE_HUNT) {
+        opts.huntCarrierInput.files = dt.files;
+        opts.huntCarrierInput.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        opts.carrierInput.files = dt.files;
+        opts.carrierInput.dispatchEvent(new Event("change", { bubbles: true }));
+      }
       return;
     }
   }, { signal });
@@ -548,15 +607,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   /* ── File input change listeners ─────────────────────── */
 
   opts.carrierInput.addEventListener("change", () => {
-    const file = readSingleFile(opts.carrierInput);
-    updateUploadInfo(file);
-    if (file) {
-      compactUploadZone();
-      showActionsBar();
-    } else {
-      expandUploadZone();
-      hideActionsBar();
-    }
+    syncUploadZoneForMode();
     refreshUI();
   }, { signal });
 
@@ -565,8 +616,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     opts.huntLabel.textContent = count > 0
       ? `${count} file${count === 1 ? "" : "s"} selected`
       : "choose files\u2026";
-    // In hunt mode, show action bar when hunt files are selected
-    if (activeMode === MODE_HUNT && count > 0) showActionsBar();
+    if (activeMode === MODE_HUNT) syncUploadZoneForMode();
     refreshUI();
   }, { signal });
 
@@ -690,6 +740,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
     setMode(mode);
   }, { signal }));
+      syncUploadZoneForMode();
 
   /* ── Carrier type toggle (embed: file vs url/seal) ──── */
 
@@ -878,7 +929,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     opts.payloadInput.value = "";
     opts.messageInput.value = "";
     opts.embedMessageCount.textContent = "0 / 48,000";
-    updateUploadInfo(null);
+    syncUploadZoneForMode();
     expandUploadZone();
     hideActionsBar();
     opts.huntLabel.textContent = "choose files\u2026";

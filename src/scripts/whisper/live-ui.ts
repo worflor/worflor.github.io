@@ -1074,7 +1074,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       relayPanel.style.display = "";
       manualPanel.style.display = "none";
       modeSwitchBtn.textContent = "or connect manually";
-      if (idleLede) idleLede.textContent = "type the same phrase on both sides and connect at the same time. that's it.";
+      if (idleLede) idleLede.textContent = "know a phrase, connect at the same time. thats it.";
       opts.externalAssistToggle.checked = true;
       updateControls();
     } else {

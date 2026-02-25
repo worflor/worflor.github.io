@@ -167,7 +167,7 @@ const seo = {
             <div id="ws-my-seal-inline-panel" class="ws-my-seal-inline-panel" style="display:none">
               <div class="ws-seal-qr-wrap">
                 <canvas id="ws-seal-qr-canvas" class="ws-seal-qr-canvas" data-qr-size="180" aria-label="QR code for your full WS2 public key"></canvas>
-                <p id="ws-seal-qr-status" class="ws-seal-hint">QR encodes the full WS2 public key exactly.</p>
+                <p id="ws-seal-qr-status" class="ws-seal-hint">share this to let someone message you.</p>
               </div>
             </div>
           </div>
@@ -176,7 +176,7 @@ const seo = {
           <div class="ws-seal-fields" id="ws-seal-fields">
             <label class="whisper-field ws-url-only" for="ws-recipient-seal">
               <span class="whisper-field-label">recipient's seal</span>
-              <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
+              <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
             </label>
             <div class="wl-join-tools ws-recipient-tools ws-url-only" role="group" aria-label="Seal tools">
               <button id="ws-recipient-paste" type="button" class="wl-tool-link" aria-label="Paste a valid seal code from clipboard">paste</button>
@@ -195,7 +195,7 @@ const seo = {
 
             <label class="whisper-field" for="ws-message">
               <span class="whisper-field-label">your message</span>
-              <textarea id="ws-message" class="whisper-input ws-textarea" rows="6" placeholder="type your secret message..." maxlength="48000"></textarea>
+              <textarea id="ws-message" class="whisper-input ws-textarea" rows="6" placeholder="your secret message..." maxlength="48000"></textarea>
             </label>
             <span id="ws-char-count" class="ws-char-count">0 / 48,000</span>
 
@@ -250,14 +250,9 @@ const seo = {
             </div>
           </div>
 
-          <!-- Hunt multi-file input -->
-          <label class="whisper-field whisper-field--hunt" for="whisper-hunt-carrier-input">
-            <span class="whisper-field-label">carrier files <span class="whisper-field-hint">(hunt mode)</span></span>
-            <div class="whisper-file-btn" tabindex="-1">
-              <span class="whisper-file-btn-text" id="whisper-hunt-label">choose files&hellip;</span>
-              <input id="whisper-hunt-carrier-input" type="file" multiple class="sr-only" aria-hidden="true" />
-            </div>
-          </label>
+          <!-- Hunt multi-file input hook (driven by the main upload zone) -->
+          <input id="whisper-hunt-carrier-input" type="file" multiple class="sr-only" aria-hidden="true" />
+          <span id="whisper-hunt-label" class="sr-only" aria-hidden="true">choose files&hellip;</span>
 
           <!-- Hidden legacy payload hook (intentionally not shown in UI) -->
           <input id="whisper-payload-input" type="file" class="sr-only" aria-hidden="true" tabindex="-1" />
@@ -362,7 +357,7 @@ const seo = {
 
         <!-- Phase: idle — create or join -->
         <div class="wl-phase" id="wl-idle-phase">
-          <p class="wl-phase-lede" id="wl-idle-lede">type the same phrase on both sides and connect at the same time. that's it.</p>
+          <p class="wl-phase-lede" id="wl-idle-lede">know a phrase, connect at the same time. thats it.</p>
 
           <!-- Relay mode: phrase + connect (the default, clean view) -->
           <div class="whisper-panel wl-relay-panel" id="wl-relay-panel">
@@ -373,7 +368,7 @@ const seo = {
                   id="wl-phrase"
                   type="text"
                   class="whisper-input"
-                  placeholder="a short phrase you both know"
+                  placeholder="a short phrase between friends"
                   autocomplete="new-password"
                   autocapitalize="off"
                   spellcheck="false"
@@ -398,7 +393,7 @@ const seo = {
               <div class="wl-action-join">
                 <span class="wl-action-label">Join</span>
                 <div class="wl-join-row">
-                  <input id="wl-join-input" type="text" class="whisper-input wl-code-input" placeholder="offer code" autocomplete="off" spellcheck="false" />
+                  <input id="wl-join-input" type="text" class="whisper-input wl-code-input" placeholder="connection code" autocomplete="off" spellcheck="false" />
                   <button id="wl-join" type="button" class="whisper-mini-btn">Join</button>
                 </div>
                 <div class="wl-join-tools" role="group" aria-label="Join code helpers">
@@ -423,7 +418,7 @@ const seo = {
                   id="wl-manual-phrase"
                   type="password"
                   class="whisper-input"
-                  placeholder="a short phrase you both know"
+                  placeholder="a short phrase between friends"
                   autocomplete="new-password"
                   autocapitalize="off"
                   spellcheck="false"
@@ -789,7 +784,7 @@ const seo = {
             </div>
             <div class="ws-seal-qr-wrap">
               <canvas id="ws-seal-qr-canvas-overlay" class="ws-seal-qr-canvas" data-qr-size="220" aria-label="QR code for your full WS2 public key"></canvas>
-              <p id="ws-seal-qr-status-overlay" class="ws-seal-hint">QR encodes the full WS2 public key exactly.</p>
+              <p id="ws-seal-qr-status-overlay" class="ws-seal-hint">share this to let someone message you.</p>
             </div>
             <p class="ws-seal-hint">Share this full WS2 code to receive messages.</p>
             <p class="ws-seal-hint">Only the browser profile with the matching private key can open messages sealed to this key.</p>
@@ -920,7 +915,6 @@ const seo = {
           <p class="whisper-log-title">runtime log</p>
           <span class="whisper-log-dot" id="whisper-log-dot"></span>
         </div>
-        <p class="whisper-log-hint">compact event trail (security-critical steps stay visible).</p>
         <pre id="whisper-log-output" class="whisper-log-output"></pre>
       </div>
     </section>
@@ -1020,8 +1014,16 @@ const seo = {
     let submodeAbort: AbortController | null = null;
     const whisperWindow = window as unknown as Record<string, WhisperLifecycle | undefined>;
 
+    const MESSAGE_PLACEHOLDERS = [
+      "your secret message...",
+      "confess your true feelings...",
+      "whats on your mind - but more importantly... how do you communicate it?",
+    ];
+
     function boot() {
       teardown();
+      const msgArea = document.querySelector<HTMLTextAreaElement>("#ws-message");
+      if (msgArea) msgArea.placeholder = MESSAGE_PLACEHOLDERS[Math.floor(Math.random() * MESSAGE_PLACEHOLDERS.length)];
       const whisperOptions = resolveWhisperUIOptions(document);
       if (whisperOptions) cleanupWhisper = initWhisper(whisperOptions);
       const liveOptions = resolveWhisperLiveUIOptions(document);
@@ -2356,13 +2358,13 @@ const seo = {
   }
 
   .wl-actions-panel {
-    gap: calc(var(--space-xs) * 0.4);
-    padding: calc(var(--space-sm) * 0.75);
+    gap: var(--space-sm);
+    padding: var(--space-sm);
   }
 
   .wl-actions-row {
     display: flex;
-    align-items: end;
+    align-items: start;
     gap: var(--space-sm);
   }
 
@@ -2392,8 +2394,8 @@ const seo = {
 
   .wl-relay-panel {
     display: grid;
-    gap: calc(var(--space-xs) * 0.5);
-    padding: calc(var(--space-sm) * 0.85);
+    gap: var(--space-sm);
+    padding: var(--space-sm);
     background: var(--whisper-surface);
   }
 
@@ -2414,19 +2416,19 @@ const seo = {
 
   .wl-relay-hint {
     margin: 0;
-    font-size: calc(var(--text-sm) * 0.78);
-    color: rgb(var(--color-text-rgb) / 0.34);
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.42);
     line-height: 1.4;
   }
 
   .wl-relay-panel .whisper-field-label {
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--text-sm);
   }
 
   .wl-relay-panel .whisper-input {
-    min-height: 2.1rem;
-    padding: 0.35rem 0.6rem;
-    font-size: calc(var(--text-sm) * 0.92);
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    font-size: var(--text-sm);
   }
 
   /* ── Mode switch link ──────────────────────────────────── */
@@ -2458,33 +2460,29 @@ const seo = {
 
   .wl-manual-options {
     display: grid;
-    gap: calc(var(--space-xs) * 0.75) var(--space-sm);
-    padding-top: calc(var(--space-xs) * 0.5);
+    gap: var(--space-sm);
+    padding-top: var(--space-sm);
     border-top: 1px solid var(--whisper-edge);
-    margin-top: calc(var(--space-xs) * 0.3);
+    margin-top: 0;
   }
 
   .wl-manual-options .whisper-field-label {
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--text-sm);
   }
 
   .wl-manual-options .whisper-input {
-    min-height: 2.1rem;
-    padding: 0.35rem 0.6rem;
-    font-size: calc(var(--text-sm) * 0.92);
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    font-size: var(--text-sm);
   }
 
   .wl-manual-options .whisper-toggle {
-    min-height: 2.1rem;
-    padding: 0.3rem 0.6rem;
+    min-height: var(--touch-target);
+    padding: 0.55rem 0.75rem;
   }
 
   .wl-manual-options .whisper-toggle-text {
-    font-size: calc(var(--text-sm) * 0.88);
-  }
-
-  .wl-manual-options .whisper-field-hint {
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--text-sm);
   }
 
   @media (min-width: 860px) {
@@ -2550,31 +2548,27 @@ const seo = {
   /* wl-phrase-panel still used by campfire */
   .wl-phrase-panel {
     display: grid;
-    gap: calc(var(--space-xs) * 0.75) var(--space-sm);
-    padding: calc(var(--space-sm) * 0.7);
+    gap: var(--space-sm);
+    padding: var(--space-sm);
   }
 
   .wl-phrase-panel .whisper-field-label {
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--text-sm);
   }
 
   .wl-phrase-panel .whisper-input {
-    min-height: 2.1rem;
-    padding: 0.35rem 0.6rem;
-    font-size: calc(var(--text-sm) * 0.92);
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    font-size: var(--text-sm);
   }
 
   .wl-phrase-panel .whisper-toggle {
-    min-height: 2.1rem;
-    padding: 0.3rem 0.6rem;
+    min-height: var(--touch-target);
+    padding: 0.55rem 0.75rem;
   }
 
   .wl-phrase-panel .whisper-toggle-text {
-    font-size: calc(var(--text-sm) * 0.88);
-  }
-
-  .wl-phrase-panel .whisper-field-hint {
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--text-sm);
   }
 
   @media (min-width: 860px) {
