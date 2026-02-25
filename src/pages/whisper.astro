@@ -1057,10 +1057,17 @@ const seo = {
       submodeRadios.forEach((radio) => {
         radio.addEventListener("change", () => {
           if (!radio.checked) return;
-          syncLiveSubmode(radio.value === "campfire" ? "campfire" : "1:1");
+          const mode = radio.value === "campfire" ? "campfire" : "1:1";
+          sessionStorage.setItem("whisper-live-submode", mode);
+          syncLiveSubmode(mode);
         }, { signal: submodeSignal });
       });
 
+      const savedSubmode = sessionStorage.getItem("whisper-live-submode");
+      if (savedSubmode === "campfire" || savedSubmode === "1:1") {
+        const target = Array.from(submodeRadios).find((r) => r.value === savedSubmode);
+        if (target) target.checked = true;
+      }
       const checkedMode = Array.from(submodeRadios).find((r) => r.checked)?.value;
       syncLiveSubmode(checkedMode === "campfire" ? "campfire" : "1:1");
     }
