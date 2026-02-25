@@ -174,11 +174,11 @@ const seo = {
 
           <!-- Seal compose fields (visibility driven by CSS) -->
           <div class="ws-seal-fields" id="ws-seal-fields">
-            <label class="whisper-field" for="ws-recipient-seal">
+            <label class="whisper-field ws-url-only" for="ws-recipient-seal">
               <span class="whisper-field-label">recipient's seal</span>
               <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
             </label>
-            <div class="wl-join-tools ws-recipient-tools" role="group" aria-label="Seal tools">
+            <div class="wl-join-tools ws-recipient-tools ws-url-only" role="group" aria-label="Seal tools">
               <button id="ws-recipient-paste" type="button" class="wl-tool-link" aria-label="Paste a valid seal code from clipboard">paste</button>
               <span class="wl-tool-sep" aria-hidden="true">/</span>
               <button id="ws-recipient-qr-scan" type="button" class="wl-tool-link">scan</button>
@@ -187,11 +187,11 @@ const seo = {
               <button id="ws-recipient-qr-stop" type="button" class="wl-tool-link wl-tool-link--stop" style="display:none">stop</button>
               <input id="ws-recipient-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
             </div>
-            <div id="ws-recipient-qr-panel" class="ws-recipient-qr-panel" style="display:none">
+            <div id="ws-recipient-qr-panel" class="ws-recipient-qr-panel ws-url-only" style="display:none">
               <video id="ws-recipient-qr-video" class="ws-recipient-qr-video" playsinline muted></video>
             </div>
-            <span id="ws-recipient-qr-status" class="whisper-field-hint ws-recipient-qr-status"></span>
-            <span id="ws-seal-validation" class="ws-seal-validation"></span>
+            <span id="ws-recipient-qr-status" class="whisper-field-hint ws-recipient-qr-status ws-url-only"></span>
+            <span id="ws-seal-validation" class="ws-seal-validation ws-url-only"></span>
 
             <label class="whisper-field" for="ws-message">
               <span class="whisper-field-label">your message</span>
@@ -199,12 +199,12 @@ const seo = {
             </label>
             <span id="ws-char-count" class="ws-char-count">0 / 48,000</span>
 
-            <label class="whisper-field" for="ws-extra-password">
+            <label class="whisper-field ws-url-only" for="ws-extra-password">
               <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(only if you've agreed on one)</span></span>
-              <input id="ws-extra-password" type="password" class="whisper-input" placeholder="leave blank if none" autocomplete="off" />
+              <input id="ws-extra-password" type="password" class="whisper-input" placeholder="leave blank if none" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" />
             </label>
 
-            <div class="whisper-field">
+            <div class="whisper-field ws-url-only">
               <span class="whisper-field-label">expires after</span>
               <div class="ws-expiry-pills" id="ws-expiry" role="radiogroup" aria-label="Expiry duration">
                 <label class="ws-expiry-pill">
@@ -238,9 +238,9 @@ const seo = {
               </div>
             </div>
 
-            <button id="ws-seal-it" type="button" class="whisper-mini-btn wl-primary" disabled>Seal it</button>
+            <button id="ws-seal-it" type="button" class="whisper-mini-btn wl-primary ws-url-only" disabled>Seal it</button>
 
-            <div id="ws-sealed-result" class="ws-sealed-result" style="display:none">
+            <div id="ws-sealed-result" class="ws-sealed-result ws-url-only" style="display:none">
               <span class="ws-sealed-result-label">sealed url</span>
               <pre id="ws-sealed-url-inline" class="ws-sealed-url-inline" role="button" tabindex="0" title="copy sealed url"></pre>
               <div class="ws-sealed-result-meta">
@@ -259,14 +259,12 @@ const seo = {
             </div>
           </label>
 
-          <!-- Payload input -->
-          <label class="whisper-field whisper-field--embed" for="whisper-payload-input">
-            <span class="whisper-field-label">payload file <span class="whisper-field-hint">(embed mode)</span></span>
-            <div class="whisper-file-btn" tabindex="-1">
-              <span class="whisper-file-btn-text" id="whisper-payload-label">choose file&hellip;</span>
-              <input id="whisper-payload-input" type="file" class="sr-only" aria-hidden="true" />
-            </div>
-          </label>
+          <!-- Hidden legacy payload hook (intentionally not shown in UI) -->
+          <input id="whisper-payload-input" type="file" class="sr-only" aria-hidden="true" tabindex="-1" />
+          <span id="whisper-payload-label" class="sr-only" aria-hidden="true">choose file&hellip;</span>
+
+          <textarea id="whisper-embed-message" class="sr-only" aria-hidden="true" tabindex="-1" maxlength="48000"></textarea>
+          <span id="whisper-embed-message-count" class="sr-only" aria-hidden="true">0 / 48,000</span>
 
           <!-- Password (file-based modes) -->
           <label class="whisper-field whisper-field--file-password" for="whisper-password-input">
@@ -276,7 +274,12 @@ const seo = {
                 id="whisper-password-input"
                 type="password"
                 class="whisper-input whisper-password-input"
-                autocomplete="off"
+                autocomplete="new-password"
+                autocapitalize="off"
+                spellcheck="false"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-form-type="other"
                 placeholder="password to encrypt"
               />
               <div class="whisper-password-tools" role="group" aria-label="Password tools">
@@ -343,7 +346,7 @@ const seo = {
       <div class="whisper-op-live" id="wl-section">
         <div class="wl-head whisper-panel" aria-label="Whisper Live status">
           <h2 class="wl-head-title">Whisper Live</h2>
-          <p class="wl-head-subtitle">fast encrypted sessions, no accounts, no relay inbox</p>
+          <p class="wl-head-subtitle">encrypted peer-to-peer chat, no accounts, no servers</p>
           <div class="wl-head-right">
             <div class="cf-live-mode-toggle" role="radiogroup" aria-label="Live sub-mode">
               <label class="cf-mode-opt">
@@ -365,8 +368,33 @@ const seo = {
 
         <!-- Phase: idle — create or join -->
         <div class="wl-phase" id="wl-idle-phase">
-          <p class="wl-phase-lede">encrypted peer-to-peer direct messager. start a channel or join someones.</p>
-          <div class="whisper-panel wl-actions-panel">
+          <p class="wl-phase-lede" id="wl-idle-lede">type the same phrase on both sides and connect. that's it.</p>
+
+          <!-- Relay mode: phrase + connect (the default, clean view) -->
+          <div class="whisper-panel wl-relay-panel" id="wl-relay-panel">
+            <label class="whisper-field wl-relay-phrase-field" for="wl-phrase">
+              <span class="whisper-field-label">shared phrase</span>
+              <div class="wl-relay-connect-row">
+                <input
+                  id="wl-phrase"
+                  type="password"
+                  class="whisper-input"
+                  placeholder="a short phrase you both know"
+                  autocomplete="new-password"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
+                />
+                <button id="wl-relay-connect" type="button" class="whisper-mini-btn wl-primary">Connect</button>
+              </div>
+            </label>
+            <p class="wl-relay-hint">agree on a phrase with your peer beforehand. the relay that matches you is blind — it never sees your messages.</p>
+          </div>
+
+          <!-- Manual mode: create/join + options (hidden by default) -->
+          <div class="whisper-panel wl-actions-panel" id="wl-manual-panel" style="display:none">
             <div class="wl-actions-row">
               <div class="wl-action-create">
                 <span class="wl-action-label">Create</span>
@@ -394,31 +422,42 @@ const seo = {
                 <span id="wl-join-qr-status" class="whisper-field-hint wl-join-qr-status"></span>
               </div>
             </div>
-          </div>
-
-          <div class="whisper-panel wl-phrase-panel">
-            <label class="whisper-field" for="wl-phrase">
-              <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(optional, match on both sides)</span></span>
-              <input
-                id="wl-phrase"
-                type="password"
-                class="whisper-input"
-                placeholder="a short phrase you both know"
-                autocomplete="off"
-              />
-            </label>
-
-            <div class="whisper-field">
-              <span class="whisper-field-label">network</span>
-              <label class="whisper-toggle" for="wl-external-assist">
-                <input id="wl-external-assist" type="checkbox" class="whisper-toggle-input" />
-                <span class="whisper-toggle-text">
-                  external assist (stun)
-                  <span class="whisper-field-hint">(helps connect across networks. may expose network metadata during setup. it turns off after connect)</span>
-                </span>
+            <div class="wl-manual-options">
+              <label class="whisper-field" for="wl-manual-phrase">
+                <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(optional)</span></span>
+                <input
+                  id="wl-manual-phrase"
+                  type="password"
+                  class="whisper-input"
+                  placeholder="a short phrase you both know"
+                  autocomplete="new-password"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
+                />
               </label>
+              <div class="whisper-field">
+                <span class="whisper-field-label">network</span>
+                <label class="whisper-toggle" for="wl-external-assist">
+                  <input id="wl-external-assist" type="checkbox" class="whisper-toggle-input" />
+                  <span class="whisper-toggle-text">
+                    external assist (stun)
+                    <span class="whisper-field-hint">(helps connect across networks)</span>
+                  </span>
+                </label>
+              </div>
             </div>
           </div>
+
+          <!-- Hidden relay state (not visible, drives logic) -->
+          <input id="wl-relay-assist" type="checkbox" class="sr-only" checked aria-hidden="true" />
+
+          <!-- Mode switch link -->
+          <p class="wl-mode-switch" id="wl-mode-switch">
+            <button type="button" class="wl-mode-switch-btn" id="wl-mode-switch-btn">or connect manually</button>
+          </p>
         </div>
 
         <!-- Phase: offering — show offer code, wait for answer -->
@@ -502,8 +541,8 @@ const seo = {
         <!-- Phase: verify fingerprint -->
         <div class="wl-phase" id="wl-verify-section" style="display:none">
           <div class="whisper-panel wl-verify-panel">
-            <h2 class="whisper-panel-title">Verify fingerprint</h2>
-            <p class="whisper-field-hint">does your peer see the same emoji?</p>
+            <h2 class="whisper-panel-title">Quick check</h2>
+            <p class="whisper-field-hint">ask your peer — do they see the same emoji?</p>
             <p id="wl-fingerprint" class="wl-fingerprint" aria-live="polite"></p>
             <div class="wl-verify-actions">
               <button id="wl-confirm" type="button" class="whisper-mini-btn wl-confirm-btn">They match</button>
@@ -563,8 +602,8 @@ const seo = {
         <!-- Phase: disconnected -->
         <div class="wl-phase" id="wl-disconnected-section" style="display:none">
           <div class="whisper-panel wl-end-panel">
-            <p class="wl-end-text">session ended. no trace remains</p>
-            <button id="wl-new-session" type="button" class="whisper-mini-btn">New session</button>
+            <p class="wl-end-text">session ended. no trace remains.</p>
+            <button id="wl-new-session" type="button" class="whisper-mini-btn">Start over</button>
           </div>
         </div>
 
@@ -859,7 +898,7 @@ const seo = {
               <p class="ws-fail-detail">this sealed message was locked with a shared phrase. enter it below to decrypt.</p>
               <div class="ws-status-meta" data-meta="password"></div>
               <label class="whisper-field" for="ws-unseal-pw-input">
-                <input id="ws-unseal-pw-input" type="password" class="whisper-input" placeholder="enter shared phrase" autocomplete="off" />
+                <input id="ws-unseal-pw-input" type="password" class="whisper-input" placeholder="enter shared phrase" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" />
               </label>
               <div class="wl-join-tools" role="group" aria-label="Paste helper">
                 <button id="ws-unseal-pw-paste" type="button" class="wl-tool-link">paste</button>
@@ -1691,12 +1730,12 @@ const seo = {
   .whisper-page:not([data-mode="embed"]) .ws-carrier-toggle-wrap { display: none; }
 
   /* When carrier=url: hide file-specific embed fields, upload zone, and file password */
-  .whisper-page[data-mode="embed"][data-carrier="url"] .whisper-field--embed:not(.ws-carrier-toggle-wrap) { display: none; }
+  .whisper-page[data-mode="embed"][data-carrier="url"] .whisper-field--embed:not(.ws-carrier-toggle-wrap):not([for="ws-message"]) { display: none; }
   .whisper-page[data-mode="embed"][data-carrier="url"] #whisper-upload-zone { display: none; }
   .whisper-page[data-mode="embed"][data-carrier="url"] .whisper-field--file-password { display: none; }
 
-  /* When carrier=file (default): hide seal fields */
-  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-seal-fields { display: none; }
+  /* When carrier=file (default): hide URL-only seal fields */
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-url-only { display: none; }
 
   /* Seal fields hidden in non-embed modes */
   .whisper-page:not([data-mode="embed"]) .ws-seal-fields { display: none; }
@@ -2311,6 +2350,111 @@ const seo = {
     min-width: 0;
   }
 
+  /* ── Relay panel (default clean view) ─────────────────── */
+
+  .wl-relay-panel {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.5);
+    padding: calc(var(--space-sm) * 0.85);
+  }
+
+  .wl-relay-connect-row {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+    align-items: stretch;
+  }
+
+  .wl-relay-connect-row .whisper-input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wl-relay-connect-row .whisper-mini-btn {
+    flex: 0 0 auto;
+  }
+
+  .wl-relay-hint {
+    margin: 0;
+    font-size: calc(var(--text-sm) * 0.78);
+    color: rgb(var(--color-text-rgb) / 0.34);
+    line-height: 1.4;
+  }
+
+  .wl-relay-panel .whisper-field-label {
+    font-size: calc(var(--text-sm) * 0.88);
+  }
+
+  .wl-relay-panel .whisper-input {
+    min-height: 2.1rem;
+    padding: 0.35rem 0.6rem;
+    font-size: calc(var(--text-sm) * 0.92);
+  }
+
+  /* ── Mode switch link ──────────────────────────────────── */
+
+  .wl-mode-switch {
+    margin: calc(var(--space-xs) * 0.6) 0 0;
+    text-align: center;
+  }
+
+  .wl-mode-switch-btn {
+    all: unset;
+    font-size: calc(var(--text-sm) * 0.8);
+    color: rgb(var(--color-text-rgb) / 0.3);
+    cursor: pointer;
+    letter-spacing: 0.01em;
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .wl-mode-switch-btn:hover {
+    color: rgb(var(--chromatic-cyan) / 0.7);
+  }
+
+  .wl-mode-switch-btn:focus-visible {
+    outline: none;
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  /* ── Manual mode options ───────────────────────────────── */
+
+  .wl-manual-options {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.75) var(--space-sm);
+    padding-top: calc(var(--space-xs) * 0.5);
+    border-top: 1px solid var(--whisper-edge);
+    margin-top: calc(var(--space-xs) * 0.3);
+  }
+
+  .wl-manual-options .whisper-field-label {
+    font-size: calc(var(--text-sm) * 0.88);
+  }
+
+  .wl-manual-options .whisper-input {
+    min-height: 2.1rem;
+    padding: 0.35rem 0.6rem;
+    font-size: calc(var(--text-sm) * 0.92);
+  }
+
+  .wl-manual-options .whisper-toggle {
+    min-height: 2.1rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .wl-manual-options .whisper-toggle-text {
+    font-size: calc(var(--text-sm) * 0.88);
+  }
+
+  .wl-manual-options .whisper-field-hint {
+    font-size: calc(var(--text-sm) * 0.8);
+  }
+
+  @media (min-width: 860px) {
+    .wl-manual-options {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-items: start;
+    }
+  }
+
   .wl-actions-divider {
     width: 1px;
     align-self: stretch;
@@ -2364,6 +2508,7 @@ const seo = {
     }
   }
 
+  /* wl-phrase-panel still used by campfire */
   .wl-phrase-panel {
     display: grid;
     gap: calc(var(--space-xs) * 0.75) var(--space-sm);

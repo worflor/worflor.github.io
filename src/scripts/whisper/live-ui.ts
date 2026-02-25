@@ -113,6 +113,10 @@ export interface WhisperLiveUIOptions {
   errorSection: HTMLElement;
   errorMessage: HTMLElement;
   errorRetryBtn: HTMLButtonElement;
+
+  /* Relay assist (optional — resolver won't block if missing) */
+  relayAssistToggle?: HTMLInputElement;
+  relayConnectBtn?: HTMLButtonElement;
 }
 
 export const WHISPER_LIVE_IDS = {
@@ -169,6 +173,8 @@ export const WHISPER_LIVE_IDS = {
   errorSection: "wl-error-section",
   errorMessage: "wl-error-message",
   errorRetryBtn: "wl-error-retry",
+  relayAssistToggle: "wl-relay-assist",
+  relayConnectBtn: "wl-relay-connect",
 } as const;
 
 /* ── DOM Helpers ──────────────────────────────────────────── */
@@ -279,6 +285,10 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
   const errorMessage = q(root, IDS.errorMessage);
   const errorRetryBtn = asButton(q(root, IDS.errorRetryBtn));
 
+  // Relay assist elements — queried separately, not required
+  const relayAssistToggle = asInput(q(root, IDS.relayAssistToggle));
+  const relayConnectBtn = asButton(q(root, IDS.relayConnectBtn));
+
   if (
     !page || !logOutput || !logDot || !liveStatusLine ||
     !liveSection || !createBtn || !joinInput || !joinBtn || !joinPasteBtn || !joinQrScanBtn || !joinQrImageBtn ||
@@ -310,6 +320,8 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     silentSection, silentSecret, silentCopyBtn, silentDisconnectBtn,
     disconnectedSection, newSessionBtn,
     errorSection, errorMessage, errorRetryBtn,
+    ...(relayAssistToggle ? { relayAssistToggle } : {}),
+    ...(relayConnectBtn ? { relayConnectBtn } : {}),
   };
 }
 
@@ -592,7 +604,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.joinPasteBtn.disabled = busy;
     opts.answerApplyBtn.disabled = busy || !hasSession || !answerHasCode;
 
-    // Network mode is a session-level choice; disable toggling once a session exists.
+    // STUN toggle — only visible in manual mode
     opts.externalAssistToggle.disabled = busy || hasSession;
 
     opts.offerCopyBtn.disabled = (opts.offerCode.textContent ?? "").trim().length === 0;
@@ -608,6 +620,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     if (!qrScanSession.active) {
       setJoinQrUiState(false);
+    }
+
+    if (opts.relayConnectBtn) {
+      opts.relayConnectBtn.disabled = busy;
+    }
+
+    // Hide mode switch when busy or mid-session
+    const modeSwitchWrap = modeSwitchBtn?.closest(".wl-mode-switch") as HTMLElement | null;
+    if (modeSwitchWrap) {
+      modeSwitchWrap.style.display = (busy || hasSession) ? "none" : "";
     }
 
     opts.chatSendBtn.disabled = busy || !hasSession || !hasChatText;
@@ -690,15 +712,45 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  function getRelayAssistDefaultFromUrl(): boolean {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const relay = (params.get("relay") || "").toLowerCase();
+      return relay === "1" || relay === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  function getPhraseFromUrl(): string {
+    try {
+      return new URLSearchParams(window.location.search).get("phrase") || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function getAutoConnectFromUrl(): boolean {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const auto = (params.get("auto") || "").toLowerCase();
+      return auto === "1" || auto === "true";
+    } catch {
+      return false;
+    }
+  }
+
   function createSession(): WhisperLiveSession {
     const externalAssist = opts.externalAssistToggle.checked;
     const rtcConfig = externalAssist ? WHISPER_LIVE_RTC_PUBLIC_STUN : WHISPER_LIVE_RTC_LOCAL_ONLY;
 
-    if (externalAssist) {
-      appendLog("external assist enabled. helps connect across different networks");
-      appendLog("note: may expose network metadata during setup. messages remain end-to-end encrypted");
-    } else {
-      appendLog("local-only mode. if connecting across networks fails, enable external assist first");
+    // Only log verbose network info in manual mode — relay users don't need to see it
+    if (!relayActive) {
+      if (externalAssist) {
+        appendLog("external assist enabled — helps connect across different networks");
+      } else {
+        appendLog("local-only mode — enable external assist if connecting across networks fails");
+      }
     }
 
     return new WhisperLiveSession({
@@ -714,13 +766,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let previousState: LiveState = "idle";
 
   function handleStateChange(state: LiveState, detail?: string): void {
+    // During relay exchange, suppress intermediate session states that would
+    // overwrite the relay UI. The relay handler manages the connecting phase
+    // display itself and clears relayActive before terminal states fire.
+    if (relayActive) {
+      const suppressed: readonly LiveState[] = [
+        "offering", "waiting-for-answer", "answering", "connecting", "disconnected",
+      ];
+      if (suppressed.includes(state)) {
+        previousState = state;
+        return;
+      }
+    }
+
     const wasRecovering = previousState === "recovering";
     previousState = state;
 
     switch (state) {
       case "idle":
         showPhase(opts.liveSection);
-        updateStatus("ready. create or join a channel");
+        updateStatus("ready to connect");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -728,7 +793,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "offering":
         setLogActive(true);
-        updateStatus("preparing your offer code...");
+        updateStatus("preparing...");
         showPhase(opts.connectingSection);
         opts.connectingStatus.textContent = "creating offer...";
         setBusy(true);
@@ -736,7 +801,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "waiting-for-answer":
         showPhase(opts.offerSection);
-        updateStatus("step 1/2: share offer, then paste peer reply");
+        updateStatus("share your offer, then paste their reply");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -747,7 +812,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "answering":
         setLogActive(true);
-        updateStatus("generating your answer code...");
+        updateStatus("preparing...");
         showPhase(opts.connectingSection);
         opts.connectingStatus.textContent = "creating answer...";
         setBusy(true);
@@ -755,22 +820,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "connecting":
         showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "establishing connection...";
-        updateStatus("connecting peer-to-peer...");
+        opts.connectingStatus.textContent = "connecting...";
+        updateStatus("connecting...");
         setLogActive(true);
         setBusy(true);
         break;
 
       case "handshaking":
         showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "exchanging keys...";
-        updateStatus("performing key exchange...");
+        opts.connectingStatus.textContent = "securing the channel...";
+        updateStatus("encrypting...");
         setBusy(true);
         break;
 
       case "verifying":
         showPhase(opts.verifySection);
-        updateStatus("verify fingerprint before messaging");
+        updateStatus("verify this matches your peer's screen");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -778,7 +843,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "live":
         showPhase(opts.chatSection);
-        updateStatus("connected, encrypted session live");
+        updateStatus("connected — end-to-end encrypted");
         opts.liveStatusLine.classList.add("whisper-status--ready");
         setLogActive(false);
         opts.chatInput.disabled = false;
@@ -788,13 +853,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (wasRecovering) {
           addChatMessage({
             type: "system", direction: "system",
-            text: "connection restored",
+            text: "reconnected",
             timestamp: Date.now(),
           });
         } else {
           addChatMessage({
             type: "system", direction: "system",
-            text: "session established, messages are end-to-end encrypted",
+            text: "connected. messages are end-to-end encrypted",
             timestamp: Date.now(),
           });
         }
@@ -815,21 +880,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "recovering":
         showPhase(opts.chatSection);
-        updateStatus("connection interrupted, recovering...");
+        updateStatus("reconnecting...");
         setLogActive(true);
         opts.chatSendBtn.disabled = true;
         opts.chatFileBtn.disabled = true;
         opts.chatInput.disabled = true;
         addChatMessage({
           type: "system", direction: "system",
-          text: "connection interrupted, attempting to recover...",
+          text: "connection interrupted, reconnecting...",
           timestamp: Date.now(),
         });
         break;
 
       case "disconnected":
         showPhase(opts.disconnectedSection);
-        updateStatus("session closed");
+        updateStatus("session ended");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -837,8 +902,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "error":
         showPhase(opts.errorSection);
-        opts.errorMessage.textContent = detail ?? "an error occurred";
-        updateStatus("connection issue");
+        opts.errorMessage.textContent = detail ?? "something went wrong";
+        updateStatus("couldn't connect");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -857,6 +922,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Reset to idle ─────────────────────────────────────── */
 
   function resetToIdle(): void {
+    relayActive = false;
+    lastErrorWasRelay = false;
+    if (relayAbort) {
+      relayAbort.abort();
+      relayAbort = null;
+    }
     if (qrScanSession.active) {
       stopJoinQrScan("cancelled");
     }
@@ -870,6 +941,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.joinInput.value = "";
     opts.answerInput.value = "";
     opts.phraseInput.value = "";
+    if (manualPhraseInput) manualPhraseInput.value = "";
     opts.chatInput.value = "";
     opts.fingerprintDisplay.textContent = "";
     opts.silentSecret.textContent = "";
@@ -880,18 +952,197 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     setAnswerQrExpanded(false);
     opts.errorMessage.textContent = "";
     showPhase(opts.liveSection);
-    updateStatus("ready — create or join a channel");
+    // Re-sync relay/manual panel visibility
+    if (opts.relayAssistToggle) applyRelayToggle(opts.relayAssistToggle.checked);
+    updateStatus("ready to connect");
     setLogActive(false);
     setBusy(false);
     updateControls();
   }
 
+  /* ── Relay assist ────────────────────────────────────────── */
+
+  let relayAbort: AbortController | null = null;
+  /** While true, handleStateChange suppresses intermediate session states
+   *  that would overwrite the relay UI. Terminal states (handshaking,
+   *  verifying, live, error) still flow through. */
+  let relayActive = false;
+  /** Set when the last error came from relay flow — error retry preserves phrase. */
+  let lastErrorWasRelay = false;
+
+  // Cache layout elements inside the idle phase
+  const relayPanel = opts.liveSection.querySelector<HTMLElement>("#wl-relay-panel");
+  const manualPanel = opts.liveSection.querySelector<HTMLElement>("#wl-manual-panel");
+  const idleLede = opts.liveSection.querySelector<HTMLElement>("#wl-idle-lede");
+  const modeSwitchBtn = opts.liveSection.querySelector<HTMLButtonElement>("#wl-mode-switch-btn");
+  const manualPhraseInput = opts.liveSection.querySelector<HTMLInputElement>("#wl-manual-phrase");
+
+  function applyRelayToggle(checked: boolean): void {
+    if (!relayPanel || !manualPanel || !modeSwitchBtn) return;
+
+    if (checked) {
+      relayPanel.style.display = "";
+      manualPanel.style.display = "none";
+      modeSwitchBtn.textContent = "or connect manually";
+      if (idleLede) idleLede.textContent = "type the same phrase on both sides and connect. that's it.";
+      opts.externalAssistToggle.checked = true;
+      updateControls();
+    } else {
+      relayPanel.style.display = "none";
+      manualPanel.style.display = "";
+      modeSwitchBtn.textContent = "or use relay assist";
+      if (idleLede) idleLede.textContent = "encrypted peer-to-peer messaging. create a channel or join one.";
+      // Sync phrase from relay input to manual input
+      if (manualPhraseInput) manualPhraseInput.value = opts.phraseInput.value;
+      updateControls();
+    }
+  }
+
+  /** Get the phrase from the active mode's input. */
+  function getActivePhrase(): string {
+    if (opts.relayAssistToggle?.checked) return opts.phraseInput.value.trim();
+    return manualPhraseInput?.value.trim() ?? "";
+  }
+
+  /** Map internal error codes to friendly messages. */
+  function friendlyRelayError(raw: string): string {
+    if (raw.includes("peer-not-found")) {
+      return "couldn't find your peer — make sure you both typed the exact same phrase, then try again at the same time";
+    }
+    if (raw.includes("relay-unavailable")) {
+      return "couldn't reach the relay. check your connection and try again, or use manual mode";
+    }
+    if (raw.includes("handshake-failed")) {
+      return "handshake failed — try again, or use a different phrase";
+    }
+    return raw;
+  }
+
+  async function handleRelayConnect(): Promise<void> {
+    const phrase = opts.phraseInput.value.trim();
+    if (!phrase) {
+      opts.phraseInput.focus();
+      // Brief visual pulse on the phrase input
+      opts.phraseInput.classList.add("ws-reject-pulse");
+      setTimeout(() => opts.phraseInput.classList.remove("ws-reject-pulse"), 400);
+      return;
+    }
+
+    setBusy(true);
+    relayActive = true;
+    relayAbort = new AbortController();
+
+    showPhase(opts.connectingSection);
+    opts.connectingStatus.textContent = "preparing...";
+    updateStatus("connecting...");
+    setLogActive(true);
+
+    opts.externalAssistToggle.checked = true;
+    session = createSession();
+
+    try {
+      // Session fires offering → waiting-for-answer internally;
+      // relayActive suppresses their UI side-effects
+      const offerCode = await session.createOffer(phrase);
+      if (aborted()) return;
+
+      opts.connectingStatus.textContent = "connecting to relay...";
+
+      const { exchangeViaTracker } = await import("./live-tracker");
+
+      // If we become the answerer, tear down the pre-created session
+      // and build a fresh one around the peer's offer
+      const acceptFn = async (peerOfferCode: string): Promise<string> => {
+        if (session) { session.disconnect(); session = null; }
+        session = createSession();
+        return session.acceptOffer(peerOfferCode, phrase);
+      };
+
+      const callbacks = {
+        onStatus: (msg: string) => {
+          if (aborted()) return;
+          opts.connectingStatus.textContent = msg;
+          updateStatus(msg);
+        },
+        onLog: (msg: string) => {
+          if (aborted()) return;
+          appendLog(msg);
+        },
+      };
+
+      const result = await exchangeViaTracker(
+        phrase, offerCode, acceptFn, callbacks, relayAbort.signal,
+      );
+
+      if (aborted()) return;
+
+      // Relay done — hand control back to session state machine
+      relayActive = false;
+
+      if (result.role === "offerer" && result.peerAnswerCode) {
+        await session!.applyAnswer(result.peerAnswerCode);
+      }
+      // Answerer: session may have already progressed past connecting
+      // (DataChannel can open instantly on same-machine). Only touch UI
+      // if the session is still waiting.
+      if (result.role === "answerer" && session && session.state === "connecting") {
+        showPhase(opts.connectingSection);
+        opts.connectingStatus.textContent = "connecting directly...";
+        updateStatus("connecting...");
+      }
+    } catch (err) {
+      relayActive = false;
+      if (aborted()) return;
+      if (session) { session.disconnect(); session = null; }
+      const raw = err instanceof Error ? err.message : "unknown error";
+      appendLog(`relay: ${raw}`);
+      lastErrorWasRelay = true;
+      handleStateChange("error", friendlyRelayError(raw));
+    } finally {
+      relayAbort = null;
+    }
+  }
+
   /* ── Event Listeners ───────────────────────────────────── */
+
+  // Mode switch button — toggles between relay and manual
+  if (modeSwitchBtn && opts.relayAssistToggle) {
+    modeSwitchBtn.addEventListener("click", () => {
+      const next = !opts.relayAssistToggle!.checked;
+      opts.relayAssistToggle!.checked = next;
+      // Sync phrase between inputs before toggling
+      if (next && manualPhraseInput) {
+        opts.phraseInput.value = manualPhraseInput.value;
+      }
+      applyRelayToggle(next);
+      // Focus the active mode's input
+      if (next) {
+        opts.phraseInput.focus();
+      } else {
+        manualPhraseInput?.focus();
+      }
+    }, { signal });
+  }
+
+  // Relay connect button
+  if (opts.relayConnectBtn) {
+    opts.relayConnectBtn.addEventListener("click", () => {
+      void handleRelayConnect();
+    }, { signal });
+  }
+
+  // Enter key on phrase input → trigger relay connect when relay is active
+  opts.phraseInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && opts.relayAssistToggle?.checked && !busy) {
+      e.preventDefault();
+      void handleRelayConnect();
+    }
+  }, { signal });
 
   // Create channel (offerer)
   opts.createBtn.addEventListener("click", async () => {
     session = createSession();
-    const phrase = opts.phraseInput.value || undefined;
+    const phrase = getActivePhrase() || undefined;
     try {
       const offerCode = await session.createOffer(phrase);
       opts.offerCode.textContent = offerCode;
@@ -943,7 +1194,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const offerCode = opts.joinInput.value.trim();
     if (!offerCode) return;
     session = createSession();
-    const phrase = opts.phraseInput.value || undefined;
+    const phrase = getActivePhrase() || undefined;
     try {
       const answerCodeStr = await session.acceptOffer(offerCode, phrase);
       opts.answerCode.textContent = answerCodeStr;
@@ -1144,14 +1395,47 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // New session
   opts.newSessionBtn.addEventListener("click", resetToIdle, { signal });
 
-  // Error retry
-  opts.errorRetryBtn.addEventListener("click", resetToIdle, { signal });
+  // Error retry — preserve phrase and relay state when retrying from a relay error
+  opts.errorRetryBtn.addEventListener("click", () => {
+    if (lastErrorWasRelay) {
+      const savedPhrase = opts.phraseInput.value;
+      const relayWasOn = opts.relayAssistToggle?.checked ?? false;
+      lastErrorWasRelay = false;
+      resetToIdle();
+      // Restore phrase and relay toggle so user can just hit Connect again
+      opts.phraseInput.value = savedPhrase;
+      if (relayWasOn && opts.relayAssistToggle) {
+        opts.relayAssistToggle.checked = true;
+        applyRelayToggle(true);
+      }
+    } else {
+      resetToIdle();
+    }
+  }, { signal });
 
   /* -- Initial state ---------------------------------------- */
 
   // Optional URL param prefill for convenience; UI remains the primary control.
   if (getExternalAssistDefaultFromUrl()) {
     opts.externalAssistToggle.checked = true;
+  }
+
+  // Sync relay UI on init — covers default checked, browser form restore, and ?relay=1
+  if (opts.relayAssistToggle) {
+    if (getRelayAssistDefaultFromUrl()) opts.relayAssistToggle.checked = true;
+    if (opts.relayAssistToggle.checked) applyRelayToggle(true);
+  }
+
+  // ?phrase= prefills the shared phrase input
+  const urlPhrase = getPhraseFromUrl();
+  if (urlPhrase) {
+    opts.phraseInput.value = urlPhrase;
+  }
+
+  // ?auto=1 with ?relay=1 and a phrase → auto-trigger relay connect
+  if (getAutoConnectFromUrl() && opts.relayAssistToggle?.checked && opts.phraseInput.value.trim()) {
+    // Slight delay so the UI has rendered before we start connecting
+    setTimeout(() => { if (!aborted()) void handleRelayConnect(); }, 100);
   }
 
   void getQrScannerCapability().then((capability) => {
@@ -1172,6 +1456,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   return () => {
     ac.abort();
+    relayActive = false;
+    if (relayAbort) {
+      relayAbort.abort();
+      relayAbort = null;
+    }
     stopJoinQrScan("teardown");
     if (session) {
       session.disconnect();
