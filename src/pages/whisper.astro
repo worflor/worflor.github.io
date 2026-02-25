@@ -11,6 +11,13 @@ const seo = {
 
 <Layout seo={seo}>
   <div class="whisper-page" id="whisper-page" data-mode="embed" data-busy="0" data-breadcrumb-controller>
+    <script is:inline>
+      (function(){var p=document.getElementById("whisper-page");if(!p)return;
+        var m=sessionStorage.getItem("whisper-mode");
+        if(m==="embed"||m==="extract"||m==="hunt"||m==="live")p.dataset.mode=m;
+        if(m==="embed"&&sessionStorage.getItem("whisper-carrier")==="url")p.dataset.carrier="url";
+      })();
+    </script>
     <!-- ── Hero ─────────────────────────────────────────────── -->
     <section
       class="mt-8 content-section whisper-intro"
