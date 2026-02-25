@@ -10,6 +10,7 @@ const WS2_DB_NAME = "whisper-seal";
 const WS2_DB_VERSION = 2;
 const WS2_DB_STORE = "identity";
 const WS2_DB_KEY = "default";
+const WS2_SESSION_KEY = "whisper-seal-session-v1";
 const P256_PUBLIC_KEY_LEN = 65;
 const P256_UNCOMPRESSED_PREFIX = 0x04;
 
@@ -38,7 +39,10 @@ export interface SealIdentity {
   fingerprint: string;
 }
 
-let identityCache: SealIdentityRecord | null = null;
+export type SealIdentityMode = "stable" | "unstable";
+
+let identityCacheStable: SealIdentityRecord | null = null;
+let identityCacheUnstable: SealIdentityRecord | null = null;
 
 /* ── Fingerprint Signals ──────────────────────────────────── */
 
@@ -268,6 +272,42 @@ async function saveIdentityStoredToDb(record: SealIdentityStored): Promise<void>
   }
 }
 
+function loadIdentityStoredFromSession(): SealIdentityStored | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(WS2_SESSION_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as {
+      publicKeyRaw?: string;
+      privateKeyCipher?: string;
+      wrapSalt?: string;
+      wrapNonce?: string;
+    };
+    if (!value?.publicKeyRaw || !value?.privateKeyCipher || !value?.wrapSalt || !value?.wrapNonce) {
+      return null;
+    }
+    return {
+      publicKeyRaw: b64urlDecode(value.publicKeyRaw),
+      privateKeyCipher: b64urlDecode(value.privateKeyCipher),
+      wrapSalt: b64urlDecode(value.wrapSalt),
+      wrapNonce: b64urlDecode(value.wrapNonce),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveIdentityStoredToSession(record: SealIdentityStored): void {
+  if (typeof sessionStorage === "undefined") throw new Error("Session storage unavailable");
+  const encoded = {
+    publicKeyRaw: b64url(record.publicKeyRaw),
+    privateKeyCipher: b64url(record.privateKeyCipher),
+    wrapSalt: b64url(record.wrapSalt),
+    wrapNonce: b64url(record.wrapNonce),
+  };
+  sessionStorage.setItem(WS2_SESSION_KEY, JSON.stringify(encoded));
+}
+
 async function unwrapIdentityPrivateKey(stored: SealIdentityStored): Promise<CryptoKey | null> {
   let fp: Uint8Array | null = null;
   let wrapKey: Uint8Array | null = null;
@@ -298,6 +338,19 @@ async function unwrapIdentityPrivateKey(stored: SealIdentityStored): Promise<Cry
 
 async function loadIdentityRecordFromDb(): Promise<SealIdentityRecord | null> {
   const stored = await loadIdentityStoredFromDb();
+  if (!stored) return null;
+
+  const privateKey = await unwrapIdentityPrivateKey(stored);
+  if (!privateKey) return null;
+
+  return {
+    publicKeyRaw: stored.publicKeyRaw,
+    privateKey,
+  };
+}
+
+async function loadIdentityRecordFromSession(): Promise<SealIdentityRecord | null> {
+  const stored = loadIdentityStoredFromSession();
   if (!stored) return null;
 
   const privateKey = await unwrapIdentityPrivateKey(stored);
@@ -343,24 +396,75 @@ async function generateIdentityRecord(): Promise<SealIdentityRecord> {
   return { publicKeyRaw, privateKey };
 }
 
-async function getOrCreateIdentityRecord(): Promise<SealIdentityRecord> {
-  if (identityCache) return identityCache;
+async function generateIdentityRecordSession(): Promise<SealIdentityRecord> {
+  const fp = await computeFingerprint();
 
-  const existing = await loadIdentityRecordFromDb();
-  if (existing) {
-    identityCache = existing;
-    return existing;
+  const pair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+
+  const publicKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const privatePkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    toArrayBuffer(privatePkcs8),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"],
+  );
+
+  const wrapSalt = randomBytes(16);
+  const wrapNonce = randomBytes(12);
+  const wrapKey = await deriveIdentityWrapKey(fp, wrapSalt);
+  const aad = getIdentityWrapAad(publicKeyRaw);
+  const privateKeyCipher = await aesGcmEncrypt(wrapKey, privatePkcs8, wrapNonce, aad);
+
+  fp.fill(0);
+  wrapKey.fill(0);
+  privatePkcs8.fill(0);
+
+  saveIdentityStoredToSession({ publicKeyRaw, privateKeyCipher, wrapSalt, wrapNonce });
+
+  return { publicKeyRaw, privateKey };
+}
+
+async function getOrCreateIdentityRecord(mode: SealIdentityMode): Promise<SealIdentityRecord> {
+  if (mode === "unstable") {
+    if (identityCacheUnstable) return identityCacheUnstable;
+    const existing = await loadIdentityRecordFromSession();
+    if (existing) {
+      identityCacheUnstable = existing;
+      return existing;
+    }
+    const created = await generateIdentityRecordSession();
+    identityCacheUnstable = created;
+    return created;
   }
 
+  if (identityCacheStable) return identityCacheStable;
+  const existing = await loadIdentityRecordFromDb();
+  if (existing) {
+    identityCacheStable = existing;
+    return existing;
+  }
   const created = await generateIdentityRecord();
-  identityCache = created;
+  identityCacheStable = created;
   return created;
 }
 
-async function getExistingIdentityRecord(): Promise<SealIdentityRecord | null> {
-  if (identityCache) return identityCache;
+async function getExistingIdentityRecord(mode: SealIdentityMode): Promise<SealIdentityRecord | null> {
+  if (mode === "unstable") {
+    if (identityCacheUnstable) return identityCacheUnstable;
+    const existing = await loadIdentityRecordFromSession();
+    if (existing) identityCacheUnstable = existing;
+    return existing;
+  }
+
+  if (identityCacheStable) return identityCacheStable;
   const existing = await loadIdentityRecordFromDb();
-  if (existing) identityCache = existing;
+  if (existing) identityCacheStable = existing;
   return existing;
 }
 
@@ -371,13 +475,13 @@ async function identityToView(record: SealIdentityRecord): Promise<SealIdentity>
   };
 }
 
-export async function getOrCreateSealIdentity(): Promise<SealIdentity> {
-  const record = await getOrCreateIdentityRecord();
+export async function getOrCreateSealIdentity(mode: SealIdentityMode = "stable"): Promise<SealIdentity> {
+  const record = await getOrCreateIdentityRecord(mode);
   return identityToView(record);
 }
 
-export async function getExistingSealIdentity(): Promise<SealIdentity | null> {
-  const record = await getExistingIdentityRecord();
+export async function getExistingSealIdentity(mode: SealIdentityMode = "stable"): Promise<SealIdentity | null> {
+  const record = await getExistingIdentityRecord(mode);
   if (!record) return null;
   return identityToView(record);
 }
@@ -502,7 +606,11 @@ export type UnsealResult =
   | { ok: true; message: string }
   | { ok: false; reason: "wrong-seal" | "expired" | "password-needed" | "decrypt-failed" | "identity-missing" };
 
-export async function unsealMessage(payload: SealPayload, extraPassword?: string): Promise<UnsealResult> {
+export async function unsealMessage(
+  payload: SealPayload,
+  extraPassword?: string,
+  mode: SealIdentityMode = "stable",
+): Promise<UnsealResult> {
   if (payload.v !== 2) {
     return { ok: false, reason: "decrypt-failed" };
   }
@@ -517,7 +625,7 @@ export async function unsealMessage(payload: SealPayload, extraPassword?: string
     return { ok: false, reason: "password-needed" };
   }
 
-  const identity = await getExistingIdentityRecord();
+  const identity = await getExistingIdentityRecord(mode);
   if (!identity) {
     return { ok: false, reason: "identity-missing" };
   }

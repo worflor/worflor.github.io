@@ -17,6 +17,7 @@ import {
   parseSealFragment,
   expiryLabel,
   COMPUTE_MIN_DISPLAY_MS,
+  type SealIdentityMode,
   type SealPayload,
 } from "./seal";
 import {
@@ -175,6 +176,7 @@ export const WHISPER_SEAL_IDS = {
 
 /** URLs above this may be truncated by messaging apps. */
 const URL_WARN_LENGTH = 2000;
+const SEAL_MODE_SESSION_KEY = "whisper-seal-mode";
 
 /* ── Resolve ──────────────────────────────────────────────── */
 
@@ -357,6 +359,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   let busy = false;
   let pendingPayload: SealPayload | null = null;
   let mySealPublicCode = "";
+  let currentIdentityMode: SealIdentityMode = "stable";
 
   type QrScanStopReason = "accepted" | "cancelled" | "error" | "teardown";
   const qrScanSession: {
@@ -390,12 +393,47 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     opts.recipientQrStopBtn.style.display = scanning ? "" : "none";
   }
 
+  function isUnstableMode(): boolean {
+    return currentIdentityMode === "unstable";
+  }
+
+  function applyIdentityModeVisuals(): void {
+    opts.page.dataset.sealMode = currentIdentityMode;
+    opts.mySealBtn.classList.toggle("ws-seal-mode-chip--stable", !isUnstableMode());
+    opts.mySealBtn.classList.toggle("ws-seal-mode-chip--unstable", isUnstableMode());
+    const modeLabel = isUnstableMode() ? "Unstable seal" : "Stable seal";
+    opts.mySealBtn.textContent = modeLabel;
+    opts.mySealBtn.setAttribute("aria-label", `${modeLabel}. Click to switch mode.`);
+    opts.mySealBtn.setAttribute("aria-pressed", String(isUnstableMode()));
+  }
+
+  function loadSavedIdentityMode(): SealIdentityMode {
+    const saved = sessionStorage.getItem(SEAL_MODE_SESSION_KEY);
+    return saved === "unstable" ? "unstable" : "stable";
+  }
+
+  function setIdentityMode(mode: SealIdentityMode): void {
+    if (currentIdentityMode === mode) {
+      applyIdentityModeVisuals();
+      return;
+    }
+    currentIdentityMode = mode;
+    sessionStorage.setItem(SEAL_MODE_SESSION_KEY, mode);
+    mySealPublicCode = "";
+    opts.mySealInline.textContent = "";
+    opts.mySealInline.style.display = "none";
+    opts.mySealInlinePanel.style.display = "none";
+    syncMySealInlinePanelState();
+    applyIdentityModeVisuals();
+    log(isUnstableMode() ? "seal mode: unstable (session-tied)" : "seal mode: stable");
+  }
+
   function syncMySealInlinePanelState(): void {
     const expanded = opts.mySealInlinePanel.style.display !== "none";
     opts.mySealBtn.setAttribute("aria-expanded", String(expanded));
-    opts.mySealBtn.setAttribute("aria-pressed", String(expanded));
-    opts.mySealBtn.classList.toggle("ws-my-seal-btn--active", expanded);
-    opts.mySealBtn.title = expanded ? "Hide your WS2 QR" : "Show your WS2 QR";
+    opts.mySealBtn.classList.toggle("ws-seal-mode-chip--active", expanded);
+    const modeText = isUnstableMode() ? "unstable" : "stable";
+    opts.mySealBtn.title = `Switch seal mode (current: ${modeText})`;
   }
 
   function isSealInlineActiveMode(): boolean {
@@ -403,10 +441,30 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   }
 
   function syncSealInlineVisibility(): void {
-    if (isSealInlineActiveMode()) return;
+    if (isSealInlineActiveMode()) {
+      if (mySealPublicCode) {
+        opts.mySealInlinePanel.style.display = "";
+        syncMySealInlinePanelState();
+      } else if (!busy) {
+        void generateSeal();
+      }
+      return;
+    }
     opts.mySealInlinePanel.style.display = "none";
     syncMySealInlinePanelState();
     if (qrScanSession.active) stopRecipientQrScan("cancelled");
+  }
+
+  function toggleIdentityMode(): void {
+    const nextMode: SealIdentityMode = currentIdentityMode === "stable" ? "unstable" : "stable";
+    setIdentityMode(nextMode);
+  }
+
+  function sealQrHintText(): string {
+    if (isUnstableMode()) {
+      return "tied to session identity, so preserve browser fingerprint.";
+    }
+    return "encodes the full WS2 public key exactly.";
   }
 
   function setRecipientFromCandidate(rawValue: string, source: "camera" | "image"): boolean {
@@ -578,6 +636,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   function ensureEmbedUrlMode(): void {
     opts.page.dataset.mode = "embed";
     opts.page.dataset.carrier = "url";
+    opts.page.dataset.sealMode = currentIdentityMode;
     sessionStorage.setItem("whisper-mode", "embed");
     sessionStorage.setItem("whisper-carrier", "url");
     opts.page.querySelectorAll<HTMLButtonElement>("[data-whisper-mode]").forEach((btn) => {
@@ -668,29 +727,29 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     busy = true;
     opts.mySealBtn.disabled = true;
     opts.mySealBtn.classList.add("ws-computing");
-    log("loading local key...");
+    log(`loading ${isUnstableMode() ? "unstable" : "stable"} local key...`);
 
     try {
       await delay(COMPUTE_MIN_DISPLAY_MS);
       if (aborted()) return;
-      const identity = await getOrCreateSealIdentity();
+      const identity = await getOrCreateSealIdentity(currentIdentityMode);
       if (aborted()) return;
       mySealPublicCode = identity.code;
 
       opts.sealCode.textContent = identity.code;
       try {
         renderSealQrToCanvas(opts.sealQrCanvas, identity.code);
-        opts.sealQrStatus.textContent = "QR encodes the full WS2 public key exactly.";
+        opts.sealQrStatus.textContent = sealQrHintText();
       } catch {
         opts.sealQrStatus.textContent = "QR preview unavailable in this browser.";
         log("qr preview unavailable");
       }
       opts.mySealInline.textContent = compactSealCode(identity.code);
       opts.mySealInline.style.display = "";
-      opts.mySealInline.title = "WS2 public key preview — click to copy full code";
+      opts.mySealInline.title = `${isUnstableMode() ? "Unstable" : "Stable"} WS2 public key preview — click to copy full code`;
       opts.mySealInlinePanel.style.display = "";
       syncMySealInlinePanelState();
-      log(`key loaded: ${compactSealCode(identity.code)}`);
+      log(`${isUnstableMode() ? "unstable" : "stable"} key loaded: ${compactSealCode(identity.code)}`);
       opts.mySealBtn.classList.remove("ws-computing");
       copyToClipboard(identity.code).then(() => {
         if (aborted()) return;
@@ -769,19 +828,19 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     log(`checking seal ${sealId}...`);
 
     try {
-      const identity = await getExistingSealIdentity();
+      const identity = await getExistingSealIdentity(currentIdentityMode);
       if (aborted()) return;
       if (identity) {
         mySealPublicCode = identity.code;
         opts.mySealInline.textContent = compactSealCode(identity.code);
         opts.mySealInline.style.display = "";
-        opts.mySealInline.title = "WS2 public key preview — click to copy full code";
-        log(`local key: ${compactSealCode(identity.code)}`);
+        opts.mySealInline.title = `${isUnstableMode() ? "Unstable" : "Stable"} WS2 public key preview — click to copy full code`;
+        log(`${isUnstableMode() ? "unstable" : "stable"} local key: ${compactSealCode(identity.code)}`);
       } else {
-        log("no local key found");
+        log(`no ${isUnstableMode() ? "unstable" : "stable"} local key found`);
       }
 
-      const result = await unsealMessage(payload, password);
+      const result = await unsealMessage(payload, password, currentIdentityMode);
       if (aborted()) return;
 
       // Populate metadata on all status screens with payload details
@@ -864,12 +923,8 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   // My Seal button
   opts.mySealBtn.addEventListener("click", () => {
-    if (mySealPublicCode) {
-      const nextVisible = opts.mySealInlinePanel.style.display === "none";
-      opts.mySealInlinePanel.style.display = nextVisible ? "" : "none";
-      syncMySealInlinePanelState();
-      return;
-    }
+    if (busy) return;
+    toggleIdentityMode();
     void generateSeal();
   }, { signal });
 
@@ -1004,6 +1059,8 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   /* ── Boot ─────────────────────────────────────────────── */
 
+  currentIdentityMode = loadSavedIdentityMode();
+  applyIdentityModeVisuals();
   setRecipientQrUiState(false);
 
   void getQrScannerCapability().then((capability) => {

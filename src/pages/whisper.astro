@@ -161,7 +161,7 @@ const seo = {
                 <input type="radio" name="ws-carrier-type" value="url" class="ws-carrier-radio" />
                 <span class="ws-carrier-label">URL (Seal)</span>
               </label>
-              <button id="ws-my-seal-btn" type="button" class="whisper-mini-btn ws-my-seal-btn" aria-expanded="false" aria-pressed="false" title="Show your WS2 QR">My Seal</button>
+              <button id="ws-my-seal-btn" type="button" class="whisper-mini-btn ws-my-seal-btn ws-seal-mode-chip ws-seal-mode-chip--stable" aria-pressed="false" title="Stable seal mode">Stable seal</button>
               <span id="ws-my-seal-inline" class="ws-my-seal-inline" style="display:none" role="button" tabindex="0" title="Click to copy"></span>
             </div>
             <div id="ws-my-seal-inline-panel" class="ws-my-seal-inline-panel" style="display:none">
@@ -365,7 +365,7 @@ const seo = {
 
         <!-- Phase: idle — create or join -->
         <div class="wl-phase" id="wl-idle-phase">
-          <p class="wl-phase-lede">encrypted peer-to-peer direct message. start a channel or join someones.</p>
+          <p class="wl-phase-lede">encrypted peer-to-peer direct messager. start a channel or join someones.</p>
           <div class="whisper-panel wl-actions-panel">
             <div class="wl-actions-row">
               <div class="wl-action-create">
@@ -1701,7 +1701,7 @@ const seo = {
   /* Seal fields hidden in non-embed modes */
   .whisper-page:not([data-mode="embed"]) .ws-seal-fields { display: none; }
 
-  /* My Seal button + inline code only when carrier=url */
+  /* Seal mode chip + inline code only when carrier=url */
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-btn,
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline,
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline-panel { display: none; }
@@ -3048,6 +3048,7 @@ const seo = {
 
   /* Inline seal code (next to My Seal button) */
   .ws-my-seal-inline {
+    --ws-copy-pulse-rgb: var(--chromatic-cyan);
     font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
     font-size: calc(var(--text-sm) * 0.92);
     font-weight: 600;
@@ -3073,18 +3074,46 @@ const seo = {
     position: relative;
   }
 
-  .ws-my-seal-btn::after {
-    content: "";
-    width: 0.38rem;
-    height: 0.38rem;
-    border-radius: var(--radius-full);
-    margin-left: 0.36rem;
-    background: rgb(var(--chromatic-cyan) / 0.22);
-    transition: background var(--duration-normal) var(--ease-out);
+  .ws-seal-mode-chip {
+    --ws-copy-pulse-rgb: var(--tool-action-load);
+    border-color: rgb(var(--tool-action-load) / 0.35);
+    color: rgb(var(--tool-action-load));
+    background: rgb(var(--tool-action-load) / 0.08);
+    transition:
+      color var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out);
   }
 
-  .ws-my-seal-btn.ws-my-seal-btn--active::after {
-    background: rgb(var(--chromatic-cyan));
+  .ws-seal-mode-chip:hover {
+    border-color: rgb(var(--tool-action-load) / 0.5);
+    background: rgb(var(--tool-action-load) / 0.14);
+  }
+
+  .ws-seal-mode-chip:focus-visible {
+    outline: none;
+    box-shadow: none;
+  }
+
+  .ws-seal-mode-chip.ws-seal-mode-chip--active {
+    box-shadow: none;
+  }
+
+  .ws-seal-mode-chip.ws-seal-mode-chip--unstable {
+    --ws-copy-pulse-rgb: var(--chromatic-red);
+    border-color: rgb(var(--chromatic-red) / 0.42);
+    color: rgb(var(--chromatic-red));
+    background: rgb(var(--chromatic-red) / 0.09);
+  }
+
+  .ws-seal-mode-chip.ws-seal-mode-chip--unstable:hover {
+    border-color: rgb(var(--chromatic-red) / 0.58);
+    background: rgb(var(--chromatic-red) / 0.15);
+  }
+
+  .ws-seal-mode-chip.ws-seal-mode-chip--unstable:focus-visible {
+    box-shadow: none;
   }
 
   .ws-my-seal-inline:hover {
@@ -3099,7 +3128,7 @@ const seo = {
 
   /* Copy-confirm pulse — used on My Seal btn and inline seal code */
   @keyframes ws-copy-pulse {
-    0%   { background: rgb(var(--chromatic-cyan) / 0.25); border-color: rgb(var(--chromatic-cyan) / 0.5); }
+    0%   { background: rgb(var(--ws-copy-pulse-rgb, var(--chromatic-cyan)) / 0.25); border-color: rgb(var(--ws-copy-pulse-rgb, var(--chromatic-cyan)) / 0.5); }
     100% { background: transparent; border-color: rgb(var(--color-text-rgb) / 0.14); }
   }
 
@@ -3237,11 +3266,28 @@ const seo = {
   .ws-my-seal-inline-panel {
     margin-top: calc(var(--space-xs) * 0.55);
     padding: calc(var(--space-xs) * 0.6);
-    border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
+    border: 1px solid rgb(var(--tool-action-load) / 0.22);
     border-radius: calc(var(--whisper-radius) * 0.55);
-    background: rgb(var(--chromatic-cyan) / 0.03);
+    background: rgb(var(--tool-action-load) / 0.04);
     min-width: 0;
     overflow: hidden;
+  }
+
+  .whisper-page[data-seal-mode="unstable"] .ws-my-seal-inline-panel {
+    border-color: rgb(var(--chromatic-red) / 0.24);
+    background: rgb(var(--chromatic-red) / 0.04);
+  }
+
+  .whisper-page[data-seal-mode="unstable"] .ws-my-seal-inline {
+    --ws-copy-pulse-rgb: var(--chromatic-red);
+    color: rgb(var(--chromatic-red));
+    background: rgb(var(--chromatic-red) / 0.08);
+    border-color: rgb(var(--chromatic-red) / 0.25);
+  }
+
+  .whisper-page[data-seal-mode="unstable"] .ws-my-seal-inline:hover {
+    background: rgb(var(--chromatic-red) / 0.14);
+    border-color: rgb(var(--chromatic-red) / 0.38);
   }
 
   .ws-my-seal-inline-panel .ws-seal-qr-wrap {
