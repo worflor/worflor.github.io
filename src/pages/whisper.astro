@@ -555,17 +555,17 @@ const seo = {
         <div class="wl-phase" id="wl-chat-section" style="display:none">
           <div class="whisper-panel wl-chat-panel">
             <div class="wl-chat-header">
-              <div class="wl-chat-security" aria-live="polite">
-                <span class="wl-chat-security-badge">verified direct channel</span>
-                <span class="wl-chat-security-sub">messages and files stay end-to-end encrypted</span>
+              <div class="wl-chat-title-wrap" aria-live="polite">
+                <h3 class="wl-chat-title">direct chat</h3>
+                <p class="wl-chat-subtitle">end-to-end encrypted</p>
               </div>
               <div class="wl-chat-tools">
                 <div class="wl-transport" role="radiogroup" aria-label="Transport mode">
-                  <label class="wl-transport-label"><input type="radio" name="wl-transport" value="naked" checked class="wl-transport-radio" /> chat</label>
+                  <label class="wl-transport-label"><input type="radio" name="wl-transport" value="naked" checked class="wl-transport-radio" /> text</label>
                   <label class="wl-transport-label"><input type="radio" name="wl-transport" value="dressed" class="wl-transport-radio" /> dressed</label>
                   <label class="wl-transport-label"><input type="radio" name="wl-transport" value="silent" class="wl-transport-radio" /> silent</label>
                 </div>
-                <button id="wl-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">Disconnect</button>
+                <button id="wl-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">End</button>
               </div>
             </div>
 
@@ -2788,89 +2788,102 @@ const seo = {
     gap: 0;
     padding: 0;
     overflow: hidden;
-    background:
-      linear-gradient(180deg, rgb(var(--chromatic-cyan) / 0.03), transparent 4rem),
-      var(--whisper-surface);
+    background: var(--whisper-surface);
   }
 
   .wl-chat-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     flex-wrap: wrap;
-    gap: calc(var(--space-xs) * 0.5);
-    padding: calc(var(--space-xs) * 0.7) calc(var(--space-sm) * 0.85);
+    gap: calc(var(--space-xs) * 0.7);
+    padding: calc(var(--space-xs) * 0.75) calc(var(--space-sm) * 0.85);
     border-bottom: 1px solid var(--whisper-edge);
-    background: rgb(var(--color-text-rgb) / 0.02);
+    background:
+      linear-gradient(180deg, rgb(var(--chromatic-cyan) / 0.03), transparent 100%),
+      rgb(var(--color-text-rgb) / 0.02);
   }
 
-  .wl-chat-security {
+  .wl-chat-title-wrap {
     display: grid;
-    gap: 0.15rem;
+    gap: 0.1rem;
     min-width: 0;
-    flex: 1 1 16rem;
+    flex: 1 1 12rem;
   }
 
-  .wl-chat-security-badge {
-    display: inline-flex;
-    align-items: center;
-    width: fit-content;
-    padding: 0.12rem 0.45rem;
-    border-radius: var(--radius-full);
-    border: 1px solid rgb(var(--tool-status-success) / 0.35);
-    background: rgb(var(--tool-status-success) / 0.08);
-    color: rgb(var(--tool-status-success));
-    font-size: calc(var(--text-sm) * 0.76);
-    letter-spacing: 0.035em;
+  .wl-chat-title {
+    margin: 0;
+    font-size: calc(var(--text-sm) * 0.94);
+    letter-spacing: 0.01em;
+    color: rgb(var(--color-text-rgb) / 0.84);
     text-transform: lowercase;
   }
 
-  .wl-chat-security-sub {
-    font-size: calc(var(--text-sm) * 0.78);
-    color: rgb(var(--color-text-rgb) / 0.46);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .wl-chat-subtitle {
+    margin: 0;
+    font-size: calc(var(--text-sm) * 0.74);
+    color: rgb(var(--color-text-rgb) / 0.48);
+    letter-spacing: 0.025em;
+    text-transform: lowercase;
   }
 
   .wl-chat-tools {
     display: inline-flex;
     align-items: center;
-    gap: calc(var(--space-xs) * 0.6);
+    gap: calc(var(--space-xs) * 0.55);
     flex-wrap: wrap;
     justify-content: flex-end;
   }
 
   .wl-transport {
     display: inline-flex;
-    gap: calc(var(--space-xs) * 0.65);
+    gap: calc(var(--space-xs) * 0.45);
     align-items: center;
     flex-wrap: wrap;
-    padding: 0.2rem 0.35rem;
+    padding: 0.22rem 0.3rem;
     border-radius: calc(var(--whisper-radius) * 0.55);
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
-    background: rgb(var(--color-text-rgb) / 0.025);
+    background: rgb(var(--color-text-rgb) / 0.03);
   }
 
   .wl-transport-label {
     display: inline-flex;
     align-items: center;
     gap: 0.3em;
-    font-size: calc(var(--text-sm) * 0.88);
-    color: rgb(var(--color-text-rgb) / 0.5);
+    font-size: calc(var(--text-sm) * 0.8);
+    color: rgb(var(--color-text-rgb) / 0.56);
     cursor: pointer;
     user-select: none;
+    padding: 0.08rem 0.3rem;
+    border-radius: calc(var(--whisper-radius) * 0.4);
+    border: 1px solid transparent;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .wl-transport-label:hover {
+    color: rgb(var(--chromatic-cyan));
+    border-color: rgb(var(--chromatic-cyan) / 0.28);
+    background: rgb(var(--chromatic-cyan) / 0.06);
+  }
+
+  .wl-transport-label:has(.wl-transport-radio:checked) {
+    color: rgb(var(--chromatic-cyan));
+    border-color: rgb(var(--chromatic-cyan) / 0.32);
+    background: rgb(var(--chromatic-cyan) / 0.08);
   }
 
   .wl-transport-radio {
-    width: 0.85rem;
-    height: 0.85rem;
+    width: 0.72rem;
+    height: 0.72rem;
     accent-color: rgb(var(--chromatic-cyan));
   }
 
   .wl-disconnect-btn {
-    font-size: calc(var(--text-sm) * 0.85);
-    padding: 0.35rem 0.65rem;
+    font-size: calc(var(--text-sm) * 0.8);
+    padding: 0.32rem 0.62rem;
     min-height: auto;
     color: rgb(var(--chromatic-red) / 0.7);
     border-color: rgb(var(--chromatic-red) / 0.2);
@@ -2887,25 +2900,23 @@ const seo = {
     min-height: 16rem;
     max-height: clamp(16rem, 14rem + 12vw, 28rem);
     overflow-y: auto;
-    padding: calc(var(--space-sm) * 0.9);
+    padding: calc(var(--space-sm) * 0.95);
     display: flex;
     flex-direction: column;
-    gap: calc(var(--space-xs) * 0.5);
+    gap: calc(var(--space-xs) * 0.42);
     scrollbar-width: thin;
     transition: background var(--duration-normal) var(--ease-out);
-    background:
-      radial-gradient(120% 90% at 50% -10%, rgb(var(--chromatic-cyan) / 0.04), transparent 58%),
-      transparent;
+    background: rgb(var(--color-bg-rgb) / 0.16);
   }
 
   .wl-chat-messages:global(.wl-chat-drop-active) {
-    background: rgb(var(--chromatic-cyan) / 0.03);
+    background: rgb(var(--chromatic-cyan) / 0.05);
   }
 
   .wl-msg {
     display: flex;
     align-items: flex-end;
-    gap: calc(var(--space-xs) * 0.4);
+    gap: calc(var(--space-xs) * 0.3);
     max-width: 80%;
   }
 
@@ -2924,31 +2935,31 @@ const seo = {
   }
 
   .wl-msg-text {
-    padding: 0.5rem 0.75rem;
-    border-radius: calc(var(--whisper-radius) * 0.65);
+    padding: 0.52rem 0.75rem;
+    border-radius: calc(var(--whisper-radius) * 0.62);
     font-size: var(--text-sm);
-    line-height: 1.5;
+    line-height: 1.42;
     word-break: break-word;
     border: 1px solid transparent;
   }
 
   .wl-msg--self .wl-msg-text {
-    background: rgb(var(--chromatic-cyan) / 0.14);
+    background: rgb(var(--chromatic-cyan) / 0.12);
     color: rgb(var(--color-text-rgb) / 0.92);
-    border-color: rgb(var(--chromatic-cyan) / 0.32);
+    border-color: rgb(var(--chromatic-cyan) / 0.26);
     border-bottom-right-radius: calc(var(--whisper-radius) * 0.2);
   }
 
   .wl-msg--peer .wl-msg-text {
-    background: rgb(var(--color-text-rgb) / 0.045);
+    background: rgb(var(--color-text-rgb) / 0.055);
     color: rgb(var(--color-text-rgb) / 0.86);
-    border-color: rgb(var(--color-text-rgb) / 0.14);
+    border-color: rgb(var(--color-text-rgb) / 0.16);
     border-bottom-left-radius: calc(var(--whisper-radius) * 0.2);
   }
 
   .wl-msg-system {
-    padding: 0.28rem 0.58rem;
-    font-size: calc(var(--text-sm) * 0.85);
+    padding: 0.25rem 0.54rem;
+    font-size: calc(var(--text-sm) * 0.8);
     color: rgb(var(--color-text-rgb) / 0.45);
     text-align: center;
     border-radius: var(--radius-full);
@@ -2957,10 +2968,10 @@ const seo = {
   }
 
   .wl-msg-time {
-    font-size: calc(var(--text-sm) * 0.72);
-    color: rgb(var(--color-text-rgb) / 0.25);
+    font-size: calc(var(--text-sm) * 0.68);
+    color: rgb(var(--color-text-rgb) / 0.28);
     flex-shrink: 0;
-    padding-bottom: 0.15rem;
+    padding-bottom: 0.2rem;
   }
 
   .wl-msg-file {
@@ -2999,27 +3010,28 @@ const seo = {
 
   .wl-chat-compose {
     display: flex;
-    gap: calc(var(--space-xs) * 0.35);
+    gap: calc(var(--space-xs) * 0.4);
     align-items: stretch;
     flex-wrap: wrap;
-    padding: calc(var(--space-xs) * 0.65);
+    padding: calc(var(--space-xs) * 0.7);
     border-top: 1px solid var(--whisper-edge);
-    background: rgb(var(--color-text-rgb) / 0.018);
+    background: rgb(var(--color-text-rgb) / 0.022);
   }
 
   .wl-chat-text-input {
     flex: 1 1 14rem;
     min-width: 0;
     min-height: auto;
-    padding: 0.5rem 0.7rem;
+    padding: 0.52rem 0.72rem;
     border-radius: calc(var(--whisper-radius) * 0.5);
+    border-color: rgb(var(--color-text-rgb) / 0.14);
   }
 
   .wl-chat-send-btn {
     min-height: auto;
-    padding: 0.45rem 0.75rem;
-    background: rgb(var(--chromatic-cyan) / 0.08);
-    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    padding: 0.48rem 0.8rem;
+    background: rgb(var(--chromatic-cyan) / 0.11);
+    border-color: rgb(var(--chromatic-cyan) / 0.36);
     color: rgb(var(--chromatic-cyan));
   }
 
@@ -3030,11 +3042,12 @@ const seo = {
 
   .wl-chat-file-btn {
     min-height: auto;
-    padding: 0.45rem;
+    padding: 0.48rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
+    border-color: rgb(var(--color-text-rgb) / 0.18);
   }
 
   .wl-file-icon {
@@ -3143,10 +3156,6 @@ const seo = {
 
     .wl-chat-header {
       align-items: stretch;
-    }
-
-    .wl-chat-security-sub {
-      white-space: normal;
     }
 
     .wl-chat-tools {

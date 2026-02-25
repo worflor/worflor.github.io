@@ -642,6 +642,24 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /* ── Chat rendering ───────────────────────────────────── */
 
+  function updateTransportUi(mode: TransportMode): void {
+    for (const radio of opts.transportRadios) {
+      radio.checked = radio.value === mode;
+    }
+
+    if (mode === "silent") {
+      opts.chatInput.placeholder = "silent mode selected";
+      opts.chatInput.disabled = true;
+      opts.chatSendBtn.disabled = true;
+      opts.chatFileBtn.disabled = true;
+      return;
+    }
+
+    opts.chatInput.placeholder = mode === "dressed" ? "type a message (files sent as carriers)" : "type a message";
+    opts.chatInput.disabled = false;
+    updateControls();
+  }
+
   function addChatMessage(msg: LiveMessage): void {
     const div = document.createElement("div");
     div.className = `wl-msg wl-msg--${msg.direction}`;
@@ -791,6 +809,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       case "live":
         enterPhase(opts.chatSection, "secure session live · end-to-end encrypted", false, false);
         opts.liveStatusLine.classList.add("whisper-status--ready");
+        updateTransportUi("naked");
         opts.chatInput.disabled = false;
         opts.chatInput.focus();
         addChatMessage({
@@ -1245,7 +1264,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   opts.transportRadios.forEach((radio) => {
     radio.addEventListener("change", () => {
       if (radio.checked && session) {
-        session.setTransport(radio.value as TransportMode);
+        const mode = radio.value as TransportMode;
+        session.setTransport(mode);
+        updateTransportUi(mode);
       }
     }, { signal });
   });
