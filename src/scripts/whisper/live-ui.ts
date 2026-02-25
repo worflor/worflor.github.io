@@ -747,9 +747,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Only log verbose network info in manual mode — relay users don't need to see it
     if (!relayActive) {
       if (externalAssist) {
-        appendLog("external assist enabled — helps connect across different networks");
+        appendLog("external assist enabled. helps connect across different networks");
       } else {
-        appendLog("local-only mode — enable external assist if connecting across networks fails");
+        appendLog("local-only mode. enable external assist if connecting across networks fails");
       }
     }
 
@@ -843,7 +843,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "live":
         showPhase(opts.chatSection);
-        updateStatus("connected — end-to-end encrypted");
+        updateStatus("connected. end-to-end encrypted");
         opts.liveStatusLine.classList.add("whisper-status--ready");
         setLogActive(false);
         opts.chatInput.disabled = false;
@@ -1007,13 +1007,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /** Map internal error codes to friendly messages. */
   function friendlyRelayError(raw: string): string {
     if (raw.includes("peer-not-found")) {
-      return "couldn't find your peer — make sure you both typed the exact same phrase, then try again at the same time";
+      return "couldn't find your peer. make sure you both typed the exact same phrase, then try again at the same time";
     }
     if (raw.includes("relay-unavailable")) {
       return "couldn't reach the relay. check your connection and try again, or use manual mode";
     }
     if (raw.includes("handshake-failed")) {
-      return "handshake failed — try again, or use a different phrase";
+      return "handshake failed. try again, or use a different phrase";
     }
     return raw;
   }
