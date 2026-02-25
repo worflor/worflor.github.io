@@ -17,20 +17,8 @@ const FLAG_RAW  = 0x00;
 const FLAG_GZIP = 0x01;
 const FLAG_SEALED = 0x02;
 
-type CompactSdpSetup = CompactSDP["setup"];
-type CompactCandidateProtocol = CompactCandidate["protocol"];
-type CompactCandidateType = CompactCandidate["type"];
-
-const SUPPORTED_CANDIDATE_PROTOCOLS: readonly CompactCandidateProtocol[] = ["udp", "tcp"];
-const SUPPORTED_CANDIDATE_TYPES: readonly CompactCandidateType[] = ["host", "srflx", "prflx", "relay"];
-
-function isSupportedCandidateProtocol(value: string): value is CompactCandidateProtocol {
-  return (SUPPORTED_CANDIDATE_PROTOCOLS as readonly string[]).includes(value);
-}
-
-function isSupportedCandidateType(value: string): value is CompactCandidateType {
-  return (SUPPORTED_CANDIDATE_TYPES as readonly string[]).includes(value);
-}
+const SUPPORTED_PROTOCOLS = ["udp", "tcp"] as const;
+const SUPPORTED_TYPES = ["host", "srflx", "prflx", "relay"] as const;
 
 /* ── Types ───────────────────────────────────────────────── */
 
@@ -91,7 +79,7 @@ function parseSDP(sdp: string): CompactSDP {
     else if (line.startsWith("a=setup:")) {
       const value = line.slice(8);
       if (value === "active" || value === "passive" || value === "actpass") {
-        setup = value as CompactSdpSetup;
+        setup = value;
       }
     }
     else if (line.startsWith("a=candidate:")) {
@@ -99,14 +87,15 @@ function parseSDP(sdp: string): CompactSDP {
       if (parts.length >= 8) {
         const protocol = parts[2].toLowerCase();
         const candidateType = parts[7];
-        if (isSupportedCandidateProtocol(protocol) && isSupportedCandidateType(candidateType)) {
+        if ((SUPPORTED_PROTOCOLS as readonly string[]).includes(protocol) &&
+            (SUPPORTED_TYPES as readonly string[]).includes(candidateType)) {
           const c: CompactCandidate = {
             foundation: parts[0],
-            protocol,
+            protocol: protocol as CompactCandidate["protocol"],
             priority: parseInt(parts[3], 10),
             ip: parts[4],
             port: parseInt(parts[5], 10),
-            type: candidateType,
+            type: candidateType as CompactCandidate["type"],
           };
           // Capture raddr/rport for srflx/prflx/relay candidates
           const raddrIdx = parts.indexOf("raddr");
@@ -159,28 +148,27 @@ function reconstructSDP(compact: CompactSDP): string {
 
 /* ── Compress / Decompress (bytes layer) ─────────────────── */
 
+async function readStream(readable: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const reader = readable.getReader();
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  return concatBytes(...chunks);
+}
+
 async function compressToBytes(compact: CompactSDP): Promise<Uint8Array> {
   const raw = TE.encode(JSON.stringify(compact));
 
   if (typeof CompressionStream !== "undefined") {
     const cs = new CompressionStream("gzip");
     const writer = cs.writable.getWriter();
-    const reader = cs.readable.getReader();
-    const chunks: Uint8Array[] = [];
-
     writer.write(raw);
     writer.close();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-    }
-
-    const gz = concatBytes(...chunks);
-    if (gz.length < raw.length) {
-      return concatBytes(new Uint8Array([FLAG_GZIP]), gz);
-    }
+    const gz = await readStream(cs.readable);
+    if (gz.length < raw.length) return concatBytes(new Uint8Array([FLAG_GZIP]), gz);
   }
 
   return concatBytes(new Uint8Array([FLAG_RAW]), raw);
@@ -190,46 +178,26 @@ async function decompressFromBytes(data: Uint8Array): Promise<CompactSDP> {
   const flag = data[0];
   const payload = data.subarray(1);
 
-  let json: string;
   if (flag === FLAG_GZIP && typeof DecompressionStream !== "undefined") {
     const ds = new DecompressionStream("gzip");
     const writer = ds.writable.getWriter();
-    const reader = ds.readable.getReader();
-    const chunks: Uint8Array[] = [];
-
     writer.write(toArrayBuffer(payload));
     writer.close();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-    }
-
-    json = TD.decode(concatBytes(...chunks));
-  } else {
-    json = TD.decode(payload);
+    return JSON.parse(TD.decode(await readStream(ds.readable))) as CompactSDP;
   }
 
-  return JSON.parse(json) as CompactSDP;
-}
-
-/* ── SDP Sealing (phrase-based encryption) ───────────────── */
-
-async function deriveSdpKey(phrase: string): Promise<Uint8Array> {
-  const phraseHash = await sha256(TE.encode(SDP_PHRASE_PREFIX + phrase));
-  const key = await hkdf(phraseHash, ZERO_SALT_32, SDP_SEAL_INFO, 32);
-  phraseHash.fill(0);
-  return key;
+  return JSON.parse(TD.decode(payload)) as CompactSDP;
 }
 
 /* ── Public API ──────────────────────────────────────────── */
 
-/**
- * Encode SDP to a compact, portable code string.
- * When `phrase` is provided, the code is AES-GCM encrypted — without the phrase
- * the code is opaque (IPs, fingerprints, all metadata hidden).
- */
+async function sealKey(phrase: string): Promise<Uint8Array> {
+  const h = await sha256(TE.encode(SDP_PHRASE_PREFIX + phrase));
+  const k = await hkdf(h, ZERO_SALT_32, SDP_SEAL_INFO, 32);
+  h.fill(0);
+  return k;
+}
+
 export async function sdpToCode(
   sdp: string, type: "offer" | "answer", phrase?: string,
 ): Promise<string> {
@@ -238,7 +206,7 @@ export async function sdpToCode(
   const innerBytes = await compressToBytes(compact);
 
   if (phrase) {
-    const key = await deriveSdpKey(phrase);
+    const key = await sealKey(phrase);
     const nonce = randomBytes(12);
     const ciphertext = await aesGcmEncrypt(key, innerBytes, nonce);
     key.fill(0);
@@ -248,25 +216,17 @@ export async function sdpToCode(
   return base64urlEncode(innerBytes);
 }
 
-/**
- * Decode a compact code string back to SDP.
- * If the code is sealed (encrypted), `phrase` is required — wrong phrase throws a
- * descriptive error so the UI can surface "wrong room code" immediately.
- */
 export async function codeToSdp(
   code: string, type: "offer" | "answer", phrase?: string,
 ): Promise<string> {
   const data = base64urlDecode(code);
 
-  let innerBytes: Uint8Array;
-
   if (data[0] === FLAG_SEALED) {
-    if (!phrase) {
-      throw new Error("This code is sealed with a shared phrase — enter it to connect");
-    }
+    if (!phrase) throw new Error("This code is sealed with a shared phrase — enter it to connect");
     const nonce = data.subarray(1, 13);
     const ciphertext = data.subarray(13);
-    const key = await deriveSdpKey(phrase);
+    const key = await sealKey(phrase);
+    let innerBytes: Uint8Array;
     try {
       innerBytes = await aesGcmDecrypt(key, ciphertext, nonce);
     } catch {
@@ -274,11 +234,12 @@ export async function codeToSdp(
       throw new Error("Wrong shared phrase — could not unseal the connection code");
     }
     key.fill(0);
-  } else {
-    innerBytes = data;
+    const compact = await decompressFromBytes(innerBytes);
+    compact.type = type;
+    return reconstructSDP(compact);
   }
 
-  const compact = await decompressFromBytes(innerBytes);
+  const compact = await decompressFromBytes(data);
   compact.type = type;
   return reconstructSDP(compact);
 }

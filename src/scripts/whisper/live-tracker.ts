@@ -42,10 +42,10 @@ const PEER_DISCOVERY_TIMEOUT = 30_000;
 const TOTAL_TIMEOUT = 45_000;
 
 /** Re-announce interval — keeps us visible if the tracker evicts stale peers. */
-const REANNOUNCE_MS = 20_000;
+const REANNOUNCE_MS = Math.floor(PEER_DISCOVERY_TIMEOUT * 0.66);
 
-/** Epoch window for salted info_hash — peers in the same window find each other. */
-const EPOCH_WINDOW = 10 * 60 * 1000; // 10 minutes
+/** Epoch window for salted info_hash — short window reduces phrase linkability. */
+const EPOCH_WINDOW = 2 * 60 * 1000; // 2 minutes
 
 /** Fixed length for padded SDP codes — hides true blob size from tracker. */
 const PADDED_CODE_LEN = 1024;
@@ -211,9 +211,12 @@ function connectToTracker(
       ws!.send(announcePayload);
 
       // Re-announce periodically — keeps us in the tracker's peer pool
-      reannounceTimer = setInterval(() => {
-        if (ws?.readyState === WebSocket.OPEN) ws.send(announcePayload);
-      }, REANNOUNCE_MS);
+      // Reannounce only matters while discovery timer is active.
+      if (REANNOUNCE_MS < PEER_DISCOVERY_TIMEOUT) {
+        reannounceTimer = setInterval(() => {
+          if (ws?.readyState === WebSocket.OPEN) ws.send(announcePayload);
+        }, REANNOUNCE_MS);
+      }
     };
 
     ws.onmessage = (event) => {

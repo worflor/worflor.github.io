@@ -57,9 +57,7 @@ import {
 
 import { createMinimalPNGCarrier } from "./live-carrier";
 
-/* ═══════════════════════════════════════════════════════════════════
-   Types
-   ═══════════════════════════════════════════════════════════════════ */
+/* ── Types ──── */
 
 export type LiveState =
   | "idle"
@@ -119,9 +117,7 @@ export interface WhisperLiveSessionOptions {
   autoConfirmFingerprint?: boolean;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   Visual Fingerprint
-   ═══════════════════════════════════════════════════════════════════ */
+/* ── Visual Fingerprint ──── */
 
 const FINGERPRINT_EMOJI = [
   "\u{1F30A}", // wave
@@ -203,9 +199,7 @@ async function deriveFingerprint(sharedSecret: Uint8Array): Promise<string> {
     .join("");
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   WhisperLiveSession
-   ═══════════════════════════════════════════════════════════════════ */
+/* ── WhisperLiveSession ──── */
 
 /**
  * Default: local-only ICE.
@@ -235,7 +229,6 @@ const ICE_GATHER_TIMEOUT = 8000;
 
 const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
 const HEARTBEAT_TIMEOUT  = 45_000;        // drop peer after 45s silence
-const CONNECTING_GRACE_PERIOD = 60_000;   // answerer waits 60s for host to apply answer
 
 const LIVE_MSG = {
   KEY_EXCHANGE: 0x10,
@@ -354,15 +347,15 @@ export class WhisperLiveSession {
 
     try {
       if (typeof pc.setConfiguration !== "function") {
-        this.log("external assist could not be disabled. setConfiguration unavailable");
+        this.onLog("external assist could not be disabled. setConfiguration unavailable");
         return;
       }
 
       const current = (typeof pc.getConfiguration === "function") ? pc.getConfiguration() : {};
       pc.setConfiguration({ ...current, iceServers: [] });
-      this.log("external assist disabled. continuing local-only");
+      this.onLog("external assist disabled. continuing local-only");
     } catch (err) {
-      this.log(`external assist disable failed: ${errorMessage(err)}`);
+      this.onLog(`external assist disable failed: ${errorMessage(err)}`);
     }
   }
 
@@ -371,24 +364,16 @@ export class WhisperLiveSession {
   private setState(state: LiveState, detail?: string): void {
     const allowed = VALID_TRANSITIONS[this._state];
     if (!allowed.includes(state)) {
-      this.log(`blocked transition ${this._state} → ${state}`);
+      this.onLog(`blocked transition ${this._state} → ${state}`);
       return;
     }
     this._state = state;
     this.onStateChange(state, detail);
   }
 
-  private log(line: string): void {
-    this.onLog(line);
-  }
-
-  private sendControlByte(type: number): void {
+  private send(type: number, payload?: Uint8Array): void {
     if (this.dc?.readyState !== "open") return;
-    this.dc.send(new Uint8Array([type]));
-  }
-
-  private sendPrefixed(type: number, payload: Uint8Array): void {
-    if (this.dc?.readyState !== "open") return;
+    if (!payload) { this.dc.send(new Uint8Array([type])); return; }
     const msg = new Uint8Array(1 + payload.length);
     msg[0] = type;
     msg.set(payload, 1);
@@ -397,15 +382,19 @@ export class WhisperLiveSession {
 
   /* ── Offer/Answer Lifecycle ─────────────────────────────── */
 
-  /** Peer A: create an offer code. */
-  async createOffer(sharedPhrase?: string): Promise<string> {
+  private initSession(sharedPhrase?: string, asOfferer = true): void {
     this._destroyed = false;
     this.externalAssistDropped = false;
     this.connectingGraceDone = false;
     this.sharedPhrase = sharedPhrase ?? "";
-    this.isOfferer = true;
+    this.isOfferer = asOfferer;
+  }
+
+  /** Peer A: create an offer code. */
+  async createOffer(sharedPhrase?: string): Promise<string> {
+    this.initSession(sharedPhrase, true);
     this.setState("offering");
-    this.log("creating offer...");
+    this.onLog("creating offer...");
 
     this.pc = new RTCPeerConnection(this.rtcConfig);
 
@@ -422,12 +411,12 @@ export class WhisperLiveSession {
     await this.pc.setLocalDescription(offer);
 
     // Wait for ICE gathering
-    this.log("gathering network candidates...");
+    this.onLog("gathering network candidates...");
     await this.waitForICE();
 
     const code = await sdpToCode(this.pc.localDescription!.sdp, "offer", this.sharedPhrase || undefined);
 
-    this.log(`offer code ready${this.sharedPhrase ? " (sealed)" : ""}`);
+    this.onLog(`offer code ready${this.sharedPhrase ? " (sealed)" : ""}`);
     this.setState("waiting-for-answer");
 
     return code;
@@ -437,24 +426,20 @@ export class WhisperLiveSession {
   async applyAnswer(answerCode: string): Promise<void> {
     if (!this.pc) throw new Error("No connection, create offer first");
 
-    this.log("applying answer code...");
+    this.onLog("applying answer code...");
     const sdp = await codeToSdp(answerCode, "answer", this.sharedPhrase || undefined);
     await this.pc.setRemoteDescription({ type: "answer", sdp });
     this.setState("connecting");
-    this.log("connecting peer-to-peer...");
+    this.onLog("connecting peer-to-peer...");
 
     // Connection established via DataChannel open event (set up in setupDataChannel)
   }
 
   /** Peer B: accept an offer code, return an answer code. */
   async acceptOffer(offerCode: string, sharedPhrase?: string): Promise<string> {
-    this._destroyed = false;
-    this.externalAssistDropped = false;
-    this.connectingGraceDone = false;
-    this.sharedPhrase = sharedPhrase ?? "";
-    this.isOfferer = false;
+    this.initSession(sharedPhrase, false);
     this.setState("answering");
-    this.log("accepting offer code...");
+    this.onLog("accepting offer code...");
 
     const offerSDP = await codeToSdp(offerCode, "offer", this.sharedPhrase || undefined);
 
@@ -475,14 +460,14 @@ export class WhisperLiveSession {
     await this.pc.setLocalDescription(answer);
 
     // Wait for ICE
-    this.log("gathering network candidates...");
+    this.onLog("gathering network candidates...");
     await this.waitForICE();
 
     const answerCode = await sdpToCode(this.pc.localDescription!.sdp, "answer", this.sharedPhrase || undefined);
 
-    this.log(`answer code ready${this.sharedPhrase ? " (sealed)" : ""}`);
+    this.onLog(`answer code ready${this.sharedPhrase ? " (sealed)" : ""}`);
     this.setState("connecting");
-    this.log("connecting peer-to-peer...");
+    this.onLog("connecting peer-to-peer...");
 
     return answerCode;
   }
@@ -493,21 +478,13 @@ export class WhisperLiveSession {
       if (!this.pc) { resolve(); return; }
 
       const logGatherResult = () => {
-        if (!this.pc?.localDescription?.sdp) return;
-        const sdp = this.pc.localDescription.sdp;
-        const candidateLines = sdp.split("\r\n").filter((l: string) => l.startsWith("a=candidate:"));
-        const types = candidateLines.map((l: string) => {
-          const m = l.match(/typ (\w+)/);
-          return m ? m[1] : "?";
-        });
-        const hasSrflx = types.includes("srflx");
-        this.log(`gathered ${candidateLines.length} candidate(s): ${types.join(", ") || "none"}`);
-        if (!hasSrflx && this.hasExternalAssistConfigured()) {
-          this.log("warning: no server-reflexive candidates — STUN may be blocked");
-        }
-        if (candidateLines.length === 0) {
-          this.log("warning: no candidates gathered — connection will likely fail");
-        }
+        const sdp = this.pc?.localDescription?.sdp ?? "";
+        const types = [...sdp.matchAll(/typ (\w+)/g)].map(m => m[1]);
+        this.onLog(`gathered ${types.length} candidate(s): ${types.join(", ") || "none"}`);
+        if (!types.includes("srflx") && this.hasExternalAssistConfigured())
+          this.onLog("warning: no server-reflexive candidates — STUN may be blocked");
+        if (types.length === 0)
+          this.onLog("warning: no candidates gathered — connection will likely fail");
       };
 
       if (this.pc.iceGatheringState === "complete") {
@@ -527,7 +504,7 @@ export class WhisperLiveSession {
       };
 
       const timer = setTimeout(() => {
-        this.log("candidate gathering timed out, proceeding with what we have");
+        this.onLog("candidate gathering timed out, proceeding with what we have");
         done();
       }, ICE_GATHER_TIMEOUT);
 
@@ -550,7 +527,7 @@ export class WhisperLiveSession {
     if (this.connectingGraceDone) return;
     if (this.connectingGraceTimer) return; // already running
     this.connectingGraceDone = true;
-    this.log("ICE failed during setup, waiting for peer to complete exchange...");
+    this.onLog("ICE failed during setup, waiting for peer to complete exchange...");
 
     // Periodically nudge the browser to retry ICE checks. When the peer
     // finally applies our code, their ICE agent starts sending binding
@@ -565,7 +542,7 @@ export class WhisperLiveSession {
         return;
       }
       if (s === "failed" || s === "disconnected") {
-        this.log(`ICE still ${s}, waiting for peer...`);
+        this.onLog(`ICE still ${s}, waiting for peer...`);
         // Re-apply remote description to re-arm ICE agent. This makes the
         // browser reconsider existing candidate pairs that may now work
         // because the peer has finally applied our offer/answer.
@@ -584,10 +561,10 @@ export class WhisperLiveSession {
       // Check current state — ICE may have recovered during the wait
       const iceState = pc.iceConnectionState;
       if (iceState === "connected" || iceState === "completed") return;
-      this.log(`connection failed after grace period (ICE: ${iceState})`);
+      this.onLog(`connection failed after grace period (ICE: ${iceState})`);
       this.setState("error", "Connection failed — peer may be unreachable. Make sure both sides have external assist enabled if connecting across networks.");
       this.cleanupConnection();
-    }, CONNECTING_GRACE_PERIOD);
+    }, HEARTBEAT_TIMEOUT);
   }
 
   private setupPeerConnection(pc: RTCPeerConnection): void {
@@ -595,15 +572,15 @@ export class WhisperLiveSession {
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         const c = event.candidate;
-        this.log(`ICE candidate: ${c.type ?? "?"} ${c.protocol ?? "?"} ${c.address ?? "?"}:${c.port ?? "?"}`);
+        this.onLog(`ICE candidate: ${c.type ?? "?"} ${c.protocol ?? "?"} ${c.address ?? "?"}:${c.port ?? "?"}`);
       } else {
-        this.log("ICE gathering complete");
+        this.onLog("ICE gathering complete");
       }
     };
 
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
-      this.log(`ICE: ${s}`);
+      this.onLog(`ICE: ${s}`);
 
       if (s === "checking") {
         // Normal — ICE is probing candidates. Nothing to do.
@@ -615,18 +592,18 @@ export class WhisperLiveSession {
         if (this._state === "live" || this._state === "silent") {
           this.stateBeforeRecovery = this._state;
           this.setState("recovering");
-          this.log("connection interrupted, attempting recovery...");
+          this.onLog("connection interrupted, attempting recovery...");
           this.recoveryTimer = setTimeout(() => {
             this.recoveryTimer = null;
             if (this._state === "recovering") {
-              this.log("recovery timeout, peer unreachable");
+              this.onLog("recovery timeout, peer unreachable");
               this.setState("disconnected");
               this.cleanupConnection();
             }
           }, HEARTBEAT_TIMEOUT);
         } else if (this._state !== "recovering") {
           // Pre-live states: expected during out-of-band code exchange, just log
-          this.log("connection interrupted during setup (expected while exchanging codes)");
+          this.onLog("connection interrupted during setup (expected while exchanging codes)");
         }
         return;
       }
@@ -635,7 +612,7 @@ export class WhisperLiveSession {
         // During active sessions, attempt one ICE restart before giving up
         if ((this._state === "live" || this._state === "silent" || this._state === "recovering") && !this.iceRestartAttempted) {
           this.iceRestartAttempted = true;
-          this.log("connection failed, attempting restart...");
+          this.onLog("connection failed, attempting restart...");
           if (this._state !== "recovering") {
             this.stateBeforeRecovery = this._state as "live" | "silent";
             this.setState("recovering");
@@ -647,7 +624,7 @@ export class WhisperLiveSession {
           // a grace period to wait for the peer to catch up.
           this.startConnectingGrace(pc);
         } else {
-          this.log("connection failed, could not reach peer");
+          this.onLog("connection failed, could not reach peer");
           this.setState("error", "Connection failed, peer may be unreachable");
           this.cleanupConnection();
         }
@@ -655,7 +632,7 @@ export class WhisperLiveSession {
       }
 
       if (s === "connected" || s === "completed") {
-        this.log(s === "completed" ? "connection fully established" : "connected to peer");
+        this.onLog(s === "completed" ? "connection fully established" : "connected to peer");
         this.iceRestartAttempted = false;
         if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
         if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
@@ -666,7 +643,7 @@ export class WhisperLiveSession {
           if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
           const returnState = this.stateBeforeRecovery;
           this.stateBeforeRecovery = null;
-          this.log("connection recovered");
+          this.onLog("connection recovered");
           this.setState(returnState);
         }
       }
@@ -674,7 +651,7 @@ export class WhisperLiveSession {
 
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
-      this.log(`conn: ${s}`);
+      this.onLog(`conn: ${s}`);
       if (s === "connected") {
         // Some browsers stabilize connectionState before ICE emits completed.
         this.dropExternalAssist(pc);
@@ -689,7 +666,7 @@ export class WhisperLiveSession {
           this.startConnectingGrace(pc);
           return;
         }
-        this.log("connection to peer failed");
+        this.onLog("connection to peer failed");
         this.setState("error", "Connection failed");
         this.cleanupConnection();
       }
@@ -707,16 +684,16 @@ export class WhisperLiveSession {
       // Offerer: create new offer with iceRestart flag
       pc.createOffer({ iceRestart: true })
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() => this.log("restart offer sent"))
+        .then(() => this.onLog("restart offer sent"))
         .catch((err) => {
-          this.log(`restart failed: ${errorMessage(err)}`);
+          this.onLog(`restart failed: ${errorMessage(err)}`);
           this.setState("disconnected");
           this.cleanupConnection();
         });
     } else {
       // Answerer: restartIce() signals the browser to expect a new offer
       pc.restartIce();
-      this.log("restart requested, waiting for path to recover");
+      this.onLog("restart requested, waiting for path to recover");
     }
   }
 
@@ -727,7 +704,7 @@ export class WhisperLiveSession {
     dc.bufferedAmountLowThreshold = BUFFERED_AMOUNT_LOW;
 
     dc.onopen = () => {
-      this.log("secure channel open, starting key exchange");
+      this.onLog("secure channel open, starting key exchange");
       // Establishment is complete at this point (DTLS/SCTP ready). If external assist was
       // enabled, drop it now so the rest of the session stays local-only.
       if (this.pc) this.dropExternalAssist(this.pc);
@@ -736,7 +713,7 @@ export class WhisperLiveSession {
       this.handshakeTimer = setTimeout(() => {
         this.handshakeTimer = null;
         if (this._state === "handshaking" || this._state === "verifying") {
-          this.log("handshake timeout, key exchange took too long");
+          this.onLog("handshake timeout, key exchange took too long");
           this.setState("error", "Handshake timed out");
           this.cleanupConnection();
         }
@@ -748,7 +725,7 @@ export class WhisperLiveSession {
       if (this._state === "live" || this._state === "silent" ||
           this._state === "recovering" ||
           this._state === "verifying" || this._state === "handshaking") {
-        this.log("peer disconnected");
+        this.onLog("peer disconnected");
         this.setState("disconnected");
         this.cleanupConnection();
       }
@@ -756,7 +733,7 @@ export class WhisperLiveSession {
 
     dc.onerror = (event) => {
       const msg = (event as ErrorEvent).message ?? "unknown";
-      this.log(`channel error: ${msg}`);
+      this.onLog(`channel error: ${msg}`);
       // During setup phases, treat as fatal; during live, let heartbeat handle it
       if (this._state === "handshaking" || this._state === "connecting") {
         this.setState("error", `Connection error: ${msg}`);
@@ -796,19 +773,19 @@ export class WhisperLiveSession {
         );
 
         const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
-        this.log("sending public key");
+        this.onLog("sending public key");
 
         // Send our public key
         if (!this.dc || this.dc.readyState !== "open") {
-          this.log("key exchange aborted, channel not available");
+          this.onLog("key exchange aborted, channel not available");
           return;
         }
-        this.sendPrefixed(LIVE_MSG.KEY_EXCHANGE, pubKeyRaw);
+        this.send(LIVE_MSG.KEY_EXCHANGE, pubKeyRaw);
 
         // Store private key for derivation when peer's key arrives
         this.ephPrivateKey = keyPair.privateKey;
       } catch (err) {
-        this.log(`key exchange failed: ${errorMessage(err, "unknown error")}`);
+        this.onLog(`key exchange failed: ${errorMessage(err, "unknown error")}`);
         this.setState("error", "Key exchange failed");
       }
     })();
@@ -816,7 +793,7 @@ export class WhisperLiveSession {
 
   private async handleKeyExchangeMessage(peerPubKeyRaw: Uint8Array): Promise<void> {
     if (this._state !== "handshaking") {
-      this.log("ignoring key exchange message, not in handshaking state");
+      this.onLog("ignoring key exchange message, not in handshaking state");
       return;
     }
     try {
@@ -835,7 +812,7 @@ export class WhisperLiveSession {
       // Wipe ephemeral key immediately — no longer needed
       this.ephPrivateKey = null;
 
-      this.log("shared secret derived");
+      this.onLog("shared secret derived");
 
       // Mix in shared phrase if provided
       if (this.sharedPhrase) {
@@ -852,7 +829,7 @@ export class WhisperLiveSession {
         );
         concat.fill(0); // wipe concat intermediate
         oldSecret.fill(0); // wipe raw ECDH output
-        this.log("shared phrase mixed into key derivation");
+        this.onLog("shared phrase mixed into key derivation");
       } else {
         this.sharedPhrase = null;
       }
@@ -861,7 +838,7 @@ export class WhisperLiveSession {
 
       // Derive fingerprint
       const fingerprint = await deriveFingerprint(sharedSecret);
-      this.log(`fingerprint: ${fingerprint}`);
+      this.onLog(`fingerprint: ${fingerprint}`);
       this.onFingerprint(fingerprint);
 
       // Initialize Double Ratchet
@@ -875,8 +852,8 @@ export class WhisperLiveSession {
 
         // Send our initial ratchet public key
         if (this.dc && this.dc.readyState === "open") {
-          this.sendPrefixed(LIVE_MSG.RATCHET_INIT, dhSelf.publicKey);
-          this.log("sent initial ratchet key");
+          this.send(LIVE_MSG.RATCHET_INIT, dhSelf.publicKey);
+          this.onLog("sent initial ratchet key");
         }
       }
       // Answerer waits for RATCHET_INIT from the offerer
@@ -890,14 +867,14 @@ export class WhisperLiveSession {
         this.confirmFingerprint();
       }
     } catch (err) {
-      this.log(`key derivation failed: ${errorMessage(err, "unknown error")}`);
+      this.onLog(`key derivation failed: ${errorMessage(err, "unknown error")}`);
       this.setState("error", "Key derivation failed");
     }
   }
 
   private async handleRatchetInit(peerRatchetPubKey: Uint8Array): Promise<void> {
     if (this._state !== "handshaking" && this._state !== "verifying") {
-      this.log("ignoring ratchet init, not in expected state");
+      this.onLog("ignoring ratchet init, not in expected state");
       return;
     }
     if (!this.sharedSecret) return;
@@ -909,8 +886,8 @@ export class WhisperLiveSession {
 
       // Send our ratchet public key back so the offerer can derive their receive chain.
       if (this.dc && this.dc.readyState === "open") {
-        this.sendPrefixed(LIVE_MSG.RATCHET_INIT, this.ratchetState.dhSelf.publicKey);
-        this.log("encryption ratchet initialized, keys exchanged");
+        this.send(LIVE_MSG.RATCHET_INIT, this.ratchetState.dhSelf.publicKey);
+        this.onLog("encryption ratchet initialized, keys exchanged");
       }
 
       // Answerer auto-confirm now that ratchet is ready
@@ -922,7 +899,7 @@ export class WhisperLiveSession {
       // Perform the first DH ratchet step so the offerer has send and receive chains.
       if (this.ratchetState) {
         await dhRatchetStep(this.ratchetState, peerRatchetPubKey);
-        this.log("encryption ratchet initialized, received peer key");
+        this.onLog("encryption ratchet initialized, received peer key");
       }
     }
   }
@@ -948,23 +925,23 @@ export class WhisperLiveSession {
         await this.handleEncryptedMessage(bytes.subarray(1));
         break;
       case LIVE_MSG.FINGERPRINT_CONFIRMED: // Fingerprint confirmed
-        this.log("peer confirmed fingerprint");
+        this.onLog("peer confirmed fingerprint");
         if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
         break;
       case LIVE_MSG.FINGERPRINT_REJECTED: // Fingerprint rejected
-        this.log("peer rejected fingerprint, aborting");
+        this.onLog("peer rejected fingerprint, aborting");
         this.setState("error", "Peer rejected fingerprint, possible interception");
         this.cleanupConnection();
         break;
       case LIVE_MSG.PING: // Ping — peer is alive, reply with pong
         this.lastPongReceived = Date.now();
-        this.sendControlByte(LIVE_MSG.PONG);
+        this.send(LIVE_MSG.PONG);
         break;
       case LIVE_MSG.PONG: // Pong — peer acknowledged our ping
         this.lastPongReceived = Date.now();
         break;
       default:
-        this.log(`unknown message type: 0x${type.toString(16)}`);
+        this.onLog(`unknown message type: 0x${type.toString(16)}`);
     }
   }
 
@@ -974,12 +951,12 @@ export class WhisperLiveSession {
     if (!complete) return; // Still waiting for more chunks
 
     if (!this.ratchetState) {
-      this.log("received message but ratchet not initialized");
+      this.onLog("received message but ratchet not initialized");
       return;
     }
 
     if (complete.length < HEADER_SIZE + 16) { // header + minimum AES-GCM tag
-      this.log("received message too short, dropped");
+      this.onLog("received message too short, dropped");
       return;
     }
 
@@ -1025,7 +1002,7 @@ export class WhisperLiveSession {
         // If a DH ratchet step was performed and decrypt still fails, the ratchet
         // is structurally broken (mismatched keys). Deterministic — disconnect.
         if (didDHRatchet) {
-          this.log("decryption failed, encryption state unrecoverable. disconnecting");
+          this.onLog("decryption failed, encryption state unrecoverable. disconnecting");
           this.setState("error", "Encryption desync, session cannot recover");
           this.cleanupConnection();
           return;
@@ -1063,7 +1040,7 @@ export class WhisperLiveSession {
         });
       }
     } catch (err) {
-      this.log(`decrypt failed: ${errorMessage(err)}`);
+      this.onLog(`decrypt failed: ${errorMessage(err)}`);
     }
   }
 
@@ -1072,15 +1049,13 @@ export class WhisperLiveSession {
   /** Enqueue a send job — serializes through sendQueue so ratchet state is never concurrent. */
   private enqueueSend(job: () => Promise<void>): Promise<void> {
     const wrapped = () => job().catch((err) => {
-      this.log(`send failed: ${errorMessage(err)}`);
+      this.onLog(`send failed: ${errorMessage(err)}`);
     });
     this.sendQueue = this.sendQueue.then(wrapped);
     return this.sendQueue;
   }
 
   async sendText(text: string): Promise<void> {
-    if (this._state !== "live" || !this.dc || !this.ratchetState) return;
-
     await this.enqueueSend(async () => {
       if (this._state !== "live" || !this.dc || !this.ratchetState) return;
       await this.encryptAndSend(TE.encode(text), 0x00);
@@ -1089,8 +1064,6 @@ export class WhisperLiveSession {
   }
 
   async sendFile(file: File): Promise<void> {
-    if (this._state !== "live" || !this.dc || !this.ratchetState) return;
-
     const fileBytes = new Uint8Array(await file.arrayBuffer());
 
     await this.enqueueSend(async () => {
@@ -1116,8 +1089,6 @@ export class WhisperLiveSession {
    * Used by CampfireNode to send campfire-typed messages through pairwise channels.
    */
   async sendEncryptedRaw(plaintext: Uint8Array, flags: number): Promise<void> {
-    if (this._state !== "live" || !this.dc || !this.ratchetState) return;
-
     await this.enqueueSend(async () => {
       if (this._state !== "live" || !this.dc || !this.ratchetState) return;
       await this.encryptAndSend(plaintext, flags);
@@ -1170,16 +1141,11 @@ export class WhisperLiveSession {
         timestamp: Date.now(),
       });
 
-      this.log(`sent ${fileName} (embedded in carrier)`);
+      this.onLog(`sent ${fileName} (embedded in carrier)`);
     } catch (err) {
-      this.log(`steganography failed, sending directly: ${errorMessage(err)}`);
-      const plaintext = encodeFilePlaintext(fileName, fileType, fileBytes);
-      await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
-      this.onMessage({
-        type: "file", direction: "self",
-        fileName, fileSize: fileBytes.length, fileType,
-        timestamp: Date.now(),
-      });
+      this.onLog(`steganography failed, sending directly: ${errorMessage(err)}`);
+      await this.encryptAndSend(encodeFilePlaintext(fileName, fileType, fileBytes), LIVE_FLAG.FILE);
+      this.onMessage({ type: "file", direction: "self", fileName, fileSize: fileBytes.length, fileType, timestamp: Date.now() });
     }
   }
 
@@ -1257,8 +1223,8 @@ export class WhisperLiveSession {
     if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
 
     // Notify peer
-    this.sendControlByte(LIVE_MSG.FINGERPRINT_CONFIRMED);
-    this.log("fingerprint confirmed, session is live");
+    this.send(LIVE_MSG.FINGERPRINT_CONFIRMED);
+    this.onLog("fingerprint confirmed, session is live");
     this.startHeartbeat();
 
     if (this.transportMode === "silent") {
@@ -1271,8 +1237,8 @@ export class WhisperLiveSession {
   rejectFingerprint(): void {
     if (this._state !== "verifying") return;
 
-    this.sendControlByte(LIVE_MSG.FINGERPRINT_REJECTED);
-    this.log("fingerprint rejected, aborting connection");
+    this.send(LIVE_MSG.FINGERPRINT_REJECTED);
+    this.onLog("fingerprint rejected, aborting connection");
     this.setState("error", "Fingerprint mismatch, possible interception");
     this.cleanupConnection();
   }
@@ -1281,7 +1247,7 @@ export class WhisperLiveSession {
 
   setTransport(mode: TransportMode): void {
     this.transportMode = mode;
-    this.log(`switched to ${mode} mode`);
+    this.onLog(`switched to ${mode} mode`);
 
     if (mode === "silent" && this._state === "live") {
       this.setState("silent");
@@ -1299,7 +1265,7 @@ export class WhisperLiveSession {
   /* ── Teardown ───────────────────────────────────────────── */
 
   disconnect(): void {
-    this.log("disconnecting, clearing session");
+    this.onLog("disconnecting, clearing session");
     this.setState("disconnected");
     this.cleanupConnection();
   }
@@ -1310,12 +1276,12 @@ export class WhisperLiveSession {
     this.stopHeartbeat();
     this.lastPongReceived = Date.now();
     this.heartbeatSend = setInterval(() => {
-      this.sendControlByte(LIVE_MSG.PING);
+      this.send(LIVE_MSG.PING);
     }, HEARTBEAT_INTERVAL);
     this.heartbeatCheck = setInterval(() => {
       if (this._state === "recovering" || this._destroyed) return;
       if (Date.now() - this.lastPongReceived > HEARTBEAT_TIMEOUT) {
-        this.log("heartbeat timeout, peer unresponsive");
+        this.onLog("heartbeat timeout, peer unresponsive");
         this.setState("disconnected");
         this.cleanupConnection();
       }
@@ -1334,9 +1300,10 @@ export class WhisperLiveSession {
     this._destroyed = true;
 
     this.stopHeartbeat();
-    if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
-    if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
-    if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
+    const clr = (t: ReturnType<typeof setTimeout> | null) => { if (t) clearTimeout(t); };
+    clr(this.handshakeTimer); this.handshakeTimer = null;
+    clr(this.recoveryTimer); this.recoveryTimer = null;
+    clr(this.connectingGraceTimer); this.connectingGraceTimer = null;
     if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
     this.connectingGraceDone = false;
     this.stateBeforeRecovery = null;
