@@ -792,6 +792,9 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       pendingPayload = null;
     } finally {
       busy = false;
+      if (!pendingPayload) {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
     }
   }
 
@@ -984,7 +987,6 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   // If URL contains a #ws2: fragment, jump straight to unseal
   const autoPayload = parseSealFragment();
   if (autoPayload) {
-    history.replaceState(null, "", window.location.pathname);
     ensureEmbedUrlMode();
     log("sealed url detected (ws2)");
     runUnseal(autoPayload);
