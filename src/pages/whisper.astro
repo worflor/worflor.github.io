@@ -1299,6 +1299,19 @@ const seo = {
     background: rgb(var(--chromatic-cyan) / 0.12);
   }
 
+  /* Live mode button — red accent when active (most alpha feature) */
+  .whisper-mode-btn--active[data-whisper-mode="live"] {
+    border-color: rgb(var(--chromatic-red) / 0.4);
+    color: rgb(var(--chromatic-red));
+    background: rgb(var(--chromatic-red) / 0.08);
+  }
+
+  .whisper-mode-btn--active[data-whisper-mode="live"]:hover {
+    border-color: rgb(var(--chromatic-red) / 0.55);
+    color: rgb(var(--chromatic-red));
+    background: rgb(var(--chromatic-red) / 0.12);
+  }
+
   /* ── Upload Zone ───────────────────────────────────────── */
   .whisper-upload-zone {
     position: relative;
