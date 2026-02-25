@@ -317,9 +317,6 @@ const seo = {
 
     function handleBeforeSwap() {
       teardown();
-      detachLifecycle();
-      const current = radarWindow[RADAR_LIFECYCLE_KEY];
-      if (current?.boot === boot) delete radarWindow[RADAR_LIFECYCLE_KEY];
     }
 
     function attachLifecycle() {

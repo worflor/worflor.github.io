@@ -176,9 +176,6 @@ const seo = {
 
     function handleBeforeSwap() {
       teardown();
-      detachLifecycle();
-      const current = cageWindow[CAGE_LIFECYCLE_KEY];
-      if (current?.boot === boot) delete cageWindow[CAGE_LIFECYCLE_KEY];
     }
 
     function attachLifecycle() {

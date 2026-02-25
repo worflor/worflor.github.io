@@ -8,7 +8,7 @@
  */
 
 import { TE, TD, aesGcmEncrypt, aesGcmDecrypt } from "../live-crypto";
-import { concatBytes, randomBytes, toHex } from "../wasm";
+import { concatBytes, randomBytes } from "../wasm";
 import {
   CF_ROOT_HEARTBEAT,
   CF_GROUP_MSG,

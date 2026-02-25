@@ -16,9 +16,8 @@ import {
   type WhisperLiveCallbacks,
 } from "../live";
 
-import { TE, TD, hkdf, aesGcmEncrypt, aesGcmDecrypt } from "../live-crypto";
+import { TE, hkdf } from "../live-crypto";
 import { randomBytes, sha256, concatBytes, toHex } from "../wasm";
-import { sdpToCode, codeToSdp } from "../live-sdp";
 
 import {
   type CampfireState,
@@ -31,15 +30,12 @@ import {
   CAMPFIRE_FLAG,
   PEER_ID_LEN,
   GROUP_KEY_LEN,
-  MSG_ID_LEN,
   ROOT_HEARTBEAT_INTERVAL,
   ROOT_HEARTBEAT_TIMEOUT,
   KEY_GRACE_PERIOD,
   DEDUP_RING_SIZE,
   MAX_HOP_COUNT,
 } from "./types";
-
-import { CampfireTopology } from "./topology";
 
 import {
   buildRootHeartbeat,
@@ -85,7 +81,6 @@ import {
 
 const ZERO_SALT_32 = new Uint8Array(32);
 const GROUP_KEY_INFO = TE.encode("campfire-group-v1");
-const ROTATE_KEY_INFO = TE.encode("campfire-rotate");
 const SUB_KEY_INFO = TE.encode("campfire-sub-v1");
 
 /** SDP type codes used in relay messages. */
@@ -114,7 +109,6 @@ export class CampfireNode {
   private allPeers = new Map<string, { peerId: Uint8Array; name: string }>();
 
   // Root-only state
-  private topology: CampfireTopology | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   // Peer-only state
@@ -167,9 +161,6 @@ export class CampfireNode {
     this.displayName = name;
     this.setState("creating");
     this.log("creating room...");
-
-    // Initialize topology
-    this.topology = new CampfireTopology(this.peerId);
 
     // Generate group key
     const seed = randomBytes(32);
@@ -492,7 +483,6 @@ export class CampfireNode {
     this.lastRootHeartbeat = Date.now();
 
     // Forward to other neighbors (gossip)
-    const wire = concatBytes(new Uint8Array([CF_ROOT_HEARTBEAT]), data);
     // We need to re-broadcast but the buildRootHeartbeat already built the full payload
     // Just broadcast the raw message including sub-type byte
     const fullMsg = concatBytes(new Uint8Array([CF_ROOT_HEARTBEAT]), data);
@@ -852,39 +842,6 @@ export class CampfireNode {
 
   private stopHeartbeatWatch(): void {
     if (this.heartbeatWatchTimer) { clearInterval(this.heartbeatWatchTimer); this.heartbeatWatchTimer = null; }
-  }
-
-  /* ── Group Key Rotation ────────────────────────────────── */
-
-  /** Root: rotate the group key (on join/leave). */
-  private async rotateGroupKey(event: string): Promise<void> {
-    if (this.role !== "root" || !this.currentEpoch) return;
-
-    const eventHash = await sha256(TE.encode(event));
-    const newKey = await hkdf(
-      concatBytes(this.currentEpoch.key, eventHash),
-      ZERO_SALT_32, ROTATE_KEY_INFO, GROUP_KEY_LEN,
-    );
-
-    this.previousEpoch = {
-      ...this.currentEpoch,
-      expiresAt: Date.now() + KEY_GRACE_PERIOD,
-    };
-
-    this.currentEpoch = {
-      epoch: this.currentEpoch.epoch + 1,
-      key: newKey,
-      expiresAt: Infinity,
-    };
-
-    // Distribute new key to all neighbors
-    for (const [, peer] of this.neighbors) {
-      if (peer.session && peer.connected) {
-        await this.sendGroupKey(peer.session, this.currentEpoch.epoch, this.currentEpoch.key);
-      }
-    }
-
-    this.log(`group key rotated to epoch ${this.currentEpoch.epoch}`);
   }
 
   /* ── Utility ───────────────────────────────────────────── */

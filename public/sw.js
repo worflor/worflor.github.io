@@ -9,55 +9,56 @@ var SHELL = [
   '/fonts/InterVariable.woff2',
 ];
 
+/** @type {ServiceWorkerGlobalScope} */
+var sw = /** @type {any} */ (self);
+
 // Install: pre-cache shell assets + offline page
-self.addEventListener('install', function (e) {
-  e.waitUntil(
-    caches.open(CACHE).then(function (cache) {
-      return cache.addAll(SHELL);
-    })
-  );
-  self.skipWaiting();
+sw.addEventListener('install', function (e) {
+  e.waitUntil((async function () {
+    var cache = await caches.open(CACHE);
+    await cache.addAll(SHELL);
+  })());
+  sw.skipWaiting();
 });
 
 // Activate: purge old caches
-self.addEventListener('activate', function (e) {
-  e.waitUntil(
-    caches.keys().then(function (keys) {
-      return Promise.all(
-        keys
-          .filter(function (k) { return k !== CACHE; })
-          .map(function (k) { return caches.delete(k); })
-      );
-    })
-  );
-  self.clients.claim();
+sw.addEventListener('activate', function (e) {
+  e.waitUntil((async function () {
+    var keys = await caches.keys();
+    await Promise.all(
+      keys
+        .filter(function (k) { return k !== CACHE; })
+        .map(function (k) { return caches.delete(k); })
+    );
+  })());
+  sw.clients.claim();
 });
 
 // Fetch: network-first for pages, cache-first for assets
-self.addEventListener('fetch', function (e) {
+sw.addEventListener('fetch', function (e) {
   var req = e.request;
 
   // Only handle GET
   if (req.method !== 'GET') return;
 
   // Skip cross-origin requests
-  if (!req.url.startsWith(self.location.origin)) return;
+  if (!req.url.startsWith(sw.location.origin)) return;
 
   // Navigation (HTML pages) — network-first, fallback to cache, then offline page
   if (req.mode === 'navigate') {
-    e.respondWith(
-      fetch(req)
-        .then(function (res) {
-          var clone = res.clone();
-          caches.open(CACHE).then(function (cache) { cache.put(req, clone); });
-          return res;
-        })
-        .catch(function () {
-          return caches.match(req).then(function (cached) {
-            return cached || caches.match('/offline');
-          });
-        })
-    );
+    e.respondWith((async function () {
+      try {
+        var res = await fetch(req);
+        try {
+          var cache = await caches.open(CACHE);
+          await cache.put(req, res.clone());
+        } catch (cacheErr) {}
+        return res;
+      } catch (networkErr) {
+        var cached = await caches.match(req);
+        return cached || caches.match('/offline');
+      }
+    })());
     return;
   }
 

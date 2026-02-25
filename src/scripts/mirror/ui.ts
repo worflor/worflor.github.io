@@ -1216,6 +1216,7 @@ function fallbackCopy(text: string, toast: (message: string) => void): void {
   ta.style.cssText = "position:fixed;top:-9999px";
   document.body.appendChild(ta);
   ta.select();
+  // @ts-ignore deprecated fallback API kept for old browsers
   try { document.execCommand("copy"); toast("copied to clipboard. dont dox yourself :)"); }
   catch { toast("Copy failed"); }
   finally { ta.remove(); }

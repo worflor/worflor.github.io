@@ -370,9 +370,6 @@ const seo = {
 
     function handleBeforeSwap() {
       teardown();
-      detachLifecycle();
-      const current = prismWindow[PRISM_LIFECYCLE_KEY];
-      if (current?.boot === boot) delete prismWindow[PRISM_LIFECYCLE_KEY];
     }
 
     function attachLifecycle() {

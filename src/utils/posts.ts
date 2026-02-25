@@ -44,7 +44,7 @@ export function formatPostDate(pubDate: string | Date): string {
 }
 
 /** Get "in the works" label */
-export function getComingSoonLabel(pubDate: string | Date): string {
+export function getComingSoonLabel(_pubDate: string | Date): string {
   return "in the works...";
 }
 

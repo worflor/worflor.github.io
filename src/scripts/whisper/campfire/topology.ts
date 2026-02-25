@@ -6,7 +6,7 @@
  */
 
 import { toHex } from "../wasm";
-import { MAX_NEIGHBORS, MIN_NEIGHBORS, PEER_ID_LEN } from "./types";
+import { MAX_NEIGHBORS, MIN_NEIGHBORS } from "./types";
 
 /* ═══════════════════════════════════════════════════════════════════
    Graph Node
@@ -64,11 +64,6 @@ export class CampfireTopology {
     if (!a || !b || aHex === bHex) return;
     a.neighbors.add(bHex);
     b.neighbors.add(aHex);
-  }
-
-  /** Get the number of neighbors for a given peer. */
-  private degree(hex: string): number {
-    return this.nodes.get(hex)?.neighbors.size ?? 0;
   }
 
   /**

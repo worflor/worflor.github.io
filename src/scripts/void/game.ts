@@ -174,6 +174,8 @@ interface SaveData {
   creatures: SerializedCreature[];
   revealMap: number[] | null;
   revealDims: { w: number; h: number } | null;
+  residueMap: number[] | null;
+  residueDims: { w: number; h: number } | null;
 }
 
 interface SaveDataEnvelope {
@@ -182,6 +184,8 @@ interface SaveDataEnvelope {
   creatures?: unknown;
   revealMap?: unknown;
   revealDims?: unknown;
+  residueMap?: unknown;
+  residueDims?: unknown;
 }
 
 // Init options
@@ -410,12 +414,103 @@ for (let i = 0; i <= BODY_SEGMENTS; i++) {
 
 const PARTICLE_COLORS: Record<string, (h: number, a: number) => string> = {
   birth: (h, a) => `hsla(${h}, 40%, 80%, ${a})`,
-  death: (h, a) => `rgba(130, 120, 140, ${a * 0.35})`,
+  death: (_h, a) => `rgba(130, 120, 140, ${a * 0.35})`,
   eat: (h, a) => `hsla(${h}, 45%, 70%, ${a})`,
   pet: (h, a) => `hsla(${h}, 50%, 85%, ${a})`,
-  ripple: (h, a) => `rgba(180, 180, 200, ${a * 0.4})`,
+  ripple: (_h, a) => `rgba(180, 180, 200, ${a * 0.4})`,
   void: (h, a) => `hsla(${h}, 50%, 35%, ${a * 0.7})`,
 };
+
+// ============================================================================
+// RESIDUE SYSTEM (Pheromones/Scent)
+// ============================================================================
+
+// A coarse grid for invisible chemical/emotional trails.
+// Creatures leave "Safety" when calm and "Distress" when scared.
+// This allows for emergent "desire paths", "safe havens", and "places to avoid".
+
+interface ResidueCell {
+  safety: number;
+  distress: number;
+}
+
+class ResidueGrid {
+  width: number;
+  height: number;
+  resolution: number; // coarser than reveal grid, maybe 40px
+  cells: Float32Array; // Interleaved [safety, distress, safety, distress...]
+
+  constructor(w: number, h: number, resolution = 40) {
+    this.width = Math.ceil(w / resolution);
+    this.height = Math.ceil(h / resolution);
+    this.resolution = resolution;
+    this.cells = new Float32Array(this.width * this.height * 2);
+  }
+
+  resize(w: number, h: number): void {
+    const newW = Math.ceil(w / this.resolution);
+    const newH = Math.ceil(h / this.resolution);
+    
+    // Create new buffer, preserving what we can (simple copy for now)
+    const newCells = new Float32Array(newW * newH * 2);
+    // (In a real resize we might want to resample, but clearing/clipping is fine for chaos)
+    this.width = newW;
+    this.height = newH;
+    this.cells = newCells;
+  }
+
+  // Deposit residue at world coordinates
+  deposit(x: number, y: number, type: "safety" | "distress", amount: number): void {
+    const cx = Math.floor(x / this.resolution);
+    const cy = Math.floor(y / this.resolution);
+    if (cx < 0 || cx >= this.width || cy < 0 || cy >= this.height) return;
+
+    const idx = (cy * this.width + cx) * 2 + (type === "safety" ? 0 : 1);
+    this.cells[idx] = Math.min(1.0, this.cells[idx] + amount);
+  }
+
+  // Get localized residue levels (bilinear interpolation for smoothness)
+  sample(x: number, y: number): { safety: number; distress: number } {
+    const gx = x / this.resolution - 0.5;
+    const gy = y / this.resolution - 0.5;
+    
+    const ix = Math.floor(gx);
+    const iy = Math.floor(gy);
+    const fx = gx - ix;
+    const fy = gy - iy;
+
+    // Helper to get safely
+    const get = (cx: number, cy: number, offset: 0 | 1) => {
+      if (cx < 0 || cx >= this.width || cy < 0 || cy >= this.height) return 0;
+      return this.cells[(cy * this.width + cx) * 2 + offset];
+    };
+
+    const s00 = get(ix, iy, 0);
+    const s10 = get(ix + 1, iy, 0);
+    const s01 = get(ix, iy + 1, 0);
+    const s11 = get(ix + 1, iy + 1, 0);
+    const safety = (s00 * (1 - fx) + s10 * fx) * (1 - fy) + (s01 * (1 - fx) + s11 * fx) * fy;
+
+    const d00 = get(ix, iy, 1);
+    const d10 = get(ix + 1, iy, 1);
+    const d01 = get(ix, iy + 1, 1);
+    const d11 = get(ix + 1, iy + 1, 1);
+    const distress = (d00 * (1 - fx) + d10 * fx) * (1 - fy) + (d01 * (1 - fx) + d11 * fx) * fy;
+
+    return { safety, distress };
+  }
+
+  // Decay loop (run occasionally)
+  decay(factor: number): void {
+    for (let i = 0; i < this.cells.length; i++) {
+      if (this.cells[i] > 0.01) {
+        this.cells[i] *= factor;
+      } else {
+        this.cells[i] = 0;
+      }
+    }
+  }
+}
 
 // ============================================================================
 // FOG WORKER - Offloads fog computation to a worker thread
@@ -660,6 +755,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
   let respawnPending = false;
   let fadingToBlack = false;
 
+  // Residue (Pheromone) System
+  const residueGrid = new ResidueGrid(W, H, 40);
+
+
   // Fog Rendering - uses worker thread when available
   const fogWorker = new FogWorker();
   let fogCanvas: HTMLCanvasElement | null = null;
@@ -739,7 +838,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
   let fissures: Fissure[] = [];
   let monoliths: Monolith[] = [];
   let nests: Nest[] = [];
-  let terrainSeed = 0;
   let terrainFeatures: TerrainFeature[] = [];
 
   // ============================================================================
@@ -850,12 +948,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       Math.round(hue2rgb(p, q, h) * 255),
       Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
     ];
-  }
-
-  function distSq(x1: number, y1: number, x2: number, y2: number): number {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    return dx * dx + dy * dy;
   }
 
   function dist(x1: number, y1: number, x2: number, y2: number): number {
@@ -1009,7 +1101,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const s = this.size * this.life * easeIn;
       const alpha = this.life * easeIn;
       const colorFn =
-        PARTICLE_COLORS[this.type] || ((h: number, a: number) => `rgba(255, 255, 255, ${a * 0.3})`);
+        PARTICLE_COLORS[this.type] || ((_h: number, a: number) => `rgba(255, 255, 255, ${a * 0.3})`);
       const col = colorFn(this.hue, alpha);
       ctx.beginPath();
       ctx.arc(this.x, this.y, Math.max(0.1, s), 0, Math.PI * 2);
@@ -2494,7 +2586,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
     }
 
-    pet(clickX: number, clickY: number): void {
+    pet(clickX: number, _clickY: number): void {
       const dx = clickX - this.x;
       const dirX = dx > 0 ? 1 : -1;
       this.targetSquash = 0.75 + Math.random() * 0.1;
@@ -2536,7 +2628,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
     }
 
-    die(reason: string): void {
+    die(_reason: string): void {
       this.isDead = true;
 
       // Release any claimed food so other creatures can claim it
@@ -2635,6 +2727,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     updateMovement(): void {
+      // 1. Interaction Overrides
       if (this === heldCreature) {
         const targetX = mouse.x;
         const targetY = mouse.y;
@@ -2657,101 +2750,204 @@ export function initVoidGame(options: GameInitOptions): () => void {
         return;
       }
 
-      // Speed based on personality and state
-      let baseSpeed = 0.3 + this.extraversion * 0.2;
-      baseSpeed *= 1 - this.fatigue * 0.4;
-      baseSpeed *= 0.7 + this._energyNorm * 0.3;
+      // 2. Personality Factors
+      const openness = this.openness;
+      const conscientiousness = this.conscientiousness;
+      const extraversion = this.extraversion;
+      const stability = this.stability;
+      const neuroticism = 1 - stability;
 
-      // Hunger-driven food seeking
+      // 3. Base Wander (Exploration Drive)
+      // Open creatures wander more widely; Conscientious ones are more direct
+      this.wanderTimer--;
+      if (this.wanderTimer <= 0) {
+        this.wanderTimer = 40 + Math.random() * 80;
+        this.wanderAngle += (Math.random() - 0.5) * (1.5 + openness); // More chaotic if open
+      }
+      
+      const wanderSpeed = 0.02 * (0.5 + openness * 0.5);
+      let fx = Math.cos(this.wanderAngle) * wanderSpeed;
+      let fy = Math.sin(this.wanderAngle) * wanderSpeed;
+
+      // 4. Hunger Drive (Utility Vector)
       const hunger = 1 - this._energyNorm;
-      if (hunger > 0.3) {
-        let nearestFood: Food | null = null;
-        let nearestDist: number = CONFIG.FOOD_SEEK_RADIUS;
+      this.seekingFood = false;
 
+      if (hunger > 0.25) {
+        let bestFood: Food | null = null;
+        let bestScore = -Infinity;
+
+        // "Rational" search: distance vs value, weighted by Conscientiousness
         for (const f of foods) {
           if (f.claimedBy && f.claimedBy !== this) continue;
-          const d = Math.hypot(f.x - this.x, f.y - this.y);
-          if (d < nearestDist) {
-            nearestDist = d;
-            nearestFood = f;
+          
+          const dx = f.x - this.x;
+          const dy = f.y - this.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq > CONFIG.FOOD_SEEK_RADIUS * CONFIG.FOOD_SEEK_RADIUS) continue;
+
+          // Utility function: Value / Distance
+          // Conscientious creatures are better optimizers
+          const value = (f.size * 10) + (this.typePreference(f.type) * 20);
+          const score = value / (distSq * 0.01 + 1);
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestFood = f;
           }
         }
 
-        if (nearestFood) {
-          if (!nearestFood.claimedBy) {
-            nearestFood.claimedBy = this;
-            this._claimedFood = nearestFood;
+        if (bestFood) {
+          if (!bestFood.claimedBy) {
+            bestFood.claimedBy = this;
+            this._claimedFood = bestFood;
           }
-          this.targetX = nearestFood.x;
-          this.targetY = nearestFood.y;
+          const dx = bestFood.x - this.x;
+          const dy = bestFood.y - this.y;
+          const d = Math.hypot(dx, dy);
+          
+          // Hunger urgency increases force - Linear curve so they act before starvation
+          const urge = hunger * (0.08 + conscientiousness * 0.04);
+          fx += (dx / d) * urge;
+          fy += (dy / d) * urge;
           this.seekingFood = true;
-          baseSpeed *= 1 + hunger * 0.5;
-        } else {
-          this.seekingFood = false;
-          if (this._claimedFood) {
-            if (this._claimedFood.claimedBy === this) {
-              this._claimedFood.claimedBy = null;
-            }
-            this._claimedFood = null;
-          }
-        }
-      } else {
-        this.seekingFood = false;
-        // Clear any claimed food when no longer hungry
-        if (this._claimedFood) {
-          if (this._claimedFood.claimedBy === this) {
-            this._claimedFood.claimedBy = null;
-          }
-          this._claimedFood = null;
         }
       }
 
-      // Wander if no target
-      // NOTE: target coordinates can validly be 0 (screen edge), so null-check explicitly.
-      if (this.targetX === null && this.targetY === null && !this.seekingFood) {
-        this.wanderTimer--;
-        if (this.wanderTimer <= 0) {
-          this.wanderTimer = 60 + Math.random() * 120;
+      // 5. Safety Drive (Residue Gradient)
+      // Neurotic creatures are highly sensitive to "bad vibes"
+      if (this.fear > 0.1 || this.stress > 0.1) {
+        // Sample gradient
+        const step = 20;
+        const rTop = residueGrid.sample(this.x, this.y - step);
+        const rBot = residueGrid.sample(this.x, this.y + step);
+        const rLeft = residueGrid.sample(this.x - step, this.y);
+        const rRight = residueGrid.sample(this.x + step, this.y);
 
-          // Home pull
-          if (this.homeStrength > 0.3 && Math.random() < this.homeStrength * 0.3) {
-            this.targetX = this.homeX + (Math.random() - 0.5) * 40;
-            this.targetY = this.homeY + (Math.random() - 0.5) * 40;
-          } else {
-            this.wanderAngle += (Math.random() - 0.5) * 1.5;
-            const wanderDist = CONFIG.WANDER_RADIUS * (0.5 + this.openness * 0.5);
-            this.targetX = this.x + Math.cos(this.wanderAngle) * wanderDist;
-            this.targetY = this.y + Math.sin(this.wanderAngle) * wanderDist;
-          }
+        // Gradient: High -> Low
+        const safetyGradX = rRight.safety - rLeft.safety;
+        const safetyGradY = rBot.safety - rTop.safety;
+        const distressGradX = rRight.distress - rLeft.distress;
+        const distressGradY = rBot.distress - rTop.distress;
+
+        const sensitivity = 0.05 + (neuroticism * 0.1) + (this.fear * 0.1);
+
+        // Seek Safety
+        fx += safetyGradX * sensitivity;
+        fy += safetyGradY * sensitivity;
+
+        // Flee Distress
+        fx -= distressGradX * sensitivity * 1.5; // Distress is scarier than safety is comforting
+        fy -= distressGradY * sensitivity * 1.5;
+      }
+
+      // 6. Phototaxis (Light Drive)
+      // Scared creatures seek revealed areas
+      if (this.fear > 0.3) {
+        const lightLevel = getLightAt(this.x, this.y);
+        if (lightLevel < 0.3) {
+          // Simple gradient check for light
+          const lLeft = getLightAt(this.x - 20, this.y);
+          const lRight = getLightAt(this.x + 20, this.y);
+          const lTop = getLightAt(this.x, this.y - 20);
+          const lBot = getLightAt(this.x, this.y + 20);
+
+          const lGradX = lRight - lLeft;
+          const lGradY = lBot - lTop;
+          
+          const phototaxis = this.fear * 0.08;
+          fx += lGradX * phototaxis;
+          fy += lGradY * phototaxis;
         }
       }
 
-      // Move toward target
-      if (this.targetX !== null && this.targetY !== null) {
-        const dx = this.targetX - this.x;
-        const dy = this.targetY - this.y;
+      // 7. Social Drive (Flocking vs Isolation)
+      // Extroverts seek crowds; Introverts seek solitude when stressed.
+      // Brave/Stable creatures act as "anchors" or leaders in the flock.
+      let neighborCx = 0, neighborCy = 0, neighborWeight = 0;
+      
+      // Personal space varies by personality
+      // Introverts need up to 30px, Extroverts tolerate 10px
+      const personalSpace = 10 + (1 - extraversion) * 20;
+      const personalSpaceSq = personalSpace * personalSpace;
+
+      for (const other of creatures) {
+        if (other === this) continue;
+        const dx = other.x - this.x;
+        const dy = other.y - this.y;
+        if (Math.abs(dx) > 100 || Math.abs(dy) > 100) continue; // optimization
+
+        const dSq = dx * dx + dy * dy;
+        
+        // Repulsion (Personal Space)
+        if (dSq < personalSpaceSq) {
+           const d = Math.sqrt(dSq);
+           const push = (personalSpace - d) * 0.03; // Stronger push for violation
+           fx -= (dx / d) * push;
+           fy -= (dy / d) * push;
+        }
+
+        // Attraction (Flocking)
+        if (dSq < 3600) { // 60px radius
+           // Weighted influence: Stable/Social creatures exert more "gravity"
+           const influence = 1 + other.stability + other.extraversion;
+           neighborCx += other.x * influence;
+           neighborCy += other.y * influence;
+           neighborWeight += influence;
+        }
+      }
+
+      if (neighborWeight > 0) {
+        const centerX = neighborCx / neighborWeight;
+        const centerY = neighborCy / neighborWeight;
+        const dx = centerX - this.x;
+        const dy = centerY - this.y;
+        
+        // Cohesion force:
+        // Extroverts love groups. Introverts avoid them if stressed.
+        let cohesion = 0;
+        
+        if (extraversion > 0.6) {
+           cohesion = 0.002 * extraversion;
+        } else if (this.stress > 0.5) {
+           // Stressed introvert: "Get away from me"
+           cohesion = -0.004 * (1 - extraversion);
+        } else if (this.lonely > 0.5) {
+           // Lonely introvert: "I guess I need people"
+           cohesion = 0.001;
+        }
+
+        fx += dx * cohesion;
+        fy += dy * cohesion;
+      }
+
+      // 8. Home Drive (Homesteading)
+      // Tired/Stressed creatures retreat to known safe spot
+      if (this.homeStrength > 0.2 && (this.fatigue > 0.6 || this.stress > 0.7)) {
+        const dx = this.homeX - this.x;
+        const dy = this.homeY - this.y;
         const d = Math.hypot(dx, dy);
-
-        if (d > 5) {
-          const moveX = (dx / d) * baseSpeed;
-          const moveY = (dy / d) * baseSpeed;
-          this.vx += moveX * 0.1;
-          this.vy += moveY * 0.1;
-        } else {
-          this.targetX = null;
-          this.targetY = null;
+        
+        // Only pull if far away
+        if (d > 50) {
+           const pull = 0.02 * this.homeStrength * conscientiousness; // Conscientious = Responsible homeowner
+           fx += (dx / d) * pull;
+           fy += (dy / d) * pull;
         }
       }
 
+      // 9. Avoidance (Hazards)
       // Hole avoidance
       for (const hole of holes) {
         const hd = Math.hypot(this.x - hole.x, this.y - hole.y);
-        const avoidRange = hole.radius + 30 + this.fear * 20;
+        const avoidRange = hole.radius + 30 + this.fear * 40; // Scared = Wider berth
         if (hd < avoidRange && hd > 0) {
-          const strength = (1 - hd / avoidRange) * 0.02 * (1 + this.fear);
-          this.vx += ((this.x - hole.x) / hd) * strength;
-          this.vy += ((this.y - hole.y) / hd) * strength;
-          this.fear = Math.min(1, this.fear + 0.002 * (1 - this.stability));
+          const strength = (1 - hd / avoidRange) * 0.08 * (1 + this.fear); // Stronger avoidance
+          fx += ((this.x - hole.x) / hd) * strength; // Away vector
+          fy += ((this.y - hole.y) / hd) * strength;
+          
+          // Panic near holes
+          this.fear = Math.min(1, this.fear + 0.003 * neuroticism);
         }
       }
 
@@ -2759,58 +2955,94 @@ export function initVoidGame(options: GameInitOptions): () => void {
       for (const f of fissures) {
         const force = f.getAvoidanceForce(this.x, this.y, this.fear, this.stability);
         if (force) {
-          this.vx += force.fx;
-          this.vy += force.fy;
+          fx += force.fx * 2.5; // Strong avoidance
+          fy += force.fy * 2.5;
         }
       }
 
-      // Social forces
-      for (const other of creatures) {
-        if (other.id === this.id) continue;
-        const odx = other.x - this.x;
-        const ody = other.y - this.y;
-        if (Math.abs(odx) > 100 || Math.abs(ody) > 100) continue;
-
-        const od = Math.hypot(odx, ody);
-        if (od < 15 && od > 0) {
-          // Separation
-          this.vx -= (odx / od) * 0.02;
-          this.vy -= (ody / od) * 0.02;
-        } else if (od < 60 && this.extraversion > 0.4) {
-          // Cohesion
-          this.vx += (odx / od) * 0.003 * this.extraversion;
-          this.vy += (ody / od) * 0.003 * this.extraversion;
+      // 10. Cursor Interaction (The "Hand")
+      // Creatures notice the player's presence
+      if (mouse.x > -50) {
+        const mdx = mouse.x - this.x;
+        const mdy = mouse.y - this.y;
+        const mdSq = mdx * mdx + mdy * mdy;
+        
+        if (mdSq < 16000) { // ~125px range
+           const md = Math.sqrt(mdSq);
+           // Curiosity vs Fear equation
+           // Curiosity: Openness + Extraversion (dampened by fear)
+           // Wariness: Neuroticism + Fear
+           const curiosity = (openness * 0.7 + extraversion * 0.3) * (1 - this.fear);
+           const wariness = (neuroticism * 0.6 + this.fear * 1.4);
+           
+           const reaction = curiosity - wariness; 
+           
+           // Positive reaction = Attract, Negative = Repel
+           // Repulsion is generally stronger/faster (survival instinct)
+           const intensity = (1 - md / 125);
+           if (reaction > 0.1) {
+              // Curious approach
+              const force = intensity * 0.015 * reaction;
+              fx += (mdx / md) * force;
+              fy += (mdy / md) * force;
+           } else if (reaction < -0.1) {
+              // Fearful retreat
+              const force = intensity * 0.04 * Math.abs(reaction);
+              fx -= (mdx / md) * force;
+              fy -= (mdy / md) * force;
+           }
         }
       }
 
-      // Void chorus attraction
-      if (this._voidChorusTimer > 0) {
-        this._voidChorusTimer--;
-        for (const other of creatures) {
-          if (other.id === this.id || other._voidChorusTimer > 0) continue;
-          const od = Math.hypot(other.x - this.x, other.y - this.y);
-          if (od < 150 && od > 20) {
-            const pull = this._voidChorusStrength * 0.01 * (1 - od / 150);
-            other.vx += ((this.x - other.x) / od) * pull;
-            other.vy += ((this.y - other.y) / od) * pull;
-          }
-        }
+      // 11. Personality Noise (Gait/Jitter)
+      // High neuroticism/stress adds random erratic force
+      if (neuroticism > 0.4 || this.stress > 0.3) {
+         const jitter = (neuroticism * 0.03) + (this.stress * 0.04);
+         fx += (Math.random() - 0.5) * jitter;
+         fy += (Math.random() - 0.5) * jitter;
       }
 
-      // Apply velocity
-      this.vx *= 0.92;
-      this.vy *= 0.92;
+      // 12. Integration & Physics
+      // Apply acceleration to velocity
+      this.vx += fx;
+      this.vy += fy;
+
+      // Speed Limiting / Damping
+      // Fatigue reduces max speed and increases drag
+      const maxSpeed = (0.25 + extraversion * 0.15) * (1 - this.fatigue * 0.5);
+      
+      // Drag/Grip: Conscientious creatures have better "traction" (less slide)
+      // Low stability creatures slide more (erratic)
+      const baseDrag = 0.92;
+      const grip = baseDrag + (conscientiousness * 0.03) - (neuroticism * 0.02) - (this.fatigue * 0.02);
+      
+      const currentSpeed = Math.hypot(this.vx, this.vy);
+      if (currentSpeed > maxSpeed) {
+        this.vx = (this.vx / currentSpeed) * maxSpeed;
+        this.vy = (this.vy / currentSpeed) * maxSpeed;
+      }
+      
+      this.vx *= grip;
+      this.vy *= grip;
+
       this.x += this.vx;
       this.y += this.vy;
 
-      // Bounds
+      // World Bounds (Bounce)
       const margin = 20;
-      if (this.x < margin) { this.x = margin; this.vx *= -0.5; }
-      if (this.x > W - margin) { this.x = W - margin; this.vx *= -0.5; }
-      if (this.y < margin) { this.y = margin; this.vy *= -0.5; }
-      if (this.y > H - margin) { this.y = H - margin; this.vy *= -0.5; }
+      if (this.x < margin) { this.x = margin; this.vx *= -0.8; }
+      if (this.x > W - margin) { this.x = W - margin; this.vx *= -0.8; }
+      if (this.y < margin) { this.y = margin; this.vy *= -0.8; }
+      if (this.y > H - margin) { this.y = H - margin; this.vy *= -0.8; }
 
       this._cachedSpeed = Math.hypot(this.vx, this.vy);
+    }
+    
+    // Helper for food preference (can be expanded)
+    typePreference(type: FoodType): number {
+      if (type === "green" && this.stress > 0.5) return 2.0; // Comfort food
+      if (type === "cyan" && this.fear > 0.5) return 1.5;   // Light food
+      return 1.0;
     }
 
     updateReveal(): void {
@@ -2857,6 +3089,38 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     updateMood(): void {
+      // 1. Environmental Influence (Residue/Scent)
+      const residue = residueGrid.sample(this.x, this.y);
+
+      // Safety calms fear and stress
+      if (residue.safety > 0.05) {
+        this.fear = Math.max(0, this.fear - 0.008 * residue.safety);
+        this.stress = Math.max(0, this.stress - 0.005 * residue.safety);
+        this.comforted = Math.min(1, this.comforted + 0.003 * residue.safety);
+        // Feeling safe improves trust slowly
+        this.trust = Math.min(1, this.trust + 0.0005 * residue.safety);
+      }
+
+      // Distress increases fear and stress
+      if (residue.distress > 0.05) {
+        // Stable creatures resist environmental panic better
+        const impact = residue.distress * (1 - this.stability * 0.6);
+        this.fear = Math.min(1, this.fear + 0.006 * impact);
+        this.stress = Math.min(1, this.stress + 0.004 * impact);
+      }
+
+      // 2. Emit Residue
+      // If very happy/calm/comforted -> Deposit Safety
+      if (this.happiness > 70 || this.comforted > 0.4) {
+        residueGrid.deposit(this.x, this.y, "safety", 0.02 + this.extraversion * 0.02);
+      }
+      // If scared/stressed -> Deposit Distress
+      if (this.fear > 0.3 || this.stress > 0.5) {
+        // Neurotic (low stability) creatures emit more distress
+        const emission = 0.03 + (1 - this.stability) * 0.04;
+        residueGrid.deposit(this.x, this.y, "distress", emission);
+      }
+
       // Comfort decay
       this.comforted = Math.max(0, this.comforted - 0.002);
       this.petted = Math.max(0, this.petted - 0.03);
@@ -3017,12 +3281,43 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     updateSocial(): void {
-      // Update bonds with nearby creatures
+      // Update bonds and spread emotions
       for (const other of creatures) {
         if (other.id === this.id) continue;
         const d = Math.hypot(other.x - this.x, other.y - this.y);
+
+        // Bonds form at close range
         if (d < CONFIG.FRIEND_RADIUS) {
           this.updateBond(other.id, "proximity");
+        }
+
+        // Emotions spread at social range
+        if (d < CONFIG.SOCIAL_RADIUS) {
+          const proximity = 1 - d / CONFIG.SOCIAL_RADIUS;
+
+          // Fear Contagion: "Panic spreads"
+          // High agreeableness (empathy) + Low stability (neuroticism) = High susceptibility
+          if (other.fear > 0.2) {
+            const susceptibility = this.agreeableness * (1.6 - this.stability);
+            const fearInflux = other.fear * 0.004 * susceptibility * proximity;
+            
+            this.fear = Math.min(1, this.fear + fearInflux);
+            this.stress = Math.min(1, this.stress + fearInflux * 0.5);
+            
+            // Observing fear makes one lose comfort
+            this.comforted = Math.max(0, this.comforted - fearInflux * 2);
+          }
+
+          // Calm Contagion: "Comfort spreads"
+          // High agreeableness = High receptivity to comfort
+          if (other.comforted > 0.2 || other.happiness > 75) {
+            const susceptibility = this.agreeableness * (0.8 + this.trust * 0.4);
+            const calmInflux = (other.comforted + (other.happiness / 100) * 0.5) * 0.002 * susceptibility * proximity;
+
+            this.comforted = Math.min(1, this.comforted + calmInflux);
+            this.stress = Math.max(0, this.stress - calmInflux);
+            this.fear = Math.max(0, this.fear - calmInflux * 1.5);
+          }
         }
       }
     }
@@ -3319,7 +3614,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // ============================================================================
 
   function generateTerrain(depth: number, seed: number): { baseLight: number; safeZoneCount: number } {
-    terrainSeed = seed;
     terrainFeatures = [];
     initWorldRandom(seed);
 
@@ -3720,6 +4014,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
     revealH = Math.ceil(H / revealRes);
     revealMap = new Float32Array(revealW * revealH);
     lastRevealTime = new Float32Array(revealW * revealH);
+    
+    // Clear residue map on world reset
+    residueGrid.cells.fill(0);
 
     initializeFogWorkerIfNeeded();
 
@@ -4058,12 +4355,27 @@ export function initVoidGame(options: GameInitOptions): () => void {
       if (!revealDims) return null;
     }
 
+    let residueMap: number[] | null = null;
+    if (Array.isArray(data.residueMap) && data.residueMap.every((n) => typeof n === "number" && Number.isFinite(n))) {
+      residueMap = data.residueMap;
+    }
+
+    let residueDims: { w: number; h: number } | null = null;
+    if (data.residueDims && typeof data.residueDims === "object") {
+      const d = data.residueDims as { w?: unknown; h?: unknown };
+      if (typeof d.w === "number" && typeof d.h === "number") {
+        residueDims = { w: d.w, h: d.h };
+      }
+    }
+
     return {
       version: SAVE_SCHEMA_VERSION,
       depth: data.depth,
       creatures: data.creatures,
       revealMap,
       revealDims,
+      residueMap,
+      residueDims,
     };
   }
 
@@ -4078,6 +4390,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
       creatures: creatures.map((c) => serializeCreature(c)),
       revealMap: revealMap ? compressRevealMap(revealMap) : null,
       revealDims: revealMap ? { w: revealW, h: revealH } : null,
+      residueMap: Array.from(residueGrid.cells),
+      residueDims: { w: residueGrid.width, h: residueGrid.height },
     };
 
     const doSave = () => {
@@ -4167,6 +4481,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
         fogCanvas = null;
         fogDirty = true;
       }
+
+      if (data.residueMap && data.residueDims && data.residueDims.w === residueGrid.width && data.residueDims.h === residueGrid.height) {
+        residueGrid.cells.set(data.residueMap);
+      }
+
       return creatures.length > 0;
     } catch {
       return false;
@@ -4458,6 +4777,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       updateFogDecay();
     }
 
+    // Residue decay - every 4 frames
+    if (time % 4 === 0) {
+      residueGrid.decay(0.996);
+    }
+
     // Sync worker's revealMap to main thread for getLightAt() - every 6 frames
     if (time % 6 === 0 && fogWorker.isActive) {
       fogWorker.requestRevealMap();
@@ -4626,6 +4950,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     initRevealMap(false);
     fogWorker.resize(W, H);
+    residueGrid.resize(W, H);
 
     if (oldReveal && oldW && oldH && revealW && revealH && revealMap && lastRevealTime) {
       const scaleX = oldW / revealW;

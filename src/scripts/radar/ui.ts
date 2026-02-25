@@ -461,25 +461,6 @@ function isLocalBrowserTarget(target: RadarTarget): boolean {
   return false;
 }
 
-function connectionToInferredRssi(effectiveType: string | undefined, connType: string | undefined): number | null {
-  // effectiveType is Chrome/Android only; connType is Firefox/broader support
-  switch (effectiveType) {
-    case "4g": return -56;
-    case "3g": return -69;
-    case "2g": return -85;
-    case "slow-2g": return -92;
-  }
-  // Fallback: use connection.type (available in Firefox)
-  switch (connType) {
-    case "ethernet": return -42;
-    case "wifi": return -55;
-    case "wimax": return -58;
-    case "cellular": return -72;
-    case "bluetooth": return -65;
-    default: return null;
-  }
-}
-
 function rangeToCanvasRadius(distanceM: number, scopeRadiusPx: number, mapRangeM = MAX_DISTANCE_M): number {
   const clampedRange = clamp(mapRangeM, MAP_RANGE_FLOOR_M, MAX_DISTANCE_M);
   const normalized = Math.log1p(distanceM) / Math.log1p(clampedRange);
@@ -493,16 +474,6 @@ function formatTime(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-  });
-}
-
-function escapeText(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => {
-    if (char === "&") return "&amp;";
-    if (char === "<") return "&lt;";
-    if (char === ">") return "&gt;";
-    if (char === '"') return "&quot;";
-    return "&#39;";
   });
 }
 
@@ -1074,7 +1045,6 @@ export function initRadar(opts: RadarUIOptions): () => void {
   let selfLon: number | null = null;
   let selfAcc: number | null = null;
   let selfSpeed: number | null = null;
-  let geoHeadingAvailable = false;
   let timingProbeInFlight = false;
   let timingProbePending = false;
   let fetchProbeInFlight = false;
@@ -1987,7 +1957,6 @@ export function initRadar(opts: RadarUIOptions): () => void {
       .map((row) => {
         const target = row.target;
         const ageSec = row.ageSec;
-        const stateAgeSec = Math.max(0, Math.floor((now - target.stateSince) / 1000));
         const conf = Math.round(target.confidence * 100);
         const priority = Math.round(row.priority * 100);
         const bearingDeg = angleRadToBearingDeg(target.angleRad);
@@ -2098,15 +2067,11 @@ export function initRadar(opts: RadarUIOptions): () => void {
     }
 
     const selectedTarget = selectedRow.target;
-    const ageSec = Math.max(0, Math.floor((now - selectedTarget.lastSeen) / 1000));
-    const conf = Math.round(selectedTarget.confidence * 100);
-    const priority = Math.round(selectedRow.priority * 100);
     const bearingDeg = angleRadToBearingDeg(selectedTarget.angleRad);
     const cardinal = bearingToCardinal(bearingDeg);
     const relative = relativeBearingLabel(bearingDeg, compassHeading);
     const rangeLabel = selectedTarget.distanceM === null ? "inferred" : formatDistance(selectedTarget.distanceM);
     const sigmaLabel = selectedTarget.sigmaM === null ? "" : ` +/-${selectedTarget.sigmaM.toFixed(1)}m`;
-    const trend = selectedTarget.trend === "unknown" ? "unknown" : selectedTarget.trend;
     const stateLabel = formatContactState(selectedRow.state);
     const stateAge = Math.max(0, Math.floor((now - selectedTarget.stateSince) / 1000));
     const activityLabel = selectedRow.active ? "active" : "inactive";
@@ -2217,8 +2182,6 @@ export function initRadar(opts: RadarUIOptions): () => void {
 
     // effectiveType gives us quality-based inferred RSSI
     // but even without it, downlink/rtt are useful data
-    const inferredRssi = connectionToInferredRssi(effectiveType, connType);
-
     const metrics: string[] = [];
     if (effectiveType) metrics.push(effectiveType);
     if (connType && connType !== effectiveType) metrics.push(connType);
@@ -2639,7 +2602,6 @@ export function initRadar(opts: RadarUIOptions): () => void {
           Number.isFinite(pos.coords.heading) &&
           pos.coords.heading >= 0
         ) {
-          geoHeadingAvailable = true;
           // Only apply if device orientation hasn't provided a heading
           if (!compassFromOrientation) {
             compassHeading = pos.coords.heading;
@@ -2894,7 +2856,6 @@ export function initRadar(opts: RadarUIOptions): () => void {
     selfSpeed = null;
     compassHeading = null;
     compassFromOrientation = false;
-    geoHeadingAvailable = false;
     ambientLux = null;
     smoothedRttMs = null;
     smoothedFetchRttMs = null;

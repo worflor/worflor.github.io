@@ -49,6 +49,7 @@ export async function copyToClipboard(text: string): Promise<void> {
   try {
     ta.focus();
     ta.select();
+    // @ts-ignore deprecated fallback API kept for compatibility
     const ok = document.execCommand("copy");
     if (!ok) throw new Error("Copy failed.");
   } finally {

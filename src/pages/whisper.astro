@@ -1002,6 +1002,7 @@ const seo = {
     let cleanupLive: (() => void) | null = null;
     let cleanupSeal: (() => void) | null = null;
     let cleanupCampfire: (() => void) | null = null;
+    let submodeAbort: AbortController | null = null;
     const whisperWindow = window as unknown as Record<string, WhisperLifecycle | undefined>;
 
     function boot() {
@@ -1036,6 +1037,10 @@ const seo = {
         "cf-ended-section",
       ];
 
+      submodeAbort?.abort();
+      submodeAbort = new AbortController();
+      const submodeSignal = submodeAbort.signal;
+
       const phaseElements = (ids: string[]): HTMLElement[] =>
         ids
           .map((id) => document.getElementById(id))
@@ -1068,7 +1073,7 @@ const seo = {
         radio.addEventListener("change", () => {
           if (!radio.checked) return;
           syncLiveSubmode(radio.value === "campfire" ? "campfire" : "1:1");
-        });
+        }, { signal: submodeSignal });
       });
 
       const checkedMode = Array.from(submodeRadios).find((r) => r.checked)?.value;
@@ -1084,6 +1089,8 @@ const seo = {
       cleanupSeal = null;
       cleanupCampfire?.();
       cleanupCampfire = null;
+      submodeAbort?.abort();
+      submodeAbort = null;
     }
 
     function detachLifecycle() {
@@ -1093,11 +1100,6 @@ const seo = {
 
     function handleBeforeSwap() {
       teardown();
-      detachLifecycle();
-      const current = whisperWindow[WHISPER_LIFECYCLE_KEY];
-      if (current?.boot === boot) {
-        delete whisperWindow[WHISPER_LIFECYCLE_KEY];
-      }
     }
 
     function attachLifecycle() {
@@ -1111,7 +1113,7 @@ const seo = {
         prev.detach();
       } else {
         document.removeEventListener("astro:after-swap", prev.boot);
-        document.removeEventListener("astro:before-swap", prev.teardown);
+        document.removeEventListener("astro:before-swap", handleBeforeSwap);
       }
       prev.teardown?.();
     }

@@ -1761,94 +1761,13 @@ export async function parseFile(file: File): Promise<LensData> {
     summaryItems: resolvedSummary,
   };
 }
-/** Build result for files with EXIF data (JPEG/TIFF — the original path) */
-function buildExifResult(
-  exif: RawExif,
-  meta: FileMetadata,
-  containerFormat: ExifContainerFormat | null,
-): LensData {
-  const builders: Array<{
-    id: string;
-    title: string;
-    build: () => ExifField[];
-  }> = [
-      { id: "file", title: "FILE", build: () => buildFileCategory(meta) },
-      { id: "image", title: "IMAGE", build: () => buildImageCategory(exif) },
-      { id: "camera", title: "CAMERA", build: () => buildCameraCategory(exif) },
-      { id: "exposure", title: "EXPOSURE", build: () => buildExposureCategory(exif) },
-      { id: "focus", title: "FOCUS & FLASH", build: () => buildFocusCategory(exif) },
-      { id: "datetime", title: "DATE & TIME", build: () => buildDateTimeCategory(exif) },
-      { id: "gps", title: "GPS", build: () => buildGpsCategory(exif) },
-      { id: "iptc", title: "IPTC METADATA", build: () => buildIptcCategory(exif) },
-      { id: "xmp", title: "XMP METADATA", build: () => buildXmpCategory(exif) },
-      { id: "icc", title: "COLOR PROFILE", build: () => buildIccCategory(exif) },
-      { id: "software", title: "SOFTWARE", build: () => buildSoftwareCategory(exif) },
-      { id: "advanced", title: "ADVANCED", build: () => buildAdvancedCategory(exif) },
-    ];
 
-  const categories: ExifCategory[] = [];
-
-  for (const b of builders) {
-    const fields = b.build();
-    if (fields.length > 0) {
-      categories.push({
-        id: b.id,
-        title: b.title,
-        fields,
-        expanded: b.id === "file" || b.id === "camera",
-      });
-    }
-  }
-
-  const { totalFields, populatedFields } = computeFieldCounts(categories);
-
-  // Determine camera name
-  const make = typeof exif["Make"] === "string" ? exif["Make"].trim() : "";
-  const model = typeof exif["Model"] === "string" ? exif["Model"].trim() : "";
-  let cameraName: string | null = null;
-  if (model) {
-    cameraName = make && !model.toLowerCase().startsWith(make.toLowerCase())
-      ? `${make} ${model}`
-      : model;
-  } else if (make) {
-    cameraName = make;
-  }
-
-  const hasGps = categories.some(
-    (c) => c.id === "gps" && c.fields.some((f) => f.id !== "gps.warning"),
-  );
-  const formatName = containerFormat
-    ?? (meta.type === "image/jpeg" || meta.type === "image/jpg" ? "JPEG" : "TIFF");
-  const formatFamily = formatName === "JPEG" ? "jpeg" : "tiff";
-
-  return {
-    categories,
-    totalFields,
-    populatedFields,
-    hasGps,
-    hasExif: true,
-    cameraName,
-    fileName: meta.name,
-    fileSize: meta.size,
-    parsedAt: Date.now(),
-    formatFamily,
-    formatName,
-    previewType: "image",
-    summaryItems: [
-      { label: "camera", value: cameraName ?? "none" },
-      { label: "GPS", value: hasGps ? "yes" : "no" },
-    ],
-  };
-}
-
-/**
- * Minimal IPTC/IIM parser for Photoshop APP13 segments.
- */
 function parseIptc(view: DataView, offset: number, length: number): RawExif {
   const result: RawExif = {};
   let pos = offset;
   const end = offset + length;
 
+  if (readAscii(view, pos, 13) !== "Photoshop 3.0") return result;
   // Skip "Photoshop 3.0\0"
   pos += 14;
 

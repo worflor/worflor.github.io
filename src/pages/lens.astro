@@ -256,11 +256,6 @@ const seo = {
 
     function handleBeforeSwap() {
       teardown();
-      detachLifecycle();
-      const current = lensWindow[LENS_LIFECYCLE_KEY];
-      if (current?.boot === boot) {
-        delete lensWindow[LENS_LIFECYCLE_KEY];
-      }
     }
 
     function attachLifecycle() {
