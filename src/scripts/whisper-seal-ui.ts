@@ -55,6 +55,7 @@ export interface WhisperSealUIOptions {
 
   /* Inline compose fields */
   recipientSealInput: HTMLInputElement;
+  recipientPasteBtn: HTMLButtonElement;
   recipientQrScanBtn: HTMLButtonElement;
   recipientQrImageBtn: HTMLButtonElement;
   recipientQrFileInput: HTMLInputElement;
@@ -122,6 +123,7 @@ export const WHISPER_SEAL_IDS = {
   mySealInline: "ws-my-seal-inline",
   mySealInlinePanel: "ws-my-seal-inline-panel",
   recipientSealInput: "ws-recipient-seal",
+  recipientPasteBtn: "ws-recipient-paste",
   recipientQrScanBtn: "ws-recipient-qr-scan",
   recipientQrImageBtn: "ws-recipient-qr-image",
   recipientQrFileInput: "ws-recipient-qr-file",
@@ -193,6 +195,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
   const mySealInlinePanel = q(root, IDS.mySealInlinePanel);
 
   const recipientSealInput = asInput(q(root, IDS.recipientSealInput));
+  const recipientPasteBtn = asButton(q(root, IDS.recipientPasteBtn));
   const recipientQrScanBtn = asButton(q(root, IDS.recipientQrScanBtn));
   const recipientQrImageBtn = asButton(q(root, IDS.recipientQrImageBtn));
   const recipientQrFileInput = asInput(q(root, IDS.recipientQrFileInput));
@@ -249,7 +252,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
   if (
     !page || !logOutput || !logDot ||
     !overlay || !soloPanel || !mySealBtn || !mySealInline || !mySealInlinePanel ||
-    !recipientSealInput || !recipientQrScanBtn || !recipientQrImageBtn ||
+    !recipientSealInput || !recipientPasteBtn || !recipientQrScanBtn || !recipientQrImageBtn ||
     !recipientQrFileInput || !recipientQrStopBtn || !recipientQrPanel || !recipientQrStatus || !recipientQrVideo ||
     !sealValidation ||
     !messageInput || !charCount || !extraPasswordInput ||
@@ -271,7 +274,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
   return {
     page, logOutput, logDot,
     overlay, soloPanel, mySealBtn, mySealInline, mySealInlinePanel,
-    recipientSealInput, recipientQrScanBtn, recipientQrImageBtn,
+    recipientSealInput, recipientPasteBtn, recipientQrScanBtn, recipientQrImageBtn,
     recipientQrFileInput, recipientQrStopBtn, recipientQrPanel, recipientQrStatus, recipientQrVideo,
     sealValidation,
     messageInput, charCount, extraPasswordInput,
@@ -869,6 +872,30 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       opts.recipientSealInput.value = normalized;
     }
     syncCompose();
+  }, { signal });
+
+  // Paste — focus input on click, validate on paste event
+  function pulsePaste(cls: string): void {
+    opts.recipientPasteBtn.classList.remove("ws-copy-pulse", "ws-reject-pulse");
+    void opts.recipientPasteBtn.offsetWidth;
+    opts.recipientPasteBtn.classList.add(cls);
+  }
+  opts.recipientPasteBtn.addEventListener("click", () => {
+    opts.recipientSealInput.focus();
+    opts.recipientSealInput.select();
+  }, { signal });
+  opts.recipientSealInput.addEventListener("paste", (e) => {
+    const pasted = e.clipboardData?.getData("text") ?? "";
+    const normalized = normalizeSealCodeInput(pasted.trim());
+    if (isSealCodeValid(normalized)) {
+      e.preventDefault();
+      opts.recipientSealInput.value = normalized;
+      syncCompose();
+      pulsePaste("ws-copy-pulse");
+    } else if (pasted.trim().length > 0) {
+      e.preventDefault();
+      pulsePaste("ws-reject-pulse");
+    }
   }, { signal });
 
   opts.messageInput.addEventListener("input", () => { syncCompose(); syncCharCount(); }, { signal });

@@ -169,7 +169,17 @@ const seo = {
           <div class="ws-seal-fields" id="ws-seal-fields">
             <label class="whisper-field" for="ws-recipient-seal">
               <span class="whisper-field-label">recipient's seal</span>
-              <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
+              <div class="whisper-password-row">
+                <input id="ws-recipient-seal" type="text" class="whisper-input whisper-password-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
+                <div class="whisper-password-tools" role="group" aria-label="Seal paste tools">
+                  <button
+                    id="ws-recipient-paste"
+                    class="whisper-mini-btn"
+                    type="button"
+                    aria-label="Paste a valid seal code from clipboard"
+                  >Paste</button>
+                </div>
+              </div>
             </label>
             <div class="ws-recipient-tools" role="group" aria-label="Recipient seal QR tools">
               <button id="ws-recipient-qr-scan" type="button" class="whisper-mini-btn">Scan QR</button>
@@ -2443,6 +2453,16 @@ const seo = {
 
   .ws-copy-pulse {
     animation: ws-copy-pulse 0.7s ease-out;
+  }
+
+  /* Reject pulse — red flash for invalid/denied actions */
+  @keyframes ws-reject-pulse {
+    0%   { background: rgb(var(--chromatic-red) / 0.25) !important; color: rgb(var(--chromatic-red)) !important; }
+    100% { background: transparent !important; }
+  }
+
+  .ws-reject-pulse {
+    animation: ws-reject-pulse 0.7s ease-out;
   }
 
   /* Computing shimmer — repeating border glow while working */
