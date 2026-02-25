@@ -16,7 +16,7 @@
  */
 
 import { sha256, randomBytes } from "./wasm";
-import { TE } from "./live-crypto";
+import { TE, hkdf } from "./live-crypto";
 
 /* ── API ──────────────────────────────────────────────────── */
 
@@ -51,6 +51,12 @@ const EPOCH_WINDOW = 2 * 60 * 1000; // 2 minutes
 const PADDED_CODE_LEN = 1024;
 const PAD_CHAR = "."; // not in base64url alphabet
 
+/** Minimum viable SDP code length — anything shorter is garbage. */
+const MIN_CODE_LEN = 40;
+
+/** Rough base64url pattern — quick sanity check before spending crypto on decode. */
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+
 /* ── Helpers ──────────────────────────────────────────────── */
 
 /** Each byte → one char via fromCharCode.
@@ -61,15 +67,21 @@ function toBin(bytes: Uint8Array): string {
   return s;
 }
 
+const TRACKER_HASH_INFO = TE.encode("whisper-tracker-room");
+const ZERO_SALT_20 = new Uint8Array(20);
+
 /** Derive two info_hashes salted with the current and previous epoch,
- *  so peers near an epoch boundary still discover each other. */
+ *  so peers near an epoch boundary still discover each other.
+ *  Uses SHA-256 → HKDF to slow down dictionary attacks on common phrases. */
 async function deriveInfoHashes(phrase: string): Promise<[current: string, previous: string]> {
   const epoch = Math.floor(Date.now() / EPOCH_WINDOW);
+  const phraseHash = await sha256(TE.encode("whisper-tracker|" + phrase));
   const [cur, prev] = await Promise.all([
-    sha256(TE.encode("whisper-tracker|" + phrase + "|" + epoch)),
-    sha256(TE.encode("whisper-tracker|" + phrase + "|" + (epoch - 1))),
+    hkdf(phraseHash, TE.encode(String(epoch)), TRACKER_HASH_INFO, 20),
+    hkdf(phraseHash, TE.encode(String(epoch - 1)), TRACKER_HASH_INFO, 20),
   ]);
-  return [toBin(cur.slice(0, 20)), toBin(prev.slice(0, 20))];
+  phraseHash.fill(0);
+  return [toBin(cur), toBin(prev)];
 }
 
 function randomBinId(): string {
@@ -157,6 +169,7 @@ function connectToTracker(
 
     let ws: WebSocket | null = null;
     let resolved = false;
+    let offerAccepted = false; // only accept one offer per connection
     let reannounceTimer: ReturnType<typeof setInterval> | null = null;
 
     const finish = (result?: TrackerSignalResult, error?: Error) => {
@@ -221,10 +234,13 @@ function connectToTracker(
 
     ws.onmessage = (event) => {
       if (resolved) return;
+      // Cap inbound message size — tracker messages should be small
+      const raw = String(event.data);
+      if (raw.length > 8192) return;
 
       let msg: Record<string, unknown>;
       try {
-        msg = JSON.parse(String(event.data)) as Record<string, unknown>;
+        msg = JSON.parse(raw) as Record<string, unknown>;
       } catch { return; }
 
       if (msg["failure reason"]) {
@@ -239,7 +255,14 @@ function connectToTracker(
         const peerOfferId = String(msg.offer_id ?? "");
         const peerPeerId = String(msg.peer_id ?? "");
 
-        if (!peerOfferCode) return;
+        // Reject empty, self-echoed, or malformed offers
+        if (!peerOfferCode || peerOfferCode.length < MIN_CODE_LEN) return;
+        if (peerPeerId === peerId) return; // tracker echoed our own offer
+        if (!BASE64URL_RE.test(peerOfferCode)) return;
+
+        // Only accept one offer per connection — prevents flood
+        if (offerAccepted) return;
+        offerAccepted = true;
 
         // Simultaneous arrival tie-break: lower peer_id becomes answerer
         if (peerId > peerPeerId) {
@@ -278,7 +301,8 @@ function connectToTracker(
       if (msg.answer && typeof msg.answer === "object") {
         const answer = msg.answer as Record<string, unknown>;
         const peerAnswerCode = unpadCode(String(answer.sdp ?? ""));
-        if (!peerAnswerCode) return;
+        if (!peerAnswerCode || peerAnswerCode.length < MIN_CODE_LEN) return;
+        if (!BASE64URL_RE.test(peerAnswerCode)) return;
 
         callbacks.onStatus("found your peer!");
         callbacks.onLog("relay: peer accepted our offer");

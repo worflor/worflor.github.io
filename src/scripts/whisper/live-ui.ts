@@ -276,6 +276,7 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
 export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const ac = new AbortController();
   const { signal } = ac;
+  const liveSurface = document.getElementById("wl-section");
   let session: WhisperLiveSession | null = null;
   const objectUrls = new Set<string>();
   let busy = false;
@@ -328,6 +329,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     for (const phase of allPhases) {
       phase.style.display = phase === el ? "" : "none";
+    }
+    if (liveSurface) {
+      liveSurface.classList.toggle("wl-connected", el === opts.chatSection);
     }
   }
 
@@ -608,6 +612,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const answerHasCode = opts.answerInput.value.trim().length > 0;
     const hasChatText = opts.chatInput.value.trim().length > 0;
     const hasSession = session !== null;
+    const chatVisible = opts.chatSection.style.display !== "none";
 
     opts.createBtn.disabled = busy;
     opts.joinBtn.disabled = busy || !joinHasCode;
@@ -636,8 +641,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       opts.relayConnectBtn.disabled = busy;
     }
 
-    // Campfire funnel is a post-connect action from the active 1:1 chat surface.
-    opts.funnelCampfireBtn.disabled = busy || !hasSession;
+    // Header controls are active while the chat surface is visible.
+    opts.funnelCampfireBtn.disabled = busy || !chatVisible;
 
     // Hide mode switch when busy or mid-session
     const modeSwitchWrap = modeSwitchBtn?.closest(".wl-mode-switch") as HTMLElement | null;
@@ -650,7 +655,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     opts.confirmBtn.disabled = busy || !hasSession;
     opts.rejectBtn.disabled = busy || !hasSession;
-    opts.disconnectBtn.disabled = busy || !hasSession;
+    opts.disconnectBtn.disabled = busy || (!hasSession && !chatVisible);
     opts.silentDisconnectBtn.disabled = busy || !hasSession;
   }
 
@@ -1340,7 +1345,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   // Disconnect
   opts.disconnectBtn.addEventListener("click", () => {
-    session?.disconnect();
+    if (session) {
+      session.disconnect();
+      return;
+    }
+    if (opts.chatSection.style.display !== "none") {
+      resetToIdle();
+    }
   }, { signal });
 
   // Silent mode copy + disconnect

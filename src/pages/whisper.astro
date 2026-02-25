@@ -349,8 +349,8 @@ const seo = {
           <p class="wl-head-subtitle">encrypted peer-to-peer chat, no accounts, no servers</p>
           <div class="wl-head-right">
             <div class="cf-live-mode-toggle" role="group" aria-label="Live controls">
-              <button id="wl-funnel-campfire" type="button" class="whisper-mini-btn cf-head-btn">campfire</button>
-              <button id="wl-disconnect" type="button" class="whisper-mini-btn cf-head-btn wl-disconnect-btn">stop</button>
+              <button id="wl-funnel-campfire" type="button" class="whisper-mini-btn cf-head-btn">start a campfire</button>
+              <button id="wl-disconnect" type="button" class="whisper-mini-btn cf-head-btn wl-disconnect-btn">Quit</button>
             </div>
           </div>
 
@@ -2195,16 +2195,22 @@ const seo = {
   }
 
   .wl-phase--chat {
-    margin-top: calc(var(--space-sm) * -1.05);
-    position: relative;
-    z-index: 2;
+    margin-top: 0;
+  }
+
+  .whisper-op-live.wl-connected .wl-phase--chat {
+    margin-top: calc(var(--space-sm) * -1);
   }
 
   .wl-head {
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr;
     grid-template-rows: auto auto auto;
     gap: calc(var(--space-xs) * 0.6) var(--space-sm);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      border-radius var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out);
   }
 
   .wl-head-title {
@@ -2217,11 +2223,27 @@ const seo = {
   }
 
   .wl-head-right {
+    display: none;
     flex: 0 0 auto;
     justify-self: end;
     grid-column: 2;
     grid-row: 3;
     align-self: center;
+  }
+
+  .whisper-op-live.wl-connected .wl-head {
+    grid-template-columns: 1fr auto;
+  }
+
+  .whisper-op-live.wl-connected .wl-head-right {
+    display: flex;
+  }
+
+  .whisper-op-live.wl-connected .wl-head {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom-color: rgb(var(--color-text-rgb) / 0.08);
+    box-shadow: none;
   }
 
   .wl-head-subtitle {
@@ -2782,9 +2804,16 @@ const seo = {
     padding: 0;
     overflow: hidden;
     background: var(--whisper-surface);
-    border-top-left-radius: calc(var(--whisper-radius) * 0.9);
-    border-top-right-radius: calc(var(--whisper-radius) * 0.9);
-    box-shadow: 0 -1px 0 rgb(var(--color-text-rgb) / 0.06);
+    border-top-left-radius: var(--whisper-radius);
+    border-top-right-radius: var(--whisper-radius);
+    border-top: 1px solid var(--whisper-edge);
+  }
+
+  .whisper-op-live.wl-connected .wl-chat-panel {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    border-top-color: rgb(var(--color-text-rgb) / 0.08);
+    box-shadow: var(--edge-highlight);
   }
 
   .wl-chat-tools {
@@ -2820,7 +2849,7 @@ const seo = {
     gap: calc(var(--space-xs) * 0.42);
     scrollbar-width: thin;
     transition: background var(--duration-normal) var(--ease-out);
-    background: rgb(var(--color-bg-rgb) / 0.16);
+    background: rgb(var(--color-text-rgb) / 0.015);
   }
 
   .wl-chat-messages:global(.wl-chat-drop-active) {
@@ -2929,7 +2958,7 @@ const seo = {
     flex-wrap: wrap;
     padding: calc(var(--space-xs) * 0.7);
     border-top: 1px solid var(--whisper-edge);
-    background: rgb(var(--color-text-rgb) / 0.022);
+    background: rgb(var(--color-text-rgb) / 0.016);
   }
 
   .wl-chat-text-input {

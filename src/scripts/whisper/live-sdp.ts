@@ -174,6 +174,17 @@ async function compressToBytes(compact: CompactSDP): Promise<Uint8Array> {
   return concatBytes(new Uint8Array([FLAG_RAW]), raw);
 }
 
+function validateCompactSDP(obj: unknown): CompactSDP {
+  if (!obj || typeof obj !== "object") throw new Error("Invalid SDP structure");
+  const o = obj as Record<string, unknown>;
+  if (typeof o.ufrag !== "string" || typeof o.pwd !== "string" ||
+      typeof o.fingerprint !== "string" || typeof o.setup !== "string") {
+    throw new Error("SDP missing required fields");
+  }
+  if (!Array.isArray(o.candidates)) throw new Error("SDP missing candidates");
+  return o as unknown as CompactSDP;
+}
+
 async function decompressFromBytes(data: Uint8Array): Promise<CompactSDP> {
   const flag = data[0];
   const payload = data.subarray(1);
@@ -183,10 +194,10 @@ async function decompressFromBytes(data: Uint8Array): Promise<CompactSDP> {
     const writer = ds.writable.getWriter();
     writer.write(toArrayBuffer(payload));
     writer.close();
-    return JSON.parse(TD.decode(await readStream(ds.readable))) as CompactSDP;
+    return validateCompactSDP(JSON.parse(TD.decode(await readStream(ds.readable))));
   }
 
-  return JSON.parse(TD.decode(payload)) as CompactSDP;
+  return validateCompactSDP(JSON.parse(TD.decode(payload)));
 }
 
 /* ── Public API ──────────────────────────────────────────── */
@@ -221,8 +232,11 @@ export async function codeToSdp(
 ): Promise<string> {
   const data = base64urlDecode(code);
 
+  if (data.length < 2) throw new Error("Connection code is too short");
+
   if (data[0] === FLAG_SEALED) {
     if (!phrase) throw new Error("This code is sealed with a shared phrase — enter it to connect");
+    if (data.length < 30) throw new Error("Sealed code is truncated"); // 1 flag + 12 nonce + 16 GCM tag min
     const nonce = data.subarray(1, 13);
     const ciphertext = data.subarray(13);
     const key = await sealKey(phrase);
