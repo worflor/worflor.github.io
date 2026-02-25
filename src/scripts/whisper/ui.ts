@@ -27,6 +27,8 @@ export interface WhisperUIOptions {
   carrierInput: HTMLInputElement;
   huntCarrierInput: HTMLInputElement;
   payloadInput: HTMLInputElement;
+  embedMessageInput: HTMLTextAreaElement;
+  embedMessageCount: HTMLElement;
   passwordInput: HTMLInputElement;
   passwordGenButton: HTMLButtonElement;
   passwordCopyButton: HTMLButtonElement;
@@ -59,6 +61,8 @@ export const WHISPER_UI_IDS = {
   carrierInput: "whisper-carrier-input",
   huntCarrierInput: "whisper-hunt-carrier-input",
   payloadInput: "whisper-payload-input",
+  embedMessageInput: "whisper-embed-message",
+  embedMessageCount: "whisper-embed-message-count",
   passwordInput: "whisper-password-input",
   passwordGenButton: "whisper-password-gen",
   passwordCopyButton: "whisper-password-copy",
@@ -111,6 +115,10 @@ function readSingleFile(input: HTMLInputElement): File | null {
   return input.files?.[0] ?? null;
 }
 
+function textToFile(text: string): File {
+  return new File([text], "message.txt", { type: "text/plain;charset=utf-8" });
+}
+
 function uuidV4FromRandom(bytes: Uint8Array): string {
   // RFC4122 v4: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -138,6 +146,8 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
   const carrierInput = asInput(q(root, WHISPER_UI_IDS.carrierInput));
   const huntCarrierInput = asInput(q(root, WHISPER_UI_IDS.huntCarrierInput));
   const payloadInput = asInput(q(root, WHISPER_UI_IDS.payloadInput));
+  const embedMessageInput = root.querySelector<HTMLTextAreaElement>(`#${WHISPER_UI_IDS.embedMessageInput}`);
+  const embedMessageCount = q(root, WHISPER_UI_IDS.embedMessageCount);
   const passwordInput = asInput(q(root, WHISPER_UI_IDS.passwordInput));
   const passwordGenButton = asButton(q(root, WHISPER_UI_IDS.passwordGenButton));
   const passwordCopyButton = asButton(q(root, WHISPER_UI_IDS.passwordCopyButton));
@@ -165,7 +175,7 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
   const modeButtons = root.querySelectorAll<HTMLButtonElement>("[data-whisper-mode]");
 
   if (
-    !page || !uploadZone || !carrierInput || !huntCarrierInput || !payloadInput ||
+    !page || !uploadZone || !carrierInput || !huntCarrierInput || !payloadInput || !embedMessageInput || !embedMessageCount ||
     !passwordInput || !passwordGenButton || !passwordCopyButton || !passwordPasteButton || !passwordMeta || !onlyDecodeHereInput || !allowTailFallbackInput || !clueInput || !runButton || !uploadButton || !clearButton ||
     !actionsBar || !statusLine || !opTitle || !logOutput || !logDot || !results || !downloadArea ||
     !progressSection || !progressFill ||
@@ -176,6 +186,7 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
 
   return {
     page, modeButtons, uploadZone, carrierInput, huntCarrierInput, payloadInput,
+    embedMessageInput, embedMessageCount,
     passwordInput, passwordGenButton, passwordCopyButton, passwordPasteButton, passwordMeta, onlyDecodeHereInput, allowTailFallbackInput, clueInput, runButton, uploadButton, clearButton, actionsBar,
     opTitle, statusLine, logOutput, logDot, results, downloadArea, progressSection, progressFill,
     uploadText, uploadMeta,
@@ -331,6 +342,10 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     return (opts.payloadInput.files?.length ?? 0) > 0;
   }
 
+  function hasEmbedMessage(): boolean {
+    return opts.embedMessageInput.value.trim().length > 0;
+  }
+
   function hasPassword(): boolean {
     return opts.passwordInput.value.length > 0;
   }
@@ -341,7 +356,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     if (activeMode === MODE_EMBED && isCarrierUrl()) return false;
     const pw = hasPassword();
     switch (activeMode) {
-      case MODE_EMBED: return hasCarrier() && hasPayload() && pw;
+      case MODE_EMBED: return hasCarrier() && (hasPayload() || hasEmbedMessage()) && pw;
       case MODE_EXTRACT: return hasCarrier() && pw;
       case MODE_HUNT: return hasHuntFiles() && pw;
     }
@@ -351,14 +366,13 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   function syncState(): void {
     if (activeMode === MODE_LIVE) return;
-    if (activeMode === MODE_EMBED && isCarrierUrl()) return;
 
     // Run button: label reflects mode, disabled until prerequisites met
     opts.runButton.textContent = MODE_LABELS[activeMode];
     opts.runButton.disabled = !canRun();
 
     // Clear: enabled when anything is loaded
-    opts.clearButton.disabled = busy || (!hasCarrier() && !hasHuntFiles() && !hasPayload());
+    opts.clearButton.disabled = busy || (!hasCarrier() && !hasHuntFiles() && !hasPayload() && !hasEmbedMessage());
 
     // Mode buttons locked while busy
     opts.modeButtons.forEach((btn) => { btn.disabled = busy; });
@@ -382,7 +396,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     switch (activeMode) {
       case MODE_EMBED:
         if (!hasCarrier()) { updateStatus("drop a carrier file"); break; }
-        if (!hasPayload()) { updateStatus("add a payload file"); break; }
+        if (!hasPayload() && !hasEmbedMessage()) { updateStatus("add a payload file or message"); break; }
         if (!hasPassword()) { updateStatus("enter a password"); break; }
         updateStatus("all set"); ready = true; break;
       case MODE_EXTRACT:
@@ -456,13 +470,28 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   }
 
   function updateUploadInfo(file: File | null): void {
+    const payload = readSingleFile(opts.payloadInput);
+    const messageLen = opts.embedMessageInput.value.trim().length;
     if (!file) {
       opts.uploadText.textContent = "drop a carrier file here";
-      opts.uploadMeta.textContent = "";
+      if (payload) {
+        opts.uploadMeta.textContent = `payload: ${payload.name} \u00B7 ${formatSize(payload.size)}`;
+      } else if (messageLen > 0) {
+        opts.uploadMeta.textContent = `message payload: ${messageLen.toLocaleString()} chars`;
+      } else {
+        opts.uploadMeta.textContent = "";
+      }
       return;
     }
+
     opts.uploadText.textContent = file.name;
-    opts.uploadMeta.textContent = `${formatSize(file.size)} \u00B7 ${file.type || "unknown type"}`;
+    const carrierMeta = `${formatSize(file.size)} \u00B7 ${file.type || "unknown type"}`;
+    const payloadMeta = payload
+      ? ` \u00B7 payload: ${payload.name}`
+      : messageLen > 0
+        ? ` \u00B7 message: ${messageLen.toLocaleString()} chars`
+        : "";
+    opts.uploadMeta.textContent = `${carrierMeta}${payloadMeta}`;
   }
 
   /* ── Upload zone interactions ────────────────────────── */
@@ -539,6 +568,25 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   opts.payloadInput.addEventListener("change", () => {
     const file = readSingleFile(opts.payloadInput);
     opts.payloadLabel.textContent = file ? file.name : "choose file\u2026";
+    if (file && opts.embedMessageInput.value.length > 0) {
+      opts.embedMessageInput.value = "";
+      opts.embedMessageCount.textContent = "0 / 48,000";
+    }
+    updateUploadInfo(readSingleFile(opts.carrierInput));
+    refreshUI();
+  }, { signal });
+
+  function syncEmbedMessageCount(): void {
+    opts.embedMessageCount.textContent = `${opts.embedMessageInput.value.length.toLocaleString()} / 48,000`;
+  }
+
+  opts.embedMessageInput.addEventListener("input", () => {
+    syncEmbedMessageCount();
+    if (hasEmbedMessage() && hasPayload()) {
+      opts.payloadInput.value = "";
+      opts.payloadLabel.textContent = "choose file\u2026";
+    }
+    updateUploadInfo(readSingleFile(opts.carrierInput));
     refreshUI();
   }, { signal });
 
@@ -609,7 +657,8 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   const carrierRadios = opts.page.querySelectorAll<HTMLInputElement>('input[name="ws-carrier-type"]');
   carrierRadios.forEach((radio) => radio.addEventListener("change", () => {
-    syncCarrier(radio.value === "url");
+    const checked = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"]:checked');
+    syncCarrier(checked?.value === "url");
     if (isCarrierUrl()) {
       hideActionsBar();
     } else {
@@ -646,7 +695,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   async function runEmbed(): Promise<void> {
     const carrier = readSingleFile(opts.carrierInput)!;
-    const payloadFile = readSingleFile(opts.payloadInput)!;
+    const payloadFile = readSingleFile(opts.payloadInput) ?? textToFile(opts.embedMessageInput.value);
     const password = opts.passwordInput.value;
 
     setBusy(true);
@@ -789,6 +838,8 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     opts.carrierInput.value = "";
     opts.huntCarrierInput.value = "";
     opts.payloadInput.value = "";
+    opts.embedMessageInput.value = "";
+    opts.embedMessageCount.textContent = "0 / 48,000";
     updateUploadInfo(null);
     expandUploadZone();
     hideActionsBar();
@@ -803,6 +854,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     const urlRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="url"]');
     if (urlRadio) urlRadio.checked = true;
   }
+  syncEmbedMessageCount();
   setMode(activeMode);
   appendLog("whisper ready");
 
