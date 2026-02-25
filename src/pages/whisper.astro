@@ -560,11 +560,6 @@ const seo = {
                 <p class="wl-chat-subtitle">end-to-end encrypted</p>
               </div>
               <div class="wl-chat-tools">
-                <div class="wl-transport" role="radiogroup" aria-label="Transport mode">
-                  <label class="wl-transport-label"><input type="radio" name="wl-transport" value="naked" checked class="wl-transport-radio" /> text</label>
-                  <label class="wl-transport-label"><input type="radio" name="wl-transport" value="dressed" class="wl-transport-radio" /> dressed</label>
-                  <label class="wl-transport-label"><input type="radio" name="wl-transport" value="silent" class="wl-transport-radio" /> silent</label>
-                </div>
                 <button id="wl-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">End</button>
               </div>
             </div>
@@ -2830,55 +2825,9 @@ const seo = {
   .wl-chat-tools {
     display: inline-flex;
     align-items: center;
-    gap: calc(var(--space-xs) * 0.55);
+    gap: calc(var(--space-xs) * 0.45);
     flex-wrap: wrap;
     justify-content: flex-end;
-  }
-
-  .wl-transport {
-    display: inline-flex;
-    gap: calc(var(--space-xs) * 0.45);
-    align-items: center;
-    flex-wrap: wrap;
-    padding: 0.22rem 0.3rem;
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
-    background: rgb(var(--color-text-rgb) / 0.03);
-  }
-
-  .wl-transport-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3em;
-    font-size: calc(var(--text-sm) * 0.8);
-    color: rgb(var(--color-text-rgb) / 0.56);
-    cursor: pointer;
-    user-select: none;
-    padding: 0.08rem 0.3rem;
-    border-radius: calc(var(--whisper-radius) * 0.4);
-    border: 1px solid transparent;
-    transition:
-      border-color var(--duration-normal) var(--ease-out),
-      color var(--duration-normal) var(--ease-out),
-      background var(--duration-normal) var(--ease-out);
-  }
-
-  .wl-transport-label:hover {
-    color: rgb(var(--chromatic-cyan));
-    border-color: rgb(var(--chromatic-cyan) / 0.28);
-    background: rgb(var(--chromatic-cyan) / 0.06);
-  }
-
-  .wl-transport-label:has(.wl-transport-radio:checked) {
-    color: rgb(var(--chromatic-cyan));
-    border-color: rgb(var(--chromatic-cyan) / 0.32);
-    background: rgb(var(--chromatic-cyan) / 0.08);
-  }
-
-  .wl-transport-radio {
-    width: 0.72rem;
-    height: 0.72rem;
-    accent-color: rgb(var(--chromatic-cyan));
   }
 
   .wl-disconnect-btn {
@@ -3163,10 +3112,6 @@ const seo = {
       justify-content: stretch;
     }
 
-    .wl-transport {
-      width: 100%;
-    }
-
     .wl-disconnect-btn {
       width: 100%;
       justify-content: center;
@@ -3195,13 +3140,6 @@ const seo = {
       max-width: 90%;
     }
 
-    .wl-transport {
-      gap: calc(var(--space-xs) * 0.5);
-    }
-
-    .wl-transport-label {
-      font-size: calc(var(--text-sm) * 0.8);
-    }
   }
 
   @media (max-height: 760px) {

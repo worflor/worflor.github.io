@@ -86,6 +86,12 @@ export interface LiveMessage {
   timestamp: number;
 }
 
+export interface ConnectionStats {
+  rtt: number;
+  bytesSent: number;
+  bytesReceived: number;
+}
+
 export interface WhisperLiveCallbacks {
   onStateChange: (state: LiveState, detail?: string) => void;
   onFingerprint: (emoji: string) => void;
@@ -93,6 +99,14 @@ export interface WhisperLiveCallbacks {
   onLog: (line: string) => void;
   /** When set and flags & 0x02 (campfire bit), decrypted plaintext is forwarded here instead of onMessage. */
   onRawDecrypted?: (plaintext: Uint8Array) => void;
+  /** Peer is actively typing. Fires at most once per ~3s. UI should auto-clear after ~4s of silence. */
+  onPeerTyping?: () => void;
+  /** A message we sent was successfully decrypted by the peer. Counter identifies which message. */
+  onAck?: (counter: number) => void;
+  /** Progress during chunked send (file transfers). */
+  onSendProgress?: (bytesSent: number, totalBytes: number) => void;
+  /** Periodic connection quality stats (fires each heartbeat cycle). */
+  onConnectionStats?: (stats: ConnectionStats) => void;
 }
 
 export interface WhisperLiveSessionOptions {
@@ -238,6 +252,8 @@ const LIVE_MSG = {
   FINGERPRINT_REJECTED: 0x31,
   PING: 0x40,
   PONG: 0x41,
+  TYPING: 0x42,
+  ACK: 0x43,
 } as const;
 
 const LIVE_FLAG = {
@@ -319,6 +335,20 @@ export class WhisperLiveSession {
   onMessage: WhisperLiveCallbacks["onMessage"];
   onLog: WhisperLiveCallbacks["onLog"];
   onRawDecrypted: WhisperLiveCallbacks["onRawDecrypted"];
+  onPeerTyping: WhisperLiveCallbacks["onPeerTyping"];
+  onAck: WhisperLiveCallbacks["onAck"];
+  onSendProgress: WhisperLiveCallbacks["onSendProgress"];
+  onConnectionStats: WhisperLiveCallbacks["onConnectionStats"];
+
+  // Tab-aware heartbeat
+  private tabHidden = false;
+  private visibilityHandler: (() => void) | null = null;
+
+  // Connection stats polling
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Recovery send queue — holds jobs until session returns to live
+  private recoveryResolve: (() => void) | null = null;
 
   private rtcConfig: RTCConfiguration;
 
@@ -328,6 +358,10 @@ export class WhisperLiveSession {
     this.onMessage = callbacks.onMessage;
     this.onLog = callbacks.onLog;
     this.onRawDecrypted = callbacks.onRawDecrypted;
+    this.onPeerTyping = callbacks.onPeerTyping;
+    this.onAck = callbacks.onAck;
+    this.onSendProgress = callbacks.onSendProgress;
+    this.onConnectionStats = callbacks.onConnectionStats;
 
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
     this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
@@ -369,6 +403,12 @@ export class WhisperLiveSession {
     }
     this._state = state;
     this.onStateChange(state, detail);
+    // Flush recovery queue when session resumes
+    if ((state === "live" || state === "disconnected" || state === "error") && this.recoveryResolve) {
+      const resolve = this.recoveryResolve;
+      this.recoveryResolve = null;
+      resolve();
+    }
   }
 
   private send(type: number, payload?: Uint8Array): void {
@@ -927,6 +967,10 @@ export class WhisperLiveSession {
       case LIVE_MSG.FINGERPRINT_CONFIRMED: // Fingerprint confirmed
         this.onLog("peer confirmed fingerprint");
         if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
+        if (this._state === "verifying") {
+          this.startHeartbeat();
+          this.setState(this.transportMode === "silent" ? "silent" : "live");
+        }
         break;
       case LIVE_MSG.FINGERPRINT_REJECTED: // Fingerprint rejected
         this.onLog("peer rejected fingerprint, aborting");
@@ -940,6 +984,16 @@ export class WhisperLiveSession {
       case LIVE_MSG.PONG: // Pong — peer acknowledged our ping
         this.lastPongReceived = Date.now();
         break;
+      case LIVE_MSG.TYPING:
+        if (this.onPeerTyping) this.onPeerTyping();
+        break;
+      case LIVE_MSG.ACK: {
+        if (bytes.length >= 5 && this.onAck) {
+          const counter = new DataView(bytes.buffer, bytes.byteOffset + 1, 4).getUint32(0, true);
+          this.onAck(counter);
+        }
+        break;
+      }
       default:
         this.onLog(`unknown message type: 0x${type.toString(16)}`);
     }
@@ -1011,6 +1065,11 @@ export class WhisperLiveSession {
       }
       messageKey.fill(0); // wipe message key after use
 
+      // ACK: tell sender we decrypted this message successfully
+      const ackPayload = new Uint8Array(4);
+      new DataView(ackPayload.buffer).setUint32(0, header.counter, true);
+      this.send(LIVE_MSG.ACK, ackPayload);
+
       const isCampfire = (header.flags & LIVE_FLAG.CAMPFIRE) !== 0;
       const isFile = (header.flags & LIVE_FLAG.FILE) !== 0;
 
@@ -1046,6 +1105,26 @@ export class WhisperLiveSession {
 
   /* ── Sending ────────────────────────────────────────────── */
 
+  /** Signal that we're actively typing. Callers should debounce (~3s). */
+  sendTyping(): void {
+    if (this._state !== "live" && this._state !== "silent") return;
+    this.send(LIVE_MSG.TYPING);
+  }
+
+  /** Wait for recovery to complete before sending. Returns false if destroyed. */
+  private waitForRecovery(): Promise<boolean> {
+    if (this._state === "live") return Promise.resolve(true);
+    if (this._state !== "recovering") return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      // Chain onto any existing waiter
+      const prev = this.recoveryResolve;
+      this.recoveryResolve = () => {
+        if (prev) prev();
+        resolve(this._state === "live" && !this._destroyed);
+      };
+    });
+  }
+
   /** Enqueue a send job — serializes through sendQueue so ratchet state is never concurrent. */
   private enqueueSend(job: () => Promise<void>): Promise<void> {
     const wrapped = () => job().catch((err) => {
@@ -1057,6 +1136,9 @@ export class WhisperLiveSession {
 
   async sendText(text: string): Promise<void> {
     await this.enqueueSend(async () => {
+      if (this._state === "recovering") {
+        if (!await this.waitForRecovery()) return;
+      }
       if (this._state !== "live" || !this.dc || !this.ratchetState) return;
       await this.encryptAndSend(TE.encode(text), 0x00);
       this.onMessage({ type: "text", direction: "self", text, timestamp: Date.now() });
@@ -1067,6 +1149,9 @@ export class WhisperLiveSession {
     const fileBytes = new Uint8Array(await file.arrayBuffer());
 
     await this.enqueueSend(async () => {
+      if (this._state === "recovering") {
+        if (!await this.waitForRecovery()) return;
+      }
       if (this._state !== "live" || !this.dc || !this.ratchetState) return;
 
       if (this.transportMode === "dressed") {
@@ -1090,6 +1175,9 @@ export class WhisperLiveSession {
    */
   async sendEncryptedRaw(plaintext: Uint8Array, flags: number): Promise<void> {
     await this.enqueueSend(async () => {
+      if (this._state === "recovering") {
+        if (!await this.waitForRecovery()) return;
+      }
       if (this._state !== "live" || !this.dc || !this.ratchetState) return;
       await this.encryptAndSend(plaintext, flags);
     });
@@ -1203,6 +1291,8 @@ export class WhisperLiveSession {
 
     // Chunk (with 0x20 prefix baked in) and send with backpressure
     const chunks = chunkMessagePrefixed(wireMessage, LIVE_MSG.ENCRYPTED);
+    const totalBytes = wireMessage.length;
+    let bytesSent = 0;
     for (const chunk of chunks) {
       if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
         try { await this.waitForDrain(); } catch { return; } // channel closed during drain
@@ -1211,6 +1301,8 @@ export class WhisperLiveSession {
       const ab = new ArrayBuffer(chunk.byteLength);
       new Uint8Array(ab).set(chunk);
       this.dc.send(ab);
+      bytesSent += chunk.byteLength;
+      if (this.onSendProgress) this.onSendProgress(bytesSent, totalBytes);
     }
   }
 
@@ -1275,22 +1367,74 @@ export class WhisperLiveSession {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.lastPongReceived = Date.now();
+
     this.heartbeatSend = setInterval(() => {
       this.send(LIVE_MSG.PING);
     }, HEARTBEAT_INTERVAL);
+
     this.heartbeatCheck = setInterval(() => {
       if (this._state === "recovering" || this._destroyed) return;
-      if (Date.now() - this.lastPongReceived > HEARTBEAT_TIMEOUT) {
+      // Widen timeout when tab is hidden — browsers throttle timers to ≥1min
+      const timeout = this.tabHidden ? HEARTBEAT_TIMEOUT * 2 : HEARTBEAT_TIMEOUT;
+      if (Date.now() - this.lastPongReceived > timeout) {
         this.onLog("heartbeat timeout, peer unresponsive");
         this.setState("disconnected");
         this.cleanupConnection();
       }
     }, HEARTBEAT_INTERVAL);
+
+    // Tab visibility — avoid false-positive timeouts when backgrounded
+    this.visibilityHandler = () => {
+      this.tabHidden = document.hidden;
+      if (!document.hidden) {
+        // Returning to foreground: bump lastPong so we don't immediately timeout
+        this.lastPongReceived = Math.max(this.lastPongReceived, Date.now() - HEARTBEAT_TIMEOUT + 5_000);
+        this.send(LIVE_MSG.PING);
+      }
+    };
+    document.addEventListener("visibilitychange", this.visibilityHandler);
+
+    // Connection stats polling
+    this.startStatsPoll();
   }
 
   private stopHeartbeat(): void {
     if (this.heartbeatSend) { clearInterval(this.heartbeatSend); this.heartbeatSend = null; }
     if (this.heartbeatCheck) { clearInterval(this.heartbeatCheck); this.heartbeatCheck = null; }
+    if (this.visibilityHandler) {
+      document.removeEventListener("visibilitychange", this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+    this.stopStatsPoll();
+  }
+
+  /* ── Connection Stats ───────────────────────────────────── */
+
+  private startStatsPoll(): void {
+    this.stopStatsPoll();
+    if (!this.onConnectionStats || !this.pc) return;
+    this.statsTimer = setInterval(() => { void this.pollStats(); }, HEARTBEAT_INTERVAL);
+  }
+
+  private stopStatsPoll(): void {
+    if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+  }
+
+  private async pollStats(): Promise<void> {
+    if (!this.pc || !this.onConnectionStats) return;
+    try {
+      const stats = await this.pc.getStats();
+      for (const report of stats.values()) {
+        if (report.type === "candidate-pair" && report.state === "succeeded") {
+          this.onConnectionStats({
+            rtt: report.currentRoundTripTime != null ? report.currentRoundTripTime * 1000 : -1,
+            bytesSent: report.bytesSent ?? 0,
+            bytesReceived: report.bytesReceived ?? 0,
+          });
+          break;
+        }
+      }
+    } catch { /* stats unavailable */ }
   }
 
   /* ── Cleanup ─────────────────────────────────────────────── */
@@ -1353,6 +1497,13 @@ export class WhisperLiveSession {
 
     this.sharedPhrase = null;
     this.assembler.reset();
+
+    // Flush any pending recovery waiters
+    if (this.recoveryResolve) {
+      const resolve = this.recoveryResolve;
+      this.recoveryResolve = null;
+      resolve();
+    }
 
     // Wipe ephemeral key if still present (interrupted handshake)
     this.ephPrivateKey = null;

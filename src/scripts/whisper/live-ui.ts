@@ -11,7 +11,6 @@ import {
   WHISPER_LIVE_RTC_PUBLIC_STUN,
   type LiveState,
   type LiveMessage,
-  type TransportMode,
 } from "./live";
 import {
   q,
@@ -96,7 +95,6 @@ export interface WhisperLiveUIOptions {
   chatSendBtn: HTMLButtonElement;
   chatFileInput: HTMLInputElement;
   chatFileBtn: HTMLButtonElement;
-  transportRadios: NodeListOf<HTMLInputElement>;
   disconnectBtn: HTMLButtonElement;
 
   /* Silent phase */
@@ -246,7 +244,6 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     chatSection: el(I.chatSection), chatMessages: el(I.chatMessages),
     chatInput: inp(I.chatInput), chatSendBtn: btn(I.chatSendBtn),
     chatFileInput: inp(I.chatFileInput), chatFileBtn: btn(I.chatFileBtn),
-    transportRadios: root.querySelectorAll<HTMLInputElement>('input[name="wl-transport"]'),
     disconnectBtn: btn(I.disconnectBtn),
     silentSection: el(I.silentSection), silentSecret: el(I.silentSecret),
     silentCopyBtn: btn(I.silentCopyBtn), silentDisconnectBtn: btn(I.silentDisconnectBtn),
@@ -281,6 +278,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let busy = false;
   let liveQrSupported = false;
   let skippedIceCandidates = 0;
+
+  // Typing indicator state
+  let typingSendTimer: ReturnType<typeof setTimeout> | null = null;
+  let peerTypingTimer: ReturnType<typeof setTimeout> | null = null;
+  const TYPING_SEND_DEBOUNCE = 3_000;
+  const TYPING_DISPLAY_TIMEOUT = 4_000;
+
+  // Tab title unread count
+  const originalTitle = document.title;
+  let unreadCount = 0;
+  let hasFocus = document.hasFocus();
 
   type QrScanStopReason = "accepted" | "cancelled" | "error" | "teardown";
   const qrScanSession: {
@@ -640,25 +648,61 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.silentDisconnectBtn.disabled = busy || !hasSession;
   }
 
-  /* ── Chat rendering ───────────────────────────────────── */
+  /* ── Tab title / unread ───────────────────────────────── */
 
-  function updateTransportUi(mode: TransportMode): void {
-    for (const radio of opts.transportRadios) {
-      radio.checked = radio.value === mode;
-    }
-
-    if (mode === "silent") {
-      opts.chatInput.placeholder = "silent mode selected";
-      opts.chatInput.disabled = true;
-      opts.chatSendBtn.disabled = true;
-      opts.chatFileBtn.disabled = true;
-      return;
-    }
-
-    opts.chatInput.placeholder = mode === "dressed" ? "type a message (files sent as carriers)" : "type a message";
-    opts.chatInput.disabled = false;
-    updateControls();
+  function bumpUnread(): void {
+    if (hasFocus) return;
+    unreadCount++;
+    document.title = `(${unreadCount}) ${originalTitle}`;
   }
+
+  function clearUnread(): void {
+    unreadCount = 0;
+    document.title = originalTitle;
+  }
+
+  /* ── Typing indicator ──────────────────────────────────── */
+
+  function showPeerTyping(): void {
+    let indicator = opts.chatMessages.querySelector<HTMLElement>(".wl-typing-indicator");
+    if (!indicator) {
+      indicator = document.createElement("div");
+      indicator.className = "wl-typing-indicator wl-msg wl-msg--peer";
+      indicator.textContent = "...";
+      opts.chatMessages.appendChild(indicator);
+      smartScroll();
+    }
+    // Reset auto-clear timer
+    if (peerTypingTimer) clearTimeout(peerTypingTimer);
+    peerTypingTimer = setTimeout(hidePeerTyping, TYPING_DISPLAY_TIMEOUT);
+  }
+
+  function hidePeerTyping(): void {
+    if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
+    const indicator = opts.chatMessages.querySelector(".wl-typing-indicator");
+    if (indicator) indicator.remove();
+  }
+
+  function emitTyping(): void {
+    if (typingSendTimer || !session) return;
+    session.sendTyping();
+    typingSendTimer = setTimeout(() => { typingSendTimer = null; }, TYPING_SEND_DEBOUNCE);
+  }
+
+  /* ── Smart scroll ──────────────────────────────────────── */
+
+  function isNearBottom(): boolean {
+    const el = opts.chatMessages;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }
+
+  function smartScroll(): void {
+    if (isNearBottom()) {
+      opts.chatMessages.scrollTop = opts.chatMessages.scrollHeight;
+    }
+  }
+
+  /* ── Chat rendering ───────────────────────────────────── */
 
   function addChatMessage(msg: LiveMessage): void {
     const div = document.createElement("div");
@@ -712,8 +756,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     timeEl.textContent = formatTime(msg.timestamp);
     div.appendChild(timeEl);
 
+    // Remove typing indicator before inserting real message (peer just sent something)
+    if (msg.direction === "peer") hidePeerTyping();
+
     opts.chatMessages.appendChild(div);
-    opts.chatMessages.scrollTop = opts.chatMessages.scrollHeight;
+    smartScroll();
+
+    // Tab title unread for peer messages
+    if (msg.direction === "peer") bumpUnread();
   }
 
   /* ── Session creation ─────────────────────────────────── */
@@ -744,6 +794,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onFingerprint: handleFingerprint,
       onMessage: handleMessage,
       onLog: appendLog,
+      onPeerTyping: showPeerTyping,
     }, {
       rtcConfig,
     });
@@ -809,8 +860,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       case "live":
         enterPhase(opts.chatSection, "secure session live · end-to-end encrypted", false, false);
         opts.liveStatusLine.classList.add("whisper-status--ready");
-        updateTransportUi("naked");
         opts.chatInput.disabled = false;
+        opts.chatInput.placeholder = "type a message";
         opts.chatInput.focus();
         addChatMessage({
           type: "system", direction: "system",
@@ -1181,7 +1232,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   };
   enterSubmit(opts.joinInput, opts.joinBtn);
   enterSubmit(opts.answerInput, opts.answerApplyBtn);
-  opts.chatInput.addEventListener("input", updateControls, { signal });
+  opts.chatInput.addEventListener("input", () => { updateControls(); emitTyping(); }, { signal });
 
   // Join niceties: clipboard + QR camera/image
   opts.joinPasteBtn.addEventListener("click", async () => {
@@ -1260,17 +1311,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }, { signal });
 
-  // Transport mode selector
-  opts.transportRadios.forEach((radio) => {
-    radio.addEventListener("change", () => {
-      if (radio.checked && session) {
-        const mode = radio.value as TransportMode;
-        session.setTransport(mode);
-        updateTransportUi(mode);
-      }
-    }, { signal });
-  });
-
   // Disconnect
   opts.disconnectBtn.addEventListener("click", () => {
     session?.disconnect();
@@ -1313,6 +1353,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       resetToIdle();
     }
   }, { signal });
+
+  // Focus tracking for unread count
+  window.addEventListener("focus", () => { hasFocus = true; clearUnread(); }, { signal });
+  window.addEventListener("blur", () => { hasFocus = false; }, { signal });
 
   /* -- Initial state ---------------------------------------- */
 
@@ -1367,6 +1411,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       session.disconnect();
       session = null;
     }
+    if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
+    if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
+    document.title = originalTitle;
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.clear();
   };
