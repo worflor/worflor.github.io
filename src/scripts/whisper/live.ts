@@ -404,7 +404,7 @@ export class WhisperLiveSession {
     this._state = state;
     this.onStateChange(state, detail);
     // Flush recovery queue when session resumes
-    if ((state === "live" || state === "disconnected" || state === "error") && this.recoveryResolve) {
+    if ((state === "live" || state === "silent" || state === "disconnected" || state === "error") && this.recoveryResolve) {
       const resolve = this.recoveryResolve;
       this.recoveryResolve = null;
       resolve();
@@ -677,7 +677,9 @@ export class WhisperLiveSession {
         if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
         if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
         this.connectingGraceDone = false;
-        this.dropExternalAssist(pc);
+        // Only strip STUN once we're past setup — during setup the srflx
+        // candidates still need STUN keepalives to maintain NAT bindings.
+        if (!this.isSetupState()) this.dropExternalAssist(pc);
         // Recover from transient disruption
         if (this._state === "recovering" && this.stateBeforeRecovery) {
           if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
@@ -694,7 +696,7 @@ export class WhisperLiveSession {
       this.onLog(`conn: ${s}`);
       if (s === "connected") {
         // Some browsers stabilize connectionState before ICE emits completed.
-        this.dropExternalAssist(pc);
+        if (!this.isSetupState()) this.dropExternalAssist(pc);
       }
       if (s === "failed") {
         // If we're already recovering (ICE restart in flight), let the ICE handler manage it
@@ -785,7 +787,9 @@ export class WhisperLiveSession {
       this.msgQueue = this.msgQueue.then(() => {
         if (this._destroyed) return;
         return this.handleRawMessage(event.data);
-      }).catch(() => {});
+      }).catch((err) => {
+        if (!this._destroyed) this.onLog(`message error: ${errorMessage(err)}`);
+      });
     };
   }
 
@@ -1107,20 +1111,24 @@ export class WhisperLiveSession {
 
   /** Signal that we're actively typing. Callers should debounce (~3s). */
   sendTyping(): void {
-    if (this._state !== "live" && this._state !== "silent") return;
+    if (!this.isLiveState()) return;
     this.send(LIVE_MSG.TYPING);
   }
 
   /** Wait for recovery to complete before sending. Returns false if destroyed. */
+  private isLiveState(): boolean {
+    return this._state === "live" || this._state === "silent";
+  }
+
   private waitForRecovery(): Promise<boolean> {
-    if (this._state === "live") return Promise.resolve(true);
+    if (this.isLiveState()) return Promise.resolve(true);
     if (this._state !== "recovering") return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       // Chain onto any existing waiter
       const prev = this.recoveryResolve;
       this.recoveryResolve = () => {
         if (prev) prev();
-        resolve(this._state === "live" && !this._destroyed);
+        resolve(this.isLiveState() && !this._destroyed);
       };
     });
   }
@@ -1139,7 +1147,7 @@ export class WhisperLiveSession {
       if (this._state === "recovering") {
         if (!await this.waitForRecovery()) return;
       }
-      if (this._state !== "live" || !this.dc || !this.ratchetState) return;
+      if (!this.isLiveState() || !this.dc || !this.ratchetState) return;
       await this.encryptAndSend(TE.encode(text), 0x00);
       this.onMessage({ type: "text", direction: "self", text, timestamp: Date.now() });
     });
@@ -1152,7 +1160,7 @@ export class WhisperLiveSession {
       if (this._state === "recovering") {
         if (!await this.waitForRecovery()) return;
       }
-      if (this._state !== "live" || !this.dc || !this.ratchetState) return;
+      if (!this.isLiveState() || !this.dc || !this.ratchetState) return;
 
       if (this.transportMode === "dressed") {
         await this.sendFileDressed(file.name, file.type, fileBytes);
@@ -1178,7 +1186,7 @@ export class WhisperLiveSession {
       if (this._state === "recovering") {
         if (!await this.waitForRecovery()) return;
       }
-      if (this._state !== "live" || !this.dc || !this.ratchetState) return;
+      if (!this.isLiveState() || !this.dc || !this.ratchetState) return;
       await this.encryptAndSend(plaintext, flags);
     });
   }

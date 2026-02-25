@@ -56,6 +56,7 @@ export interface WhisperLiveUIOptions {
   joinQrVideo: HTMLVideoElement;
   phraseInput: HTMLInputElement;
   externalAssistToggle: HTMLInputElement;
+  funnelCampfireBtn: HTMLButtonElement;
 
   /* Offering phase */
   offerSection: HTMLElement;
@@ -132,6 +133,7 @@ export const WHISPER_LIVE_IDS = {
   joinQrVideo: "wl-join-qr-video",
   phraseInput: "wl-phrase",
   externalAssistToggle: "wl-external-assist",
+  funnelCampfireBtn: "wl-funnel-campfire",
   offerSection: "wl-offer-section",
   offerCode: "wl-offer-code",
   offerCopyBtn: "wl-offer-copy",
@@ -228,6 +230,7 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     joinQrPanel: el(I.joinQrPanel), joinQrStatus: el(I.joinQrStatus),
     joinQrVideo: root.querySelector<HTMLVideoElement>(`#${I.joinQrVideo}`),
     phraseInput: inp(I.phraseInput), externalAssistToggle: inp(I.externalAssistToggle),
+    funnelCampfireBtn: btn(I.funnelCampfireBtn),
     offerSection: el(I.offerSection), offerCode: el(I.offerCode),
     offerCopyBtn: btn(I.offerCopyBtn), offerBackBtn: btn(I.offerBackBtn),
     offerQrToggleBtn: btn(I.offerQrToggleBtn), offerQrPanel: el(I.offerQrPanel),
@@ -632,6 +635,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (opts.relayConnectBtn) {
       opts.relayConnectBtn.disabled = busy;
     }
+
+    // Campfire funnel is a post-connect action from the active 1:1 chat surface.
+    opts.funnelCampfireBtn.disabled = busy || !hasSession;
 
     // Hide mode switch when busy or mid-session
     const modeSwitchWrap = modeSwitchBtn?.closest(".wl-mode-switch") as HTMLElement | null;
@@ -1039,8 +1045,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const { exchangeViaTracker } = await import("./live-tracker");
 
       // If we become the answerer, tear down the pre-created session
-      // and build a fresh one around the peer's offer
+      // and build a fresh one around the peer's offer.
+      // Guard: multiple tracker connections race — only the first wins.
+      let acceptCalled = false;
       const acceptFn = async (peerOfferCode: string): Promise<string> => {
+        if (acceptCalled) throw new Error("duplicate-accept");
+        acceptCalled = true;
         if (session) { session.disconnect(); session = null; }
         session = createSession();
         return session.acceptOffer(peerOfferCode, phrase);
@@ -1106,10 +1116,27 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }, { signal });
   }
 
+  // Funnel action: switch to campfire surface
+  opts.funnelCampfireBtn.addEventListener("click", () => {
+    window.dispatchEvent(new CustomEvent("whisper-live-funnel", { detail: { mode: "campfire" } }));
+  }, { signal });
+
   // Relay connect button
   if (opts.relayConnectBtn) {
     opts.relayConnectBtn.addEventListener("click", () => {
       void handleRelayConnect();
+    }, { signal });
+
+    // Testing shortcut: right-click Connect to open chat UI without network session.
+    opts.relayConnectBtn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showPhase(opts.chatSection);
+      updateStatus("chat preview · not connected");
+      setLogActive(false);
+      setBusy(false);
+      updateControls();
+      try { opts.chatInput.focus(); } catch { /* noop */ }
     }, { signal });
   }
 
