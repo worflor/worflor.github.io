@@ -370,17 +370,17 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
       case "active":
         showPhase(opts.activeSection);
-        updateStatus("room active, group-encrypted");
+        updateStatus("in the room, encrypted");
         setLogActive(false);
         opts.chatInput.disabled = false;
         setBusy(false);
         opts.chatInput.focus();
-        addChatMessage("", "connected. messages are encrypted with a shared group key", Date.now(), "system");
+        addChatMessage("", "you're in. everything here is end-to-end encrypted", Date.now(), "system");
         break;
 
       case "ended":
         showPhase(opts.endedSection);
-        opts.endedMessage.textContent = detail ?? "the fire is out. nothing remains.";
+        opts.endedMessage.textContent = detail ?? "the campfire is out. nothing remains.";
         updateStatus("session closed");
         setLogActive(false);
         setBusy(false);
@@ -521,7 +521,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     try {
       const answerCode = await node.joinCampfire(offerCode, name, useStun);
       // peer needs to send answer code back to root out-of-band
-      opts.connectingStatus.textContent = "send this answer code back to the room creator";
+      opts.connectingStatus.textContent = "send this reply code back to whoever created the room";
       appendLog(`answer code ready. share it back`);
     } catch (err) {
       appendLog(`join failed: ${err instanceof Error ? err.message : "unknown"}`);

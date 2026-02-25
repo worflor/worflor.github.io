@@ -613,14 +613,14 @@ const seo = {
 
         <!-- Campfire: idle -->
         <div class="wl-phase" id="cf-idle-phase" style="display:none">
-          <p class="wl-phase-lede">group chat over the same peer-to-peer mesh. one person creates the room, everyone else joins with the code. root controls the session.</p>
+          <p class="wl-phase-lede">encrypted group chat, peer-to-peer. one person creates the room and shares the code. everyone connects directly, no server in the middle.</p>
           <div class="wl-grid">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Create</h3>
                 <span class="whisper-panel-mode">start a new room</span>
               </div>
-              <p class="wl-inline-hint">you become root. peers connect through you.</p>
+              <p class="wl-inline-hint">you host the room. others join using your code.</p>
               <button id="cf-create" type="button" class="whisper-mini-btn wl-primary">Create room</button>
             </div>
 
@@ -629,7 +629,7 @@ const seo = {
                 <h3 class="whisper-panel-title">Join</h3>
                 <span class="whisper-panel-mode">paste a room code</span>
               </div>
-              <p class="wl-inline-hint">paste the code from whoever created the room.</p>
+              <p class="wl-inline-hint">got a code? paste it here to join the room.</p>
               <div class="wl-join-row">
                 <input
                   id="cf-join-input"
@@ -672,14 +672,14 @@ const seo = {
 
         <!-- Campfire: waiting -->
         <div class="wl-phase" id="cf-waiting-section" style="display:none">
-          <p class="wl-phase-lede">share the room code with peers. as each one joins, paste their reply code here to let them in.</p>
+          <p class="wl-phase-lede">share the room code. when someone sends back their reply, paste it here to let them in.</p>
           <div class="wl-grid wl-grid--offer">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Room code</h3>
                 <span class="whisper-panel-mode">send this to peers</span>
               </div>
-              <p class="wl-inline-hint">each peer uses this to generate their answer.</p>
+              <p class="wl-inline-hint">anyone with this code can request to join.</p>
               <div class="wl-code-display-wrap">
                 <pre id="cf-room-code" class="wl-code-display"></pre>
                 <button id="cf-room-copy" type="button" class="whisper-mini-btn">Copy</button>
@@ -691,7 +691,7 @@ const seo = {
                 <h3 class="whisper-panel-title">Accept</h3>
                 <span class="whisper-panel-mode">paste peer reply</span>
               </div>
-              <p class="wl-inline-hint">paste each peer's answer code to complete their connection.</p>
+              <p class="wl-inline-hint">paste a peer's reply code to finish connecting them.</p>
               <div class="wl-join-row">
                 <input
                   id="cf-answer-input"
@@ -770,7 +770,7 @@ const seo = {
         <!-- Campfire: ended -->
         <div class="wl-phase" id="cf-ended-section" style="display:none">
           <div class="whisper-panel wl-end-panel">
-            <p id="cf-ended-message" class="wl-end-text">the fire is out. nothing remains.</p>
+            <p id="cf-ended-message" class="wl-end-text">the campfire is out. nothing remains.</p>
             <button id="cf-new-campfire" type="button" class="whisper-mini-btn">New session</button>
           </div>
         </div>
@@ -2153,8 +2153,8 @@ const seo = {
     flex: 0 0 auto;
     justify-self: end;
     grid-column: 2;
-    grid-row: 1 / span 2;
-    align-self: start;
+    grid-row: 3;
+    align-self: center;
   }
 
   .wl-head-subtitle {
@@ -2175,7 +2175,7 @@ const seo = {
   }
 
   .wl-status-chip {
-    grid-column: 1 / -1;
+    grid-column: 1;
     grid-row: 3;
     display: inline-flex;
     align-items: center;
@@ -2728,14 +2728,7 @@ const seo = {
   @media (max-width: 520px) {
     .wl-head {
       grid-template-columns: 1fr;
-      grid-template-rows: auto auto auto;
-    }
-
-    .wl-head-right {
-      grid-column: 1;
-      grid-row: 3;
-      justify-self: start;
-      order: 2;
+      grid-template-rows: auto auto auto auto;
     }
 
     .wl-status-chip {
@@ -2744,12 +2737,17 @@ const seo = {
       display: flex;
       flex-wrap: wrap;
       gap: calc(var(--space-xs) * 0.5);
-      order: 1;
+    }
+
+    .wl-head-right {
+      grid-column: 1;
+      grid-row: 4;
+      justify-self: start;
     }
 
     .cf-live-mode-toggle {
-      margin-top: calc(var(--space-xs) * 0.5);
-      width: 100%;
+      margin-top: 0;
+      width: auto;
     }
 
     .wl-phase-lede {
