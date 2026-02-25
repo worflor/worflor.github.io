@@ -49,6 +49,9 @@ export interface CampfireUIOptions {
   /* Connecting phase */
   connectingSection: HTMLElement;
   connectingStatus: HTMLElement;
+  joinerAnswerPanel: HTMLElement;
+  joinerCode: HTMLElement;
+  joinerCopyBtn: HTMLButtonElement;
 
   /* Active phase — group chat */
   activeSection: HTMLElement;
@@ -90,6 +93,9 @@ export const CAMPFIRE_IDS = {
   answerApplyBtn: "cf-answer-apply",
   connectingSection: "cf-connecting-section",
   connectingStatus: "cf-connecting-status",
+  joinerAnswerPanel: "cf-joiner-answer",
+  joinerCode: "cf-joiner-code",
+  joinerCopyBtn: "cf-joiner-copy",
   activeSection: "cf-active-section",
   chatMessages: "cf-chat-messages",
   chatInput: "cf-chat-input",
@@ -144,6 +150,9 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
 
   const connectingSection = q(root, IDS.connectingSection);
   const connectingStatus = q(root, IDS.connectingStatus);
+  const joinerAnswerPanel = q(root, IDS.joinerAnswerPanel);
+  const joinerCode = q(root, IDS.joinerCode);
+  const joinerCopyBtn = asButton(q(root, IDS.joinerCopyBtn));
 
   const activeSection = q(root, IDS.activeSection);
   const chatMessages = q(root, IDS.chatMessages);
@@ -169,7 +178,7 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
     !page || !logOutput || !logDot || !statusLine ||
     !idleSection || !createBtn || !nameInput || !joinInput || !joinBtn || !externalAssistToggle ||
     !waitingSection || !roomCode || !roomCodeCopyBtn || !answerInput || !answerApplyBtn ||
-    !connectingSection || !connectingStatus ||
+    !connectingSection || !connectingStatus || !joinerAnswerPanel || !joinerCode || !joinerCopyBtn ||
     !activeSection || !chatMessages || !chatInput || !chatSendBtn || !peerList || !disconnectBtn ||
     !dmOverlay || !dmMessages || !dmInput || !dmSendBtn || !dmCloseBtn || !dmTargetName ||
     !subCreateBtn ||
@@ -182,7 +191,7 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
     page, logOutput, logDot, statusLine,
     idleSection, createBtn, nameInput, joinInput, joinBtn, externalAssistToggle,
     waitingSection, roomCode, roomCodeCopyBtn, answerInput, answerApplyBtn,
-    connectingSection, connectingStatus,
+    connectingSection, connectingStatus, joinerAnswerPanel, joinerCode, joinerCopyBtn,
     activeSection, chatMessages, chatInput, chatSendBtn, peerList, disconnectBtn,
     dmOverlay, dmMessages, dmInput, dmSendBtn, dmCloseBtn, dmTargetName,
     subCreateBtn,
@@ -444,6 +453,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     opts.answerInput.value = "";
     opts.chatInput.value = "";
     opts.endedMessage.textContent = "";
+    opts.joinerCode.textContent = "";
+    opts.joinerAnswerPanel.style.display = "none";
     closeDmPanel();
     showPhase(opts.idleSection);
     updateStatus("ready");
@@ -491,6 +502,19 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     }
   }, { signal });
 
+  // Copy joiner answer code
+  opts.joinerCopyBtn.addEventListener("click", async () => {
+    const code = opts.joinerCode.textContent ?? "";
+    if (!code) return;
+    try {
+      await copyToClipboard(code);
+      flashText(opts.joinerCopyBtn, "Copied");
+      appendLog("answer code copied to clipboard");
+    } catch {
+      appendLog("copy failed");
+    }
+  }, { signal });
+
   // Apply answer (Root)
   opts.answerApplyBtn.addEventListener("click", async () => {
     const code = opts.answerInput.value.trim();
@@ -520,7 +544,9 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     });
     try {
       const answerCode = await node.joinCampfire(offerCode, name, useStun);
-      // peer needs to send answer code back to root out-of-band
+      // Show answer code so joiner can copy it back to root
+      opts.joinerCode.textContent = answerCode;
+      opts.joinerAnswerPanel.style.display = "";
       opts.connectingStatus.textContent = "send this reply code back to whoever created the room";
       appendLog(`answer code ready. share it back`);
     } catch (err) {

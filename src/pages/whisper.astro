@@ -713,6 +713,17 @@ const seo = {
             <div class="wl-spinner" aria-hidden="true"></div>
             <p id="cf-connecting-status" class="wl-connecting-text">joining the room...</p>
           </div>
+          <div class="whisper-panel wl-card" id="cf-joiner-answer" style="display:none">
+            <div class="whisper-panel-header">
+              <h3 class="whisper-panel-title">Reply code</h3>
+              <span class="whisper-panel-mode">send back to the host</span>
+            </div>
+            <p class="wl-inline-hint">copy this and send it to whoever created the room. keep this tab open.</p>
+            <div class="wl-code-display-wrap">
+              <pre id="cf-joiner-code" class="wl-code-display"></pre>
+              <button id="cf-joiner-copy" type="button" class="whisper-mini-btn">Copy</button>
+            </div>
+          </div>
         </div>
 
         <!-- Campfire: active -->
@@ -904,7 +915,7 @@ const seo = {
       <div class="whisper-insights">
         <h2 class="insights-title">what does this do?</h2>
         <p class="insights-text">
-          whisper takes a normal file (a "carrier"), and hides something secret inside it. the secret payload is injected into padding, gaps, and dead space most formats already have. the carrier file retiains all functionality. if there's
+          whisper takes a normal file (a "carrier"), and hides something secret inside it. the secret payload is injected into padding, gaps, and dead space most formats already have. the carrier file retiains full functionality. if there's
           not enough room, it can attach as a tail.
         </p>
         <p class="insights-text">

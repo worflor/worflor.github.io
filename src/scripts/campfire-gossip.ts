@@ -487,7 +487,7 @@ export class CampfireNode {
 
   /* ── Message Handlers ──────────────────────────────────── */
 
-  private handleRootHeartbeat(data: Uint8Array): void {
+  private async handleRootHeartbeat(data: Uint8Array): Promise<void> {
     const hb = parseRootHeartbeat(data);
     this.lastRootHeartbeat = Date.now();
 
@@ -501,7 +501,7 @@ export class CampfireNode {
     if (this.hasSeen(dedupKey)) return;
     this.markSeen(dedupKey);
 
-    this.broadcastToNeighbors(fullMsg);
+    await this.broadcastToNeighbors(fullMsg);
   }
 
   private async handleGroupMsg(data: Uint8Array, fromLabel: string): Promise<void> {
@@ -557,7 +557,7 @@ export class CampfireNode {
     await this.broadcastToNeighbors(rewrapped, fromLabel);
   }
 
-  private handleJoinAnnounce(data: Uint8Array, fromLabel: string): void {
+  private async handleJoinAnnounce(data: Uint8Array, fromLabel: string): Promise<void> {
     const { peerId, name } = parseJoinAnnounce(data);
     const hex = toHex(peerId);
 
@@ -571,10 +571,10 @@ export class CampfireNode {
 
     // Forward gossip
     const wire = buildJoinAnnounce(peerId, name);
-    this.broadcastToNeighbors(wire, fromLabel);
+    await this.broadcastToNeighbors(wire, fromLabel);
   }
 
-  private handleLeaveAnnounce(data: Uint8Array, fromLabel: string): void {
+  private async handleLeaveAnnounce(data: Uint8Array, fromLabel: string): Promise<void> {
     const { peerId } = parseLeaveAnnounce(data);
     const hex = toHex(peerId);
 
@@ -588,7 +588,7 @@ export class CampfireNode {
 
     // Forward gossip
     const wire = buildLeaveAnnounce(peerId);
-    this.broadcastToNeighbors(wire, fromLabel);
+    await this.broadcastToNeighbors(wire, fromLabel);
   }
 
   private async handleSdpRelay(data: Uint8Array): Promise<void> {
@@ -913,13 +913,13 @@ export class CampfireNode {
   /* ── Teardown ──────────────────────────────────────────── */
 
   /** End the campfire (Root: kill switch, Peer: leave). */
-  endCampfire(reason?: string): void {
+  async endCampfire(reason?: string): Promise<void> {
     if (this._state === "ended" || this._state === "idle") return;
 
     if (this.role === "root") {
       // Broadcast leave announce for root
       const wire = buildLeaveAnnounce(this.peerId);
-      this.broadcastToNeighbors(wire);
+      await this.broadcastToNeighbors(wire);
     }
 
     this.stopRootHeartbeat();

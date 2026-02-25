@@ -229,6 +229,7 @@ const ICE_GATHER_TIMEOUT = 8000;
 
 const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
 const HEARTBEAT_TIMEOUT  = 45_000;        // drop peer after 45s silence
+const CONNECTING_GRACE_PERIOD = 60_000;   // answerer waits 60s for host to apply answer
 
 const LIVE_MSG = {
   KEY_EXCHANGE: 0x10,
@@ -297,6 +298,10 @@ export class WhisperLiveSession {
   private stateBeforeRecovery: "live" | "silent" | null = null;
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private iceRestartAttempted = false;
+
+  // Answerer grace period (wait for host to apply answer code)
+  private connectingGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectingGraceDone = false;
 
   // External assist (STUN) lifecycle
   private externalAssistEstablishmentOnly: boolean;
@@ -386,6 +391,7 @@ export class WhisperLiveSession {
   async createOffer(sharedPhrase?: string): Promise<string> {
     this._destroyed = false;
     this.externalAssistDropped = false;
+    this.connectingGraceDone = false;
     this.sharedPhrase = sharedPhrase ?? "";
     this.isOfferer = true;
     this.setState("offering");
@@ -434,6 +440,7 @@ export class WhisperLiveSession {
   async acceptOffer(offerCode: string, sharedPhrase?: string): Promise<string> {
     this._destroyed = false;
     this.externalAssistDropped = false;
+    this.connectingGraceDone = false;
     this.sharedPhrase = sharedPhrase ?? "";
     this.isOfferer = false;
     this.setState("answering");
@@ -533,6 +540,18 @@ export class WhisperLiveSession {
             this.setState("recovering");
           }
           this.attemptIceRestart(pc);
+        } else if (this._state === "connecting" && !this.isOfferer && !this.connectingGraceDone) {
+          // Answerer: host hasn't applied our answer yet. Wait patiently.
+          this.connectingGraceDone = true;
+          this.log("waiting for host to complete the handshake...");
+          this.connectingGraceTimer = setTimeout(() => {
+            this.connectingGraceTimer = null;
+            if (this._state === "connecting" && pc.iceConnectionState === "failed") {
+              this.log("connection failed, could not reach peer");
+              this.setState("error", "Connection failed, peer may be unreachable");
+              this.cleanupConnection();
+            }
+          }, CONNECTING_GRACE_PERIOD);
         } else {
           this.log("connection failed, could not reach peer");
           this.setState("error", "Connection failed, peer may be unreachable");
@@ -541,6 +560,8 @@ export class WhisperLiveSession {
       } else if (s === "connected" || s === "completed") {
         this.log(s === "completed" ? "connection established" : "connected to peer");
         this.iceRestartAttempted = false;
+        if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
+        this.connectingGraceDone = false;
         this.dropExternalAssist(pc);
         // Recover from transient disruption
         if (this._state === "recovering" && this.stateBeforeRecovery) {
@@ -754,7 +775,9 @@ export class WhisperLiveSession {
       this.setState("verifying");
 
       // Auto-confirm for programmatic connections (Campfire neighbor links)
-      if (this.autoConfirm) {
+      // Offerer can confirm immediately (ratchet already initialized above).
+      // Answerer must wait for RATCHET_INIT from offerer (handled in handleRatchetInit).
+      if (this.autoConfirm && this.isOfferer) {
         this.confirmFingerprint();
       }
     } catch (err) {
@@ -779,6 +802,11 @@ export class WhisperLiveSession {
       if (this.dc && this.dc.readyState === "open") {
         this.sendPrefixed(LIVE_MSG.RATCHET_INIT, this.ratchetState.dhSelf.publicKey);
         this.log("encryption ratchet initialized, keys exchanged");
+      }
+
+      // Answerer auto-confirm now that ratchet is ready
+      if (this.autoConfirm && this._state === "verifying") {
+        this.confirmFingerprint();
       }
     } else {
       // Offerer receives answerer's ratchet public key.
@@ -812,6 +840,7 @@ export class WhisperLiveSession {
         break;
       case LIVE_MSG.FINGERPRINT_CONFIRMED: // Fingerprint confirmed
         this.log("peer confirmed fingerprint");
+        if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
         break;
       case LIVE_MSG.FINGERPRINT_REJECTED: // Fingerprint rejected
         this.log("peer rejected fingerprint, aborting");
@@ -1198,6 +1227,8 @@ export class WhisperLiveSession {
     this.stopHeartbeat();
     if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
     if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
+    if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
+    this.connectingGraceDone = false;
     this.stateBeforeRecovery = null;
     this.iceRestartAttempted = false;
     this.externalAssistDropped = false;
