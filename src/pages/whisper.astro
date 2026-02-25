@@ -2727,8 +2727,16 @@ const seo = {
   /* ── Live mode responsive ────────────────────────────────── */
   @media (max-width: 520px) {
     .wl-head {
-      grid-template-columns: 1fr;
-      grid-template-rows: auto auto auto auto;
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto auto;
+    }
+
+    .wl-head-title {
+      grid-column: 1 / -1;
+    }
+
+    .wl-head-subtitle {
+      grid-column: 1 / -1;
     }
 
     .wl-status-chip {
@@ -2740,9 +2748,10 @@ const seo = {
     }
 
     .wl-head-right {
-      grid-column: 1;
-      grid-row: 4;
-      justify-self: start;
+      grid-column: 2;
+      grid-row: 3;
+      justify-self: end;
+      align-self: center;
     }
 
     .cf-live-mode-toggle {
