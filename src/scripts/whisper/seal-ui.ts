@@ -318,14 +318,16 @@ function populateStatusMeta(container: HTMLElement, payload: SealPayload): void 
       const mins = Math.floor(ago / 60_000);
       const hrs = Math.floor(ago / 3_600_000);
       const days = Math.floor(ago / 86_400_000);
-      const agoText = days > 0 ? `${days}d ago` : hrs > 0 ? `${hrs}h ago` : mins > 0 ? `${mins}m ago` : "just now";
+      const secs = Math.floor(ago / 1_000);
+      const agoText = days > 0 ? `${days}d ago` : hrs > 0 ? `${hrs}h ago` : mins > 0 ? `${mins}m ago` : `${secs}s ago`;
       parts.push(`expired ${agoText}`);
     } else {
       const rem = payload.t - now;
       const mins = Math.ceil(rem / 60_000);
       const hrs = Math.round(rem / 3_600_000);
       const days = Math.round(rem / 86_400_000);
-      const remText = days > 1 ? `${days}d` : hrs > 0 ? `${hrs}h` : `${mins}m`;
+      const secs = Math.ceil(rem / 1_000);
+      const remText = days > 1 ? `${days}d` : hrs > 0 ? `${hrs}h` : mins > 0 ? `${mins}m` : `${secs}s`;
       parts.push(`expires in ${remText}`);
     }
     parts.push(d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));

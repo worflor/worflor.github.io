@@ -633,6 +633,8 @@ export function expiryLabel(ms: number | string): string {
   if (EXPIRY_LABELS[key]) return EXPIRY_LABELS[key];
   const n = typeof ms === "number" ? ms : parseInt(ms, 10);
   if (Number.isNaN(n) || n <= 0) return "never";
+  const secs = Math.round(n / 1_000);
+  if (secs < 60) return `${secs} sec`;
   const mins = Math.round(n / 60_000);
   if (mins < 60) return `${mins} min`;
   const hrs = Math.round(n / 3_600_000);
