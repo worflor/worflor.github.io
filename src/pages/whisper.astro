@@ -1160,8 +1160,10 @@ const seo = {
     --whisper-radius: var(--radius-lg);
     --whisper-muted: rgb(var(--color-text-rgb) / 0.58);
     --whisper-faint: rgb(var(--color-text-rgb) / 0.3);
-    --whisper-edge: rgb(var(--color-text-rgb) / 0.14);
-    --whisper-surface: rgb(var(--color-text-rgb) / 0.015);
+    --whisper-edge: rgb(var(--color-text-rgb) / 0.12);
+    --whisper-surface: rgb(10 10 10 / 0.82);
+    --whisper-surface-deep: rgb(10 10 10 / 0.94);
+    --whisper-surface-glass: none;
     --whisper-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
     padding-bottom: calc(var(--whisper-action-offset) + var(--space-lg));
   }
@@ -1519,9 +1521,9 @@ const seo = {
   }
 
   .whisper-input {
-    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     border-radius: calc(var(--whisper-radius) * 0.75);
-    background: rgb(var(--color-text-rgb) / 0.02);
+    background: rgb(10 10 10 / 0.9);
     color: var(--color-text);
     min-height: var(--touch-target);
     padding: 0.6rem 0.75rem;
@@ -1538,8 +1540,10 @@ const seo = {
 
   .whisper-input:focus-visible {
     outline: none;
-    border-color: rgb(var(--color-text-rgb) / 0.3);
-    box-shadow: 0 0 0 2px rgb(var(--color-text-rgb) / 0.06);
+    border-color: rgb(var(--chromatic-cyan) / 0.34);
+    box-shadow:
+      0 0 0 2px rgb(var(--chromatic-cyan) / 0.1),
+      0 0 18px rgb(var(--chromatic-cyan) / 0.06);
   }
 
   .whisper-password-row {
@@ -1559,8 +1563,8 @@ const seo = {
     min-height: var(--touch-target);
     padding: 0.6rem 0.75rem;
     border-radius: calc(var(--whisper-radius) * 0.75);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
-    background: rgb(var(--color-text-rgb) / 0.02);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    background: rgb(10 10 10 / 0.88);
     color: rgb(var(--color-text-rgb) / 0.6);
     font-family: var(--font-body);
     font-size: var(--text-sm);
@@ -1594,8 +1598,8 @@ const seo = {
   }
 
   .whisper-mini-btn:hover {
-    border-color: rgb(var(--color-text-rgb) / 0.24);
-    background: rgb(var(--color-text-rgb) / 0.04);
+    border-color: rgb(var(--color-text-rgb) / 0.22);
+    background: rgb(var(--color-text-rgb) / 0.05);
     color: rgb(var(--color-text-rgb) / 0.75);
   }
 
@@ -2207,6 +2211,7 @@ const seo = {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto auto;
     gap: calc(var(--space-xs) * 0.6) var(--space-sm);
+    background: var(--whisper-surface);
     transition:
       border-color var(--duration-normal) var(--ease-out),
       border-radius var(--duration-normal) var(--ease-out),
@@ -2273,8 +2278,8 @@ const seo = {
     overflow: hidden;
     padding: calc(var(--space-xs) * 0.5) calc(var(--space-xs) * 0.75);
     border-radius: calc(var(--whisper-radius) * 0.75);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
-    background: rgb(var(--color-text-rgb) / 0.018);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    background: rgb(10 10 10 / 0.9);
     color: rgb(var(--color-text-rgb) / 0.62);
   }
 
@@ -2386,6 +2391,7 @@ const seo = {
     display: grid;
     gap: calc(var(--space-xs) * 0.5);
     padding: calc(var(--space-sm) * 0.85);
+    background: var(--whisper-surface);
   }
 
   .wl-relay-connect-row {
@@ -2803,7 +2809,7 @@ const seo = {
     gap: 0;
     padding: 0;
     overflow: hidden;
-    background: var(--whisper-surface);
+    background: var(--whisper-surface-deep);
     border-top-left-radius: var(--whisper-radius);
     border-top-right-radius: var(--whisper-radius);
     border-top: 1px solid var(--whisper-edge);
@@ -2849,7 +2855,13 @@ const seo = {
     gap: calc(var(--space-xs) * 0.42);
     scrollbar-width: thin;
     transition: background var(--duration-normal) var(--ease-out);
-    background: rgb(var(--color-text-rgb) / 0.015);
+    background:
+      linear-gradient(
+        180deg,
+        rgb(var(--color-text-rgb) / 0.018) 0%,
+        transparent 50%
+      ),
+      rgb(10 10 10 / 0.92);
   }
 
   .wl-chat-messages:global(.wl-chat-drop-active) {
@@ -2958,7 +2970,13 @@ const seo = {
     flex-wrap: wrap;
     padding: calc(var(--space-xs) * 0.7);
     border-top: 1px solid var(--whisper-edge);
-    background: rgb(var(--color-text-rgb) / 0.016);
+    background:
+      linear-gradient(
+        180deg,
+        rgb(var(--color-text-rgb) / 0.02) 0%,
+        rgb(var(--color-text-rgb) / 0.008) 100%
+      ),
+      rgb(10 10 10 / 0.94);
   }
 
   .wl-chat-text-input {
@@ -2973,14 +2991,23 @@ const seo = {
   .wl-chat-send-btn {
     min-height: auto;
     padding: 0.48rem 0.8rem;
-    background: rgb(var(--chromatic-cyan) / 0.11);
-    border-color: rgb(var(--chromatic-cyan) / 0.36);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.2) 0%,
+      rgb(var(--chromatic-cyan) / 0.12) 100%
+    );
+    border-color: rgb(var(--chromatic-cyan) / 0.42);
     color: rgb(var(--chromatic-cyan));
+    box-shadow: 0 0 12px rgb(var(--chromatic-cyan) / 0.1);
   }
 
   .wl-chat-send-btn:hover {
-    background: rgb(var(--chromatic-cyan) / 0.14);
-    border-color: rgb(var(--chromatic-cyan) / 0.45);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.24) 0%,
+      rgb(var(--chromatic-cyan) / 0.15) 100%
+    );
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
   }
 
   .wl-chat-file-btn {
@@ -3844,6 +3871,8 @@ const seo = {
     border: 1px solid var(--whisper-edge);
     border-radius: calc(var(--whisper-radius) * 0.5);
     overflow: hidden;
+    background: rgb(10 10 10 / 0.88);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
     white-space: nowrap;
   }
 
@@ -3887,6 +3916,7 @@ const seo = {
     font-size: calc(var(--text-sm) * 0.82);
     color: var(--whisper-muted);
     background: transparent;
+    letter-spacing: 0.01em;
     text-transform: lowercase;
   }
 
@@ -3897,6 +3927,17 @@ const seo = {
   .cf-head-btn:hover {
     background: rgb(var(--color-text-rgb) / 0.08);
     color: var(--color-text);
+  }
+
+  /* Live header button accents */
+  #wl-funnel-campfire:hover {
+    background: rgb(var(--tool-action-load) / 0.16);
+    color: rgb(var(--tool-action-load));
+  }
+
+  #wl-disconnect:hover {
+    background: rgb(var(--chromatic-red) / 0.12);
+    color: rgb(var(--chromatic-red));
   }
 
   /* Chat header with peer list */

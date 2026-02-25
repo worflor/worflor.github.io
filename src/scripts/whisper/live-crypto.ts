@@ -53,11 +53,6 @@ export async function kdfChainDirect(
   return [new Uint8Array(newChainKey), new Uint8Array(messageKey)];
 }
 
-export async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const cryptoKey = await importHmacSha256Key(key);
-  return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, toArrayBuffer(data)));
-}
-
 export async function hkdf(
   ikm: Uint8Array,
   salt: Uint8Array,

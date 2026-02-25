@@ -5,14 +5,8 @@
  * SDP codes between two peers who share a phrase. The tracker sees only encrypted
  * blobs — it thinks it's brokering a torrent swarm.
  *
- * Both peers type the same phrase, click Connect, and the tracker relays encrypted
- * blobs between them in ~3 seconds. Then the WebSocket dies.
- *
- * No external dependencies. No accounts. No new infrastructure.
- *
- * Protocol note: WebTorrent trackers expect info_hash, peer_id, offer_id, and
- * to_peer_id as 20-byte binary strings (each char = one byte via charCodeAt).
- * JSON.stringify handles the \uXXXX escaping automatically.
+ * Server etiquette: one socket per tracker, all hashes multiplexed on it,
+ * race trackers but kill the loser immediately, send `stopped` on exit.
  */
 
 import { sha256, randomBytes } from "./wasm";
@@ -40,27 +34,15 @@ const TRACKER_URLS = [
 const WS_CONNECT_TIMEOUT = 5_000;
 const PEER_DISCOVERY_TIMEOUT = 30_000;
 const TOTAL_TIMEOUT = 45_000;
-
-/** Re-announce interval — keeps us visible if the tracker evicts stale peers. */
-const REANNOUNCE_MS = Math.floor(PEER_DISCOVERY_TIMEOUT * 0.66);
-
-/** Epoch window for salted info_hash — short window reduces phrase linkability. */
-const EPOCH_WINDOW = 2 * 60 * 1000; // 2 minutes
-
-/** Fixed length for padded SDP codes — hides true blob size from tracker. */
+const EPOCH_WINDOW = 2 * 60 * 1000;
+const EPOCH_BOUNDARY_MARGIN = 15_000;
 const PADDED_CODE_LEN = 1024;
-const PAD_CHAR = "."; // not in base64url alphabet
-
-/** Minimum viable SDP code length — anything shorter is garbage. */
+const PAD_CHAR = ".";
 const MIN_CODE_LEN = 40;
-
-/** Rough base64url pattern — quick sanity check before spending crypto on decode. */
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
-/** Each byte → one char via fromCharCode.
- *  This is the encoding WebTorrent trackers expect for info_hash, peer_id, etc. */
 function toBin(bytes: Uint8Array): string {
   let s = "";
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
@@ -68,20 +50,19 @@ function toBin(bytes: Uint8Array): string {
 }
 
 const TRACKER_HASH_INFO = TE.encode("whisper-tracker-room");
-const ZERO_SALT_20 = new Uint8Array(20);
 
-/** Derive two info_hashes salted with the current and previous epoch,
- *  so peers near an epoch boundary still discover each other.
- *  Uses SHA-256 → HKDF to slow down dictionary attacks on common phrases. */
-async function deriveInfoHashes(phrase: string): Promise<[current: string, previous: string]> {
-  const epoch = Math.floor(Date.now() / EPOCH_WINDOW);
+async function deriveInfoHashes(phrase: string): Promise<string[]> {
+  const now = Date.now();
+  const epoch = Math.floor(now / EPOCH_WINDOW);
   const phraseHash = await sha256(TE.encode("whisper-tracker|" + phrase));
-  const [cur, prev] = await Promise.all([
-    hkdf(phraseHash, TE.encode(String(epoch)), TRACKER_HASH_INFO, 20),
-    hkdf(phraseHash, TE.encode(String(epoch - 1)), TRACKER_HASH_INFO, 20),
-  ]);
+  const cur = await hkdf(phraseHash, TE.encode(String(epoch)), TRACKER_HASH_INFO, 20);
+  const hashes: string[] = [toBin(cur)];
+  if (now - epoch * EPOCH_WINDOW < EPOCH_BOUNDARY_MARGIN) {
+    const prev = await hkdf(phraseHash, TE.encode(String(epoch - 1)), TRACKER_HASH_INFO, 20);
+    hashes.push(toBin(prev));
+  }
   phraseHash.fill(0);
-  return [toBin(cur), toBin(prev)];
+  return hashes;
 }
 
 function randomBinId(): string {
@@ -107,30 +88,31 @@ export async function exchangeViaTracker(
   callbacks: TrackerSignalCallbacks,
   signal?: AbortSignal,
 ): Promise<TrackerSignalResult> {
-  const [currentHash, previousHash] = await deriveInfoHashes(phrase);
+  const hashes = await deriveInfoHashes(phrase);
   const peerId = randomBinId();
   const offerId = randomBinId();
+  const paddedOffer = padCode(myOfferCode);
 
   callbacks.onLog("relay: room ready");
 
-  // Hard cap on total exchange time
   const totalAc = new AbortController();
   const totalTimer = setTimeout(() => totalAc.abort(), TOTAL_TIMEOUT);
-  const cleanup = () => clearTimeout(totalTimer);
 
   if (signal) {
     if (signal.aborted) {
-      cleanup();
+      clearTimeout(totalTimer);
       throw new DOMException("Aborted", "AbortError");
     }
     signal.addEventListener("abort", () => totalAc.abort(), { once: true });
   }
 
+  // Race all trackers — each opens ONE socket and multiplexes all hashes
+  // on it. The first tracker to yield a result wins; losers are torn down
+  // immediately via the AbortController in `finally`.
   try {
-    const attempts = TRACKER_URLS.flatMap((url) => [
-      connectToTracker(url, currentHash, peerId, offerId, myOfferCode, acceptOfferFn, callbacks, totalAc.signal),
-      connectToTracker(url, previousHash, peerId, offerId, myOfferCode, acceptOfferFn, callbacks, totalAc.signal),
-    ]);
+    const attempts = TRACKER_URLS.map((url) =>
+      connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal),
+    );
     return await Promise.any(attempts);
   } catch (err) {
     if (err instanceof AggregateError) {
@@ -142,19 +124,19 @@ export async function exchangeViaTracker(
     }
     throw err;
   } finally {
-    cleanup();
+    clearTimeout(totalTimer);
     totalAc.abort();
   }
 }
 
-/* ── Single tracker connection ────────────────────────────── */
+/* ── Single tracker connection (multiplexed hashes) ───────── */
 
 function connectToTracker(
   url: string,
-  infoHash: string,
+  infoHashes: string[],
   peerId: string,
   offerId: string,
-  myOfferCode: string,
+  paddedOffer: string,
   acceptOfferFn: (peerOfferCode: string) => Promise<string>,
   callbacks: TrackerSignalCallbacks,
   signal: AbortSignal,
@@ -168,18 +150,47 @@ function connectToTracker(
     }
 
     let ws: WebSocket | null = null;
-    let resolved = false;
-    let offerAccepted = false; // only accept one offer per connection
-    let reannounceTimer: ReturnType<typeof setInterval> | null = null;
+    let done = false;
+    let offerAccepted = false;
+    let discoveryTimer: ReturnType<typeof setTimeout>;
+
+    // Pre-serialize announce payloads — one per hash, reused as-is
+    const announcePayloads = infoHashes.map((h) => JSON.stringify({
+      action: "announce",
+      info_hash: h,
+      peer_id: peerId,
+      numwant: 1,
+      offers: [{ offer_id: offerId, offer: { type: "offer", sdp: paddedOffer } }],
+    }));
+
+    // Pre-serialize stopped payloads
+    const stoppedPayloads = infoHashes.map((h) => JSON.stringify({
+      action: "announce",
+      info_hash: h,
+      peer_id: peerId,
+      event: "stopped",
+    }));
 
     const finish = (result?: TrackerSignalResult, error?: Error) => {
-      if (resolved) return;
-      resolved = true;
+      if (done) return;
+      done = true;
       clearTimeout(connectTimer);
       clearTimeout(discoveryTimer);
-      if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
-      try { ws?.close(); } catch { /* noop */ }
+
+      // Politely deregister from all swarms before closing
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        for (const payload of stoppedPayloads) {
+          try { ws.send(payload); } catch { break; }
+        }
+        // Close with 1000 (normal closure) — tells the server this was
+        // intentional so it can reclaim resources immediately rather than
+        // waiting for TCP FIN timeout.
+        try { ws.close(1000); } catch { /* noop */ }
+      } else {
+        try { ws?.close(1000); } catch { /* noop */ }
+      }
       ws = null;
+
       if (result) resolve(result);
       else reject(error ?? new Error("relay-unavailable"));
     };
@@ -191,8 +202,6 @@ function connectToTracker(
     const connectTimer = setTimeout(() => {
       finish(undefined, new Error("relay-unavailable"));
     }, WS_CONNECT_TIMEOUT);
-
-    let discoveryTimer: ReturnType<typeof setTimeout>;
 
     try {
       ws = new WebSocket(url);
@@ -211,60 +220,43 @@ function connectToTracker(
         finish(undefined, new Error("peer-not-found"));
       }, PEER_DISCOVERY_TIMEOUT);
 
-      const announcePayload = JSON.stringify({
-        action: "announce",
-        info_hash: infoHash,
-        peer_id: peerId,
-        numwant: 1,
-        offers: [{
-          offer_id: offerId,
-          offer: { type: "offer", sdp: padCode(myOfferCode) },
-        }],
-      });
-      ws!.send(announcePayload);
-
-      // Re-announce periodically — keeps us in the tracker's peer pool
-      // Reannounce only matters while discovery timer is active.
-      if (REANNOUNCE_MS < PEER_DISCOVERY_TIMEOUT) {
-        reannounceTimer = setInterval(() => {
-          if (ws?.readyState === WebSocket.OPEN) ws.send(announcePayload);
-        }, REANNOUNCE_MS);
-      }
+      // Single announce per hash — no re-announce. The WebSocket staying
+      // open is itself the keepalive; trackers evict on socket close,
+      // not on announce timeout.
+      for (const payload of announcePayloads) ws!.send(payload);
     };
 
     ws.onmessage = (event) => {
-      if (resolved) return;
-      // Cap inbound message size — tracker messages should be small
-      const raw = String(event.data);
-      if (raw.length > 8192) return;
+      if (done) return;
+
+      // Text frames arrive as strings — no coercion needed.
+      // Binary frames (unexpected from a WebTorrent tracker) are ignored.
+      const raw = event.data;
+      if (typeof raw !== "string" || raw.length > 8192) return;
 
       let msg: Record<string, unknown>;
-      try {
-        msg = JSON.parse(raw) as Record<string, unknown>;
-      } catch { return; }
+      try { msg = JSON.parse(raw); } catch { return; }
 
       if (msg["failure reason"]) {
         callbacks.onLog(`relay: tracker said: ${msg["failure reason"]}`);
         return;
       }
 
-      // Received an offer → we may become the answerer
+      // ── Offer received → we may become the answerer ──
+
       if (msg.offer && typeof msg.offer === "object") {
         const offer = msg.offer as Record<string, unknown>;
         const peerOfferCode = unpadCode(String(offer.sdp ?? ""));
         const peerOfferId = String(msg.offer_id ?? "");
         const peerPeerId = String(msg.peer_id ?? "");
 
-        // Reject empty, self-echoed, or malformed offers
         if (!peerOfferCode || peerOfferCode.length < MIN_CODE_LEN) return;
-        if (peerPeerId === peerId) return; // tracker echoed our own offer
+        if (peerPeerId === peerId) return;
         if (!BASE64URL_RE.test(peerOfferCode)) return;
-
-        // Only accept one offer per connection — prevents flood
         if (offerAccepted) return;
         offerAccepted = true;
 
-        // Simultaneous arrival tie-break: lower peer_id becomes answerer
+        // Tie-break: lower peer_id becomes answerer
         if (peerId > peerPeerId) {
           callbacks.onLog("relay: resolving connection order...");
           return;
@@ -273,13 +265,17 @@ function connectToTracker(
         callbacks.onStatus("found your peer!");
         callbacks.onLog("relay: peer found, accepting their offer");
 
+        // Determine which info_hash this offer came on — reply on the same one.
+        // The tracker routes answers by (info_hash, to_peer_id, offer_id).
+        const replyHash = typeof msg.info_hash === "string" ? msg.info_hash : infoHashes[0];
+
         void acceptOfferFn(peerOfferCode)
           .then((myAnswerCode) => {
-            if (resolved || !ws || ws.readyState !== WebSocket.OPEN) return;
+            if (done || !ws || ws.readyState !== WebSocket.OPEN) return;
 
             ws.send(JSON.stringify({
               action: "announce",
-              info_hash: infoHash,
+              info_hash: replyHash,
               peer_id: peerId,
               to_peer_id: peerPeerId,
               answer: { type: "answer", sdp: padCode(myAnswerCode) },
@@ -290,14 +286,15 @@ function connectToTracker(
             callbacks.onStatus("connecting directly...");
             finish({ role: "answerer" });
           })
-          .catch((err) => {
-            finish(undefined, new Error(`handshake-failed`));
+          .catch(() => {
+            finish(undefined, new Error("handshake-failed"));
           });
 
         return;
       }
 
-      // Received an answer → we stay offerer
+      // ── Answer received → we stay offerer ──
+
       if (msg.answer && typeof msg.answer === "object") {
         const answer = msg.answer as Record<string, unknown>;
         const peerAnswerCode = unpadCode(String(answer.sdp ?? ""));
@@ -311,12 +308,10 @@ function connectToTracker(
       }
     };
 
-    ws.onerror = () => {
-      finish(undefined, new Error("relay-unavailable"));
-    };
+    ws.onerror = () => finish(undefined, new Error("relay-unavailable"));
 
     ws.onclose = () => {
-      if (!resolved) finish(undefined, new Error("relay-unavailable"));
+      if (!done) finish(undefined, new Error("relay-unavailable"));
     };
   });
 }

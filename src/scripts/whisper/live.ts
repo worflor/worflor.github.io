@@ -200,14 +200,11 @@ const FINGERPRINT_EMOJI = [
   "\u{1F32A}\uFE0F",  // tornado
 ];
 
-/* Pre-encoded constants — avoids per-call TextEncoder allocations */
-const FP_PREFIX = TE.encode("whisper-fp-v1");
-const PHRASE_PREFIX = "whisper-phrase|";
 const PHRASE_KDF_INFO = TE.encode("whisper-live-keyed");
 const ZERO_SALT_32 = new Uint8Array(32);
 
 async function deriveFingerprint(sharedSecret: Uint8Array): Promise<string> {
-  const hash = await sha256(concatBytes(FP_PREFIX, sharedSecret));
+  const hash = await sha256(concatBytes(TE.encode("whisper-fp-v1"), sharedSecret));
   return Array.from(hash.subarray(0, 4))
     .map((b) => FINGERPRINT_EMOJI[b % FINGERPRINT_EMOJI.length])
     .join("");
@@ -440,13 +437,11 @@ export class WhisperLiveSession {
 
     this.setupPeerConnection(this.pc);
 
-    // Create data channel
     this.dc = this.pc.createDataChannel("whisper", {
       ordered: true,
     });
     this.setupDataChannel(this.dc);
 
-    // Create offer
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
 
@@ -495,7 +490,6 @@ export class WhisperLiveSession {
     // Set remote description (offer)
     await this.pc.setRemoteDescription({ type: "offer", sdp: offerSDP });
 
-    // Create answer
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
 
@@ -596,7 +590,7 @@ export class WhisperLiveSession {
     this.connectingGraceTimer = setTimeout(() => {
       this.connectingGraceTimer = null;
       if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
-      if (this._state === "live" || this._state === "silent" ||
+      if (this.isLiveState() ||
           this._state === "disconnected" || this._state === "error") return;
       // Check current state — ICE may have recovered during the wait
       const iceState = pc.iceConnectionState;
@@ -629,7 +623,7 @@ export class WhisperLiveSession {
 
       if (s === "disconnected") {
         // During live sessions, enter recovery grace period instead of instant disconnect
-        if (this._state === "live" || this._state === "silent") {
+        if (this.isLiveState()) {
           this.stateBeforeRecovery = this._state;
           this.setState("recovering");
           this.onLog("connection interrupted, attempting recovery...");
@@ -650,7 +644,7 @@ export class WhisperLiveSession {
 
       if (s === "failed") {
         // During active sessions, attempt one ICE restart before giving up
-        if ((this._state === "live" || this._state === "silent" || this._state === "recovering") && !this.iceRestartAttempted) {
+        if ((this.isLiveState() || this._state === "recovering") && !this.iceRestartAttempted) {
           this.iceRestartAttempted = true;
           this.onLog("connection failed, attempting restart...");
           if (this._state !== "recovering") {
@@ -764,7 +758,7 @@ export class WhisperLiveSession {
     };
 
     dc.onclose = () => {
-      if (this._state === "live" || this._state === "silent" ||
+      if (this.isLiveState() ||
           this._state === "recovering" ||
           this._state === "verifying" || this._state === "handshaking") {
         this.onLog("peer disconnected");
@@ -809,7 +803,6 @@ export class WhisperLiveSession {
   private async performKeyExchange(): Promise<void> {
     this.keyReady = (async () => {
       try {
-        // Generate ephemeral ECDH keypair
         const keyPair = await crypto.subtle.generateKey(
           { name: "ECDH", namedCurve: "P-256" },
           false,
@@ -818,15 +811,12 @@ export class WhisperLiveSession {
 
         const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
         this.onLog("sending public key");
-
-        // Send our public key
         if (!this.dc || this.dc.readyState !== "open") {
           this.onLog("key exchange aborted, channel not available");
           return;
         }
         this.send(LIVE_MSG.KEY_EXCHANGE, pubKeyRaw);
 
-        // Store private key for derivation when peer's key arrives
         this.ephPrivateKey = keyPair.privateKey;
       } catch (err) {
         this.onLog(`key exchange failed: ${errorMessage(err, "unknown error")}`);
@@ -844,7 +834,6 @@ export class WhisperLiveSession {
       await this.keyReady;
       if (!this.ephPrivateKey) throw new Error("No ephemeral private key");
 
-      // Derive shared secret via ECDH
       const peerPubKey = await crypto.subtle.importKey(
         "raw", toArrayBuffer(peerPubKeyRaw), { name: "ECDH", namedCurve: "P-256" }, false, [],
       );
@@ -853,14 +842,12 @@ export class WhisperLiveSession {
       );
       let sharedSecret: Uint8Array = new Uint8Array(sharedBits);
 
-      // Wipe ephemeral key immediately — no longer needed
       this.ephPrivateKey = null;
 
       this.onLog("shared secret derived");
 
-      // Mix in shared phrase if provided
       if (this.sharedPhrase) {
-        const phraseHash = await sha256(TE.encode(PHRASE_PREFIX + this.sharedPhrase));
+        const phraseHash = await sha256(TE.encode("whisper-phrase|" + this.sharedPhrase));
         this.sharedPhrase = null; // wipe phrase immediately
         const concat = concatBytes(sharedSecret, phraseHash);
         phraseHash.fill(0); // wipe intermediate
@@ -880,27 +867,19 @@ export class WhisperLiveSession {
 
       this.sharedSecret = sharedSecret;
 
-      // Derive fingerprint
       const fingerprint = await deriveFingerprint(sharedSecret);
       this.onLog(`fingerprint: ${fingerprint}`);
       this.onFingerprint(fingerprint);
 
-      // Initialize Double Ratchet
-      // The offerer generates an initial ratchet DH keypair and sends it.
-      // The answerer receives it and uses it to derive both send and receive chains.
-      // Then the answerer sends back their ratchet public key so the offerer
-      // can derive their receive chain (and a new send chain).
       if (this.isOfferer) {
         const dhSelf = await generateDHKeyPair();
         this.ratchetState = await initRatchetAsOfferer(sharedSecret, dhSelf);
 
-        // Send our initial ratchet public key
         if (this.dc && this.dc.readyState === "open") {
           this.send(LIVE_MSG.RATCHET_INIT, dhSelf.publicKey);
           this.onLog("sent initial ratchet key");
         }
       }
-      // Answerer waits for RATCHET_INIT from the offerer
 
       this.setState("verifying");
 
@@ -924,23 +903,17 @@ export class WhisperLiveSession {
     if (!this.sharedSecret) return;
 
     if (!this.isOfferer) {
-      // Answerer receives offerer's initial DH public key.
-      // initRatchetAsReceiver derives a sending chain for the answerer.
       this.ratchetState = await initRatchetAsReceiver(this.sharedSecret, peerRatchetPubKey);
 
-      // Send our ratchet public key back so the offerer can derive their receive chain.
       if (this.dc && this.dc.readyState === "open") {
         this.send(LIVE_MSG.RATCHET_INIT, this.ratchetState.dhSelf.publicKey);
         this.onLog("encryption ratchet initialized, keys exchanged");
       }
 
-      // Answerer auto-confirm now that ratchet is ready
       if (this.autoConfirm && this._state === "verifying") {
         this.confirmFingerprint();
       }
     } else {
-      // Offerer receives answerer's ratchet public key.
-      // Perform the first DH ratchet step so the offerer has send and receive chains.
       if (this.ratchetState) {
         await dhRatchetStep(this.ratchetState, peerRatchetPubKey);
         this.onLog("encryption ratchet initialized, received peer key");
@@ -1037,10 +1010,8 @@ export class WhisperLiveSession {
           didDHRatchet = true;
         }
 
-        // Skip to the correct message number
         await skipMessageKeys(this.ratchetState, header.counter);
 
-        // Derive message key
         if (!this.ratchetState.chainKeyRecv) throw new Error("No receiving chain key");
         const oldRecvChainKey = this.ratchetState.chainKeyRecv;
         const [newChainKey, mk] = await kdfChain(oldRecvChainKey);
@@ -1050,8 +1021,7 @@ export class WhisperLiveSession {
         messageKey = mk;
       }
 
-      // Decrypt
-      const aad = complete.subarray(0, HEADER_SIZE); // header as AAD
+      const aad = complete.subarray(0, HEADER_SIZE);
       let plaintext: Uint8Array;
       try {
         plaintext = await aesGcmDecrypt(messageKey, header.ciphertext, header.nonce, aad);
@@ -1117,7 +1087,7 @@ export class WhisperLiveSession {
 
   /** Wait for recovery to complete before sending. Returns false if destroyed. */
   private isLiveState(): boolean {
-    return this._state === "live" || this._state === "silent";
+    return this.isLiveState();
   }
 
   private waitForRecovery(): Promise<boolean> {
@@ -1194,15 +1164,10 @@ export class WhisperLiveSession {
   private async sendFileDressed(
     fileName: string, fileType: string, fileBytes: Uint8Array,
   ): Promise<void> {
-    // Dressed mode: embed the file into a carrier using the steganography engine
-    // For now, we create a minimal PNG carrier and embed into it
     if (!this.engine) this.engine = new WhisperEngine();
-
-    // Create a simple carrier (1x1 transparent PNG)
     const carrier = createMinimalPNGCarrier();
 
     try {
-      // Derive stego password via HKDF — avoids exposing raw sharedSecret
       let password: string;
       if (this.sharedSecret) {
         const stegoKey = await hkdf(this.sharedSecret, ZERO_SALT_32, TE.encode("whisper-stego"), 16);
@@ -1212,7 +1177,6 @@ export class WhisperLiveSession {
         password = "whisper-dressed";
       }
 
-      // Create a File object for the payload
       const payloadFile = new File([toArrayBuffer(fileBytes)], fileName, { type: fileType });
       const carrierFile = new File([toArrayBuffer(carrier)], "carrier.png", { type: "image/png" });
 
@@ -1264,12 +1228,10 @@ export class WhisperLiveSession {
   private async encryptAndSend(plaintext: Uint8Array, flags: number): Promise<void> {
     if (!this.ratchetState || !this.dc) return;
 
-    // Ensure we have a sending chain
     if (!this.ratchetState.chainKeySend) {
       throw new Error("No sending chain, ratchet not fully initialized");
     }
 
-    // Derive message key from sending chain
     const oldSendChainKey = this.ratchetState.chainKeySend;
     const [newChainKey, messageKey] = await kdfChain(oldSendChainKey);
     oldSendChainKey.fill(0); // wipe old chain key
@@ -1279,7 +1241,6 @@ export class WhisperLiveSession {
     const counter = this.ratchetState.nSend;
     const prevChainLen = this.ratchetState.prevChainLength;
 
-    // Build header
     const header = buildHeader(
       flags,
       this.ratchetState.dhSelf.publicKey,
@@ -1288,16 +1249,13 @@ export class WhisperLiveSession {
       nonce,
     );
 
-    // Encrypt with header as AAD
     const ciphertext = await aesGcmEncrypt(messageKey, plaintext, nonce, header);
     messageKey.fill(0); // wipe message key after use
 
-    // Combine header + ciphertext
     const wireMessage = concatBytes(header, ciphertext);
 
     this.ratchetState.nSend++;
 
-    // Chunk (with 0x20 prefix baked in) and send with backpressure
     const chunks = chunkMessagePrefixed(wireMessage, LIVE_MSG.ENCRYPTED);
     const totalBytes = wireMessage.length;
     let bytesSent = 0;
@@ -1486,7 +1444,6 @@ export class WhisperLiveSession {
       try { pc.close(); } catch { /* ignore */ }
     }
 
-    // Wipe crypto state
     if (this.ratchetState) {
       this.ratchetState.rootKey.fill(0);
       if (this.ratchetState.chainKeySend) this.ratchetState.chainKeySend.fill(0);
@@ -1506,14 +1463,12 @@ export class WhisperLiveSession {
     this.sharedPhrase = null;
     this.assembler.reset();
 
-    // Flush any pending recovery waiters
     if (this.recoveryResolve) {
       const resolve = this.recoveryResolve;
       this.recoveryResolve = null;
       resolve();
     }
 
-    // Wipe ephemeral key if still present (interrupted handshake)
     this.ephPrivateKey = null;
     this.keyReady = Promise.resolve();
   }
