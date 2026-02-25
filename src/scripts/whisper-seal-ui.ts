@@ -971,8 +971,8 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     setRecipientQrUiState(false);
     setRecipientQrStatus("");
     opts.recipientQrScanBtn.title = capability.supported
-      ? "Scan WS2 key from camera"
-      : "Camera QR scan unavailable";
+      ? "Scan QR from camera"
+      : "QR scan not supported";
     opts.recipientQrImageBtn.title = "Load QR image";
     if (!capability.supported) log(capability.reason ?? "camera qr scan unavailable");
   });

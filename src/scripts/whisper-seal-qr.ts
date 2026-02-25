@@ -110,7 +110,7 @@ export async function getQrScannerCapability(): Promise<QrScannerCapability> {
   if (!ctor) {
     return {
       supported: false,
-      reason: "Camera QR scan is unavailable in this browser.",
+      reason: "qr scan not supported",
     };
   }
 
@@ -123,12 +123,12 @@ export async function getQrScannerCapability(): Promise<QrScannerCapability> {
     if (formats.includes("qr_code")) return { supported: true };
     return {
       supported: false,
-      reason: "Native detector is available but QR format is not supported.",
+      reason: "qr format not supported",
     };
   } catch {
     return {
       supported: false,
-      reason: "QR capability could not be verified.",
+      reason: "qr check failed",
     };
   }
 }
