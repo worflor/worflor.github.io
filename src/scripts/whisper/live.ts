@@ -287,6 +287,9 @@ export class WhisperLiveSession {
   /** Ephemeral ECDH private key — exists only during handshake, then wiped */
   private ephPrivateKey: CryptoKey | null = null;
 
+  /** Resolves when local ephemeral key generation is complete */
+  private keyReady: Promise<void> = Promise.resolve();
+
   /** Serializes async message handling to prevent ratchet state races */
   private msgQueue: Promise<void> = Promise.resolve();
   /** Serializes async sends to prevent chain key reuse */
@@ -783,30 +786,32 @@ export class WhisperLiveSession {
   *   [LIVE_MSG.PONG]                                → pong (heartbeat reply)
    */
   private async performKeyExchange(): Promise<void> {
-    try {
-      // Generate ephemeral ECDH keypair
-      const keyPair = await crypto.subtle.generateKey(
-        { name: "ECDH", namedCurve: "P-256" },
-        false,
-        ["deriveBits"],
-      );
+    this.keyReady = (async () => {
+      try {
+        // Generate ephemeral ECDH keypair
+        const keyPair = await crypto.subtle.generateKey(
+          { name: "ECDH", namedCurve: "P-256" },
+          false,
+          ["deriveBits"],
+        );
 
-      const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
-      this.log("sending public key");
+        const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
+        this.log("sending public key");
 
-      // Send our public key
-      if (!this.dc || this.dc.readyState !== "open") {
-        this.log("key exchange aborted, channel not available");
-        return;
+        // Send our public key
+        if (!this.dc || this.dc.readyState !== "open") {
+          this.log("key exchange aborted, channel not available");
+          return;
+        }
+        this.sendPrefixed(LIVE_MSG.KEY_EXCHANGE, pubKeyRaw);
+
+        // Store private key for derivation when peer's key arrives
+        this.ephPrivateKey = keyPair.privateKey;
+      } catch (err) {
+        this.log(`key exchange failed: ${errorMessage(err, "unknown error")}`);
+        this.setState("error", "Key exchange failed");
       }
-      this.sendPrefixed(LIVE_MSG.KEY_EXCHANGE, pubKeyRaw);
-
-      // Store private key for derivation when peer's key arrives
-      this.ephPrivateKey = keyPair.privateKey;
-    } catch (err) {
-      this.log(`key exchange failed: ${errorMessage(err, "unknown error")}`);
-      this.setState("error", "Key exchange failed");
-    }
+    })();
   }
 
   private async handleKeyExchangeMessage(peerPubKeyRaw: Uint8Array): Promise<void> {
@@ -815,6 +820,7 @@ export class WhisperLiveSession {
       return;
     }
     try {
+      await this.keyReady;
       if (!this.ephPrivateKey) throw new Error("No ephemeral private key");
 
       // Derive shared secret via ECDH
@@ -1383,5 +1389,6 @@ export class WhisperLiveSession {
 
     // Wipe ephemeral key if still present (interrupted handshake)
     this.ephPrivateKey = null;
+    this.keyReady = Promise.resolve();
   }
 }
