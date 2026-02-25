@@ -301,10 +301,6 @@ function compactSealCode(code: string): string {
   return `${code.slice(0, 20)}…${code.slice(-12)}`;
 }
 
-function formatInlineSealPreview(code: string): string {
-  return compactSealCode(code);
-}
-
 function populateStatusMeta(container: HTMLElement, payload: SealPayload): void {
   const meta = container.querySelector<HTMLElement>(".ws-status-meta");
   if (!meta) return;
@@ -692,13 +688,12 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
         opts.sealQrStatus.textContent = "QR preview unavailable in this browser.";
         log("qr preview unavailable");
       }
-      opts.mySealInline.textContent = formatInlineSealPreview(identity.code);
+      opts.mySealInline.textContent = compactSealCode(identity.code);
       opts.mySealInline.style.display = "";
       opts.mySealInline.title = "WS2 public key preview — click to copy full code";
       opts.mySealInlinePanel.style.display = "";
       syncMySealInlinePanelState();
       log(`key loaded: ${compactSealCode(identity.code)}`);
-      // Stop shimmer, fire copy pulse
       opts.mySealBtn.classList.remove("ws-computing");
       copyToClipboard(identity.code).then(() => {
         if (aborted()) return;
@@ -781,7 +776,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       if (aborted()) return;
       if (identity) {
         mySealPublicCode = identity.code;
-        opts.mySealInline.textContent = formatInlineSealPreview(identity.code);
+        opts.mySealInline.textContent = compactSealCode(identity.code);
         opts.mySealInline.style.display = "";
         opts.mySealInline.title = "WS2 public key preview — click to copy full code";
         log(`local key: ${compactSealCode(identity.code)}`);
@@ -1029,14 +1024,19 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   pageObserver = new MutationObserver(() => {
     syncSealInlineVisibility();
-    // Hide seal overlay when user switches modes (e.g. away from an expired/fail screen)
-    if (opts.overlay.style.display !== "none") {
-      hideOverlay();
-      busy = false;
-      pendingPayload = null;
-    }
   });
   pageObserver.observe(opts.page, { attributes: true, attributeFilter: ["data-mode", "data-carrier"] });
+
+  // Hide seal overlay when user clicks any mode tab
+  opts.page.querySelectorAll<HTMLButtonElement>("[data-whisper-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (opts.overlay.style.display !== "none") {
+        hideOverlay();
+        busy = false;
+        pendingPayload = null;
+      }
+    }, { signal });
+  });
   syncMySealInlinePanelState();
   syncSealInlineVisibility();
 

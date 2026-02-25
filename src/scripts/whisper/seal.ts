@@ -132,16 +132,12 @@ export function normalizeSealCodeInput(code: string): string {
   return code.replace(/\s+/g, "").trim();
 }
 
-function normalizeSealCode(code: string): string {
-  return normalizeSealCodeInput(code);
-}
-
 export function sealPublicKeyToCode(publicKeyRaw: Uint8Array): string {
   return `${WS2_PREFIX}${b64url(publicKeyRaw)}`;
 }
 
 export function parseSealPublicCode(code: string): Uint8Array | null {
-  const normalized = normalizeSealCode(code);
+  const normalized = normalizeSealCodeInput(code);
   const prefix = normalized.slice(0, 4).toUpperCase();
   if (prefix !== WS2_PREFIX) return null;
   const encoded = normalized.slice(4);
@@ -597,12 +593,12 @@ export function decodeSealPayload(encoded: string): SealPayload | null {
     if (typeof obj.p !== "number" || (obj.p !== 0 && obj.p !== 1)) return null;
     if (typeof obj.t !== "number" || !Number.isFinite(obj.t) || obj.t < 0) return null;
 
-    if (obj?.v === 2 &&
+    if (
       typeof obj.epk === "string" && typeof obj.ks === "string" &&
       typeof obj.kn === "string" && typeof obj.k === "string" &&
       typeof obj.n === "string" && typeof obj.c === "string" &&
       typeof obj.rf === "string" && obj.rf.length > 0 &&
-      (obj.p === 0 ? typeof obj.ps === "undefined" || typeof obj.ps === "string" : typeof obj.ps === "string")) {
+      (obj.p === 0 || typeof obj.ps === "string")) {
       return obj as SealPayload;
     }
     return null;
