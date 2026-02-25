@@ -874,26 +874,24 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     syncCompose();
   }, { signal });
 
-  // Paste — focus input on click, validate on paste event
+  // Paste — read clipboard on click, validate, pulse button
   function pulsePaste(cls: string): void {
     opts.recipientPasteBtn.classList.remove("ws-copy-pulse", "ws-reject-pulse");
     void opts.recipientPasteBtn.offsetWidth;
     opts.recipientPasteBtn.classList.add(cls);
   }
-  opts.recipientPasteBtn.addEventListener("click", () => {
-    opts.recipientSealInput.focus();
-    opts.recipientSealInput.select();
-  }, { signal });
-  opts.recipientSealInput.addEventListener("paste", (e) => {
-    const pasted = e.clipboardData?.getData("text") ?? "";
-    const normalized = normalizeSealCodeInput(pasted.trim());
-    if (isSealCodeValid(normalized)) {
-      e.preventDefault();
-      opts.recipientSealInput.value = normalized;
-      syncCompose();
-      pulsePaste("ws-copy-pulse");
-    } else if (pasted.trim().length > 0) {
-      e.preventDefault();
+  opts.recipientPasteBtn.addEventListener("click", async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      const normalized = normalizeSealCodeInput(text.trim());
+      if (isSealCodeValid(normalized)) {
+        opts.recipientSealInput.value = normalized;
+        syncCompose();
+        pulsePaste("ws-copy-pulse");
+      } else {
+        pulsePaste("ws-reject-pulse");
+      }
+    } catch {
       pulsePaste("ws-reject-pulse");
     }
   }, { signal });

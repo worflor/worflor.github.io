@@ -2457,12 +2457,15 @@ const seo = {
 
   /* Reject pulse — red flash for invalid/denied actions */
   @keyframes ws-reject-pulse {
-    0%   { background: rgb(var(--chromatic-red) / 0.25) !important; color: rgb(var(--chromatic-red)) !important; }
-    100% { background: transparent !important; }
+    0%   { background: rgb(var(--chromatic-red) / 0.25); color: rgb(var(--chromatic-red)); }
+    100% { background: transparent; }
   }
 
-  .ws-reject-pulse {
+  .ws-reject-pulse,
+  .whisper-password-tools .ws-reject-pulse {
     animation: ws-reject-pulse 0.7s ease-out;
+    background: transparent;
+    color: rgb(var(--chromatic-red));
   }
 
   /* Computing shimmer — repeating border glow while working */
