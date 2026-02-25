@@ -431,10 +431,10 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   function syncCarrier(isUrl: boolean): void {
     if (isUrl) {
       opts.page.dataset.carrier = "url";
-      sessionStorage.setItem("whisper-carrier", "url");
-    } else {
-      delete opts.page.dataset.carrier;
       sessionStorage.removeItem("whisper-carrier");
+    } else {
+      opts.page.dataset.carrier = "file";
+      sessionStorage.setItem("whisper-carrier", "file");
     }
   }
 
@@ -939,9 +939,9 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   /* ── Initial state ───────────────────────────────────── */
 
-  if (savedCarrier === "url") {
-    const urlRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="url"]');
-    if (urlRadio) urlRadio.checked = true;
+  if (savedCarrier === "file") {
+    const fileRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="file"]');
+    if (fileRadio) fileRadio.checked = true;
   }
   syncEmbedMessageCount();
   setMode(activeMode);

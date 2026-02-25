@@ -15,7 +15,7 @@ const seo = {
       (function(){var p=document.getElementById("whisper-page");if(!p)return;
         var m=sessionStorage.getItem("whisper-mode");
         if(m==="embed"||m==="extract"||m==="hunt"||m==="live")p.dataset.mode=m;
-        if(m==="embed"&&sessionStorage.getItem("whisper-carrier")==="url")p.dataset.carrier="url";
+        if(m==="embed")p.dataset.carrier=sessionStorage.getItem("whisper-carrier")==="file"?"file":"url";
       })();
     </script>
     <!-- ── Hero ─────────────────────────────────────────────── -->
@@ -154,11 +154,11 @@ const seo = {
             <span class="whisper-field-label">carrier</span>
             <div class="ws-carrier-toggle" role="radiogroup" aria-label="Carrier type">
               <label class="ws-carrier-opt">
-                <input type="radio" name="ws-carrier-type" value="file" checked class="ws-carrier-radio" />
+                <input type="radio" name="ws-carrier-type" value="file" class="ws-carrier-radio" />
                 <span class="ws-carrier-label">File</span>
               </label>
               <label class="ws-carrier-opt">
-                <input type="radio" name="ws-carrier-type" value="url" class="ws-carrier-radio" />
+                <input type="radio" name="ws-carrier-type" value="url" checked class="ws-carrier-radio" />
                 <span class="ws-carrier-label">URL</span>
               </label>
               <button id="ws-my-seal-btn" type="button" class="whisper-mini-btn ws-my-seal-btn ws-seal-mode-chip ws-seal-mode-chip--stable" aria-pressed="false" title="switch seal mode">Stable seal</button>
