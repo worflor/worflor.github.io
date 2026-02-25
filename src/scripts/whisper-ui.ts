@@ -184,7 +184,9 @@ export function resolveWhisperUIOptions(root: ParentNode = document): WhisperUIO
 
 export function initWhisper(opts: WhisperUIOptions): () => void {
   const engine = new WhisperEngine();
-  let activeMode: WhisperMode = MODE_EMBED;
+  const savedMode = sessionStorage.getItem("whisper-mode");
+  const savedCarrier = sessionStorage.getItem("whisper-carrier");
+  let activeMode: WhisperMode = isMode(savedMode ?? undefined) ? (savedMode as WhisperMode) : MODE_EMBED;
   let busy = false;
   let actionBarVisible = false;
   let fadeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -400,17 +402,21 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   function setMode(mode: WhisperMode): void {
     activeMode = mode;
     opts.page.dataset.mode = mode;
+    sessionStorage.setItem("whisper-mode", mode);
 
     // Sync carrier attribute with radio state
     if (mode === MODE_EMBED) {
       const urlRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="url"]');
       if (urlRadio?.checked) {
         opts.page.dataset.carrier = "url";
+        sessionStorage.setItem("whisper-carrier", "url");
       } else {
         delete opts.page.dataset.carrier;
+        sessionStorage.removeItem("whisper-carrier");
       }
     } else {
       delete opts.page.dataset.carrier;
+      sessionStorage.removeItem("whisper-carrier");
     }
 
     syncOpTitle();
@@ -580,9 +586,11 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   carrierRadios.forEach((radio) => radio.addEventListener("change", () => {
     if (radio.value === "url") {
       opts.page.dataset.carrier = "url";
+      sessionStorage.setItem("whisper-carrier", "url");
       hideActionsBar();
     } else {
       delete opts.page.dataset.carrier;
+      sessionStorage.removeItem("whisper-carrier");
       opts.passwordInput.placeholder = "password to encrypt";
       if (hasCarrier()) showActionsBar();
     }
@@ -769,6 +777,10 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   /* ── Initial state ───────────────────────────────────── */
 
+  if (savedCarrier === "url") {
+    const urlRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="url"]');
+    if (urlRadio) urlRadio.checked = true;
+  }
   setMode(activeMode);
   appendLog("whisper ready");
 
