@@ -2360,7 +2360,6 @@ const seo = {
   /* Carrier toggle (pill control matching Live transport toggle) */
   .ws-carrier-toggle {
     display: flex;
-    flex-wrap: wrap;
     gap: calc(var(--space-xs) * 0.8);
     align-items: center;
     min-width: 0;
@@ -2398,9 +2397,11 @@ const seo = {
     padding: 0.25em 0.55em;
     cursor: pointer;
     user-select: all;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
     transition:
       background var(--duration-normal) var(--ease-out),
       border-color var(--duration-normal) var(--ease-out);
