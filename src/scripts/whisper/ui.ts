@@ -374,7 +374,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     if (busy) { opts.statusLine.classList.remove("whisper-status--ready"); return; }
     if (activeMode === MODE_LIVE) return;
     if (activeMode === MODE_EMBED && isCarrierUrl()) {
-      updateStatus("seal mode — compose below");
+      updateStatus("steganography seal — compose below");
       opts.statusLine.classList.remove("whisper-status--ready");
       return;
     }
