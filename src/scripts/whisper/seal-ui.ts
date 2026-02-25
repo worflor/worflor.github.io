@@ -471,7 +471,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
 
   function sealQrHintText(): string {
     if (isUnstableMode()) {
-      return "tied to session identity, so preserve browser fingerprint.";
+      return "tied to session identity, so preserve session fingerprint.";
     }
     return "tied to the browser's unique fingerprint - keep the environment stable.";
   }
