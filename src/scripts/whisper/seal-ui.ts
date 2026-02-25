@@ -67,8 +67,6 @@ export interface WhisperSealUIOptions {
   messageInput: HTMLTextAreaElement;
   charCount: HTMLElement;
   extraPasswordInput: HTMLInputElement;
-  extraPwGenBtn: HTMLButtonElement;
-  extraPwCopyBtn: HTMLButtonElement;
   expiryGroup: HTMLElement;
   expiryCustomWrap: HTMLElement;
   expiryCustomVal: HTMLInputElement;
@@ -114,6 +112,7 @@ export interface WhisperSealUIOptions {
   expiredBackBtn: HTMLButtonElement;
   unsealPassword: HTMLElement;
   unsealPwInput: HTMLInputElement;
+  unsealPwPasteBtn: HTMLButtonElement;
   unsealPwSubmitBtn: HTMLButtonElement;
 }
 
@@ -135,8 +134,6 @@ export const WHISPER_SEAL_IDS = {
   messageInput: "ws-message",
   charCount: "ws-char-count",
   extraPasswordInput: "ws-extra-password",
-  extraPwGenBtn: "ws-extra-pw-gen",
-  extraPwCopyBtn: "ws-extra-pw-copy",
   expiryGroup: "ws-expiry",
   expiryCustomWrap: "ws-expiry-custom",
   expiryCustomVal: "ws-expiry-custom-val",
@@ -172,6 +169,7 @@ export const WHISPER_SEAL_IDS = {
   expiredBackBtn: "ws-expired-back",
   unsealPassword: "ws-unseal-password",
   unsealPwInput: "ws-unseal-pw-input",
+  unsealPwPasteBtn: "ws-unseal-pw-paste",
   unsealPwSubmitBtn: "ws-unseal-pw-submit",
 } as const;
 
@@ -207,8 +205,6 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
   const messageInput = root.querySelector<HTMLTextAreaElement>(`#${IDS.messageInput}`);
   const charCount = q(root, IDS.charCount);
   const extraPasswordInput = asInput(q(root, IDS.extraPasswordInput));
-  const extraPwGenBtn = asButton(q(root, IDS.extraPwGenBtn));
-  const extraPwCopyBtn = asButton(q(root, IDS.extraPwCopyBtn));
   const expiryGroup = q(root, IDS.expiryGroup);
   const expiryCustomWrap = q(root, IDS.expiryCustomWrap);
   const expiryCustomVal = asInput(q(root, IDS.expiryCustomVal));
@@ -247,6 +243,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
   const expiredBackBtn = asButton(q(root, IDS.expiredBackBtn));
   const unsealPassword = q(root, IDS.unsealPassword);
   const unsealPwInput = asInput(q(root, IDS.unsealPwInput));
+  const unsealPwPasteBtn = asButton(q(root, IDS.unsealPwPasteBtn));
   const unsealPwSubmitBtn = asButton(q(root, IDS.unsealPwSubmitBtn));
 
   if (
@@ -256,7 +253,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
     !recipientQrFileInput || !recipientQrStopBtn || !recipientQrPanel || !recipientQrStatus || !recipientQrVideo ||
     !sealValidation ||
     !messageInput || !charCount || !extraPasswordInput ||
-    !extraPwGenBtn || !extraPwCopyBtn || !expiryGroup ||
+    !expiryGroup ||
     !expiryCustomWrap || !expiryCustomVal || !expiryCustomUnit ||
     !sealItBtn ||
     !sealedResultWrap || !sealedUrlInline || !sealedResultInfo || !sealedResultWarning ||
@@ -266,7 +263,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
     !unsealPhase || !unsealProgress || !unsealSuccess || !decryptedMessage ||
     !msgCopyBtn || !unsealDoneBtn || !unsealFail || !failBackBtn ||
     !unsealExpired || !expiredBackBtn ||
-    !unsealPassword || !unsealPwInput || !unsealPwSubmitBtn
+    !unsealPassword || !unsealPwInput || !unsealPwPasteBtn || !unsealPwSubmitBtn
   ) {
     return null;
   }
@@ -278,7 +275,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
     recipientQrFileInput, recipientQrStopBtn, recipientQrPanel, recipientQrStatus, recipientQrVideo,
     sealValidation,
     messageInput, charCount, extraPasswordInput,
-    extraPwGenBtn, extraPwCopyBtn, expiryGroup,
+    expiryGroup,
     expiryCustomWrap, expiryCustomVal, expiryCustomUnit,
     sealItBtn,
     sealedResultWrap, sealedUrlInline, sealedResultInfo, sealedResultWarning,
@@ -288,7 +285,7 @@ export function resolveWhisperSealUIOptions(root: ParentNode = document): Whispe
     unsealPhase, unsealProgress, unsealSuccess, decryptedMessage,
     msgCopyBtn, unsealDoneBtn, unsealFail, failBackBtn,
     unsealExpired, expiredBackBtn,
-    unsealPassword, unsealPwInput, unsealPwSubmitBtn,
+    unsealPassword, unsealPwInput, unsealPwPasteBtn, unsealPwSubmitBtn,
   };
 }
 
@@ -959,19 +956,6 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copySealedUrl(); }
   }, { signal });
 
-  // Extra password — generate & copy
-  opts.extraPwGenBtn.addEventListener("click", () => {
-    const pw = crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
-    opts.extraPasswordInput.value = pw;
-    opts.extraPasswordInput.focus();
-    try { opts.extraPasswordInput.setSelectionRange(0, pw.length); } catch { /* ignore */ }
-    flashText(opts.extraPwGenBtn, "Done");
-  }, { signal });
-
-  opts.extraPwCopyBtn.addEventListener("click", async () => {
-    const pw = opts.extraPasswordInput.value;
-    if (pw) await safeCopy(pw, opts.extraPwCopyBtn, "Copied!");
-  }, { signal });
 
   // Expiry — toggle custom fields on radio change + sync initial state
   opts.expiryGroup.addEventListener("change", syncExpiryCustom, { signal });
@@ -995,7 +979,19 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   opts.failBackBtn.addEventListener("click", hideOverlay, { signal });
   opts.expiredBackBtn.addEventListener("click", hideOverlay, { signal });
 
-  // Password submit
+  // Password paste + submit
+  opts.unsealPwPasteBtn.addEventListener("click", async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        opts.unsealPwInput.value = text;
+        opts.unsealPwInput.dispatchEvent(new Event("input", { bubbles: true }));
+        flashText(opts.unsealPwPasteBtn, "pasted");
+      }
+    } catch {
+      flashText(opts.unsealPwPasteBtn, "failed");
+    }
+  }, { signal });
   opts.unsealPwSubmitBtn.addEventListener("click", () => {
     if (pendingPayload && !busy) runUnseal(pendingPayload, opts.unsealPwInput.value);
   }, { signal });

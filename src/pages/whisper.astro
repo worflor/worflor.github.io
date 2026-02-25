@@ -176,22 +176,15 @@ const seo = {
           <div class="ws-seal-fields" id="ws-seal-fields">
             <label class="whisper-field" for="ws-recipient-seal">
               <span class="whisper-field-label">recipient's seal</span>
-              <div class="whisper-password-row">
-                <input id="ws-recipient-seal" type="text" class="whisper-input whisper-password-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
-                <div class="whisper-password-tools" role="group" aria-label="Seal paste tools">
-                  <button
-                    id="ws-recipient-paste"
-                    class="whisper-mini-btn"
-                    type="button"
-                    aria-label="Paste a valid seal code from clipboard"
-                  >Paste</button>
-                </div>
-              </div>
+              <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="paste recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
             </label>
-            <div class="ws-recipient-tools" role="group" aria-label="Recipient seal QR tools">
-              <button id="ws-recipient-qr-scan" type="button" class="whisper-mini-btn">Scan QR</button>
-              <button id="ws-recipient-qr-image" type="button" class="whisper-mini-btn">Image</button>
-              <button id="ws-recipient-qr-stop" type="button" class="whisper-mini-btn" style="display:none">Stop</button>
+            <div class="wl-join-tools ws-recipient-tools" role="group" aria-label="Seal tools">
+              <button id="ws-recipient-paste" type="button" class="wl-tool-link" aria-label="Paste a valid seal code from clipboard">paste</button>
+              <span class="wl-tool-sep" aria-hidden="true">/</span>
+              <button id="ws-recipient-qr-scan" type="button" class="wl-tool-link">scan</button>
+              <span class="wl-tool-sep" aria-hidden="true">/</span>
+              <button id="ws-recipient-qr-image" type="button" class="wl-tool-link">image</button>
+              <button id="ws-recipient-qr-stop" type="button" class="wl-tool-link wl-tool-link--stop" style="display:none">stop</button>
               <input id="ws-recipient-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
             </div>
             <div id="ws-recipient-qr-panel" class="ws-recipient-qr-panel" style="display:none">
@@ -208,25 +201,7 @@ const seo = {
 
             <label class="whisper-field" for="ws-extra-password">
               <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(only if you've agreed on one)</span></span>
-              <div class="whisper-password-row">
-                <input id="ws-extra-password" type="password" class="whisper-input whisper-password-input" placeholder="leave blank if none" autocomplete="off" />
-                <div class="whisper-password-tools ws-extra-pw-tools" role="group" aria-label="Password tools">
-                  <button
-                    id="ws-extra-pw-gen"
-                    class="whisper-mini-btn"
-                    type="button"
-                    aria-label="Generate a strong random password"
-                    title="Generate"
-                  >Generate</button>
-                  <button
-                    id="ws-extra-pw-copy"
-                    class="whisper-mini-btn"
-                    type="button"
-                    aria-label="Copy password to clipboard"
-                    title="Copy"
-                  >Copy</button>
-                </div>
-              </div>
+              <input id="ws-extra-password" type="password" class="whisper-input" placeholder="leave blank if none" autocomplete="off" />
             </label>
 
             <div class="whisper-field">
@@ -321,6 +296,9 @@ const seo = {
                 >Copy</button>
               </div>
             </div>
+            <div class="wl-join-tools whisper-password-paste-tools" role="group" aria-label="Paste helper">
+              <button id="whisper-password-paste" type="button" class="wl-tool-link">paste</button>
+            </div>
             <p id="whisper-password-meta" class="whisper-password-meta whisper-field-hint" aria-live="polite"></p>
           </label>
 
@@ -350,12 +328,12 @@ const seo = {
 
           <!-- Clue -->
           <label class="whisper-field whisper-field--hunt" for="whisper-clue-input">
-            <span class="whisper-field-label">payload clue <span class="whisper-field-hint">(optional)</span></span>
+            <span class="whisper-field-label">filter <span class="whisper-field-hint">(optional, skip payloads that don't match)</span></span>
             <input
               id="whisper-clue-input"
               type="text"
               class="whisper-input"
-              placeholder="name fragment or hash prefix"
+              placeholder="filename, label, or type"
             />
           </label>
         </div>
@@ -402,10 +380,12 @@ const seo = {
                   <button id="wl-join" type="button" class="whisper-mini-btn">Join</button>
                 </div>
                 <div class="wl-join-tools" role="group" aria-label="Join code helpers">
-                  <button id="wl-join-paste" type="button" class="whisper-mini-btn">Paste</button>
-                  <button id="wl-join-qr-scan" type="button" class="whisper-mini-btn">Scan QR</button>
-                  <button id="wl-join-qr-image" type="button" class="whisper-mini-btn">Image</button>
-                  <button id="wl-join-qr-stop" type="button" class="whisper-mini-btn" style="display:none">Stop</button>
+                  <button id="wl-join-paste" type="button" class="wl-tool-link">paste</button>
+                  <span class="wl-tool-sep" aria-hidden="true">/</span>
+                  <button id="wl-join-qr-scan" type="button" class="wl-tool-link">scan</button>
+                  <span class="wl-tool-sep" aria-hidden="true">/</span>
+                  <button id="wl-join-qr-image" type="button" class="wl-tool-link">image</button>
+                  <button id="wl-join-qr-stop" type="button" class="wl-tool-link wl-tool-link--stop" style="display:none">stop</button>
                   <input id="wl-join-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
                 </div>
                 <div id="wl-join-qr-panel" class="wl-join-qr-panel" style="display:none">
@@ -881,6 +861,9 @@ const seo = {
               <label class="whisper-field" for="ws-unseal-pw-input">
                 <input id="ws-unseal-pw-input" type="password" class="whisper-input" placeholder="enter shared phrase" autocomplete="off" />
               </label>
+              <div class="wl-join-tools" role="group" aria-label="Paste helper">
+                <button id="ws-unseal-pw-paste" type="button" class="wl-tool-link">paste</button>
+              </div>
               <button id="ws-unseal-pw-submit" type="button" class="whisper-mini-btn wl-primary">Decrypt</button>
             </div>
           </div>
@@ -1515,8 +1498,8 @@ const seo = {
 
   .whisper-input:focus-visible {
     outline: none;
-    border-color: rgb(var(--chromatic-cyan) / 0.5);
-    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
+    border-color: rgb(var(--color-text-rgb) / 0.3);
+    box-shadow: 0 0 0 2px rgb(var(--color-text-rgb) / 0.06);
   }
 
   .whisper-password-row {
@@ -1587,7 +1570,10 @@ const seo = {
 
   .whisper-password-meta {
     margin: 0;
-    min-height: 1.25em;
+  }
+
+  .whisper-password-meta:empty {
+    display: none;
   }
 
   .whisper-mini-btn:focus-visible {
@@ -1713,7 +1699,7 @@ const seo = {
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline,
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline-panel { display: none; }
 
-  /* Password tools (generate/copy) only in embed mode */
+  /* Password tools (generate/copy) only in embed mode; paste link only in extract/hunt */
   .whisper-page:not([data-mode="embed"]) .whisper-password-tools { display: none; }
 
   /* Overlay hides solo panel when active (JS-managed via style) */
@@ -2286,7 +2272,8 @@ const seo = {
   }
 
   .wl-actions-panel {
-    gap: calc(var(--space-xs) * 0.5);
+    gap: calc(var(--space-xs) * 0.4);
+    padding: calc(var(--space-sm) * 0.75);
   }
 
   .wl-actions-row {
@@ -2297,10 +2284,11 @@ const seo = {
 
   .wl-action-label {
     display: block;
-    font-size: calc(var(--text-sm) * 0.88);
-    color: rgb(var(--color-text-rgb) / 0.52);
-    letter-spacing: 0.02em;
-    margin-bottom: calc(var(--space-xs) * 0.35);
+    font-size: calc(var(--text-sm) * 0.82);
+    color: rgb(var(--color-text-rgb) / 0.38);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: calc(var(--space-xs) * 0.25);
   }
 
   .wl-action-create {
@@ -2321,6 +2309,41 @@ const seo = {
     align-self: stretch;
     background: var(--whisper-edge);
     flex: 0 0 1px;
+  }
+
+  /* Inline text-link tools under join input */
+  .wl-tool-link {
+    all: unset;
+    font-size: calc(var(--text-sm) * 0.78);
+    color: rgb(var(--color-text-rgb) / 0.34);
+    cursor: pointer;
+    letter-spacing: 0.01em;
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .wl-tool-link:hover {
+    color: rgb(var(--chromatic-cyan) / 0.85);
+  }
+
+  .wl-tool-link:focus-visible {
+    outline: none;
+    color: rgb(var(--chromatic-cyan));
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .wl-tool-link--stop {
+    color: rgb(var(--chromatic-red) / 0.55);
+  }
+
+  .wl-tool-link--stop:hover {
+    color: rgb(var(--chromatic-red) / 0.85);
+  }
+
+  .wl-tool-sep {
+    font-size: calc(var(--text-sm) * 0.72);
+    color: rgb(var(--color-text-rgb) / 0.18);
+    user-select: none;
   }
 
   @media (max-width: 520px) {
@@ -2430,8 +2453,9 @@ const seo = {
   .wl-join-tools {
     display: flex;
     flex-wrap: wrap;
-    gap: calc(var(--space-xs) * 0.45);
-    margin-top: calc(var(--space-xs) * 0.55);
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.35);
+    margin-top: calc(var(--space-xs) * 0.3);
   }
 
   .wl-join-qr-panel {
@@ -3282,8 +3306,9 @@ const seo = {
   .ws-recipient-tools {
     display: flex;
     flex-wrap: wrap;
-    gap: calc(var(--space-xs) * 0.45);
-    margin-top: calc(var(--space-xs) * -0.45);
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.35);
+    margin-top: calc(var(--space-xs) * -0.25);
   }
 
   .ws-recipient-qr-panel {
