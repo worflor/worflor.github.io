@@ -15,7 +15,7 @@
  * JSON.stringify handles the \uXXXX escaping automatically.
  */
 
-import { sha256, toHex, randomBytes } from "./wasm";
+import { sha256, randomBytes } from "./wasm";
 import { TE } from "./live-crypto";
 
 /* ── API ──────────────────────────────────────────────────── */
@@ -44,6 +44,13 @@ const TOTAL_TIMEOUT = 45_000;
 /** Re-announce interval — keeps us visible if the tracker evicts stale peers. */
 const REANNOUNCE_MS = 20_000;
 
+/** Epoch window for salted info_hash — peers in the same window find each other. */
+const EPOCH_WINDOW = 10 * 60 * 1000; // 10 minutes
+
+/** Fixed length for padded SDP codes — hides true blob size from tracker. */
+const PADDED_CODE_LEN = 1024;
+const PAD_CHAR = "."; // not in base64url alphabet
+
 /* ── Helpers ──────────────────────────────────────────────── */
 
 /** Each byte → one char via fromCharCode.
@@ -54,13 +61,29 @@ function toBin(bytes: Uint8Array): string {
   return s;
 }
 
-async function deriveInfoHash(phrase: string): Promise<string> {
-  const hash = await sha256(TE.encode("whisper-tracker|" + phrase));
-  return toBin(hash.slice(0, 20));
+/** Derive two info_hashes salted with the current and previous epoch,
+ *  so peers near an epoch boundary still discover each other. */
+async function deriveInfoHashes(phrase: string): Promise<[current: string, previous: string]> {
+  const epoch = Math.floor(Date.now() / EPOCH_WINDOW);
+  const [cur, prev] = await Promise.all([
+    sha256(TE.encode("whisper-tracker|" + phrase + "|" + epoch)),
+    sha256(TE.encode("whisper-tracker|" + phrase + "|" + (epoch - 1))),
+  ]);
+  return [toBin(cur.slice(0, 20)), toBin(prev.slice(0, 20))];
 }
 
 function randomBinId(): string {
   return toBin(randomBytes(20));
+}
+
+function padCode(code: string): string {
+  if (code.length >= PADDED_CODE_LEN) return code;
+  return code + PAD_CHAR.repeat(PADDED_CODE_LEN - code.length);
+}
+
+function unpadCode(code: string): string {
+  const idx = code.indexOf(PAD_CHAR);
+  return idx === -1 ? code : code.slice(0, idx);
 }
 
 /* ── Main exchange function ───────────────────────────────── */
@@ -72,12 +95,11 @@ export async function exchangeViaTracker(
   callbacks: TrackerSignalCallbacks,
   signal?: AbortSignal,
 ): Promise<TrackerSignalResult> {
-  const infoHash = await deriveInfoHash(phrase);
+  const [currentHash, previousHash] = await deriveInfoHashes(phrase);
   const peerId = randomBinId();
   const offerId = randomBinId();
 
-  const hashHex = toHex(Uint8Array.from(infoHash.slice(0, 6), (c) => c.charCodeAt(0)));
-  callbacks.onLog(`relay: room ${hashHex}… ready`);
+  callbacks.onLog("relay: room ready");
 
   // Hard cap on total exchange time
   const totalAc = new AbortController();
@@ -93,11 +115,11 @@ export async function exchangeViaTracker(
   }
 
   try {
-    return await Promise.any(
-      TRACKER_URLS.map((url) =>
-        connectToTracker(url, infoHash, peerId, offerId, myOfferCode, acceptOfferFn, callbacks, totalAc.signal),
-      ),
-    );
+    const attempts = TRACKER_URLS.flatMap((url) => [
+      connectToTracker(url, currentHash, peerId, offerId, myOfferCode, acceptOfferFn, callbacks, totalAc.signal),
+      connectToTracker(url, previousHash, peerId, offerId, myOfferCode, acceptOfferFn, callbacks, totalAc.signal),
+    ]);
+    return await Promise.any(attempts);
   } catch (err) {
     if (err instanceof AggregateError) {
       const first = err.errors[0];
@@ -183,7 +205,7 @@ function connectToTracker(
         numwant: 1,
         offers: [{
           offer_id: offerId,
-          offer: { type: "offer", sdp: myOfferCode },
+          offer: { type: "offer", sdp: padCode(myOfferCode) },
         }],
       });
       ws!.send(announcePayload);
@@ -210,7 +232,7 @@ function connectToTracker(
       // Received an offer → we may become the answerer
       if (msg.offer && typeof msg.offer === "object") {
         const offer = msg.offer as Record<string, unknown>;
-        const peerOfferCode = String(offer.sdp ?? "");
+        const peerOfferCode = unpadCode(String(offer.sdp ?? ""));
         const peerOfferId = String(msg.offer_id ?? "");
         const peerPeerId = String(msg.peer_id ?? "");
 
@@ -234,7 +256,7 @@ function connectToTracker(
               info_hash: infoHash,
               peer_id: peerId,
               to_peer_id: peerPeerId,
-              answer: { type: "answer", sdp: myAnswerCode },
+              answer: { type: "answer", sdp: padCode(myAnswerCode) },
               offer_id: peerOfferId,
             }));
 
@@ -252,7 +274,7 @@ function connectToTracker(
       // Received an answer → we stay offerer
       if (msg.answer && typeof msg.answer === "object") {
         const answer = msg.answer as Record<string, unknown>;
-        const peerAnswerCode = String(answer.sdp ?? "");
+        const peerAnswerCode = unpadCode(String(answer.sdp ?? ""));
         if (!peerAnswerCode) return;
 
         callbacks.onStatus("found your peer!");

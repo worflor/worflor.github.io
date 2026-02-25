@@ -336,6 +336,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let liveQrSupported = false;
   let offerQrExpanded = false;
   let answerQrExpanded = false;
+  let skippedIceCandidates = 0;
 
   type QrScanStopReason = "accepted" | "cancelled" | "error" | "teardown";
   const qrScanSession: {
@@ -575,8 +576,74 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /* ── Log ──────────────────────────────────────────────── */
 
+  function updateProgressFromLog(line: string): void {
+    const normalized = line.toLowerCase();
+
+    if (normalized.includes("gathering network candidates")) {
+      if (opts.connectingSection.style.display !== "none") {
+        opts.connectingStatus.textContent = "finding the best direct path...";
+      }
+      updateStatus("checking network paths...");
+      return;
+    }
+
+    if (normalized.includes("offer code ready")) {
+      updateStatus("step 1/2: send your invite code");
+      return;
+    }
+
+    if (normalized.includes("answer code ready")) {
+      updateStatus("step 2/2: send your reply code");
+      return;
+    }
+
+    if (normalized.includes("applying answer code")) {
+      if (opts.connectingSection.style.display !== "none") {
+        opts.connectingStatus.textContent = "verifying peer reply...";
+      }
+      updateStatus("applying peer reply...");
+      return;
+    }
+
+    if (normalized.includes("connecting peer-to-peer")) {
+      if (opts.connectingSection.style.display !== "none") {
+        opts.connectingStatus.textContent = "opening direct channel...";
+      }
+      updateStatus("opening direct channel...");
+      return;
+    }
+
+    if (normalized.includes("secure channel open")) {
+      if (opts.connectingSection.style.display !== "none") {
+        opts.connectingStatus.textContent = "starting end-to-end key exchange...";
+      }
+      updateStatus("starting key exchange...");
+      return;
+    }
+
+    if (normalized.includes("fingerprint:")) {
+      updateStatus("security check: compare emoji with your peer");
+      return;
+    }
+
+    if (normalized.includes("fingerprint confirmed")) {
+      updateStatus("secure session is live");
+    }
+  }
+
   function appendLog(line: string): void {
+    if (line.startsWith("ICE candidate:")) {
+      skippedIceCandidates += 1;
+      return;
+    }
+
+    if (line.startsWith("gathered ") && skippedIceCandidates > 0) {
+      appendToLog(opts.logOutput, `network candidates collected (${skippedIceCandidates} checks)`);
+      skippedIceCandidates = 0;
+    }
+
     appendToLog(opts.logOutput, line);
+    updateProgressFromLog(line);
   }
 
   function setLogActive(active: boolean): void {
@@ -793,15 +860,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "offering":
         setLogActive(true);
-        updateStatus("preparing...");
+        updateStatus("step 1/2: creating your invite");
         showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "creating offer...";
+        opts.connectingStatus.textContent = "creating your invite code...";
         setBusy(true);
         break;
 
       case "waiting-for-answer":
         showPhase(opts.offerSection);
-        updateStatus("share your offer, then paste their reply");
+        updateStatus("step 1/2: send invite, then wait for reply");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -812,30 +879,30 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "answering":
         setLogActive(true);
-        updateStatus("preparing...");
+        updateStatus("step 1/2: reading invite");
         showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "creating answer...";
+        opts.connectingStatus.textContent = "creating your reply code...";
         setBusy(true);
         break;
 
       case "connecting":
         showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "connecting...";
-        updateStatus("connecting...");
+        opts.connectingStatus.textContent = "connecting directly...";
+        updateStatus("connecting directly...");
         setLogActive(true);
         setBusy(true);
         break;
 
       case "handshaking":
         showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "securing the channel...";
-        updateStatus("encrypting...");
+        opts.connectingStatus.textContent = "starting end-to-end encryption...";
+        updateStatus("starting encryption...");
         setBusy(true);
         break;
 
       case "verifying":
         showPhase(opts.verifySection);
-        updateStatus("verify this matches your peer's screen");
+        updateStatus("security check: compare emoji with your peer");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -843,7 +910,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "live":
         showPhase(opts.chatSection);
-        updateStatus("connected. end-to-end encrypted");
+        updateStatus("secure session live · end-to-end encrypted");
         opts.liveStatusLine.classList.add("whisper-status--ready");
         setLogActive(false);
         opts.chatInput.disabled = false;
@@ -948,6 +1015,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.joinQrStatus.textContent = "";
     opts.offerQrStatus.textContent = "";
     opts.answerQrStatus.textContent = "";
+    skippedIceCandidates = 0;
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
     opts.errorMessage.textContent = "";
@@ -1115,12 +1183,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.phraseInput.value = manualPhraseInput.value;
       }
       applyRelayToggle(next);
-      // Focus the active mode's input
-      if (next) {
-        opts.phraseInput.focus();
-      } else {
-        manualPhraseInput?.focus();
-      }
     }, { signal });
   }
 

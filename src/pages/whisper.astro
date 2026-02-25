@@ -541,12 +541,12 @@ const seo = {
         <!-- Phase: verify fingerprint -->
         <div class="wl-phase" id="wl-verify-section" style="display:none">
           <div class="whisper-panel wl-verify-panel">
-            <h2 class="whisper-panel-title">Quick check</h2>
-            <p class="whisper-field-hint">ask your peer: do they see the same emoji?</p>
+            <h2 class="whisper-panel-title">Security check</h2>
+            <p class="whisper-field-hint">ask your peer: do they see the same emoji? if not, stop.</p>
             <p id="wl-fingerprint" class="wl-fingerprint" aria-live="polite"></p>
             <div class="wl-verify-actions">
-              <button id="wl-confirm" type="button" class="whisper-mini-btn wl-confirm-btn">They match</button>
-              <button id="wl-reject" type="button" class="whisper-mini-btn wl-reject-btn">They don't match</button>
+              <button id="wl-confirm" type="button" class="whisper-mini-btn wl-confirm-btn">Match · continue</button>
+              <button id="wl-reject" type="button" class="whisper-mini-btn wl-reject-btn">No match · stop</button>
             </div>
           </div>
         </div>
@@ -555,12 +555,18 @@ const seo = {
         <div class="wl-phase" id="wl-chat-section" style="display:none">
           <div class="whisper-panel wl-chat-panel">
             <div class="wl-chat-header">
-              <div class="wl-transport" role="radiogroup" aria-label="Transport mode">
-                <label class="wl-transport-label"><input type="radio" name="wl-transport" value="naked" checked class="wl-transport-radio" /> naked</label>
-                <label class="wl-transport-label"><input type="radio" name="wl-transport" value="dressed" class="wl-transport-radio" /> dressed</label>
-                <label class="wl-transport-label"><input type="radio" name="wl-transport" value="silent" class="wl-transport-radio" /> silent</label>
+              <div class="wl-chat-security" aria-live="polite">
+                <span class="wl-chat-security-badge">verified direct channel</span>
+                <span class="wl-chat-security-sub">messages and files stay end-to-end encrypted</span>
               </div>
-              <button id="wl-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">Disconnect</button>
+              <div class="wl-chat-tools">
+                <div class="wl-transport" role="radiogroup" aria-label="Transport mode">
+                  <label class="wl-transport-label"><input type="radio" name="wl-transport" value="naked" checked class="wl-transport-radio" /> chat</label>
+                  <label class="wl-transport-label"><input type="radio" name="wl-transport" value="dressed" class="wl-transport-radio" /> dressed</label>
+                  <label class="wl-transport-label"><input type="radio" name="wl-transport" value="silent" class="wl-transport-radio" /> silent</label>
+                </div>
+                <button id="wl-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">Disconnect</button>
+              </div>
             </div>
 
             <div id="wl-chat-messages" class="wl-chat-messages" aria-live="polite" aria-relevant="additions"></div>
@@ -930,6 +936,7 @@ const seo = {
           <p class="whisper-log-title">runtime log</p>
           <span class="whisper-log-dot" id="whisper-log-dot"></span>
         </div>
+        <p class="whisper-log-hint">compact event trail (security-critical steps stay visible).</p>
         <pre id="whisper-log-output" class="whisper-log-output"></pre>
       </div>
     </section>
@@ -1892,6 +1899,14 @@ const seo = {
     letter-spacing: 0.04em;
   }
 
+  .whisper-log-hint {
+    margin: 0;
+    padding: 0.45rem 0.8rem 0;
+    font-size: calc(var(--text-sm) * 0.76);
+    color: rgb(var(--color-text-rgb) / 0.38);
+    line-height: 1.35;
+  }
+
   .whisper-log-dot {
     width: 6px;
     height: 6px;
@@ -2773,6 +2788,9 @@ const seo = {
     gap: 0;
     padding: 0;
     overflow: hidden;
+    background:
+      linear-gradient(180deg, rgb(var(--chromatic-cyan) / 0.03), transparent 4rem),
+      var(--whisper-surface);
   }
 
   .wl-chat-header {
@@ -2781,15 +2799,57 @@ const seo = {
     justify-content: space-between;
     flex-wrap: wrap;
     gap: calc(var(--space-xs) * 0.5);
-    padding: calc(var(--space-xs) * 0.6) calc(var(--space-sm) * 0.8);
+    padding: calc(var(--space-xs) * 0.7) calc(var(--space-sm) * 0.85);
     border-bottom: 1px solid var(--whisper-edge);
+    background: rgb(var(--color-text-rgb) / 0.02);
+  }
+
+  .wl-chat-security {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+    flex: 1 1 16rem;
+  }
+
+  .wl-chat-security-badge {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 0.12rem 0.45rem;
+    border-radius: var(--radius-full);
+    border: 1px solid rgb(var(--tool-status-success) / 0.35);
+    background: rgb(var(--tool-status-success) / 0.08);
+    color: rgb(var(--tool-status-success));
+    font-size: calc(var(--text-sm) * 0.76);
+    letter-spacing: 0.035em;
+    text-transform: lowercase;
+  }
+
+  .wl-chat-security-sub {
+    font-size: calc(var(--text-sm) * 0.78);
+    color: rgb(var(--color-text-rgb) / 0.46);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .wl-chat-tools {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.6);
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .wl-transport {
     display: inline-flex;
-    gap: calc(var(--space-xs) * 0.8);
+    gap: calc(var(--space-xs) * 0.65);
     align-items: center;
     flex-wrap: wrap;
+    padding: 0.2rem 0.35rem;
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    background: rgb(var(--color-text-rgb) / 0.025);
   }
 
   .wl-transport-label {
@@ -2814,6 +2874,7 @@ const seo = {
     min-height: auto;
     color: rgb(var(--chromatic-red) / 0.7);
     border-color: rgb(var(--chromatic-red) / 0.2);
+    background: rgb(var(--chromatic-red) / 0.04);
   }
 
   .wl-disconnect-btn:hover {
@@ -2826,12 +2887,15 @@ const seo = {
     min-height: 16rem;
     max-height: clamp(16rem, 14rem + 12vw, 28rem);
     overflow-y: auto;
-    padding: var(--space-sm);
+    padding: calc(var(--space-sm) * 0.9);
     display: flex;
     flex-direction: column;
-    gap: calc(var(--space-xs) * 0.4);
+    gap: calc(var(--space-xs) * 0.5);
     scrollbar-width: thin;
     transition: background var(--duration-normal) var(--ease-out);
+    background:
+      radial-gradient(120% 90% at 50% -10%, rgb(var(--chromatic-cyan) / 0.04), transparent 58%),
+      transparent;
   }
 
   .wl-chat-messages:global(.wl-chat-drop-active) {
@@ -2860,31 +2924,36 @@ const seo = {
   }
 
   .wl-msg-text {
-    padding: 0.45rem 0.7rem;
-    border-radius: calc(var(--whisper-radius) * 0.6);
+    padding: 0.5rem 0.75rem;
+    border-radius: calc(var(--whisper-radius) * 0.65);
     font-size: var(--text-sm);
     line-height: 1.5;
     word-break: break-word;
+    border: 1px solid transparent;
   }
 
   .wl-msg--self .wl-msg-text {
-    background: rgb(var(--chromatic-cyan) / 0.1);
-    color: rgb(var(--color-text-rgb) / 0.88);
+    background: rgb(var(--chromatic-cyan) / 0.14);
+    color: rgb(var(--color-text-rgb) / 0.92);
+    border-color: rgb(var(--chromatic-cyan) / 0.32);
     border-bottom-right-radius: calc(var(--whisper-radius) * 0.2);
   }
 
   .wl-msg--peer .wl-msg-text {
-    background: rgb(var(--color-text-rgb) / 0.06);
-    color: rgb(var(--color-text-rgb) / 0.82);
+    background: rgb(var(--color-text-rgb) / 0.045);
+    color: rgb(var(--color-text-rgb) / 0.86);
+    border-color: rgb(var(--color-text-rgb) / 0.14);
     border-bottom-left-radius: calc(var(--whisper-radius) * 0.2);
   }
 
   .wl-msg-system {
-    padding: 0.35rem 0.65rem;
+    padding: 0.28rem 0.58rem;
     font-size: calc(var(--text-sm) * 0.85);
-    color: rgb(var(--color-text-rgb) / 0.35);
+    color: rgb(var(--color-text-rgb) / 0.45);
     text-align: center;
-    font-style: italic;
+    border-radius: var(--radius-full);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    background: rgb(var(--color-text-rgb) / 0.02);
   }
 
   .wl-msg-time {
@@ -2933,15 +3002,16 @@ const seo = {
     gap: calc(var(--space-xs) * 0.35);
     align-items: stretch;
     flex-wrap: wrap;
-    padding: calc(var(--space-xs) * 0.6);
+    padding: calc(var(--space-xs) * 0.65);
     border-top: 1px solid var(--whisper-edge);
+    background: rgb(var(--color-text-rgb) / 0.018);
   }
 
   .wl-chat-text-input {
     flex: 1 1 14rem;
     min-width: 0;
     min-height: auto;
-    padding: 0.45rem 0.65rem;
+    padding: 0.5rem 0.7rem;
     border-radius: calc(var(--whisper-radius) * 0.5);
   }
 
@@ -3073,6 +3143,15 @@ const seo = {
 
     .wl-chat-header {
       align-items: stretch;
+    }
+
+    .wl-chat-security-sub {
+      white-space: normal;
+    }
+
+    .wl-chat-tools {
+      width: 100%;
+      justify-content: stretch;
     }
 
     .wl-transport {
