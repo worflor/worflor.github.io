@@ -26,7 +26,7 @@ interface TrackerSignalCallbacks {
 
 /* ── Constants ────────────────────────────────────────────── */
 
-const TRACKER_URLS = [
+export const TRACKER_URLS = [
   "wss://tracker.openwebtorrent.com",
   "wss://tracker.webtorrent.dev",
 ];
@@ -34,16 +34,16 @@ const TRACKER_URLS = [
 const WS_CONNECT_TIMEOUT = 5_000;
 const PEER_DISCOVERY_TIMEOUT = 30_000;
 const TOTAL_TIMEOUT = 45_000;
-const EPOCH_WINDOW = 2 * 60 * 1000;
+export const EPOCH_WINDOW = 2 * 60 * 1000;
 const EPOCH_BOUNDARY_MARGIN = 15_000;
-const PADDED_CODE_LEN = 1024;
-const PAD_CHAR = ".";
-const MIN_CODE_LEN = 40;
-const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+export const PADDED_CODE_LEN = 1024;
+export const PAD_CHAR = ".";
+export const MIN_CODE_LEN = 40;
+export const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
-function toBin(bytes: Uint8Array): string {
+export function toBin(bytes: Uint8Array): string {
   let s = "";
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
   return s;
@@ -51,7 +51,7 @@ function toBin(bytes: Uint8Array): string {
 
 const TRACKER_HASH_INFO = TE.encode("whisper-tracker-room");
 
-async function deriveInfoHashes(phrase: string): Promise<string[]> {
+export async function deriveInfoHashes(phrase: string): Promise<string[]> {
   const now = Date.now();
   const epoch = Math.floor(now / EPOCH_WINDOW);
   const phraseHash = await sha256(TE.encode("whisper-tracker|" + phrase));
@@ -65,16 +65,16 @@ async function deriveInfoHashes(phrase: string): Promise<string[]> {
   return hashes;
 }
 
-function randomBinId(): string {
+export function randomBinId(): string {
   return toBin(randomBytes(20));
 }
 
-function padCode(code: string): string {
+export function padCode(code: string): string {
   if (code.length >= PADDED_CODE_LEN) return code;
   return code + PAD_CHAR.repeat(PADDED_CODE_LEN - code.length);
 }
 
-function unpadCode(code: string): string {
+export function unpadCode(code: string): string {
   const idx = code.indexOf(PAD_CHAR);
   return idx === -1 ? code : code.slice(0, idx);
 }
@@ -93,7 +93,7 @@ export async function exchangeViaTracker(
   const offerId = randomBinId();
   const paddedOffer = padCode(myOfferCode);
 
-  callbacks.onLog("relay: room ready");
+  callbacks.onLog("relay room ready");
 
   const totalAc = new AbortController();
   const totalTimer = setTimeout(() => totalAc.abort(), TOTAL_TIMEOUT);
@@ -213,7 +213,7 @@ function connectToTracker(
 
     ws.onopen = () => {
       clearTimeout(connectTimer);
-      callbacks.onLog(`relay: connected via ${host}`);
+      callbacks.onLog(`connected to relay via ${host}`);
       callbacks.onStatus("waiting for your peer...");
 
       discoveryTimer = setTimeout(() => {
@@ -238,7 +238,7 @@ function connectToTracker(
       try { msg = JSON.parse(raw); } catch { return; }
 
       if (msg["failure reason"]) {
-        callbacks.onLog(`relay: tracker said: ${msg["failure reason"]}`);
+        callbacks.onLog(`relay message: ${msg["failure reason"]}`);
         return;
       }
 
@@ -258,12 +258,12 @@ function connectToTracker(
 
         // Tie-break: lower peer_id becomes answerer
         if (peerId > peerPeerId) {
-          callbacks.onLog("relay: resolving connection order...");
+          callbacks.onLog("resolving connection order...");
           return;
         }
 
         callbacks.onStatus("found your peer!");
-        callbacks.onLog("relay: peer found, accepting their offer");
+        callbacks.onLog("peer found, accepting their offer");
 
         // Determine which info_hash this offer came on — reply on the same one.
         // The tracker routes answers by (info_hash, to_peer_id, offer_id).
@@ -282,7 +282,7 @@ function connectToTracker(
               offer_id: peerOfferId,
             }));
 
-            callbacks.onLog("relay: exchange complete, going direct");
+            callbacks.onLog("exchange complete, connecting directly");
             callbacks.onStatus("connecting directly...");
             finish({ role: "answerer" });
           })
@@ -302,7 +302,7 @@ function connectToTracker(
         if (!BASE64URL_RE.test(peerAnswerCode)) return;
 
         callbacks.onStatus("found your peer!");
-        callbacks.onLog("relay: peer accepted our offer");
+        callbacks.onLog("peer accepted our offer");
         finish({ role: "offerer", peerAnswerCode });
         return;
       }

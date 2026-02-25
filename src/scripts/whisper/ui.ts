@@ -944,8 +944,8 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     if (fileRadio) fileRadio.checked = true;
   }
   syncEmbedMessageCount();
-  setMode(activeMode);
   appendLog("whisper ready");
+  setMode(activeMode);
 
   return () => {
     ac.abort();

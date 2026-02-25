@@ -729,6 +729,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       opts.relayConnectBtn.disabled = busy;
     }
 
+    if (flareFireBtn) {
+      flareFireBtn.disabled = busy || flareActive;
+    }
+    if (flarePhraseInput) {
+      flarePhraseInput.disabled = busy || flareActive;
+    }
+
     opts.funnelCampfireBtn.disabled = busy || !chatVisible;
 
     const modeSwitchWrap = modeSwitchBtn?.closest(".wl-mode-switch") as HTMLElement | null;
@@ -877,8 +884,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const externalAssist = opts.externalAssistToggle.checked;
     const rtcConfig = externalAssist ? WHISPER_LIVE_RTC_PUBLIC_STUN : WHISPER_LIVE_RTC_LOCAL_ONLY;
 
-    // Only log verbose network info in manual mode — relay users don't need to see it
-    if (!relayActive) {
+    // Only log verbose network info in manual mode — relay/flare users don't need to see it
+    if (!relayActive && !flareActive) {
       if (externalAssist) {
         appendLog("external assist enabled. helps connect across different networks");
       } else {
@@ -900,10 +907,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let previousState: LiveState = "idle";
 
   function handleStateChange(state: LiveState, detail?: string): void {
-    // During relay exchange, suppress intermediate session states that would
-    // overwrite the relay UI. The relay handler manages the connecting phase
-    // display itself and clears relayActive before terminal states fire.
-    if (relayActive) {
+    // During relay/flare exchange, suppress intermediate session states that would
+    // overwrite the UI. The handler manages the connecting phase display itself
+    // and clears the active flag before terminal states fire.
+    if (relayActive || flareActive) {
       const suppressed: readonly LiveState[] = [
         "offering", "waiting-for-answer", "answering", "connecting", "disconnected",
       ];
@@ -1010,10 +1017,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function resetToIdle(): void {
     relayActive = false;
     lastErrorWasRelay = false;
+    lastErrorWasFlare = false;
     if (relayAbort) {
       relayAbort.abort();
       relayAbort = null;
     }
+    extinguishFlare();
     if (qrScanSession.active) {
       stopJoinQrScan("cancelled");
     }
@@ -1027,12 +1036,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
                        opts.answerQrStatus, opts.errorMessage]) el.textContent = "";
     for (const el of [opts.joinInput, opts.answerInput, opts.phraseInput, opts.chatInput]) el.value = "";
     if (manualPhraseInput) manualPhraseInput.value = "";
+    if (flarePhraseInput) flarePhraseInput.value = "";
     skippedIceCandidates = 0;
     currentLiveState = "idle";
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
     showPhase(opts.liveSection);
-    if (opts.relayAssistToggle) applyRelayToggle(opts.relayAssistToggle.checked);
+    if (opts.relayAssistToggle) applyModeSwitch(currentIdleMode);
     updateStatus("ready to connect");
     setLogActive(false);
     setBusy(false);
@@ -1060,32 +1070,100 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /** Set when the last error came from relay flow — error retry preserves phrase. */
   let lastErrorWasRelay = false;
 
+  /* ── Signal Flare ────────────────────────────────────────── */
+
+  let flareActive = false;
+  let flareAbort: AbortController | null = null;
+  let flarePeerResolve: ((accept: boolean) => void) | null = null;
+  let flareStartTime = 0;
+  let flareElapsedTimer: ReturnType<typeof setInterval> | null = null;
+  let lastErrorWasFlare = false;
+
   // Cache layout elements inside the idle phase
   const relayPanel = opts.liveSection.querySelector<HTMLElement>("#wl-relay-panel");
+  const flarePanel = opts.liveSection.querySelector<HTMLElement>("#wl-flare-panel");
   const manualPanel = opts.liveSection.querySelector<HTMLElement>("#wl-manual-panel");
   const idleLede = opts.liveSection.querySelector<HTMLElement>("#wl-idle-lede");
   const modeSwitchBtn = opts.liveSection.querySelector<HTMLButtonElement>("#wl-mode-switch-btn");
+  const flareSwitchBtn = opts.liveSection.querySelector<HTMLButtonElement>("#wl-flare-switch-btn");
   const manualPhraseInput = opts.liveSection.querySelector<HTMLInputElement>("#wl-manual-phrase");
+  const flarePhraseInput = opts.liveSection.querySelector<HTMLInputElement>("#wl-flare-phrase");
+  const flareFireBtn = opts.liveSection.querySelector<HTMLButtonElement>("#wl-flare-fire");
+  const flareBurning = opts.liveSection.querySelector<HTMLElement>("#wl-flare-burning");
+  const flareElapsed = opts.liveSection.querySelector<HTMLElement>("#wl-flare-elapsed");
+  const flareExtinguishBtn = opts.liveSection.querySelector<HTMLButtonElement>("#wl-flare-extinguish");
+  const flareArrived = opts.liveSection.querySelector<HTMLElement>("#wl-flare-arrived");
+  const flareAcceptBtn = opts.liveSection.querySelector<HTMLButtonElement>("#wl-flare-accept");
+  const flareIgnoreBtn = opts.liveSection.querySelector<HTMLButtonElement>("#wl-flare-ignore");
+  const flarePhraseField = opts.liveSection.querySelector<HTMLElement>(".wl-flare-phrase-field");
 
-  function applyRelayToggle(checked: boolean): void {
+  type IdleMode = "relay" | "flare" | "manual";
+  let currentIdleMode: IdleMode = "relay";
+
+  const modeSwitchWrap = opts.liveSection.querySelector<HTMLElement>("#wl-mode-switch");
+
+  const IDLE_MODE_CONFIG: Record<IdleMode, {
+    lede: string;
+    flareLink: string;
+    manualLink: string;
+    relayAssist: boolean;
+  }> = {
+    relay: {
+      lede: "know a phrase, connect at the same time. thats it.",
+      flareLink: "try a signal flare",
+      manualLink: "or connect manually",
+      relayAssist: true,
+    },
+    flare: {
+      lede: "fire a flare and wait for a signal",
+      flareLink: "try relay assist",
+      manualLink: "or connect manually",
+      relayAssist: true,
+    },
+    manual: {
+      lede: "encrypted peer-to-peer messaging. create a channel or join one.",
+      flareLink: "try a signal flare",
+      manualLink: "try relay assist",
+      relayAssist: false,
+    },
+  };
+
+  function applyModeSwitch(mode: IdleMode): void {
     if (!relayPanel || !manualPanel || !modeSwitchBtn) return;
+    currentIdleMode = mode;
+    const cfg = IDLE_MODE_CONFIG[mode];
 
-    if (checked) {
-      relayPanel.style.display = "";
-      manualPanel.style.display = "none";
-      modeSwitchBtn.textContent = "or connect manually";
-      if (idleLede) idleLede.textContent = "know a phrase, connect at the same time. thats it.";
-      opts.externalAssistToggle.checked = true;
-      updateControls();
-    } else {
-      relayPanel.style.display = "none";
-      manualPanel.style.display = "";
-      modeSwitchBtn.textContent = "or use relay assist";
-      if (idleLede) idleLede.textContent = "encrypted peer-to-peer messaging. create a channel or join one.";
-      // Sync phrase from relay input to manual input
-      if (manualPhraseInput) manualPhraseInput.value = opts.phraseInput.value;
-      updateControls();
+    // Single data attribute drives all CSS state — no class toggling
+    if (modeSwitchWrap) modeSwitchWrap.dataset.idleMode = mode;
+
+    // Panel visibility
+    relayPanel.style.display = mode === "relay" ? "" : "none";
+    if (flarePanel) flarePanel.style.display = mode === "flare" ? "" : "none";
+    manualPanel.style.display = mode === "manual" ? "" : "none";
+
+    // Link labels — kill transition during swap so old hover color doesn't linger
+    const btns = [flareSwitchBtn, modeSwitchBtn].filter(Boolean) as HTMLElement[];
+    for (const b of btns) b.style.transition = "none";
+    if (flareSwitchBtn) flareSwitchBtn.textContent = cfg.flareLink;
+    modeSwitchBtn.textContent = cfg.manualLink;
+    if (idleLede) idleLede.textContent = cfg.lede;
+    // Force reflow then restore transition
+    void modeSwitchBtn.offsetWidth;
+    for (const b of btns) b.style.transition = "";
+
+    // Sync shared state
+    opts.externalAssistToggle.checked = cfg.relayAssist;
+    if (opts.relayAssistToggle) opts.relayAssistToggle.checked = cfg.relayAssist;
+    if (mode === "manual" && manualPhraseInput) {
+      manualPhraseInput.value = opts.phraseInput.value;
     }
+
+    updateControls();
+  }
+
+  // Backwards-compat shim used by existing relay logic
+  function applyRelayToggle(checked: boolean): void {
+    applyModeSwitch(checked ? "relay" : "manual");
   }
 
   /** Get the phrase from the active mode's input. */
@@ -1180,7 +1258,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (aborted()) return;
       if (session) { session.disconnect(); session = null; }
       const raw = errMsg(err);
-      appendLog(`relay: ${raw}`);
+      appendLog(`relay error: ${raw}`);
       lastErrorWasRelay = true;
       handleStateChange("error", friendlyRelayError(raw));
     } finally {
@@ -1188,16 +1266,193 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  /* ── Signal Flare helpers ─────────────────────────────── */
+
+  function formatElapsed(ms: number): string {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+  }
+
+  function setFlareUiState(state: "input" | "burning" | "arrived"): void {
+    if (flarePhraseField) flarePhraseField.style.display = state === "input" ? "" : "none";
+    if (flareFireBtn) flareFireBtn.style.display = state === "input" ? "" : "none";
+    if (flareBurning) flareBurning.style.display = state === "burning" ? "" : "none";
+    if (flareArrived) flareArrived.style.display = state === "arrived" ? "" : "none";
+  }
+
+  function extinguishFlare(): void {
+    flareActive = false;
+    if (flareAbort) {
+      flareAbort.abort();
+      flareAbort = null;
+    }
+    if (flarePeerResolve) {
+      flarePeerResolve(false);
+      flarePeerResolve = null;
+    }
+    if (flareElapsedTimer) {
+      clearInterval(flareElapsedTimer);
+      flareElapsedTimer = null;
+    }
+    flareStartTime = 0;
+    setFlareUiState("input");
+    if (flareElapsed) flareElapsed.textContent = "";
+    document.title = originalTitle;
+  }
+
+  async function handleFlareConnect(): Promise<void> {
+    const phrase = flarePhraseInput?.value.trim() ?? "";
+    if (!phrase) {
+      flarePhraseInput?.focus();
+      if (flarePhraseInput) {
+        flarePhraseInput.classList.add("ws-reject-pulse");
+        setTimeout(() => flarePhraseInput!.classList.remove("ws-reject-pulse"), 400);
+      }
+      return;
+    }
+
+    flareActive = true;
+    flareAbort = new AbortController();
+    setBusy(true);
+
+    // Request notification permission if default
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      try { await Notification.requestPermission(); } catch { /* noop */ }
+    }
+
+    opts.externalAssistToggle.checked = true;
+    session = createSession();
+
+    try {
+      const offerCode = await session.createOffer(phrase);
+      if (aborted()) return;
+
+      setLogActive(true);
+      appendLog("flare preparing...");
+      updateStatus("flare is burning");
+      setBusy(false);
+
+      // Show burning state
+      setFlareUiState("burning");
+      flareStartTime = Date.now();
+      if (flareElapsed) flareElapsed.textContent = "0s";
+      flareElapsedTimer = setInterval(() => {
+        if (flareElapsed && flareStartTime) {
+          flareElapsed.textContent = formatElapsed(Date.now() - flareStartTime);
+        }
+      }, 1000);
+
+      const { maintainFlare } = await import("./live-flare");
+
+      let acceptCalled = false;
+      const acceptFn = async (peerOfferCode: string): Promise<string> => {
+        if (acceptCalled) throw new Error("duplicate-accept");
+        acceptCalled = true;
+        if (session) { session.disconnect(); session = null; }
+        session = createSession();
+        return session.acceptOffer(peerOfferCode, phrase);
+      };
+
+      const callbacks = {
+        onStatus: (msg: string) => {
+          if (aborted()) return;
+          updateStatus(msg);
+        },
+        onLog: (msg: string) => {
+          if (aborted()) return;
+          appendLog(msg);
+        },
+        onPeerArrived: (): Promise<boolean> => {
+          return new Promise<boolean>((resolve) => {
+            flarePeerResolve = resolve;
+            setFlareUiState("arrived");
+
+            // Tab title notification
+            document.title = "someone arrived \u2014 Whisper";
+
+            // Browser notification
+            if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+              try {
+                new Notification("Signal Flare", {
+                  body: "someone found your flare",
+                  tag: "whisper-flare",
+                });
+              } catch { /* noop */ }
+            }
+          });
+        },
+      };
+
+      const result = await maintainFlare(
+        phrase, offerCode, acceptFn, callbacks, flareAbort.signal,
+      );
+
+      if (aborted()) return;
+
+      // Clear flare state before terminal flow
+      flareActive = false;
+      if (flareElapsedTimer) { clearInterval(flareElapsedTimer); flareElapsedTimer = null; }
+      document.title = originalTitle;
+
+      setBusy(true);
+      showPhase(opts.connectingSection);
+      opts.connectingStatus.textContent = "connecting directly...";
+      updateStatus("connecting...");
+
+      if (result.role === "offerer" && result.peerAnswerCode) {
+        await session!.applyAnswer(result.peerAnswerCode);
+      }
+      if (result.role === "answerer" && session && session.state === "connecting") {
+        showPhase(opts.connectingSection);
+        opts.connectingStatus.textContent = "connecting directly...";
+        updateStatus("connecting...");
+      }
+    } catch (err) {
+      flareActive = false;
+      extinguishFlare();
+      if (aborted()) return;
+      if (session) { session.disconnect(); session = null; }
+      const raw = errMsg(err);
+      if (raw === "Aborted") return;
+      appendLog(`flare error: ${raw}`);
+      lastErrorWasFlare = true;
+      handleStateChange("error", friendlyRelayError(raw));
+    } finally {
+      flareAbort = null;
+    }
+  }
+
   /* ── Event Listeners ───────────────────────────────────── */
 
-  if (modeSwitchBtn && opts.relayAssistToggle) {
+  if (modeSwitchBtn) {
     modeSwitchBtn.addEventListener("click", () => {
-      const next = !opts.relayAssistToggle!.checked;
-      opts.relayAssistToggle!.checked = next;
-      if (next && manualPhraseInput) {
-        opts.phraseInput.value = manualPhraseInput.value;
+      if (currentIdleMode === "manual") {
+        // "or use relay assist" → relay
+        if (manualPhraseInput) opts.phraseInput.value = manualPhraseInput.value;
+        applyModeSwitch("relay");
+      } else {
+        // "or connect manually" → manual
+        applyModeSwitch("manual");
       }
-      applyRelayToggle(next);
+    }, { signal });
+  }
+
+  if (flareSwitchBtn) {
+    flareSwitchBtn.addEventListener("click", () => {
+      if (currentIdleMode === "flare") {
+        // "or use relay assist" → relay
+        if (flarePhraseInput) opts.phraseInput.value = flarePhraseInput.value;
+        applyModeSwitch("relay");
+      } else {
+        // "or fire a signal flare" → flare
+        if (flarePhraseInput) flarePhraseInput.value = opts.phraseInput.value;
+        applyModeSwitch("flare");
+      }
     }, { signal });
   }
 
@@ -1228,6 +1483,55 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       void handleRelayConnect();
     }
   }, { signal });
+
+  // ── Flare event listeners ──
+
+  if (flareFireBtn) {
+    flareFireBtn.addEventListener("click", () => {
+      if (!flareActive) void handleFlareConnect();
+    }, { signal });
+  }
+
+  if (flarePhraseInput) {
+    flarePhraseInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !busy && !flareActive) {
+        e.preventDefault();
+        void handleFlareConnect();
+      }
+    }, { signal });
+  }
+
+  if (flareExtinguishBtn) {
+    flareExtinguishBtn.addEventListener("click", () => {
+      extinguishFlare();
+      if (session) { session.disconnect(); session = null; }
+      updateStatus("ready to connect");
+      setLogActive(false);
+      setBusy(false);
+      updateControls();
+    }, { signal });
+  }
+
+  if (flareAcceptBtn) {
+    flareAcceptBtn.addEventListener("click", () => {
+      if (flarePeerResolve) {
+        flarePeerResolve(true);
+        flarePeerResolve = null;
+      }
+      document.title = originalTitle;
+    }, { signal });
+  }
+
+  if (flareIgnoreBtn) {
+    flareIgnoreBtn.addEventListener("click", () => {
+      if (flarePeerResolve) {
+        flarePeerResolve(false);
+        flarePeerResolve = null;
+      }
+      document.title = originalTitle;
+      setFlareUiState("burning");
+    }, { signal });
+  }
 
   opts.createBtn.addEventListener("click", async () => {
     session = createSession();
@@ -1484,7 +1788,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   opts.newSessionBtn.addEventListener("click", resetToIdle, { signal });
 
   opts.errorRetryBtn.addEventListener("click", () => {
-    if (lastErrorWasRelay) {
+    if (lastErrorWasFlare) {
+      const savedPhrase = flarePhraseInput?.value ?? "";
+      lastErrorWasFlare = false;
+      resetToIdle();
+      if (flarePhraseInput) flarePhraseInput.value = savedPhrase;
+      applyModeSwitch("flare");
+    } else if (lastErrorWasRelay) {
       const savedPhrase = opts.phraseInput.value;
       const relayWasOn = opts.relayAssistToggle?.checked ?? false;
       lastErrorWasRelay = false;
@@ -1493,7 +1803,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       opts.phraseInput.value = savedPhrase;
       if (relayWasOn && opts.relayAssistToggle) {
         opts.relayAssistToggle.checked = true;
-        applyRelayToggle(true);
+        applyModeSwitch("relay");
       }
     } else {
       resetToIdle();
@@ -1514,19 +1824,30 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // Sync relay UI on init — covers default checked, browser form restore, and ?relay=1
   if (opts.relayAssistToggle) {
     if (urlFlag("relay")) opts.relayAssistToggle.checked = true;
-    if (opts.relayAssistToggle.checked) applyRelayToggle(true);
+    if (opts.relayAssistToggle.checked) applyModeSwitch("relay");
   }
 
-  // ?phrase= prefills the shared phrase input
+  // ?flare=1 switches to flare mode
+  if (urlFlag("flare")) {
+    applyModeSwitch("flare");
+  }
+
+  // ?phrase= prefills the shared phrase inputs
   const urlPhrase = urlParam("phrase");
   if (urlPhrase) {
     opts.phraseInput.value = urlPhrase;
+    if (flarePhraseInput) flarePhraseInput.value = urlPhrase;
   }
 
   // ?auto=1 with ?relay=1 and a phrase → auto-trigger relay connect
-  if (urlFlag("auto") && opts.relayAssistToggle?.checked && opts.phraseInput.value.trim()) {
+  if (urlFlag("auto") && opts.relayAssistToggle?.checked && !urlFlag("flare") && opts.phraseInput.value.trim()) {
     // Slight delay so the UI has rendered before we start connecting
     setTimeout(() => { if (!aborted()) void handleRelayConnect(); }, 100);
+  }
+
+  // ?auto=1 with ?flare=1 and a phrase → auto-fire flare
+  if (urlFlag("auto") && urlFlag("flare") && flarePhraseInput && flarePhraseInput.value.trim()) {
+    setTimeout(() => { if (!aborted()) void handleFlareConnect(); }, 100);
   }
 
   void getQrScannerCapability().then((capability) => {
@@ -1552,6 +1873,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       relayAbort.abort();
       relayAbort = null;
     }
+    extinguishFlare();
     stopJoinQrScan("teardown");
     if (session) {
       session.disconnect();

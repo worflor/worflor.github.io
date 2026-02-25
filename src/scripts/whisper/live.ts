@@ -506,11 +506,11 @@ export class WhisperLiveSession {
       const logGatherResult = () => {
         const sdp = this.pc?.localDescription?.sdp ?? "";
         const types = [...sdp.matchAll(/typ (\w+)/g)].map(m => m[1]);
-        this.onLog(`gathered ${types.length} candidate(s): ${types.join(", ") || "none"}`);
+        this.onLog(`gathered ${types.length} network path(s): ${types.join(", ") || "none"}`);
         if (!types.includes("srflx") && this.hasExternalAssistConfigured())
-          this.onLog("warning: no server-reflexive candidates — STUN may be blocked");
+          this.onLog("no relay candidates found, external assist may be unavailable");
         if (types.length === 0)
-          this.onLog("warning: no candidates gathered — connection will likely fail");
+          this.onLog("no network paths found, connection may fail");
       };
 
       if (this.pc.iceGatheringState === "complete") {
@@ -530,7 +530,7 @@ export class WhisperLiveSession {
       };
 
       const timer = setTimeout(() => {
-        this.onLog("candidate gathering timed out, proceeding with what we have");
+        this.onLog("path discovery timed out, proceeding with what we have");
         done();
       }, ICE_GATHER_TIMEOUT);
 
@@ -553,7 +553,7 @@ export class WhisperLiveSession {
     if (this.connectingGraceDone) return;
     if (this.connectingGraceTimer) return; // already running
     this.connectingGraceDone = true;
-    this.onLog("ICE failed during setup, waiting for peer to complete exchange...");
+    this.onLog("negotiating connection, waiting for peer to finish exchange...");
 
     // Re-apply remote description periodically to re-arm ICE agent for
     // incoming connectivity checks from the peer.
@@ -565,11 +565,11 @@ export class WhisperLiveSession {
         return;
       }
       if (s === "failed" || s === "disconnected") {
-        this.onLog(`ICE still ${s}, waiting for peer...`);
+        this.onLog(`still negotiating, waiting for peer...`);
         const rd = this.pc.remoteDescription;
         if (rd) {
           this.pc.setRemoteDescription(rd).catch((e) => {
-            this.onLog(`ICE re-arm failed: ${e instanceof Error ? e.message : "unknown"}`);
+            this.onLog(`negotiation re-arm failed: ${e instanceof Error ? e.message : "unknown"}`);
           });
         }
       }
@@ -583,7 +583,7 @@ export class WhisperLiveSession {
       // Check current state — ICE may have recovered during the wait
       const iceState = pc.iceConnectionState;
       if (iceState === "connected" || iceState === "completed") return;
-      this.onLog(`connection failed after grace period (ICE: ${iceState})`);
+      this.onLog("connection failed after waiting period");
       this.setState("error", "Connection failed — peer may be unreachable. Make sure both sides have external assist enabled if connecting across networks.");
       this.cleanupConnection();
     }, HEARTBEAT_TIMEOUT);
@@ -593,15 +593,15 @@ export class WhisperLiveSession {
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         const c = event.candidate;
-        this.onLog(`ICE candidate: ${c.type ?? "?"} ${c.protocol ?? "?"} ${c.address ?? "?"}:${c.port ?? "?"}`);
+        this.onLog(`network path: ${c.type ?? "?"} ${c.protocol ?? "?"} ${c.address ?? "?"}:${c.port ?? "?"}`);
       } else {
-        this.onLog("ICE gathering complete");
+        this.onLog("network path discovery complete");
       }
     };
 
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
-      this.onLog(`ICE: ${s}`);
+      this.onLog(`network: ${s}`);
 
       if (s === "checking") return;
 
@@ -662,7 +662,7 @@ export class WhisperLiveSession {
 
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
-      this.onLog(`conn: ${s}`);
+      this.onLog(`connection: ${s}`);
       if (s === "connected") {
         if (!this.isSetupState()) this.dropExternalAssist(pc);
       }
