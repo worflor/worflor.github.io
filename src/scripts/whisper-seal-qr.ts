@@ -147,6 +147,54 @@ export interface QrImageDecodeResult {
   method: "barcode" | "text" | "bytes";
 }
 
+export interface QrTextDecodeResult {
+  rawValue: string;
+  method: "barcode" | "text";
+}
+
+export async function decodeQrTextFromImage(file: File): Promise<QrTextDecodeResult | null> {
+  let bitmap: ImageBitmap | null = null;
+  try {
+    try {
+      bitmap = await createImageBitmap(file);
+    } catch {
+      bitmap = null;
+    }
+
+    if (!bitmap) return null;
+
+    try {
+      const barcode = await createQrDetector();
+      if (barcode) {
+        const found = await barcode.detect(bitmap);
+        for (const entry of found) {
+          if (!entry.rawValue) continue;
+          const value = entry.rawValue.trim();
+          if (value) return { rawValue: value, method: "barcode" };
+        }
+      }
+    } catch {
+      // Soft-fail and continue with OCR fallback.
+    }
+
+    try {
+      const textCtor = getTextDetectorCtor();
+      if (textCtor) {
+        const textDetector = new textCtor();
+        const blocks = await textDetector.detect(bitmap);
+        const joined = blocks.map((block) => block.rawValue ?? "").join("\n").trim();
+        if (joined) return { rawValue: joined, method: "text" };
+      }
+    } catch {
+      // Soft-fail with null.
+    }
+  } finally {
+    bitmap?.close();
+  }
+
+  return null;
+}
+
 export async function decodeWs2FromImage(file: File): Promise<QrImageDecodeResult | null> {
   let bitmap: ImageBitmap | null = null;
   try {
@@ -205,7 +253,11 @@ export async function decodeWs2FromImage(file: File): Promise<QrImageDecodeResul
  * and does not replace WS2 validation; callers must always re-validate decoded payload.
  */
 export function renderSealQrToCanvas(canvas: HTMLCanvasElement, ws2Code: string): void {
-  const qr = qrcodegen.QrCode.encodeText(ws2Code, qrcodegen.QrCode.Ecc.MEDIUM);
+  renderQrToCanvas(canvas, ws2Code);
+}
+
+export function renderQrToCanvas(canvas: HTMLCanvasElement, value: string): void {
+  const qr = qrcodegen.QrCode.encodeText(value, qrcodegen.QrCode.Ecc.MEDIUM);
   const modules = qr.size;
   const margin = QR_QUIET_ZONE_MODULES;
 

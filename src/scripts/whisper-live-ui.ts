@@ -25,6 +25,14 @@ import {
   appendToLog,
   setLogDotActive,
 } from "./whisper-ui-helpers";
+import {
+  createQrDetector,
+  decodeQrTextFromImage,
+  getQrCameraConstraints,
+  getQrScanIntervalMs,
+  getQrScannerCapability,
+  renderQrToCanvas,
+} from "./whisper-seal-qr";
 
 /* ── Interface & IDs ──────────────────────────────────────── */
 
@@ -39,6 +47,14 @@ export interface WhisperLiveUIOptions {
   createBtn: HTMLButtonElement;
   joinInput: HTMLInputElement;
   joinBtn: HTMLButtonElement;
+  joinPasteBtn: HTMLButtonElement;
+  joinQrScanBtn: HTMLButtonElement;
+  joinQrImageBtn: HTMLButtonElement;
+  joinQrFileInput: HTMLInputElement;
+  joinQrStopBtn: HTMLButtonElement;
+  joinQrPanel: HTMLElement;
+  joinQrStatus: HTMLElement;
+  joinQrVideo: HTMLVideoElement;
   phraseInput: HTMLInputElement;
   externalAssistToggle: HTMLInputElement;
 
@@ -46,6 +62,11 @@ export interface WhisperLiveUIOptions {
   offerSection: HTMLElement;
   offerCode: HTMLElement;
   offerCopyBtn: HTMLButtonElement;
+  offerBackBtn: HTMLButtonElement;
+  offerQrToggleBtn: HTMLButtonElement;
+  offerQrPanel: HTMLElement;
+  offerQrCanvas: HTMLCanvasElement;
+  offerQrStatus: HTMLElement;
   answerInput: HTMLInputElement;
   answerApplyBtn: HTMLButtonElement;
 
@@ -53,6 +74,10 @@ export interface WhisperLiveUIOptions {
   answerSection: HTMLElement;
   answerCode: HTMLElement;
   answerCopyBtn: HTMLButtonElement;
+  answerQrToggleBtn: HTMLButtonElement;
+  answerQrPanel: HTMLElement;
+  answerQrCanvas: HTMLCanvasElement;
+  answerQrStatus: HTMLElement;
 
   /* Connecting/handshaking phase */
   connectingSection: HTMLElement;
@@ -95,16 +120,33 @@ export const WHISPER_LIVE_IDS = {
   createBtn: "wl-create",
   joinInput: "wl-join-input",
   joinBtn: "wl-join",
+  joinPasteBtn: "wl-join-paste",
+  joinQrScanBtn: "wl-join-qr-scan",
+  joinQrImageBtn: "wl-join-qr-image",
+  joinQrFileInput: "wl-join-qr-file",
+  joinQrStopBtn: "wl-join-qr-stop",
+  joinQrPanel: "wl-join-qr-panel",
+  joinQrStatus: "wl-join-qr-status",
+  joinQrVideo: "wl-join-qr-video",
   phraseInput: "wl-phrase",
   externalAssistToggle: "wl-external-assist",
   offerSection: "wl-offer-section",
   offerCode: "wl-offer-code",
   offerCopyBtn: "wl-offer-copy",
+  offerBackBtn: "wl-offer-back",
+  offerQrToggleBtn: "wl-offer-qr-toggle",
+  offerQrPanel: "wl-offer-qr-panel",
+  offerQrCanvas: "wl-offer-qr-canvas",
+  offerQrStatus: "wl-offer-qr-status",
   answerInput: "wl-answer-input",
   answerApplyBtn: "wl-answer-apply",
   answerSection: "wl-answer-section",
   answerCode: "wl-answer-code",
   answerCopyBtn: "wl-answer-copy",
+  answerQrToggleBtn: "wl-answer-qr-toggle",
+  answerQrPanel: "wl-answer-qr-panel",
+  answerQrCanvas: "wl-answer-qr-canvas",
+  answerQrStatus: "wl-answer-qr-status",
   connectingSection: "wl-connecting-section",
   connectingStatus: "wl-connecting-status",
   verifySection: "wl-verify-section",
@@ -136,6 +178,34 @@ function formatTime(ts: number): string {
   return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
 }
 
+type LiveQrKind = "offer" | "answer";
+const LIVE_QR_PREFIX = "WLV1";
+const LIVE_CODE_MIN_LEN = 48;
+
+function buildLiveQrPayload(kind: LiveQrKind, code: string): string {
+  return `${LIVE_QR_PREFIX}:${kind}:${code}`;
+}
+
+function extractLiveCodeCandidate(raw: string, expectedKind?: LiveQrKind): string | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const prefixed = text.match(/WLV1:(offer|answer):([A-Za-z0-9_-]{16,})/i);
+  if (prefixed) {
+    const kind = prefixed[1].toLowerCase() as LiveQrKind;
+    if (expectedKind && kind !== expectedKind) return null;
+    return prefixed[2];
+  }
+
+  if (text.length >= LIVE_CODE_MIN_LEN && /^[A-Za-z0-9_-]+$/.test(text)) {
+    return text;
+  }
+
+  const fallback = text.match(/[A-Za-z0-9_-]{48,}/);
+  if (!fallback) return null;
+  return fallback[0];
+}
+
 /* ── Resolve ──────────────────────────────────────────────── */
 
 export function resolveWhisperLiveUIOptions(root: ParentNode = document): WhisperLiveUIOptions | null {
@@ -150,18 +220,35 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
   const createBtn = asButton(q(root, IDS.createBtn));
   const joinInput = asInput(q(root, IDS.joinInput));
   const joinBtn = asButton(q(root, IDS.joinBtn));
+  const joinPasteBtn = asButton(q(root, IDS.joinPasteBtn));
+  const joinQrScanBtn = asButton(q(root, IDS.joinQrScanBtn));
+  const joinQrImageBtn = asButton(q(root, IDS.joinQrImageBtn));
+  const joinQrFileInput = asInput(q(root, IDS.joinQrFileInput));
+  const joinQrStopBtn = asButton(q(root, IDS.joinQrStopBtn));
+  const joinQrPanel = q(root, IDS.joinQrPanel);
+  const joinQrStatus = q(root, IDS.joinQrStatus);
+  const joinQrVideo = root.querySelector<HTMLVideoElement>(`#${IDS.joinQrVideo}`);
   const phraseInput = asInput(q(root, IDS.phraseInput));
   const externalAssistToggle = asInput(q(root, IDS.externalAssistToggle));
 
   const offerSection = q(root, IDS.offerSection);
   const offerCode = q(root, IDS.offerCode);
   const offerCopyBtn = asButton(q(root, IDS.offerCopyBtn));
+  const offerBackBtn = asButton(q(root, IDS.offerBackBtn));
+  const offerQrToggleBtn = asButton(q(root, IDS.offerQrToggleBtn));
+  const offerQrPanel = q(root, IDS.offerQrPanel);
+  const offerQrCanvas = root.querySelector<HTMLCanvasElement>(`#${IDS.offerQrCanvas}`);
+  const offerQrStatus = q(root, IDS.offerQrStatus);
   const answerInput = asInput(q(root, IDS.answerInput));
   const answerApplyBtn = asButton(q(root, IDS.answerApplyBtn));
 
   const answerSection = q(root, IDS.answerSection);
   const answerCode = q(root, IDS.answerCode);
   const answerCopyBtn = asButton(q(root, IDS.answerCopyBtn));
+  const answerQrToggleBtn = asButton(q(root, IDS.answerQrToggleBtn));
+  const answerQrPanel = q(root, IDS.answerQrPanel);
+  const answerQrCanvas = root.querySelector<HTMLCanvasElement>(`#${IDS.answerQrCanvas}`);
+  const answerQrStatus = q(root, IDS.answerQrStatus);
 
   const connectingSection = q(root, IDS.connectingSection);
   const connectingStatus = q(root, IDS.connectingStatus);
@@ -194,9 +281,10 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
 
   if (
     !page || !logOutput || !logDot || !liveStatusLine ||
-    !liveSection || !createBtn || !joinInput || !joinBtn || !phraseInput || !externalAssistToggle ||
-    !offerSection || !offerCode || !offerCopyBtn || !answerInput || !answerApplyBtn ||
-    !answerSection || !answerCode || !answerCopyBtn ||
+    !liveSection || !createBtn || !joinInput || !joinBtn || !joinPasteBtn || !joinQrScanBtn || !joinQrImageBtn ||
+    !joinQrFileInput || !joinQrStopBtn || !joinQrPanel || !joinQrStatus || !joinQrVideo || !phraseInput || !externalAssistToggle ||
+    !offerSection || !offerCode || !offerCopyBtn || !offerBackBtn || !offerQrToggleBtn || !offerQrPanel || !offerQrCanvas || !offerQrStatus || !answerInput || !answerApplyBtn ||
+    !answerSection || !answerCode || !answerCopyBtn || !answerQrToggleBtn || !answerQrPanel || !answerQrCanvas || !answerQrStatus ||
     !connectingSection || !connectingStatus ||
     !verifySection || !fingerprintDisplay || !confirmBtn || !rejectBtn ||
     !chatSection || !chatMessages || !chatInput || !chatSendBtn ||
@@ -211,9 +299,10 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
 
   return {
     page, logOutput, logDot, liveStatusLine,
-    liveSection, createBtn, joinInput, joinBtn, phraseInput, externalAssistToggle,
-    offerSection, offerCode, offerCopyBtn, answerInput, answerApplyBtn,
-    answerSection, answerCode, answerCopyBtn,
+    liveSection, createBtn, joinInput, joinBtn, joinPasteBtn, joinQrScanBtn, joinQrImageBtn,
+    joinQrFileInput, joinQrStopBtn, joinQrPanel, joinQrStatus, joinQrVideo, phraseInput, externalAssistToggle,
+    offerSection, offerCode, offerCopyBtn, offerBackBtn, offerQrToggleBtn, offerQrPanel, offerQrCanvas, offerQrStatus, answerInput, answerApplyBtn,
+    answerSection, answerCode, answerCopyBtn, answerQrToggleBtn, answerQrPanel, answerQrCanvas, answerQrStatus,
     connectingSection, connectingStatus,
     verifySection, fingerprintDisplay, confirmBtn, rejectBtn,
     chatSection, chatMessages, chatInput, chatSendBtn,
@@ -232,6 +321,24 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let session: WhisperLiveSession | null = null;
   const objectUrls = new Set<string>();
   let busy = false;
+  let liveQrSupported = false;
+  let offerQrExpanded = false;
+  let answerQrExpanded = false;
+
+  type QrScanStopReason = "accepted" | "cancelled" | "error" | "teardown";
+  const qrScanSession: {
+    rafId: number;
+    stream: MediaStream | null;
+    active: boolean;
+    lastFrameAt: number;
+    runId: number;
+  } = {
+    rafId: 0,
+    stream: null,
+    active: false,
+    lastFrameAt: 0,
+    runId: 0,
+  };
 
   /* ── Phase management ─────────────────────────────────── */
 
@@ -248,8 +355,209 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   ];
 
   function showPhase(el: HTMLElement): void {
+    if (qrScanSession.active && el !== opts.liveSection) {
+      stopJoinQrScan("cancelled");
+    }
     for (const phase of allPhases) {
       phase.style.display = phase === el ? "" : "none";
+    }
+  }
+
+  function pulsePasteState(ok: boolean): void {
+    opts.joinPasteBtn.classList.remove("ws-copy-pulse", "ws-reject-pulse");
+    void opts.joinPasteBtn.offsetWidth;
+    opts.joinPasteBtn.classList.add(ok ? "ws-copy-pulse" : "ws-reject-pulse");
+  }
+
+  function setJoinQrUiState(scanning: boolean): void {
+    opts.joinQrScanBtn.disabled = busy || scanning || !liveQrSupported;
+    opts.joinQrImageBtn.disabled = busy || scanning;
+    opts.joinQrStopBtn.style.display = scanning ? "" : "none";
+  }
+
+  function setJoinQrStatus(text: string): void {
+    opts.joinQrStatus.textContent = text;
+  }
+
+  function setOfferQrExpanded(expanded: boolean): void {
+    offerQrExpanded = expanded;
+    opts.offerQrPanel.style.display = expanded ? "" : "none";
+    opts.offerQrToggleBtn.textContent = expanded ? "Hide QR" : "Show QR";
+    opts.offerQrToggleBtn.setAttribute("aria-expanded", String(expanded));
+  }
+
+  function setAnswerQrExpanded(expanded: boolean): void {
+    answerQrExpanded = expanded;
+    opts.answerQrPanel.style.display = expanded ? "" : "none";
+    opts.answerQrToggleBtn.textContent = expanded ? "Hide QR" : "Show QR";
+    opts.answerQrToggleBtn.setAttribute("aria-expanded", String(expanded));
+  }
+
+  function aborted(): boolean {
+    return signal.aborted;
+  }
+
+  function applyJoinOfferCandidate(raw: string, source: "camera" | "image" | "paste"): boolean {
+    const code = extractLiveCodeCandidate(raw, "offer");
+    if (!code) {
+      setJoinQrStatus(source === "paste" ? "No offer code found." : "Offer QR not recognized.");
+      return false;
+    }
+    opts.joinInput.value = code;
+    updateControls();
+    setJoinQrStatus("Offer code loaded.");
+    if (source !== "camera") {
+      try { opts.joinBtn.focus(); } catch { /* noop */ }
+    }
+    return true;
+  }
+
+  function normalizeTypedCodes(): void {
+    const joinNormalized = extractLiveCodeCandidate(opts.joinInput.value, "offer");
+    if (joinNormalized && joinNormalized !== opts.joinInput.value.trim()) {
+      opts.joinInput.value = joinNormalized;
+    }
+
+    const answerNormalized = extractLiveCodeCandidate(opts.answerInput.value, "answer");
+    if (answerNormalized && answerNormalized !== opts.answerInput.value.trim()) {
+      opts.answerInput.value = answerNormalized;
+    }
+  }
+
+  function stopJoinQrScan(reason: QrScanStopReason = "cancelled"): void {
+    qrScanSession.runId += 1;
+
+    if (qrScanSession.rafId) {
+      cancelAnimationFrame(qrScanSession.rafId);
+      qrScanSession.rafId = 0;
+    }
+
+    qrScanSession.active = false;
+    qrScanSession.lastFrameAt = 0;
+
+    if (qrScanSession.stream) {
+      for (const track of qrScanSession.stream.getTracks()) track.stop();
+      qrScanSession.stream = null;
+    }
+
+    opts.joinQrVideo.pause();
+    opts.joinQrVideo.srcObject = null;
+    opts.joinQrPanel.style.display = "none";
+    setJoinQrUiState(false);
+
+    if (reason === "cancelled") {
+      setJoinQrStatus("");
+    }
+  }
+
+  async function scanJoinFromImage(file: File): Promise<void> {
+    const decoded = await decodeQrTextFromImage(file);
+    if (aborted()) return;
+    if (!decoded) {
+      setJoinQrStatus("No offer code found.");
+      return;
+    }
+    if (!applyJoinOfferCandidate(decoded.rawValue, "image")) {
+      setJoinQrStatus("Offer QR not recognized.");
+    }
+  }
+
+  async function startJoinQrScan(): Promise<void> {
+    if (qrScanSession.active) return;
+    const runId = qrScanSession.runId + 1;
+    qrScanSession.runId = runId;
+
+    const capability = await getQrScannerCapability();
+    if (aborted() || runId !== qrScanSession.runId) return;
+    if (!capability.supported) {
+      setJoinQrStatus("Camera unavailable.");
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setJoinQrStatus("Camera unavailable.");
+      return;
+    }
+
+    const detector = await createQrDetector();
+    if (aborted() || runId !== qrScanSession.runId) return;
+    if (!detector) {
+      setJoinQrStatus("Camera unavailable.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: getQrCameraConstraints(),
+        audio: false,
+      });
+      if (aborted() || runId !== qrScanSession.runId) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+
+      qrScanSession.stream = stream;
+      opts.joinQrVideo.srcObject = stream;
+      await opts.joinQrVideo.play();
+      if (aborted() || runId !== qrScanSession.runId) {
+        stopJoinQrScan("cancelled");
+        return;
+      }
+
+      qrScanSession.active = true;
+      opts.joinQrPanel.style.display = "";
+      setJoinQrUiState(true);
+      setJoinQrStatus("Scanning…");
+
+      const loop = async (at: number): Promise<void> => {
+        if (!qrScanSession.active || aborted() || runId !== qrScanSession.runId) return;
+        if (at - qrScanSession.lastFrameAt < getQrScanIntervalMs()) {
+          qrScanSession.rafId = requestAnimationFrame((t) => { void loop(t); });
+          return;
+        }
+
+        qrScanSession.lastFrameAt = at;
+        try {
+          const detections = await detector.detect(opts.joinQrVideo);
+          if (!qrScanSession.active || aborted() || runId !== qrScanSession.runId) return;
+          for (const detection of detections) {
+            if (!detection.rawValue) continue;
+            if (applyJoinOfferCandidate(detection.rawValue, "camera")) {
+              stopJoinQrScan("accepted");
+              return;
+            }
+          }
+        } catch {
+          stopJoinQrScan("error");
+          setJoinQrStatus("Scan failed.");
+          return;
+        }
+
+        qrScanSession.rafId = requestAnimationFrame((t) => { void loop(t); });
+      };
+
+      qrScanSession.rafId = requestAnimationFrame((t) => { void loop(t); });
+    } catch {
+      stopJoinQrScan("error");
+      setJoinQrStatus("Camera unavailable.");
+    }
+  }
+
+  function renderOfferQr(code: string): void {
+    try {
+      renderQrToCanvas(opts.offerQrCanvas, buildLiveQrPayload("offer", code));
+      opts.offerQrStatus.textContent = "Scan to auto-fill the offer code.";
+    } catch {
+      opts.offerQrStatus.textContent = "QR preview unavailable in this browser.";
+    }
+  }
+
+  function renderAnswerQr(code: string): void {
+    try {
+      renderQrToCanvas(opts.answerQrCanvas, buildLiveQrPayload("answer", code));
+      opts.answerQrStatus.textContent = "Scan to auto-fill the answer code.";
+    } catch {
+      opts.answerQrStatus.textContent = "QR preview unavailable in this browser.";
     }
   }
 
@@ -281,13 +589,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     opts.createBtn.disabled = busy;
     opts.joinBtn.disabled = busy || !joinHasCode;
+    opts.joinPasteBtn.disabled = busy;
     opts.answerApplyBtn.disabled = busy || !hasSession || !answerHasCode;
 
     // Network mode is a session-level choice; disable toggling once a session exists.
     opts.externalAssistToggle.disabled = busy || hasSession;
 
     opts.offerCopyBtn.disabled = (opts.offerCode.textContent ?? "").trim().length === 0;
+    opts.offerBackBtn.disabled = busy;
     opts.answerCopyBtn.disabled = (opts.answerCode.textContent ?? "").trim().length === 0;
+    const hasOffer = (opts.offerCode.textContent ?? "").trim().length > 0;
+    const hasAnswer = (opts.answerCode.textContent ?? "").trim().length > 0;
+    opts.offerQrToggleBtn.disabled = !hasOffer;
+    opts.answerQrToggleBtn.disabled = !hasAnswer;
+
+    if (!hasOffer && offerQrExpanded) setOfferQrExpanded(false);
+    if (!hasAnswer && answerQrExpanded) setAnswerQrExpanded(false);
+
+    if (!qrScanSession.active) {
+      setJoinQrUiState(false);
+    }
 
     opts.chatSendBtn.disabled = busy || !hasSession || !hasChatText;
     opts.chatFileBtn.disabled = busy || !hasSession;
@@ -399,7 +720,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     switch (state) {
       case "idle":
         showPhase(opts.liveSection);
-        updateStatus("ready to connect");
+        updateStatus("ready — create or join a channel");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -407,7 +728,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "offering":
         setLogActive(true);
-        updateStatus("creating offer...");
+        updateStatus("preparing your offer code...");
         showPhase(opts.connectingSection);
         opts.connectingStatus.textContent = "creating offer...";
         setBusy(true);
@@ -415,7 +736,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "waiting-for-answer":
         showPhase(opts.offerSection);
-        updateStatus("share the offer code, then paste the answer");
+        updateStatus("step 1/2: share offer, then paste peer reply");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -426,7 +747,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "answering":
         setLogActive(true);
-        updateStatus("creating answer...");
+        updateStatus("generating your answer code...");
         showPhase(opts.connectingSection);
         opts.connectingStatus.textContent = "creating answer...";
         setBusy(true);
@@ -449,7 +770,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "verifying":
         showPhase(opts.verifySection);
-        updateStatus("verify the fingerprint with your peer");
+        updateStatus("verify fingerprint before messaging");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -457,7 +778,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "live":
         showPhase(opts.chatSection);
-        updateStatus("session is live");
+        updateStatus("connected — encrypted session live");
         opts.liveStatusLine.classList.add("whisper-status--ready");
         setLogActive(false);
         opts.chatInput.disabled = false;
@@ -485,7 +806,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (secret) {
           opts.silentSecret.textContent = secret;
         }
-        updateStatus("shared secret derived. use as Whisper password");
+        updateStatus("shared secret ready for Whisper password mode");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -508,7 +829,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "disconnected":
         showPhase(opts.disconnectedSection);
-        updateStatus("session ended");
+        updateStatus("session closed");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -517,7 +838,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       case "error":
         showPhase(opts.errorSection);
         opts.errorMessage.textContent = detail ?? "an error occurred";
-        updateStatus("error");
+        updateStatus("connection issue");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -536,6 +857,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Reset to idle ─────────────────────────────────────── */
 
   function resetToIdle(): void {
+    if (qrScanSession.active) {
+      stopJoinQrScan("cancelled");
+    }
     if (session) {
       session.disconnect();
       session = null;
@@ -549,9 +873,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.chatInput.value = "";
     opts.fingerprintDisplay.textContent = "";
     opts.silentSecret.textContent = "";
+    opts.joinQrStatus.textContent = "";
+    opts.offerQrStatus.textContent = "";
+    opts.answerQrStatus.textContent = "";
+    setOfferQrExpanded(false);
+    setAnswerQrExpanded(false);
     opts.errorMessage.textContent = "";
     showPhase(opts.liveSection);
-    updateStatus("ready to connect");
+    updateStatus("ready — create or join a channel");
     setLogActive(false);
     setBusy(false);
     updateControls();
@@ -566,6 +895,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       const offerCode = await session.createOffer(phrase);
       opts.offerCode.textContent = offerCode;
+      renderOfferQr(offerCode);
+      setOfferQrExpanded(false);
       updateControls();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "unknown";
@@ -587,8 +918,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }, { signal });
 
+  // Back from create/offer phase
+  opts.offerBackBtn.addEventListener("click", () => {
+    resetToIdle();
+  }, { signal });
+
   // Apply answer code (offerer)
   opts.answerApplyBtn.addEventListener("click", async () => {
+    normalizeTypedCodes();
     const code = opts.answerInput.value.trim();
     if (!code || !session) return;
     try {
@@ -602,6 +939,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   // Join channel (answerer) — paste offer code
   opts.joinBtn.addEventListener("click", async () => {
+    normalizeTypedCodes();
     const offerCode = opts.joinInput.value.trim();
     if (!offerCode) return;
     session = createSession();
@@ -609,8 +947,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       const answerCodeStr = await session.acceptOffer(offerCode, phrase);
       opts.answerCode.textContent = answerCodeStr;
+      renderAnswerQr(answerCodeStr);
+      setAnswerQrExpanded(false);
       showPhase(opts.answerSection);
-      updateStatus("share the answer code back to your peer");
+      updateStatus("step 2/2: send answer back to the creator");
       setBusy(false);
       updateControls();
     } catch (err) {
@@ -665,9 +1005,72 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }, { signal });
 
   // Keep button states in sync with inputs
-  opts.joinInput.addEventListener("input", updateControls, { signal });
-  opts.answerInput.addEventListener("input", updateControls, { signal });
+  opts.joinInput.addEventListener("input", () => {
+    normalizeTypedCodes();
+    updateControls();
+  }, { signal });
+  opts.joinInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (!opts.joinBtn.disabled) {
+      opts.joinBtn.click();
+    }
+  }, { signal });
+
+  opts.answerInput.addEventListener("input", () => {
+    normalizeTypedCodes();
+    updateControls();
+  }, { signal });
+  opts.answerInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (!opts.answerApplyBtn.disabled) {
+      opts.answerApplyBtn.click();
+    }
+  }, { signal });
   opts.chatInput.addEventListener("input", updateControls, { signal });
+
+  // Join niceties: clipboard + QR camera/image
+  opts.joinPasteBtn.addEventListener("click", async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      const ok = applyJoinOfferCandidate(text, "paste");
+      pulsePasteState(ok);
+    } catch {
+      pulsePasteState(false);
+    }
+  }, { signal });
+
+  opts.joinQrScanBtn.addEventListener("click", () => {
+    void startJoinQrScan();
+  }, { signal });
+
+  opts.joinQrImageBtn.addEventListener("click", () => {
+    opts.joinQrFileInput.click();
+  }, { signal });
+
+  opts.joinQrStopBtn.addEventListener("click", () => {
+    stopJoinQrScan("cancelled");
+  }, { signal });
+
+  opts.joinQrFileInput.addEventListener("change", () => {
+    const file = opts.joinQrFileInput.files?.[0];
+    opts.joinQrFileInput.value = "";
+    if (!file) return;
+    void scanJoinFromImage(file).catch(() => {
+      setJoinQrStatus("Scan failed.");
+    });
+  }, { signal });
+
+  opts.offerQrToggleBtn.addEventListener("click", () => {
+    if (opts.offerQrToggleBtn.disabled) return;
+    setOfferQrExpanded(!offerQrExpanded);
+  }, { signal });
+
+  opts.answerQrToggleBtn.addEventListener("click", () => {
+    if (opts.answerQrToggleBtn.disabled) return;
+    setAnswerQrExpanded(!answerQrExpanded);
+  }, { signal });
 
   // Send file
   opts.chatFileBtn.addEventListener("click", () => {
@@ -751,14 +1154,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.externalAssistToggle.checked = true;
   }
 
+  void getQrScannerCapability().then((capability) => {
+    if (aborted()) return;
+    liveQrSupported = capability.supported;
+    setJoinQrUiState(false);
+    if (!capability.supported) {
+      opts.joinQrScanBtn.title = "Camera QR scan unavailable in this browser";
+    }
+  });
+
   showPhase(opts.liveSection);
   appendLog("live channel ready");
+  setOfferQrExpanded(false);
+  setAnswerQrExpanded(false);
   updateControls();
 
   /* ── Teardown ───────────────────────────────────────────── */
 
   return () => {
     ac.abort();
+    stopJoinQrScan("teardown");
     if (session) {
       session.disconnect();
       session = null;

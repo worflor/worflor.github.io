@@ -93,6 +93,8 @@ export interface WhisperLiveCallbacks {
   onFingerprint: (emoji: string) => void;
   onMessage: (msg: LiveMessage) => void;
   onLog: (line: string) => void;
+  /** When set and flags & 0x02 (campfire bit), decrypted plaintext is forwarded here instead of onMessage. */
+  onRawDecrypted?: (plaintext: Uint8Array) => void;
 }
 
 export interface WhisperLiveSessionOptions {
@@ -108,6 +110,13 @@ export interface WhisperLiveSessionOptions {
    * scoped to connection setup only.
    */
   externalAssistEstablishmentOnly?: boolean;
+
+  /**
+   * When true, automatically calls confirmFingerprint() upon reaching "verifying" state.
+   * Used for programmatic neighbor connections in Campfire mode where Root has already
+   * verified the topology.
+   */
+  autoConfirmFingerprint?: boolean;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -274,11 +283,15 @@ export class WhisperLiveSession {
   private externalAssistEstablishmentOnly: boolean;
   private externalAssistDropped = false;
 
+  // Auto-confirm fingerprint (Campfire programmatic connections)
+  private autoConfirm: boolean;
+
   // Callbacks
   onStateChange: WhisperLiveCallbacks["onStateChange"];
   onFingerprint: WhisperLiveCallbacks["onFingerprint"];
   onMessage: WhisperLiveCallbacks["onMessage"];
   onLog: WhisperLiveCallbacks["onLog"];
+  onRawDecrypted: WhisperLiveCallbacks["onRawDecrypted"];
 
   private rtcConfig: RTCConfiguration;
 
@@ -287,9 +300,11 @@ export class WhisperLiveSession {
     this.onFingerprint = callbacks.onFingerprint;
     this.onMessage = callbacks.onMessage;
     this.onLog = callbacks.onLog;
+    this.onRawDecrypted = callbacks.onRawDecrypted;
 
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
     this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
+    this.autoConfirm = options.autoConfirmFingerprint ?? false;
   }
 
   private hasExternalAssistConfigured(): boolean {
@@ -711,6 +726,11 @@ export class WhisperLiveSession {
       // Answerer waits for 0x11 from the offerer
 
       this.setState("verifying");
+
+      // Auto-confirm for programmatic connections (Campfire neighbor links)
+      if (this.autoConfirm) {
+        this.confirmFingerprint();
+      }
     } catch (err) {
       this.log(`key derivation failed: ${err instanceof Error ? err.message : "unknown error"}`);
       this.setState("error", "Key derivation failed");
@@ -853,7 +873,14 @@ export class WhisperLiveSession {
       }
       messageKey.fill(0); // wipe message key after use
 
+      const isCampfire = (header.flags & 0x02) !== 0;
       const isFile = (header.flags & 0x01) !== 0;
+
+      // Campfire messages: delegate to raw callback instead of processing as text/file
+      if (isCampfire && this.onRawDecrypted) {
+        this.onRawDecrypted(plaintext);
+        return;
+      }
 
       if (isFile) {
         const { fileName, fileType, fileBytes } = decodeFilePlaintext(plaintext);
@@ -920,6 +947,19 @@ export class WhisperLiveSession {
         fileName: file.name, fileSize: fileBytes.length, fileType: file.type,
         timestamp: Date.now(),
       });
+    });
+  }
+
+  /**
+   * Send arbitrary plaintext through the encrypted channel with custom flags.
+   * Used by CampfireNode to send campfire-typed messages through pairwise channels.
+   */
+  async sendEncryptedRaw(plaintext: Uint8Array, flags: number): Promise<void> {
+    if (this._state !== "live" || !this.dc || !this.ratchetState) return;
+
+    await this.enqueueSend(async () => {
+      if (this._state !== "live" || !this.dc || !this.ratchetState) return;
+      await this.encryptAndSend(plaintext, flags);
     });
   }
 

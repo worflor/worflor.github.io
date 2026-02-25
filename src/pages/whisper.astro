@@ -365,8 +365,18 @@ const seo = {
       <div class="whisper-op-live" id="wl-section">
         <div class="wl-head whisper-panel" aria-label="Whisper Live status">
           <h2 class="wl-head-title">Whisper Live</h2>
+          <p class="wl-head-subtitle">fast encrypted sessions — no accounts, no relay inbox</p>
           <div class="wl-head-right">
-            <span class="wl-head-meta">peer-to-peer</span>
+            <div class="cf-live-mode-toggle" role="radiogroup" aria-label="Live sub-mode">
+              <label class="cf-mode-opt">
+                <input type="radio" name="wl-live-submode" value="1:1" checked class="cf-mode-radio" />
+                <span class="cf-mode-label">1:1</span>
+              </label>
+              <label class="cf-mode-opt">
+                <input type="radio" name="wl-live-submode" value="campfire" class="cf-mode-radio" />
+                <span class="cf-mode-label">Campfire</span>
+              </label>
+            </div>
           </div>
 
           <div class="wl-status-chip" role="status" aria-live="polite">
@@ -377,12 +387,14 @@ const seo = {
 
         <!-- Phase: idle — create or join -->
         <div class="wl-phase" id="wl-idle-phase">
+          <p class="wl-phase-lede">Create to start a channel, or join with an offer code. Use a shared phrase only if both peers already agreed on one.</p>
           <div class="wl-grid">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Create</h3>
                 <span class="whisper-panel-mode">start a new channel</span>
               </div>
+              <p class="wl-inline-hint">You create the offer first, then wait for one reply code.</p>
               <button id="wl-create" type="button" class="whisper-mini-btn wl-primary">Create channel</button>
             </div>
 
@@ -391,6 +403,7 @@ const seo = {
                 <h3 class="whisper-panel-title">Join</h3>
                 <span class="whisper-panel-mode">paste an offer code</span>
               </div>
+              <p class="wl-inline-hint">Paste, scan, or import an offer code to generate your answer.</p>
               <div class="wl-join-row">
                 <input
                   id="wl-join-input"
@@ -402,6 +415,17 @@ const seo = {
                 />
                 <button id="wl-join" type="button" class="whisper-mini-btn">Join</button>
               </div>
+              <div class="wl-join-tools" role="group" aria-label="Join code helpers">
+                <button id="wl-join-paste" type="button" class="whisper-mini-btn">Paste</button>
+                <button id="wl-join-qr-scan" type="button" class="whisper-mini-btn">Scan QR</button>
+                <button id="wl-join-qr-image" type="button" class="whisper-mini-btn">Image</button>
+                <button id="wl-join-qr-stop" type="button" class="whisper-mini-btn" style="display:none">Stop</button>
+                <input id="wl-join-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
+              </div>
+              <div id="wl-join-qr-panel" class="wl-join-qr-panel" style="display:none">
+                <video id="wl-join-qr-video" class="wl-join-qr-video" playsinline muted></video>
+              </div>
+              <span id="wl-join-qr-status" class="whisper-field-hint wl-join-qr-status"></span>
             </div>
           </div>
 
@@ -432,15 +456,24 @@ const seo = {
 
         <!-- Phase: offering — show offer code, wait for answer -->
         <div class="wl-phase" id="wl-offer-section" style="display:none">
-          <div class="wl-grid">
+          <p class="wl-phase-lede">Step 1: send your offer. Step 2: paste the peer reply to complete the handshake.</p>
+          <div class="wl-grid wl-grid--offer">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Send</h3>
                 <span class="whisper-panel-mode">offer code</span>
               </div>
+              <p class="wl-inline-hint">Share this with your peer through any channel.</p>
               <div class="wl-code-display-wrap">
                 <pre id="wl-offer-code" class="wl-code-display"></pre>
                 <button id="wl-offer-copy" type="button" class="whisper-mini-btn">Copy</button>
+              </div>
+              <div class="wl-live-qr-toggle-row">
+                <button id="wl-offer-qr-toggle" type="button" class="whisper-mini-btn" aria-expanded="false">Show QR</button>
+              </div>
+              <div id="wl-offer-qr-panel" class="wl-live-qr-wrap" style="display:none">
+                <canvas id="wl-offer-qr-canvas" class="ws-seal-qr-canvas" data-qr-size="132" aria-label="QR code for this Whisper Live offer"></canvas>
+                <p id="wl-offer-qr-status" class="ws-seal-hint wl-live-qr-status"></p>
               </div>
             </div>
 
@@ -449,6 +482,7 @@ const seo = {
                 <h3 class="whisper-panel-title">Receive</h3>
                 <span class="whisper-panel-mode">paste reply</span>
               </div>
+              <p class="wl-inline-hint">Paste their answer code here, then connect.</p>
               <div class="wl-join-row">
                 <input
                   id="wl-answer-input"
@@ -462,18 +496,30 @@ const seo = {
               </div>
             </div>
           </div>
+          <div class="wl-offer-actions">
+            <button id="wl-offer-back" type="button" class="whisper-mini-btn">Back</button>
+          </div>
         </div>
 
         <!-- Phase: answering — show answer code to copy back -->
         <div class="wl-phase" id="wl-answer-section" style="display:none">
+          <p class="wl-phase-lede">Send this answer code back to the creator to finish connecting.</p>
           <div class="whisper-panel wl-answer-only">
             <div class="whisper-panel-header">
               <h3 class="whisper-panel-title">Send back</h3>
               <span class="whisper-panel-mode">answer code</span>
             </div>
+            <p class="wl-inline-hint">Keep this tab open until the creator confirms connection.</p>
             <div class="wl-code-display-wrap">
               <pre id="wl-answer-code" class="wl-code-display"></pre>
               <button id="wl-answer-copy" type="button" class="whisper-mini-btn">Copy</button>
+            </div>
+            <div class="wl-live-qr-toggle-row">
+              <button id="wl-answer-qr-toggle" type="button" class="whisper-mini-btn" aria-expanded="false">Show QR</button>
+            </div>
+            <div id="wl-answer-qr-panel" class="wl-live-qr-wrap" style="display:none">
+              <canvas id="wl-answer-qr-canvas" class="ws-seal-qr-canvas" data-qr-size="132" aria-label="QR code for this Whisper Live answer"></canvas>
+              <p id="wl-answer-qr-status" class="ws-seal-hint wl-live-qr-status"></p>
             </div>
           </div>
         </div>
@@ -560,6 +606,172 @@ const seo = {
           <div class="whisper-panel wl-error-panel">
             <p id="wl-error-message" class="wl-error-text"></p>
             <button id="wl-error-retry" type="button" class="whisper-mini-btn">Try again</button>
+          </div>
+        </div>
+
+        <!-- ═══ Campfire phases (group chat within Live) ═══ -->
+
+        <!-- Campfire: idle — create or join group -->
+        <div class="wl-phase" id="cf-idle-phase" style="display:none">
+          <p class="wl-phase-lede">Campfire is lightweight multi-peer chat. Start a room and share the room code, or join an existing one.</p>
+          <div class="wl-grid">
+            <div class="whisper-panel wl-card">
+              <div class="whisper-panel-header">
+                <h3 class="whisper-panel-title">Create</h3>
+                <span class="whisper-panel-mode">start a campfire</span>
+              </div>
+              <p class="wl-inline-hint">Creates a room code so peers can join your group.</p>
+              <button id="cf-create" type="button" class="whisper-mini-btn wl-primary">Light a campfire</button>
+            </div>
+
+            <div class="whisper-panel wl-card">
+              <div class="whisper-panel-header">
+                <h3 class="whisper-panel-title">Join</h3>
+                <span class="whisper-panel-mode">paste a room code</span>
+              </div>
+              <p class="wl-inline-hint">Join an existing room and generate your peer answer.</p>
+              <div class="wl-join-row">
+                <input
+                  id="cf-join-input"
+                  type="text"
+                  class="whisper-input wl-code-input"
+                  placeholder="room code"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button id="cf-join" type="button" class="whisper-mini-btn">Join</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="whisper-panel wl-phrase-panel">
+            <label class="whisper-field" for="cf-name">
+              <span class="whisper-field-label">your name</span>
+              <input
+                id="cf-name"
+                type="text"
+                class="whisper-input"
+                placeholder="anonymous"
+                autocomplete="off"
+                maxlength="32"
+              />
+            </label>
+
+            <div class="whisper-field">
+              <span class="whisper-field-label">network</span>
+              <label class="whisper-toggle" for="cf-external-assist">
+                <input id="cf-external-assist" type="checkbox" class="whisper-toggle-input" />
+                <span class="whisper-toggle-text">
+                  external assist (stun)
+                  <span class="whisper-field-hint">(helps connect across networks)</span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: waiting — show room code, accept answers -->
+        <div class="wl-phase" id="cf-waiting-section" style="display:none">
+          <p class="wl-phase-lede">Share the room code, then accept reply codes from peers as they join.</p>
+          <div class="wl-grid wl-grid--offer">
+            <div class="whisper-panel wl-card">
+              <div class="whisper-panel-header">
+                <h3 class="whisper-panel-title">Room code</h3>
+                <span class="whisper-panel-mode">share this with peers</span>
+              </div>
+              <p class="wl-inline-hint">Every new peer starts by using this room code.</p>
+              <div class="wl-code-display-wrap">
+                <pre id="cf-room-code" class="wl-code-display"></pre>
+                <button id="cf-room-copy" type="button" class="whisper-mini-btn">Copy</button>
+              </div>
+            </div>
+
+            <div class="whisper-panel wl-card">
+              <div class="whisper-panel-header">
+                <h3 class="whisper-panel-title">Accept peer</h3>
+                <span class="whisper-panel-mode">paste their answer code</span>
+              </div>
+              <p class="wl-inline-hint">Accept reply codes one by one as peers connect.</p>
+              <div class="wl-join-row">
+                <input
+                  id="cf-answer-input"
+                  type="text"
+                  class="whisper-input wl-code-input"
+                  placeholder="answer code"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button id="cf-answer-apply" type="button" class="whisper-mini-btn wl-primary">Connect</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: connecting -->
+        <div class="wl-phase" id="cf-connecting-section" style="display:none">
+          <div class="whisper-panel wl-connecting-panel">
+            <div class="wl-spinner" aria-hidden="true"></div>
+            <p id="cf-connecting-status" class="wl-connecting-text">connecting to campfire...</p>
+          </div>
+        </div>
+
+        <!-- Campfire: active — group chat + peer list -->
+        <div class="wl-phase" id="cf-active-section" style="display:none">
+          <div class="whisper-panel wl-chat-panel cf-chat-panel">
+            <div class="wl-chat-header cf-chat-header">
+              <div class="cf-peer-list-wrap">
+                <span class="cf-peer-label">around the fire:</span>
+                <div id="cf-peer-list" class="cf-peer-list" role="list"></div>
+              </div>
+              <div class="cf-header-actions">
+                <button id="cf-sub-create" type="button" class="whisper-mini-btn" title="Break away with selected peers">Break away</button>
+                <button id="cf-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">Leave</button>
+              </div>
+            </div>
+
+            <div id="cf-chat-messages" class="wl-chat-messages" aria-live="polite" aria-relevant="additions"></div>
+
+            <div class="wl-chat-compose">
+              <input
+                id="cf-chat-input"
+                type="text"
+                class="whisper-input wl-chat-text-input"
+                placeholder="say something to the group"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button id="cf-chat-send" type="button" class="whisper-mini-btn wl-chat-send-btn">Send</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: DM overlay -->
+        <div id="cf-dm-overlay" class="cf-dm-overlay" style="display:none">
+          <div class="whisper-panel cf-dm-panel">
+            <div class="cf-dm-header">
+              <span class="cf-dm-label">DM with <strong id="cf-dm-target-name"></strong></span>
+              <button id="cf-dm-close" type="button" class="whisper-mini-btn">Close</button>
+            </div>
+            <div id="cf-dm-messages" class="wl-chat-messages cf-dm-messages"></div>
+            <div class="wl-chat-compose">
+              <input
+                id="cf-dm-input"
+                type="text"
+                class="whisper-input wl-chat-text-input"
+                placeholder="private message"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button id="cf-dm-send" type="button" class="whisper-mini-btn wl-chat-send-btn">Send</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: ended -->
+        <div class="wl-phase" id="cf-ended-section" style="display:none">
+          <div class="whisper-panel wl-end-panel">
+            <p id="cf-ended-message" class="wl-end-text">the fire has gone out</p>
+            <button id="cf-new-campfire" type="button" class="whisper-mini-btn">New session</button>
           </div>
         </div>
       </div>
@@ -767,6 +979,7 @@ const seo = {
     import { initWhisper, resolveWhisperUIOptions } from "../scripts/whisper-ui";
     import { initWhisperLive, resolveWhisperLiveUIOptions } from "../scripts/whisper-live-ui";
     import { initWhisperSeal, resolveWhisperSealUIOptions } from "../scripts/whisper-seal-ui";
+    import { initCampfire, resolveCampfireUIOptions } from "../scripts/campfire-ui";
 
     const WHISPER_LIFECYCLE_KEY = "__whisperLifecycle";
     type WhisperLifecycle = {
@@ -778,6 +991,7 @@ const seo = {
     let cleanupWhisper: (() => void) | null = null;
     let cleanupLive: (() => void) | null = null;
     let cleanupSeal: (() => void) | null = null;
+    let cleanupCampfire: (() => void) | null = null;
     const whisperWindow = window as unknown as Record<string, WhisperLifecycle | undefined>;
 
     function boot() {
@@ -788,6 +1002,67 @@ const seo = {
       if (liveOptions) cleanupLive = initWhisperLive(liveOptions);
       const sealOptions = resolveWhisperSealUIOptions(document);
       if (sealOptions) cleanupSeal = initWhisperSeal(sealOptions);
+      const campfireOptions = resolveCampfireUIOptions(document);
+      if (campfireOptions) cleanupCampfire = initCampfire(campfireOptions);
+
+      // Wire up Live sub-mode toggle (1:1 vs Campfire)
+      const submodeRadios = document.querySelectorAll<HTMLInputElement>('input[name="wl-live-submode"]');
+      const livePhaseIds = [
+        "wl-idle-phase",
+        "wl-offer-section",
+        "wl-answer-section",
+        "wl-connecting-section",
+        "wl-verify-section",
+        "wl-chat-section",
+        "wl-silent-section",
+        "wl-disconnected-section",
+        "wl-error-section",
+      ];
+      const campfirePhaseIds = [
+        "cf-idle-phase",
+        "cf-waiting-section",
+        "cf-connecting-section",
+        "cf-active-section",
+        "cf-ended-section",
+      ];
+
+      const phaseElements = (ids: string[]): HTMLElement[] =>
+        ids
+          .map((id) => document.getElementById(id))
+          .filter((el): el is HTMLElement => el instanceof HTMLElement);
+
+      const hasVisiblePhase = (elements: HTMLElement[]): boolean =>
+        elements.some((el) => el.style.display !== "none");
+
+      function syncLiveSubmode(mode: "1:1" | "campfire"): void {
+        const livePhases = phaseElements(livePhaseIds);
+        const campfirePhases = phaseElements(campfirePhaseIds);
+
+        if (mode === "campfire") {
+          for (const phase of livePhases) phase.style.display = "none";
+          if (!hasVisiblePhase(campfirePhases)) {
+            const cfIdle = document.getElementById("cf-idle-phase");
+            if (cfIdle instanceof HTMLElement) cfIdle.style.display = "";
+          }
+          return;
+        }
+
+        for (const phase of campfirePhases) phase.style.display = "none";
+        if (!hasVisiblePhase(livePhases)) {
+          const wlIdle = document.getElementById("wl-idle-phase");
+          if (wlIdle instanceof HTMLElement) wlIdle.style.display = "";
+        }
+      }
+
+      submodeRadios.forEach((radio) => {
+        radio.addEventListener("change", () => {
+          if (!radio.checked) return;
+          syncLiveSubmode(radio.value === "campfire" ? "campfire" : "1:1");
+        });
+      });
+
+      const checkedMode = Array.from(submodeRadios).find((r) => r.checked)?.value;
+      syncLiveSubmode(checkedMode === "campfire" ? "campfire" : "1:1");
     }
 
     function teardown() {
@@ -797,6 +1072,8 @@ const seo = {
       cleanupLive = null;
       cleanupSeal?.();
       cleanupSeal = null;
+      cleanupCampfire?.();
+      cleanupCampfire = null;
     }
 
     function detachLifecycle() {
@@ -1848,12 +2125,18 @@ const seo = {
   .whisper-op-live {
     display: grid;
     gap: var(--space-sm);
+    align-content: start;
+  }
+
+  .wl-phase {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.7);
   }
 
   .wl-head {
     display: grid;
     grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     gap: calc(var(--space-xs) * 0.6) var(--space-sm);
   }
 
@@ -1870,7 +2153,18 @@ const seo = {
     flex: 0 0 auto;
     justify-self: end;
     grid-column: 2;
-    grid-row: 1;
+    grid-row: 1 / span 2;
+    align-self: start;
+  }
+
+  .wl-head-subtitle {
+    margin: 0;
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.46);
+    letter-spacing: 0.01em;
+    grid-column: 1;
+    grid-row: 2;
+    max-width: 48ch;
   }
 
   .wl-head-meta {
@@ -1882,7 +2176,7 @@ const seo = {
 
   .wl-status-chip {
     grid-column: 1 / -1;
-    grid-row: 2;
+    grid-row: 3;
     display: inline-flex;
     align-items: center;
     gap: 0.5em;
@@ -1926,21 +2220,65 @@ const seo = {
     grid-template-columns: 1fr;
   }
 
+  .wl-phase-lede {
+    margin: 0;
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.44);
+    line-height: 1.45;
+    letter-spacing: 0.01em;
+  }
+
+  .wl-inline-hint {
+    margin: calc(var(--space-xs) * -0.15) 0 0;
+    font-size: calc(var(--text-sm) * 0.84);
+    color: rgb(var(--color-text-rgb) / 0.4);
+    line-height: 1.35;
+  }
+
   @media (min-width: 680px) {
     .wl-grid {
       grid-template-columns: 1fr 1fr;
-      align-items: stretch;
+      align-items: start;
+    }
+
+    .wl-grid.wl-grid--offer {
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
     }
   }
 
   .wl-card {
-    /* whisper-panel already defines padding/border/radius/background for consistent spacing */
+    /* Keep card content compact even when sibling cards are taller. */
+    align-content: start;
+  }
+
+  .wl-phrase-panel {
+    display: grid;
+    gap: calc(var(--space-xs) * 0.75) var(--space-sm);
+  }
+
+  @media (min-width: 860px) {
+    .wl-phrase-panel {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-items: start;
+    }
   }
 
   .wl-join-row {
     display: flex;
     gap: calc(var(--space-xs) * 0.5);
     align-items: stretch;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+
+  .wl-join-row .whisper-input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wl-join-row .whisper-mini-btn {
+    flex: 0 0 auto;
+    min-width: 5.25rem;
   }
 
   .wl-code-input {
@@ -1982,11 +2320,74 @@ const seo = {
     box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.06);
   }
 
+  .wl-join-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.45);
+    margin-top: calc(var(--space-xs) * 0.55);
+  }
+
+  .wl-join-qr-panel {
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    background: rgb(var(--chromatic-cyan) / 0.04);
+    padding: calc(var(--space-xs) * 0.45);
+    margin-top: calc(var(--space-xs) * 0.5);
+  }
+
+  .wl-join-qr-video {
+    width: 100%;
+    max-height: 16rem;
+    border-radius: calc(var(--whisper-radius) * 0.45);
+    background: rgb(var(--color-bg-rgb));
+    object-fit: cover;
+  }
+
+  .wl-join-qr-status {
+    display: block;
+    margin-top: calc(var(--space-xs) * 0.5);
+  }
+
+  .wl-join-qr-status:empty {
+    display: none;
+  }
+
+  .wl-live-qr-wrap {
+    display: grid;
+    justify-items: center;
+    gap: calc(var(--space-xs) * 0.45);
+    margin-top: calc(var(--space-xs) * 0.55);
+    padding-top: calc(var(--space-xs) * 0.25);
+    border-top: 1px dashed rgb(var(--color-text-rgb) / 0.08);
+  }
+
+  .wl-live-qr-toggle-row {
+    margin-top: calc(var(--space-xs) * 0.6);
+    display: flex;
+    justify-content: center;
+  }
+
+  .wl-offer-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: calc(var(--space-xs) * 0.75);
+  }
+
+  .wl-live-qr-status {
+    text-align: center;
+    min-height: 1.2em;
+  }
+
   /* ── Code display (offer/answer) ────────────────────────── */
   .wl-code-display-wrap {
     display: flex;
     gap: calc(var(--space-xs) * 0.5);
-    align-items: stretch;
+    align-items: flex-start;
+  }
+
+  .wl-code-display-wrap .whisper-mini-btn {
+    min-height: auto;
+    padding: 0.45rem 0.7rem;
   }
 
   .wl-code-display {
@@ -2095,6 +2496,8 @@ const seo = {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.5);
     padding: calc(var(--space-xs) * 0.6) calc(var(--space-sm) * 0.8);
     border-bottom: 1px solid var(--whisper-edge);
   }
@@ -2103,6 +2506,7 @@ const seo = {
     display: inline-flex;
     gap: calc(var(--space-xs) * 0.8);
     align-items: center;
+    flex-wrap: wrap;
   }
 
   .wl-transport-label {
@@ -2245,12 +2649,13 @@ const seo = {
     display: flex;
     gap: calc(var(--space-xs) * 0.35);
     align-items: stretch;
+    flex-wrap: wrap;
     padding: calc(var(--space-xs) * 0.6);
     border-top: 1px solid var(--whisper-edge);
   }
 
   .wl-chat-text-input {
-    flex: 1;
+    flex: 1 1 14rem;
     min-width: 0;
     min-height: auto;
     padding: 0.45rem 0.65rem;
@@ -2276,6 +2681,7 @@ const seo = {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 auto;
   }
 
   .wl-file-icon {
@@ -2320,6 +2726,73 @@ const seo = {
 
   /* ── Live mode responsive ────────────────────────────────── */
   @media (max-width: 520px) {
+    .wl-head {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto auto auto;
+    }
+
+    .wl-head-right {
+      grid-column: 1;
+      grid-row: 3;
+      justify-self: start;
+    }
+
+    .wl-status-chip {
+      grid-row: 4;
+    }
+
+    .wl-phase-lede {
+      font-size: calc(var(--text-sm) * 0.84);
+    }
+
+    .wl-inline-hint {
+      font-size: calc(var(--text-sm) * 0.8);
+    }
+
+    .wl-join-row .whisper-mini-btn {
+      min-width: 4.8rem;
+      padding-inline: 0.65rem;
+    }
+
+    .wl-code-display-wrap {
+      flex-direction: column;
+    }
+
+    .wl-code-display-wrap .whisper-mini-btn {
+      width: 100%;
+    }
+
+    .wl-offer-actions {
+      justify-content: stretch;
+    }
+
+    .wl-offer-actions .whisper-mini-btn {
+      width: 100%;
+    }
+
+    .wl-chat-header {
+      align-items: stretch;
+    }
+
+    .wl-transport {
+      width: 100%;
+    }
+
+    .wl-disconnect-btn {
+      width: 100%;
+      justify-content: center;
+    }
+
+    .wl-chat-compose {
+      gap: calc(var(--space-xs) * 0.45);
+    }
+
+    .wl-chat-file-btn,
+    .wl-chat-send-btn {
+      flex: 1 1 calc(50% - var(--space-xs));
+      justify-content: center;
+    }
+
     .wl-fingerprint {
       font-size: 2.2rem;
       letter-spacing: 0.2em;
@@ -2339,6 +2812,22 @@ const seo = {
 
     .wl-transport-label {
       font-size: calc(var(--text-sm) * 0.8);
+    }
+  }
+
+  @media (max-height: 760px) {
+    .wl-chat-messages {
+      min-height: 10rem;
+      max-height: 18rem;
+    }
+
+    .wl-code-display {
+      max-height: 4.5rem;
+    }
+
+    .wl-head-subtitle,
+    .wl-phase-lede {
+      line-height: 1.35;
     }
   }
 
@@ -2885,5 +3374,203 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.44);
     margin: 0 0 var(--space-md);
     line-height: 1.5;
+  }
+
+  /* ═══ Campfire styles ═══════════════════════════════════════ */
+
+  /* Sub-mode toggle (1:1 vs Campfire) */
+  .cf-live-mode-toggle {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--whisper-edge);
+    border-radius: calc(var(--whisper-radius) * 0.5);
+    overflow: hidden;
+    max-width: 100%;
+  }
+
+  .cf-mode-opt {
+    display: flex;
+    cursor: pointer;
+  }
+
+  .cf-mode-radio {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .cf-mode-label {
+    display: flex;
+    align-items: center;
+    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.8);
+    font-size: calc(var(--text-sm) * 0.85);
+    color: var(--whisper-muted);
+    transition: background 0.15s, color 0.15s;
+    user-select: none;
+  }
+
+  .cf-mode-radio:checked + .cf-mode-label {
+    background: rgb(var(--color-text-rgb) / 0.08);
+    color: var(--color-text);
+  }
+
+  .cf-mode-opt:not(:last-child) .cf-mode-label {
+    border-right: 1px solid var(--whisper-edge);
+  }
+
+  /* Chat header with peer list */
+  .cf-chat-header {
+    flex-direction: column;
+    gap: calc(var(--space-xs) * 0.5);
+  }
+
+  @media (min-width: 960px) {
+    .cf-chat-header {
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+    }
+  }
+
+  .cf-peer-list-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .cf-peer-label {
+    font-size: calc(var(--text-sm) * 0.85);
+    color: var(--whisper-muted);
+    flex: 0 0 auto;
+  }
+
+  .cf-peer-list {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+    flex-wrap: wrap;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .cf-peer-item {
+    display: inline-flex;
+    align-items: center;
+    padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
+    border-radius: calc(var(--whisper-radius) * 0.4);
+    background: rgb(var(--color-text-rgb) / 0.05);
+    font-size: calc(var(--text-sm) * 0.8);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .cf-peer-item:hover {
+    background: rgb(var(--chromatic-cyan) / 0.12);
+  }
+
+  .cf-peer-name {
+    color: var(--color-text);
+  }
+
+  .cf-header-actions {
+    display: flex;
+    gap: var(--space-xs);
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  @media (min-width: 960px) {
+    .cf-header-actions {
+      width: auto;
+      flex: 0 0 auto;
+    }
+  }
+
+  .cf-msg-name {
+    display: block;
+    font-size: calc(var(--text-sm) * 0.8);
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    margin-bottom: calc(var(--space-xs) * 0.2);
+  }
+
+  /* DM overlay */
+  .cf-dm-overlay {
+    position: fixed;
+    bottom: 0;
+    right: var(--space-md);
+    width: min(380px, calc(100vw - var(--space-md) * 2));
+    z-index: 100;
+  }
+
+  .cf-dm-panel {
+    display: flex;
+    flex-direction: column;
+    max-height: 50vh;
+    border-bottom: none;
+    border-radius: var(--whisper-radius) var(--whisper-radius) 0 0;
+    box-shadow: 0 -2px 16px rgb(0 0 0 / 0.15);
+  }
+
+  .cf-dm-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--whisper-edge);
+  }
+
+  .cf-dm-label {
+    font-size: var(--text-sm);
+    color: var(--whisper-muted);
+  }
+
+  .cf-dm-messages {
+    min-height: 8rem;
+    max-height: 20rem;
+  }
+
+  @media (max-width: 680px) {
+    .cf-live-mode-toggle {
+      width: 100%;
+    }
+
+    .cf-mode-opt {
+      flex: 1 1 50%;
+      min-width: 0;
+    }
+
+    .cf-mode-label {
+      justify-content: center;
+      width: 100%;
+    }
+
+    .cf-header-actions {
+      justify-content: stretch;
+    }
+
+    .cf-header-actions .whisper-mini-btn {
+      flex: 1 1 50%;
+      justify-content: center;
+    }
+
+    .cf-peer-list {
+      max-height: 6rem;
+      overflow-y: auto;
+      padding-right: calc(var(--space-xs) * 0.25);
+    }
+
+    .cf-dm-overlay {
+      right: 0;
+      left: 0;
+      width: 100%;
+      padding: 0 var(--space-xs);
+      box-sizing: border-box;
+    }
+
+    .cf-dm-panel {
+      max-height: 62vh;
+      border-radius: calc(var(--whisper-radius) * 0.85) calc(var(--whisper-radius) * 0.85) 0 0;
+    }
   }
 </style>
