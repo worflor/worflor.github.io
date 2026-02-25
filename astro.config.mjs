@@ -12,7 +12,9 @@ export default defineConfig({
   output: "static",
   trailingSlash: "never",
   prefetch: {
-    prefetchAll: true,
+    // Avoid eagerly warming every route on first page load.
+    // Keep intent-driven prefetching for better network efficiency.
+    prefetchAll: false,
     defaultStrategy: "hover",
   },
   experimental: {

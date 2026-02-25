@@ -11,6 +11,7 @@ interface Props {
 }
 
 const { seo } = Astro.props;
+const isContactPage = Astro.url.pathname === "/contact";
 ---
 
 <script>
@@ -147,10 +148,19 @@ const { seo } = Astro.props;
     <link rel="manifest" href="/site.webmanifest" />
     {import.meta.env.PROD && (
       <script is:inline>
-        if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+        (function () {
+          if (!('serviceWorker' in navigator)) return;
+          var register = function () { navigator.serviceWorker.register('/sw.js'); };
+          if ('requestIdleCallback' in window) {
+            window.requestIdleCallback(register, { timeout: 2000 });
+          } else {
+            window.addEventListener('load', register, { once: true });
+          }
+        })();
       </script>
     )}
-    <link rel="preconnect" href="https://formsubmit.co" crossorigin />
+    {isContactPage && <link rel="preconnect" href="https://formsubmit.co" crossorigin />}
+    {isContactPage && <link rel="dns-prefetch" href="//formsubmit.co" />}
     <meta name="generator" content={Astro.generator} />
     <title>{seo.title}</title>
     <meta name="description" content={seo.description} />

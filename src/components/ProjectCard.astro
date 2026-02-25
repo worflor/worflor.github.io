@@ -48,22 +48,78 @@ const htmlDescription = parseMarkdown(description);
 </a>
 
 <script>
-  document.querySelectorAll('.github-stars').forEach(async (el) => {
-    const repo = el.getAttribute('data-repo');
-    if (!repo) return;
+  (function () {
+    var CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
+    var STORE_KEY = 'github-stars-cache-v1';
 
-    try {
-      const res = await fetch(`https://api.github.com/repos/${repo}`);
-      if (res.ok) {
-        const data = await res.json();
-        const countEl = el.querySelector('.star-count');
-        if (countEl) {
-          countEl.textContent = data.stargazers_count;
-          (el as HTMLElement).style.display = 'flex';
-        }
+    function readCache(): Record<string, { stars: number; ts: number }> {
+      try {
+        var raw = localStorage.getItem(STORE_KEY);
+        if (!raw) return {};
+        var parsed = JSON.parse(raw) as Record<string, { stars: number; ts: number }>;
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch {
+        return {};
       }
-    } catch {
-      // Silently fail
     }
-  });
+
+    function writeCache(cache: Record<string, { stars: number; ts: number }>) {
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify(cache));
+      } catch {
+        // ignore quota/storage errors
+      }
+    }
+
+    function setStars(el: HTMLElement, stars: number) {
+      var countEl = el.querySelector('.star-count');
+      if (countEl) {
+        countEl.textContent = String(stars);
+        el.style.display = 'flex';
+      }
+    }
+
+    var inflight = new Map<string, Promise<any>>();
+    var cache = readCache();
+    var now = Date.now();
+
+    document.querySelectorAll('.github-stars').forEach(async function (el) {
+      if (!(el instanceof HTMLElement)) return;
+      var repo = el.getAttribute('data-repo');
+      if (!repo) return;
+      const repoName: string = repo;
+
+      var cached = cache[repoName];
+      if (cached && typeof cached.stars === 'number' && now - cached.ts < CACHE_TTL_MS) {
+        setStars(el, cached.stars);
+        return;
+      }
+
+      try {
+        var promise = inflight.get(repoName);
+        if (!promise) {
+          promise = fetch(`https://api.github.com/repos/${repoName}`, {
+            headers: { Accept: 'application/vnd.github+json' },
+          })
+            .then(function (res) {
+              if (!res.ok) throw new Error('GitHub fetch failed');
+              return res.json();
+            })
+            .finally(function () {
+              inflight.delete(repoName);
+            });
+          inflight.set(repoName, promise);
+        }
+
+        var data = await promise;
+        if (data && typeof data.stargazers_count === 'number') {
+          cache[repoName] = { stars: data.stargazers_count, ts: Date.now() };
+          writeCache(cache);
+          setStars(el, data.stargazers_count);
+        }
+      } catch {
+        // Silently fail
+      }
+    });
+  })();
 </script>
