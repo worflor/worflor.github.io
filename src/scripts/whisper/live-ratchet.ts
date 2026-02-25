@@ -97,8 +97,8 @@ export async function initRatchetAsReceiver(
   const dhSelf = await generateDHKeyPair();
   const dhOutput = await dhExchange(dhSelf.privateKey, peerPublicKey);
   const [rootKey, chainKeySend] = await kdfRootChain(sharedSecret, dhOutput);
-  dhOutput.fill(0); // wipe DH output
-  sharedSecret.fill(0); // wipe initial shared secret (now in rootKey)
+  dhOutput.fill(0);
+  sharedSecret.fill(0);
 
   return {
     rootKey,
@@ -138,33 +138,29 @@ export async function dhRatchetStep(state: RatchetState, peerPublicKey: Uint8Arr
   state.nSend = 0;
   state.nRecv = 0;
 
-  // Wipe old peer key before replacing
   if (state.dhPeer) state.dhPeer.fill(0);
   state.dhPeer = peerPublicKey;
   state.dhPeerHex = toHex(peerPublicKey);
 
-  // Wipe old chain keys before replacing
   if (state.chainKeyRecv) state.chainKeyRecv.fill(0);
   if (state.chainKeySend) state.chainKeySend.fill(0);
 
-  // Derive receiving chain
   const dhRecv = await dhExchange(state.dhSelf.privateKey, peerPublicKey);
   const oldRootKey1 = state.rootKey;
   const [rootKey1, chainKeyRecv] = await kdfRootChain(state.rootKey, dhRecv);
-  dhRecv.fill(0); // wipe DH output
-  oldRootKey1.fill(0); // wipe old root key
+  dhRecv.fill(0);
+  oldRootKey1.fill(0);
   state.rootKey = rootKey1;
   state.chainKeyRecv = chainKeyRecv;
 
-  // Generate new DH keypair and derive sending chain
   const oldDhSelf = state.dhSelf;
   state.dhSelf = await generateDHKeyPair();
-  oldDhSelf.publicKey.fill(0); // wipe old DH public key
+  oldDhSelf.publicKey.fill(0);
   const dhSend = await dhExchange(state.dhSelf.privateKey, peerPublicKey);
   const intermediateRootKey = state.rootKey;
   const [rootKey2, chainKeySend] = await kdfRootChain(state.rootKey, dhSend);
-  dhSend.fill(0); // wipe DH output
-  intermediateRootKey.fill(0); // wipe intermediate root key
+  dhSend.fill(0);
+  intermediateRootKey.fill(0);
   state.rootKey = rootKey2;
   state.chainKeySend = chainKeySend;
 }
@@ -178,19 +174,17 @@ export async function skipMessageKeys(state: RatchetState, until: number): Promi
   while (state.nRecv < until) {
     const oldChainKey = state.chainKeyRecv!;
     const [newChainKey, mk] = await kdfChain(oldChainKey);
-    oldChainKey.fill(0); // wipe old chain key
+    oldChainKey.fill(0);
     state.chainKeyRecv = newChainKey;
     state.skippedKeys.set(skippedKeyId(pubHex, state.nRecv), mk);
     state.nRecv++;
 
-    // Evict oldest entries if over limit (Map preserves insertion order)
     if (state.skippedKeys.size > MAX_SKIP * 2) {
       const excess = state.skippedKeys.size - MAX_SKIP;
       const iter = state.skippedKeys.keys();
       for (let i = 0; i < excess; i++) {
         const k = iter.next().value;
         if (k !== undefined) {
-          // Zero skipped keys before eviction (item 7)
           const evicted = state.skippedKeys.get(k);
           if (evicted) evicted.fill(0);
           state.skippedKeys.delete(k);

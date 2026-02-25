@@ -43,6 +43,7 @@ export interface CampfireUIOptions {
   waitingSection: HTMLElement;
   roomCode: HTMLElement;
   roomCodeCopyBtn: HTMLButtonElement;
+  roomCodeShareBtn: HTMLButtonElement;
   answerInput: HTMLInputElement;
   answerApplyBtn: HTMLButtonElement;
 
@@ -52,6 +53,7 @@ export interface CampfireUIOptions {
   joinerAnswerPanel: HTMLElement;
   joinerCode: HTMLElement;
   joinerCopyBtn: HTMLButtonElement;
+  joinerShareBtn: HTMLButtonElement;
 
   /* Active phase — group chat */
   activeSection: HTMLElement;
@@ -89,6 +91,7 @@ export const CAMPFIRE_IDS = {
   waitingSection: "cf-waiting-section",
   roomCode: "cf-room-code",
   roomCodeCopyBtn: "cf-room-copy",
+  roomCodeShareBtn: "cf-room-share",
   answerInput: "cf-answer-input",
   answerApplyBtn: "cf-answer-apply",
   connectingSection: "cf-connecting-section",
@@ -96,6 +99,7 @@ export const CAMPFIRE_IDS = {
   joinerAnswerPanel: "cf-joiner-answer",
   joinerCode: "cf-joiner-code",
   joinerCopyBtn: "cf-joiner-copy",
+  joinerShareBtn: "cf-joiner-share",
   activeSection: "cf-active-section",
   chatMessages: "cf-chat-messages",
   chatInput: "cf-chat-input",
@@ -145,6 +149,7 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
   const waitingSection = q(root, IDS.waitingSection);
   const roomCode = q(root, IDS.roomCode);
   const roomCodeCopyBtn = asButton(q(root, IDS.roomCodeCopyBtn));
+  const roomCodeShareBtn = asButton(q(root, IDS.roomCodeShareBtn));
   const answerInput = asInput(q(root, IDS.answerInput));
   const answerApplyBtn = asButton(q(root, IDS.answerApplyBtn));
 
@@ -153,6 +158,7 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
   const joinerAnswerPanel = q(root, IDS.joinerAnswerPanel);
   const joinerCode = q(root, IDS.joinerCode);
   const joinerCopyBtn = asButton(q(root, IDS.joinerCopyBtn));
+  const joinerShareBtn = asButton(q(root, IDS.joinerShareBtn));
 
   const activeSection = q(root, IDS.activeSection);
   const chatMessages = q(root, IDS.chatMessages);
@@ -178,7 +184,9 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
     !page || !logOutput || !logDot || !statusLine ||
     !idleSection || !createBtn || !nameInput || !joinInput || !joinBtn || !externalAssistToggle ||
     !waitingSection || !roomCode || !roomCodeCopyBtn || !answerInput || !answerApplyBtn ||
+    !roomCodeShareBtn ||
     !connectingSection || !connectingStatus || !joinerAnswerPanel || !joinerCode || !joinerCopyBtn ||
+    !joinerShareBtn ||
     !activeSection || !chatMessages || !chatInput || !chatSendBtn || !peerList || !disconnectBtn ||
     !dmOverlay || !dmMessages || !dmInput || !dmSendBtn || !dmCloseBtn || !dmTargetName ||
     !subCreateBtn ||
@@ -190,8 +198,8 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
   return {
     page, logOutput, logDot, statusLine,
     idleSection, createBtn, nameInput, joinInput, joinBtn, externalAssistToggle,
-    waitingSection, roomCode, roomCodeCopyBtn, answerInput, answerApplyBtn,
-    connectingSection, connectingStatus, joinerAnswerPanel, joinerCode, joinerCopyBtn,
+    waitingSection, roomCode, roomCodeCopyBtn, roomCodeShareBtn, answerInput, answerApplyBtn,
+    connectingSection, connectingStatus, joinerAnswerPanel, joinerCode, joinerCopyBtn, joinerShareBtn,
     activeSection, chatMessages, chatInput, chatSendBtn, peerList, disconnectBtn,
     dmOverlay, dmMessages, dmInput, dmSendBtn, dmCloseBtn, dmTargetName,
     subCreateBtn,
@@ -268,6 +276,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     opts.createBtn.disabled = busy || !hasName;
     opts.joinBtn.disabled = busy || !hasJoinCode || !hasName;
     opts.answerApplyBtn.disabled = busy || !hasNode || !hasAnswerCode;
+    opts.roomCodeShareBtn.disabled = (opts.roomCode.textContent ?? "").trim().length === 0;
+    opts.joinerShareBtn.disabled = (opts.joinerCode.textContent ?? "").trim().length === 0;
     opts.chatSendBtn.disabled = busy || !hasNode || !hasChatText;
     opts.disconnectBtn.disabled = busy || !hasNode;
   }
@@ -502,6 +512,22 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     }
   }, { signal });
 
+  opts.roomCodeShareBtn.addEventListener("click", async () => {
+    const code = (opts.roomCode.textContent ?? "").trim();
+    if (!code) return;
+    try {
+      if (navigator.share) {
+        await navigator.share({ text: code });
+      } else {
+        await copyToClipboard(code);
+        flashText(opts.roomCodeShareBtn, "Copied");
+      }
+      appendLog("room code shared");
+    } catch {
+      appendLog("share cancelled or unavailable");
+    }
+  }, { signal });
+
   // Copy joiner answer code
   opts.joinerCopyBtn.addEventListener("click", async () => {
     const code = opts.joinerCode.textContent ?? "";
@@ -512,6 +538,22 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       appendLog("answer code copied to clipboard");
     } catch {
       appendLog("copy failed");
+    }
+  }, { signal });
+
+  opts.joinerShareBtn.addEventListener("click", async () => {
+    const code = (opts.joinerCode.textContent ?? "").trim();
+    if (!code) return;
+    try {
+      if (navigator.share) {
+        await navigator.share({ text: code });
+      } else {
+        await copyToClipboard(code);
+        flashText(opts.joinerShareBtn, "Copied");
+      }
+      appendLog("answer code shared");
+    } catch {
+      appendLog("share cancelled or unavailable");
     }
   }, { signal });
 

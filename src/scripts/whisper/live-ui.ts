@@ -62,6 +62,7 @@ export interface WhisperLiveUIOptions {
   offerSection: HTMLElement;
   offerCode: HTMLElement;
   offerCopyBtn: HTMLButtonElement;
+  offerShareBtn: HTMLButtonElement;
   offerBackBtn: HTMLButtonElement;
   offerQrToggleBtn: HTMLButtonElement;
   offerQrPanel: HTMLElement;
@@ -74,6 +75,7 @@ export interface WhisperLiveUIOptions {
   answerSection: HTMLElement;
   answerCode: HTMLElement;
   answerCopyBtn: HTMLButtonElement;
+  answerShareBtn: HTMLButtonElement;
   answerQrToggleBtn: HTMLButtonElement;
   answerQrPanel: HTMLElement;
   answerQrCanvas: HTMLCanvasElement;
@@ -137,6 +139,7 @@ export const WHISPER_LIVE_IDS = {
   offerSection: "wl-offer-section",
   offerCode: "wl-offer-code",
   offerCopyBtn: "wl-offer-copy",
+  offerShareBtn: "wl-offer-share",
   offerBackBtn: "wl-offer-back",
   offerQrToggleBtn: "wl-offer-qr-toggle",
   offerQrPanel: "wl-offer-qr-panel",
@@ -147,6 +150,7 @@ export const WHISPER_LIVE_IDS = {
   answerSection: "wl-answer-section",
   answerCode: "wl-answer-code",
   answerCopyBtn: "wl-answer-copy",
+  answerShareBtn: "wl-answer-share",
   answerQrToggleBtn: "wl-answer-qr-toggle",
   answerQrPanel: "wl-answer-qr-panel",
   answerQrCanvas: "wl-answer-qr-canvas",
@@ -177,7 +181,11 @@ export const WHISPER_LIVE_IDS = {
   relayConnectBtn: "wl-relay-connect",
 } as const;
 
-/* ── DOM Helpers ──────────────────────────────────────────── */
+/* ── Helpers ──────────────────────────────────────────────── */
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : "unknown";
+}
 
 function formatTime(ts: number): string {
   const d = new Date(ts);
@@ -233,11 +241,13 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     funnelCampfireBtn: btn(I.funnelCampfireBtn),
     offerSection: el(I.offerSection), offerCode: el(I.offerCode),
     offerCopyBtn: btn(I.offerCopyBtn), offerBackBtn: btn(I.offerBackBtn),
+    offerShareBtn: btn(I.offerShareBtn),
     offerQrToggleBtn: btn(I.offerQrToggleBtn), offerQrPanel: el(I.offerQrPanel),
     offerQrCanvas: root.querySelector<HTMLCanvasElement>(`#${I.offerQrCanvas}`),
     offerQrStatus: el(I.offerQrStatus), answerInput: inp(I.answerInput), answerApplyBtn: btn(I.answerApplyBtn),
     answerSection: el(I.answerSection), answerCode: el(I.answerCode),
     answerCopyBtn: btn(I.answerCopyBtn), answerQrToggleBtn: btn(I.answerQrToggleBtn),
+    answerShareBtn: btn(I.answerShareBtn),
     answerQrPanel: el(I.answerQrPanel),
     answerQrCanvas: root.querySelector<HTMLCanvasElement>(`#${I.answerQrCanvas}`),
     answerQrStatus: el(I.answerQrStatus),
@@ -283,13 +293,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let liveQrSupported = false;
   let skippedIceCandidates = 0;
 
-  // Typing indicator state
   let typingSendTimer: ReturnType<typeof setTimeout> | null = null;
   let peerTypingTimer: ReturnType<typeof setTimeout> | null = null;
   const TYPING_SEND_DEBOUNCE = 3_000;
   const TYPING_DISPLAY_TIMEOUT = 4_000;
 
-  // Tab title unread count
   const originalTitle = document.title;
   let unreadCount = 0;
   let hasFocus = document.hasFocus();
@@ -523,59 +531,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /* ── Log ──────────────────────────────────────────────── */
 
+  function setConnecting(text: string): void {
+    if (opts.connectingSection.style.display !== "none") {
+      opts.connectingStatus.textContent = text;
+    }
+  }
+
   function updateProgressFromLog(line: string): void {
-    const normalized = line.toLowerCase();
-
-    if (normalized.includes("gathering network candidates")) {
-      if (opts.connectingSection.style.display !== "none") {
-        opts.connectingStatus.textContent = "finding the best direct path...";
-      }
-      updateStatus("checking network paths...");
-      return;
-    }
-
-    if (normalized.includes("offer code ready")) {
-      updateStatus("step 1/2: send your invite code");
-      return;
-    }
-
-    if (normalized.includes("answer code ready")) {
-      updateStatus("step 2/2: send your reply code");
-      return;
-    }
-
-    if (normalized.includes("applying answer code")) {
-      if (opts.connectingSection.style.display !== "none") {
-        opts.connectingStatus.textContent = "verifying peer reply...";
-      }
-      updateStatus("applying peer reply...");
-      return;
-    }
-
-    if (normalized.includes("connecting peer-to-peer")) {
-      if (opts.connectingSection.style.display !== "none") {
-        opts.connectingStatus.textContent = "opening direct channel...";
-      }
-      updateStatus("opening direct channel...");
-      return;
-    }
-
-    if (normalized.includes("secure channel open")) {
-      if (opts.connectingSection.style.display !== "none") {
-        opts.connectingStatus.textContent = "starting end-to-end key exchange...";
-      }
-      updateStatus("starting key exchange...");
-      return;
-    }
-
-    if (normalized.includes("fingerprint:")) {
-      updateStatus("security check: compare emoji with your peer");
-      return;
-    }
-
-    if (normalized.includes("fingerprint confirmed")) {
-      updateStatus("secure session is live");
-    }
+    const n = line.toLowerCase();
+    if (n.includes("gathering network candidates"))    { setConnecting("finding the best direct path..."); updateStatus("checking network paths..."); }
+    else if (n.includes("offer code ready"))           { updateStatus("step 1/2: send your invite code"); }
+    else if (n.includes("answer code ready"))          { updateStatus("step 2/2: send your reply code"); }
+    else if (n.includes("applying answer code"))       { setConnecting("verifying peer reply..."); updateStatus("applying peer reply..."); }
+    else if (n.includes("connecting peer-to-peer"))    { setConnecting("opening direct channel..."); updateStatus("opening direct channel..."); }
+    else if (n.includes("secure channel open"))        { setConnecting("starting end-to-end key exchange..."); updateStatus("starting key exchange..."); }
+    else if (n.includes("fingerprint:"))               { updateStatus("security check: compare emoji with your peer"); }
+    else if (n.includes("fingerprint confirmed"))      { updateStatus("secure session is live"); }
   }
 
   function appendLog(line: string): void {
@@ -619,12 +590,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.joinPasteBtn.disabled = busy;
     opts.answerApplyBtn.disabled = busy || !hasSession || !answerHasCode;
 
-    // STUN toggle — only visible in manual mode
-    opts.externalAssistToggle.disabled = busy || hasSession;
+      opts.externalAssistToggle.disabled = busy || hasSession;
 
     opts.offerCopyBtn.disabled = (opts.offerCode.textContent ?? "").trim().length === 0;
+    if (opts.offerShareBtn) {
+      opts.offerShareBtn.disabled = (opts.offerCode.textContent ?? "").trim().length === 0;
+    }
     opts.offerBackBtn.disabled = busy;
     opts.answerCopyBtn.disabled = (opts.answerCode.textContent ?? "").trim().length === 0;
+    if (opts.answerShareBtn) {
+      opts.answerShareBtn.disabled = (opts.answerCode.textContent ?? "").trim().length === 0;
+    }
     const hasOffer = (opts.offerCode.textContent ?? "").trim().length > 0;
     const hasAnswer = (opts.answerCode.textContent ?? "").trim().length > 0;
     opts.offerQrToggleBtn.disabled = !hasOffer;
@@ -641,10 +617,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       opts.relayConnectBtn.disabled = busy;
     }
 
-    // Header controls are active while the chat surface is visible.
     opts.funnelCampfireBtn.disabled = busy || !chatVisible;
 
-    // Hide mode switch when busy or mid-session
     const modeSwitchWrap = modeSwitchBtn?.closest(".wl-mode-switch") as HTMLElement | null;
     if (modeSwitchWrap) {
       modeSwitchWrap.style.display = (busy || hasSession) ? "none" : "";
@@ -738,8 +712,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       fileEl.append(nameEl, sizeEl);
 
-      // Download link if we have file data (peer messages)
-      if (msg.fileData) {
+        if (msg.fileData) {
         const ab = new ArrayBuffer(msg.fileData.byteLength);
         new Uint8Array(ab).set(msg.fileData);
         const blob = new Blob([ab], { type: msg.fileType ?? "application/octet-stream" });
@@ -767,13 +740,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     timeEl.textContent = formatTime(msg.timestamp);
     div.appendChild(timeEl);
 
-    // Remove typing indicator before inserting real message (peer just sent something)
     if (msg.direction === "peer") hidePeerTyping();
 
     opts.chatMessages.appendChild(div);
     smartScroll();
 
-    // Tab title unread for peer messages
     if (msg.direction === "peer") bumpUnread();
   }
 
@@ -934,24 +905,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       session = null;
     }
     clearNode(opts.chatMessages);
-    opts.offerCode.textContent = "";
-    opts.answerCode.textContent = "";
-    opts.joinInput.value = "";
-    opts.answerInput.value = "";
-    opts.phraseInput.value = "";
+    for (const el of [opts.offerCode, opts.answerCode, opts.fingerprintDisplay,
+                       opts.silentSecret, opts.joinQrStatus, opts.offerQrStatus,
+                       opts.answerQrStatus, opts.errorMessage]) el.textContent = "";
+    for (const el of [opts.joinInput, opts.answerInput, opts.phraseInput, opts.chatInput]) el.value = "";
     if (manualPhraseInput) manualPhraseInput.value = "";
-    opts.chatInput.value = "";
-    opts.fingerprintDisplay.textContent = "";
-    opts.silentSecret.textContent = "";
-    opts.joinQrStatus.textContent = "";
-    opts.offerQrStatus.textContent = "";
-    opts.answerQrStatus.textContent = "";
     skippedIceCandidates = 0;
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
-    opts.errorMessage.textContent = "";
     showPhase(opts.liveSection);
-    // Re-sync relay/manual panel visibility
     if (opts.relayAssistToggle) applyRelayToggle(opts.relayAssistToggle.checked);
     updateStatus("ready to connect");
     setLogActive(false);
@@ -1040,18 +1002,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     session = createSession();
 
     try {
-      // Session fires offering → waiting-for-answer internally;
-      // relayActive suppresses their UI side-effects
-      const offerCode = await session.createOffer(phrase);
+        const offerCode = await session.createOffer(phrase);
       if (aborted()) return;
 
       opts.connectingStatus.textContent = "connecting to relay...";
 
       const { exchangeViaTracker } = await import("./live-tracker");
 
-      // If we become the answerer, tear down the pre-created session
-      // and build a fresh one around the peer's offer.
-      // Guard: multiple tracker connections race — only the first wins.
       let acceptCalled = false;
       const acceptFn = async (peerOfferCode: string): Promise<string> => {
         if (acceptCalled) throw new Error("duplicate-accept");
@@ -1079,15 +1036,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       if (aborted()) return;
 
-      // Relay done — hand control back to session state machine
       relayActive = false;
 
       if (result.role === "offerer" && result.peerAnswerCode) {
         await session!.applyAnswer(result.peerAnswerCode);
       }
-      // Answerer: session may have already progressed past connecting
-      // (DataChannel can open instantly on same-machine). Only touch UI
-      // if the session is still waiting.
       if (result.role === "answerer" && session && session.state === "connecting") {
         showPhase(opts.connectingSection);
         opts.connectingStatus.textContent = "connecting directly...";
@@ -1097,7 +1050,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       relayActive = false;
       if (aborted()) return;
       if (session) { session.disconnect(); session = null; }
-      const raw = err instanceof Error ? err.message : "unknown error";
+      const raw = errMsg(err);
       appendLog(`relay: ${raw}`);
       lastErrorWasRelay = true;
       handleStateChange("error", friendlyRelayError(raw));
@@ -1108,12 +1061,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /* ── Event Listeners ───────────────────────────────────── */
 
-  // Mode switch button — toggles between relay and manual
   if (modeSwitchBtn && opts.relayAssistToggle) {
     modeSwitchBtn.addEventListener("click", () => {
       const next = !opts.relayAssistToggle!.checked;
       opts.relayAssistToggle!.checked = next;
-      // Sync phrase between inputs before toggling
       if (next && manualPhraseInput) {
         opts.phraseInput.value = manualPhraseInput.value;
       }
@@ -1121,18 +1072,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }, { signal });
   }
 
-  // Funnel action: switch to campfire surface
   opts.funnelCampfireBtn.addEventListener("click", () => {
     window.dispatchEvent(new CustomEvent("whisper-live-funnel", { detail: { mode: "campfire" } }));
   }, { signal });
 
-  // Relay connect button
   if (opts.relayConnectBtn) {
     opts.relayConnectBtn.addEventListener("click", () => {
       void handleRelayConnect();
     }, { signal });
 
-    // Testing shortcut: right-click Connect to open chat UI without network session.
     opts.relayConnectBtn.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1145,7 +1093,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }, { signal });
   }
 
-  // Enter key on phrase input → trigger relay connect when relay is active
   opts.phraseInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && opts.relayAssistToggle?.checked && !busy) {
       e.preventDefault();
@@ -1153,7 +1100,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }, { signal });
 
-  // Create channel (offerer)
   opts.createBtn.addEventListener("click", async () => {
     session = createSession();
     const phrase = getActivePhrase() || undefined;
@@ -1164,13 +1110,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       setOfferQrExpanded(false);
       updateControls();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "unknown";
+      const msg = errMsg(err);
       appendLog(`offer failed: ${msg}`);
       handleStateChange("error", msg);
     }
   }, { signal });
 
-  // Copy code helper
   const copyCode = (el: HTMLElement, btn: HTMLButtonElement, label: string) => {
     btn.addEventListener("click", async () => {
       const code = el.textContent ?? "";
@@ -1182,10 +1127,30 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   copyCode(opts.offerCode, opts.offerCopyBtn, "offer code");
   copyCode(opts.answerCode, opts.answerCopyBtn, "answer code");
 
-  // Back from create/offer phase
+  const shareCode = (el: HTMLElement, btn: HTMLButtonElement | undefined, label: string) => {
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      const code = (el.textContent ?? "").trim();
+      if (!code) return;
+      try {
+        if (navigator.share) {
+          await navigator.share({ text: code });
+        } else {
+          await copyToClipboard(code);
+          flashText(btn, "Copied");
+        }
+        appendLog(`${label} shared`);
+      } catch {
+        appendLog("share cancelled or unavailable");
+      }
+    }, { signal });
+  };
+
+  shareCode(opts.offerCode, opts.offerShareBtn, "offer code");
+  shareCode(opts.answerCode, opts.answerShareBtn, "answer code");
+
   opts.offerBackBtn.addEventListener("click", resetToIdle, { signal });
 
-  // Apply answer code (offerer)
   opts.answerApplyBtn.addEventListener("click", async () => {
     normalizeTypedCodes();
     const code = opts.answerInput.value.trim();
@@ -1193,13 +1158,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       await session.applyAnswer(code);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "unknown";
+      const msg = errMsg(err);
       appendLog(`answer apply failed: ${msg}`);
       handleStateChange("error", msg);
     }
   }, { signal });
 
-  // Join channel (answerer) — paste offer code
   opts.joinBtn.addEventListener("click", async () => {
     normalizeTypedCodes();
     const offerCode = opts.joinInput.value.trim();
@@ -1216,23 +1180,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       setBusy(false);
       updateControls();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "unknown";
+      const msg = errMsg(err);
       appendLog(`join failed: ${msg}`);
       handleStateChange("error", msg);
     }
   }, { signal });
 
-  // Confirm fingerprint
   opts.confirmBtn.addEventListener("click", () => {
     session?.confirmFingerprint();
   }, { signal });
 
-  // Reject fingerprint
   opts.rejectBtn.addEventListener("click", () => {
     session?.rejectFingerprint();
   }, { signal });
 
-  // Send text message
   const sendMessage = async () => {
     const text = opts.chatInput.value.trim();
     if (!text || !session) return;
@@ -1241,7 +1202,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       await session.sendText(text);
     } catch (err) {
-      appendLog(`send failed: ${err instanceof Error ? err.message : "unknown"}`);
+      appendLog(`send failed: ${errMsg(err)}`);
     }
   };
 
@@ -1253,7 +1214,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }, { signal });
 
-  // Keep button states in sync with inputs
   const enterSubmit = (input: HTMLInputElement, btn: HTMLButtonElement) => {
     input.addEventListener("input", () => { normalizeTypedCodes(); updateControls(); }, { signal });
     input.addEventListener("keydown", (e) => {
@@ -1266,7 +1226,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   enterSubmit(opts.answerInput, opts.answerApplyBtn);
   opts.chatInput.addEventListener("input", () => { updateControls(); emitTyping(); }, { signal });
 
-  // Join niceties: clipboard + QR camera/image
+  const chatCompose = opts.chatInput.closest(".wl-chat-compose");
+  if (chatCompose) {
+    const syncComposeState = () => {
+      const hasValue = opts.chatInput.value.trim().length > 0;
+      chatCompose.classList.toggle("wl-chat-input-has-value", hasValue);
+    };
+    syncComposeState();
+    opts.chatInput.addEventListener("input", syncComposeState, { signal });
+  }
+
   opts.joinPasteBtn.addEventListener("click", async () => {
     try {
       const text = await navigator.clipboard.readText();
@@ -1305,7 +1274,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     btn.addEventListener("click", () => { if (!btn.disabled) setFn(!state.value); }, { signal });
   }
 
-  // Send file
   opts.chatFileBtn.addEventListener("click", () => {
     opts.chatFileInput.click();
   }, { signal });
@@ -1317,11 +1285,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       await session.sendFile(file);
     } catch (err) {
-      appendLog(`file send failed: ${err instanceof Error ? err.message : "unknown"}`);
+      appendLog(`file send failed: ${errMsg(err)}`);
     }
   }, { signal });
 
-  // File drag-and-drop on chat
   opts.chatMessages.addEventListener("dragover", (e) => {
     e.preventDefault();
     opts.chatMessages.classList.add("wl-chat-drop-active");
@@ -1339,11 +1306,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       await session.sendFile(file);
     } catch (err) {
-      appendLog(`file send failed: ${err instanceof Error ? err.message : "unknown"}`);
+      appendLog(`file send failed: ${errMsg(err)}`);
     }
   }, { signal });
 
-  // Disconnect
   opts.disconnectBtn.addEventListener("click", () => {
     if (session) {
       session.disconnect();
@@ -1354,7 +1320,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }, { signal });
 
-  // Silent mode copy + disconnect
   opts.silentCopyBtn.addEventListener("click", async () => {
     const secret = opts.silentSecret.textContent ?? "";
     if (!secret) return;
@@ -1371,10 +1336,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     session?.disconnect();
   }, { signal });
 
-  // New session
   opts.newSessionBtn.addEventListener("click", resetToIdle, { signal });
 
-  // Error retry — preserve phrase and relay state when retrying from a relay error
   opts.errorRetryBtn.addEventListener("click", () => {
     if (lastErrorWasRelay) {
       const savedPhrase = opts.phraseInput.value;
@@ -1392,7 +1355,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }, { signal });
 
-  // Focus tracking for unread count
   window.addEventListener("focus", () => { hasFocus = true; clearUnread(); }, { signal });
   window.addEventListener("blur", () => { hasFocus = false; }, { signal });
 
