@@ -546,7 +546,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function renderOfferQr(code: string): void {
     try {
       renderQrToCanvas(opts.offerQrCanvas, buildLiveQrPayload("offer", code));
-      opts.offerQrStatus.textContent = "Scan to auto-fill the offer code.";
+      opts.offerQrStatus.textContent = "scan to auto-fill the offer code.";
     } catch {
       opts.offerQrStatus.textContent = "QR preview unavailable in this browser.";
     }
@@ -555,9 +555,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function renderAnswerQr(code: string): void {
     try {
       renderQrToCanvas(opts.answerQrCanvas, buildLiveQrPayload("answer", code));
-      opts.answerQrStatus.textContent = "Scan to auto-fill the answer code.";
+      opts.answerQrStatus.textContent = "scan to auto-fill the answer code.";
     } catch {
-      opts.answerQrStatus.textContent = "QR preview unavailable in this browser.";
+      opts.answerQrStatus.textContent = "qr preview unavailable in this browser.";
     }
   }
 
@@ -720,7 +720,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     switch (state) {
       case "idle":
         showPhase(opts.liveSection);
-        updateStatus("ready — create or join a channel");
+        updateStatus("ready. create or join a channel");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -778,7 +778,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "live":
         showPhase(opts.chatSection);
-        updateStatus("connected — encrypted session live");
+        updateStatus("connected, encrypted session live");
         opts.liveStatusLine.classList.add("whisper-status--ready");
         setLogActive(false);
         opts.chatInput.disabled = false;
@@ -822,7 +822,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatInput.disabled = true;
         addChatMessage({
           type: "system", direction: "system",
-          text: "connection interrupted \u2014 attempting to recover...",
+          text: "connection interrupted, attempting to recover...",
           timestamp: Date.now(),
         });
         break;

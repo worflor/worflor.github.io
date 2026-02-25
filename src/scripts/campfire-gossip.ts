@@ -1,5 +1,5 @@
 /**
- * Campfire — gossip-propagated group chat engine.
+ * Campfire: gossip-propagated group chat engine.
  *
  * CampfireNode manages the campfire lifecycle:
  *   - Root: create campfire, assign topology, distribute group keys, heartbeat
@@ -166,7 +166,7 @@ export class CampfireNode {
     this.peerIdHex = toHex(this.peerId);
     this.displayName = name;
     this.setState("creating");
-    this.log("creating campfire...");
+    this.log("creating room...");
 
     // Initialize topology
     this.topology = new CampfireTopology(this.peerId);
@@ -185,9 +185,9 @@ export class CampfireNode {
 
     const offerCode = await rootSession.createOffer();
     this.setState("waiting");
-    this.log("campfire ready — share the room code");
+    this.log("room ready, share the code");
 
-    // Store pending session — will be assigned to joining peer
+    // Store pending session, will be assigned to joining peer
     this._pendingRootSession = rootSession;
     this._pendingRootOffer = offerCode;
 
@@ -215,7 +215,7 @@ export class CampfireNode {
     this.peerIdHex = toHex(this.peerId);
     this.displayName = name;
     this.setState("connecting");
-    this.log("joining campfire...");
+    this.log("joining room...");
 
     // Create session to Root
     const session = this.createNeighborSession("join-root");
@@ -257,9 +257,9 @@ export class CampfireNode {
 
   private handleNeighborConnected(label: string, session: WhisperLiveSession): void {
     if (this.role === "root" && label === "root-initial") {
-      // First peer joined — store as neighbor
+      // First peer joined, store as neighbor
       // We'll get their peerId from the first message they send
-      // For now, generate a temporary ID — Root will assign real ID via PEER_LIST exchange
+      // For now, generate a temporary ID. Root will assign real ID via PEER_LIST exchange
       const tempId = randomBytes(PEER_ID_LEN);
       const tempHex = toHex(tempId);
       this.neighbors.set(tempHex, {
@@ -301,7 +301,7 @@ export class CampfireNode {
 
       if (this._state !== "active") {
         this.setState("active");
-        this.log("connected to campfire");
+        this.log("connected to room");
       }
     } else {
       // Additional neighbor connected (topology expansion)
@@ -333,9 +333,9 @@ export class CampfireNode {
     } else {
       // If peer lost root connection
       if (label === "join-root" || label === "root") {
-        // Root is gone — campfire ends
+        // Root is gone, campfire ends
         this.log("lost connection to root");
-        this.endCampfire("The fire is out. Nothing remains.");
+        this.endCampfire("root disconnected. the fire is out. nothing remains.");
       }
     }
   }
@@ -351,7 +351,7 @@ export class CampfireNode {
       this._pendingRootSession = session;
       this._pendingRootOffer = offerCode;
       // In a real deployment, Root would update the room code.
-      // Here we re-use the same pattern — the UI will show "new peers can join"
+      // Here we re-use the same pattern. The UI will show "new peers can join"
     } catch (err) {
       this.log(`failed to prepare next slot: ${err instanceof Error ? err.message : "unknown"}`);
     }
@@ -481,7 +481,7 @@ export class CampfireNode {
         await this.handleSubSdp(payload);
         break;
       default:
-        this.log(`unknown campfire sub-type: 0x${subType.toString(16)}`);
+        this.log(`unknown sub-type: 0x${subType.toString(16)}`);
     }
   }
 
@@ -513,7 +513,7 @@ export class CampfireNode {
 
     // Hop limit
     if (parsed.hopCount >= MAX_HOP_COUNT) {
-      this.log("dropping message: max hop count exceeded");
+      this.log("message dropped, max hops exceeded");
       return;
     }
 
@@ -552,7 +552,7 @@ export class CampfireNode {
       plaintext,
     });
 
-    // Forward to other neighbors (gossip) — re-wrap with incremented hop count
+    // Forward to other neighbors (gossip), re-wrap with incremented hop count
     const rewrapped = rewrapGroupMsg(concatBytes(new Uint8Array([CF_GROUP_MSG]), data), parsed.hopCount + 1);
     await this.broadcastToNeighbors(rewrapped, fromLabel);
   }
@@ -567,7 +567,7 @@ export class CampfireNode {
     this.allPeers.set(hex, { peerId: new Uint8Array(peerId), name });
     this.cb.onPeerJoin(peerId, name);
     this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
-    this.log(`${name} joined the campfire`);
+    this.log(`${name} joined the room`);
 
     // Forward gossip
     const wire = buildJoinAnnounce(peerId, name);
@@ -584,7 +584,7 @@ export class CampfireNode {
     this.allPeers.delete(hex);
     this.cb.onPeerLeave(peerId);
     this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
-    this.log(`${peer?.name ?? hex.slice(0, 8)} left the campfire`);
+    this.log(`${peer?.name ?? hex.slice(0, 8)} left the room`);
 
     // Forward gossip
     const wire = buildLeaveAnnounce(peerId);
@@ -596,7 +596,7 @@ export class CampfireNode {
     const targetHex = toHex(targetPeerId);
 
     if (targetHex === this.peerIdHex) {
-      // This SDP is for us — handle it
+      // This SDP is for us, handle it
       await this.handleIncomingSdp(sdpType, sdpCode, "relay");
     } else if (this.role === "root") {
       // Root relays to the target peer
@@ -716,9 +716,9 @@ export class CampfireNode {
   }
 
   private async handleIncomingSubSdp(_subId: Uint8Array, _sdpType: number, _sdpCode: string): Promise<void> {
-    // Sub-campfire SDP handling — similar pattern to DM SDP
+    // Sub-campfire SDP handling, similar pattern to DM SDP
     // Implementation deferred to sub-campfire creation flow
-    this.log("sub-campfire SDP received (handling deferred)");
+    this.log("sub-room sdp received");
   }
 
   /* ── DM Side-Channels ──────────────────────────────────── */
@@ -726,7 +726,7 @@ export class CampfireNode {
   /** Initiate a DM with a specific peer by their hex ID. */
   async startDm(targetPeerIdHex: string): Promise<void> {
     if (this.dmSessions.has(targetPeerIdHex)) {
-      this.log("DM session already exists");
+      this.log("dm session already open");
       return;
     }
 
@@ -743,14 +743,14 @@ export class CampfireNode {
 
     // Send DM SDP relay through the mesh
     await this.broadcastToNeighbors(buildDmSdpRelay(target.peerId, SDP_OFFER, offerCode));
-    this.log(`DM initiated with ${target.name}`);
+    this.log(`dm started with ${target.name}`);
   }
 
   /** Send a DM text to a peer. */
   async sendDmText(targetPeerIdHex: string, text: string): Promise<void> {
     const session = this.dmSessions.get(targetPeerIdHex);
     if (!session) {
-      this.log("no DM session");
+      this.log("no dm session");
       return;
     }
     await session.sendText(text);
@@ -765,7 +765,7 @@ export class CampfireNode {
             this.dmSessions.set(peerIdHex, pending.session);
             this.pendingDmSdp.delete(peerIdHex);
           }
-          this.log(`DM live with ${peerIdHex.slice(0, 8)}`);
+          this.log(`dm live with ${peerIdHex.slice(0, 8)}`);
         }
       },
       onFingerprint: () => {},
@@ -775,7 +775,7 @@ export class CampfireNode {
           this.cb.onDmMessage(peerId, { type: "text", text: msg.text, timestamp: msg.timestamp });
         }
       },
-      onLog: (line) => this.log(`[DM ${peerIdHex.slice(0, 8)}] ${line}`),
+      onLog: (line) => this.log(`[dm ${peerIdHex.slice(0, 8)}] ${line}`),
     };
 
     return new WhisperLiveSession(callbacks, {
@@ -789,7 +789,7 @@ export class CampfireNode {
   /** Root: create a sub-campfire with selected peers. */
   async createSubCampfire(inviteePeerIds: Uint8Array[]): Promise<Uint8Array | null> {
     if (this.role !== "root") {
-      this.log("only root can create sub-campfires");
+      this.log("only root can split rooms");
       return null;
     }
 
@@ -816,7 +816,7 @@ export class CampfireNode {
     const wire = buildSubInvite(subId, this.peerId, inviteePeerIds);
     await this.broadcastToNeighbors(wire);
 
-    this.log(`sub-campfire ${subHex.slice(0, 8)} created with ${inviteePeerIds.length} invitees`);
+    this.log(`sub-room ${subHex.slice(0, 8)} created, ${inviteePeerIds.length} invited`);
     return subId;
   }
 
@@ -844,8 +844,8 @@ export class CampfireNode {
     this.heartbeatWatchTimer = setInterval(() => {
       if (this._state !== "active") return;
       if (Date.now() - this.lastRootHeartbeat > ROOT_HEARTBEAT_TIMEOUT) {
-        this.log("root heartbeat lost");
-        this.endCampfire("The fire is out. Nothing remains.");
+        this.log("root heartbeat lost, session ending");
+        this.endCampfire("root went silent. the fire is out. nothing remains.");
       }
     }, ROOT_HEARTBEAT_INTERVAL);
   }
@@ -957,11 +957,11 @@ export class CampfireNode {
     this.seenMsgIds = [];
     this.seenMsgSet.clear();
 
-    this.setState("ended", reason ?? "campfire ended");
-    this.log(reason ?? "campfire ended");
+    this.setState("ended", reason ?? "session ended");
+    this.log(reason ?? "session ended");
   }
 
-  /** Full cleanup — called when leaving the page. */
+  /** Full cleanup, called when leaving the page. */
   destroy(): void {
     this.endCampfire();
     this._state = "idle";

@@ -339,22 +339,22 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     switch (state) {
       case "idle":
         showPhase(opts.idleSection);
-        updateStatus("ready");
+        updateStatus("ready to connect");
         setLogActive(false);
         setBusy(false);
         break;
 
       case "creating":
         showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "creating campfire...";
-        updateStatus("creating campfire...");
+        opts.connectingStatus.textContent = "setting up the room...";
+        updateStatus("creating room...");
         setLogActive(true);
         setBusy(true);
         break;
 
       case "waiting":
         showPhase(opts.waitingSection);
-        updateStatus("share the room code");
+        updateStatus("room open, waiting for peers");
         setLogActive(false);
         setBusy(false);
         updateControls();
@@ -362,26 +362,26 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
       case "connecting":
         showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "connecting to campfire...";
-        updateStatus("connecting...");
+        opts.connectingStatus.textContent = "joining the room...";
+        updateStatus("connecting peer-to-peer...");
         setLogActive(true);
         setBusy(true);
         break;
 
       case "active":
         showPhase(opts.activeSection);
-        updateStatus("campfire is burning");
+        updateStatus("room active, group-encrypted");
         setLogActive(false);
         opts.chatInput.disabled = false;
         setBusy(false);
         opts.chatInput.focus();
-        addChatMessage("", "campfire lit — messages are group-encrypted", Date.now(), "system");
+        addChatMessage("", "connected. messages are encrypted with a shared group key", Date.now(), "system");
         break;
 
       case "ended":
         showPhase(opts.endedSection);
-        opts.endedMessage.textContent = detail ?? "the fire has gone out";
-        updateStatus("ended");
+        opts.endedMessage.textContent = detail ?? "the fire is out. nothing remains.";
+        updateStatus("session closed");
         setLogActive(false);
         setBusy(false);
         closeDmPanel();
@@ -402,13 +402,13 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     }
   }
 
-  function handlePeerJoin(peerId: Uint8Array, name: string): void {
-    addChatMessage("", `${name} joined`, Date.now(), "system");
+  function handlePeerJoin(_peerId: Uint8Array, name: string): void {
+    addChatMessage("", `${name} joined the room`, Date.now(), "system");
   }
 
   function handlePeerLeave(peerId: Uint8Array): void {
     const hex = toHex(peerId);
-    addChatMessage("", `${hex.slice(0, 8)} left`, Date.now(), "system");
+    addChatMessage("", `${hex.slice(0, 8)} left the room`, Date.now(), "system");
   }
 
   function handleDmMessage(fromPeerId: Uint8Array, msg: { type: "text"; text: string; timestamp: number }): void {
@@ -456,7 +456,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   // Create campfire (Root)
   opts.createBtn.addEventListener("click", async () => {
-    const name = opts.nameInput.value.trim() || "Anonymous";
+    const name = opts.nameInput.value.trim() || "someone";
     const useStun = opts.externalAssistToggle.checked;
     node = new CampfireNode({
       onStateChange: handleStateChange,
@@ -474,7 +474,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       updateControls();
     } catch (err) {
       appendLog(`create failed: ${err instanceof Error ? err.message : "unknown"}`);
-      handleStateChange("ended", "failed to create campfire");
+      handleStateChange("ended", "could not create room");
     }
   }, { signal });
 
@@ -485,7 +485,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     try {
       await copyToClipboard(code);
       flashText(opts.roomCodeCopyBtn, "Copied");
-      appendLog("room code copied");
+      appendLog("room code copied to clipboard");
     } catch {
       appendLog("copy failed");
     }
@@ -505,7 +505,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   // Join campfire (Peer)
   opts.joinBtn.addEventListener("click", async () => {
     const offerCode = opts.joinInput.value.trim();
-    const name = opts.nameInput.value.trim() || "Anonymous";
+    const name = opts.nameInput.value.trim() || "someone";
     if (!offerCode) return;
     const useStun = opts.externalAssistToggle.checked;
     node = new CampfireNode({
@@ -520,14 +520,12 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     });
     try {
       const answerCode = await node.joinCampfire(offerCode, name, useStun);
-      // For joining, we need to share the answer back — not a full phase like Live
-      // The answer code needs to be given back to Root out-of-band
-      // Show it briefly in the connecting section
-      opts.connectingStatus.textContent = "connected! share this answer code back:";
-      appendLog(`answer code: ${answerCode.slice(0, 20)}...`);
+      // peer needs to send answer code back to root out-of-band
+      opts.connectingStatus.textContent = "send this answer code back to the room creator";
+      appendLog(`answer code ready. share it back`);
     } catch (err) {
       appendLog(`join failed: ${err instanceof Error ? err.message : "unknown"}`);
-      handleStateChange("ended", "failed to join campfire");
+      handleStateChange("ended", "could not join the room");
     }
   }, { signal });
 
@@ -561,7 +559,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   // Disconnect
   opts.disconnectBtn.addEventListener("click", () => {
-    node?.endCampfire("you left the campfire");
+    node?.endCampfire("you left the room");
   }, { signal });
 
   // DM send
@@ -585,7 +583,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       opts.dmMessages.appendChild(div);
       opts.dmMessages.scrollTop = opts.dmMessages.scrollHeight;
     } catch (err) {
-      appendLog(`DM send failed: ${err instanceof Error ? err.message : "unknown"}`);
+      appendLog(`dm send failed: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }, { signal });
 
@@ -601,7 +599,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   // Sub-campfire create (placeholder — needs peer selection UI)
   opts.subCreateBtn.addEventListener("click", () => {
-    appendLog("sub-campfire creation: select peers from the list first");
+    appendLog("split: select peers from the list first");
   }, { signal });
 
   // New campfire
@@ -610,7 +608,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   /* ── Initial state ──────────────────────────────────────── */
 
   showPhase(opts.idleSection);
-  appendLog("campfire mode ready");
+  appendLog("campfire ready");
   updateControls();
 
   /* ── Teardown ────────────────────────────────────────────── */

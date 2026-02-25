@@ -365,7 +365,7 @@ const seo = {
       <div class="whisper-op-live" id="wl-section">
         <div class="wl-head whisper-panel" aria-label="Whisper Live status">
           <h2 class="wl-head-title">Whisper Live</h2>
-          <p class="wl-head-subtitle">fast encrypted sessions — no accounts, no relay inbox</p>
+          <p class="wl-head-subtitle">fast encrypted sessions, no accounts, no relay inbox</p>
           <div class="wl-head-right">
             <div class="cf-live-mode-toggle" role="radiogroup" aria-label="Live sub-mode">
               <label class="cf-mode-opt">
@@ -387,14 +387,14 @@ const seo = {
 
         <!-- Phase: idle — create or join -->
         <div class="wl-phase" id="wl-idle-phase">
-          <p class="wl-phase-lede">Create to start a channel, or join with an offer code. Use a shared phrase only if both peers already agreed on one.</p>
+          <p class="wl-phase-lede">create to start a channel, or join with someone else's offer code. shared phrase is optional, only set one if you both already agreed on it.</p>
           <div class="wl-grid">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Create</h3>
                 <span class="whisper-panel-mode">start a new channel</span>
               </div>
-              <p class="wl-inline-hint">You create the offer first, then wait for one reply code.</p>
+              <p class="wl-inline-hint">you make the offer, then wait for one reply code.</p>
               <button id="wl-create" type="button" class="whisper-mini-btn wl-primary">Create channel</button>
             </div>
 
@@ -403,7 +403,7 @@ const seo = {
                 <h3 class="whisper-panel-title">Join</h3>
                 <span class="whisper-panel-mode">paste an offer code</span>
               </div>
-              <p class="wl-inline-hint">Paste, scan, or import an offer code to generate your answer.</p>
+              <p class="wl-inline-hint">paste, scan, or import an offer code to generate your answer.</p>
               <div class="wl-join-row">
                 <input
                   id="wl-join-input"
@@ -431,7 +431,7 @@ const seo = {
 
           <div class="whisper-panel wl-phrase-panel">
             <label class="whisper-field" for="wl-phrase">
-              <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(optional — match on both sides)</span></span>
+              <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(optional, match on both sides)</span></span>
               <input
                 id="wl-phrase"
                 type="password"
@@ -456,14 +456,14 @@ const seo = {
 
         <!-- Phase: offering — show offer code, wait for answer -->
         <div class="wl-phase" id="wl-offer-section" style="display:none">
-          <p class="wl-phase-lede">Step 1: send your offer. Step 2: paste the peer reply to complete the handshake.</p>
+          <p class="wl-phase-lede">send your offer to the other peer, then paste their reply to complete the handshake.</p>
           <div class="wl-grid wl-grid--offer">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Send</h3>
                 <span class="whisper-panel-mode">offer code</span>
               </div>
-              <p class="wl-inline-hint">Share this with your peer through any channel.</p>
+              <p class="wl-inline-hint">share this with your peer through any channel.</p>
               <div class="wl-code-display-wrap">
                 <pre id="wl-offer-code" class="wl-code-display"></pre>
                 <button id="wl-offer-copy" type="button" class="whisper-mini-btn">Copy</button>
@@ -482,7 +482,7 @@ const seo = {
                 <h3 class="whisper-panel-title">Receive</h3>
                 <span class="whisper-panel-mode">paste reply</span>
               </div>
-              <p class="wl-inline-hint">Paste their answer code here, then connect.</p>
+              <p class="wl-inline-hint">paste their answer code here, then connect.</p>
               <div class="wl-join-row">
                 <input
                   id="wl-answer-input"
@@ -503,13 +503,13 @@ const seo = {
 
         <!-- Phase: answering — show answer code to copy back -->
         <div class="wl-phase" id="wl-answer-section" style="display:none">
-          <p class="wl-phase-lede">Send this answer code back to the creator to finish connecting.</p>
+          <p class="wl-phase-lede">send this answer code back to the creator to finish connecting.</p>
           <div class="whisper-panel wl-answer-only">
             <div class="whisper-panel-header">
               <h3 class="whisper-panel-title">Send back</h3>
               <span class="whisper-panel-mode">answer code</span>
             </div>
-            <p class="wl-inline-hint">Keep this tab open until the creator confirms connection.</p>
+            <p class="wl-inline-hint">keep this tab open until the creator confirms connection.</p>
             <div class="wl-code-display-wrap">
               <pre id="wl-answer-code" class="wl-code-display"></pre>
               <button id="wl-answer-copy" type="button" class="whisper-mini-btn">Copy</button>
@@ -596,7 +596,7 @@ const seo = {
         <!-- Phase: disconnected -->
         <div class="wl-phase" id="wl-disconnected-section" style="display:none">
           <div class="whisper-panel wl-end-panel">
-            <p class="wl-end-text">session ended — no trace remains</p>
+            <p class="wl-end-text">session ended. no trace remains</p>
             <button id="wl-new-session" type="button" class="whisper-mini-btn">New session</button>
           </div>
         </div>
@@ -611,17 +611,17 @@ const seo = {
 
         <!-- ═══ Campfire phases (group chat within Live) ═══ -->
 
-        <!-- Campfire: idle — create or join group -->
+        <!-- Campfire: idle -->
         <div class="wl-phase" id="cf-idle-phase" style="display:none">
-          <p class="wl-phase-lede">Campfire is lightweight multi-peer chat. Start a room and share the room code, or join an existing one.</p>
+          <p class="wl-phase-lede">group chat over the same peer-to-peer mesh. one person creates the room, everyone else joins with the code. root controls the session.</p>
           <div class="wl-grid">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Create</h3>
-                <span class="whisper-panel-mode">start a campfire</span>
+                <span class="whisper-panel-mode">start a new room</span>
               </div>
-              <p class="wl-inline-hint">Creates a room code so peers can join your group.</p>
-              <button id="cf-create" type="button" class="whisper-mini-btn wl-primary">Light a campfire</button>
+              <p class="wl-inline-hint">you become root. peers connect through you.</p>
+              <button id="cf-create" type="button" class="whisper-mini-btn wl-primary">Create room</button>
             </div>
 
             <div class="whisper-panel wl-card">
@@ -629,7 +629,7 @@ const seo = {
                 <h3 class="whisper-panel-title">Join</h3>
                 <span class="whisper-panel-mode">paste a room code</span>
               </div>
-              <p class="wl-inline-hint">Join an existing room and generate your peer answer.</p>
+              <p class="wl-inline-hint">paste the code from whoever created the room.</p>
               <div class="wl-join-row">
                 <input
                   id="cf-join-input"
@@ -646,12 +646,12 @@ const seo = {
 
           <div class="whisper-panel wl-phrase-panel">
             <label class="whisper-field" for="cf-name">
-              <span class="whisper-field-label">your name</span>
+              <span class="whisper-field-label">display name <span class="whisper-field-hint">(visible to the group)</span></span>
               <input
                 id="cf-name"
                 type="text"
                 class="whisper-input"
-                placeholder="anonymous"
+                placeholder="your name (optional)"
                 autocomplete="off"
                 maxlength="32"
               />
@@ -663,23 +663,23 @@ const seo = {
                 <input id="cf-external-assist" type="checkbox" class="whisper-toggle-input" />
                 <span class="whisper-toggle-text">
                   external assist (stun)
-                  <span class="whisper-field-hint">(helps connect across networks)</span>
+                  <span class="whisper-field-hint">(helps connect across networks. may expose network metadata during setup. turns off after connect)</span>
                 </span>
               </label>
             </div>
           </div>
         </div>
 
-        <!-- Campfire: waiting — show room code, accept answers -->
+        <!-- Campfire: waiting -->
         <div class="wl-phase" id="cf-waiting-section" style="display:none">
-          <p class="wl-phase-lede">Share the room code, then accept reply codes from peers as they join.</p>
+          <p class="wl-phase-lede">share the room code with peers. as each one joins, paste their reply code here to let them in.</p>
           <div class="wl-grid wl-grid--offer">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Room code</h3>
-                <span class="whisper-panel-mode">share this with peers</span>
+                <span class="whisper-panel-mode">send this to peers</span>
               </div>
-              <p class="wl-inline-hint">Every new peer starts by using this room code.</p>
+              <p class="wl-inline-hint">each peer uses this to generate their answer.</p>
               <div class="wl-code-display-wrap">
                 <pre id="cf-room-code" class="wl-code-display"></pre>
                 <button id="cf-room-copy" type="button" class="whisper-mini-btn">Copy</button>
@@ -688,10 +688,10 @@ const seo = {
 
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Accept peer</h3>
-                <span class="whisper-panel-mode">paste their answer code</span>
+                <h3 class="whisper-panel-title">Accept</h3>
+                <span class="whisper-panel-mode">paste peer reply</span>
               </div>
-              <p class="wl-inline-hint">Accept reply codes one by one as peers connect.</p>
+              <p class="wl-inline-hint">paste each peer's answer code to complete their connection.</p>
               <div class="wl-join-row">
                 <input
                   id="cf-answer-input"
@@ -711,20 +711,20 @@ const seo = {
         <div class="wl-phase" id="cf-connecting-section" style="display:none">
           <div class="whisper-panel wl-connecting-panel">
             <div class="wl-spinner" aria-hidden="true"></div>
-            <p id="cf-connecting-status" class="wl-connecting-text">connecting to campfire...</p>
+            <p id="cf-connecting-status" class="wl-connecting-text">joining the room...</p>
           </div>
         </div>
 
-        <!-- Campfire: active — group chat + peer list -->
+        <!-- Campfire: active -->
         <div class="wl-phase" id="cf-active-section" style="display:none">
           <div class="whisper-panel wl-chat-panel cf-chat-panel">
             <div class="wl-chat-header cf-chat-header">
               <div class="cf-peer-list-wrap">
-                <span class="cf-peer-label">around the fire:</span>
+                <span class="cf-peer-label">in room:</span>
                 <div id="cf-peer-list" class="cf-peer-list" role="list"></div>
               </div>
               <div class="cf-header-actions">
-                <button id="cf-sub-create" type="button" class="whisper-mini-btn" title="Break away with selected peers">Break away</button>
+                <button id="cf-sub-create" type="button" class="whisper-mini-btn" title="split off with selected peers">Split</button>
                 <button id="cf-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">Leave</button>
               </div>
             </div>
@@ -736,7 +736,7 @@ const seo = {
                 id="cf-chat-input"
                 type="text"
                 class="whisper-input wl-chat-text-input"
-                placeholder="say something to the group"
+                placeholder="type a message"
                 autocomplete="off"
                 spellcheck="false"
               />
@@ -749,7 +749,7 @@ const seo = {
         <div id="cf-dm-overlay" class="cf-dm-overlay" style="display:none">
           <div class="whisper-panel cf-dm-panel">
             <div class="cf-dm-header">
-              <span class="cf-dm-label">DM with <strong id="cf-dm-target-name"></strong></span>
+              <span class="cf-dm-label"><strong id="cf-dm-target-name"></strong></span>
               <button id="cf-dm-close" type="button" class="whisper-mini-btn">Close</button>
             </div>
             <div id="cf-dm-messages" class="wl-chat-messages cf-dm-messages"></div>
@@ -758,7 +758,7 @@ const seo = {
                 id="cf-dm-input"
                 type="text"
                 class="whisper-input wl-chat-text-input"
-                placeholder="private message"
+                placeholder="just between you two"
                 autocomplete="off"
                 spellcheck="false"
               />
@@ -770,7 +770,7 @@ const seo = {
         <!-- Campfire: ended -->
         <div class="wl-phase" id="cf-ended-section" style="display:none">
           <div class="whisper-panel wl-end-panel">
-            <p id="cf-ended-message" class="wl-end-text">the fire has gone out</p>
+            <p id="cf-ended-message" class="wl-end-text">the fire is out. nothing remains.</p>
             <button id="cf-new-campfire" type="button" class="whisper-mini-btn">New session</button>
           </div>
         </div>
@@ -2728,17 +2728,28 @@ const seo = {
   @media (max-width: 520px) {
     .wl-head {
       grid-template-columns: 1fr;
-      grid-template-rows: auto auto auto auto;
+      grid-template-rows: auto auto auto;
     }
 
     .wl-head-right {
       grid-column: 1;
       grid-row: 3;
       justify-self: start;
+      order: 2;
     }
 
     .wl-status-chip {
-      grid-row: 4;
+      grid-row: 3;
+      grid-column: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: calc(var(--space-xs) * 0.5);
+      order: 1;
+    }
+
+    .cf-live-mode-toggle {
+      margin-top: calc(var(--space-xs) * 0.5);
+      width: 100%;
     }
 
     .wl-phase-lede {
@@ -3530,11 +3541,23 @@ const seo = {
     max-height: 20rem;
   }
 
-  @media (max-width: 680px) {
+  @media (max-width: 680px) and (min-width: 521px) {
     .cf-live-mode-toggle {
       width: 100%;
     }
 
+    .cf-mode-opt {
+      flex: 1 1 50%;
+      min-width: 0;
+    }
+
+    .cf-mode-label {
+      justify-content: center;
+      width: 100%;
+    }
+  }
+
+  @media (max-width: 520px) {
     .cf-mode-opt {
       flex: 1 1 50%;
       min-width: 0;
