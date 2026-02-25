@@ -696,7 +696,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
         const myRaw = mySealPublicCode ? parseSealPublicCode(mySealPublicCode) : null;
         const isSelfSeal = !!recipientRaw && !!myRaw && bytesEqual(recipientRaw, myRaw);
         opts.sealValidation.textContent = isSelfSeal
-          ? "\u2713 valid WS2 public key..."
+          ? "\u2713 valid WS2 public key :)"
           : "\u2713 valid WS2 public key";
       } else {
         opts.sealValidation.textContent = "\u2717 invalid WS2 public key";

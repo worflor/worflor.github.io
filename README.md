@@ -4,14 +4,14 @@ My personal site. Built with [Astro](https://astro.build/) and [Tailwind CSS](ht
 
 ---
 
-### Running locally
+### Local
 
 ```bash
 npm install
 npm run dev
 ```
 
-### Building for production
+### Building
 
 ```bash
 npm run build
