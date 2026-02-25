@@ -305,6 +305,46 @@ function formatInlineSealPreview(code: string): string {
   return compactSealCode(code);
 }
 
+function populateStatusMeta(container: HTMLElement, payload: SealPayload): void {
+  const meta = container.querySelector<HTMLElement>(".ws-status-meta");
+  if (!meta) return;
+  const parts: string[] = [];
+
+  if (payload.t > 0) {
+    const d = new Date(payload.t);
+    const now = Date.now();
+    if (now >= payload.t) {
+      const ago = now - payload.t;
+      const mins = Math.floor(ago / 60_000);
+      const hrs = Math.floor(ago / 3_600_000);
+      const days = Math.floor(ago / 86_400_000);
+      const agoText = days > 0 ? `${days}d ago` : hrs > 0 ? `${hrs}h ago` : mins > 0 ? `${mins}m ago` : "just now";
+      parts.push(`expired ${agoText}`);
+    } else {
+      const rem = payload.t - now;
+      const mins = Math.ceil(rem / 60_000);
+      const hrs = Math.round(rem / 3_600_000);
+      const days = Math.round(rem / 86_400_000);
+      const remText = days > 1 ? `${days}d` : hrs > 0 ? `${hrs}h` : `${mins}m`;
+      parts.push(`expires in ${remText}`);
+    }
+    parts.push(d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+  } else {
+    parts.push("no expiry");
+  }
+
+  if (payload.rf) {
+    parts.push(`seal ${payload.rf.slice(0, 8)}`);
+  }
+
+  if (payload.p === 1) {
+    parts.push("phrase-locked");
+  }
+
+  const sep = '<span class="ws-status-meta-sep">\u00b7</span>';
+  meta.innerHTML = parts.map((p) => `<span>${p}</span>`).join(sep);
+}
+
 /* ── Init ─────────────────────────────────────────────────── */
 
 export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
@@ -748,6 +788,11 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       const result = await unsealMessage(payload, password);
       if (aborted()) return;
 
+      // Populate metadata on all status screens with payload details
+      for (const el of [opts.unsealSuccess, opts.unsealExpired, opts.unsealFail, opts.unsealPassword]) {
+        populateStatusMeta(el, payload);
+      }
+
       if (result.ok) {
         opts.decryptedMessage.textContent = result.message;
         showUnsealSub(opts.unsealSuccess);
@@ -984,13 +1029,27 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   syncMySealInlinePanelState();
   syncSealInlineVisibility();
 
-  // If URL contains a #ws2: fragment, jump straight to unseal
-  const autoPayload = parseSealFragment();
-  if (autoPayload) {
-    ensureEmbedUrlMode();
-    log("sealed url detected (ws2)");
-    runUnseal(autoPayload);
+  // If URL contains a #ws2: fragment, jump straight to unseal.
+  // This handles both initial page load AND mid-session hash changes
+  // (e.g. pasting a sealed URL while already on the whisper page).
+  // Hash-only changes don't trigger page navigations or astro:after-swap,
+  // so hashchange is the correct event to listen for.
+  function checkSealFragment(): void {
+    const payload = parseSealFragment();
+    if (payload) {
+      // Reset any in-progress unseal before starting the new one
+      if (busy) {
+        busy = false;
+        pendingPayload = null;
+      }
+      ensureEmbedUrlMode();
+      log("sealed url detected (ws2)");
+      runUnseal(payload);
+    }
   }
+
+  checkSealFragment();
+  window.addEventListener("hashchange", checkSealFragment, { signal });
 
   /* ── Teardown ─────────────────────────────────────────── */
 

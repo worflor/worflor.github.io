@@ -848,34 +848,62 @@ const seo = {
               <p class="ws-computing-text">checking your seal...</p>
             </div>
 
-            <div id="ws-unseal-success" style="display:none">
-              <h3 class="whisper-panel-title">Sealed Message</h3>
+            <div id="ws-unseal-success" class="ws-status-screen" style="display:none">
+              <div class="ws-status-icon ws-status-icon--success" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                  <polyline points="22 4 12 14.01 9 11.01"/>
+                </svg>
+              </div>
+              <h3 class="whisper-panel-title ws-status-title">Sealed Message</h3>
               <div class="ws-message-display">
                 <pre id="ws-decrypted-message" class="ws-decrypted-text"></pre>
               </div>
               <p class="ws-unseal-meta"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> Decrypted locally with your seal.</p>
+              <div class="ws-status-meta" data-meta="success"></div>
               <div class="ws-unseal-actions">
                 <button id="ws-msg-copy" type="button" class="whisper-mini-btn wl-primary">Copy content</button>
                 <button id="ws-unseal-done" type="button" class="whisper-mini-btn">Close</button>
               </div>
             </div>
 
-            <div id="ws-unseal-fail" style="display:none">
-              <h3 class="whisper-panel-title">Cannot Open</h3>
+            <div id="ws-unseal-fail" class="ws-status-screen" style="display:none">
+              <div class="ws-status-icon ws-status-icon--locked" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+              </div>
+              <h3 class="whisper-panel-title ws-status-title">Cannot Open</h3>
               <p class="ws-fail-text">This message was sealed for a different browser.</p>
               <p class="ws-fail-detail">No matching private key was found in this browser profile. If you are the recipient, use the browser profile where your seal identity was created.</p>
+              <div class="ws-status-meta" data-meta="fail"></div>
               <button id="ws-fail-back" type="button" class="whisper-mini-btn">Back</button>
             </div>
 
-            <div id="ws-unseal-expired" style="display:none">
-              <h3 class="whisper-panel-title">Expired</h3>
+            <div id="ws-unseal-expired" class="ws-status-screen" style="display:none">
+              <div class="ws-status-icon ws-status-icon--expired" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <polyline points="12 6 12 12 16 14"/>
+                </svg>
+              </div>
+              <h3 class="whisper-panel-title ws-status-title">Expired</h3>
               <p class="ws-fail-text">This sealed message has expired and can no longer be opened.</p>
+              <p class="ws-fail-detail">This one had a time limit and it's passed. Ask the sender to seal a new one.</p>
+              <div class="ws-status-meta" data-meta="expired"></div>
               <button id="ws-expired-back" type="button" class="whisper-mini-btn">Back</button>
             </div>
 
-            <div id="ws-unseal-password" style="display:none">
-              <h3 class="whisper-panel-title">Shared Phrase Required</h3>
-              <p class="ws-fail-detail">This sealed message was locked with a shared phrase.</p>
+            <div id="ws-unseal-password" class="ws-status-screen" style="display:none">
+              <div class="ws-status-icon ws-status-icon--phrase" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+                </svg>
+              </div>
+              <h3 class="whisper-panel-title ws-status-title">Shared Phrase Required</h3>
+              <p class="ws-fail-detail">This sealed message was locked with a shared phrase. Enter it below to decrypt.</p>
+              <div class="ws-status-meta" data-meta="password"></div>
               <label class="whisper-field" for="ws-unseal-pw-input">
                 <input id="ws-unseal-pw-input" type="password" class="whisper-input" placeholder="enter shared phrase" autocomplete="off" />
               </label>
@@ -3411,6 +3439,96 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.44);
     margin: 0 0 var(--space-md);
     line-height: 1.5;
+  }
+
+  /* ── Status screens (expired, fail, password, success) ───── */
+
+  /* Status icon — circular badge above the title */
+  .ws-status-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: var(--radius-full);
+    margin-bottom: calc(var(--space-xs) * 0.6);
+  }
+
+  .ws-status-icon svg {
+    opacity: 0.85;
+  }
+
+  /* Expired — warning tone, faint pulsing border */
+  .ws-status-icon--expired {
+    color: rgb(var(--tool-status-warning));
+    border: 1px solid rgb(var(--tool-status-warning) / 0.25);
+    background: rgb(var(--tool-status-warning) / 0.06);
+    animation: ws-expired-glow 3s ease-in-out infinite;
+  }
+
+  @keyframes ws-expired-glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--tool-status-warning) / 0); }
+    50%      { box-shadow: 0 0 12px 0 rgb(var(--tool-status-warning) / 0.08); }
+  }
+
+  /* Locked / Cannot Open — red tone */
+  .ws-status-icon--locked {
+    color: rgb(var(--chromatic-red) / 0.7);
+    border: 1px solid rgb(var(--chromatic-red) / 0.2);
+    background: rgb(var(--chromatic-red) / 0.05);
+  }
+
+  /* Phrase required — cyan tone, matches primary accent */
+  .ws-status-icon--phrase {
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
+    background: rgb(var(--chromatic-cyan) / 0.05);
+    animation: ws-phrase-shimmer 2.5s ease-in-out infinite;
+  }
+
+  @keyframes ws-phrase-shimmer {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0); }
+    50%      { box-shadow: 0 0 10px 0 rgb(var(--chromatic-cyan) / 0.06); }
+  }
+
+  /* Success — green tone */
+  .ws-status-icon--success {
+    color: rgb(var(--tool-status-success));
+    border: 1px solid rgb(var(--tool-status-success) / 0.25);
+    background: rgb(var(--tool-status-success) / 0.06);
+  }
+
+  /* Status title — slightly larger weight for these screens */
+  .ws-status-title {
+    font-size: var(--text-lg);
+    letter-spacing: -0.01em;
+  }
+
+  /* Status metadata line — shows seal details on status screens */
+  .ws-status-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.6);
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.32);
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.75);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    background: rgb(var(--color-text-rgb) / 0.015);
+    margin-bottom: var(--space-sm);
+  }
+
+  .ws-status-meta:empty {
+    display: none;
+  }
+
+  .ws-status-meta span {
+    white-space: nowrap;
+  }
+
+  .ws-status-meta-sep {
+    color: rgb(var(--color-text-rgb) / 0.12);
   }
 
   /* ═══ Campfire styles ═══════════════════════════════════════ */

@@ -2882,7 +2882,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
         // Repulsion (Personal Space)
         if (dSq < personalSpaceSq) {
            const d = Math.sqrt(dSq);
-           const push = (personalSpace - d) * 0.03; // Stronger push for violation
+           // Smooth repulsion curve: (1 - d/r)
+           const push = (1 - d / personalSpace) * 0.05; 
            fx -= (dx / d) * push;
            fy -= (dy / d) * push;
         }
@@ -2904,17 +2905,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const dy = centerY - this.y;
         
         // Cohesion force:
-        // Extroverts love groups. Introverts avoid them if stressed.
         let cohesion = 0;
         
         if (extraversion > 0.6) {
            cohesion = 0.002 * extraversion;
         } else if (this.stress > 0.5) {
-           // Stressed introvert: "Get away from me"
-           cohesion = -0.004 * (1 - extraversion);
-        } else if (this.lonely > 0.5) {
-           // Lonely introvert: "I guess I need people"
-           cohesion = 0.001;
+           // Stressed introvert: Slight repulsion from center
+           cohesion = -0.001 * (1 - extraversion);
+        } else {
+           // Introvert/Neutral: Weak attraction (safety in numbers)
+           cohesion = 0.0005;
         }
 
         fx += dx * cohesion;
@@ -2976,18 +2976,21 @@ export function initVoidGame(options: GameInitOptions): () => void {
            const wariness = (neuroticism * 0.6 + this.fear * 1.4);
            
            const reaction = curiosity - wariness; 
-           
-           // Positive reaction = Attract, Negative = Repel
-           // Repulsion is generally stronger/faster (survival instinct)
            const intensity = (1 - md / 125);
-           if (reaction > 0.1) {
+
+           if (Math.abs(reaction) < 0.2 && curiosity > 0.3) {
+              // Conflicted: Wary Orbit
+              // Perpendicular force
+              fx += (-mdy / md) * 0.02 * intensity;
+              fy += (mdx / md) * 0.02 * intensity;
+           } else if (reaction > 0.1) {
               // Curious approach
-              const force = intensity * 0.015 * reaction;
+              const force = intensity * 0.025 * reaction;
               fx += (mdx / md) * force;
               fy += (mdy / md) * force;
            } else if (reaction < -0.1) {
               // Fearful retreat
-              const force = intensity * 0.04 * Math.abs(reaction);
+              const force = intensity * 0.06 * Math.abs(reaction);
               fx -= (mdx / md) * force;
               fy -= (mdy / md) * force;
            }
@@ -3009,7 +3012,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       // Speed Limiting / Damping
       // Fatigue reduces max speed and increases drag
-      const maxSpeed = (0.25 + extraversion * 0.15) * (1 - this.fatigue * 0.5);
+      const panicBonus = this.fear > 0.5 ? 1 + (this.fear - 0.5) : 1;
+      const maxSpeed = (0.25 + extraversion * 0.15) * (1 - this.fatigue * 0.5) * panicBonus;
       
       // Drag/Grip: Conscientious creatures have better "traction" (less slide)
       // Low stability creatures slide more (erratic)
