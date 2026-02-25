@@ -11,6 +11,7 @@ import {
   getExistingSealIdentity,
   isSealCodeValid,
   normalizeSealCodeInput,
+  parseSealPublicCode,
   sealMessage,
   unsealMessage,
   buildSealUrl,
@@ -300,6 +301,14 @@ function compactSealCode(code: string): string {
   return `${code.slice(0, 20)}…${code.slice(-12)}`;
 }
 
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 function populateStatusMeta(container: HTMLElement, payload: SealPayload): void {
   const meta = container.querySelector<HTMLElement>(".ws-status-meta");
   if (!meta) return;
@@ -433,7 +442,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     opts.mySealBtn.setAttribute("aria-expanded", String(expanded));
     opts.mySealBtn.classList.toggle("ws-seal-mode-chip--active", expanded);
     const modeText = isUnstableMode() ? "unstable" : "stable";
-    opts.mySealBtn.title = `Switch seal mode (current: ${modeText})`;
+    opts.mySealBtn.title = `switch seal mode (${modeText})`;
   }
 
   function isSealInlineActiveMode(): boolean {
@@ -682,9 +691,16 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     const hasMsg = opts.messageInput.value.trim().length > 0;
 
     if (code.length > 0) {
-      opts.sealValidation.textContent = valid
-        ? "\u2713 valid WS2 public key"
-        : "\u2717 invalid WS2 public key";
+      if (valid) {
+        const recipientRaw = parseSealPublicCode(code);
+        const myRaw = mySealPublicCode ? parseSealPublicCode(mySealPublicCode) : null;
+        const isSelfSeal = !!recipientRaw && !!myRaw && bytesEqual(recipientRaw, myRaw);
+        opts.sealValidation.textContent = isSelfSeal
+          ? "\u2713 valid WS2 public key..."
+          : "\u2713 valid WS2 public key";
+      } else {
+        opts.sealValidation.textContent = "\u2717 invalid WS2 public key";
+      }
       opts.sealValidation.dataset.valid = String(valid);
     } else {
       opts.sealValidation.textContent = "";
@@ -746,7 +762,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       }
       opts.mySealInline.textContent = compactSealCode(identity.code);
       opts.mySealInline.style.display = "";
-      opts.mySealInline.title = `${isUnstableMode() ? "Unstable" : "Stable"} WS2 public key preview — click to copy full code`;
+      opts.mySealInline.title = `copy full ${isUnstableMode() ? "unstable" : "stable"} seal`;
       opts.mySealInlinePanel.style.display = "";
       syncMySealInlinePanelState();
       log(`${isUnstableMode() ? "unstable" : "stable"} key loaded: ${compactSealCode(identity.code)}`);
@@ -834,7 +850,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
         mySealPublicCode = identity.code;
         opts.mySealInline.textContent = compactSealCode(identity.code);
         opts.mySealInline.style.display = "";
-        opts.mySealInline.title = `${isUnstableMode() ? "Unstable" : "Stable"} WS2 public key preview — click to copy full code`;
+        opts.mySealInline.title = `copy full ${isUnstableMode() ? "unstable" : "stable"} seal`;
         log(`${isUnstableMode() ? "unstable" : "stable"} local key: ${compactSealCode(identity.code)}`);
       } else {
         log(`no ${isUnstableMode() ? "unstable" : "stable"} local key found`);
@@ -1069,9 +1085,9 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     setRecipientQrUiState(false);
     setRecipientQrStatus("");
     opts.recipientQrScanBtn.title = capability.supported
-      ? "Scan QR from camera"
-      : "QR scan not supported";
-    opts.recipientQrImageBtn.title = "Load QR image";
+      ? "scan qr"
+      : "camera scan unavailable";
+    opts.recipientQrImageBtn.title = "load qr image";
     if (!capability.supported) log(capability.reason ?? "camera qr scan unavailable");
   });
 

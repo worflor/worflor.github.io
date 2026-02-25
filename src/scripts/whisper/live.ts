@@ -216,12 +216,18 @@ export const WHISPER_LIVE_RTC_LOCAL_ONLY: RTCConfiguration = {
   iceServers: [],
 };
 
-/** Legacy/compat STUN config (opt-in). */
+/** STUN config (opt-in). Multiple servers for redundancy. */
 export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: [
+      "stun:stun.l.google.com:19302",
+      "stun:stun1.l.google.com:19302",
+      "stun:stun2.l.google.com:19302",
+      "stun:stun3.l.google.com:19302",
+      "stun:stun4.l.google.com:19302",
+    ] },
   ],
+  iceCandidatePoolSize: 2,
 };
 
 // Timeout for ICE gathering (ms)
@@ -299,9 +305,10 @@ export class WhisperLiveSession {
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private iceRestartAttempted = false;
 
-  // Answerer grace period (wait for host to apply answer code)
+  // Setup grace period (wait for peer to complete out-of-band code exchange)
   private connectingGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private connectingGraceDone = false;
+  private iceRetryInterval: ReturnType<typeof setInterval> | null = null;
 
   // External assist (STUN) lifecycle
   private externalAssistEstablishmentOnly: boolean;
@@ -482,7 +489,26 @@ export class WhisperLiveSession {
     return new Promise((resolve) => {
       if (!this.pc) { resolve(); return; }
 
+      const logGatherResult = () => {
+        if (!this.pc?.localDescription?.sdp) return;
+        const sdp = this.pc.localDescription.sdp;
+        const candidateLines = sdp.split("\r\n").filter((l: string) => l.startsWith("a=candidate:"));
+        const types = candidateLines.map((l: string) => {
+          const m = l.match(/typ (\w+)/);
+          return m ? m[1] : "?";
+        });
+        const hasSrflx = types.includes("srflx");
+        this.log(`gathered ${candidateLines.length} candidate(s): ${types.join(", ") || "none"}`);
+        if (!hasSrflx && this.hasExternalAssistConfigured()) {
+          this.log("warning: no server-reflexive candidates — STUN may be blocked");
+        }
+        if (candidateLines.length === 0) {
+          this.log("warning: no candidates gathered — connection will likely fail");
+        }
+      };
+
       if (this.pc.iceGatheringState === "complete") {
+        logGatherResult();
         resolve();
         return;
       }
@@ -493,6 +519,7 @@ export class WhisperLiveSession {
         settled = true;
         clearTimeout(timer);
         if (this.pc) this.pc.onicegatheringstatechange = null;
+        logGatherResult();
         resolve();
       };
 
@@ -509,9 +536,77 @@ export class WhisperLiveSession {
 
   /* ── Peer Connection ─────────────────────────────────────── */
 
+  /** Whether we're in a pre-live setup state where ICE failures are expected. */
+  private isSetupState(): boolean {
+    return this._state === "connecting" || this._state === "answering" ||
+           this._state === "waiting-for-answer" || this._state === "offering";
+  }
+
+  /** Start the grace period for setup ICE failures (both offerer and answerer). */
+  private startConnectingGrace(pc: RTCPeerConnection): void {
+    if (this.connectingGraceDone) return;
+    if (this.connectingGraceTimer) return; // already running
+    this.connectingGraceDone = true;
+    this.log("ICE failed during setup, waiting for peer to complete exchange...");
+
+    // Periodically nudge the browser to retry ICE checks. When the peer
+    // finally applies our code, their ICE agent starts sending binding
+    // requests. Our side needs to be actively checking too. Re-applying
+    // the existing remote description re-arms the ICE agent to process
+    // new incoming connectivity checks from the peer.
+    this.iceRetryInterval = setInterval(() => {
+      if (!this.pc) return;
+      const s = this.pc.iceConnectionState;
+      if (s === "connected" || s === "completed") {
+        if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
+        return;
+      }
+      if (s === "failed" || s === "disconnected") {
+        this.log(`ICE still ${s}, waiting for peer...`);
+        // Re-apply remote description to re-arm ICE agent. This makes the
+        // browser reconsider existing candidate pairs that may now work
+        // because the peer has finally applied our offer/answer.
+        const rd = this.pc.remoteDescription;
+        if (rd) {
+          this.pc.setRemoteDescription(rd).catch(() => {});
+        }
+      }
+    }, 8_000);
+
+    this.connectingGraceTimer = setTimeout(() => {
+      this.connectingGraceTimer = null;
+      if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
+      if (this._state === "live" || this._state === "silent" ||
+          this._state === "disconnected" || this._state === "error") return;
+      // Check current state — ICE may have recovered during the wait
+      const iceState = pc.iceConnectionState;
+      if (iceState === "connected" || iceState === "completed") return;
+      this.log(`connection failed after grace period (ICE: ${iceState})`);
+      this.setState("error", "Connection failed — peer may be unreachable. Make sure both sides have external assist enabled if connecting across networks.");
+      this.cleanupConnection();
+    }, CONNECTING_GRACE_PERIOD);
+  }
+
   private setupPeerConnection(pc: RTCPeerConnection): void {
+    // Log every ICE candidate for debugging
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        const c = event.candidate;
+        this.log(`ICE candidate: ${c.type ?? "?"} ${c.protocol ?? "?"} ${c.address ?? "?"}:${c.port ?? "?"}`);
+      } else {
+        this.log("ICE gathering complete");
+      }
+    };
+
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
+      this.log(`ICE: ${s}`);
+
+      if (s === "checking") {
+        // Normal — ICE is probing candidates. Nothing to do.
+        return;
+      }
+
       if (s === "disconnected") {
         // During live sessions, enter recovery grace period instead of instant disconnect
         if (this._state === "live" || this._state === "silent") {
@@ -527,10 +622,13 @@ export class WhisperLiveSession {
             }
           }, HEARTBEAT_TIMEOUT);
         } else if (this._state !== "recovering") {
-          // Pre-live states: no recovery, just log
-          this.log("connection interrupted during setup");
+          // Pre-live states: expected during out-of-band code exchange, just log
+          this.log("connection interrupted during setup (expected while exchanging codes)");
         }
-      } else if (s === "failed") {
+        return;
+      }
+
+      if (s === "failed") {
         // During active sessions, attempt one ICE restart before giving up
         if ((this._state === "live" || this._state === "silent" || this._state === "recovering") && !this.iceRestartAttempted) {
           this.iceRestartAttempted = true;
@@ -540,30 +638,24 @@ export class WhisperLiveSession {
             this.setState("recovering");
           }
           this.attemptIceRestart(pc);
-        } else if (!this.isOfferer && !this.connectingGraceDone &&
-                   (this._state === "connecting" || this._state === "answering" || this._state === "waiting-for-answer")) {
-          // Answerer: host hasn't applied our answer yet, or we're still generating it.
-          // ICE fails fast because the other side hasn't set up yet. Wait patiently.
-          this.connectingGraceDone = true;
-          this.log("waiting for host to complete the handshake...");
-          this.connectingGraceTimer = setTimeout(() => {
-            this.connectingGraceTimer = null;
-            if (pc.iceConnectionState === "failed" &&
-                this._state !== "live" && this._state !== "silent" && this._state !== "disconnected" && this._state !== "error") {
-              this.log("connection failed, could not reach peer");
-              this.setState("error", "Connection failed, peer may be unreachable");
-              this.cleanupConnection();
-            }
-          }, CONNECTING_GRACE_PERIOD);
+        } else if (this.isSetupState()) {
+          // During setup: ICE fails because the other side hasn't applied our
+          // answer/offer yet. This is normal for manual code exchange — start
+          // a grace period to wait for the peer to catch up.
+          this.startConnectingGrace(pc);
         } else {
           this.log("connection failed, could not reach peer");
           this.setState("error", "Connection failed, peer may be unreachable");
           this.cleanupConnection();
         }
-      } else if (s === "connected" || s === "completed") {
-        this.log(s === "completed" ? "connection established" : "connected to peer");
+        return;
+      }
+
+      if (s === "connected" || s === "completed") {
+        this.log(s === "completed" ? "connection fully established" : "connected to peer");
         this.iceRestartAttempted = false;
         if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
+        if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
         this.connectingGraceDone = false;
         this.dropExternalAssist(pc);
         // Recover from transient disruption
@@ -579,6 +671,7 @@ export class WhisperLiveSession {
 
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
+      this.log(`conn: ${s}`);
       if (s === "connected") {
         // Some browsers stabilize connectionState before ICE emits completed.
         this.dropExternalAssist(pc);
@@ -586,10 +679,13 @@ export class WhisperLiveSession {
       if (s === "failed") {
         // If we're already recovering (ICE restart in flight), let the ICE handler manage it
         if (this._state === "recovering") return;
-        // Answerer grace period: don't kill during out-of-band exchange
+        // During setup: ICE failure is expected, grace period handles it
         if (this.connectingGraceTimer) return;
-        if (!this.isOfferer &&
-            (this._state === "connecting" || this._state === "answering" || this._state === "waiting-for-answer")) return;
+        if (this.isSetupState()) {
+          // Start grace if not already started (connectionState can fire before iceConnectionState)
+          this.startConnectingGrace(pc);
+          return;
+        }
         this.log("connection to peer failed");
         this.setState("error", "Connection failed");
         this.cleanupConnection();
@@ -1235,6 +1331,7 @@ export class WhisperLiveSession {
     if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
     if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
     if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
+    if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
     this.connectingGraceDone = false;
     this.stateBeforeRecovery = null;
     this.iceRestartAttempted = false;
@@ -1256,6 +1353,7 @@ export class WhisperLiveSession {
     }
 
     if (pc) {
+      pc.onicecandidate = null;
       pc.oniceconnectionstatechange = null;
       pc.onconnectionstatechange = null;
       pc.onicegatheringstatechange = null;

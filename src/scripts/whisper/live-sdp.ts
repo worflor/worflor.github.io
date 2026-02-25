@@ -150,6 +150,9 @@ function reconstructSDP(compact: CompactSDP): string {
     lines.push(line);
   }
 
+  // Signal that all candidates are included (no trickle)
+  lines.push("a=end-of-candidates");
+
   lines.push("");
   return lines.join("\r\n");
 }
