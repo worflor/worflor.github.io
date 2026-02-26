@@ -57,6 +57,17 @@ export interface VoteTopicOptions {
   parties?: number;
   /** Timeout in ms before votes expire (default 30s). */
   timeoutMs?: number;
+  /**
+   * Weight of this client's vote (default 1).
+   * Always 1 in 1:1 (symmetric). In campfire, founders get weight 2.
+   * Assigned locally, never declared over the wire → unspoofable.
+   */
+  localWeight?: number;
+  /**
+   * Weight of each peer's vote (default 1).
+   * In 1:1, always 1 (symmetric). In campfire, non-founder peers get weight 1.
+   */
+  peerWeight?: number;
   /** Called when the vote threshold is met — execute the action. */
   onExecute: () => void;
   /** Called on every state transition. Wire this to your UI. */
@@ -70,6 +81,8 @@ export class VoteTopic {
   private _local = false;
   private _peer = 0;
   private _maxPeer: number;
+  private _localWeight: number;
+  private _peerWeight: number;
   private _timer: ReturnType<typeof setTimeout> | null = null;
   private _timeoutMs: number;
   private _onExecute: () => void;
@@ -77,7 +90,10 @@ export class VoteTopic {
 
   constructor(opts: VoteTopicOptions) {
     const parties = opts.parties ?? 2;
-    this.threshold = Math.floor(parties / 2) + 1;
+    this._localWeight = opts.localWeight ?? 1;
+    this._peerWeight = opts.peerWeight ?? 1;
+    const totalWeight = this._localWeight + this._peerWeight * (parties - 1);
+    this.threshold = Math.floor(totalWeight / 2) + 1;
     this._maxPeer = parties - 1;
     this._timeoutMs = opts.timeoutMs ?? 30_000;
     this._onExecute = opts.onExecute;
@@ -86,6 +102,20 @@ export class VoteTopic {
 
   get state(): VoteState { return this._state; }
   get localVoted(): boolean { return this._local; }
+
+  /**
+   * Reconfigure weights and recalculate threshold.
+   * Call when the session role becomes known (e.g. on "live" state).
+   * Safe to call multiple times — resets vote state.
+   */
+  setWeights(localWeight: number, peerWeight: number, parties?: number): void {
+    this._localWeight = localWeight;
+    this._peerWeight = peerWeight;
+    if (parties !== undefined) this._maxPeer = parties - 1;
+    const totalWeight = this._localWeight + this._peerWeight * this._maxPeer;
+    (this as { threshold: number }).threshold = Math.floor(totalWeight / 2) + 1;
+    this.reset();
+  }
 
   /** Cast this client's vote. Returns true if threshold met (action executed). */
   castLocal(): boolean {
@@ -142,7 +172,7 @@ export class VoteTopic {
     this._clearTimer();
   }
 
-  private _tally(): number { return (this._local ? 1 : 0) + this._peer; }
+  private _tally(): number { return (this._local ? this._localWeight : 0) + this._peer * this._peerWeight; }
 
   private _transition(next: VoteState): void {
     if (this._state === next) return;
@@ -170,4 +200,26 @@ export class VoteTopic {
   private _clearTimer(): void {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
   }
+}
+
+/* ── Message reference encoding ─────────────────────────── */
+
+/**
+ * Encode a message reference as a 5-byte payload.
+ * [0]    direction: 0x00 = self (from sender's perspective), 0x01 = peer
+ * [1..4] counter (4B LE)
+ */
+export function encodeMsgRef(direction: "self" | "peer", counter: number): Uint8Array {
+  const buf = new Uint8Array(5);
+  buf[0] = direction === "self" ? 0x00 : 0x01;
+  new DataView(buf.buffer).setUint32(1, counter, true);
+  return buf;
+}
+
+export function decodeMsgRef(payload: Uint8Array): { direction: "self" | "peer"; counter: number } | null {
+  if (payload.length < 5) return null;
+  return {
+    direction: payload[0] === 0x00 ? "self" : "peer",
+    counter: new DataView(payload.buffer, payload.byteOffset + 1, 4).getUint32(0, true),
+  };
 }

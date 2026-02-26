@@ -1174,7 +1174,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /** Maps send counter → message DOM element for delivery confirmation. */
   const pendingDelivery = new Map<number, HTMLElement>();
 
-  function addChatMessage(msg: LiveMessage, sendCounter?: number): void {
+  function addChatMessage(msg: LiveMessage): void {
     // Hide empty-state hint on first real message
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
 
@@ -1244,8 +1244,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       smartScroll();
     }
 
-    if (msg.direction === "self" && sendCounter !== undefined) {
-      pendingDelivery.set(sendCounter, div);
+    if (msg.counter !== undefined) {
+      div.dataset.msgId = `${msg.direction === "self" ? "s" : "p"}:${msg.counter}`;
+    }
+
+    if (msg.direction === "self" && msg.counter !== undefined) {
+      pendingDelivery.set(msg.counter, div);
     }
     if (msg.direction === "peer") {
       bumpUnread();
@@ -1352,6 +1356,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "live":
+        // 1:1 is always symmetric — both parties are equal.
+        // Campfire: founders get elevated weight via setWeights(2, 1, partyCount).
+        if (session) clearVote.setWeights(1, 1);
         enterPhase(opts.chatSection, "secure session live · end-to-end encrypted", false, false);
         opts.liveStatusLine.classList.add("whisper-status--ready");
         opts.chatInput.disabled = false;
@@ -1425,12 +1432,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.fpNicknameInput.parentElement?.classList.remove("wl-fp-wrap--editing");
   }
 
-  /** Counters queued for the next self-message to pair with delivery tracking. */
-  const selfCounterQueue: number[] = [];
-
   function handleMessage(msg: LiveMessage): void {
-    const counter = msg.direction === "self" ? selfCounterQueue.shift() : undefined;
-    addChatMessage(msg, counter);
+    addChatMessage(msg);
   }
 
   /* ── Reset to idle ─────────────────────────────────────── */
@@ -1452,7 +1455,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       session = null;
     }
     pendingDelivery.clear();
-    selfCounterQueue.length = 0;
     clearNode(opts.chatMessages);
     // Restore empty-state hint
     if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
@@ -1889,7 +1891,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       e.preventDefault();
       e.stopPropagation();
       showPhase(opts.chatSection);
-      updateStatus("chat preview · not connected");
+      updateStatus("chat preview · for testing");
       setLogActive(false);
       setBusy(false);
       updateControls();
@@ -2091,7 +2093,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     // Phase 1: encrypt + buffer begins
     const counter = session.sendCounter;
-    selfCounterQueue.push(counter);
     sendBeginFill();
     try {
       await session.sendText(text);
@@ -2223,7 +2224,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!file || !session) return;
     opts.chatFileInput.value = "";
     const counter = session.sendCounter;
-    selfCounterQueue.push(counter);
     sendBeginFill();
     try {
       await session.sendFile(file);
@@ -2253,7 +2253,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const file = (e as DragEvent).dataTransfer?.files?.[0];
     if (!file || !session) return;
     const counter = session.sendCounter;
-    selfCounterQueue.push(counter);
     sendBeginFill();
     try {
       await session.sendFile(file);

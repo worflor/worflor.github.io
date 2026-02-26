@@ -85,6 +85,8 @@ export interface LiveMessage {
   fileData?: Uint8Array;
   fileType?: string;
   timestamp: number;
+  /** Double Ratchet message counter — unique per direction within a session. */
+  counter?: number;
 }
 
 export interface ConnectionStats {
@@ -417,6 +419,9 @@ export class WhisperLiveSession {
 
   /** Current send counter — the counter of the next message that will be sent. */
   get sendCounter(): number { return this.ratchetState?.nSend ?? 0; }
+
+  /** Whether this side created the session (offerer). Cryptographically established during handshake. */
+  get isHost(): boolean { return this.isOfferer; }
 
   private setState(state: LiveState, detail?: string): void {
     const allowed = VALID_TRANSITIONS[this._state];
@@ -1031,6 +1036,7 @@ export class WhisperLiveSession {
           fileData: fileBytes,
           fileType,
           timestamp: Date.now(),
+          counter: header.counter,
         });
       } else {
         this.onMessage({
@@ -1038,6 +1044,7 @@ export class WhisperLiveSession {
           direction: "peer",
           text: TD.decode(plaintext),
           timestamp: Date.now(),
+          counter: header.counter,
         });
       }
     } catch (err) {
@@ -1103,8 +1110,9 @@ export class WhisperLiveSession {
   async sendText(text: string): Promise<void> {
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
+      const counter = this.ratchetState!.nSend;
       await this.encryptAndSend(TE.encode(text), 0x00);
-      this.onMessage({ type: "text", direction: "self", text, timestamp: Date.now() });
+      this.onMessage({ type: "text", direction: "self", text, timestamp: Date.now(), counter });
     });
   }
 
@@ -1116,12 +1124,13 @@ export class WhisperLiveSession {
         await this.sendFileDressed(file.name, file.type, fileBytes);
         return;
       }
+      const counter = this.ratchetState!.nSend;
       const plaintext = encodeFilePlaintext(file.name, file.type, fileBytes);
       await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
       this.onMessage({
         type: "file", direction: "self",
         fileName: file.name, fileSize: fileBytes.length, fileType: file.type,
-        timestamp: Date.now(),
+        timestamp: Date.now(), counter,
       });
     });
   }
@@ -1162,6 +1171,7 @@ export class WhisperLiveSession {
 
       // Send the dressed carrier as a file message
       const dressedBytes = new Uint8Array(await result.outputFile.arrayBuffer());
+      const counter = this.ratchetState!.nSend;
       const plaintext = encodeFilePlaintext(result.outputName, result.outputType, dressedBytes);
       await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
 
@@ -1172,13 +1182,15 @@ export class WhisperLiveSession {
         fileSize: dressedBytes.length,
         fileType: result.outputType,
         timestamp: Date.now(),
+        counter,
       });
 
       this.onLog(`sent ${fileName} (embedded in carrier)`);
     } catch (err) {
       this.onLog(`steganography failed, sending directly: ${errorMessage(err)}`);
+      const counter = this.ratchetState!.nSend;
       await this.encryptAndSend(encodeFilePlaintext(fileName, fileType, fileBytes), LIVE_FLAG.FILE);
-      this.onMessage({ type: "file", direction: "self", fileName, fileSize: fileBytes.length, fileType, timestamp: Date.now() });
+      this.onMessage({ type: "file", direction: "self", fileName, fileSize: fileBytes.length, fileType, timestamp: Date.now(), counter });
     }
   }
 

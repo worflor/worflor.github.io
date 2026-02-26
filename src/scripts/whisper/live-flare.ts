@@ -61,36 +61,34 @@ export async function maintainFlare(
 
   return new Promise<FlareResult>((resolve, reject) => {
     let done = false;
-    let ws: WebSocket | null = null;
     let reannounceTimer: ReturnType<typeof setInterval> | null = null;
-    let reconnectDelay = RECONNECT_BASE;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let connectedUrl = "";
+    const sockets = new Map<string, WebSocket>();
+    const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const reconnectDelayByUrl = new Map<string, number>();
+    const seenOffers = new Set<string>();
+    const seenAnswers = new Set<string>();
 
     const finish = (result?: FlareResult, error?: Error) => {
       if (done) return;
       done = true;
 
       if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      for (const t of reconnectTimers.values()) clearTimeout(t);
+      reconnectTimers.clear();
 
-      // Send stopped for current hashes
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        for (const h of currentHashes) {
-          try {
-            ws.send(JSON.stringify({
-              action: "announce",
-              info_hash: h,
-              peer_id: peerId,
-              event: "stopped",
-            }));
-          } catch { break; }
+      // Send stopped for current hashes on all open sockets.
+      const stoppedPayloads = makeStoppedPayloads(currentHashes);
+      for (const ws of sockets.values()) {
+        if (ws.readyState === WebSocket.OPEN) {
+          for (const payload of stoppedPayloads) {
+            try { ws.send(payload); } catch { break; }
+          }
+          try { ws.close(1000); } catch { /* noop */ }
+        } else {
+          try { ws.close(1000); } catch { /* noop */ }
         }
-        try { ws.close(1000); } catch { /* noop */ }
-      } else {
-        try { ws?.close(1000); } catch { /* noop */ }
       }
-      ws = null;
+      sockets.clear();
 
       if (result) resolve(result);
       else reject(error ?? new Error("flare-failed"));
@@ -120,9 +118,11 @@ export async function maintainFlare(
     }
 
     function sendAll(payloads: string[]): void {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      for (const p of payloads) {
-        try { ws.send(p); } catch { break; }
+      for (const ws of sockets.values()) {
+        if (ws.readyState !== WebSocket.OPEN) continue;
+        for (const p of payloads) {
+          try { ws.send(p); } catch { break; }
+        }
       }
     }
 
@@ -145,35 +145,78 @@ export async function maintainFlare(
       sendAll(makeAnnouncePayloads(currentHashes));
     }
 
+    function scheduleReconnect(url: string): void {
+      if (done) return;
+      if (reconnectTimers.has(url)) return;
+
+      const host = new URL(url).host;
+      const delay = reconnectDelayByUrl.get(url) ?? RECONNECT_BASE;
+      reconnectDelayByUrl.set(url, Math.min(delay * 2, RECONNECT_CAP));
+
+      callbacks.onLog(`flare reconnecting via ${host} in ${(delay / 1000).toFixed(0)}s...`);
+
+      const timer = setTimeout(async () => {
+        reconnectTimers.delete(url);
+        if (done) return;
+
+        // Re-derive hashes in case epoch changed while disconnected.
+        lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
+        currentHashes = await deriveInfoHashes(phrase);
+
+        connectToTracker(url);
+      }, delay);
+
+      reconnectTimers.set(url, timer);
+    }
+
     function connectToTracker(url: string): void {
       if (done) return;
+      if (sockets.has(url)) return;
 
       const host = new URL(url).host;
       callbacks.onStatus("connecting to relay...");
 
+      let opened = false;
+      let closeHandled = false;
       let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
         connectTimer = null;
-        if (ws) {
-          try { ws.close(); } catch { /* noop */ }
-          ws = null;
+        if (closeHandled) return;
+        const sock = sockets.get(url);
+        if (sock) {
+          try { sock.close(); } catch { /* noop */ }
         }
-        scheduleReconnect();
+        scheduleReconnect(url);
       }, WS_CONNECT_TIMEOUT);
 
+      let ws: WebSocket;
       try {
         ws = new WebSocket(url);
       } catch {
         if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-        scheduleReconnect();
+        scheduleReconnect(url);
         return;
       }
+      sockets.set(url, ws);
+
+      const handleDrop = () => {
+        if (closeHandled) return;
+        closeHandled = true;
+        if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+        const cur = sockets.get(url);
+        if (cur === ws) sockets.delete(url);
+        if (!done) {
+          if (opened) callbacks.onLog(`flare connection dropped via ${host}, reconnecting...`);
+          callbacks.onStatus("reconnecting...");
+          scheduleReconnect(url);
+        }
+      };
 
       ws.onopen = () => {
+        opened = true;
         if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
         if (done) return;
 
-        connectedUrl = url;
-        reconnectDelay = RECONNECT_BASE; // Reset backoff on success
+        reconnectDelayByUrl.set(url, RECONNECT_BASE); // Reset backoff on success
 
         callbacks.onLog(`flare connected via ${host}`);
         callbacks.onStatus("flare is burning");
@@ -182,13 +225,14 @@ export async function maintainFlare(
         sendAll(makeAnnouncePayloads(currentHashes));
 
         // Start periodic re-announce / epoch check
-        if (reannounceTimer) clearInterval(reannounceTimer);
-        reannounceTimer = setInterval(() => {
-          if (done) return;
-          // Re-announce (tracker keepalive) + check epoch
-          sendAll(makeAnnouncePayloads(currentHashes));
-          void checkEpochRotation();
-        }, REANNOUNCE_INTERVAL);
+        if (!reannounceTimer) {
+          reannounceTimer = setInterval(() => {
+            if (done) return;
+            // Re-announce (tracker keepalive) + check epoch
+            sendAll(makeAnnouncePayloads(currentHashes));
+            void checkEpochRotation();
+          }, REANNOUNCE_INTERVAL);
+        }
       };
 
       ws.onmessage = (event) => {
@@ -213,14 +257,19 @@ export async function maintainFlare(
           const peerPeerId = String(msg.peer_id ?? "");
 
           if (!peerOfferCode || peerOfferCode.length < MIN_CODE_LEN) return;
+          if (!peerOfferId) return;
           if (peerPeerId === peerId) return;
           if (!BASE64URL_RE.test(peerOfferCode)) return;
+
+          const offerKey = `${peerPeerId}|${peerOfferId}|${peerOfferCode.slice(0, 24)}`;
+          if (seenOffers.has(offerKey)) return;
 
           // Tie-break: lower peer_id becomes answerer
           if (peerId > peerPeerId) {
             callbacks.onLog("resolving connection order...");
             return;
           }
+          seenOffers.add(offerKey);
 
           callbacks.onLog("someone found your flare");
 
@@ -240,7 +289,7 @@ export async function maintainFlare(
 
             try {
               const myAnswerCode = await acceptOfferFn(peerOfferCode);
-              if (done || !ws || ws.readyState !== WebSocket.OPEN) return;
+                if (done || ws.readyState !== WebSocket.OPEN) return;
 
               ws.send(JSON.stringify({
                 action: "announce",
@@ -269,6 +318,10 @@ export async function maintainFlare(
           if (!peerAnswerCode || peerAnswerCode.length < MIN_CODE_LEN) return;
           if (!BASE64URL_RE.test(peerAnswerCode)) return;
 
+          const answerKey = `${String(msg.peer_id ?? "")}|${String(msg.offer_id ?? "")}|${peerAnswerCode.slice(0, 24)}`;
+          if (seenAnswers.has(answerKey)) return;
+          seenAnswers.add(answerKey);
+
           callbacks.onStatus("found your peer!");
           callbacks.onLog("peer accepted our offer");
           finish({ role: "offerer", peerAnswerCode });
@@ -277,101 +330,17 @@ export async function maintainFlare(
       };
 
       ws.onerror = () => {
-        if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-        if (!done) scheduleReconnect();
+        // onclose handles reconnect consistently.
       };
 
-      ws.onclose = () => {
-        if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-        if (!done) {
-          callbacks.onLog("flare connection dropped, reconnecting...");
-          callbacks.onStatus("reconnecting...");
-          scheduleReconnect();
-        }
-      };
+      ws.onclose = handleDrop;
     }
 
-    function scheduleReconnect(): void {
-      if (done) return;
-      if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
-      ws = null;
-
-      const delay = reconnectDelay;
-      reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_CAP);
-
-      callbacks.onLog(`flare reconnecting in ${(delay / 1000).toFixed(0)}s...`);
-      reconnectTimer = setTimeout(async () => {
-        reconnectTimer = null;
-        if (done) return;
-
-        // Re-derive hashes in case epoch changed during disconnect
-        lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
-        currentHashes = await deriveInfoHashes(phrase);
-
-        // Try preferred URL first, then fall back to racing all
-        if (connectedUrl) {
-          connectToTracker(connectedUrl);
-        } else {
-          connectFirst();
-        }
-      }, delay);
+    function connectAllTrackers(): void {
+      for (const url of TRACKER_URLS) connectToTracker(url);
     }
 
-    function connectFirst(): void {
-      if (done) return;
-      // Race all trackers — first to open wins
-      let won = false;
-      const sockets: WebSocket[] = [];
-
-      for (const url of TRACKER_URLS) {
-        try {
-          const sock = new WebSocket(url);
-          sockets.push(sock);
-
-          sock.onopen = () => {
-            if (won || done) {
-              try { sock.close(1000); } catch { /* noop */ }
-              return;
-            }
-            won = true;
-            // Close all other sockets
-            for (const s of sockets) {
-              if (s !== sock) {
-                try { s.close(1000); } catch { /* noop */ }
-              }
-            }
-            // Reassign to main socket and set up handlers
-            try { sock.close(1000); } catch { /* noop */ }
-            connectToTracker(url);
-          };
-
-          sock.onerror = () => {
-            // Will trigger onclose
-          };
-
-          sock.onclose = () => {
-            if (!won && sockets.every((s) => s.readyState === WebSocket.CLOSED)) {
-              // All failed
-              if (!done) scheduleReconnect();
-            }
-          };
-        } catch {
-          // Skip this URL
-        }
-      }
-
-      // Timeout for initial connection race
-      setTimeout(() => {
-        if (!won && !done) {
-          for (const s of sockets) {
-            try { s.close(); } catch { /* noop */ }
-          }
-          scheduleReconnect();
-        }
-      }, WS_CONNECT_TIMEOUT);
-    }
-
-    // Start by racing all trackers
-    connectFirst();
+    // Start by connecting to all trackers, so peers on different relays can still meet.
+    connectAllTrackers();
   });
 }
