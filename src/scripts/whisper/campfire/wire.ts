@@ -20,6 +20,8 @@ import {
   CF_PEER_LIST,
   CF_DM_SDP_RELAY,
   CF_RING_WANT,
+  CF_REACT,
+  CF_UNREACT,
   PEER_ID_LEN,
   GROUP_KEY_LEN,
   MSG_ID_LEN,
@@ -176,6 +178,30 @@ export function buildRingWant(originPeerId: Uint8Array, targetPeerId: Uint8Array
   );
 }
 
+/**
+ * 0x5C CF_REACT / 0x5D CF_UNREACT:
+ *   [subType:1B][targetMsgIdFull:32B][senderId:16B][hopCount:1B][emoji:utf8]
+ *
+ * subType must be CF_REACT or CF_UNREACT.
+ * targetMsgIdFull is the 32-byte SHA-256 msgId of the message being reacted to.
+ * emoji is any Unicode emoji string encoded as UTF-8 (no length prefix — fills to end of payload).
+ */
+export function buildCfReact(
+  subType: typeof CF_REACT | typeof CF_UNREACT,
+  targetMsgIdFull: Uint8Array,
+  senderId: Uint8Array,
+  emoji: string,
+  hopCount = 0,
+): Uint8Array {
+  return concatBytes(
+    new Uint8Array([subType]),
+    targetMsgIdFull,
+    senderId,
+    new Uint8Array([hopCount]),
+    TE.encode(emoji),
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    Parsers
    ═══════════════════════════════════════════════════════════════════ */
@@ -304,4 +330,24 @@ export function parseRingWant(data: Uint8Array): ParsedRingWant {
     fromSeq: readU32LE(data, PEER_ID_LEN * 2),
     toSeq: readU32LE(data, PEER_ID_LEN * 2 + 4),
   };
+}
+
+export interface ParsedCfReact {
+  /** Full 32-byte SHA-256 of the target message — used for gossip re-broadcast. */
+  targetMsgIdFull: Uint8Array;
+  senderId: Uint8Array;
+  hopCount: number;
+  /** Free-form Unicode emoji string. */
+  emoji: string;
+}
+
+/** Parse a CF_REACT or CF_UNREACT payload (data is AFTER the subtype byte). */
+export function parseCfReact(data: Uint8Array): ParsedCfReact | null {
+  if (data.length < MSG_ID_LEN + PEER_ID_LEN + 2) return null; // min: 32 + 16 + 1 (hop) + 1 (emoji)
+  let o = 0;
+  const targetMsgIdFull = data.subarray(o, o + MSG_ID_LEN); o += MSG_ID_LEN;
+  const senderId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
+  const hopCount = data[o]; o += 1;
+  const emoji = TD.decode(data.subarray(o));
+  return { targetMsgIdFull, senderId, hopCount, emoji };
 }

@@ -87,10 +87,19 @@ export function encodeFilePlaintext(fileName: string, fileType: string, fileByte
   return buf;
 }
 
-/** Strip path separators, control chars, and null bytes from a filename. */
+/** Strip path separators, control chars, null bytes, and reserved device names from a filename. */
 function sanitizeFileName(name: string): string {
-  // Remove path separators and null bytes, then strip control characters (U+0000–U+001F, U+007F)
-  return name.replace(/[/\\]/g, "_").replace(/[\x00-\x1f\x7f]/g, "") || "file";
+  let sanitized = name
+    .replace(/[/\\]/g, "_")            // path separators → underscore
+    .replace(/[\x00-\x1f\x7f]/g, "")  // strip control characters
+    .replace(/[<>:"|?*]/g, "_")        // characters illegal on Windows
+    .replace(/\s+$/, "")               // trailing whitespace
+    .replace(/\.+$/, "");              // trailing dots (Windows strips these silently)
+  // Windows reserved device names — prefix with underscore to defuse
+  if (/^(CON|PRN|AUX|NUL|COM\d|LPT\d)(\.|$)/i.test(sanitized)) {
+    sanitized = "_" + sanitized;
+  }
+  return sanitized || "file";
 }
 
 export function decodeFilePlaintext(data: Uint8Array): { fileName: string; fileType: string; fileBytes: Uint8Array } {

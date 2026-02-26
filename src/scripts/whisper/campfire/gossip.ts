@@ -48,6 +48,7 @@ import {
   buildTopologyAssign,
   buildDmSdpRelay,
   buildRingWant,
+  buildCfReact,
   parseRootHeartbeat,
   parseGroupMsgHeader,
   decryptGroupMsg,
@@ -59,6 +60,7 @@ import {
   parseTopologyAssign,
   parseDmSdpRelay,
   parseRingWant,
+  parseCfReact,
 } from "./wire";
 
 import {
@@ -72,6 +74,8 @@ import {
   CF_PEER_LIST,
   CF_DM_SDP_RELAY,
   CF_RING_WANT,
+  CF_REACT,
+  CF_UNREACT,
 } from "./types";
 
 import { CampfireTopology } from "./topology";
@@ -125,6 +129,8 @@ export class CampfireNode {
   // Gossip dedup
   private seenMsgIds: string[] = [];
   private seenMsgSet = new Set<string>();
+  // React dedup — key: "{senderHex}:{react|unreact}:{targetMsgIdHex}:{emoji}"
+  private seenReacts = new Set<string>();
 
   // Ring/repair state
   private seqBySender = new Map<string, number>();
@@ -519,6 +525,7 @@ export class CampfireNode {
     const seqLe = new Uint8Array(4);
     new DataView(seqLe.buffer).setUint32(0, seq, true);
     const msgId = await sha256(concatBytes(this.peerId, seqLe, plaintext));
+    const displayId = new DataView(msgId.buffer, msgId.byteOffset, 4).getUint32(0, true);
 
     const wire = await buildGroupMsg(
       msgId, this.peerId,
@@ -534,6 +541,7 @@ export class CampfireNode {
     // Show locally
     this.cb.onMessage({
       msgId,
+      displayId,
       senderId: this.peerId,
       senderIdHex: this.peerIdHex,
       timestamp: Date.now(),
@@ -542,6 +550,23 @@ export class CampfireNode {
       contentType: ContentType.Text,
       plaintext,
     });
+  }
+
+  /**
+   * Broadcast a reaction to a campfire message group-wide.
+   * @param targetMsgIdFull  The full 32-byte SHA-256 msgId of the message being reacted to.
+   * @param emoji            Free-form Unicode emoji string.
+   * @param isUnreact        If true, sends CF_UNREACT instead of CF_REACT.
+   */
+  async broadcastReact(targetMsgIdFull: Uint8Array, emoji: string, isUnreact = false): Promise<void> {
+    if (this._state !== "active" || !this.currentEpoch) return;
+    const subType = isUnreact ? CF_UNREACT : CF_REACT;
+    const wire = buildCfReact(subType, targetMsgIdFull, this.peerId, emoji, 0);
+    // Mark as seen so we don't re-deliver our own reaction when gossip loops back
+    const targetHex = toHex(targetMsgIdFull);
+    const action = isUnreact ? "unreact" : "react";
+    this.seenReacts.add(`${this.peerIdHex}:${action}:${targetHex}:${emoji}`);
+    await this.broadcastToNeighbors(wire);
   }
 
   /* ── Gossip Dedup ──────────────────────────────────────── */
@@ -598,6 +623,12 @@ export class CampfireNode {
         break;
       case CF_RING_WANT:
         await this.handleRingWant(payload, fromLabel);
+        break;
+      case CF_REACT:
+        await this.handleCfReact(plaintext, fromLabel, false);
+        break;
+      case CF_UNREACT:
+        await this.handleCfReact(plaintext, fromLabel, true);
         break;
       default:
         break; // unknown message type, silently ignore
@@ -680,8 +711,10 @@ export class CampfireNode {
     }
 
     // Deliver to UI
+    const displayId = new DataView(parsed.msgId.buffer, parsed.msgId.byteOffset, 4).getUint32(0, true);
     this.cb.onMessage({
       msgId: parsed.msgId,
+      displayId,
       senderId: parsed.senderId,
       senderIdHex: toHex(parsed.senderId),
       timestamp: parsed.timestamp,
@@ -723,6 +756,41 @@ export class CampfireNode {
     }
 
     await this.broadcastToNeighbors(buildRingWant(originPeerId, targetPeerId, fromSeq, toSeq), fromLabel);
+  }
+
+  /**
+   * Handle an incoming CF_REACT or CF_UNREACT message.
+   * `plaintext` is the full campfire payload including the subtype byte.
+   */
+  private async handleCfReact(plaintext: Uint8Array, fromLabel: string, isUnreact: boolean): Promise<void> {
+    const data = plaintext.subarray(1);
+    const parsed = parseCfReact(data);
+    if (!parsed) return;
+
+    const senderHex = toHex(parsed.senderId);
+    const targetHex = toHex(parsed.targetMsgIdFull);
+    const action = isUnreact ? "unreact" : "react";
+    const dedupKey = `${senderHex}:${action}:${targetHex}:${parsed.emoji}`;
+
+    if (this.seenReacts.has(dedupKey)) return;
+    this.seenReacts.add(dedupKey);
+
+    if (parsed.hopCount >= MAX_HOP_COUNT) return;
+
+    // Deliver to UI
+    const displayId = new DataView(parsed.targetMsgIdFull.buffer, parsed.targetMsgIdFull.byteOffset, 4).getUint32(0, true);
+    if (isUnreact) {
+      this.cb.onUnreact?.(displayId, parsed.emoji, senderHex);
+    } else {
+      this.cb.onReact?.(displayId, parsed.emoji, senderHex);
+    }
+
+    // Gossip forward with incremented hop count
+    const rewrapped = buildCfReact(
+      isUnreact ? CF_UNREACT : CF_REACT,
+      parsed.targetMsgIdFull, parsed.senderId, parsed.emoji, parsed.hopCount + 1,
+    );
+    await this.broadcastToNeighbors(rewrapped, fromLabel);
   }
 
   private async handleJoinAnnounce(data: Uint8Array, fromLabel: string): Promise<void> {
@@ -1135,6 +1203,7 @@ export class CampfireNode {
     this.allPeers.clear();
     this.seenMsgIds = [];
     this.seenMsgSet.clear();
+    this.seenReacts.clear();
     this.seqBySender.clear();
     this.recentBySeq.clear();
     this.assignedNeighborHexes.clear();

@@ -13,7 +13,11 @@ import {
   type LiveState,
   type LiveMessage,
 } from "./live";
-import { CTRL_OP, VoteTopic } from "./live-ctrl";
+import {
+  CTRL_OP, VoteTopic,
+  encodeSeenPayload, decodeSeenPayload,
+  encodeReactPayload, decodeReactPayload,
+} from "./live-ctrl";
 import {
   q,
   asInput,
@@ -100,6 +104,10 @@ export interface WhisperLiveUIOptions {
   chatSendBtn: HTMLButtonElement;
   chatFileInput: HTMLInputElement;
   chatFileBtn: HTMLButtonElement;
+  chatMicWrap: HTMLElement;
+  chatMicBtn: HTMLButtonElement;
+  chatMicCancel: HTMLButtonElement;
+  chatMicSend: HTMLButtonElement;
   chatClearBtn: HTMLButtonElement;
   disconnectBtn: HTMLButtonElement;
   fpChip: HTMLButtonElement;
@@ -174,6 +182,10 @@ const WHISPER_LIVE_IDS = {
   chatSendBtn: "wl-chat-send",
   chatFileInput: "wl-chat-file-input",
   chatFileBtn: "wl-chat-file-btn",
+  chatMicWrap: "wl-chat-mic-wrap",
+  chatMicBtn: "wl-chat-mic-btn",
+  chatMicCancel: "wl-chat-mic-cancel",
+  chatMicSend: "wl-chat-mic-send",
   chatClearBtn: "wl-chat-clear-btn",
   disconnectBtn: "wl-disconnect",
   fpChip: "wl-fp-chip",
@@ -302,6 +314,8 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     chatSection: el(I.chatSection), chatMessages: el(I.chatMessages),
     chatInput: inp(I.chatInput), chatSendBtn: btn(I.chatSendBtn),
     chatFileInput: inp(I.chatFileInput), chatFileBtn: btn(I.chatFileBtn),
+    chatMicWrap: el(I.chatMicWrap),
+    chatMicBtn: btn(I.chatMicBtn), chatMicCancel: btn(I.chatMicCancel), chatMicSend: btn(I.chatMicSend),
     chatClearBtn: btn(I.chatClearBtn),
     disconnectBtn: btn(I.disconnectBtn),
     fpChip: btn(I.fpChip), fpChipEmoji: el(I.fpChipEmoji), fpChipName: el(I.fpChipName),
@@ -398,12 +412,97 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // Route inbound ctrl frames to the right handler.
   // Adding a new voted feature = new VoteTopic + two lines here.
 
-  function handleCtrl(opcode: number, _payload: Uint8Array): void {
+  function handleCtrl(opcode: number, payload: Uint8Array): void {
     switch (opcode) {
       case CTRL_OP.CLEAR_VOTE:   clearVote.receivePeer(); break;
       case CTRL_OP.CLEAR_CANCEL: clearVote.cancelPeer();  break;
       case CTRL_OP.CAMPFIRE_VOTE:   campfireVote.receivePeer(); break;
       case CTRL_OP.CAMPFIRE_CANCEL: campfireVote.cancelPeer();  break;
+      case CTRL_OP.SEEN: {
+        const msgId = decodeSeenPayload(payload);
+        if (msgId !== null) markSeen(msgId);
+        break;
+      }
+      case CTRL_OP.REACT: {
+        const r = decodeReactPayload(payload);
+        if (r) applyReaction(r.msgId, r.emoji, "peer");
+        break;
+      }
+      case CTRL_OP.UNREACT: {
+        const r = decodeReactPayload(payload);
+        if (r) removeReaction(r.msgId, r.emoji, "peer");
+        break;
+      }
+    }
+  }
+
+  function markSeen(msgId: number): void {
+    const el = msgById.get(msgId);
+    if (!el) return;
+    el.classList.add("wl-msg--seen");
+  }
+
+  function applyReaction(msgId: number, emoji: string, who: "self" | "peer"): void {
+    const el = msgById.get(msgId);
+    if (!el || !emoji) return;
+    let bar = el.querySelector<HTMLElement>(".wl-msg-reactions");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "wl-msg-reactions";
+      el.appendChild(bar);
+    }
+    // Use emoji string as the stable key — CSS.escape handles any exotic codepoints in selectors
+    let pill = bar.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    if (!pill) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      pill = btn;
+      pill.className = "wl-reaction";
+      pill.dataset.emoji = emoji;
+      pill.dataset.self = "0";
+      pill.dataset.peer = "0";
+      pill.textContent = emoji;
+      pill.addEventListener("click", () => toggleSelfReaction(msgId, emoji));
+      bar.appendChild(pill);
+    }
+    pill.dataset[who] = "1";
+    updateReactionPill(pill);
+  }
+
+  function removeReaction(msgId: number, emoji: string, who: "self" | "peer"): void {
+    const el = msgById.get(msgId);
+    if (!el) return;
+    const pill = el.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    if (!pill) return;
+    pill.dataset[who] = "0";
+    updateReactionPill(pill);
+    if (pill.dataset.self === "0" && pill.dataset.peer === "0") pill.remove();
+    const bar = el.querySelector(".wl-msg-reactions");
+    if (bar && !bar.hasChildNodes()) bar.remove();
+  }
+
+  function updateReactionPill(pill: HTMLElement): void {
+    const hasSelf = pill.dataset.self === "1";
+    const hasPeer = pill.dataset.peer === "1";
+    pill.classList.toggle("wl-reaction--self", hasSelf);
+    pill.classList.toggle("wl-reaction--peer", hasPeer);
+  }
+
+  /**
+   * Toggle self-reaction on a message. Looks up the existing pill in the DOM —
+   * if already reacted, unreacts; otherwise reacts. No pill param needed since
+   * we key by emoji string in data-emoji.
+   */
+  function toggleSelfReaction(msgId: number, emoji: string): void {
+    if (!session) return;
+    const el = msgById.get(msgId);
+    const pill = el?.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    if (pill?.dataset.self === "1") {
+      session.sendCtrl(CTRL_OP.UNREACT, encodeReactPayload(msgId, emoji));
+      removeReaction(msgId, emoji, "self");
+    } else {
+      session.sendCtrl(CTRL_OP.REACT, encodeReactPayload(msgId, emoji));
+      applyReaction(msgId, emoji, "self");
     }
   }
 
@@ -656,11 +755,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     send.fillTarget = Math.max(send.fillTarget, send.energy + (1 - send.energy) * fraction);
   }
 
-  function sendInFlight(counter: number): void {
+  function sendInFlight(msgId: number): void {
     if (!chatCompose || reduceMotion) return;
     const now = Date.now();
-    send.acks.add(counter);
-    send.timestamps.set(counter, now);
+    send.acks.add(msgId);
+    send.timestamps.set(msgId, now);
     send.phase = "in-flight";
     send.fillTarget = 1;
     send.inflightStart = now;
@@ -668,8 +767,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     ensureRaf();
     // Safety: auto-release if ACK never arrives
     setTimeout(() => {
-      if (send.acks.delete(counter) && send.acks.size === 0) {
-        send.timestamps.delete(counter);
+      if (send.acks.delete(msgId) && send.acks.size === 0) {
+        send.timestamps.delete(msgId);
         sendDelivered();
       }
     }, 5000);
@@ -689,19 +788,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     ensureRaf();
   }
 
-  function handleAck(counter: number): void {
-    const sentAt = send.timestamps.get(counter);
+  function handleAck(msgId: number): void {
+    const sentAt = send.timestamps.get(msgId);
     if (sentAt) {
       send.ackLatency = send.ackLatency * 0.7 + (Date.now() - sentAt) * 0.3;
-      send.timestamps.delete(counter);
+      send.timestamps.delete(msgId);
     }
-    // Mark message as delivered in DOM
-    const msgEl = pendingDelivery.get(counter);
-    if (msgEl) {
-      msgEl.classList.add("wl-msg--delivered");
-      pendingDelivery.delete(counter);
-    }
-    send.acks.delete(counter);
+    // Mark message as delivered — reuse msgById (ACK arrives for self-sent messages)
+    const msgEl = msgById.get(msgId);
+    if (msgEl) msgEl.classList.add("wl-msg--delivered");
+    send.acks.delete(msgId);
     if (send.acks.size === 0 && send.phase === "in-flight") sendDelivered();
   }
 
@@ -1104,8 +1200,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       modeSwitchWrap.style.display = (busy || hasSession) ? "none" : "";
     }
 
-    opts.chatSendBtn.disabled = busy || !hasSession || !hasChatText;
-    opts.chatFileBtn.disabled = busy || !hasSession;
+    const canChat = hasSession || chatVisible;       // preview mode has no session but chat is visible
+    opts.chatSendBtn.disabled = busy || !canChat || !hasChatText;
+    opts.chatFileBtn.disabled = busy || !canChat;
+    opts.chatMicBtn.disabled = busy || !canChat;
+    opts.chatMicCancel.disabled = busy || !canChat;
+    opts.chatMicSend.disabled = busy || !canChat;
     const hasChatMessages = opts.chatMessages.children.length > 0
       && !(opts.chatMessages.children.length === 1 && opts.chatMessages.firstElementChild?.classList.contains("wl-chat-empty"));
     opts.chatClearBtn.disabled = busy || !hasChatMessages;
@@ -1152,6 +1252,440 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.08);
     } catch { /* Audio not available — silent fallback */ }
+  }
+
+  /* ── Audio recording ────────────────────────────────────── */
+
+  let mediaRecorder: MediaRecorder | null = null;
+  let recordingStream: MediaStream | null = null;
+  let recordingChunks: Blob[] = [];
+  let recordingChunksBytes = 0;
+  let recordingStart = 0;
+  let recordingTimer: ReturnType<typeof setInterval> | null = null;
+  let activeAudio: { el: HTMLAudioElement; btn: HTMLButtonElement; wrap: HTMLElement; redraw: (p: number) => void; raf: number } | null = null;
+
+  /** Timeslice (ms) — MediaRecorder flushes ondataavailable periodically.
+   *  Keeps encoded data flowing out of the encoder's internal buffer so the
+   *  browser can manage memory (Chrome stores Blob data out-of-process and can
+   *  page it). Also lets us track accumulated size for the duration display.
+   *  1 s is frequent enough to be useful, infrequent enough to avoid overhead. */
+  const RECORDING_TIMESLICE = 1_000;
+
+  /** Voice-optimized audio constraints. echoCancellation + noiseSuppression +
+   *  autoGainControl are enabled for clean voice capture regardless of mic
+   *  quality. Mono (channelCount:1) halves bandwidth with no perceptual loss
+   *  for speech — most mics are mono anyway. sampleRate is intentionally
+   *  omitted — forcing a non-native rate triggers resampling which degrades
+   *  quality. The browser's native rate (48 kHz Chrome/Firefox, 44.1 kHz Safari)
+   *  is fed directly to the Opus encoder which handles any rate natively. */
+  const VOICE_CONSTRAINTS: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    channelCount: 1,
+  };
+
+  const micSupported = typeof MediaRecorder !== "undefined";
+  if (!micSupported) {
+    opts.chatMicWrap.setAttribute("data-hidden", "");
+  }
+
+  /** Preferred MIME types in priority order.
+   *  1. webm/opus  — Chrome, Firefox, Edge, Safari 18.4+. Opus is the gold
+   *     standard: perceptually transparent at 128 kbps VBR, ~10x smaller than
+   *     PCM, better quality-per-bit than AAC/Vorbis/MP3 at every bitrate.
+   *  2. ogg/opus   — Firefox fallback (same Opus codec, different container).
+   *  3. mp4/opus   — future Safari / Chrome 132+ (MP4 container, same codec).
+   *  4. webm (bare) — lets the browser pick the codec (usually Opus anyway).
+   *  5. mp4 (bare)  — Safari <18.4 falls here → AAC. Worse quality-per-bit
+   *     than Opus but still a real codec; playback works everywhere. */
+  const AUDIO_MIME_PREFS = [
+    "audio/webm;codecs=opus",
+    "audio/ogg;codecs=opus",
+    "audio/mp4;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+  ] as const;
+
+  function getAudioMimeType(): string {
+    for (const t of AUDIO_MIME_PREFS) {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return "";
+  }
+
+  function formatRecordDuration(ms: number): string {
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    return `${m}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  function formatBytes(b: number): string {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  /** Concatenate recorded Blob chunks into a single Uint8Array without the
+   *  peak memory doubling of Blob→arrayBuffer(). Each chunk is read
+   *  individually (~16 KB at 128 kbps, 1 s timeslice) so overhead above the
+   *  final array is never more than one chunk's worth — O(1) extra, not O(n). */
+  async function concatChunks(chunks: Blob[], totalBytes: number): Promise<Uint8Array> {
+    const out = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      const ab = await chunk.arrayBuffer();
+      out.set(new Uint8Array(ab), offset);
+      offset += ab.byteLength;
+    }
+    return out;
+  }
+
+  let micPending = false;
+  let micHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let micHoldMode = false;
+  /** Pointer ID that initiated the current press; -1 when idle. */
+  let micPointerId = -1;
+  /**
+   * Deferred action when getUserMedia resolves after the user already acted:
+   * - "send"    — hold-mode pointerup arrived before stream → auto-send on resolve
+   * - "discard" — cancel fired while getUserMedia pending → discard the stream
+   */
+  let micDeferred: "send" | "discard" | null = null;
+
+  function resetMicState(): void {
+    micHoldMode = false;
+    micDeferred = null;
+    micPointerId = -1;
+    if (micHoldTimer) { clearTimeout(micHoldTimer); micHoldTimer = null; }
+  }
+
+  function startRecording(): void {
+    if (!micSupported || micPending || mediaRecorder) return;
+    const mimeType = getAudioMimeType();
+    if (!mimeType) return;
+
+    micPending = true;
+    navigator.mediaDevices.getUserMedia({ audio: VOICE_CONSTRAINTS }).then((stream) => {
+      micPending = false;
+
+      // Cancelled while awaiting permission (e.g. Escape during browser prompt)
+      if (micDeferred === "discard") {
+        micDeferred = null;
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+
+      recordingStream = stream;
+      recordingChunks = [];
+      recordingChunksBytes = 0;
+      recordingStart = Date.now();
+
+      // 128 kbps VBR — perceptually transparent for Opus (indistinguishable
+      // from lossless in listening tests). For AAC fallback on older Safari
+      // this is also a high-quality tier. VBR is the default audioBitrateMode.
+      const mr = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 });
+      mediaRecorder = mr;
+
+      // --- ondataavailable: accumulate encoded chunks ---
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          recordingChunks.push(e.data);
+          recordingChunksBytes += e.data.size;
+        }
+      };
+
+      // --- onerror: encoder failure, codec crash, etc. ---
+      // Modern browsers fire ErrorEvent; legacy may fire MediaRecorderErrorEvent.
+      mr.onerror = (e) => {
+        const detail = (e as ErrorEvent).message
+          || ((e as any).error as DOMException)?.message
+          || "unknown";
+        appendLog(`recording error: ${detail}`);
+        cancelRecording();
+      };
+
+      // --- onstop: finalize and send ---
+      mr.onstop = () => {
+        const elapsed = Date.now() - recordingStart;
+        const chunks = recordingChunks;
+        const totalBytes = recordingChunksBytes;
+        recordingChunks = [];
+        recordingChunksBytes = 0;
+        cleanupRecordingStream();
+
+        // Discard short recordings (< 500ms)
+        if (elapsed < 500 || chunks.length === 0) return;
+
+        const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("ogg") ? "ogg" : "m4a";
+        const name = `audio-${Date.now()}.${ext}`;
+
+        // Concatenate chunks directly into a Uint8Array — avoids the peak
+        // memory doubling of Blob→arrayBuffer(). Each ~16 KB chunk is read
+        // individually so overhead is O(1), not O(n).
+        concatChunks(chunks, totalBytes).then((bytes) => {
+          // Release chunk Blob references now that bytes are copied out
+          chunks.length = 0;
+
+          if (!session) {
+            addChatMessage({
+              type: "file", direction: "self",
+              fileName: name, fileSize: bytes.length, fileType: mimeType,
+              fileData: bytes, timestamp: Date.now(),
+            });
+            simulateSendEnergy();
+            return;
+          }
+          sendBeginFill();
+          session.sendAudio(name, mimeType, bytes).then((msgId) => {
+            sendInFlight(msgId);
+          }).catch((err) => {
+            send.phase = "delivered"; send.velocity = -4;
+            appendLog(`audio send failed: ${errMsg(err)}`);
+            pulseComposeIntent("error", 1100);
+          });
+        }).catch((err) => {
+          appendLog(`audio encode failed: ${errMsg(err)}`);
+        });
+      };
+
+      // --- Track ended: mic disconnected, OS revoked, another app took device.
+      //     Per spec, MediaRecorder auto-stops when all tracks end, but browser
+      //     implementations are inconsistent (iOS Safari onstop may not fire).
+      //     Explicit stop ensures clean teardown on every platform. ---
+      const track = stream.getAudioTracks()[0];
+      if (track) {
+        track.addEventListener("ended", () => {
+          if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            appendLog("mic disconnected — sending recorded audio");
+            stopRecording();
+          }
+        }, { once: true });
+      }
+
+      // --- Start with timeslice: encoder flushes data every interval so
+      //     chunks flow to JS incrementally. This lets the browser manage
+      //     memory (Chrome pages Blob data out-of-process) and prevents the
+      //     entire recording from sitting in one opaque encoder buffer. ---
+      mr.start(RECORDING_TIMESLICE);
+      opts.chatMicWrap.setAttribute("data-recording", "true");
+      opts.chatMicCancel.tabIndex = 0;
+      opts.chatMicSend.tabIndex = 0;
+      opts.chatMicBtn.tabIndex = -1;
+      opts.chatInput.disabled = true;
+      opts.chatInput.placeholder = "recording... 0:00";
+
+      // Timer uses Date.now() deltas, not tick counting — immune to setInterval
+      // throttling when the tab is backgrounded (Chrome: 1 s minimum in
+      // background, 1 min after 5 min hidden; mobile: may be frozen entirely).
+      // The display catches up correctly when the tab regains focus.
+      recordingTimer = setInterval(() => {
+        const dur = formatRecordDuration(Date.now() - recordingStart);
+        const size = recordingChunksBytes > 0 ? ` · ${formatBytes(recordingChunksBytes)}` : "";
+        opts.chatInput.placeholder = `recording... ${dur}${size}`;
+      }, 1000);
+
+      // Hold-mode: user already released finger while getUserMedia was pending
+      if (micDeferred === "send") {
+        micDeferred = null;
+        stopRecording();
+      }
+    }).catch((err) => {
+      micPending = false;
+      resetMicState();
+      appendLog(`mic access denied: ${errMsg(err)}`);
+    });
+  }
+
+  // --- Page visibility: flush encoder buffer before OS may freeze the tab ---
+  // requestData() forces a synchronous ondataavailable with whatever the
+  // encoder has buffered. If the OS freezes/kills the page after this, at least
+  // the chunks array is up-to-date (though JS memory is lost anyway on kill —
+  // this mainly helps with the resume-from-freeze case on Android Chrome).
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && mediaRecorder?.state === "recording") {
+      try { mediaRecorder.requestData(); } catch { /* not recording */ }
+    }
+  }, { signal });
+
+  /** Shared UI teardown for ending any recording state. */
+  function teardownRecordingUI(): void {
+    if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
+    opts.chatMicWrap.removeAttribute("data-recording");
+    opts.chatMicCancel.tabIndex = -1;
+    opts.chatMicSend.tabIndex = -1;
+    opts.chatMicBtn.tabIndex = 0;
+    resetMicState();
+    opts.chatInput.disabled = false;
+    opts.chatInput.placeholder = "whisper something...";
+  }
+
+  function stopRecording(): void {
+    teardownRecordingUI();
+    const mr = mediaRecorder;
+    mediaRecorder = null;
+    if (mr && mr.state !== "inactive") {
+      try { mr.stop(); } catch {
+        // Encoder already dead — onstop won't fire, clean up manually
+        cleanupRecordingStream();
+      }
+    } else {
+      // Already inactive or null — ensure stream tracks are stopped
+      cleanupRecordingStream();
+    }
+  }
+
+  function cancelRecording(): void {
+    teardownRecordingUI();
+    recordingChunks = [];
+    recordingChunksBytes = 0;
+    const mr = mediaRecorder;
+    mediaRecorder = null;
+    if (mr && mr.state !== "inactive") {
+      mr.onstop = null;
+      try { mr.stop(); } catch { /* already dead */ }
+    }
+    cleanupRecordingStream();
+    if (micPending) micDeferred = "discard";
+  }
+
+  function cleanupRecordingStream(): void {
+    if (recordingStream) {
+      for (const track of recordingStream.getTracks()) track.stop();
+      recordingStream = null;
+    }
+  }
+
+  /* ── Active audio management ────────────────────────────── */
+
+  function stopAllAudio(): void {
+    if (activeAudio) {
+      cancelAnimationFrame(activeAudio.raf);
+      activeAudio.el.pause();
+      activeAudio.el.currentTime = 0;
+      setPlayIcon(activeAudio.btn, false);
+      activeAudio.wrap.removeAttribute("data-playing");
+      activeAudio.redraw(0);
+      activeAudio = null;
+    }
+  }
+
+  function formatAudioDuration(seconds: number): string {
+    if (!isFinite(seconds)) return "0:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  const PLAY_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><polygon points="4,2 14,8 4,14"/></svg>';
+  const PAUSE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="0.8"/><rect x="9.5" y="2" width="3.5" height="12" rx="0.8"/></svg>';
+
+  function setPlayIcon(btn: HTMLButtonElement, playing: boolean): void {
+    btn.innerHTML = playing ? PAUSE_SVG : PLAY_SVG;
+    btn.setAttribute("aria-label", playing ? "Pause" : "Play");
+  }
+
+  /* ── Waveform extraction & rendering ────────────────────── */
+
+  const WAVE_BAR_W = 3;
+  const WAVE_GAP   = 2.5;
+  const WAVE_MIN_H = 3;
+
+  /** Decode audio blob → array of amplitudes normalised to 0–1.
+   *
+   *  Algorithm (CSS-Tricks / SoundCloud style):
+   *  1. Divide PCM into N equal blocks
+   *  2. Per block: mean of |sample| (absolute amplitude, not RMS — gives
+   *     more visual contrast between loud and quiet sections)
+   *  3. Normalise so loudest block = 1.0
+   *  4. Apply √ curve to spread dynamic range — without this, voice audio
+   *     produces a handful of tall bars and many near-zero bars ("square"
+   *     look) because energy is concentrated in speech bursts
+   *  5. Light 3-tap moving-average smooth to soften harsh jumps between
+   *     adjacent bars */
+  function extractWaveform(blob: Blob, numBars: number): Promise<Float32Array> {
+    return blob.arrayBuffer().then((buf) => {
+      const actx = new AudioContext();
+      return actx.decodeAudioData(buf).then((decoded) => {
+        void actx.close();
+        const raw = decoded.getChannelData(0);
+        const blockSize = Math.max(1, Math.floor(raw.length / numBars));
+        const amps = new Float32Array(numBars);
+
+        // Step 1-2: mean absolute amplitude per block
+        let peak = 0;
+        for (let i = 0; i < numBars; i++) {
+          let sum = 0;
+          const off = i * blockSize;
+          const end = Math.min(off + blockSize, raw.length);
+          for (let j = off; j < end; j++) sum += Math.abs(raw[j]);
+          amps[i] = sum / (end - off);
+          if (amps[i] > peak) peak = amps[i];
+        }
+
+        // Step 3: normalise to 0–1
+        if (peak > 0) for (let i = 0; i < numBars; i++) amps[i] /= peak;
+
+        // Step 4: sqrt curve — compresses dynamic range so quiet sections
+        // are still visible while loud sections stay tall
+        for (let i = 0; i < numBars; i++) amps[i] = Math.sqrt(amps[i]);
+
+        // Step 5: 3-tap moving-average smooth
+        const smoothed = new Float32Array(numBars);
+        for (let i = 0; i < numBars; i++) {
+          const prev = i > 0 ? amps[i - 1] : amps[i];
+          const next = i < numBars - 1 ? amps[i + 1] : amps[i];
+          smoothed[i] = prev * 0.2 + amps[i] * 0.6 + next * 0.2;
+        }
+
+        return smoothed;
+      });
+    });
+  }
+
+  /** Spring integrator matching the site's compose system: accel = ω²(target-x) − 2ζω·v
+   *  ω=14 ζ=0.68 → slightly underdamped for a gentle overshoot on reveal. */
+  function springStep(pos: number, vel: number, target: number, dt: number): [number, number] {
+    const omega = 14, zeta = 0.68;
+    const accel = omega * omega * (target - pos) - 2 * zeta * omega * vel;
+    return [pos + (vel + accel * dt) * dt, vel + accel * dt];
+  }
+
+  /** Draw waveform bars with playhead glow — evenly spaced across full width. */
+  function drawWaveform(
+    ctx: CanvasRenderingContext2D, w: number, h: number,
+    barHeights: Float32Array, progress: number,
+    played: string, unplayed: string, glowColor: string,
+  ): void {
+    ctx.clearRect(0, 0, w, h);
+    const n = barHeights.length;
+    if (n === 0) return;
+    const step = w / n;
+    const bw = Math.max(2, step - WAVE_GAP);
+    const maxH = h - 2;
+    const r = bw / 2;
+    const headIdx = Math.floor(progress * n);
+    const hasHead = progress > 0.001 && progress < 0.999;
+
+    for (let i = 0; i < n; i++) {
+      const x = i * step + (step - bw) / 2;
+      const barH = Math.max(WAVE_MIN_H, barHeights[i] * maxH);
+      const y = (h - barH) / 2;
+      const isPlayed = (i + 0.5) / n <= progress;
+
+      // Playhead proximity glow — falls off over ~3 bars
+      const dist = Math.abs(i - headIdx);
+      const g = hasHead && dist < 4 ? (1 - dist / 4) * 0.65 : 0;
+      if (g > 0) { ctx.shadowColor = glowColor; ctx.shadowBlur = 6 * g; }
+      else { ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; }
+
+      ctx.fillStyle = isPlayed ? played : unplayed;
+      ctx.beginPath();
+      ctx.roundRect(x, y, bw, barH, r);
+      ctx.fill();
+    }
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
   }
 
   /* ── Compose state protocol ──────────────────────────────
@@ -1274,8 +1808,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   const chatEmpty = opts.chatMessages.querySelector<HTMLElement>("#wl-chat-empty");
 
-  /** Maps send counter → message DOM element for delivery confirmation. */
-  const pendingDelivery = new Map<number, HTMLElement>();
+  /** Maps global msgId → message DOM element for ACK delivery, SEEN, and REACT lookups. */
+  const msgById = new Map<number, HTMLElement>();
 
   function addChatMessage(msg: LiveMessage): void {
     // Hide empty-state hint on first real message
@@ -1289,6 +1823,199 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       textEl.className = "wl-msg-text";
       textEl.textContent = msg.text ?? "";
       div.appendChild(textEl);
+    } else if (msg.type === "file" && msg.fileType?.startsWith("audio/") && msg.fileData) {
+      /* ── Inline audio player with waveform ─────────────── */
+      const audioEl = document.createElement("div");
+      audioEl.className = "wl-msg-audio";
+
+      const playBtn = document.createElement("button");
+      playBtn.type = "button";
+      playBtn.className = "wl-audio-play-btn";
+      setPlayIcon(playBtn, false);
+
+      const canvas = document.createElement("canvas");
+      canvas.className = "wl-audio-wave";
+
+      const durLabel = document.createElement("span");
+      durLabel.className = "wl-audio-duration";
+      durLabel.textContent = "0:00";
+
+      audioEl.append(playBtn, canvas, durLabel);
+
+      // Build blob with real MIME type — audio types are safe (not executable)
+      const abCopy = new ArrayBuffer(msg.fileData.byteLength);
+      new Uint8Array(abCopy).set(msg.fileData);
+      const blob = new Blob([abCopy], { type: msg.fileType });
+      const url = URL.createObjectURL(blob);
+      objectUrls.add(url);
+
+      let audio: HTMLAudioElement | null = null;
+      let waveform: Float32Array | null = null;
+      let barHeights: Float32Array | null = null;   // spring-animated heights
+      let barVelocities: Float32Array | null = null;
+      let playProgress = 0;
+      let playRaf = 0;
+      let accentPlayed = "";
+      let accentUnplayed = "";
+      let accentGlow = "";
+      let canvasW = 0;
+      let canvasH = 0;
+      let ctx2d: CanvasRenderingContext2D | null = null;
+
+      /** Redraw at a given progress (0–1). */
+      function redraw(p: number): void {
+        playProgress = p;
+        if (!ctx2d || !barHeights) return;
+        drawWaveform(ctx2d, canvasW, canvasH, barHeights, p, accentPlayed, accentUnplayed, accentGlow);
+      }
+
+      /** rAF loop while audio is playing — reads currentTime for smooth sweep. */
+      function playbackTick(): void {
+        if (audio && !audio.paused && audio.duration) {
+          const p = audio.currentTime / audio.duration;
+          redraw(p);
+          durLabel.textContent = formatAudioDuration(audio.currentTime);
+        }
+        playRaf = requestAnimationFrame(playbackTick);
+      }
+
+      function startPlaybackLoop(): void {
+        cancelAnimationFrame(playRaf);
+        playRaf = requestAnimationFrame(playbackTick);
+      }
+
+      function stopPlaybackLoop(): void {
+        cancelAnimationFrame(playRaf);
+        playRaf = 0;
+      }
+
+      /** Size the canvas bitmap to match CSS layout (HiDPI-aware). */
+      function sizeCanvas(): boolean {
+        const dpr = devicePixelRatio || 1;
+        const cw = canvas.clientWidth;
+        const ch = canvas.clientHeight;
+        if (cw === 0 || ch === 0) return false;
+        canvasW = cw;
+        canvasH = ch;
+        canvas.width = cw * dpr;
+        canvas.height = ch * dpr;
+        ctx2d = canvas.getContext("2d");
+        if (ctx2d) ctx2d.scale(dpr, dpr);
+        return !!ctx2d;
+      }
+
+      /** Read accent color from the resolved CSS custom property. */
+      function readColors(): void {
+        const raw = getComputedStyle(div).getPropertyValue("--msg-accent").trim();
+        accentPlayed = `rgba(${raw}, 0.72)`;
+        accentUnplayed = `rgba(${raw}, 0.16)`;
+        accentGlow = `rgba(${raw}, 0.55)`;
+      }
+
+      /** Spring-animate bars from zero to their waveform targets. */
+      function revealWaveform(): void {
+        if (!waveform || !ctx2d) return;
+        const n = waveform.length;
+        barHeights = new Float32Array(n);
+        barVelocities = new Float32Array(n);
+        const staggerPerBar = 0.008; // seconds between each bar starting
+        const t0 = performance.now();
+        let prevT = t0;
+        const tick = (now: number) => {
+          const dt = Math.min((now - prevT) / 1000, 0.04);
+          prevT = now;
+          const elapsed = (now - t0) / 1000;
+          let settled = true;
+          for (let i = 0; i < n; i++) {
+            const delay = i * staggerPerBar;
+            if (elapsed < delay) { settled = false; continue; }
+            const target = waveform![i];
+            const [np, nv] = springStep(barHeights![i], barVelocities![i], target, dt);
+            barHeights![i] = np;
+            barVelocities![i] = nv;
+            if (Math.abs(np - target) > 0.002 || Math.abs(nv) > 0.05) settled = false;
+          }
+          drawWaveform(ctx2d!, canvasW, canvasH, barHeights!, playProgress, accentPlayed, accentUnplayed, accentGlow);
+          if (!settled) requestAnimationFrame(tick);
+          else {
+            // Snap to exact targets
+            for (let i = 0; i < n; i++) barHeights![i] = waveform![i];
+            drawWaveform(ctx2d!, canvasW, canvasH, barHeights!, playProgress, accentPlayed, accentUnplayed, accentGlow);
+          }
+        };
+        requestAnimationFrame(tick);
+      }
+
+      // Kick off waveform extraction + canvas init after DOM insertion
+      requestAnimationFrame(() => {
+        if (!sizeCanvas()) return;
+        readColors();
+        // Bar count: enough to fill the width without being cramped
+        const numBars = Math.min(64, Math.max(12, Math.round(canvasW / (WAVE_BAR_W + WAVE_GAP))));
+        // Seeded pseudo-random placeholder while decoding (visually interesting)
+        const ph = new Float32Array(numBars);
+        let seed = msg.timestamp & 0xffff;
+        for (let i = 0; i < numBars; i++) {
+          seed = (seed * 16807 + 7) & 0x7fffffff;
+          ph[i] = 0.15 + 0.35 * ((seed & 0xffff) / 0xffff);
+        }
+        waveform = ph;
+        barHeights = new Float32Array(ph);
+        barVelocities = new Float32Array(numBars);
+        redraw(0);
+
+        extractWaveform(blob, numBars).then((amps) => {
+          waveform = amps;
+          revealWaveform();
+        }).catch(() => {
+          // Decoding failed — keep placeholder bars (still functional for progress)
+        });
+      });
+
+      // ── Audio element + event wiring (lazy) ──
+
+      playBtn.addEventListener("click", () => {
+        if (!audio) {
+          audio = new Audio(url);
+          audio.addEventListener("loadedmetadata", () => {
+            durLabel.textContent = formatAudioDuration(audio!.duration);
+          });
+          audio.addEventListener("ended", () => {
+            stopPlaybackLoop();
+            setPlayIcon(playBtn, false);
+            audioEl.removeAttribute("data-playing");
+            redraw(0);
+            durLabel.textContent = formatAudioDuration(audio!.duration);
+            if (activeAudio?.el === audio) activeAudio = null;
+          });
+        }
+
+        if (audio.paused) {
+          stopAllAudio();
+          audio.play().catch(() => { setPlayIcon(playBtn, false); audioEl.removeAttribute("data-playing"); });
+          setPlayIcon(playBtn, true);
+          audioEl.setAttribute("data-playing", "");
+          startPlaybackLoop();
+          activeAudio = { el: audio, btn: playBtn, wrap: audioEl, redraw, raf: playRaf };
+        } else {
+          stopPlaybackLoop();
+          audioEl.removeAttribute("data-playing");
+          audio.pause();
+          setPlayIcon(playBtn, false);
+          if (activeAudio?.el === audio) activeAudio = null;
+        }
+      }, { signal });
+
+      // Click on canvas to seek
+      canvas.addEventListener("click", (e) => {
+        if (!audio || !audio.duration) return;
+        const rect = canvas.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        audio.currentTime = ratio * audio.duration;
+        redraw(ratio);
+      }, { signal });
+
+      div.appendChild(audioEl);
     } else if (msg.type === "file") {
       const fileEl = document.createElement("div");
       fileEl.className = "wl-msg-file";
@@ -1306,7 +2033,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (msg.fileData) {
         const ab = new ArrayBuffer(msg.fileData.byteLength);
         new Uint8Array(ab).set(msg.fileData);
-        const blob = new Blob([ab], { type: msg.fileType ?? "application/octet-stream" });
+        // Always use octet-stream for received files — never let the browser interpret
+        // peer-declared MIME types (prevents HTML/SVG/etc. execution via blob URL).
+        // The download attribute + file extension ensure the OS opens files correctly.
+        const blob = new Blob([ab], { type: "application/octet-stream" });
         const url = URL.createObjectURL(blob);
         objectUrls.add(url);
 
@@ -1347,16 +2077,44 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       smartScroll();
     }
 
-    if (msg.counter !== undefined) {
-      div.dataset.msgId = `${msg.direction === "self" ? "s" : "p"}:${msg.counter}`;
+    if (msg.msgId !== undefined) {
+      div.dataset.msgId = String(msg.msgId);
+      msgById.set(msg.msgId, div);
+
+      // Emoji picker — shown on hover via CSS. A single text input accepts any Unicode emoji
+      // from the OS emoji picker (Win+. / Ctrl+Cmd+Space / mobile keyboard).
+      const picker = document.createElement("div");
+      picker.className = "wl-react-picker";
+      picker.setAttribute("aria-label", "React");
+      const pickerInput = document.createElement("input");
+      pickerInput.type = "text";
+      pickerInput.className = "wl-react-pick-input";
+      pickerInput.placeholder = "+";
+      pickerInput.title = "React with any emoji";
+      pickerInput.setAttribute("aria-label", "React with emoji");
+      pickerInput.addEventListener("input", (e) => {
+        e.stopPropagation();
+        const raw = pickerInput.value;
+        pickerInput.value = "";
+        if (!raw || msg.msgId === undefined) return;
+        // Extract the first grapheme cluster — handles multi-codepoint sequences
+        // (flag emoji, family emoji, skin tone modifiers, etc.)
+        const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
+        const first = seg[Symbol.iterator]().next().value;
+        const emoji = first?.segment ?? raw[0];
+        if (emoji) toggleSelfReaction(msg.msgId, emoji);
+      });
+      picker.appendChild(pickerInput);
+      div.appendChild(picker);
     }
 
-    if (msg.direction === "self" && msg.counter !== undefined) {
-      pendingDelivery.set(msg.counter, div);
-    }
     if (msg.direction === "peer") {
       bumpUnread();
       nudgeAudio();
+      // Send SEEN immediately if tab is focused.
+      if (!document.hidden && msg.msgId !== undefined && session) {
+        session.sendCtrl(CTRL_OP.SEEN, encodeSeenPayload(msg.msgId));
+      }
     }
   }
 
@@ -1553,7 +2311,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     stopIdleKeepAlive();
     if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
     hidePeerTyping();
-    pendingDelivery.clear();
+    msgById.clear();
     clearNode(opts.chatMessages);
     // Restore empty-state hint
     if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
@@ -2201,11 +2959,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       return;
     }
     // Phase 1: encrypt + buffer begins
-    const counter = session.sendCounter;
     sendBeginFill();
     try {
-      await session.sendText(text);
-      sendInFlight(counter);
+      const msgId = await session.sendText(text);
+      sendInFlight(msgId);
     } catch (err) {
       send.phase = "delivered"; send.velocity = -4;
       appendLog(`send failed: ${errMsg(err)}`);
@@ -2317,6 +3074,66 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.chatFileInput.click();
   }, { signal });
 
+  // Mic button: pointer events for click vs hold detection.
+  // - Primary button only (button 0) — ignore right-click, pen eraser, etc.
+  // - Pointer ID tracking — ignore multi-touch secondary fingers.
+  // - setPointerCapture — pointerup always fires on mic even if finger slides off.
+  opts.chatMicBtn.addEventListener("pointerdown", (e) => {
+    if (opts.chatMicBtn.disabled || e.button !== 0) return;
+    if (micPointerId !== -1) return;           // already tracking a pointer
+    e.preventDefault();
+    micPointerId = e.pointerId;
+    opts.chatMicBtn.setPointerCapture(e.pointerId);
+    micHoldMode = false;
+    micDeferred = null;
+    micHoldTimer = setTimeout(() => {
+      micHoldMode = true;
+      startRecording();
+    }, 300);
+  }, { signal });
+
+  opts.chatMicBtn.addEventListener("pointerup", (e) => {
+    if (e.pointerId !== micPointerId) return;  // not our pointer
+    if (micHoldTimer) { clearTimeout(micHoldTimer); micHoldTimer = null; }
+    micPointerId = -1;
+    if (!micHoldMode) {
+      // Short click — start recording (click-to-toggle mode).
+      // Split buttons take over once recording is active.
+      if (!mediaRecorder && !micPending) startRecording();
+    } else if (mediaRecorder) {
+      // Release after hold — send
+      stopRecording();
+    } else if (micPending) {
+      // Released before getUserMedia resolved — defer send to when stream arrives
+      micDeferred = "send";
+    }
+  }, { signal });
+
+  // pointercancel + lostpointercapture — clean up if capture is lost unexpectedly
+  function handlePointerAbort(e: PointerEvent): void {
+    if (e.pointerId !== micPointerId) return;
+    if (micHoldTimer) { clearTimeout(micHoldTimer); micHoldTimer = null; }
+    micPointerId = -1;
+    if (micHoldMode) cancelRecording();
+  }
+  opts.chatMicBtn.addEventListener("pointercancel", handlePointerAbort, { signal });
+  opts.chatMicBtn.addEventListener("lostpointercapture", handlePointerAbort, { signal });
+
+  // Suppress context menu on mic button — long-press on touch would otherwise
+  // show the browser context menu, fighting the 300ms hold-to-record gesture.
+  opts.chatMicBtn.addEventListener("contextmenu", (e) => { e.preventDefault(); }, { signal });
+
+  // Split button handlers
+  opts.chatMicCancel.addEventListener("click", () => cancelRecording(), { signal });
+  opts.chatMicSend.addEventListener("click", () => stopRecording(), { signal });
+
+  // Escape cancels recording (any mode)
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && (mediaRecorder || micPending)) {
+      cancelRecording();
+    }
+  }, { signal });
+
   opts.chatClearBtn.addEventListener("click", () => {
     if (!session) {
       executeClearHistory();
@@ -2336,11 +3153,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const file = opts.chatFileInput.files?.[0];
     if (!file || !session) return;
     opts.chatFileInput.value = "";
-    const counter = session.sendCounter;
     sendBeginFill();
     try {
-      await session.sendFile(file);
-      sendInFlight(counter);
+      const msgId = await session.sendFile(file);
+      sendInFlight(msgId);
     } catch (err) {
       send.phase = "delivered"; send.velocity = -4;
       appendLog(`file send failed: ${errMsg(err)}`);
@@ -2365,11 +3181,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     syncComposeIntent();
     const file = (e as DragEvent).dataTransfer?.files?.[0];
     if (!file || !session) return;
-    const counter = session.sendCounter;
     sendBeginFill();
     try {
-      await session.sendFile(file);
-      sendInFlight(counter);
+      const msgId = await session.sendFile(file);
+      sendInFlight(msgId);
     } catch (err) {
       send.phase = "delivered"; send.velocity = -4;
       appendLog(`file send failed: ${errMsg(err)}`);
@@ -2503,6 +3318,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
     if (composeIntentTimer) { clearTimeout(composeIntentTimer); composeIntentTimer = null; }
     if (composeActivityRaf) { cancelAnimationFrame(composeActivityRaf); composeActivityRaf = 0; }
+    cancelRecording();
+    stopAllAudio();
     document.title = originalTitle;
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.clear();

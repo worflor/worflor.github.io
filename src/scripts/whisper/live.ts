@@ -79,14 +79,18 @@ export type TransportMode = "naked" | "dressed" | "silent";
 export interface LiveMessage {
   type: "text" | "file" | "system";
   direction: "self" | "peer" | "system";
+  /**
+   * Global session message ID — unique across both directions for the entire session.
+   * Offerer's messages: 0, 2, 4… Answerer's messages: 1, 3, 5…
+   * Zero wire overhead — derived from per-side send/recv totals + role.
+   */
+  msgId?: number;
   text?: string;
   fileName?: string;
   fileSize?: number;
   fileData?: Uint8Array;
   fileType?: string;
   timestamp: number;
-  /** Double Ratchet message counter — unique per direction within a session. */
-  counter?: number;
 }
 
 export interface ConnectionStats {
@@ -104,8 +108,8 @@ export interface WhisperLiveCallbacks {
   onRawDecrypted?: (plaintext: Uint8Array) => void;
   /** Peer compose state. 0x00 = actively typing, 0x01 = idle with unsent text, 0x02 = cleared. */
   onPeerTyping?: (state: number) => void;
-  /** A message we sent was successfully decrypted by the peer. Counter identifies which message. */
-  onAck?: (counter: number) => void;
+  /** A message we sent was successfully decrypted by the peer. msgId identifies which message. */
+  onAck?: (msgId: number) => void;
   /** Progress during chunked send (file transfers). */
   onSendProgress?: (bytesSent: number, totalBytes: number) => void;
   /** Periodic connection quality stats (fires each heartbeat cycle). */
@@ -314,6 +318,10 @@ export class WhisperLiveSession {
   private assembler = new ChunkAssembler();
   private engine: WhisperEngine | null = null;
   private isOfferer = false;
+  /** Total messages sent this session — never resets unlike ratchet nSend. */
+  private nSentTotal = 0;
+  /** Total messages received this session — mirrors peer's nSentTotal. */
+  private nRecvTotal = 0;
 
   /** Ephemeral ECDH private key — exists only during handshake, then wiped */
   private ephPrivateKey: CryptoKey | null = null;
@@ -416,9 +424,6 @@ export class WhisperLiveSession {
   }
 
   get state(): LiveState { return this._state; }
-
-  /** Current send counter — the counter of the next message that will be sent. */
-  get sendCounter(): number { return this.ratchetState?.nSend ?? 0; }
 
   /** Whether this side created the session (offerer). Cryptographically established during handshake. */
   get isHost(): boolean { return this.isOfferer; }
@@ -943,8 +948,8 @@ export class WhisperLiveSession {
         break;
       case LIVE_MSG.ACK: {
         if (bytes.length >= 5 && this.onAck) {
-          const counter = new DataView(bytes.buffer, bytes.byteOffset + 1, 4).getUint32(0, true);
-          this.onAck(counter);
+          const msgId = new DataView(bytes.buffer, bytes.byteOffset + 1, 4).getUint32(0, true);
+          this.onAck(msgId);
         }
         break;
       }
@@ -1014,8 +1019,12 @@ export class WhisperLiveSession {
       messageKey.fill(0); // wipe message key after use
       this.consecutiveDecryptFailures = 0; // reset on successful decrypt
 
+      // Global msgId — must increment for ALL messages (incl. campfire) to mirror peer's nSentTotal.
+      const msgId = this.nRecvTotal * 2 + (this.isOfferer ? 1 : 0);
+      this.nRecvTotal++;
+
       const ackPayload = new Uint8Array(4);
-      new DataView(ackPayload.buffer).setUint32(0, header.counter, true);
+      new DataView(ackPayload.buffer).setUint32(0, msgId, true);
       this.send(LIVE_MSG.ACK, ackPayload);
 
       const isCampfire = (header.flags & LIVE_FLAG.CAMPFIRE) !== 0;
@@ -1031,20 +1040,20 @@ export class WhisperLiveSession {
         this.onMessage({
           type: "file",
           direction: "peer",
+          msgId,
           fileName,
           fileSize: fileBytes.length,
           fileData: fileBytes,
           fileType,
           timestamp: Date.now(),
-          counter: header.counter,
         });
       } else {
         this.onMessage({
           type: "text",
           direction: "peer",
+          msgId,
           text: TD.decode(plaintext),
           timestamp: Date.now(),
-          counter: header.counter,
         });
       }
     } catch (err) {
@@ -1107,32 +1116,56 @@ export class WhisperLiveSession {
     return this.isLiveState() && !!this.dc && !!this.ratchetState;
   }
 
-  async sendText(text: string): Promise<void> {
+  async sendText(text: string): Promise<number> {
+    let sentMsgId = 0;
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
-      const counter = this.ratchetState!.nSend;
-      await this.encryptAndSend(TE.encode(text), 0x00);
-      this.onMessage({ type: "text", direction: "self", text, timestamp: Date.now(), counter });
+      const msgId = await this.encryptAndSend(TE.encode(text), 0x00);
+      sentMsgId = msgId;
+      this.onMessage({ type: "text", direction: "self", msgId, text, timestamp: Date.now() });
     });
+    return sentMsgId;
   }
 
-  async sendFile(file: File): Promise<void> {
+  async sendFile(file: File): Promise<number> {
     const fileBytes = new Uint8Array(await file.arrayBuffer());
+    let sentMsgId = 0;
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
       if (this.transportMode === "dressed") {
-        await this.sendFileDressed(file.name, file.type, fileBytes);
+        sentMsgId = await this.sendFileDressed(file.name, file.type, fileBytes);
         return;
       }
-      const counter = this.ratchetState!.nSend;
       const plaintext = encodeFilePlaintext(file.name, file.type, fileBytes);
-      await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
+      const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
+      sentMsgId = msgId;
       this.onMessage({
         type: "file", direction: "self",
-        fileName: file.name, fileSize: fileBytes.length, fileType: file.type,
-        timestamp: Date.now(), counter,
+        msgId, fileName: file.name, fileSize: fileBytes.length, fileType: file.type,
+        timestamp: Date.now(),
       });
     });
+    return sentMsgId;
+  }
+
+  /** Send an audio recording as a file message, keeping bytes for self-playback.
+   *  Always uses raw file wire — skips dressed mode (stego wraps audio in a PNG
+   *  carrier which destroys playback and adds pointless overhead). */
+  async sendAudio(fileName: string, fileType: string, audioBytes: Uint8Array): Promise<number> {
+    let sentMsgId = 0;
+    await this.enqueueSend(async () => {
+      if (!await this.canSend()) return;
+      const plaintext = encodeFilePlaintext(fileName, fileType, audioBytes);
+      const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
+      sentMsgId = msgId;
+      this.onMessage({
+        type: "file", direction: "self",
+        msgId, fileName, fileSize: audioBytes.length, fileType,
+        fileData: audioBytes,
+        timestamp: Date.now(),
+      });
+    });
+    return sentMsgId;
   }
 
   /** Send raw plaintext with custom flags. Used by CampfireNode for pairwise channels. */
@@ -1145,7 +1178,7 @@ export class WhisperLiveSession {
 
   private async sendFileDressed(
     fileName: string, fileType: string, fileBytes: Uint8Array,
-  ): Promise<void> {
+  ): Promise<number> {
     if (!this.engine) this.engine = new WhisperEngine();
     const carrier = createMinimalPNGCarrier();
 
@@ -1171,26 +1204,26 @@ export class WhisperLiveSession {
 
       // Send the dressed carrier as a file message
       const dressedBytes = new Uint8Array(await result.outputFile.arrayBuffer());
-      const counter = this.ratchetState!.nSend;
       const plaintext = encodeFilePlaintext(result.outputName, result.outputType, dressedBytes);
-      await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
+      const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
 
       this.onMessage({
         type: "file",
         direction: "self",
+        msgId,
         fileName: result.outputName,
         fileSize: dressedBytes.length,
         fileType: result.outputType,
         timestamp: Date.now(),
-        counter,
       });
 
       this.onLog(`sent ${fileName} (embedded in carrier)`);
+      return msgId;
     } catch (err) {
       this.onLog(`steganography failed, sending directly: ${errorMessage(err)}`);
-      const counter = this.ratchetState!.nSend;
-      await this.encryptAndSend(encodeFilePlaintext(fileName, fileType, fileBytes), LIVE_FLAG.FILE);
-      this.onMessage({ type: "file", direction: "self", fileName, fileSize: fileBytes.length, fileType, timestamp: Date.now(), counter });
+      const msgId = await this.encryptAndSend(encodeFilePlaintext(fileName, fileType, fileBytes), LIVE_FLAG.FILE);
+      this.onMessage({ type: "file", direction: "self", msgId, fileName, fileSize: fileBytes.length, fileType, timestamp: Date.now() });
+      return msgId;
     }
   }
 
@@ -1210,12 +1243,15 @@ export class WhisperLiveSession {
     });
   }
 
-  private async encryptAndSend(plaintext: Uint8Array, flags: number): Promise<void> {
-    if (!this.ratchetState || !this.dc) return;
+  private async encryptAndSend(plaintext: Uint8Array, flags: number): Promise<number> {
+    if (!this.ratchetState || !this.dc) return 0;
 
     if (!this.ratchetState.chainKeySend) {
       throw new Error("No sending chain, ratchet not fully initialized");
     }
+
+    const msgId = this.nSentTotal * 2 + (this.isOfferer ? 0 : 1);
+    this.nSentTotal++;
 
     const oldSendChainKey = this.ratchetState.chainKeySend;
     const [newChainKey, messageKey] = await kdfChainDirect(oldSendChainKey);
@@ -1249,15 +1285,16 @@ export class WhisperLiveSession {
     let bytesSent = 0;
     for (const chunk of chunks) {
       if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
-        try { await this.waitForDrain(); } catch { return; } // channel closed during drain
+        try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
       }
-      if (!this.dc || this.dc.readyState !== "open") return;
+      if (!this.dc || this.dc.readyState !== "open") return msgId;
       const ab = new ArrayBuffer(chunk.byteLength);
       new Uint8Array(ab).set(chunk);
       this.dc.send(ab);
       bytesSent += chunk.byteLength;
       if (this.onSendProgress) this.onSendProgress(bytesSent, totalBytes);
     }
+    return msgId;
   }
 
   /* ── Trust ──────────────────────────────────────────────── */

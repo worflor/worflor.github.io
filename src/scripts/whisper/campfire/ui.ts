@@ -242,6 +242,10 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   let flareMode: "host" | "join" | null = null;
   let busy = false;
   let knownPeerNames = new Map<string, string>();
+  /** displayId → DOM element, for REACT lookups. */
+  const msgById = new Map<number, HTMLElement>();
+  /** displayId → full 32-byte msgId (SHA-256), needed to call broadcastReact. */
+  const msgIdFullById = new Map<number, Uint8Array>();
 
   const onBootstrap = (event: Event) => {
     const custom = event as CustomEvent<CampfireBootstrapDetail>;
@@ -411,7 +415,10 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   /* ── Chat rendering ───────────────────────────────────── */
 
-  function addChatMessage(name: string, text: string, timestamp: number, direction: "self" | "peer" | "system"): void {
+  function addChatMessage(
+    name: string, text: string, timestamp: number, direction: "self" | "peer" | "system",
+    displayId?: number, msgIdFull?: Uint8Array,
+  ): void {
     const div = document.createElement("div");
     div.className = `wl-msg wl-msg--${direction}`;
 
@@ -432,8 +439,95 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     timeEl.textContent = formatTime(timestamp);
     div.appendChild(timeEl);
 
+    // Track by displayId for reactions (only for real messages, not system)
+    if (displayId !== undefined && msgIdFull !== undefined && direction !== "system") {
+      div.dataset.msgId = String(displayId);
+      msgById.set(displayId, div);
+      msgIdFullById.set(displayId, msgIdFull);
+
+      // Emoji picker — same free-form approach as 1:1 chat
+      const picker = document.createElement("div");
+      picker.className = "wl-react-picker";
+      picker.setAttribute("aria-label", "React");
+      const pickerInput = document.createElement("input");
+      pickerInput.type = "text";
+      pickerInput.className = "wl-react-pick-input";
+      pickerInput.placeholder = "+";
+      pickerInput.title = "React with any emoji";
+      pickerInput.setAttribute("aria-label", "React with emoji");
+      pickerInput.addEventListener("input", (e) => {
+        e.stopPropagation();
+        const raw = pickerInput.value;
+        pickerInput.value = "";
+        if (!raw || displayId === undefined) return;
+        const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
+        const first = seg[Symbol.iterator]().next().value;
+        const emoji = first?.segment ?? raw[0];
+        if (emoji) toggleCfReaction(displayId, emoji);
+      });
+      picker.appendChild(pickerInput);
+      div.appendChild(picker);
+    }
+
     opts.chatMessages.appendChild(div);
     opts.chatMessages.scrollTop = opts.chatMessages.scrollHeight;
+  }
+
+  /* ── Reaction helpers ─────────────────────────────────── */
+
+  function applyCfReaction(displayId: number, emoji: string, who: "self" | "peer"): void {
+    const el = msgById.get(displayId);
+    if (!el || !emoji) return;
+    let bar = el.querySelector<HTMLElement>(".wl-msg-reactions");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "wl-msg-reactions";
+      el.appendChild(bar);
+    }
+    let pill = bar.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    if (!pill) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      pill = btn;
+      pill.className = "wl-reaction";
+      pill.dataset.emoji = emoji;
+      pill.dataset.self = "0";
+      pill.dataset.peer = "0";
+      pill.textContent = emoji;
+      pill.addEventListener("click", () => toggleCfReaction(displayId, emoji));
+      bar.appendChild(pill);
+    }
+    pill.dataset[who] = "1";
+    pill.classList.toggle("wl-reaction--self", pill.dataset.self === "1");
+    pill.classList.toggle("wl-reaction--peer", pill.dataset.peer === "1");
+  }
+
+  function removeCfReaction(displayId: number, emoji: string, who: "self" | "peer"): void {
+    const el = msgById.get(displayId);
+    if (!el) return;
+    const pill = el.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    if (!pill) return;
+    pill.dataset[who] = "0";
+    pill.classList.toggle("wl-reaction--self", pill.dataset.self === "1");
+    pill.classList.toggle("wl-reaction--peer", pill.dataset.peer === "1");
+    if (pill.dataset.self === "0" && pill.dataset.peer === "0") pill.remove();
+    const bar = el.querySelector(".wl-msg-reactions");
+    if (bar && !bar.hasChildNodes()) bar.remove();
+  }
+
+  function toggleCfReaction(displayId: number, emoji: string): void {
+    if (!node) return;
+    const msgIdFull = msgIdFullById.get(displayId);
+    if (!msgIdFull) return;
+    const el = msgById.get(displayId);
+    const pill = el?.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    const isUnreact = pill?.dataset.self === "1";
+    node.broadcastReact(msgIdFull, emoji, isUnreact);
+    if (isUnreact) {
+      removeCfReaction(displayId, emoji, "self");
+    } else {
+      applyCfReaction(displayId, emoji, "self");
+    }
   }
 
   /* ── Peer list rendering ──────────────────────────────── */
@@ -561,17 +655,21 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
         updateControls();
       },
       onDmMessage: handleDmMessage,
+      onReact: (displayId, emoji, _senderHex) => applyCfReaction(displayId, emoji, "peer"),
+      onUnreact: (displayId, emoji, _senderHex) => removeCfReaction(displayId, emoji, "peer"),
     });
   }
 
   function handleMessage(msg: CampfireMessage): void {
     const isSelf = msg.senderIdHex === node?.getPeerIdHex();
-    if (isSelf) return; // already shown locally
+    const direction = isSelf ? "self" : "peer";
 
     if (msg.contentType === ContentType.Text) {
       const text = TD.decode(msg.plaintext);
-      const display = knownPeerNames.get(msg.senderIdHex) ?? `${msg.senderIdHex.slice(0, 8)}...`;
-      addChatMessage(display, text, msg.timestamp, "peer");
+      const display = isSelf
+        ? (node?.getDisplayName() ?? "you")
+        : (knownPeerNames.get(msg.senderIdHex) ?? `${msg.senderIdHex.slice(0, 8)}...`);
+      addChatMessage(display, text, msg.timestamp, direction, msg.displayId, msg.msgId);
     } else if (msg.contentType === ContentType.System) {
       const text = TD.decode(msg.plaintext);
       addChatMessage("", text, msg.timestamp, "system");
@@ -620,6 +718,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       node = null;
     }
     clearNode(opts.chatMessages);
+    msgById.clear();
+    msgIdFullById.clear();
     clearNode(opts.peerList);
     opts.roomCode.textContent = "";
     opts.joinInput.value = "";
@@ -822,7 +922,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     updateControls();
     try {
       await node.broadcastText(text);
-      addChatMessage(node.getDisplayName(), text, Date.now(), "self");
+      // Message display is handled by cb.onMessage → handleMessage
     } catch (err) {
       appendLog(`send failed: ${err instanceof Error ? err.message : "unknown"}`);
     }

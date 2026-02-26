@@ -22,6 +22,8 @@ export const CF_GROUP_KEY          = 0x56;
 export const CF_PEER_LIST          = 0x57;
 export const CF_DM_SDP_RELAY       = 0x58;
 export const CF_RING_WANT          = 0x5b;
+export const CF_REACT              = 0x5c;  // [targetMsgIdFull:32B][senderId:16B][hopCount:1B][emoji:utf8]
+export const CF_UNREACT            = 0x5d;  // [targetMsgIdFull:32B][senderId:16B][hopCount:1B][emoji:utf8]
 
 /** Flags bit for campfire messages in the whisper-live header. */
 export const CAMPFIRE_FLAG         = 0x02;
@@ -91,7 +93,12 @@ export interface GroupKeyEpoch {
 }
 
 export interface CampfireMessage {
-  msgId: Uint8Array;        // 32 bytes
+  msgId: Uint8Array;        // 32 bytes — full SHA-256, used for gossip dedup
+  /**
+   * Compact uint32 display ID derived from the first 4 bytes of msgId (LE).
+   * Used for DOM lookups (msgById), SEEN, and REACT — same numeric domain as 1:1 LiveMessage.msgId.
+   */
+  displayId: number;
   senderId: Uint8Array;     // 16 bytes
   senderIdHex: string;
   timestamp: number;
@@ -110,5 +117,9 @@ export interface CampfireCallbacks {
   onLog: (line: string) => void;
   onRoomCodeUpdate?: (code: string) => void;
   onDmMessage: (fromPeerId: Uint8Array, msg: { type: "text"; text: string; timestamp: number }) => void;
+  /** A peer reacted to a message. displayId matches CampfireMessage.displayId. */
+  onReact?: (displayId: number, emoji: string, senderIdHex: string) => void;
+  /** A peer un-reacted to a message. */
+  onUnreact?: (displayId: number, emoji: string, senderIdHex: string) => void;
 }
 

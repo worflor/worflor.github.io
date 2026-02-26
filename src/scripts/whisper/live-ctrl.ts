@@ -2,22 +2,35 @@
  * Whisper Live — control protocol (CTRL frames).
  *
  * Opcode ranges:
- *   0x01–0x0F  history/storage    CLEAR_VOTE=0x01, CLEAR_CANCEL=0x02
- *   0x10–0x1F  presence/status    (future)
- *   0x20–0x2F  reactions          (future)
- *   0x30–0x3F  session policy     (future)
+ *   0x01–0x7F  no-payload signals  (bit 7 = 0)
+ *     0x01–0x0F  history/storage    CLEAR_VOTE, CLEAR_CANCEL
+ *     0x03–0x04  campfire voting
+ *     0x10–0x1F  presence/status    (future)
+ *     0x30–0x3F  session policy     (future)
+ *   0x80–0xFF  payload-bearing ops (bit 7 = 1)
+ *     0x81  SEEN    [msgId:4B LE]
+ *     0x82  REACT   [msgId:4B LE][emoji:utf8]
+ *     0x83  UNREACT [msgId:4B LE][emoji:utf8]
  *
  * Frame format (payload after LIVE_MSG.CTRL type byte):
  *   [0]       opcode      (1B)
  *   [1]       payload_len (1B, 0–255)
  *   [2..2+N]  payload     (N bytes)
+ *
+ * Message references use the global session msgId (uint32 LE):
+ *   offerer's messages → even IDs (0, 2, 4…)
+ *   answerer's messages → odd IDs (1, 3, 5…)
+ * No direction byte needed — the parity encodes it.
  */
 
 export const CTRL_OP = {
-  CLEAR_VOTE:   0x01,
-  CLEAR_CANCEL: 0x02,
+  CLEAR_VOTE:      0x01,
+  CLEAR_CANCEL:    0x02,
   CAMPFIRE_VOTE:   0x03,
   CAMPFIRE_CANCEL: 0x04,
+  SEEN:            0x81,  // payload: [msgId:4B LE]
+  REACT:           0x82,  // payload: [msgId:4B LE][emoji:utf8]
+  UNREACT:         0x83,  // payload: [msgId:4B LE][emoji:utf8]
 } as const;
 
 /* ── Wire format ─────────────────────────────────────────── */
@@ -204,24 +217,33 @@ export class VoteTopic {
   }
 }
 
-/* ── Message reference encoding ─────────────────────────── */
+/* ── SEEN / REACT payload encoding ───────────────────────── */
 
-/**
- * Encode a message reference as a 5-byte payload.
- * [0]    direction: 0x00 = self (from sender's perspective), 0x01 = peer
- * [1..4] counter (4B LE)
- */
-export function encodeMsgRef(direction: "self" | "peer", counter: number): Uint8Array {
-  const buf = new Uint8Array(5);
-  buf[0] = direction === "self" ? 0x00 : 0x01;
-  new DataView(buf.buffer).setUint32(1, counter, true);
+/** SEEN payload: 4-byte global msgId (LE). */
+export function encodeSeenPayload(msgId: number): Uint8Array {
+  const buf = new Uint8Array(4);
+  new DataView(buf.buffer).setUint32(0, msgId, true);
   return buf;
 }
 
-export function decodeMsgRef(payload: Uint8Array): { direction: "self" | "peer"; counter: number } | null {
+export function decodeSeenPayload(payload: Uint8Array): number | null {
+  if (payload.length < 4) return null;
+  return new DataView(payload.buffer, payload.byteOffset).getUint32(0, true);
+}
+
+/** REACT / UNREACT payload: 4-byte global msgId (LE) + emoji as UTF-8 bytes. */
+export function encodeReactPayload(msgId: number, emoji: string): Uint8Array {
+  const emojiBytes = new TextEncoder().encode(emoji);
+  const buf = new Uint8Array(4 + emojiBytes.length);
+  new DataView(buf.buffer).setUint32(0, msgId, true);
+  buf.set(emojiBytes, 4);
+  return buf;
+}
+
+export function decodeReactPayload(payload: Uint8Array): { msgId: number; emoji: string } | null {
   if (payload.length < 5) return null;
   return {
-    direction: payload[0] === 0x00 ? "self" : "peer",
-    counter: new DataView(payload.buffer, payload.byteOffset + 1, 4).getUint32(0, true),
+    msgId: new DataView(payload.buffer, payload.byteOffset).getUint32(0, true),
+    emoji: new TextDecoder().decode(payload.subarray(4)),
   };
 }

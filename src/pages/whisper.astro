@@ -10,7 +10,7 @@ const seo = {
 ---
 
 <Layout seo={seo}>
-  <div class="whisper-page" id="whisper-page" data-mode="embed" data-busy="0" data-breadcrumb-controller>
+  <div class="whisper-page" id="whisper-page" data-mode="live" data-busy="0" data-breadcrumb-controller>
     <script is:inline>
       (function(){var p=document.getElementById("whisper-page");if(!p)return;
         var m=sessionStorage.getItem("whisper-mode");
@@ -599,14 +599,36 @@ const seo = {
             </div>
 
             <div class="wl-chat-compose">
-              <input
-                id="wl-chat-input"
-                type="text"
-                class="whisper-input wl-chat-text-input"
-                placeholder="whisper something..."
-                autocomplete="off"
-                spellcheck="false"
-              />
+              <div class="wl-chat-input-wrap">
+                <input
+                  id="wl-chat-input"
+                  type="text"
+                  class="whisper-input wl-chat-text-input"
+                  placeholder="whisper something..."
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <div class="wl-mic-wrap" id="wl-chat-mic-wrap">
+                  <button id="wl-chat-mic-cancel" type="button" class="wl-mic-split wl-mic-cancel" aria-label="Cancel recording" tabindex="-1">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                      <path d="M4 4l8 8M12 4l-8 8"></path>
+                    </svg>
+                  </button>
+                  <button id="wl-chat-mic-btn" type="button" class="wl-chat-mic-btn"
+                    aria-label="Record audio message" title="record audio" disabled>
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" class="wl-mic-icon" aria-hidden="true">
+                      <rect x="5.5" y="1.5" width="5" height="9" rx="2.5"></rect>
+                      <path d="M3 7.5a5 5 0 0010 0"></path>
+                      <path d="M8 13v2"></path>
+                    </svg>
+                  </button>
+                  <button id="wl-chat-mic-send" type="button" class="wl-mic-split wl-mic-send" aria-label="Send recording" tabindex="-1">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                      <path d="M3 8l4 4 6-7"></path>
+                    </svg>
+                  </button>
+                </div>
+              </div>
               <button
                 id="wl-chat-clear-btn"
                 type="button"
@@ -1009,10 +1031,17 @@ const seo = {
 
     <!-- ── Runtime Log ──────────────────────────────────────── -->
     <section class="mt-[var(--space-sm)] content-section whisper-section--shared">
-      <div class="whisper-log-wrap">
-        <div class="whisper-log-header">
+      <div class="whisper-log-wrap" id="whisper-log-wrap">
+        <div class="whisper-log-header" role="button" tabindex="0"
+          aria-expanded="true" aria-controls="whisper-log-output">
           <p class="whisper-log-title">runtime log</p>
-          <span class="whisper-log-dot" id="whisper-log-dot"></span>
+          <span class="whisper-log-header-right">
+            <span class="whisper-log-dot" id="whisper-log-dot"></span>
+            <svg class="whisper-log-chevron" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M3 4.5 L6 7.5 L9 4.5" fill="none" stroke="currentColor"
+                stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
         </div>
         <pre id="whisper-log-output" class="whisper-log-output"></pre>
       </div>
@@ -1131,6 +1160,28 @@ const seo = {
       if (sealOptions) cleanupSeal = initWhisperSeal(sealOptions);
       const campfireOptions = resolveCampfireUIOptions(document);
       if (campfireOptions) cleanupCampfire = initCampfire(campfireOptions);
+
+      // Wire up collapsible runtime log
+      const logWrap = document.getElementById("whisper-log-wrap");
+      const logHeader = logWrap?.querySelector<HTMLElement>(".whisper-log-header");
+      if (logWrap && logHeader) {
+        const STORAGE_KEY = "whisper-log-collapsed";
+        if (localStorage.getItem(STORAGE_KEY) === "1") {
+          logWrap.classList.add("whisper-log-collapsed");
+          logHeader.setAttribute("aria-expanded", "false");
+        }
+        logHeader.addEventListener("click", () => {
+          const collapsed = logWrap.classList.toggle("whisper-log-collapsed");
+          logHeader.setAttribute("aria-expanded", String(!collapsed));
+          localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
+        });
+        logHeader.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            logHeader.click();
+          }
+        });
+      }
 
       // Wire up Live sub-mode toggle (1:1 vs Campfire)
       const submodeRadios = document.querySelectorAll<HTMLInputElement>('input[name="wl-live-submode"]');
@@ -1995,6 +2046,49 @@ const seo = {
     justify-content: space-between;
     padding: 0.55rem 0.8rem;
     border-bottom: 1px solid var(--whisper-edge);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .whisper-log-header:hover .whisper-log-title {
+    color: rgb(var(--color-text-rgb) / 0.58);
+  }
+
+  .whisper-log-header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .whisper-log-chevron {
+    width: 0.75rem;
+    height: 0.75rem;
+    color: rgb(var(--color-text-rgb) / 0.3);
+    transition: transform var(--duration-normal) var(--ease-out);
+    flex-shrink: 0;
+  }
+
+  .whisper-log-wrap.whisper-log-collapsed .whisper-log-chevron {
+    transform: rotate(-90deg);
+  }
+
+  .whisper-log-wrap.whisper-log-collapsed .whisper-log-header {
+    border-bottom-color: transparent;
+  }
+
+  .whisper-log-wrap.whisper-log-collapsed .whisper-log-output {
+    max-height: 0;
+    min-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+  }
+
+  .whisper-log-output {
+    transition: max-height var(--duration-normal) var(--ease-out),
+                min-height var(--duration-normal) var(--ease-out),
+                padding var(--duration-normal) var(--ease-out);
   }
 
   .whisper-log-title {
@@ -2294,6 +2388,14 @@ const seo = {
 
     .wl-spinner {
       animation: none;
+    }
+
+    .whisper-log-chevron {
+      transition: none;
+    }
+
+    .whisper-log-output {
+      transition: none;
     }
   }
 
@@ -3345,7 +3447,8 @@ const seo = {
   }
 
   .wl-chat-messages :global(.wl-msg--self .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--self .wl-msg-file) {
+  .wl-chat-messages :global(.wl-msg--self .wl-msg-file),
+  .wl-chat-messages :global(.wl-msg--self .wl-msg-audio) {
     border-bottom-right-radius: calc(var(--whisper-radius) * 0.15);
   }
 
@@ -3354,13 +3457,15 @@ const seo = {
   }
 
   .wl-chat-messages :global(.wl-msg--delivered .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-file) {
+  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-file),
+  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-audio) {
     color: rgb(var(--color-text-rgb) / 0.88);
     border-color: rgb(var(--color-text-rgb) / 0.22);
   }
 
   .wl-chat-messages :global(.wl-msg--peer .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--peer .wl-msg-file) {
+  .wl-chat-messages :global(.wl-msg--peer .wl-msg-file),
+  .wl-chat-messages :global(.wl-msg--peer .wl-msg-audio) {
     color: rgb(var(--msg-accent) / 0.9);
     border-bottom-left-radius: calc(var(--whisper-radius) * 0.15);
   }
@@ -3388,11 +3493,13 @@ const seo = {
 
   /* Soften corner between grouped bubbles */
   .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-file) {
+  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-file),
+  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-audio) {
     border-top-right-radius: calc(var(--whisper-radius) * 0.2);
   }
   .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-file) {
+  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-file),
+  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-audio) {
     border-top-left-radius: calc(var(--whisper-radius) * 0.2);
   }
 
@@ -3437,6 +3544,84 @@ const seo = {
 
   .wl-chat-messages :global(.wl-msg-file-download:hover) {
     color: rgb(var(--msg-accent) / 0.85);
+  }
+
+  /* ── Audio player ─────────────────────────────────────────── */
+  .wl-chat-messages :global(.wl-msg-audio) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.7rem;
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    border: 1px solid rgb(var(--msg-accent) / 0.14);
+    background:
+      linear-gradient(
+        135deg,
+        rgb(var(--msg-accent) / 0.07) 0%,
+        rgb(var(--msg-accent) / 0.03) 100%
+      );
+    min-width: 11rem;
+    transition: border-color 300ms ease, box-shadow 300ms ease;
+  }
+
+  /* Subtle glow when playing */
+  .wl-chat-messages :global(.wl-msg-audio[data-playing]) {
+    border-color: rgb(var(--msg-accent) / 0.28);
+    box-shadow: 0 0 8px rgb(var(--msg-accent) / 0.08);
+  }
+
+  .wl-chat-messages :global(.wl-audio-play-btn) {
+    width: 1.7rem;
+    height: 1.7rem;
+    min-width: 1.7rem;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--msg-accent) / 0.22);
+    background: rgb(var(--msg-accent) / 0.08);
+    color: rgb(var(--msg-accent) / 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: background 200ms ease, border-color 200ms ease, color 200ms ease, transform 120ms ease;
+  }
+
+  .wl-chat-messages :global(.wl-audio-play-btn:hover) {
+    background: rgb(var(--msg-accent) / 0.15);
+    border-color: rgb(var(--msg-accent) / 0.38);
+    color: rgb(var(--msg-accent) / 0.85);
+  }
+
+  .wl-chat-messages :global(.wl-audio-play-btn:active) {
+    transform: scale(0.92);
+  }
+
+  .wl-chat-messages :global(.wl-audio-play-btn svg) {
+    width: 0.8rem;
+    height: 0.8rem;
+  }
+
+  .wl-chat-messages :global(.wl-audio-wave) {
+    display: block;
+    flex: 1 1 0;
+    min-width: 0;
+    height: 1.8rem;
+    cursor: pointer;
+  }
+
+  .wl-chat-messages :global(.wl-audio-duration) {
+    font-size: calc(var(--text-sm) * 0.7);
+    color: rgb(var(--msg-accent) / 0.4);
+    white-space: nowrap;
+    min-width: 2.2rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    transition: color 300ms ease;
+  }
+
+  .wl-chat-messages :global(.wl-msg-audio[data-playing] .wl-audio-duration) {
+    color: rgb(var(--msg-accent) / 0.65);
   }
 
   .wl-chat-compose {
@@ -3587,18 +3772,151 @@ const seo = {
     animation: wl-intent-error 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) 2;
   }
 
-  .wl-chat-text-input {
+  .wl-chat-input-wrap {
     flex: 1 1 14rem;
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+  }
+
+  .wl-chat-text-input {
+    flex: 1;
     min-width: 0;
     width: 100%;
     min-height: auto;
-    padding: 0.52rem 0.72rem;
+    padding: 0.52rem 2.4rem 0.52rem 0.72rem;
     border-radius: calc(var(--whisper-radius) * 0.5);
     border-color: rgb(var(--color-text-rgb) / 0.14);
     transition:
       border-color var(--duration-normal) var(--ease-out),
       background var(--duration-normal) var(--ease-out),
       transform 120ms linear;
+  }
+
+  .wl-mic-wrap {
+    position: absolute;
+    right: 0.35rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    gap: 2px;
+    align-items: center;
+    border-radius: 9999px;
+    touch-action: none;
+  }
+
+  .wl-mic-wrap[data-hidden] {
+    display: none;
+  }
+
+  .wl-chat-mic-btn {
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    background: rgb(var(--color-text-rgb) / 0.04);
+    color: rgb(var(--color-text-rgb) / 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: background 200ms ease, border-color 200ms ease, color 200ms ease, box-shadow 200ms ease, width 200ms ease, opacity 200ms ease;
+    touch-action: none;
+  }
+
+  .wl-chat-mic-btn:hover:not(:disabled) {
+    border-color: rgb(var(--chromatic-cyan) / 0.4);
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .wl-chat-mic-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  /* Split buttons (cancel + send) — collapsed by default */
+  .wl-mic-split {
+    width: 0;
+    overflow: hidden;
+    opacity: 0;
+    height: 1.4rem;
+    border-radius: 50%;
+    border: 1px solid transparent;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: width 200ms ease, opacity 200ms ease, background 200ms ease, border-color 200ms ease;
+  }
+
+  .wl-mic-split svg {
+    width: 0.7rem;
+    height: 0.7rem;
+    flex-shrink: 0;
+  }
+
+  /* Recording state — expand split buttons, hide mic */
+  .wl-mic-wrap[data-recording="true"] .wl-chat-mic-btn {
+    width: 0;
+    overflow: hidden;
+    opacity: 0;
+    border: none;
+    padding: 0;
+  }
+
+  .wl-mic-wrap[data-recording="true"] .wl-mic-split {
+    width: 1.4rem;
+    opacity: 1;
+  }
+
+  .wl-mic-wrap[data-recording="true"] .wl-mic-cancel {
+    color: rgb(var(--chromatic-red) / 0.7);
+    border-color: rgb(var(--chromatic-red) / 0.3);
+    background: rgb(var(--chromatic-red) / 0.08);
+  }
+
+  .wl-mic-wrap[data-recording="true"] .wl-mic-cancel:hover {
+    background: rgb(var(--chromatic-red) / 0.18);
+    border-color: rgb(var(--chromatic-red) / 0.5);
+    color: rgb(var(--chromatic-red));
+  }
+
+  .wl-mic-wrap[data-recording="true"] .wl-mic-send {
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .wl-mic-wrap[data-recording="true"] .wl-mic-send:hover {
+    background: rgb(var(--chromatic-cyan) / 0.18);
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  .wl-mic-split:disabled {
+    opacity: 0.35;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  /* Pulse on the wrapper during recording */
+  .wl-mic-wrap[data-recording="true"] {
+    animation: wl-mic-pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes wl-mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--chromatic-red) / 0.25); }
+    50% { box-shadow: 0 0 0 4px rgb(var(--chromatic-red) / 0); }
+  }
+
+  .wl-mic-icon {
+    width: 0.85rem;
+    height: 0.85rem;
   }
 
   .wl-chat-compose[data-intent="connecting"] .wl-chat-text-input {
@@ -3818,6 +4136,9 @@ const seo = {
     .wl-chat-compose::after {
       display: none !important;
     }
+    .wl-chat-mic-btn { animation: none !important; transition: none !important; }
+    .wl-mic-wrap { animation: none !important; }
+    .wl-mic-split { transition: none !important; }
     .wl-chat-clear-btn,
     .wl-clear-icon { animation: none !important; transform: none !important; }
     .wl-chat-clear-btn[data-clear-state="pending-out"] { opacity: 0.55; }
