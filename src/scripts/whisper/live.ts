@@ -134,70 +134,80 @@ export interface WhisperLiveSessionOptions {
 /* ── Visual Fingerprint ──── */
 
 const FINGERPRINT_EMOJI = [
-  "\u{1F30A}", // wave
-  "\u{1F98A}", // fox
-  "\u{1F525}", // fire
-  "\u{2B50}",  // star
-  "\u{1F343}", // leaf
-  "\u{1F312}", // moon
-  "\u{26A1}",  // lightning
-  "\u{2744}\uFE0F",  // snowflake
-  "\u{1F338}", // cherry blossom
-  "\u{1F40B}", // whale
-  "\u{1F987}", // bat
-  "\u{1F426}", // bird
-  "\u{1F98B}", // butterfly
-  "\u{1F41A}", // shell
-  "\u{1F340}", // four leaf clover
-  "\u{1F30B}", // volcano
-  "\u{1F30C}", // milky way
-  "\u{1F300}", // cyclone
-  "\u{1F308}", // rainbow
-  "\u{2602}\uFE0F",  // umbrella
-  "\u{1F30D}", // globe
-  "\u{1F3D4}\uFE0F",  // mountain
-  "\u{1F3DD}\uFE0F",  // island
-  "\u{1F335}", // cactus
-  "\u{1F344}", // mushroom
-  "\u{1F33B}", // sunflower
-  "\u{1F334}", // palm
+  // forest & nature
+  "\u{1F332}", // evergreen tree
   "\u{1F333}", // deciduous tree
-  "\u{1F47B}", // ghost
-  "\u{1F3AD}", // performing arts
+  "\u{1F344}", // mushroom
+  "\u{1F33F}", // herb
+  "\u{1F343}", // leaves
+  "\u{1F341}", // maple leaf
+  "\u{1F342}", // fallen leaf
+  "\u{1F33E}", // sheaf of rice
+  "\u{1F330}", // chestnut
+  "\u{1F338}", // cherry blossom
+  "\u{1F339}", // rose
+  "\u{1F33B}", // sunflower
+  "\u{1F331}", // seedling
+  "\u{1FAB6}", // feather
+  "\u{1F340}", // four leaf clover
+  // fantasy & sky
   "\u{1F52E}", // crystal ball
-  "\u{1F3B2}", // dice
-  "\u{1F511}", // key
-  "\u{1F6E1}\uFE0F",  // shield
-  "\u{2693}",  // anchor
-  "\u{1FA90}", // ringed planet
-  "\u{1F9CA}", // ice
-  "\u{1F40C}", // snail
-  "\u{1F9A5}", // sloth
-  "\u{1F995}", // sauropod
-  "\u{1F3AF}", // dart
-  "\u{1F3B5}", // music note
-  "\u{1F9E9}", // puzzle piece
-  "\u{1F52D}", // telescope
-  "\u{2699}\uFE0F",  // gear
-  "\u{1F9ED}", // compass
-  "\u{1F3F3}\uFE0F",  // white flag
-  "\u{1F54A}\uFE0F",  // dove
-  "\u{1F985}", // eagle
-  "\u{1F989}", // owl
-  "\u{1F99C}", // parrot
+  "\u{1FA84}", // magic wand
+  "\u{2728}",  // sparkles
+  "\u{1F4AB}", // dizzy
+  "\u{1F31F}", // glowing star
+  "\u{2B50}",  // star
+  "\u{1F319}", // crescent moon
+  "\u{1F315}", // full moon
+  "\u{1F311}", // new moon
+  "\u{1F30C}", // milky way
+  "\u{1F525}", // fire
+  "\u{1F48E}", // gem
+  // knightly & castle
+  "\u{1F3F0}", // castle
+  "\u{2694}\uFE0F",  // crossed swords
+  "\u{1F6E1}\uFE0F", // shield
+  "\u{1F5E1}\uFE0F", // dagger
+  "\u{1F3F9}", // bow and arrow
+  "\u{1F5DD}\uFE0F", // old key
+  "\u{1F4DC}", // scroll
+  "\u{1FA99}", // coin
+  "\u{1F56F}\uFE0F", // candle
+  "\u{269C}\uFE0F",  // fleur-de-lis
+  // creatures
+  "\u{1F98A}", // fox
+  "\u{1F43A}", // wolf
+  "\u{1F99D}", // raccoon
+  "\u{1F408}\u200D\u{2B1B}", // black cat
   "\u{1F409}", // dragon
   "\u{1F984}", // unicorn
-  "\u{1F9A0}", // microbe
-  "\u{1F30E}", // globe americas
-  "\u{1F319}", // crescent moon
-  "\u{2604}\uFE0F",  // comet
-  "\u{1F30F}", // globe asia
-  "\u{1F311}", // new moon
-  "\u{1F315}", // full moon
-  "\u{1F4A0}", // diamond with dot
-  "\u{1F4AB}", // dizzy
-  "\u{1F329}\uFE0F",  // cloud lightning
-  "\u{1F32A}\uFE0F",  // tornado
+  "\u{1F989}", // owl
+  "\u{1F987}", // bat
+  "\u{1F98C}", // deer
+  "\u{1F407}", // rabbit
+  "\u{1F994}", // hedgehog
+  "\u{1F9A2}", // swan
+  "\u{1F41D}", // bee
+  "\u{1F40C}", // snail
+  "\u{1F40D}", // snake
+  // sky & weather
+  "\u{1F30A}", // wave
+  "\u{26A1}",  // lightning
+  "\u{2744}\uFE0F",  // snowflake
+  "\u{1F308}", // rainbow
+  // hearts
+  "\u{1F49C}", // purple heart
+  "\u{1F5A4}", // black heart
+  "\u{1F496}", // sparkling heart
+  "\u{1F49D}", // heart with ribbon
+  // allowed
+  "\u{1F1E8}\u{1F1E6}", // canada
+  "\u{1F484}", // lipstick
+  "\u{1FAB7}", // biting lip
+  "\u{1F346}", // eggplant
+  "\u{1F351}", // peach
+  "\u{1F34E}", // apple
+  "\u{1F349}", // watermelon
 ];
 
 const PHRASE_KDF_INFO = TE.encode("whisper-live-keyed");
@@ -383,7 +393,6 @@ export class WhisperLiveSession {
 
       const current = (typeof pc.getConfiguration === "function") ? pc.getConfiguration() : {};
       pc.setConfiguration({ ...current, iceServers: [] });
-      this.onLog("external assist disabled. continuing local-only");
     } catch (err) {
       this.onLog(`external assist disable failed: ${errorMessage(err)}`);
     }
@@ -393,10 +402,7 @@ export class WhisperLiveSession {
 
   private setState(state: LiveState, detail?: string): void {
     const allowed = VALID_TRANSITIONS[this._state];
-    if (!allowed.includes(state)) {
-      this.onLog(`blocked transition ${this._state} → ${state}`);
-      return;
-    }
+    if (!allowed.includes(state)) return;
     this._state = state;
     this.onStateChange(state, detail);
     if ((state === "live" || state === "silent" || state === "disconnected" || state === "error") && this.recoveryResolve) {
@@ -506,7 +512,8 @@ export class WhisperLiveSession {
       const logGatherResult = () => {
         const sdp = this.pc?.localDescription?.sdp ?? "";
         const types = [...sdp.matchAll(/typ (\w+)/g)].map(m => m[1]);
-        this.onLog(`gathered ${types.length} network path(s): ${types.join(", ") || "none"}`);
+        const uniqueTypes = [...new Set(types)];
+        this.onLog(`gathered ${types.length} network path(s): ${uniqueTypes.join(", ") || "none"}`);
         if (!types.includes("srflx") && this.hasExternalAssistConfigured())
           this.onLog("no relay candidates found, external assist may be unavailable");
         if (types.length === 0)
@@ -565,7 +572,6 @@ export class WhisperLiveSession {
         return;
       }
       if (s === "failed" || s === "disconnected") {
-        this.onLog(`still negotiating, waiting for peer...`);
         const rd = this.pc.remoteDescription;
         if (rd) {
           this.pc.setRemoteDescription(rd).catch((e) => {
@@ -590,18 +596,12 @@ export class WhisperLiveSession {
   }
 
   private setupPeerConnection(pc: RTCPeerConnection): void {
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        const c = event.candidate;
-        this.onLog(`network path: ${c.type ?? "?"} ${c.protocol ?? "?"} ${c.address ?? "?"}:${c.port ?? "?"}`);
-      } else {
-        this.onLog("network path discovery complete");
-      }
+    pc.onicecandidate = (_event) => {
+      // Per-candidate logs omitted; summary logged after gathering completes
     };
 
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
-      this.onLog(`network: ${s}`);
 
       if (s === "checking") return;
 
@@ -618,8 +618,6 @@ export class WhisperLiveSession {
               this.cleanupConnection();
             }
           }, HEARTBEAT_TIMEOUT);
-        } else if (this._state !== "recovering") {
-          this.onLog("connection interrupted during setup (expected while exchanging codes)");
         }
         return;
       }
@@ -644,7 +642,7 @@ export class WhisperLiveSession {
       }
 
       if (s === "connected" || s === "completed") {
-        this.onLog(s === "completed" ? "connection fully established" : "connected to peer");
+        if (s === "connected") this.onLog("connected to peer");
         this.iceRestartAttempted = false;
         if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
         if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
@@ -662,12 +660,11 @@ export class WhisperLiveSession {
 
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
-      this.onLog(`connection: ${s}`);
       if (s === "connected") {
         if (!this.isSetupState()) this.dropExternalAssist(pc);
       }
       if (s === "failed") {
-        if (this._state === "recovering") return;
+        if (this._state === "recovering" || this._state === "error" || this._state === "disconnected") return;
         if (this.connectingGraceTimer) return;
         if (this.isSetupState()) {
           this.startConnectingGrace(pc);
@@ -691,7 +688,6 @@ export class WhisperLiveSession {
       // Offerer: create new offer with iceRestart flag
       pc.createOffer({ iceRestart: true })
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() => this.onLog("restart offer sent"))
         .catch((err) => {
           this.onLog(`restart failed: ${errorMessage(err)}`);
           this.setState("disconnected");
@@ -777,7 +773,6 @@ export class WhisperLiveSession {
         );
 
         const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
-        this.onLog("sending public key");
         if (!this.dc || this.dc.readyState !== "open") {
           this.onLog("key exchange aborted, channel not available");
           return;
@@ -793,10 +788,7 @@ export class WhisperLiveSession {
   }
 
   private async handleKeyExchangeMessage(peerPubKeyRaw: Uint8Array): Promise<void> {
-    if (this._state !== "handshaking") {
-      this.onLog("ignoring key exchange message, not in handshaking state");
-      return;
-    }
+    if (this._state !== "handshaking") return;
     try {
       await this.keyReady;
       if (!this.ephPrivateKey) throw new Error("No ephemeral private key");
@@ -810,8 +802,6 @@ export class WhisperLiveSession {
       let sharedSecret: Uint8Array = new Uint8Array(sharedBits);
 
       this.ephPrivateKey = null;
-
-      this.onLog("shared secret derived");
 
       if (this.sharedPhrase) {
         const phraseHash = await sha256(TE.encode("whisper-phrase|" + this.sharedPhrase));
@@ -827,7 +817,6 @@ export class WhisperLiveSession {
         );
         concat.fill(0); // wipe concat intermediate
         oldSecret.fill(0); // wipe raw ECDH output
-        this.onLog("shared phrase mixed into key derivation");
       } else {
         this.sharedPhrase = null;
       }
@@ -844,7 +833,6 @@ export class WhisperLiveSession {
 
         if (this.dc && this.dc.readyState === "open") {
           this.send(LIVE_MSG.RATCHET_INIT, dhSelf.publicKey);
-          this.onLog("sent initial ratchet key");
         }
       }
 
@@ -863,10 +851,7 @@ export class WhisperLiveSession {
   }
 
   private async handleRatchetInit(peerRatchetPubKey: Uint8Array): Promise<void> {
-    if (this._state !== "handshaking" && this._state !== "verifying") {
-      this.onLog("ignoring ratchet init, not in expected state");
-      return;
-    }
+    if (this._state !== "handshaking" && this._state !== "verifying") return;
     if (!this.sharedSecret) return;
 
     if (!this.isOfferer) {
@@ -874,7 +859,7 @@ export class WhisperLiveSession {
 
       if (this.dc && this.dc.readyState === "open") {
         this.send(LIVE_MSG.RATCHET_INIT, this.ratchetState.dhSelf.publicKey);
-        this.onLog("encryption ratchet initialized, keys exchanged");
+        this.onLog("encryption ready");
       }
 
       if (this.autoConfirm && this._state === "verifying") {
@@ -883,7 +868,7 @@ export class WhisperLiveSession {
     } else {
       if (this.ratchetState) {
         await dhRatchetStep(this.ratchetState, peerRatchetPubKey);
-        this.onLog("encryption ratchet initialized, received peer key");
+        this.onLog("encryption ready");
       }
     }
   }
@@ -947,15 +932,9 @@ export class WhisperLiveSession {
     const complete = this.assembler.feed(wireData);
     if (!complete) return; // Still waiting for more chunks
 
-    if (!this.ratchetState) {
-      this.onLog("received message but ratchet not initialized");
-      return;
-    }
+    if (!this.ratchetState) return;
 
-    if (complete.length < HEADER_SIZE + 16) { // header + minimum AES-GCM tag
-      this.onLog("received message too short, dropped");
-      return;
-    }
+    if (complete.length < HEADER_SIZE + 16) return; // header + minimum AES-GCM tag
 
     try {
       const header = parseHeader(complete);
@@ -1235,7 +1214,6 @@ export class WhisperLiveSession {
     if (this._state !== "verifying") return;
     if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
     this.send(LIVE_MSG.FINGERPRINT_CONFIRMED);
-    this.onLog("fingerprint confirmed, session is live");
     this.startHeartbeat();
     this.setState(this.transportMode === "silent" ? "silent" : "live");
   }
@@ -1244,7 +1222,6 @@ export class WhisperLiveSession {
     if (this._state !== "verifying") return;
 
     this.send(LIVE_MSG.FINGERPRINT_REJECTED);
-    this.onLog("fingerprint rejected, aborting connection");
     this.setState("error", "Fingerprint mismatch, possible interception");
     this.cleanupConnection();
   }
@@ -1253,7 +1230,6 @@ export class WhisperLiveSession {
 
   setTransport(mode: TransportMode): void {
     this.transportMode = mode;
-    this.onLog(`switched to ${mode} mode`);
 
     if (mode === "silent" && this._state === "live") {
       this.setState("silent");
@@ -1271,7 +1247,6 @@ export class WhisperLiveSession {
   /* ── Teardown ───────────────────────────────────────────── */
 
   disconnect(): void {
-    this.onLog("disconnecting, clearing session");
     this.setState("disconnected");
     this.cleanupConnection();
   }

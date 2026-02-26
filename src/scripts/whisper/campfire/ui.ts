@@ -590,7 +590,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       opts.joinerCode.textContent = answerCode;
       opts.joinerAnswerPanel.style.display = "";
       opts.connectingStatus.textContent = "send this reply code back to whoever created the room";
-      appendLog(`answer code ready. share it back`);
+      appendLog("answer code ready, share it back");
     } catch (err) {
       appendLog(`join failed: ${err instanceof Error ? err.message : "unknown"}`);
       handleStateChange("ended", "could not join the room");
@@ -667,7 +667,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   // Sub-campfire create (placeholder — needs peer selection UI)
   opts.subCreateBtn.addEventListener("click", () => {
-    appendLog("split: select peers from the list first");
+    appendLog("select peers from the list before splitting");
   }, { signal });
 
   // New campfire

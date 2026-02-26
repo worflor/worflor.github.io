@@ -311,6 +311,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let composeActivityRaf = 0;
   let composeActivityLastTick = 0;
   let composeFlow = 0;
+  let sendEnergy = 0;
+  let sendEnergyVelocity = 0;
+  let peerTypingIntensity = 0;    // 0→1 fade in/out
+  let peerTypingPhase = 0;        // oscillator phase (radians)
+  let peerTypingTarget = 0;       // 1 when typing, 0 when not
   let currentLiveState: LiveState = "idle";
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -319,6 +324,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     chatCompose.style.setProperty("--wl-activity", composeActivity.toFixed(3));
     chatCompose.style.setProperty("--wl-velocity", Math.min(1, Math.abs(composeActivityVelocity) * 0.18).toFixed(3));
     chatCompose.style.setProperty("--wl-flow", `${(((Math.sin(composeFlow) + 1) * 0.5) * 100).toFixed(2)}%`);
+    chatCompose.style.setProperty("--wl-send-energy", sendEnergy.toFixed(3));
+    chatCompose.style.setProperty("--wl-peer-typing", peerTypingIntensity.toFixed(3));
+    // Eased sine — slow at edges, fast through middle (honey weight)
+    const raw = (Math.sin(peerTypingPhase) + 1) * 0.5;
+    const eased = raw * raw * (3 - 2 * raw); // smoothstep
+    chatCompose.style.setProperty("--wl-typing-pos", eased.toFixed(4));
   }
 
   function stepComposeActivity(ts: number): void {
@@ -341,13 +352,43 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     // Procedural phase progression tied to current energy.
     composeFlow += dt * (2.4 + (composeActivity * 6.2));
+
+    // Send energy: spring toward 0 — fills on impulse, ripples back naturally.
+    const seOmega = 8;
+    const seZeta = 0.55;
+    const seAccel = (seOmega * seOmega * (0 - sendEnergy))
+      - (2 * seZeta * seOmega * sendEnergyVelocity);
+    sendEnergyVelocity += seAccel * dt;
+    sendEnergy += sendEnergyVelocity * dt;
+    sendEnergy = Math.max(0, Math.min(1, sendEnergy));
+
+    // Peer typing: smooth fade in/out, weighted oscillator for scanning.
+    // Intensity lerps toward target (1=typing, 0=stopped).
+    const fadeSpeed = peerTypingTarget > 0.5 ? 4.5 : 2.8; // faster in, slower out
+    peerTypingIntensity += (peerTypingTarget - peerTypingIntensity) * Math.min(1, fadeSpeed * dt);
+    peerTypingIntensity = Math.max(0, Math.min(1, peerTypingIntensity));
+
+    // Phase advances only while visible — variable speed for organic feel.
+    // Slower at edges (honey weight), base period ~2.8s.
+    if (peerTypingIntensity > 0.01) {
+      const pos = (Math.sin(peerTypingPhase) + 1) * 0.5;
+      // Speed up in the middle, decelerate at edges — weighted pendulum feel.
+      const edgeDist = 1 - Math.abs(pos - 0.5) * 2; // 0 at edges, 1 at center
+      const speed = 1.8 + edgeDist * 1.4;
+      peerTypingPhase += dt * speed;
+    }
+
     syncComposeActivityVar();
 
-    if (
+    const active =
       composeActivity > 0.006
       || composeActivityTarget > 0.006
       || Math.abs(composeActivityVelocity) > 0.006
-    ) {
+      || sendEnergy > 0.006
+      || Math.abs(sendEnergyVelocity) > 0.006
+      || peerTypingIntensity > 0.006;
+
+    if (active) {
       composeActivityRaf = requestAnimationFrame(stepComposeActivity);
       return;
     }
@@ -355,6 +396,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     composeActivity = 0;
     composeActivityTarget = 0;
     composeActivityVelocity = 0;
+    sendEnergy = 0;
+    sendEnergyVelocity = 0;
+    peerTypingIntensity = 0;
     syncComposeActivityVar();
     composeActivityRaf = 0;
     composeActivityLastTick = 0;
@@ -365,6 +409,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const b = Math.max(0, Math.min(1, boost));
     composeActivityTarget = Math.min(1, composeActivityTarget + b);
     composeActivityVelocity += b * 2.25;
+    syncComposeActivityVar();
+    if (!composeActivityRaf) {
+      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
+    }
+  }
+
+  function pulseSendEnergy(): void {
+    if (!chatCompose || reduceMotion) return;
+    // Additive: if already in motion, stack energy and add velocity kick
+    sendEnergy = Math.min(1, sendEnergy + (1 - sendEnergy) * 0.8 + 0.2);
+    sendEnergyVelocity += 3.5;
     syncComposeActivityVar();
     if (!composeActivityRaf) {
       composeActivityRaf = requestAnimationFrame(stepComposeActivity);
@@ -769,24 +824,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Typing indicator ──────────────────────────────────── */
 
   function showPeerTyping(): void {
-    let indicator = opts.chatMessages.querySelector<HTMLElement>(".wl-typing-indicator");
-    if (!indicator) {
-      indicator = document.createElement("div");
-      indicator.className = "wl-typing-indicator wl-msg wl-msg--peer";
-      indicator.textContent = "...";
-      opts.chatMessages.appendChild(indicator);
-      smartScroll();
-    }
+    peerTypingTarget = 1;
     // Reset auto-clear timer
     if (peerTypingTimer) clearTimeout(peerTypingTimer);
     peerTypingTimer = setTimeout(hidePeerTyping, TYPING_DISPLAY_TIMEOUT);
     exciteComposeActivity(0.18);
+    // Ensure rAF loop is running
+    if (!composeActivityRaf && chatCompose && !reduceMotion) {
+      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
+    }
   }
 
   function hidePeerTyping(): void {
     if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
-    const indicator = opts.chatMessages.querySelector(".wl-typing-indicator");
-    if (indicator) indicator.remove();
+    peerTypingTarget = 0;
+    // rAF loop will continue until intensity fades to 0
   }
 
   function emitTyping(): void {
@@ -1100,8 +1152,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   type IdleMode = "relay" | "flare" | "manual";
   let currentIdleMode: IdleMode = "relay";
 
-  const modeSwitchWrap = opts.liveSection.querySelector<HTMLElement>("#wl-mode-switch");
-
   const IDLE_MODE_CONFIG: Record<IdleMode, {
     lede: string;
     flareLink: string;
@@ -1133,23 +1183,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     currentIdleMode = mode;
     const cfg = IDLE_MODE_CONFIG[mode];
 
-    // Single data attribute drives all CSS state — no class toggling
-    if (modeSwitchWrap) modeSwitchWrap.dataset.idleMode = mode;
-
     // Panel visibility
     relayPanel.style.display = mode === "relay" ? "" : "none";
     if (flarePanel) flarePanel.style.display = mode === "flare" ? "" : "none";
     manualPanel.style.display = mode === "manual" ? "" : "none";
 
-    // Link labels — kill transition during swap so old hover color doesn't linger
-    const btns = [flareSwitchBtn, modeSwitchBtn].filter(Boolean) as HTMLElement[];
-    for (const b of btns) b.style.transition = "none";
-    if (flareSwitchBtn) flareSwitchBtn.textContent = cfg.flareLink;
+    // Link labels + hover color via custom property (no selector swaps, no transition hacks)
+    if (flareSwitchBtn) {
+      flareSwitchBtn.textContent = cfg.flareLink;
+      flareSwitchBtn.style.setProperty("--switch-hover", mode === "flare" ? "var(--chromatic-cyan)" : "255 160 40");
+    }
     modeSwitchBtn.textContent = cfg.manualLink;
     if (idleLede) idleLede.textContent = cfg.lede;
-    // Force reflow then restore transition
-    void modeSwitchBtn.offsetWidth;
-    for (const b of btns) b.style.transition = "";
 
     // Sync shared state
     opts.externalAssistToggle.checked = cfg.relayAssist;
@@ -1269,13 +1314,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Signal Flare helpers ─────────────────────────────── */
 
   function formatElapsed(ms: number): string {
-    const s = Math.floor(ms / 1000);
-    if (s < 60) return `${s}s`;
-    const m = Math.floor(s / 60);
-    if (m < 60) return `${m}m`;
-    const h = Math.floor(m / 60);
-    const rm = m % 60;
-    return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+    const total = Math.floor(ms / 1000);
+    const s = total % 60;
+    const m = Math.floor(total / 60) % 60;
+    const h = Math.floor(total / 3600);
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
   }
 
   function setFlareUiState(state: "input" | "burning" | "arrived"): void {
@@ -1629,9 +1674,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   const sendMessage = async () => {
     const text = opts.chatInput.value.trim();
-    if (!text || !session) return;
+    if (!text) return;
     opts.chatInput.value = "";
     updateControls();
+    pulseSendEnergy();
+    if (!session) {
+      // Preview mode — render locally without a connection
+      addChatMessage({ type: "text", direction: "self", text, timestamp: Date.now() });
+      pulseComposeIntent("success", 700);
+      exciteComposeActivity(0.35);
+      return;
+    }
     pulseComposeIntent("sending", 500);
     exciteComposeActivity(0.45);
     try {
@@ -1650,6 +1703,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
+    }
+    // Preview mode: Shift+Enter simulates peer typing
+    if (e.key === "Enter" && e.shiftKey && !session) {
+      e.preventDefault();
+      showPeerTyping();
     }
   }, { signal });
 

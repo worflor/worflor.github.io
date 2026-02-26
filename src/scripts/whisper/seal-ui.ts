@@ -393,7 +393,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
   };
 
   const logQr = (event: string): void => {
-    log(`qr: ${event}`);
+    log(event);
   };
 
   function setRecipientQrUiState(scanning: boolean): void {
@@ -434,7 +434,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     opts.mySealInlinePanel.style.display = "none";
     syncMySealInlinePanelState();
     applyIdentityModeVisuals();
-    log(isUnstableMode() ? "seal mode: unstable (session-tied)" : "seal mode: stable");
+    log(isUnstableMode() ? "seal mode: unstable" : "seal mode: stable");
   }
 
   function syncMySealInlinePanelState(): void {
@@ -480,14 +480,14 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     const normalized = normalizeSealCodeInput(rawValue);
     if (!normalized || !isSealCodeValid(normalized)) {
       setRecipientQrStatus("Invalid WS2 key.");
-      logQr(`${source} invalid ws2 key`);
+      logQr(`${source} scan: invalid seal key`);
       return false;
     }
 
     opts.recipientSealInput.value = normalized;
     syncCompose();
     setRecipientQrStatus("WS2 key loaded.");
-    logQr(`${source} loaded ws2 key`);
+    logQr(`${source} scan: seal key loaded`);
     opts.messageInput.focus();
     return true;
   }
@@ -516,7 +516,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (reason === "cancelled") {
       setRecipientQrStatus("");
     }
-    if (reason === "error") logQr("camera stopped after error");
+    if (reason === "error") logQr("camera stopped after an error");
   }
 
   async function scanRecipientFromImage(file: File): Promise<void> {
@@ -524,7 +524,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (aborted()) return;
     if (!decoded) {
       setRecipientQrStatus("No WS2 key found.");
-      logQr("image no ws2 key found");
+      logQr("no seal key found in image");
       return;
     }
 
@@ -544,13 +544,13 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (aborted() || runId !== qrScanSession.runId) return;
     if (!capability.supported) {
       setRecipientQrStatus("Camera unavailable.");
-      logQr(`camera unavailable (${capability.reason ?? "unsupported"})`);
+      logQr(`camera unavailable: ${capability.reason ?? "unsupported"}`);
       return;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setRecipientQrStatus("Camera unavailable.");
-      logQr("camera unavailable (getUserMedia unsupported)");
+      logQr("camera unavailable: browser does not support camera access");
       return;
     }
 
@@ -558,7 +558,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     if (aborted() || runId !== qrScanSession.runId) return;
     if (!detector) {
       setRecipientQrStatus("Camera unavailable.");
-      logQr("camera unavailable (detector init failed)");
+      logQr("camera unavailable: qr detector could not start");
       return;
     }
 
@@ -619,7 +619,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       stopRecipientQrScan("error");
       const msg = e instanceof Error ? e.message : "camera permission denied";
       setRecipientQrStatus("Camera unavailable.");
-      logQr(`camera failed (${msg})`);
+      logQr(`camera failed: ${msg}`);
     }
   }
 
@@ -743,7 +743,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     busy = true;
     opts.mySealBtn.disabled = true;
     opts.mySealBtn.classList.add("ws-computing");
-    log(`loading ${isUnstableMode() ? "unstable" : "stable"} local key...`);
+    log(`loading ${isUnstableMode() ? "unstable" : "stable"} seal key...`);
 
     try {
       await delay(COMPUTE_MIN_DISPLAY_MS);
@@ -765,7 +765,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       opts.mySealInline.title = `copy full ${isUnstableMode() ? "unstable" : "stable"} seal`;
       opts.mySealInlinePanel.style.display = "";
       syncMySealInlinePanelState();
-      log(`${isUnstableMode() ? "unstable" : "stable"} key loaded: ${compactSealCode(identity.code)}`);
+      log(`${isUnstableMode() ? "unstable" : "stable"} seal key loaded: ${compactSealCode(identity.code)}`);
       opts.mySealBtn.classList.remove("ws-computing");
       copyToClipboard(identity.code).then(() => {
         if (aborted()) return;
@@ -774,7 +774,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       }).catch(() => {});
     } catch (e) {
       if (aborted()) return;
-      log(`error: ${e instanceof Error ? e.message : "unknown"}`);
+      log(`seal error: ${e instanceof Error ? e.message : "unknown"}`);
     } finally {
       busy = false;
       opts.mySealBtn.disabled = false;
@@ -795,7 +795,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     const expiryMs = getExpiryMs();
     const pw = opts.extraPasswordInput.value || undefined;
 
-    log(`sealing message for recipient key (${message.length.toLocaleString()} chars)`);
+    log("sealing message...");
 
     try {
       const payload = await sealMessage(recipient, message, expiryMs, pw);
@@ -817,7 +817,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       }
 
       opts.sealedResultWrap.style.display = "";
-      log(`url generated (${url.length.toLocaleString()} chars)`);
+      log("sealed link ready");
 
       // Auto-copy
       safeCopy(url, opts.sealItBtn, "Copied!");
@@ -851,9 +851,9 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
         opts.mySealInline.textContent = compactSealCode(identity.code);
         opts.mySealInline.style.display = "";
         opts.mySealInline.title = `copy full ${isUnstableMode() ? "unstable" : "stable"} seal`;
-        log(`${isUnstableMode() ? "unstable" : "stable"} local key: ${compactSealCode(identity.code)}`);
+        log(`${isUnstableMode() ? "unstable" : "stable"} seal key: ${compactSealCode(identity.code)}`);
       } else {
-        log(`no ${isUnstableMode() ? "unstable" : "stable"} local key found`);
+        log("no local seal key found");
       }
 
       const result = await unsealMessage(payload, password, currentIdentityMode);
@@ -867,7 +867,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       if (result.ok) {
         opts.decryptedMessage.textContent = result.message;
         showUnsealSub(opts.unsealSuccess);
-        log("decrypted");
+        log("decrypted successfully");
         pendingPayload = null;
         opts.msgCopyBtn.focus();
         return;
@@ -876,7 +876,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       switch (result.reason) {
         case "expired":
           showUnsealSub(opts.unsealExpired);
-          log("expired");
+          log("seal has expired");
           pendingPayload = null;
           break;
         case "password-needed":
@@ -892,12 +892,12 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
           break;
         case "identity-missing":
           showUnsealSub(opts.unsealFail);
-          log("no local key in this browser");
+          log("no seal key found in this browser");
           pendingPayload = null;
           break;
         case "decrypt-failed":
           showUnsealSub(opts.unsealFail);
-          log("decryption failed. wrong browser or corrupted");
+          log("decryption failed, wrong browser or corrupted data");
           pendingPayload = null;
           break;
       }
@@ -923,7 +923,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
       flashText(btn, label);
     } catch (e) {
       if (aborted()) return;
-      log(`copy failed: ${e instanceof Error ? e.message : "unknown"}`);
+      log("copy failed");
     }
   }
 
@@ -975,7 +975,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
     void scanRecipientFromImage(file).catch((e) => {
       const msg = e instanceof Error ? e.message : "unknown";
       setRecipientQrStatus("Scan failed.");
-      logQr(`image scan failed (${msg})`);
+      logQr(`image scan failed: ${msg}`);
     });
   }, { signal });
 
@@ -1123,7 +1123,7 @@ export function initWhisperSeal(opts: WhisperSealUIOptions): () => void {
         pendingPayload = null;
       }
       ensureEmbedUrlMode();
-      log("sealed message found in url");
+      log("sealed message detected in link");
       runUnseal(payload);
     }
   }

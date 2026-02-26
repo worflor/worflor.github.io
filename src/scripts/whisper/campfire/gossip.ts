@@ -223,7 +223,7 @@ export class CampfireNode {
   private createNeighborSession(label: string): WhisperLiveSession {
     const callbacks: WhisperLiveCallbacks = {
       onStateChange: (state, detail) => {
-        this.log(`[${label}] ${state}${detail ? `: ${detail}` : ""}`);
+        if (state === "error" && detail) this.log(detail);
         if (state === "live") {
           this.handleNeighborConnected(label, session);
         } else if (state === "disconnected" || state === "error") {
@@ -232,7 +232,7 @@ export class CampfireNode {
       },
       onFingerprint: () => {},
       onMessage: () => {},
-      onLog: (line) => this.log(`[${label}] ${line}`),
+      onLog: () => {},
       onRawDecrypted: (plaintext) => this.handleCampfireMessage(plaintext, label),
     };
 
@@ -304,7 +304,7 @@ export class CampfireNode {
         connected: true,
         joinedAt: Date.now(),
       });
-      this.log(`neighbor ${label} connected`);
+      this.log("new neighbor connected");
     }
   }
 
@@ -313,7 +313,7 @@ export class CampfireNode {
     if (neighbor) {
       neighbor.connected = false;
       this.neighbors.delete(label);
-      this.log(`neighbor ${label} disconnected`);
+      this.log("neighbor disconnected");
     }
 
     // If root peer loses connection, check if there are any neighbors left
@@ -325,7 +325,7 @@ export class CampfireNode {
       // If peer lost root connection
       if (label === "join-root" || label === "root") {
         // Root is gone, campfire ends
-        this.log("lost connection to root");
+        this.log("lost connection to the room host");
         this.endCampfire("root disconnected. the fire is out. nothing remains.");
       }
     }
@@ -344,7 +344,7 @@ export class CampfireNode {
       // In a real deployment, Root would update the room code.
       // Here we re-use the same pattern. The UI will show "new peers can join"
     } catch (err) {
-      this.log(`failed to prepare next slot: ${err instanceof Error ? err.message : "unknown"}`);
+      this.log(`failed to prepare next connection: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }
 
@@ -472,7 +472,7 @@ export class CampfireNode {
         await this.handleSubSdp(payload);
         break;
       default:
-        this.log(`unknown sub-type: 0x${subType.toString(16)}`);
+        break; // unknown message type, silently ignore
     }
   }
 
@@ -503,7 +503,7 @@ export class CampfireNode {
 
     // Hop limit
     if (parsed.hopCount >= MAX_HOP_COUNT) {
-      this.log("message dropped, max hops exceeded");
+      return; // max hops exceeded, silently drop
       return;
     }
 
@@ -521,11 +521,11 @@ export class CampfireNode {
       try {
         plaintext = await decryptGroupMsg(parsed.ciphertext, parsed.nonce, key);
       } catch {
-        this.log("group message decryption failed");
+        this.log("message could not be decrypted");
         return;
       }
     } else {
-      this.log(`no key for epoch ${parsed.epoch}`);
+      this.log("no key for this message, may have been sent before you joined");
       return;
     }
 
@@ -574,7 +574,7 @@ export class CampfireNode {
     this.allPeers.delete(hex);
     this.cb.onPeerLeave(peerId);
     this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
-    this.log(`${peer?.name ?? hex.slice(0, 8)} left the room`);
+    this.log(`${peer?.name ?? "someone"} left the room`);
 
     // Forward gossip
     const wire = buildLeaveAnnounce(peerId);
@@ -600,7 +600,7 @@ export class CampfireNode {
 
   private handleGroupKeyMsg(data: Uint8Array): void {
     const { epoch, groupKey } = parseGroupKey(data);
-    this.log(`received group key epoch ${epoch}`);
+    this.log("encryption key updated");
 
     // Rotate keys
     if (this.currentEpoch) {
@@ -621,7 +621,6 @@ export class CampfireNode {
       }
     }
     this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
-    this.log(`peer list updated: ${this.allPeers.size} peers`);
   }
 
   private async handleDmSdpRelay(data: Uint8Array, fromLabel: string): Promise<void> {
@@ -708,7 +707,7 @@ export class CampfireNode {
   private async handleIncomingSubSdp(_subId: Uint8Array, _sdpType: number, _sdpCode: string): Promise<void> {
     // Sub-campfire SDP handling, similar pattern to DM SDP
     // Implementation deferred to sub-campfire creation flow
-    this.log("sub-room sdp received");
+    // sub-room SDP routing not yet implemented
   }
 
   /* ── DM Side-Channels ──────────────────────────────────── */
@@ -716,7 +715,7 @@ export class CampfireNode {
   /** Initiate a DM with a specific peer by their hex ID. */
   async startDm(targetPeerIdHex: string): Promise<void> {
     if (this.dmSessions.has(targetPeerIdHex)) {
-      this.log("dm session already open");
+      this.log("direct message session already open");
       return;
     }
 
@@ -727,22 +726,19 @@ export class CampfireNode {
     // Find target peerId bytes
     const target = this.allPeers.get(targetPeerIdHex);
     if (!target) {
-      this.log("target peer not found");
+      this.log("peer not found");
       return;
     }
 
     // Send DM SDP relay through the mesh
     await this.broadcastToNeighbors(buildDmSdpRelay(target.peerId, SDP_OFFER, offerCode));
-    this.log(`dm started with ${target.name}`);
+    this.log(`starting direct message with ${target.name}`);
   }
 
   /** Send a DM text to a peer. */
   async sendDmText(targetPeerIdHex: string, text: string): Promise<void> {
     const session = this.dmSessions.get(targetPeerIdHex);
-    if (!session) {
-      this.log("no dm session");
-      return;
-    }
+    if (!session) return;
     await session.sendText(text);
   }
 
@@ -755,7 +751,7 @@ export class CampfireNode {
             this.dmSessions.set(peerIdHex, pending.session);
             this.pendingDmSdp.delete(peerIdHex);
           }
-          this.log(`dm live with ${peerIdHex.slice(0, 8)}`);
+          this.log("direct message connected");
         }
       },
       onFingerprint: () => {},
@@ -765,7 +761,7 @@ export class CampfireNode {
           this.cb.onDmMessage(peerId, { type: "text", text: msg.text, timestamp: msg.timestamp });
         }
       },
-      onLog: (line) => this.log(`[dm ${peerIdHex.slice(0, 8)}] ${line}`),
+      onLog: () => {},
     };
 
     return new WhisperLiveSession(callbacks, {
@@ -779,7 +775,7 @@ export class CampfireNode {
   /** Root: create a sub-campfire with selected peers. */
   async createSubCampfire(inviteePeerIds: Uint8Array[]): Promise<Uint8Array | null> {
     if (this.role !== "root") {
-      this.log("only root can split rooms");
+      this.log("only the room creator can split the room");
       return null;
     }
 
@@ -806,7 +802,7 @@ export class CampfireNode {
     const wire = buildSubInvite(subId, this.peerId, inviteePeerIds);
     await this.broadcastToNeighbors(wire);
 
-    this.log(`sub-room ${subHex.slice(0, 8)} created, ${inviteePeerIds.length} invited`);
+    this.log(`private room created, ${inviteePeerIds.length} invited`);
     return subId;
   }
 
@@ -834,7 +830,7 @@ export class CampfireNode {
     this.heartbeatWatchTimer = setInterval(() => {
       if (this._state !== "active") return;
       if (Date.now() - this.lastRootHeartbeat > ROOT_HEARTBEAT_TIMEOUT) {
-        this.log("root heartbeat lost, session ending");
+        this.log("room host went silent, session ending");
         this.endCampfire("root went silent. the fire is out. nothing remains.");
       }
     }, ROOT_HEARTBEAT_INTERVAL);

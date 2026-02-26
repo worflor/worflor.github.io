@@ -405,9 +405,8 @@ const seo = {
                 <span class="wl-flare-ember" aria-hidden="true"></span>
                 <span class="wl-flare-burning-text">flare is burning</span>
                 <span id="wl-flare-elapsed" class="wl-flare-elapsed"></span>
+                <button id="wl-flare-extinguish" type="button" class="whisper-mini-btn wl-flare-extinguish-btn">Extinguish</button>
               </div>
-              <p class="wl-flare-burning-hint">keep this tab open. you'll be notified when someone arrives.</p>
-              <button id="wl-flare-extinguish" type="button" class="whisper-mini-btn">Extinguish</button>
             </div>
 
             <!-- Peer arrived state -->
@@ -482,10 +481,10 @@ const seo = {
           <input id="wl-relay-assist" type="checkbox" class="sr-only" checked aria-hidden="true" />
 
           <!-- Mode switch links -->
-          <p class="wl-mode-switch" id="wl-mode-switch" data-idle-mode="relay">
-            <button type="button" class="wl-mode-switch-btn wl-mode-switch-btn--flare" id="wl-flare-switch-btn">try a signal flare</button>
+          <p class="wl-mode-switch" id="wl-mode-switch">
+            <button type="button" class="wl-mode-switch-btn" id="wl-flare-switch-btn">try a signal flare</button>
             <span class="wl-mode-switch-sep" aria-hidden="true">&middot;</span>
-            <button type="button" class="wl-mode-switch-btn wl-mode-switch-btn--manual" id="wl-mode-switch-btn">or connect manually</button>
+            <button type="button" class="wl-mode-switch-btn" id="wl-mode-switch-btn">or connect manually</button>
           </p>
         </div>
 
@@ -2480,6 +2479,7 @@ const seo = {
 
   .wl-mode-switch-btn {
     all: unset;
+    --switch-hover: var(--chromatic-cyan);
     font-size: calc(var(--text-sm) * 0.8);
     color: rgb(var(--color-text-rgb) / 0.3);
     cursor: pointer;
@@ -2488,21 +2488,12 @@ const seo = {
   }
 
   .wl-mode-switch-btn:hover {
-    color: rgb(var(--chromatic-cyan) / 0.7);
+    color: rgb(var(--switch-hover) / 0.7);
   }
 
   .wl-mode-switch-btn:focus-visible {
     outline: none;
-    color: rgb(var(--chromatic-cyan));
-  }
-
-  /* Flare link gets amber hover when pointing at flare mode (relay/manual views) */
-  .wl-mode-switch:not([data-idle-mode="flare"]) .wl-mode-switch-btn--flare:hover {
-    color: rgb(255 160 40 / 0.7);
-  }
-
-  .wl-mode-switch:not([data-idle-mode="flare"]) .wl-mode-switch-btn--flare:focus-visible {
-    color: rgb(255 160 40);
+    color: rgb(var(--switch-hover));
   }
 
   .wl-mode-switch-sep {
@@ -2552,6 +2543,11 @@ const seo = {
     font-size: var(--text-sm);
   }
 
+  .wl-flare-panel .whisper-input:focus-visible {
+    outline-color: rgb(var(--chromatic-flare) / 0.42);
+    border-color: rgb(var(--chromatic-flare) / 0.34);
+  }
+
   .wl-flare-fire-btn {
     border-color: rgb(var(--chromatic-flare) / 0.4) !important;
     color: rgb(var(--chromatic-flare)) !important;
@@ -2565,16 +2561,12 @@ const seo = {
 
   /* Burning state */
 
-  .wl-flare-burning {
-    display: grid;
-    gap: var(--space-sm);
-  }
-
   .wl-flare-burning-indicator {
     display: flex;
     align-items: center;
     gap: calc(var(--space-xs) * 0.5);
-    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.8);
+    min-height: var(--touch-target);
+    padding: 0 calc(var(--space-xs) * 0.8);
     border-radius: calc(var(--whisper-radius) * 0.55);
     border: 1px solid rgb(var(--chromatic-flare) / 0.25);
     background: rgb(var(--chromatic-flare) / 0.04);
@@ -2609,11 +2601,12 @@ const seo = {
     font-variant-numeric: tabular-nums;
   }
 
-  .wl-flare-burning-hint {
-    margin: 0;
-    font-size: calc(var(--text-sm) * 0.82);
-    color: rgb(var(--color-text-rgb) / 0.38);
-    line-height: 1.4;
+  .wl-flare-extinguish-btn {
+    flex-shrink: 0;
+    margin-left: calc(var(--space-xs) * 0.3);
+    font-size: calc(var(--text-sm) * 0.78);
+    padding: 0.35rem 0.6rem;
+    min-height: calc(var(--touch-target) * 0.72);
   }
 
   /* Peer arrived state */
@@ -3023,8 +3016,9 @@ const seo = {
 
   .wl-chat-messages {
     min-height: 16rem;
-    max-height: clamp(16rem, 14rem + 12vw, 28rem);
+    max-height: clamp(32rem, 28rem + 12vw, 56rem);
     overflow-y: auto;
+    scroll-behavior: auto;
     padding: calc(var(--space-sm) * 0.95);
     display: flex;
     flex-direction: column;
@@ -3044,105 +3038,113 @@ const seo = {
     background: rgb(var(--chromatic-cyan) / 0.05);
   }
 
-  .wl-msg {
+  .wl-chat-messages :global(.wl-msg) {
+    --msg-accent: var(--color-text-rgb);
     display: flex;
-    align-items: flex-end;
-    gap: calc(var(--space-xs) * 0.3);
+    flex-direction: column;
+    gap: 0.1rem;
     max-width: 80%;
   }
 
-  .wl-msg--self {
+  .wl-chat-messages :global(.wl-msg + .wl-msg) {
+    margin-top: calc(var(--space-xs) * 0.35);
+  }
+
+  .wl-chat-messages :global(.wl-msg--self) {
     align-self: flex-end;
-    flex-direction: row-reverse;
+    align-items: flex-end;
   }
 
-  .wl-msg--peer {
+  .wl-chat-messages :global(.wl-msg--peer) {
+    --msg-accent: var(--pride-purple);
     align-self: flex-start;
+    align-items: flex-start;
   }
 
-  .wl-msg--system {
+  .wl-chat-messages :global(.wl-msg--system) {
     align-self: center;
+    align-items: center;
     max-width: 90%;
   }
 
-  .wl-msg-text {
-    padding: 0.52rem 0.75rem;
-    border-radius: calc(var(--whisper-radius) * 0.62);
+  .wl-chat-messages :global(.wl-msg-text) {
+    padding: 0.42rem 0.65rem;
+    border-radius: calc(var(--whisper-radius) * 0.55);
     font-size: var(--text-sm);
     line-height: 1.42;
     word-break: break-word;
-    border: 1px solid transparent;
+    border: 1px solid rgb(var(--msg-accent) / 0.16);
+    background: rgb(var(--msg-accent) / 0.06);
+    color: rgb(var(--color-text-rgb) / 0.72);
   }
 
-  .wl-msg--self .wl-msg-text {
-    background: rgb(var(--chromatic-cyan) / 0.12);
-    color: rgb(var(--color-text-rgb) / 0.92);
-    border-color: rgb(var(--chromatic-cyan) / 0.26);
-    border-bottom-right-radius: calc(var(--whisper-radius) * 0.2);
+  .wl-chat-messages :global(.wl-msg--self .wl-msg-text) {
+    border-bottom-right-radius: calc(var(--whisper-radius) * 0.15);
   }
 
-  .wl-msg--peer .wl-msg-text {
-    background: rgb(var(--color-text-rgb) / 0.055);
-    color: rgb(var(--color-text-rgb) / 0.86);
-    border-color: rgb(var(--color-text-rgb) / 0.16);
-    border-bottom-left-radius: calc(var(--whisper-radius) * 0.2);
+  .wl-chat-messages :global(.wl-msg--peer .wl-msg-text) {
+    color: rgb(var(--msg-accent) / 0.9);
+    border-bottom-left-radius: calc(var(--whisper-radius) * 0.15);
   }
 
-  .wl-msg-system {
-    padding: 0.25rem 0.54rem;
-    font-size: calc(var(--text-sm) * 0.8);
-    color: rgb(var(--color-text-rgb) / 0.45);
+  .wl-chat-messages :global(.wl-msg-system) {
+    padding: 0.2rem 0;
+    font-size: calc(var(--text-sm) * 0.76);
+    color: rgb(var(--color-text-rgb) / 0.32);
     text-align: center;
-    border-radius: var(--radius-full);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
-    background: rgb(var(--color-text-rgb) / 0.02);
+    border: none;
+    background: none;
   }
 
-  .wl-msg-time {
-    font-size: calc(var(--text-sm) * 0.68);
-    color: rgb(var(--color-text-rgb) / 0.28);
-    flex-shrink: 0;
-    padding-bottom: 0.2rem;
+  .wl-chat-messages :global(.wl-msg-time) {
+    display: block;
+    font-size: calc(var(--text-sm) * 0.62);
+    color: rgb(var(--color-text-rgb) / 0.22);
+    padding: 0 0.25rem;
+    letter-spacing: 0.02em;
+    line-height: 1;
   }
 
-  .wl-msg-file {
+  .wl-chat-messages :global(.wl-msg-file) {
     display: grid;
-    gap: calc(var(--space-xs) * 0.2);
-    padding: 0.5rem 0.7rem;
-    border-radius: calc(var(--whisper-radius) * 0.6);
-    border: 1px solid var(--whisper-edge);
-    background: var(--whisper-surface);
+    gap: calc(var(--space-xs) * 0.15);
+    padding: 0.42rem 0.65rem;
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    border: 1px solid rgb(var(--msg-accent) / 0.16);
+    background: rgb(var(--msg-accent) / 0.06);
   }
 
-  .wl-msg-file-name {
-    font-size: var(--text-sm);
+  .wl-chat-messages :global(.wl-msg-file-name) {
+    font-size: calc(var(--text-sm) * 0.92);
     font-weight: 600;
-    color: rgb(var(--color-text-rgb) / 0.8);
+    color: rgb(var(--msg-accent) / 0.8);
     word-break: break-word;
   }
 
-  .wl-msg-file-size {
-    font-size: calc(var(--text-sm) * 0.85);
-    color: rgb(var(--color-text-rgb) / 0.4);
+  .wl-chat-messages :global(.wl-msg-file-size) {
+    font-size: calc(var(--text-sm) * 0.72);
+    color: rgb(var(--color-text-rgb) / 0.32);
   }
 
-  .wl-msg-file-download {
-    font-size: var(--text-sm);
-    color: rgb(var(--chromatic-cyan));
+  .wl-chat-messages :global(.wl-msg-file-download) {
+    font-size: calc(var(--text-sm) * 0.78);
+    color: rgb(var(--msg-accent) / 0.6);
     text-decoration: none;
-    border-bottom: 1px solid rgb(var(--chromatic-cyan) / 0.3);
     width: fit-content;
   }
 
-  .wl-msg-file-download:hover {
-    color: var(--color-text);
-    border-bottom-color: rgb(var(--color-text-rgb) / 0.5);
+  .wl-chat-messages :global(.wl-msg-file-download:hover) {
+    color: rgb(var(--msg-accent) / 0.85);
   }
 
   .wl-chat-compose {
     --wl-activity: 0;
     --wl-velocity: 0;
     --wl-flow: 50%;
+    --wl-send-energy: 0;
+    --wl-peer-typing: 0;
+    --wl-typing-pos: 0;
+    position: relative;
     display: flex;
     gap: calc(var(--space-xs) * 0.4);
     align-items: stretch;
@@ -3163,6 +3165,43 @@ const seo = {
       filter var(--duration-fast) linear;
     transform: translateZ(0);
     filter: saturate(calc(1 + (var(--wl-activity) * 0.24)));
+  }
+
+  .wl-chat-compose::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    pointer-events: none;
+    background: rgb(var(--chromatic-cyan) / calc(var(--wl-send-energy) * 0.9));
+    clip-path: inset(0 calc(50% * (1 - var(--wl-send-energy))) 0 calc(50% * (1 - var(--wl-send-energy))));
+    box-shadow:
+      0 0 calc(var(--wl-send-energy) * 6px) rgb(var(--chromatic-cyan) / calc(var(--wl-send-energy) * 0.5)),
+      0 0 calc(var(--wl-send-energy) * 12px) rgb(var(--chromatic-cyan) / calc(var(--wl-send-energy) * 0.2));
+  }
+
+  .wl-chat-compose::after {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    pointer-events: none;
+    opacity: var(--wl-peer-typing);
+    background:
+      radial-gradient(
+        ellipse calc(12% + var(--wl-peer-typing) * 4%) 100%
+        at calc(var(--wl-typing-pos) * 100%) 50%,
+        rgb(var(--pride-purple) / 0.95) 0%,
+        rgb(var(--pride-purple) / 0.4) 40%,
+        transparent 100%
+      );
+    box-shadow:
+      0 0 calc(var(--wl-peer-typing) * 8px) rgb(var(--pride-purple) / calc(var(--wl-peer-typing) * 0.35)),
+      0 0 calc(var(--wl-peer-typing) * 16px) rgb(var(--pride-purple) / calc(var(--wl-peer-typing) * 0.12));
   }
 
   .wl-chat-compose:focus-within {
@@ -3244,7 +3283,6 @@ const seo = {
     border-color: rgb(var(--color-text-rgb) / 0.14);
     transition:
       border-color var(--duration-normal) var(--ease-out),
-      outline-color var(--duration-normal) var(--ease-out),
       background var(--duration-normal) var(--ease-out),
       transform 120ms linear;
   }
@@ -3394,6 +3432,10 @@ const seo = {
       background-size: 100% 100%, 100% 100%, 100% 100% !important;
       background-position: 0 0, 0 0, 0 0 !important;
     }
+    .wl-chat-compose::before,
+    .wl-chat-compose::after {
+      display: none !important;
+    }
   }
 
   /* ── Silent mode ─────────────────────────────────────────── */
@@ -3474,6 +3516,30 @@ const seo = {
       font-size: calc(var(--text-sm) * 0.8);
     }
 
+    .wl-flare-burning-indicator {
+      gap: calc(var(--space-xs) * 0.35);
+      padding: 0 calc(var(--space-xs) * 0.5);
+    }
+
+    .wl-flare-burning-text {
+      font-size: calc(var(--text-sm) * 0.8);
+    }
+
+    .wl-flare-extinguish-btn {
+      font-size: calc(var(--text-sm) * 0.72);
+      padding: 0.3rem 0.5rem;
+      margin-left: auto;
+    }
+
+    .wl-flare-arrived-actions {
+      flex-direction: column;
+    }
+
+    .wl-flare-arrived-actions .whisper-mini-btn {
+      width: 100%;
+      justify-content: center;
+    }
+
     .wl-join-row .whisper-mini-btn {
       min-width: 4.8rem;
       padding-inline: 0.65rem;
@@ -3528,7 +3594,7 @@ const seo = {
       min-height: 12rem;
     }
 
-    .wl-msg {
+    .wl-chat-messages :global(.wl-msg) {
       max-width: 90%;
     }
 
@@ -3537,7 +3603,7 @@ const seo = {
   @media (max-height: 760px) {
     .wl-chat-messages {
       min-height: 10rem;
-      max-height: 18rem;
+      max-height: 36rem;
     }
 
     .wl-code-display {
