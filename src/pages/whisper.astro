@@ -3224,21 +3224,23 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.72);
   }
 
-  .wl-chat-messages :global(.wl-msg--self .wl-msg-text) {
+  .wl-chat-messages :global(.wl-msg--self .wl-msg-text),
+  .wl-chat-messages :global(.wl-msg--self .wl-msg-file) {
     border-bottom-right-radius: calc(var(--whisper-radius) * 0.15);
+  }
+
+  .wl-chat-messages :global(.wl-msg--self .wl-msg-text) {
     transition: color 400ms ease-out, border-color 400ms ease-out;
   }
 
-  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-text) {
+  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-text),
+  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-file) {
     color: rgb(var(--color-text-rgb) / 0.88);
     border-color: rgb(var(--color-text-rgb) / 0.22);
   }
 
-  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-file) {
-    border-color: rgb(var(--color-text-rgb) / 0.22);
-  }
-
-  .wl-chat-messages :global(.wl-msg--peer .wl-msg-text) {
+  .wl-chat-messages :global(.wl-msg--peer .wl-msg-text),
+  .wl-chat-messages :global(.wl-msg--peer .wl-msg-file) {
     color: rgb(var(--msg-accent) / 0.9);
     border-bottom-left-radius: calc(var(--whisper-radius) * 0.15);
   }
@@ -3265,10 +3267,12 @@ const seo = {
   }
 
   /* Soften corner between grouped bubbles */
-  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-text) {
+  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-text),
+  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-file) {
     border-top-right-radius: calc(var(--whisper-radius) * 0.2);
   }
-  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-text) {
+  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-text),
+  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-file) {
     border-top-left-radius: calc(var(--whisper-radius) * 0.2);
   }
 

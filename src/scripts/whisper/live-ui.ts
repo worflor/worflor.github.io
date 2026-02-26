@@ -2001,10 +2001,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       e.preventDefault();
       sendMessage();
     }
-    // Preview mode: Shift+Enter simulates peer typing
+    // Preview mode: Shift+Enter simulates a peer message
     if (e.key === "Enter" && e.shiftKey && !session) {
       e.preventDefault();
+      const peerText = opts.chatInput.value.trim();
+      opts.chatInput.value = "";
+      updateControls();
       showPeerTyping();
+      if (peerText) {
+        setTimeout(() => {
+          hidePeerTyping();
+          addChatMessage({ type: "text", direction: "peer", text: peerText, timestamp: Date.now() });
+        }, 800 + Math.random() * 600);
+      }
     }
   }, { signal });
 
