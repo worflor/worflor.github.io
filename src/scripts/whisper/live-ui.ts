@@ -766,7 +766,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     if (liveSurface) {
       liveSurface.classList.toggle("wl-connected", el === opts.chatSection);
-      liveSurface.classList.remove("wl-preview");
+      liveSurface.classList.remove("wl-preview", "wl-recovering");
     }
   }
 

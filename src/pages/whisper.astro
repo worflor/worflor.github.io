@@ -354,7 +354,9 @@ const seo = {
           <div class="wl-head-right">
             <div class="cf-live-mode-toggle" role="group" aria-label="Live controls">
               <button id="wl-funnel-campfire" type="button" class="whisper-mini-btn cf-head-btn">start a campfire</button>
-              <button id="wl-disconnect" type="button" class="whisper-mini-btn cf-head-btn wl-disconnect-btn">Quit</button>
+              <button id="wl-disconnect" type="button" class="whisper-mini-btn cf-head-btn wl-disconnect-btn" aria-label="Quit">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+              </button>
             </div>
           </div>
 
@@ -3892,6 +3894,10 @@ const seo = {
       grid-row: 1;
     }
 
+    .whisper-op-live.wl-connected .wl-head-title-row {
+      grid-column: 1;
+    }
+
     .cf-live-mode-toggle {
       margin-top: 0;
       width: auto;
@@ -4748,6 +4754,12 @@ const seo = {
 
   .cf-live-mode-toggle .cf-head-btn:last-child {
     border-right: 0;
+  }
+
+  .wl-disconnect-btn svg {
+    display: block;
+    width: 14px;
+    height: 14px;
   }
 
   .cf-head-btn:hover {
