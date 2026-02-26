@@ -13,6 +13,7 @@ import {
   type LiveState,
   type LiveMessage,
 } from "./live";
+import { CTRL_OP } from "./live-ctrl";
 import {
   q,
   asInput,
@@ -99,6 +100,7 @@ export interface WhisperLiveUIOptions {
   chatSendBtn: HTMLButtonElement;
   chatFileInput: HTMLInputElement;
   chatFileBtn: HTMLButtonElement;
+  chatClearBtn: HTMLButtonElement;
   disconnectBtn: HTMLButtonElement;
   fpChip: HTMLButtonElement;
   fpChipEmoji: HTMLElement;
@@ -172,6 +174,7 @@ const WHISPER_LIVE_IDS = {
   chatSendBtn: "wl-chat-send",
   chatFileInput: "wl-chat-file-input",
   chatFileBtn: "wl-chat-file-btn",
+  chatClearBtn: "wl-chat-clear-btn",
   disconnectBtn: "wl-disconnect",
   fpChip: "wl-fp-chip",
   fpChipEmoji: "wl-fp-chip-emoji",
@@ -196,8 +199,19 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : "unknown";
 }
 
+const _storedPref = localStorage.getItem("wl-time-12h");
+let use12h = _storedPref !== null
+  ? _storedPref === "1"
+  : /^h1[12]$/.test(new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions().hourCycle ?? "");
+
 function formatTime(ts: number): string {
   const d = new Date(ts);
+  if (use12h) {
+    const h = d.getHours();
+    const m = d.getMinutes().toString().padStart(2, "0");
+    const period = h >= 12 ? "pm" : "am";
+    return `${(h % 12 || 12)}:${m} ${period}`;
+  }
   return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
 }
 
@@ -288,6 +302,7 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     chatSection: el(I.chatSection), chatMessages: el(I.chatMessages),
     chatInput: inp(I.chatInput), chatSendBtn: btn(I.chatSendBtn),
     chatFileInput: inp(I.chatFileInput), chatFileBtn: btn(I.chatFileBtn),
+    chatClearBtn: btn(I.chatClearBtn),
     disconnectBtn: btn(I.disconnectBtn),
     fpChip: btn(I.fpChip), fpChipEmoji: el(I.fpChipEmoji), fpChipName: el(I.fpChipName),
     fpNicknameInput: inp(I.fpNicknameInput),
@@ -328,8 +343,46 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   let typingSendTimer: ReturnType<typeof setTimeout> | null = null;
   let peerTypingTimer: ReturnType<typeof setTimeout> | null = null;
-  const TYPING_SEND_DEBOUNCE = 3_000;
-  const TYPING_DISPLAY_TIMEOUT = 4_000;
+  /** Typing debounce scaled to current network — reads live so it adapts
+   *  if the connection changes (e.g. wifi → cellular). Constrained networks
+   *  get a longer window; good connections stay at the original 3s default. */
+  function typingSendDebounce(): number {
+    return env.constrainedNetwork ? 6_000 : Math.min(6_000, Math.max(3_000, env.rtt * 4));
+  }
+  function typingDisplayTimeout(): number {
+    return env.constrainedNetwork ? 6_000 : 4_000;
+  }
+
+  type ClearState = "idle" | "pending-out" | "pending-in";
+  let clearState: ClearState = "idle";
+  let clearTimer: ReturnType<typeof setTimeout> | null = null;
+  const CLEAR_TIMEOUT_MS = 30_000;
+
+  function setClearState(next: ClearState): void {
+    clearState = next;
+    opts.chatClearBtn.dataset.clearState = next;
+  }
+  function armClearTimer(): void {
+    if (clearTimer) clearTimeout(clearTimer);
+    clearTimer = setTimeout(() => { clearTimer = null; setClearState("idle"); }, CLEAR_TIMEOUT_MS);
+  }
+  function clearClearTimer(): void {
+    if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
+  }
+  function executeClearHistory(): void {
+    clearNode(opts.chatMessages);
+    if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
+    clearClearTimer();
+    setClearState("idle");
+    updateControls();
+  }
+  function handleCtrl(opcode: number, _payload: Uint8Array): void {
+    if (opcode === CTRL_OP.CLEAR_REQ && clearState === "idle") {
+      setClearState("pending-in"); armClearTimer();
+    } else if (opcode === CTRL_OP.CLEAR_CONFIRM && clearState === "pending-out") {
+      executeClearHistory();
+    }
+  }
 
   const originalTitle = document.title;
   let unreadCount = 0;
@@ -369,7 +422,46 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     speed: 0,           // 0→1 instantaneous motion speed
   };
   let currentLiveState: LiveState = "idle";
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ── Environment sensing ───────────────────────────────── */
+  // Derive behavioral flags from browser signals. These adapt the UX
+  // to the user's actual context — network, device, preferences.
+  // All reads are behind optional chaining; missing APIs → safe defaults
+  // that match the original hardcoded values.
+
+  // Static hardware facts — read once, never change.
+  const lightDevice = (navigator.hardwareConcurrency ?? 8) <= 2
+    || ((navigator as any).deviceMemory ?? 8) < 2;
+
+  // Network & preferences — can change mid-session.
+  // Wrapped in a live-reading object so callers always get current state.
+  const env = {
+    get conn() {
+      return (navigator as any).connection as
+        { effectiveType?: string; rtt?: number; saveData?: boolean } | undefined;
+    },
+    /** User explicitly asked their browser to use less data. */
+    get saveData(): boolean { return this.conn?.saveData === true; },
+    /** Network too slow for ephemeral signals to arrive meaningfully. */
+    get constrainedNetwork(): boolean {
+      const t = this.conn?.effectiveType;
+      return t === "slow-2g" || t === "2g";
+    },
+    /** Current round-trip estimate, clamped to a usable range.
+     *  Default 100ms — moderate, matches the original 3s debounce feel. */
+    get rtt(): number {
+      return Math.min(2_000, Math.max(50, this.conn?.rtt ?? 100));
+    },
+    lightDevice,
+  };
+
+  // Reduced-motion: composite of explicit preference + device/network.
+  // Mutable so we can react to live media-query changes.
+  let reduceMotion = lightDevice;
+  const motionMq = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const syncMotion = () => { reduceMotion = motionMq.matches || env.lightDevice || env.constrainedNetwork; };
+  syncMotion();
+  motionMq.addEventListener("change", syncMotion, { signal });
 
   /** Push all animation state to CSS custom properties. One place, once per frame. */
   function syncCSSVars(): void {
@@ -977,6 +1069,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     opts.chatSendBtn.disabled = busy || !hasSession || !hasChatText;
     opts.chatFileBtn.disabled = busy || !hasSession;
+    const hasChatMessages = opts.chatMessages.children.length > 0
+      && !(opts.chatMessages.children.length === 1 && opts.chatMessages.firstElementChild?.classList.contains("wl-chat-empty"));
+    opts.chatClearBtn.disabled = busy || !hasChatMessages;
 
     opts.confirmBtn.disabled = busy || !hasSession;
     opts.rejectBtn.disabled = busy || !hasSession;
@@ -1029,7 +1124,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Each typing signal nudges the pendulum — keeps it feeling alive
     if (typing.amplitude > 0.3) typing.phaseVelocity += 0.3;
     if (peerTypingTimer) clearTimeout(peerTypingTimer);
-    peerTypingTimer = setTimeout(hidePeerTyping, TYPING_DISPLAY_TIMEOUT);
+    peerTypingTimer = setTimeout(hidePeerTyping, typingDisplayTimeout());
     exciteComposeActivity(0.18);
     ensureRaf();
   }
@@ -1041,8 +1136,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function emitTyping(): void {
     if (typingSendTimer || !session) return;
+    // Typing signals are ephemeral — skip entirely when the browser says
+    // "conserve bandwidth" (save-data) or the network can barely carry content.
+    if (env.saveData || env.constrainedNetwork) return;
     session.sendTyping();
-    typingSendTimer = setTimeout(() => { typingSendTimer = null; }, TYPING_SEND_DEBOUNCE);
+    typingSendTimer = setTimeout(() => { typingSendTimer = null; }, typingSendDebounce());
     exciteComposeActivity(0.22);
   }
 
@@ -1120,6 +1218,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     const timeEl = document.createElement("time");
     timeEl.className = "wl-msg-time";
+    timeEl.dateTime = String(msg.timestamp);
     timeEl.textContent = formatTime(msg.timestamp);
     div.appendChild(timeEl);
 
@@ -1179,6 +1278,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onAck: handleAck,
       onSendProgress: (sent, total) => sendProgress(sent / total),
       onConnectionStats: handleConnectionStats,
+      onCtrl: handleCtrl,
     }, {
       rtcConfig,
       autoConfirmFingerprint: true,
@@ -1357,6 +1457,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (flarePhraseInput) flarePhraseInput.value = "";
     skippedIceCandidates = 0;
     currentLiveState = "idle";
+    clearClearTimer(); setClearState("idle");
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
     resetFpChip();
@@ -2029,6 +2130,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   enterSubmit(opts.answerInput, opts.answerApplyBtn);
   opts.chatInput.addEventListener("input", () => { updateControls(); emitTyping(); }, { signal });
 
+  // Toggle 12h/24h on timestamp tap
+  opts.chatMessages.addEventListener("click", (e) => {
+    const time = (e.target as HTMLElement).closest<HTMLTimeElement>(".wl-msg-time");
+    if (!time) return;
+    use12h = !use12h;
+    localStorage.setItem("wl-time-12h", use12h ? "1" : "0");
+    for (const el of opts.chatMessages.querySelectorAll<HTMLTimeElement>(".wl-msg-time")) {
+      const ts = Number(el.dateTime);
+      if (ts) el.textContent = formatTime(ts);
+    }
+  }, { signal });
+
   if (chatCompose) {
     chatCompose.style.setProperty("--wl-activity", "0");
     const syncComposeState = () => {
@@ -2081,6 +2194,23 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   opts.chatFileBtn.addEventListener("click", () => {
     opts.chatFileInput.click();
+  }, { signal });
+
+  opts.chatClearBtn.addEventListener("click", () => {
+    if (!session) {
+      executeClearHistory();
+      return;
+    }
+    if (clearState === "idle") {
+      session.sendCtrl(CTRL_OP.CLEAR_REQ);
+      setClearState("pending-out"); armClearTimer();
+    } else if (clearState === "pending-in") {
+      session.sendCtrl(CTRL_OP.CLEAR_CONFIRM);
+      executeClearHistory();
+    } else {
+      // pending-out: second click cancels
+      clearClearTimer(); setClearState("idle");
+    }
   }, { signal });
 
   opts.chatFileInput.addEventListener("change", async () => {

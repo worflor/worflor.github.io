@@ -30,6 +30,7 @@ import {
   aesGcmDecrypt,
 } from "./live-crypto";
 import { sdpToCode, codeToSdp } from "./live-sdp";
+import { encodeCtrl, decodeCtrl } from "./live-ctrl";
 
 import {
   type RatchetState,
@@ -107,6 +108,8 @@ export interface WhisperLiveCallbacks {
   onSendProgress?: (bytesSent: number, totalBytes: number) => void;
   /** Periodic connection quality stats (fires each heartbeat cycle). */
   onConnectionStats?: (stats: ConnectionStats) => void;
+  /** Incoming control frame from peer. */
+  onCtrl?: (opcode: number, payload: Uint8Array) => void;
 }
 
 export interface WhisperLiveSessionOptions {
@@ -269,6 +272,7 @@ const LIVE_MSG = {
   PONG: 0x41,
   TYPING: 0x42,
   ACK: 0x43,
+  CTRL: 0x50,
 } as const;
 
 const LIVE_FLAG = {
@@ -355,6 +359,7 @@ export class WhisperLiveSession {
   onAck: WhisperLiveCallbacks["onAck"];
   onSendProgress: WhisperLiveCallbacks["onSendProgress"];
   onConnectionStats: WhisperLiveCallbacks["onConnectionStats"];
+  onCtrl: WhisperLiveCallbacks["onCtrl"];
 
   // Tab-aware heartbeat
   private tabHidden = false;
@@ -378,6 +383,7 @@ export class WhisperLiveSession {
     this.onAck = callbacks.onAck;
     this.onSendProgress = callbacks.onSendProgress;
     this.onConnectionStats = callbacks.onConnectionStats;
+    this.onCtrl = callbacks.onCtrl;
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
     this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
     this.autoConfirm = options.autoConfirmFingerprint ?? false;
@@ -937,6 +943,11 @@ export class WhisperLiveSession {
         }
         break;
       }
+      case LIVE_MSG.CTRL: {
+        const frame = decodeCtrl(bytes.subarray(1));
+        if (frame && this.onCtrl) this.onCtrl(frame.opcode, frame.payload);
+        break;
+      }
       default:
         this.onLog(`unknown message type: 0x${type.toString(16)}`);
     }
@@ -1046,6 +1057,12 @@ export class WhisperLiveSession {
   sendTyping(): void {
     if (!this.isLiveState()) return;
     this.send(LIVE_MSG.TYPING);
+  }
+
+  /** Send a control frame to the peer. */
+  sendCtrl(opcode: number, payload?: Uint8Array): void {
+    if (!this.isLiveState()) return;
+    this.send(LIVE_MSG.CTRL, encodeCtrl(opcode, payload));
   }
 
   /** Wait for recovery to complete before sending. Returns false if destroyed. */

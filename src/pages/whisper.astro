@@ -606,6 +606,15 @@ const seo = {
                 autocomplete="off"
                 spellcheck="false"
               />
+              <button
+                id="wl-chat-clear-btn"
+                type="button"
+                class="whisper-mini-btn wl-chat-clear-btn"
+                aria-label="Clear chat history"
+                title="Clear history"
+                data-clear-state="idle"
+                disabled
+              >↺</button>
               <button id="wl-chat-file-btn" type="button" class="whisper-mini-btn wl-chat-file-btn" aria-label="Send a file" title="Send file">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" class="wl-file-icon" aria-hidden="true">
                   <path d="M8 2v8M4 6l4-4 4 4"></path>
@@ -3283,6 +3292,8 @@ const seo = {
     padding: 0 0.25rem;
     letter-spacing: 0.02em;
     line-height: 1;
+    cursor: pointer;
+    user-select: none;
   }
 
   .wl-chat-messages :global(.wl-msg-file) {
@@ -3581,6 +3592,31 @@ const seo = {
     transition-duration: 40ms;
   }
 
+  .wl-chat-clear-btn {
+    flex: 0 0 auto;
+    font-size: 0.95rem;
+    transition: border-color var(--duration-normal) var(--ease-out),
+                box-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  @keyframes wl-clear-waiting {
+    0%,100% { opacity: 1; }
+    50%     { opacity: 0.4; }
+  }
+  .wl-chat-clear-btn[data-clear-state="pending-out"] {
+    border-color: rgb(var(--tool-action-load) / 0.5);
+    animation: wl-clear-waiting 2.2s ease-in-out infinite;
+  }
+
+  @keyframes wl-clear-incoming {
+    0%,100% { box-shadow: 0 0 0 1px rgb(var(--chromatic-cyan) / 0.25); }
+    50%     { box-shadow: 0 0 7px 2px rgb(var(--chromatic-cyan) / 0.5); }
+  }
+  .wl-chat-clear-btn[data-clear-state="pending-in"] {
+    border-color: rgb(var(--chromatic-cyan) / 0.55);
+    animation: wl-clear-incoming 1.1s ease-in-out infinite;
+  }
+
   .wl-file-icon {
     width: 1rem;
     height: 1rem;
@@ -3622,6 +3658,9 @@ const seo = {
     .wl-chat-compose::after {
       display: none !important;
     }
+    .wl-chat-clear-btn { animation: none !important; }
+    .wl-chat-clear-btn[data-clear-state="pending-out"] { opacity: 0.6; }
+    .wl-chat-clear-btn[data-clear-state="pending-in"] { outline: 2px solid rgb(var(--chromatic-cyan) / 0.6); }
   }
 
   /* ── Silent mode ─────────────────────────────────────────── */
