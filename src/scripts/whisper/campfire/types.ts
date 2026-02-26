@@ -21,8 +21,6 @@ export const CF_SDP_RELAY          = 0x55;
 export const CF_GROUP_KEY          = 0x56;
 export const CF_PEER_LIST          = 0x57;
 export const CF_DM_SDP_RELAY       = 0x58;
-export const CF_SUB_INVITE         = 0x59;
-export const CF_SUB_SDP            = 0x5a;
 export const CF_RING_WANT          = 0x5b;
 
 /** Flags bit for campfire messages in the whisper-live header. */
@@ -112,13 +110,5 @@ export interface CampfireCallbacks {
   onLog: (line: string) => void;
   onRoomCodeUpdate?: (code: string) => void;
   onDmMessage: (fromPeerId: Uint8Array, msg: { type: "text"; text: string; timestamp: number }) => void;
-  onSubCampfireInvite: (subId: Uint8Array, inviterPeerId: Uint8Array, invitees: Uint8Array[]) => void;
 }
 
-export interface SubCampfire {
-  subId: Uint8Array;
-  subIdHex: string;
-  members: Map<string, CampfirePeer>;
-  groupKey: Uint8Array;
-  epoch: number;
-}

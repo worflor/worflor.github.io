@@ -346,7 +346,7 @@ function connectToTracker(
         if (!peerAnswerCode || peerAnswerCode.length < MIN_CODE_LEN) return;
         if (!fromPeerId || fromPeerId === peerId) return;
         if (toPeerId && toPeerId !== peerId) return;
-        if (!incomingOfferId || incomingOfferId !== offerId) return;
+        if (incomingOfferId && incomingOfferId !== offerId) return;
         if (infoHash && !infoHashes.includes(infoHash)) return;
         if (!BASE64URL_RE.test(peerAnswerCode)) return;
 

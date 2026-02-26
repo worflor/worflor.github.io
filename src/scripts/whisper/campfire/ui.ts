@@ -78,9 +78,6 @@ export interface CampfireUIOptions {
   dmCloseBtn: HTMLButtonElement;
   dmTargetName: HTMLElement;
 
-  /* Sub-campfire UI */
-  subCreateBtn: HTMLButtonElement;
-
   /* Ended phase */
   endedSection: HTMLElement;
   endedMessage: HTMLElement;
@@ -130,7 +127,6 @@ export const CAMPFIRE_IDS = {
   dmSendBtn: "cf-dm-send",
   dmCloseBtn: "cf-dm-close",
   dmTargetName: "cf-dm-target-name",
-  subCreateBtn: "cf-sub-create",
   endedSection: "cf-ended-section",
   endedMessage: "cf-ended-message",
   newCampfireBtn: "cf-new-campfire",
@@ -198,8 +194,6 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
   const dmCloseBtn = asButton(q(root, IDS.dmCloseBtn));
   const dmTargetName = q(root, IDS.dmTargetName);
 
-  const subCreateBtn = asButton(q(root, IDS.subCreateBtn));
-
   const endedSection = q(root, IDS.endedSection);
   const endedMessage = q(root, IDS.endedMessage);
   const newCampfireBtn = asButton(q(root, IDS.newCampfireBtn));
@@ -216,7 +210,6 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
     !joinerShareBtn ||
     !activeSection || !chatMessages || !chatInput || !chatSendBtn || !peerList || !disconnectBtn ||
     !dmOverlay || !dmMessages || !dmInput || !dmSendBtn || !dmCloseBtn || !dmTargetName ||
-    !subCreateBtn ||
     !endedSection || !endedMessage || !newCampfireBtn
   ) {
     return null;
@@ -232,7 +225,6 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
     connectingSection, connectingStatus, joinerAnswerPanel, joinerCode, joinerCopyBtn, joinerShareBtn,
     activeSection, chatMessages, chatInput, chatSendBtn, peerList, disconnectBtn,
     dmOverlay, dmMessages, dmInput, dmSendBtn, dmCloseBtn, dmTargetName,
-    subCreateBtn,
     endedSection, endedMessage, newCampfireBtn,
   };
 }
@@ -569,7 +561,6 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
         updateControls();
       },
       onDmMessage: handleDmMessage,
-      onSubCampfireInvite: () => {},
     });
   }
 
@@ -593,7 +584,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   function handlePeerLeave(peerId: Uint8Array): void {
     const hex = toHex(peerId);
-    addChatMessage("", `${hex.slice(0, 8)} left the room`, Date.now(), "system");
+    const name = knownPeerNames.get(hex) ?? `${hex.slice(0, 8)}`;
+    addChatMessage("", `${name} left the room`, Date.now(), "system");
   }
 
   function handleDmMessage(fromPeerId: Uint8Array, msg: { type: "text"; text: string; timestamp: number }): void {
@@ -893,11 +885,6 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   // DM close
   opts.dmCloseBtn.addEventListener("click", closeDmPanel, { signal });
-
-  // Sub-campfire create (placeholder — needs peer selection UI)
-  opts.subCreateBtn.addEventListener("click", () => {
-    appendLog("select peers from the list before splitting");
-  }, { signal });
 
   // New campfire
   opts.newCampfireBtn.addEventListener("click", resetToIdle, { signal });

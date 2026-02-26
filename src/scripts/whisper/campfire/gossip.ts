@@ -25,7 +25,6 @@ import {
   type CampfireCallbacks,
   type CampfirePeer,
   type GroupKeyEpoch,
-  type SubCampfire,
   ContentType,
   CAMPFIRE_FLAG,
   PEER_ID_LEN,
@@ -46,9 +45,8 @@ import {
   buildJoinAnnounce,
   buildLeaveAnnounce,
   buildSdpRelay,
+  buildTopologyAssign,
   buildDmSdpRelay,
-  buildSubInvite,
-  buildSubSdp,
   buildRingWant,
   parseRootHeartbeat,
   parseGroupMsgHeader,
@@ -58,9 +56,8 @@ import {
   parseSdpRelay,
   parseGroupKey,
   parsePeerList,
+  parseTopologyAssign,
   parseDmSdpRelay,
-  parseSubInvite,
-  parseSubSdp,
   parseRingWant,
 } from "./wire";
 
@@ -69,14 +66,15 @@ import {
   CF_GROUP_MSG,
   CF_JOIN_ANNOUNCE,
   CF_LEAVE_ANNOUNCE,
+  CF_TOPOLOGY_ASSIGN,
   CF_SDP_RELAY,
   CF_GROUP_KEY,
   CF_PEER_LIST,
   CF_DM_SDP_RELAY,
-  CF_SUB_INVITE,
-  CF_SUB_SDP,
   CF_RING_WANT,
 } from "./types";
+
+import { CampfireTopology } from "./topology";
 
 /* ═══════════════════════════════════════════════════════════════════
    Constants
@@ -84,7 +82,6 @@ import {
 
 const ZERO_SALT_32 = new Uint8Array(32);
 const GROUP_KEY_INFO = TE.encode("campfire-group-v1");
-const SUB_KEY_INFO = TE.encode("campfire-sub-v1");
 
 /** SDP type codes used in relay messages. */
 const SDP_OFFER = 0x01;
@@ -115,10 +112,15 @@ export class CampfireNode {
 
   // Root-only state
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private topology: CampfireTopology | null = null;
+  private heartbeatSeq = 0;
 
   // Peer-only state
   private lastRootHeartbeat = 0;
   private heartbeatWatchTimer: ReturnType<typeof setInterval> | null = null;
+  private bootstrapSession: WhisperLiveSession | null = null;
+  private assignedNeighborHexes = new Set<string>();
+  private meshNeighborsConnected = 0;
 
   // Gossip dedup
   private seenMsgIds: string[] = [];
@@ -134,8 +136,8 @@ export class CampfireNode {
   private dmSessions = new Map<string, WhisperLiveSession>();
   private pendingDmSdp = new Map<string, { session: WhisperLiveSession; isOfferer: boolean }>();
 
-  // Sub-campfires
-  private subCampfires = new Map<string, SubCampfire>();
+  // Mesh SDP handshakes
+  private pendingMeshSdp = new Map<string, { session: WhisperLiveSession; isOfferer: boolean }>();
 
   // RTC config
   private useStun = false;
@@ -174,6 +176,9 @@ export class CampfireNode {
     this.displayName = name;
     this.setState("creating");
     this.log("creating room...");
+
+    // Initialize topology (Root-only)
+    this.topology = new CampfireTopology(this.peerId);
 
     // Generate group key
     const seed = randomBytes(32);
@@ -233,8 +238,8 @@ export class CampfireNode {
     const session = this.createNeighborSession("join-root");
     const answerCode = await session.acceptOffer(offerCode);
 
-    // Session will auto-confirm fingerprint and go live
-    // Root will send PEER_LIST + GROUP_KEY once connected
+    // Track bootstrap session for potential later release
+    this.bootstrapSession = session;
 
     return answerCode;
   }
@@ -317,8 +322,40 @@ export class CampfireNode {
       }
 
       void this.sendToNeighbor(session, buildJoinAnnounce(this.peerId, this.displayName));
+    } else if (label.startsWith("mesh-")) {
+      // Mesh neighbor connected — resolve full peer ID from label prefix
+      const prefix = label.slice(5); // strip "mesh-"
+      let resolvedHex = "";
+      let resolvedId = new Uint8Array(PEER_ID_LEN);
+      let resolvedName = label;
+      for (const [hex, info] of this.allPeers) {
+        if (hex.startsWith(prefix)) {
+          resolvedHex = hex;
+          resolvedId = new Uint8Array(info.peerId);
+          resolvedName = info.name;
+          break;
+        }
+      }
+
+      this.neighbors.set(label, {
+        peerId: resolvedId,
+        peerIdHex: resolvedHex,
+        name: resolvedName,
+        session,
+        connected: true,
+        joinedAt: Date.now(),
+      });
+      this.log(`mesh neighbor connected: ${resolvedName}`);
+
+      // Track mesh neighbor connections for bootstrap release
+      if (resolvedHex) {
+        this.meshNeighborsConnected++;
+        this.maybeReleaseBootstrap();
+      }
+
+      if (this._state === "active") this.startRingRepair();
     } else {
-      // Additional neighbor connected (topology expansion)
+      // Additional neighbor connected (topology expansion, other)
       this.neighbors.set(label, {
         peerId: new Uint8Array(PEER_ID_LEN),
         peerIdHex: label,
@@ -341,11 +378,31 @@ export class CampfireNode {
 
       if (this.role === "root" && neighbor.peerIdHex && this.allPeers.has(neighbor.peerIdHex)) {
         const leavingId = neighbor.peerId;
-        this.allPeers.delete(neighbor.peerIdHex);
+        const leavingHex = neighbor.peerIdHex;
+        this.allPeers.delete(leavingHex);
         this.cb.onPeerLeave(leavingId);
         this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
         const leaveWire = buildLeaveAnnounce(leavingId);
         void this.broadcastToNeighbors(leaveWire);
+
+        // Topology maintenance: remove node and rebalance
+        if (this.topology) {
+          const affected = this.topology.removeNode(leavingId);
+          const newEdges = this.topology.rebalanceAfterRemoval(affected);
+          for (const [peerA, peerB] of newEdges) {
+            const hexA = toHex(peerA);
+            const hexB = toHex(peerB);
+            // Send topology assign to both peers
+            const neighborA = this.findNeighborByHex(hexA);
+            const neighborB = this.findNeighborByHex(hexB);
+            if (neighborA?.session) {
+              void this.sendToNeighbor(neighborA.session, buildTopologyAssign([peerB]));
+            }
+            if (neighborB?.session) {
+              void this.sendToNeighbor(neighborB.session, buildTopologyAssign([peerA]));
+            }
+          }
+        }
       }
     }
 
@@ -355,13 +412,33 @@ export class CampfireNode {
         // All peers gone, but Root stays active (waiting for new joiners)
       }
     } else {
-      // If peer lost root connection
+      // If peer lost root connection and has no other neighbors, campfire ends
       if (label === "join-root" || label === "root") {
-        // Root is gone, campfire ends
-        this.log("lost connection to the room host");
-        this.endCampfire("root disconnected. the fire is out. nothing remains.");
+        this.bootstrapSession = null;
+        // Only end if we have no mesh neighbors
+        const meshNeighbors = Array.from(this.neighbors.keys()).filter(l => l.startsWith("mesh-"));
+        if (meshNeighbors.length === 0) {
+          this.log("lost connection to the room host");
+          this.endCampfire("root disconnected. the fire is out. nothing remains.");
+        } else {
+          this.log("bootstrap link to host released, mesh neighbors active");
+        }
       }
     }
+  }
+
+  /** Release bootstrap connection to Root if Root isn't among assigned neighbors. */
+  private maybeReleaseBootstrap(): void {
+    if (this.role !== "peer" || !this.bootstrapSession) return;
+    if (this.meshNeighborsConnected < 1) return;
+    // If Root is among our assigned neighbors, keep the bootstrap
+    if (this.rootPeerIdHex && this.assignedNeighborHexes.has(this.rootPeerIdHex)) return;
+    // Root is NOT an assigned neighbor; release bootstrap
+    this.log("releasing bootstrap connection to host");
+    this.bootstrapSession.disconnect();
+    this.bootstrapSession = null;
+    this.neighbors.delete("root");
+    this.neighbors.delete("join-root");
   }
 
   /* ── Root: Prepare Next Connection Slot ─────────────── */
@@ -375,8 +452,6 @@ export class CampfireNode {
       this._pendingRootSession = session;
       this._pendingRootOffer = offerCode;
       this.cb.onRoomCodeUpdate?.(offerCode);
-      // In a real deployment, Root would update the room code.
-      // Here we re-use the same pattern. The UI will show "new peers can join"
     } catch (err) {
       this.log(`failed to prepare next connection: ${err instanceof Error ? err.message : "unknown"}`);
     }
@@ -419,29 +494,6 @@ export class CampfireNode {
     await this.sendToNeighbor(session, data);
   }
 
-  private ringNeighbors(): string[] {
-    const all = Array.from(this.allPeers.keys()).sort();
-    if (all.length < 2 || !this.peerIdHex) return [];
-    const idx = all.indexOf(this.peerIdHex);
-    if (idx < 0) return [];
-    const prev = all[(idx - 1 + all.length) % all.length];
-    const next = all[(idx + 1) % all.length];
-    return prev === next ? [prev] : [prev, next];
-  }
-
-  private async sendToRingNeighbors(data: Uint8Array, excludeLabel?: string): Promise<void> {
-    const targets = new Set(this.ringNeighbors());
-    const jobs: Promise<void>[] = [];
-    for (const [label, peer] of this.neighbors) {
-      if (excludeLabel && label === excludeLabel) continue;
-      if (!peer.connected || !peer.session) continue;
-      const key = peer.peerIdHex || label;
-      if (!targets.has(key)) continue;
-      jobs.push(this.sendToNeighbor(peer.session, data));
-    }
-    await Promise.all(jobs);
-  }
-
   private rememberRecent(senderHex: string, seq: number, rawGroupPayload: Uint8Array): void {
     const key = `${senderHex}:${seq}`;
     const full = concatBytes(new Uint8Array([CF_GROUP_MSG]), rawGroupPayload);
@@ -477,7 +529,7 @@ export class CampfireNode {
     this.markSeen(msgId);
     this.seqBySender.set(this.peerIdHex, seq);
     this.rememberRecent(this.peerIdHex, seq, wire.subarray(1));
-    await this.sendToRingNeighbors(wire);
+    await this.broadcastToNeighbors(wire);
 
     // Show locally
     this.cb.onMessage({
@@ -518,19 +570,22 @@ export class CampfireNode {
 
     switch (subType) {
       case CF_ROOT_HEARTBEAT:
-        this.handleRootHeartbeat(payload);
+        await this.handleRootHeartbeat(payload);
         break;
       case CF_GROUP_MSG:
         await this.handleGroupMsg(payload, fromLabel);
         break;
       case CF_JOIN_ANNOUNCE:
-        this.handleJoinAnnounce(payload, fromLabel);
+        await this.handleJoinAnnounce(payload, fromLabel);
         break;
       case CF_LEAVE_ANNOUNCE:
-        this.handleLeaveAnnounce(payload, fromLabel);
+        await this.handleLeaveAnnounce(payload, fromLabel);
+        break;
+      case CF_TOPOLOGY_ASSIGN:
+        await this.handleTopologyAssign(payload);
         break;
       case CF_SDP_RELAY:
-        await this.handleSdpRelay(payload);
+        await this.handleSdpRelay(payload, fromLabel);
         break;
       case CF_GROUP_KEY:
         this.handleGroupKeyMsg(payload);
@@ -540,12 +595,6 @@ export class CampfireNode {
         break;
       case CF_DM_SDP_RELAY:
         await this.handleDmSdpRelay(payload, fromLabel);
-        break;
-      case CF_SUB_INVITE:
-        this.handleSubInvite(payload);
-        break;
-      case CF_SUB_SDP:
-        await this.handleSubSdp(payload);
         break;
       case CF_RING_WANT:
         await this.handleRingWant(payload, fromLabel);
@@ -559,6 +608,14 @@ export class CampfireNode {
 
   private async handleRootHeartbeat(data: Uint8Array): Promise<void> {
     const hb = parseRootHeartbeat(data);
+
+    // Dedup using rootPeerId + epoch + seq
+    const seqBytes = new Uint8Array(4);
+    new DataView(seqBytes.buffer).setUint32(0, hb.seq, true);
+    const dedupKey = concatBytes(hb.rootPeerId, new Uint8Array(new Uint32Array([hb.epoch]).buffer), seqBytes);
+    if (this.hasSeen(dedupKey)) return;
+    this.markSeen(dedupKey);
+
     this.lastRootHeartbeat = Date.now();
     this.rootPeerIdHex = toHex(hb.rootPeerId);
 
@@ -579,14 +636,7 @@ export class CampfireNode {
     }
 
     // Forward to other neighbors (gossip)
-    // We need to re-broadcast but the buildRootHeartbeat already built the full payload
-    // Just broadcast the raw message including sub-type byte
     const fullMsg = concatBytes(new Uint8Array([CF_ROOT_HEARTBEAT]), data);
-    // Mark as seen using rootPeerId + epoch as dedup key
-    const dedupKey = concatBytes(hb.rootPeerId, new Uint8Array(new Uint32Array([hb.epoch]).buffer));
-    if (this.hasSeen(dedupKey)) return;
-    this.markSeen(dedupKey);
-
     await this.broadcastToNeighbors(fullMsg);
   }
 
@@ -643,7 +693,7 @@ export class CampfireNode {
 
     // Forward to other neighbors (gossip), re-wrap with incremented hop count
     const rewrapped = rewrapGroupMsg(concatBytes(new Uint8Array([CF_GROUP_MSG]), data), parsed.hopCount + 1);
-    await this.sendToRingNeighbors(rewrapped, fromLabel);
+    await this.broadcastToNeighbors(rewrapped, fromLabel);
   }
 
   private async handleRingWant(data: Uint8Array, fromLabel: string): Promise<void> {
@@ -672,7 +722,7 @@ export class CampfireNode {
       return;
     }
 
-    await this.sendToRingNeighbors(buildRingWant(originPeerId, targetPeerId, fromSeq, toSeq), fromLabel);
+    await this.broadcastToNeighbors(buildRingWant(originPeerId, targetPeerId, fromSeq, toSeq), fromLabel);
   }
 
   private async handleJoinAnnounce(data: Uint8Array, fromLabel: string): Promise<void> {
@@ -690,6 +740,15 @@ export class CampfireNode {
         from.peerId = new Uint8Array(peerId);
         from.peerIdHex = hex;
         from.name = name;
+      }
+
+      // Root: add to topology and assign neighbors
+      if (this.topology) {
+        const neighborIds = this.topology.selectNeighborsForNewPeer(peerId);
+        // Send TOPOLOGY_ASSIGN to the new peer
+        if (from?.session) {
+          void this.sendToNeighbor(from.session, buildTopologyAssign(neighborIds));
+        }
       }
     }
     this.cb.onPeerJoin(peerId, name);
@@ -718,19 +777,95 @@ export class CampfireNode {
     await this.broadcastToNeighbors(wire, fromLabel);
   }
 
-  private async handleSdpRelay(data: Uint8Array): Promise<void> {
-    const { targetPeerId, sdpType, sdpCode } = parseSdpRelay(data);
+  /* ── Topology Assign Handler ─────────────────────────── */
+
+  private async handleTopologyAssign(data: Uint8Array): Promise<void> {
+    const { neighborPeerIds } = parseTopologyAssign(data);
+    this.log(`topology assigned: ${neighborPeerIds.length} neighbor(s)`);
+
+    this.assignedNeighborHexes.clear();
+    for (const nId of neighborPeerIds) {
+      this.assignedNeighborHexes.add(toHex(nId));
+    }
+
+    for (const neighborId of neighborPeerIds) {
+      const neighborHex = toHex(neighborId);
+      // Skip if already connected to this peer
+      if (this.findNeighborByHex(neighborHex)) continue;
+      // Skip if this is our root bootstrap (already connected)
+      if (this.rootPeerIdHex && neighborHex === this.rootPeerIdHex) continue;
+
+      // Create mesh session and offer
+      const prefix = neighborHex.slice(0, 8);
+      const label = `mesh-${prefix}`;
+      const session = this.createNeighborSession(label);
+      try {
+        const offerCode = await session.createOffer();
+        this.pendingMeshSdp.set(neighborHex, { session, isOfferer: true });
+
+        // Send SDP relay through gossip
+        const wire = buildSdpRelay(neighborId, this.peerId, SDP_OFFER, offerCode);
+        await this.broadcastToNeighbors(wire);
+      } catch (err) {
+        this.log(`mesh offer failed: ${err instanceof Error ? err.message : "unknown"}`);
+      }
+    }
+  }
+
+  /* ── SDP Relay Handler ───────────────────────────────── */
+
+  private async handleSdpRelay(data: Uint8Array, fromLabel: string): Promise<void> {
+    const { targetPeerId, originPeerId, sdpType, sdpCode } = parseSdpRelay(data);
     const targetHex = toHex(targetPeerId);
+    const originHex = toHex(originPeerId);
 
     if (targetHex === this.peerIdHex) {
-      // This SDP is for us, handle it
-      await this.handleIncomingSdp(sdpType, sdpCode, "relay");
+      // This SDP is for us
+      await this.handleIncomingMeshSdp(sdpType, sdpCode, originHex, originPeerId);
     } else if (this.role === "root") {
-      // Root relays to the target peer
+      // Root relays to the target peer directly if they're a neighbor
       const targetPeer = this.findNeighborByHex(targetHex);
       if (targetPeer?.session) {
-        const wire = buildSdpRelay(targetPeerId, sdpType, sdpCode);
+        const wire = buildSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode);
         await this.sendToNeighbor(targetPeer.session, wire);
+      }
+    } else {
+      // Non-root: gossip-forward SDP relay
+      await this.broadcastToNeighbors(
+        buildSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode),
+        fromLabel,
+      );
+    }
+  }
+
+  /* ── Mesh SDP Handling ──────────────────────────────── */
+
+  private async handleIncomingMeshSdp(
+    sdpType: number, sdpCode: string, originHex: string, originPeerId: Uint8Array,
+  ): Promise<void> {
+    if (sdpType === SDP_OFFER) {
+      // Someone is offering to connect to us — create mesh session and answer
+      const prefix = originHex.slice(0, 8);
+      const label = `mesh-${prefix}`;
+      const session = this.createNeighborSession(label);
+      try {
+        const answerCode = await session.acceptOffer(sdpCode);
+        // Send answer back through gossip
+        const wire = buildSdpRelay(originPeerId, this.peerId, SDP_ANSWER, answerCode);
+        await this.broadcastToNeighbors(wire);
+      } catch (err) {
+        this.log(`mesh answer failed: ${err instanceof Error ? err.message : "unknown"}`);
+      }
+    } else if (sdpType === SDP_ANSWER) {
+      // Answer to our earlier offer
+      const pending = this.pendingMeshSdp.get(originHex);
+      if (pending?.isOfferer) {
+        try {
+          await pending.session.applyAnswer(sdpCode);
+        } catch (err) {
+          this.log(`mesh apply-answer failed: ${err instanceof Error ? err.message : "unknown"}`);
+        }
+        this.pendingMeshSdp.delete(originHex);
       }
     }
   }
@@ -789,41 +924,7 @@ export class CampfireNode {
     }
   }
 
-  private handleSubInvite(data: Uint8Array): void {
-    const { subId, inviterPeerId, invitees } = parseSubInvite(data);
-    this.cb.onSubCampfireInvite(subId, inviterPeerId, invitees);
-  }
-
-  private async handleSubSdp(data: Uint8Array): Promise<void> {
-    const { subId, targetPeerId, sdpType, sdpCode } = parseSubSdp(data);
-    const targetHex = toHex(targetPeerId);
-
-    if (targetHex === this.peerIdHex) {
-      // Sub SDP is for us
-      await this.handleIncomingSubSdp(subId, sdpType, sdpCode);
-    } else if (this.role === "root") {
-      // Relay
-      const targetPeer = this.findNeighborByHex(targetHex);
-      if (targetPeer?.session) {
-        await this.sendToNeighbor(targetPeer.session, buildSubSdp(subId, targetPeerId, sdpType, sdpCode));
-      }
-    }
-  }
-
-  /* ── SDP Handling ──────────────────────────────────────── */
-
-  private async handleIncomingSdp(sdpType: number, sdpCode: string, label: string): Promise<void> {
-    if (sdpType === SDP_OFFER) {
-      // Someone is offering to connect to us
-      const session = this.createNeighborSession(`neighbor-${label}`);
-      const answerCode = await session.acceptOffer(sdpCode);
-      // Send answer back through the mesh
-      await this.broadcastToNeighbors(buildSdpRelay(this.peerId, SDP_ANSWER, answerCode));
-    } else if (sdpType === SDP_ANSWER) {
-      // Topology SDP answer routing is not active in this build.
-      this.log(`received topology SDP answer on ${label}`);
-    }
-  }
+  /* ── SDP Handling (DM) ──────────────────────────────── */
 
   private async handleIncomingDmSdp(sdpType: number, sdpCode: string, originHex: string): Promise<void> {
     if (sdpType === SDP_OFFER) {
@@ -840,12 +941,6 @@ export class CampfireNode {
         this.pendingDmSdp.delete(originHex);
       }
     }
-  }
-
-  private async handleIncomingSubSdp(_subId: Uint8Array, _sdpType: number, _sdpCode: string): Promise<void> {
-    // Sub-campfire SDP handling, similar pattern to DM SDP
-    // Implementation deferred to sub-campfire creation flow
-    // sub-room SDP routing not yet implemented
   }
 
   /* ── DM Side-Channels ──────────────────────────────────── */
@@ -915,42 +1010,6 @@ export class CampfireNode {
     return session;
   }
 
-  /* ── Sub-Campfires ─────────────────────────────────────── */
-
-  /** Root: create a sub-campfire with selected peers. */
-  async createSubCampfire(inviteePeerIds: Uint8Array[]): Promise<Uint8Array | null> {
-    if (this.role !== "root") {
-      this.log("only the room creator can split the room");
-      return null;
-    }
-
-    const subId = randomBytes(PEER_ID_LEN);
-    const subHex = toHex(subId);
-
-    // Derive sub-group key from parent key + subId
-    if (!this.currentEpoch) return null;
-    const subKey = await hkdf(
-      concatBytes(this.currentEpoch.key, subId),
-      ZERO_SALT_32, SUB_KEY_INFO, GROUP_KEY_LEN,
-    );
-
-    const sub: SubCampfire = {
-      subId,
-      subIdHex: subHex,
-      members: new Map(),
-      groupKey: subKey,
-      epoch: 1,
-    };
-    this.subCampfires.set(subHex, sub);
-
-    // Send invites through the mesh
-    const wire = buildSubInvite(subId, this.peerId, inviteePeerIds);
-    await this.broadcastToNeighbors(wire);
-
-    this.log(`private room created, ${inviteePeerIds.length} invited`);
-    return subId;
-  }
-
   /* ── Root Heartbeat ────────────────────────────────────── */
 
   private startRootHeartbeat(): void {
@@ -958,7 +1017,8 @@ export class CampfireNode {
     this.heartbeatTimer = setInterval(async () => {
       if (this._state !== "active" && this._state !== "waiting") return;
       const epoch = this.currentEpoch?.epoch ?? 0;
-      const wire = buildRootHeartbeat(epoch, this.allPeers.size, this.peerId);
+      const seq = ++this.heartbeatSeq;
+      const wire = buildRootHeartbeat(epoch, this.allPeers.size, this.peerId, seq);
       await this.broadcastToNeighbors(wire);
     }, ROOT_HEARTBEAT_INTERVAL);
   }
@@ -976,7 +1036,7 @@ export class CampfireNode {
         if (hex === this.peerIdHex) continue;
         const wantFrom = (this.seqBySender.get(hex) ?? 0) + 1;
         const wantTo = wantFrom + RING_REPAIR_WINDOW - 1;
-        void this.sendToRingNeighbors(buildRingWant(this.peerId, this.hexToPeerId(hex), wantFrom, wantTo));
+        void this.broadcastToNeighbors(buildRingWant(this.peerId, this.hexToPeerId(hex), wantFrom, wantTo));
       }
     }, RING_REPAIR_INTERVAL);
   }
@@ -1048,6 +1108,12 @@ export class CampfireNode {
     }
     this.neighbors.clear();
 
+    // Disconnect bootstrap if still open
+    if (this.bootstrapSession) {
+      this.bootstrapSession.disconnect();
+      this.bootstrapSession = null;
+    }
+
     // Disconnect all DM sessions
     for (const [, session] of this.dmSessions) {
       session.disconnect();
@@ -1064,17 +1130,15 @@ export class CampfireNode {
       this.previousEpoch = null;
     }
 
-    // Wipe sub-campfire keys
-    for (const [, sub] of this.subCampfires) {
-      sub.groupKey.fill(0);
-    }
-    this.subCampfires.clear();
-
+    this.pendingMeshSdp.clear();
+    this.topology = null;
     this.allPeers.clear();
     this.seenMsgIds = [];
     this.seenMsgSet.clear();
     this.seqBySender.clear();
     this.recentBySeq.clear();
+    this.assignedNeighborHexes.clear();
+    this.meshNeighborsConnected = 0;
 
     this.setState("ended", reason ?? "session ended");
     this.log(reason ?? "session ended");

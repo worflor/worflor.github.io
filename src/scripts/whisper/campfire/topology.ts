@@ -68,29 +68,23 @@ export class CampfireTopology {
 
   /**
    * Select neighbors for a newly joined peer.
-   * The new peer is always connected to Root. Additionally, we pick 1–2
-   * existing least-connected peers as extra neighbors.
-   *
-   * Returns the list of peer IDs the new peer should connect to (including Root).
+   * Root is treated as just another candidate — whoever has the lowest
+   * degree gets picked first. Returns the list of peer IDs the new peer
+   * should connect to.
    */
   selectNeighborsForNewPeer(newPeerId: Uint8Array): Uint8Array[] {
     const newHex = toHex(newPeerId);
     this.addNode(newPeerId);
 
-    // Always connect to Root
-    this.addEdge(newHex, this.rootHex);
-    const neighbors: Uint8Array[] = [this.nodes.get(this.rootHex)!.peerId];
-
-    // Find candidates: all peers except root and newPeer, sorted by degree (ascending)
+    // All nodes except the new peer, sorted by degree ascending
     const candidates = Array.from(this.nodes.values())
-      .filter((n) => n.peerIdHex !== this.rootHex && n.peerIdHex !== newHex)
+      .filter((n) => n.peerIdHex !== newHex)
       .sort((a, b) => a.neighbors.size - b.neighbors.size);
 
-    // Pick up to MIN_NEIGHBORS - 1 extra neighbors (since Root is already one)
-    const extraCount = Math.min(MIN_NEIGHBORS - 1, candidates.length);
-    for (let i = 0; i < extraCount; i++) {
-      const c = candidates[i];
-      if (c.neighbors.size >= MAX_NEIGHBORS) break; // don't overload
+    const neighbors: Uint8Array[] = [];
+    for (const c of candidates) {
+      if (neighbors.length >= MIN_NEIGHBORS) break;
+      if (c.neighbors.size >= MAX_NEIGHBORS) continue;
       this.addEdge(newHex, c.peerIdHex);
       neighbors.push(c.peerId);
     }

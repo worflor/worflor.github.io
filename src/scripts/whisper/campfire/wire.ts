@@ -19,8 +19,6 @@ import {
   CF_GROUP_KEY,
   CF_PEER_LIST,
   CF_DM_SDP_RELAY,
-  CF_SUB_INVITE,
-  CF_SUB_SDP,
   CF_RING_WANT,
   PEER_ID_LEN,
   GROUP_KEY_LEN,
@@ -65,9 +63,9 @@ function readF64LE(data: Uint8Array, offset: number): number {
    Builders
    ═══════════════════════════════════════════════════════════════════ */
 
-/** 0x50 ROOT_HEARTBEAT: [epoch 4B][peerCount 2B][rootPeerId 16B] */
-export function buildRootHeartbeat(epoch: number, peerCount: number, rootPeerId: Uint8Array): Uint8Array {
-  return concatBytes(new Uint8Array([CF_ROOT_HEARTBEAT]), u32LE(epoch), u16LE(peerCount), rootPeerId);
+/** 0x50 ROOT_HEARTBEAT: [epoch 4B][peerCount 2B][rootPeerId 16B][seq 4B] */
+export function buildRootHeartbeat(epoch: number, peerCount: number, rootPeerId: Uint8Array, seq: number): Uint8Array {
+  return concatBytes(new Uint8Array([CF_ROOT_HEARTBEAT]), u32LE(epoch), u16LE(peerCount), rootPeerId, u32LE(seq));
 }
 
 /**
@@ -125,11 +123,12 @@ export function buildTopologyAssign(neighborPeerIds: Uint8Array[]): Uint8Array {
   return concatBytes(...parts);
 }
 
-/** 0x55 SDP_RELAY: [targetPeerId 16B][sdpType 1B][sdpCode...] */
-export function buildSdpRelay(targetPeerId: Uint8Array, sdpType: number, sdpCode: string): Uint8Array {
+/** 0x55 SDP_RELAY: [targetPeerId 16B][originPeerId 16B][sdpType 1B][sdpCode...] */
+export function buildSdpRelay(targetPeerId: Uint8Array, originPeerId: Uint8Array, sdpType: number, sdpCode: string): Uint8Array {
   return concatBytes(
     new Uint8Array([CF_SDP_RELAY]),
     targetPeerId,
+    originPeerId,
     new Uint8Array([sdpType]),
     TE.encode(sdpCode),
   );
@@ -166,23 +165,6 @@ export function buildDmSdpRelay(
   );
 }
 
-/** 0x59 SUB_CAMPFIRE_INVITE: [subId 16B][inviterPeerId 16B][...inviteePeerIds 16B each] */
-export function buildSubInvite(subId: Uint8Array, inviterPeerId: Uint8Array, invitees: Uint8Array[]): Uint8Array {
-  const parts: Uint8Array[] = [new Uint8Array([CF_SUB_INVITE]), subId, inviterPeerId];
-  for (const id of invitees) parts.push(id);
-  return concatBytes(...parts);
-}
-
-/** 0x5A SUB_CAMPFIRE_SDP: [subId 16B][targetPeerId 16B][sdpType 1B][sdpCode...] */
-export function buildSubSdp(subId: Uint8Array, targetPeerId: Uint8Array, sdpType: number, sdpCode: string): Uint8Array {
-  return concatBytes(
-    new Uint8Array([CF_SUB_SDP]),
-    subId, targetPeerId,
-    new Uint8Array([sdpType]),
-    TE.encode(sdpCode),
-  );
-}
-
 /** 0x5B RING_WANT: [originPeerId 16B][targetPeerId 16B][fromSeq 4B][toSeq 4B] */
 export function buildRingWant(originPeerId: Uint8Array, targetPeerId: Uint8Array, fromSeq: number, toSeq: number): Uint8Array {
   return concatBytes(
@@ -198,13 +180,15 @@ export function buildRingWant(originPeerId: Uint8Array, targetPeerId: Uint8Array
    Parsers
    ═══════════════════════════════════════════════════════════════════ */
 
-export interface ParsedRootHeartbeat { epoch: number; peerCount: number; rootPeerId: Uint8Array }
+export interface ParsedRootHeartbeat { epoch: number; peerCount: number; rootPeerId: Uint8Array; seq: number }
 export function parseRootHeartbeat(data: Uint8Array): ParsedRootHeartbeat {
   // data starts AFTER the sub-type byte
+  const seqOffset = 6 + PEER_ID_LEN;
   return {
     epoch: readU32LE(data, 0),
     peerCount: readU16LE(data, 4),
     rootPeerId: data.subarray(6, 6 + PEER_ID_LEN),
+    seq: data.length >= seqOffset + 4 ? readU32LE(data, seqOffset) : 0,
   };
 }
 
@@ -258,12 +242,13 @@ export function parseTopologyAssign(data: Uint8Array): ParsedTopologyAssign {
   return { neighborPeerIds: ids };
 }
 
-export interface ParsedSdpRelay { targetPeerId: Uint8Array; sdpType: number; sdpCode: string }
+export interface ParsedSdpRelay { targetPeerId: Uint8Array; originPeerId: Uint8Array; sdpType: number; sdpCode: string }
 export function parseSdpRelay(data: Uint8Array): ParsedSdpRelay {
   return {
     targetPeerId: data.subarray(0, PEER_ID_LEN),
-    sdpType: data[PEER_ID_LEN],
-    sdpCode: TD.decode(data.subarray(PEER_ID_LEN + 1)),
+    originPeerId: data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2),
+    sdpType: data[PEER_ID_LEN * 2],
+    sdpCode: TD.decode(data.subarray(PEER_ID_LEN * 2 + 1)),
   };
 }
 
@@ -300,29 +285,6 @@ export function parseDmSdpRelay(data: Uint8Array): ParsedDmSdpRelay {
   return {
     targetPeerId: data.subarray(0, PEER_ID_LEN),
     originPeerId: data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2),
-    sdpType: data[PEER_ID_LEN * 2],
-    sdpCode: TD.decode(data.subarray(PEER_ID_LEN * 2 + 1)),
-  };
-}
-
-export interface ParsedSubInvite { subId: Uint8Array; inviterPeerId: Uint8Array; invitees: Uint8Array[] }
-export function parseSubInvite(data: Uint8Array): ParsedSubInvite {
-  const subId = data.subarray(0, PEER_ID_LEN);
-  const inviterPeerId = data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2);
-  const invitees: Uint8Array[] = [];
-  let o = PEER_ID_LEN * 2;
-  while (o + PEER_ID_LEN <= data.length) {
-    invitees.push(data.subarray(o, o + PEER_ID_LEN));
-    o += PEER_ID_LEN;
-  }
-  return { subId, inviterPeerId, invitees };
-}
-
-export interface ParsedSubSdp { subId: Uint8Array; targetPeerId: Uint8Array; sdpType: number; sdpCode: string }
-export function parseSubSdp(data: Uint8Array): ParsedSubSdp {
-  return {
-    subId: data.subarray(0, PEER_ID_LEN),
-    targetPeerId: data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2),
     sdpType: data[PEER_ID_LEN * 2],
     sdpCode: TD.decode(data.subarray(PEER_ID_LEN * 2 + 1)),
   };
