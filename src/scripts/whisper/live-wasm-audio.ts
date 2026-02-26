@@ -102,6 +102,16 @@ const GT_u = [0x4b];
 const LT_u = [0x48];
 const EQ = [0x46];
 
+const F32_ABS = [0x8b];
+const F32_MAX = [0x97];
+const F32_CONST = (v: number): number[] => {
+    const buf = new ArrayBuffer(4);
+    new Float32Array(buf)[0] = v;
+    return [0x43, ...new Uint8Array(buf)];
+};
+const F32 = 0x7d;
+const I64 = 0x7e;
+
 function encodeLocals(decls: { count: number; type: number }[]): number[] {
     return [...encodeULEB(decls.length), ...decls.flatMap(d => [...encodeULEB(d.count), d.type])];
 }
@@ -750,19 +760,44 @@ export async function encodeAdpcm(
     const pcmPtr = WASM_BUF;
     const outPtr = WASM_BUF + pcmBytes;
 
-    new Float32Array(mem.buffer, pcmPtr, numSamples).set(float32Samples);
+    if (isRaw) {
+        // Raw mode: no normalization, bit-exact
+        new Float32Array(mem.buffer, pcmPtr, numSamples).set(float32Samples);
+        const bytesWritten = wasm.encode_raw(pcmPtr, numSamples, outPtr);
+        const view = new DataView(mem.buffer);
+        view.setUint16(outPtr + 4, sampleRate & 0xFFFF, true);
+        view.setUint16(outPtr + 6, 0, true); // flags: 0 = raw
+        return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
+    }
 
-    const bytesWritten = isRaw
-        ? wasm.encode_raw(pcmPtr, numSamples, outPtr)
-        : wasm.encode_adpcm(pcmPtr, numSamples, outPtr, scalar);
+    // Physics-based VBR: normalize by frame peak amplitude
+    // This gives quiet speakers the same relative SNR as loud speakers (no quality loss),
+    // while CLZ packing naturally adapts bitrate to signal complexity.
+    let framePeak = 0;
+    for (let k = 0; k < numSamples; k++) {
+        const a = Math.abs(float32Samples[k]);
+        if (a > framePeak) framePeak = a;
+    }
+    framePeak = Math.max(framePeak, 1e-10); // avoid division by zero
+
+    const normalized = new Float32Array(numSamples);
+    for (let k = 0; k < numSamples; k++) {
+        normalized[k] = float32Samples[k] / framePeak;
+    }
+
+    new Float32Array(mem.buffer, pcmPtr, numSamples).set(normalized);
+    const bytesWritten = wasm.encode_adpcm(pcmPtr, numSamples, outPtr, scalar);
 
     const view = new DataView(mem.buffer);
     view.setUint16(outPtr + 4, sampleRate & 0xFFFF, true);
-    // Pack quality into upper 8 bits of flags; bit0 = compressed flag
-    const flags = isRaw ? 0 : (((quality & 0xFF) << 8) | 1);
+    const flags = ((quality & 0xFF) << 8) | 1;
     view.setUint16(outPtr + 6, flags, true);
 
-    return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
+    // Append framePeak as f32 after encoded payload (4 bytes)
+    const result = new Uint8Array(bytesWritten + 4);
+    result.set(new Uint8Array(mem.buffer, outPtr, bytesWritten));
+    new DataView(result.buffer).setFloat32(bytesWritten, framePeak, true);
+    return result;
 }
 
 export async function decodeAdpcm(
@@ -782,7 +817,17 @@ export async function decodeAdpcm(
     const quality = (flags >> 8) & 0xFF;
     const scalar = Math.max(1, Math.floor(Math.pow(2, (quality / 100) * 15)));
 
-    const inBytes = adpcmBytes.length;
+    // For compressed mode, framePeak is appended as last 4 bytes
+    let framePeak = 1.0;
+    let wasmInput = adpcmBytes;
+    if (!isRaw && adpcmBytes.length > HEADER_SIZE + MAC_SIZE + 4) {
+        framePeak = new DataView(
+            adpcmBytes.buffer, adpcmBytes.byteOffset + adpcmBytes.length - 4, 4
+        ).getFloat32(0, true);
+        wasmInput = adpcmBytes.slice(0, adpcmBytes.length - 4);
+    }
+
+    const inBytes = wasmInput.length;
     const outBytes = numSamples * 4;
     const totalNeeded = WASM_BUF + inBytes + outBytes;
 
@@ -799,16 +844,23 @@ export async function decodeAdpcm(
     const inPtr = WASM_BUF;
     const outPtr = WASM_BUF + inBytes;
 
-    new Uint8Array(mem.buffer).set(adpcmBytes, inPtr);
+    new Uint8Array(mem.buffer).set(wasmInput, inPtr);
 
     const samplesDecoded = isRaw
         ? wasm.decode_raw(inPtr, inBytes, outPtr)
         : wasm.decode_adpcm(inPtr, inBytes, outPtr, scalar);
 
     const tampered = samplesDecoded === 0;
-    const pcm = tampered
-        ? new Float32Array(numSamples)
-        : new Float32Array(mem.buffer, outPtr, samplesDecoded).slice();
+    let pcm: Float32Array;
+    if (tampered) {
+        pcm = new Float32Array(numSamples);
+    } else {
+        pcm = new Float32Array(mem.buffer, outPtr, samplesDecoded).slice();
+        // Denormalize: scale back by frame peak amplitude
+        if (!isRaw && framePeak !== 1.0) {
+            for (let k = 0; k < pcm.length; k++) pcm[k] *= framePeak;
+        }
+    }
 
     return { pcm, sampleRate, tampered };
 }
