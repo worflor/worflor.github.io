@@ -118,6 +118,7 @@ const Op = {
     // Types
     F32: 0x7d,
     I64: 0x7e,
+    FUNC: 0x60,
 };
 
 const I32 = Op.I32;
@@ -217,7 +218,7 @@ function avalanche(reg: number): number[] {
 const ENC_STATE_ADDR = 0x0100;
 const DEC_STATE_ADDR = 0x0200;
 const BUF_START = 0x0800;
-const HEADER_SIZE = 8;
+const HEADER_SIZE = 12;
 const MAC_SIZE = 8;
 
 function QROUND(a: number, b: number, c: number, d: number): number[] {
@@ -271,58 +272,49 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
 }
 
 /**
- * Native WebAssembly Abstract Syntax Tree (AST) Encoder
+ * The Digital Twin Stereo AST.
  * 
- * Implements a Continuous Parametric Physics Engine in pure O(N) integer math.
- * Instead of static prediction modes, this executes a 3-pass Linear Regression:
+ * We don't just 'do' stereo. We decompose reality into Mid and Side.
  * 
- * - Pass 1 (Tension Analysis): Calculates the optimal `K` coefficient (string tension).
- *    `K = sum(p1*(val+p2)) / (sum(p1*p1) + epsilon)`
- * 
- * - Pass 2 (Friction Analysis): Calculates the optimal `G` coefficient (acoustic damping/friction).
- *    `G = sum(p2*((K*p1)-val)) / (sum(p2*p2) + epsilon)`
- * 
- * - Pass 3 (Entropy Packing): Simulates the `max_Z` requirement and outputs a 16-bit
- *    Physics Header `[K(8) | G(8) | W(5)]` per 32-sample block.
- * 
- * Resulting Inverse Prediction: `pred = (K*p1) >> 5 - (G*p2) >> 5`
- * 
- * @returns {number[]} The compiled WebAssembly bytecode module.
+ * If numChannels == 2:
+ *  - Mid = (L+R)/2 (The core pressure wave)
+ *  - Side = (L-R)   (The spatial width / phase differential)
+ *  - Full Spatial Preservation: By regressing both Mid and Side with their own 
+ *    physics coefficients, we perfectly track the soundstage geometry.
  */
 function buildEncodeBody(): number[] {
-    const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar = 3; // args (scalar is f32)
+    const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar = 3, numChannels = 4; // args
 
-    // I32 locals (starts at 4) -> 4..43
-    const i = 4, packedLen = 5, prev1 = 6, i32_val = 7, delta = 8, z = 9;
-    const bit_cnt = 10;
-    const crypto_i = 11, crypto_words = 12, cipher = 13, idx = 14, sample_count = 15, mac0 = 16, mac1 = 17, temp = 18;
-    const v = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34];
-    const prev2 = 35, block_start = 36, block_end = 37;
+    // I32 locals
+    const packedLen = 5, i = 6, j = 7, p1_sim = 8, p2_sim = 9;
+    const i32_val = 10, delta = 11, z = 12, mz = 13, W_curr = 14, temp = 15;
+    const crypto_i = 16, crypto_words = 17, cipher = 18, idx = 19, sample_count = 20;
+    const mac0 = 21, mac1 = 22, prev1 = 23, prev2 = 24, block_start = 25, block_end = 26;
+    const v = [27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42];
+    const K = 43, G = 44, bit_cnt = 45, ch = 46;
 
-    // Physics Engine I32 Locals
-    const K = 38, G = 39, W_curr = 40, mz = 41, p1_sim = 42, p2_sim = 43;
+    // F32 locals
+    const framePeak = 47, f32_val = 48, sum_p1_p1 = 49, sum_p1_val = 50;
+    const sum_p2_p2 = 51, sum_p2_err = 52, K_float = 53, G_float = 54;
+    const f32_p1 = 55, f32_p2 = 56;
+    const left = 57, right = 58;
 
-    // F32 locals (starts at 44) => 44..53 (10 locals)
-    const framePeak = 44, f32_val = 45, sum_p1_p1 = 46, sum_p1_val = 47;
-    const sum_p2_p2 = 48, sum_p2_err = 49, K_float = 50, G_float = 51;
-    const f32_p1 = 52, f32_p2 = 53;
-
-    // I64 locals (starts at 54) => 54 (1 local)
-    const bit_buf = 54;
+    // I64 locals
+    const i64_bit_buf = 59; // Using I64 for the real bit accumulator
 
     // Helper: shift value into bit buffer, drain full bytes
     function emitBits(valueInstr: number[], nbitsInstr: number[]): number[] {
         return [
-            ...GET(bit_buf),
+            ...GET(i64_bit_buf),
             ...valueInstr, ...I64_EXTEND_I32_U, ...GET(bit_cnt), ...I64_EXTEND_I32_U, ...I64_SHL,
-            ...I64_OR, ...SET(bit_buf),
+            ...I64_OR, ...SET(i64_bit_buf),
             ...GET(bit_cnt), ...nbitsInstr, ...ADD, ...SET(bit_cnt),
             ...BLOCK, ...LOOP,
             ...GET(bit_cnt), ...CI32(8), ...LT_u, ...BRIF(1),
-            ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD,
-            ...GET(bit_buf), ...I32_WRAP_I64, ...STORE8(0, 0),
+            ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(packedLen), ...ADD,
+            ...GET(i64_bit_buf), ...I32_WRAP_I64, ...STORE8(0, 0),
             ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
-            ...GET(bit_buf), ...CI64(8), ...I64_SHR_u, ...SET(bit_buf),
+            ...GET(i64_bit_buf), ...CI64(8), ...I64_SHR_u, ...SET(i64_bit_buf),
             ...GET(bit_cnt), ...CI32(8), ...SUB, ...SET(bit_cnt),
             ...BR(0), ...END, ...END,
         ];
@@ -343,40 +335,42 @@ function buildEncodeBody(): number[] {
     }
 
     const body = [
-        // 1. Write Header
+        // 1. Slam the Header
         ...GET(outPtr), ...GET(numSamples), ...STORE32(2, 0),
-        ...GET(outPtr), ...CI32(0), ...STORE16(1, 4),
-        ...GET(outPtr), ...CI32(0), ...STORE16(0, 6),
+        ...GET(outPtr), ...CI32(0), ...STORE32(2, 4), // Frequency space (JS fills this)
+        ...GET(outPtr), ...GET(numChannels), ...CI32(8), ...SHL, ...STORE16(1, 8), // flags: channel count lives in the mid-byte
+        ...GET(outPtr), ...CI32(0), ...STORE16(0, 10), // Dead air
 
         // 2. Load Parametric predictor state
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 144), ...SET(prev1),
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 148), ...SET(prev2),
 
-        // 3. Peak Normalization — anchor the block amplitude scalar
-        // We find the max physical displacement across the wave, bounding it at -60dB minimum.
+        // 3. Peak Normalization (Handling Interleaved Stereo)
         ...F32_CONST(0.001), ...SET(framePeak),
         ...CI32(0), ...SET(i),
         ...BLOCK, ...LOOP,
-        ...GET(i), ...GET(numSamples), ...GE_s, ...BRIF(1),
+        ...GET(i), ...GET(numSamples), ...GET(numChannels), ...MUL, ...GE_s, ...BRIF(1),
         ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...F32_ABS,
         ...GET(framePeak), ...F32_MAX, ...SET(framePeak),
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END,
 
-        // 4. Parametric Physics Evaluator — 32 samples per microblock
+        // ── Physics Evaluator: 32 samples per microblock of pure resonance ──
         ...CI32(0), ...SET(block_start), ...CI32(0), ...SET(packedLen),
-        ...CI64(0), ...SET(bit_buf), ...CI32(0), ...SET(bit_cnt),
+        ...CI64(0), ...SET(i64_bit_buf), ...CI32(0), ...SET(bit_cnt),
 
-        ...BLOCK, ...LOOP, // outer: block loop
+        ...BLOCK, ...LOOP, // block loop
         ...GET(block_start), ...GET(numSamples), ...GE_s, ...BRIF(1),
 
-        // Clamp block to frame boundary
+        // Don't overshoot reality
         ...GET(block_start), ...CI32(32), ...ADD, ...SET(block_end),
         ...GET(block_end), ...GET(numSamples), ...GT_u, ...IF, ...GET(numSamples), ...SET(block_end), ...END,
 
-        // ── Pass 1: Extract Tension (K) ──
-        // Execute O(N) linear regression across the waveform to mathematically derive
-        // the Continuous Harmonic Tension constant of the vibrating space.
+        // ── Reality Check: 0=Mid, 1=Side ──
+        ...CI32(0), ...SET(ch),
+        ...BLOCK, ...LOOP, // dimension loop
+
+        // ── Pass 1: Extract Tension (K) for current channel ──
         ...F32_CONST(0), ...SET(sum_p1_p1),
         ...F32_CONST(0), ...SET(sum_p1_val),
         ...GET(prev1), ...SET(p1_sim),
@@ -386,17 +380,32 @@ function buildEncodeBody(): number[] {
         ...BLOCK, ...LOOP, // pass 1 loop
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
+        // L/R -> M/S Matrix
+        ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
+        // Load L and R
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 4), ...SET(right),
+
+        ...GET(ch), ...CI32(0), ...EQ, ...IF,
+        // Mid = (L + R) / 2
+        ...GET(left), ...GET(right), ...F32_ADD, ...F32_CONST(0.5), ...F32_MUL, ...SET(f32_val),
+        ...ELSE,
+        // Side = L - R
+        ...GET(left), ...GET(right), ...F32_SUB, ...SET(f32_val),
+        ...END,
+        ...ELSE,
+        // Mono fallback
+        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val),
+        ...END,
+
         // Quantize
-        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
-        ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
+        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
         ...GET(i32_val), ...F32_CONVERT_I32_S, ...SET(f32_val),
         ...GET(p1_sim), ...F32_CONVERT_I32_S, ...SET(f32_p1),
         ...GET(p2_sim), ...F32_CONVERT_I32_S, ...SET(f32_p2),
 
-        // sum_p1_p1 += p1 * p1
         ...GET(sum_p1_p1), ...GET(f32_p1), ...GET(f32_p1), ...F32_MUL, ...F32_ADD, ...SET(sum_p1_p1),
-        // sum_p1_val += p1 * (val + p2)
         ...GET(sum_p1_val), ...GET(f32_p1), ...GET(f32_val), ...GET(f32_p2), ...F32_ADD, ...F32_MUL, ...F32_ADD, ...SET(sum_p1_val),
 
         ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
@@ -407,8 +416,6 @@ function buildEncodeBody(): number[] {
         ...GET(sum_p1_val), ...GET(sum_p1_p1), ...F32_CONST(0.000001), ...F32_ADD, ...F32_DIV, ...SET(K_float),
 
         // ── Pass 2: Extract Friction (G) & Predict Entropy (mz) ──
-        // Using the Tension (K) offset, perform a second integration to calculate the
-        // Acoustic Damping constant (G) covering air viscosity and phase decay.
         ...F32_CONST(0), ...SET(sum_p2_p2),
         ...F32_CONST(0), ...SET(sum_p2_err),
         ...GET(prev1), ...SET(p1_sim),
@@ -418,16 +425,26 @@ function buildEncodeBody(): number[] {
         ...BLOCK, ...LOOP, // pass 2 loop
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
-        ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
+        // L/R -> M/S Matrix
+        ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 4), ...SET(right),
+        ...GET(ch), ...CI32(0), ...EQ, ...IF,
+        ...GET(left), ...GET(right), ...F32_ADD, ...F32_CONST(0.5), ...F32_MUL, ...SET(f32_val),
+        ...ELSE,
+        ...GET(left), ...GET(right), ...F32_SUB, ...SET(f32_val),
+        ...END,
+        ...ELSE,
+        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val),
+        ...END,
+
+        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
         ...GET(i32_val), ...F32_CONVERT_I32_S, ...SET(f32_val),
         ...GET(p1_sim), ...F32_CONVERT_I32_S, ...SET(f32_p1),
         ...GET(p2_sim), ...F32_CONVERT_I32_S, ...SET(f32_p2),
 
-        // sum_p2_p2 += p2 * p2
         ...GET(sum_p2_p2), ...GET(f32_p2), ...GET(f32_p2), ...F32_MUL, ...F32_ADD, ...SET(sum_p2_p2),
-        // sum_p2_err += p2 * (K_float * p1 - val)
         ...GET(sum_p2_err), ...GET(f32_p2), ...GET(K_float), ...GET(f32_p1), ...F32_MUL, ...GET(f32_val), ...F32_SUB, ...F32_MUL, ...F32_ADD, ...SET(sum_p2_err),
 
         ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
@@ -456,8 +473,20 @@ function buildEncodeBody(): number[] {
         ...BLOCK, ...LOOP, // pass 3 sim loop
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
-        ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
+        // L/R -> M/S Matrix
+        ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 4), ...SET(right),
+        ...GET(ch), ...CI32(0), ...EQ, ...IF,
+        ...GET(left), ...GET(right), ...F32_ADD, ...F32_CONST(0.5), ...F32_MUL, ...SET(f32_val),
+        ...ELSE,
+        ...GET(left), ...GET(right), ...F32_SUB, ...SET(f32_val),
+        ...END,
+        ...ELSE,
+        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val),
+        ...END,
+
+        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
         // pred = (K * p1) >> 5 - (G * p2) >> 5
         ...GET(K), ...GET(p1_sim), ...MUL, ...CI32(5), ...SHR_s,
@@ -472,24 +501,35 @@ function buildEncodeBody(): number[] {
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END, // pass 3 sim loop
 
-        // W_curr = 32 - clz(mz)
+        // W_curr = 32 - clz(mz) -> Bit-width needed to survive the entropy
         ...CI32(32), ...GET(mz), ...CLZ, ...SUB, ...SET(W_curr),
 
-        // ── Emit Block Header (21 bits: 8-bit K, 8-bit G, 5-bit W) ──
-        // Convert signed to unsigned byte: K & 0xFF, G & 0xFF
-        ...GET(K), ...CI32(255), ...AND, ...SET(temp),
+        // ── Emit physics coefficients (21 bits) ──
+        ...GET(K), ...CI32(255), ...AND, ...SET(temp), // Tension
         ...emitBits([...GET(temp)], [...CI32(8)]),
-        ...GET(G), ...CI32(255), ...AND, ...SET(temp),
+        ...GET(G), ...CI32(255), ...AND, ...SET(temp), // Friction
         ...emitBits([...GET(temp)], [...CI32(8)]),
         ...emitBits([...GET(W_curr)], [...CI32(5)]),
 
-        // ── Real Encode Pass (Digital Twin Physics applied) ──
+        // ── Final Encode: Applying the Physical Equation of Motion ──
         ...GET(block_start), ...SET(i),
         ...BLOCK, ...LOOP, // encode loop
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
-        ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
+        // L/R -> M/S Matrix
+        ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 4), ...SET(right),
+        ...GET(ch), ...CI32(0), ...EQ, ...IF,
+        ...GET(left), ...GET(right), ...F32_ADD, ...F32_CONST(0.5), ...F32_MUL, ...SET(f32_val),
+        ...ELSE,
+        ...GET(left), ...GET(right), ...F32_SUB, ...SET(f32_val),
+        ...END,
+        ...ELSE,
+        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val),
+        ...END,
+
+        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
         // pred = (K * p1) >> 5 - (G * p2) >> 5
         ...GET(K), ...GET(prev1), ...MUL, ...CI32(5), ...SHR_s,
@@ -510,20 +550,25 @@ function buildEncodeBody(): number[] {
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END, // end encode loop
 
+        // Increment channel
+        ...GET(ch), ...CI32(1), ...ADD, ...SET(ch),
+        ...GET(ch), ...GET(numChannels), ...LT_u, ...BRIF(0),
+        ...END, ...END, // end channel loop
+
         ...GET(block_end), ...SET(block_start), ...BR(0),
         ...END, ...END, // end block loop
 
         // Flush remaining bits
         ...GET(bit_cnt), ...CI32(0), ...GT_u, ...IF,
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD,
-        ...GET(bit_buf), ...I32_WRAP_I64, ...STORE8(0, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(packedLen), ...ADD,
+        ...GET(i64_bit_buf), ...I32_WRAP_I64, ...STORE8(0, 0),
         ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
         ...END,
 
         // Pad to 4-byte alignment
         ...BLOCK, ...LOOP,
         ...GET(packedLen), ...CI32(3), ...AND, ...CI32(0), ...EQ, ...BRIF(1),
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD, ...CI32(0), ...STORE8(0, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(packedLen), ...ADD, ...CI32(0), ...STORE8(0, 0),
         ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
         ...BR(0), ...END, ...END,
 
@@ -544,7 +589,7 @@ function buildEncodeBody(): number[] {
         ...GET(crypto_i), ...GET(crypto_words), ...GE_s, ...BRIF(1),
 
         // Load plaintext 32-bit chunk
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(z), // z is temp plaintext
+        ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(z), // z is temp plaintext
 
         // Generate keystream block if needed
         ...GET(idx), ...CI32(64), ...GE_s, ...IF,
@@ -557,7 +602,7 @@ function buildEncodeBody(): number[] {
         ...GET(idx), ...CI32(4), ...ADD, ...SET(idx),
 
         // Write cipher back to payload in-place
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(cipher), ...STORE32(2, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(cipher), ...STORE32(2, 0),
 
         // Update MAC (Inline SipHash-lite)
         ...GET(mac0), ...GET(cipher), ...ADD, ...SET(mac0),
@@ -580,11 +625,11 @@ function buildEncodeBody(): number[] {
         ...END, ...END,
 
         // Append 64-bit MAC
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD, ...GET(mac0), ...STORE32(2, 0),
-        ...GET(outPtr), ...CI32(12), ...ADD, ...GET(packedLen), ...ADD, ...GET(mac1), ...STORE32(2, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(packedLen), ...ADD, ...GET(mac0), ...STORE32(2, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE + 4), ...ADD, ...GET(packedLen), ...ADD, ...GET(mac1), ...STORE32(2, 0),
 
         // Append f32 framePeak (4 bytes)
-        ...GET(outPtr), ...CI32(16), ...ADD, ...GET(packedLen), ...ADD, ...GET(framePeak), ...STOREF32(2, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE + 8), ...ADD, ...GET(packedLen), ...ADD, ...GET(framePeak), ...STOREF32(2, 0),
 
         // Save Crypto state
         ...CI32(0), ...GET(idx), ...STORE32(2, ENC_STATE_ADDR + 128),
@@ -597,44 +642,43 @@ function buildEncodeBody(): number[] {
         ...END,
     ];
     return funcBody([
-        { count: 40, type: I32 }, // locals 4..43
-        { count: 10, type: F32 }, // locals 44..53
-        { count: 1, type: I64 }   // local 54
+        { count: 42, type: I32 }, // locals 5..46 are I32
+        { count: 12, type: F32 }, // locals 47..58 are F32
+        { count: 1, type: I64 },  // local 59 is I64
     ], body);
 }
 
 function buildDecodeBody(): number[] {
-    const adpcmPtr = 0, numBytes = 1, outPtr = 2, scalar = 3; // args (scalar is f32)
+    const adpcmPtr = 0, numBytes = 1, outPtr = 2, scalar = 3, numChannels = 4; // args
 
-    // locals 4..43 are I32 (40 locals total)
-    const numSamples = 4, packedLen = 5, prev1 = 6;
-    const i32_val = 7, delta = 8, z = 9, crypto_i = 10, crypto_words = 11;
-    const cipher = 12, idx = 13, sample_count = 14, mac0 = 15, mac1 = 16, temp = 17;
-    const expMac0 = 18, expMac1 = 19, i = 20;
-    const bit_cnt = 21; // i32
-    const v = [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
-    const prev2 = 38;
-    const block_start = 39, block_end = 40;
+    // I32 locals
+    const numSamples = 5, packedLen = 6, prev1 = 7, i32_val = 8, delta = 9, z = 10;
+    const crypto_i = 11, crypto_words = 12, cipher = 13, idx = 14, sample_count = 15;
+    const mac0 = 16, mac1 = 17, temp = 18, expMac0 = 19, expMac1 = 20, i = 21;
+    const bit_cnt = 22;
+    const v = [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38];
+    const prev2 = 39, block_start = 40, block_end = 41;
 
-    // Physics properties
-    const K = 41, G = 42, W_curr = 43;
+    // Physics Engine I32 Locals
+    const K = 42, G = 43, W_curr = 44, ch = 45;
+    const mid = 46, side = 47; // Temp storage for M/S to L/R conversion
 
-    // local 44 is F32
-    const framePeak = 44; // f32
+    // F32 locals
+    const framePeak = 48; // local 48 is F32
 
-    // local 45 is I64
-    const bit_buf = 45; // i64
+    // I64 locals
+    const i64_bit_buf = 49; // local 49 is I64 bit accumulator
 
     // Helper: refill i64 bit_buf from payload bytes until bit_cnt >= needed
     function refillBits(neededInstr: number[]): number[] {
         return [
             ...BLOCK, ...LOOP,
             ...GET(bit_cnt), ...neededInstr, ...GE_s, ...BRIF(1),
-            // bit_buf |= (byte << bit_cnt)
-            ...GET(bit_buf),
-            ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD8u(0, 0), ...I64_EXTEND_I32_U,
+            // i64_bit_buf |= (byte << bit_cnt)
+            ...GET(i64_bit_buf),
+            ...GET(adpcmPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD8u(0, 0), ...I64_EXTEND_I32_U,
             ...GET(bit_cnt), ...I64_EXTEND_I32_U, ...I64_SHL,
-            ...I64_OR, ...SET(bit_buf),
+            ...I64_OR, ...SET(i64_bit_buf),
             ...GET(bit_cnt), ...CI32(8), ...ADD, ...SET(bit_cnt),
             ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i),
             ...BR(0), ...END, ...END,
@@ -645,31 +689,31 @@ function buildDecodeBody(): number[] {
     function extractBits(nbitsInstr: number[]): number[] {
         return [
             ...nbitsInstr, ...CI32(32), ...EQ, ...IF_I32,
-            ...GET(bit_buf), ...I32_WRAP_I64, // full 32-bit wrap fallback
+            ...GET(i64_bit_buf), ...I32_WRAP_I64, // full 32-bit wrap fallback
             ...ELSE,
-            ...GET(bit_buf), ...I32_WRAP_I64,
+            ...GET(i64_bit_buf), ...I32_WRAP_I64,
             ...CI32(1), ...nbitsInstr, ...SHL, ...CI32(1), ...SUB, // (1<<n)-1
             ...AND,
             ...END,
-            // bit_buf >>= n
-            ...GET(bit_buf), ...nbitsInstr, ...I64_EXTEND_I32_U, ...I64_SHR_u, ...SET(bit_buf),
+            // i64_bit_buf >>= n
+            ...GET(i64_bit_buf), ...nbitsInstr, ...I64_EXTEND_I32_U, ...I64_SHR_u, ...SET(i64_bit_buf),
             // bit_cnt -= n
             ...GET(bit_cnt), ...nbitsInstr, ...SUB, ...SET(bit_cnt),
         ];
     }
 
     const body = [
+        // 1. Recover the Pressure Wave (numSamples)
         ...GET(adpcmPtr), ...LOAD32(2, 0), ...SET(numSamples),
 
-        // 1. Initial Crypto State
+        // 2. Wake up the Crypto Engine
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 128), ...SET(idx),
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 132), ...SET(sample_count),
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 136), ...SET(mac0),
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 140), ...SET(mac1),
 
-        // 2. Cryptography Pass (In-place Decryption)
-        // Note: The appended framePeak (if present) is at the very end and NOT covered by the MAC nor encrypted
-        // So packedLen = numBytes - (HEADER_SIZE + MAC_SIZE + 4)
+        // 3. The Decryption Pass (In-place reality reconstruction)
+        // packedLen = numBytes - (Header + MAC + framePeak)
         ...GET(numBytes), ...CI32(HEADER_SIZE + MAC_SIZE + 4), ...SUB, ...SET(packedLen),
         ...GET(packedLen), ...CI32(2), ...SHR_u, ...SET(crypto_words),
         ...CI32(0), ...SET(crypto_i),
@@ -677,7 +721,7 @@ function buildDecodeBody(): number[] {
         ...BLOCK, ...LOOP,
         ...GET(crypto_i), ...GET(crypto_words), ...GE_s, ...BRIF(1),
 
-        ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(cipher),
+        ...GET(adpcmPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(cipher),
 
         // MAC UPDATE
         ...GET(mac0), ...GET(cipher), ...ADD, ...SET(mac0),
@@ -692,7 +736,7 @@ function buildDecodeBody(): number[] {
 
         // XOR AND OVERWRITE
         ...CI32(0), ...CI32(DEC_STATE_ADDR + 64), ...GET(idx), ...ADD, ...LOAD32(2, 0), ...GET(cipher), ...XOR, ...SET(temp),
-        ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(temp), ...STORE32(2, 0),
+        ...GET(adpcmPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(temp), ...STORE32(2, 0),
         ...GET(idx), ...CI32(4), ...ADD, ...SET(idx),
 
         // Ratchet
@@ -709,7 +753,7 @@ function buildDecodeBody(): number[] {
         ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i), ...BR(0),
         ...END, ...END,
 
-        // 3. Verify MAC
+        // VerVerify MAC
         // MAC is 8 bytes before the last 4 bytes (framePeak), so offsets are -12 and -8 from numBytes
         ...GET(adpcmPtr), ...GET(numBytes), ...CI32(12), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac0),
         ...GET(adpcmPtr), ...GET(numBytes), ...CI32(8), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac1),
@@ -728,70 +772,85 @@ function buildDecodeBody(): number[] {
         // Offset is numBytes - 4
         ...GET(adpcmPtr), ...GET(numBytes), ...CI32(4), ...SUB, ...ADD, ...LOADF32(2, 0), ...SET(framePeak),
 
-        // 4. Parametric Physics Evaluator — continuous microblock simulation
+        // 4. Digital Twin Simulation — Continuous resonance recovery
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 144), ...SET(prev1),
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 148), ...SET(prev2),
         ...CI32(0), ...SET(i), ...CI32(0), ...SET(crypto_i),
         ...CI32(0), ...SET(bit_cnt),
-        ...CI64(0), ...SET(bit_buf),
+        ...CI64(0), ...SET(i64_bit_buf),
         ...CI32(0), ...SET(block_start),
 
         ...BLOCK, ...LOOP, // block loop
         ...GET(block_start), ...GET(numSamples), ...GE_s, ...BRIF(1),
 
-        // Clamp block to frame boundary
         ...GET(block_start), ...CI32(32), ...ADD, ...SET(block_end),
         ...GET(block_end), ...GET(numSamples), ...GT_u, ...IF, ...GET(numSamples), ...SET(block_end), ...END,
 
-        // ── Read Physics Header ──
+        // ── Dimensions: 0=Mid, 1=Side ──
+        ...CI32(0), ...SET(ch),
+        ...BLOCK, ...LOOP, // dimension loop
+
+        // Read Physics Header (21 bits)
         ...refillBits([...CI32(21)]),
-
         ...extractBits([...CI32(8)]), ...SET(K),
-        // Sign extend 8-bit K to 32-bit K
         ...GET(K), ...CI32(24), ...SHL, ...CI32(24), ...SHR_s, ...SET(K),
-
         ...extractBits([...CI32(8)]), ...SET(G),
-        // Sign extend 8-bit G to 32-bit G
         ...GET(G), ...CI32(24), ...SHL, ...CI32(24), ...SHR_s, ...SET(G),
-
         ...extractBits([...CI32(5)]), ...SET(W_curr),
 
-        // Decode block
+        // Decode Samples
         ...GET(block_start), ...SET(i),
-        ...BLOCK, ...LOOP, // decode loop
+        ...BLOCK, ...LOOP, // decode samples loop
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        // Read exactly W_curr bits per sample
-        ...GET(W_curr), ...CI32(0), ...EQ, ...IF,
-        ...CI32(0), ...SET(z),
-        ...ELSE,
+        ...GET(W_curr), ...CI32(0), ...GT_u, ...IF,
         ...refillBits([...GET(W_curr)]),
-        ...extractBits([...GET(W_curr)]),
-        ...SET(z),
+        ...extractBits([...GET(W_curr)]), ...SET(z),
+        ...GET(z), ...CI32(1), ...AND, ...CI32(0), ...EQ, ...IF,
+        ...GET(z), ...CI32(1), ...SHR_u, ...SET(delta),
+        ...ELSE,
+        ...GET(z), ...CI32(1), ...SHR_u, ...CI32(-1), ...XOR, ...SET(delta),
+        ...END,
+        ...ELSE,
+        ...CI32(0), ...SET(delta),
         ...END,
 
-        // delta = (z >>> 1) ^ (0 - (z & 1))
-        ...GET(z), ...CI32(1), ...SHR_u, ...CI32(0), ...GET(z), ...CI32(1), ...AND, ...SUB, ...XOR, ...SET(delta),
-
-        // pred = (K * p1) >> 5 - (G * p2) >> 5
         ...GET(K), ...GET(prev1), ...MUL, ...CI32(5), ...SHR_s,
         ...GET(G), ...GET(prev2), ...MUL, ...CI32(5), ...SHR_s, ...SUB, ...SET(temp),
-
-        // val = delta + pred
         ...GET(delta), ...GET(temp), ...ADD, ...SET(i32_val),
 
-        // Update state
+        // Store reconstructed M/S sample temporarily
+        ...GET(ch), ...CI32(0), ...EQ, ...IF,
+        ...GET(i32_val), ...SET(mid),
+        ...ELSE,
+        ...GET(i32_val), ...SET(side),
+        ...END,
+
+        // If mono or Side dimension finished, reconstruct the L/R soundstage
+        ...GET(numChannels), ...CI32(1), ...EQ, ...GET(ch), ...CI32(1), ...EQ, ...OR, ...IF,
+        ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
+        // Dimension Matrix: L = Mid + Side/2, R = Mid - Side/2
+        ...GET(mid), ...GET(side), ...CI32(1), ...SHR_s, ...ADD, ...SET(i32_val),
+        ...GET(outPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...F32_DIV, ...GET(framePeak), ...F32_MUL, ...STOREF32(2, 0),
+        // R = M - S/2
+        ...GET(mid), ...GET(side), ...CI32(1), ...SHR_s, ...SUB, ...SET(i32_val),
+        ...GET(outPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...F32_DIV, ...GET(framePeak), ...F32_MUL, ...STOREF32(2, 4),
+        ...ELSE,
+        // Mono
+        ...GET(outPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...F32_DIV, ...GET(framePeak), ...F32_MUL, ...STOREF32(2, 0),
+        ...END,
+        ...END,
+
         ...GET(prev1), ...SET(prev2), ...GET(i32_val), ...SET(prev1),
-
-        // f32 output: (val / scalar) * framePeak
-        ...GET(outPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD,
-        ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...F32_DIV, ...GET(framePeak), ...F32_MUL, ...STOREF32(2, 0),
-
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END, // end decode loop
+        ...END, ...END, // decode samples loop
+
+        ...GET(ch), ...CI32(1), ...ADD, ...SET(ch),
+        ...GET(ch), ...GET(numChannels), ...LT_u, ...BRIF(0),
+        ...END, ...END, // channel loop
 
         ...GET(block_end), ...SET(block_start), ...BR(0),
-        ...END, ...END,
+        ...END, ...END, // block loop
 
         ...CI32(0), ...GET(prev1), ...STORE32(2, DEC_STATE_ADDR + 144),
         ...CI32(0), ...GET(prev2), ...STORE32(2, DEC_STATE_ADDR + 148),
@@ -800,29 +859,30 @@ function buildDecodeBody(): number[] {
         ...END,
     ];
     return funcBody([
-        { count: 40, type: I32 }, // locals 4..43
-        { count: 1, type: F32 },  // local 44 (framePeak)
-        { count: 1, type: I64 },  // local 45 (bit_buf)
+        { count: 43, type: I32 }, // locals 5..47 (numSamples..side)
+        { count: 1, type: F32 },  // local 48 (framePeak)
+        { count: 1, type: I64 },  // local 49 (i64_bit_buf)
     ], body);
 }
 
 function buildEncodeRawBody(): number[] {
-    const pcmPtr = 0, numSamples = 1, outPtr = 2; // args
-    const inSample = 3, cipher = 4, crypto_i = 5, crypto_words = 6, temp = 7;
-    const idx = 8, sample_count = 9, mac0 = 10, mac1 = 11;
-    const v = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+    const pcmPtr = 0, numSamples = 1, outPtr = 2, numChannels = 3; // args
+    const inSample = 4, cipher = 5, crypto_i = 6, crypto_words = 7, temp = 8;
+    const idx = 9, sample_count = 10, mac0 = 11, mac1 = 12;
+    const v = [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 
     const body = [
         ...GET(outPtr), ...GET(numSamples), ...STORE32(2, 0),
-        ...GET(outPtr), ...CI32(0), ...STORE16(1, 4),
-        ...GET(outPtr), ...CI32(0), ...STORE16(0, 6), // flags: 0 (Raw)
+        ...GET(outPtr), ...CI32(0), ...STORE32(2, 4), // Sample Rate (zeroed, filled by JS)
+        ...GET(outPtr), ...GET(numChannels), ...CI32(8), ...SHL, ...STORE16(1, 8), // flags: mid-byte numChannels
+        ...GET(outPtr), ...CI32(0), ...STORE16(0, 10), // Padding
 
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 128), ...SET(idx),
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 132), ...SET(sample_count),
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 136), ...SET(mac0),
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 140), ...SET(mac1),
 
-        ...GET(numSamples), ...SET(crypto_words),
+        ...GET(numSamples), ...GET(numChannels), ...MUL, ...SET(crypto_words),
         ...CI32(0), ...SET(crypto_i),
         ...BLOCK, ...LOOP,
         ...GET(crypto_i), ...GET(crypto_words), ...GE_s, ...BRIF(1),
@@ -837,7 +897,7 @@ function buildEncodeRawBody(): number[] {
         ...CI32(0), ...CI32(ENC_STATE_ADDR + 64), ...GET(idx), ...ADD, ...LOAD32(2, 0), ...GET(inSample), ...XOR, ...SET(cipher),
         ...GET(idx), ...CI32(4), ...ADD, ...SET(idx),
 
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(cipher), ...STORE32(2, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(cipher), ...STORE32(2, 0),
 
         ...GET(mac0), ...GET(cipher), ...ADD, ...SET(mac0),
         ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
@@ -856,41 +916,39 @@ function buildEncodeRawBody(): number[] {
         ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i), ...BR(0),
         ...END, ...END,
 
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(numSamples), ...CI32(2), ...SHL, ...ADD, ...GET(mac0), ...STORE32(2, 0),
-        ...GET(outPtr), ...CI32(12), ...ADD, ...GET(numSamples), ...CI32(2), ...SHL, ...ADD, ...GET(mac1), ...STORE32(2, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(crypto_words), ...CI32(2), ...SHL, ...ADD, ...GET(mac0), ...STORE32(2, 0),
+        ...GET(outPtr), ...CI32(HEADER_SIZE + 4), ...ADD, ...GET(crypto_words), ...CI32(2), ...SHL, ...ADD, ...GET(mac1), ...STORE32(2, 0),
 
         ...CI32(0), ...GET(idx), ...STORE32(2, ENC_STATE_ADDR + 128),
         ...CI32(0), ...GET(sample_count), ...STORE32(2, ENC_STATE_ADDR + 132),
         ...CI32(0), ...GET(mac0), ...STORE32(2, ENC_STATE_ADDR + 136),
         ...CI32(0), ...GET(mac1), ...STORE32(2, ENC_STATE_ADDR + 140),
 
-        ...GET(numSamples), ...CI32(2), ...SHL, ...CI32(HEADER_SIZE + MAC_SIZE), ...ADD,
+        ...GET(crypto_words), ...CI32(2), ...SHL, ...CI32(HEADER_SIZE + MAC_SIZE), ...ADD,
         ...END
     ];
-    return funcBody([{ count: 25, type: I32 }], body);
+    return funcBody([{ count: 30, type: I32 }], body);
 }
 
 function buildDecodeRawBody(): number[] {
-    const rawPtr = 0, numBytes = 1, outPtr = 2; // args
-    const numSamples = 3, crypto_i = 4, cipher = 5, crypto_words = 6, temp = 7;
+    const adpcmPtr = 0, numBytes = 1, outPtr = 2, numChannels = 3; // args
+    const cipher = 4, crypto_i = 5, crypto_words = 6, temp = 7;
     const idx = 8, sample_count = 9, mac0 = 10, mac1 = 11, expMac0 = 12, expMac1 = 13;
     const v = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
 
     const body = [
-        ...GET(rawPtr), ...LOAD32(2, 0), ...SET(numSamples),
-
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 128), ...SET(idx),
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 132), ...SET(sample_count),
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 136), ...SET(mac0),
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 140), ...SET(mac1),
 
-        ...GET(numBytes), ...CI32(HEADER_SIZE + MAC_SIZE), ...SUB, ...CI32(2), ...SHR_u, ...SET(crypto_words),
+        ...GET(numBytes), ...CI32(MAC_SIZE + HEADER_SIZE), ...SUB, ...CI32(2), ...SHR_u, ...SET(crypto_words),
         ...CI32(0), ...SET(crypto_i),
 
         ...BLOCK, ...LOOP,
         ...GET(crypto_i), ...GET(crypto_words), ...GE_s, ...BRIF(1),
 
-        ...GET(rawPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(cipher),
+        ...GET(adpcmPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(cipher),
 
         ...GET(mac0), ...GET(cipher), ...ADD, ...SET(mac0),
         ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
@@ -918,8 +976,8 @@ function buildDecodeRawBody(): number[] {
         ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i), ...BR(0),
         ...END, ...END,
 
-        ...GET(rawPtr), ...GET(numBytes), ...CI32(8), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac0),
-        ...GET(rawPtr), ...GET(numBytes), ...CI32(4), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac1),
+        ...GET(adpcmPtr), ...GET(numBytes), ...CI32(8), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac0),
+        ...GET(adpcmPtr), ...GET(numBytes), ...CI32(4), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac1),
 
         ...GET(mac0), ...GET(expMac0), ...EQ, ...GET(mac1), ...GET(expMac1), ...EQ, ...AND, ...CI32(0), ...EQ, ...IF,
         ...CI32(0), ...RETURN,
@@ -930,10 +988,10 @@ function buildDecodeRawBody(): number[] {
         ...CI32(0), ...GET(mac0), ...STORE32(2, DEC_STATE_ADDR + 136),
         ...CI32(0), ...GET(mac1), ...STORE32(2, DEC_STATE_ADDR + 140),
 
-        ...GET(numSamples),
+        ...GET(crypto_words), ...GET(numChannels), ...DIV,
         ...END
     ];
-    return funcBody([{ count: 27, type: I32 }], body);
+    return funcBody([{ count: 30, type: I32 }], body);
 }
 
 function buildResetStateBody(addr: number): number[] {
@@ -970,27 +1028,45 @@ function buildResetStateBody(addr: number): number[] {
     ]);
 }
 
+/**
+ * The raw binary interface to the Digital Twin.
+ */
+export interface AdpcmWasmExports {
+    memory: WebAssembly.Memory;
+    encode_adpcm: (pcmPtr: number, numSamples: number, outPtr: number, scalar: number, numChannels: number) => number;
+    decode_adpcm: (adpcmPtr: number, numBytes: number, outPtr: number, scalar: number, numChannels: number) => number;
+    encode_raw: (pcmPtr: number, numSamples: number, outPtr: number, numChannels: number) => number;
+    decode_raw: (rawPtr: number, numBytes: number, outPtr: number, numChannels: number) => number;
+    reset_enc: (k0: number, k1: number, k2: number, k3: number) => void;
+    reset_dec: (k0: number, k1: number, k2: number, k3: number) => void;
+}
+
 export function buildAdpcmWasmBytes(): Uint8Array {
     const magic = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
     const typeSection = section(1, [
         ...encodeULEB(4),
-        0x60, ...encodeULEB(4), I32, I32, I32, 0x7d, ...encodeULEB(1), I32, // type 0
-        0x60, ...encodeULEB(0), ...encodeULEB(0), // type 1
-        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32, // type 2
-        0x60, ...encodeULEB(4), I32, I32, I32, I32, ...encodeULEB(0), // type 3
+        // 0: (i32, i32, i32, f32, i32) -> i32 (adpcm/raw funcs)
+        Op.FUNC, ...encodeULEB(5), I32, I32, I32, Op.F32, I32, ...encodeULEB(1), I32,
+        // 1: (i32, i32, i32, i32) -> i32 (raw funcs)
+        Op.FUNC, ...encodeULEB(4), I32, I32, I32, I32, ...encodeULEB(1), I32,
+        // 2: (i32, i32, i32, i32) -> void (resets)
+        Op.FUNC, ...encodeULEB(4), I32, I32, I32, I32, ...encodeULEB(0),
+        // 3: () -> void (not used)
+        Op.FUNC, ...encodeULEB(0), ...encodeULEB(0),
     ]);
 
     const funcSection = section(3, [
         ...encodeULEB(6),
         ...encodeULEB(0), // encode_adpcm
         ...encodeULEB(0), // decode_adpcm
-        ...encodeULEB(2), // encode_raw
-        ...encodeULEB(2), // decode_raw
-        ...encodeULEB(3), // reset_enc
-        ...encodeULEB(3), // reset_dec
+        ...encodeULEB(1), // encode_raw
+        ...encodeULEB(1), // decode_raw
+        ...encodeULEB(2), // reset_enc
+        ...encodeULEB(2), // reset_dec
     ]);
-    const memSection = section(5, [...encodeULEB(1), 0x01, ...encodeULEB(2), ...encodeULEB(2048)]);
+
+    const memSection = section(5, [...encodeULEB(1), 0x01, ...encodeULEB(2), ...encodeULEB(2048)]); // init 2 pages, max 2048
 
     const exportSection = section(7, [
         ...encodeULEB(7),
@@ -999,8 +1075,8 @@ export function buildAdpcmWasmBytes(): Uint8Array {
         ...nameSec("decode_adpcm"), 0x00, ...encodeULEB(1),
         ...nameSec("encode_raw"), 0x00, ...encodeULEB(2),
         ...nameSec("decode_raw"), 0x00, ...encodeULEB(3),
-        ...nameSec("reset_encoder_state"), 0x00, ...encodeULEB(4),
-        ...nameSec("reset_decoder_state"), 0x00, ...encodeULEB(5),
+        ...nameSec("reset_enc"), 0x00, ...encodeULEB(4),
+        ...nameSec("reset_dec"), 0x00, ...encodeULEB(5),
     ]);
 
     const codeSection = section(10, [
@@ -1015,26 +1091,19 @@ export function buildAdpcmWasmBytes(): Uint8Array {
 
     return new Uint8Array([
         ...magic,
-        ...typeSection,
-        ...funcSection,
-        ...memSection,
-        ...exportSection,
-        ...codeSection,
+        ...typeSection.flat(),
+        ...funcSection.flat(),
+        ...memSection.flat(),
+        ...exportSection.flat(),
+        ...codeSection.flat(),
     ]);
-}
-
-export interface AdpcmWasmExports {
-    memory: WebAssembly.Memory;
-    encode_adpcm: (pcmPtr: number, numSamples: number, outPtr: number, scalar: number) => number;
-    decode_adpcm: (adpcmPtr: number, numBytes: number, outPtr: number, scalar: number) => number;
-    encode_raw: (pcmPtr: number, numSamples: number, outPtr: number) => number;
-    decode_raw: (rawPtr: number, numBytes: number, outPtr: number) => number;
-    reset_encoder_state: (k0: number, k1: number, k2: number, k3: number) => void;
-    reset_decoder_state: (k0: number, k1: number, k2: number, k3: number) => void;
 }
 
 let _wasmPromise: Promise<AdpcmWasmExports> | null = null;
 
+/**
+ * Spin up the physics engine.
+ */
 export function getAdpcmWasm(): Promise<AdpcmWasmExports> {
     if (_wasmPromise) return _wasmPromise;
     _wasmPromise = (async () => {
@@ -1051,19 +1120,19 @@ export async function encodeAdpcm(
     float32Samples: Float32Array,
     sampleRate: number,
     encryptionKey?: Uint32Array,
-    options?: { quality?: number },
+    options?: { quality?: number; numChannels?: number },
 ): Promise<Uint8Array> {
     const wasm = await getAdpcmWasm();
     const mem = wasm.memory;
 
     const quality = options?.quality ?? 80;
+    const numChannels = options?.numChannels ?? 1; // 1=Mono, 2=Stereo (M/S Dimension Matrix)
     const isRaw = quality >= 100;
-    // scalar: at quality 80 -> ~32767, at quality 30 -> ~1024, at quality 100 -> raw path
     const scalar = Math.max(1, Math.floor(Math.pow(2, (quality / 100) * 15)));
 
-    const numSamples = float32Samples.length;
-    const pcmBytes = numSamples * 4;
-    const outMaxBytes = HEADER_SIZE + numSamples * 4 + MAC_SIZE + (Math.ceil(numSamples / 64) * 4);
+    const numSamples = float32Samples.length / numChannels; // Total frames of reality
+    const pcmBytes = float32Samples.length * 4;
+    const outMaxBytes = HEADER_SIZE + pcmBytes + MAC_SIZE + (Math.ceil(numSamples / 32) * 10 * numChannels); // Buffer for safety
     const totalNeeded = WASM_BUF + pcmBytes + outMaxBytes;
 
     const currentBytes = mem.buffer.byteLength;
@@ -1072,32 +1141,29 @@ export async function encodeAdpcm(
     }
 
     if (encryptionKey && encryptionKey.length === 4) {
-        wasm.reset_encoder_state(encryptionKey[0], encryptionKey[1], encryptionKey[2], encryptionKey[3]);
+        wasm.reset_enc(encryptionKey[0], encryptionKey[1], encryptionKey[2], encryptionKey[3]);
     } else {
-        wasm.reset_encoder_state(0xDEADBEEF, 0x1337C0DE, 0x8BADF00D, 0x0DEFACED);
+        wasm.reset_enc(0xDEADBEEF, 0x1337C0DE, 0x8BADF00D, 0x0DEFACED);
     }
 
     const pcmPtr = WASM_BUF;
     const outPtr = WASM_BUF + pcmBytes;
 
     if (isRaw) {
-        // Raw mode: no normalization, bit-exact
-        new Float32Array(mem.buffer, pcmPtr, numSamples).set(float32Samples);
-        const bytesWritten = wasm.encode_raw(pcmPtr, numSamples, outPtr);
+        new Float32Array(mem.buffer, pcmPtr, float32Samples.length).set(float32Samples);
+        const bytesWritten = wasm.encode_raw(pcmPtr, numSamples, outPtr, numChannels);
         const view = new DataView(mem.buffer);
-        view.setUint16(outPtr + 4, sampleRate & 0xFFFF, true);
-        view.setUint16(outPtr + 6, 0, true); // flags: 0 = raw
+        view.setUint32(outPtr + 4, sampleRate, true);
         return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
     }
 
-    // Physics-based VBR: WASM Handles frame peak normalization internally
-    new Float32Array(mem.buffer, pcmPtr, numSamples).set(float32Samples);
-    const bytesWritten = wasm.encode_adpcm(pcmPtr, numSamples, outPtr, scalar);
+    new Float32Array(mem.buffer, pcmPtr, float32Samples.length).set(float32Samples);
+    const bytesWritten = wasm.encode_adpcm(pcmPtr, numSamples, outPtr, scalar, numChannels);
 
     const view = new DataView(mem.buffer);
-    view.setUint16(outPtr + 4, sampleRate & 0xFFFF, true);
+    view.setUint32(outPtr + 4, sampleRate, true);
     const flags = ((quality & 0xFF) << 8) | 1;
-    view.setUint16(outPtr + 6, flags, true);
+    view.setUint16(outPtr + 8, flags, true);
 
     return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
 }
@@ -1113,8 +1179,8 @@ export async function decodeAdpcm(
 
     const hdr = new DataView(adpcmBytes.buffer, adpcmBytes.byteOffset, HEADER_SIZE);
     const numSamples = hdr.getUint32(0, true);
-    const sampleRate = hdr.getUint16(4, true) || 48000;
-    const flags = hdr.getUint16(6, true);
+    const sampleRate = hdr.getUint32(4, true) || 48000;
+    const flags = hdr.getUint16(8, true);
     const isRaw = (flags & 1) === 0;
     const quality = (flags >> 8) & 0xFF;
     const scalar = Math.max(1, Math.floor(Math.pow(2, (quality / 100) * 15)));
@@ -1129,23 +1195,29 @@ export async function decodeAdpcm(
     }
 
     if (encryptionKey && encryptionKey.length === 4) {
-        wasm.reset_decoder_state(encryptionKey[0], encryptionKey[1], encryptionKey[2], encryptionKey[3]);
+        wasm.reset_dec(encryptionKey[0], encryptionKey[1], encryptionKey[2], encryptionKey[3]);
     } else {
-        wasm.reset_decoder_state(0xDEADBEEF, 0x1337C0DE, 0x8BADF00D, 0x0DEFACED);
+        wasm.reset_dec(0xDEADBEEF, 0x1337C0DE, 0x8BADF00D, 0x0DEFACED);
     }
+
     const inPtr = WASM_BUF;
     const outPtr = WASM_BUF + inBytes;
 
-    new Uint8Array(mem.buffer).set(adpcmBytes, inPtr);
+    new Uint8Array(mem.buffer, inPtr, inBytes).set(adpcmBytes);
 
-    const samplesDecoded = isRaw
-        ? wasm.decode_raw(inPtr, inBytes, outPtr)
-        : wasm.decode_adpcm(inPtr, inBytes, outPtr, scalar);
+    let samplesDecoded = 0;
+    const numChannels = ((flags >> 8) & 0xFF) || 1;
 
-    const tampered = samplesDecoded === 0;
-    const pcm = tampered
-        ? new Float32Array(numSamples)
-        : new Float32Array(mem.buffer, outPtr, samplesDecoded).slice();
+    if (isRaw) {
+        samplesDecoded = wasm.decode_raw(inPtr, inBytes, outPtr, numChannels);
+    } else {
+        samplesDecoded = wasm.decode_adpcm(inPtr, inBytes, outPtr, scalar, numChannels);
+    }
 
-    return { pcm, sampleRate, tampered };
+    if (samplesDecoded === 0) {
+        return { pcm: new Float32Array(0), sampleRate, tampered: true };
+    }
+
+    const pcm = new Float32Array(mem.buffer.slice(outPtr, outPtr + samplesDecoded * numChannels * 4));
+    return { pcm, sampleRate, tampered: false };
 }
