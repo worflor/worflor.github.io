@@ -1285,6 +1285,23 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   const ADPCM_MIME = "audio/x-whisper-adpcm";
 
+  function isWhisperAudioCodec(fileType?: string, fileName?: string): boolean {
+    const t = (fileType ?? "").toLowerCase();
+    const n = (fileName ?? "").toLowerCase();
+    // Accept legacy and current custom-codec markers so UI keeps rendering
+    // audio messages even if wire MIME changes across versions.
+    return t === ADPCM_MIME
+      || t.includes("x-whisper")
+      || t.includes("whisper-audio")
+      || n.endsWith(".wadpcm");
+  }
+
+  function isRenderableAudioMessage(msg: LiveMessage): boolean {
+    if (msg.type !== "file" || !msg.fileData) return false;
+    const type = msg.fileType?.toLowerCase() ?? "";
+    return type.startsWith("audio/") || isWhisperAudioCodec(msg.fileType, msg.fileName);
+  }
+
   // AudioWorklet-based PTT state
   let recordingStream: MediaStream | null = null;
   let recordingStart = 0;
@@ -1785,7 +1802,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       textEl.className = "wl-msg-text";
       textEl.textContent = msg.text ?? "";
       div.appendChild(textEl);
-    } else if (msg.type === "file" && msg.fileType?.startsWith("audio/") && msg.fileData) {
+    } else if (isRenderableAudioMessage(msg)) {
+      const fileData = msg.fileData;
+      if (!fileData) return;
       /* ── Inline audio player with waveform ─────────────── */
       const audioEl = document.createElement("div");
       audioEl.className = "wl-msg-audio";
@@ -1811,9 +1830,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       audioEl.append(playBtn, canvas, durLabel, dlBtn);
 
       // We don't need a blob URL for custom WASM ADPCM playback
-      const isAdpcm = msg.fileType === ADPCM_MIME;
-      const abCopy = new ArrayBuffer(msg.fileData.byteLength);
-      new Uint8Array(abCopy).set(msg.fileData);
+      const isWhisperCodec = isWhisperAudioCodec(msg.fileType, msg.fileName);
+      const abCopy = new ArrayBuffer(fileData.byteLength);
+      new Uint8Array(abCopy).set(fileData);
 
       let pcmData: Float32Array | null = null;
       let durationSeconds = 0;
@@ -1938,7 +1957,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         redraw(0);
 
         try {
-          if (isAdpcm) {
+          if (isWhisperCodec) {
             const decoded = await decodeAdpcm(new Uint8Array(abCopy));
             pcmData = decoded.pcm;
             durationSeconds = decoded.pcm.length / decoded.sampleRate;
@@ -2033,11 +2052,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, { signal });
 
       dlBtn.addEventListener("click", async () => {
-        if (!isAdpcm || dlBtn.disabled) return;
+        if (!isWhisperCodec || dlBtn.disabled) return;
         dlBtn.disabled = true;
         try {
           // Decode proprietary ADPCM payload to standard PCM, wrap in a RIFF WAV container Blob
-          const wavBlob = await adpcmToWav(msg.fileData!);
+          const wavBlob = await adpcmToWav(fileData);
           const url = URL.createObjectURL(wavBlob);
           objectUrls.add(url);
 
