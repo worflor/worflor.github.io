@@ -515,7 +515,7 @@ export const WASM_BUF = BUF_START;
 //    result, equivalent to a free ~3dB SNR improvement for voice.
 
 const DC_ALPHA = 0.9999;
-const PREEMPH_MU = 0.97;
+const PREEMPH_MU = 0.90; // Reduced pre-emphasis for more natural sound
 
 // --- Streaming DSP State ---
 let dcXPrev = 0;
@@ -546,16 +546,14 @@ function applyDcBlockAndPreemphasis(samples: Float32Array, sampleRate: number): 
         out[i] = dc;
     }
 
-    // --- Gentle Downward Expander (Soft Noise Gate) ---
-    // Instead of muting silence to 0 (which sounds unnatural), we just reduce 
-    // background hiss/room tone by 50% (-6dB). This preserves a natural, raw sound
-    // without pumping artifacts.
-    const GATE_THRESH = 0.000031; // ~ -45 dBFS
+    // --- Very Gentle Noise Gate ---
+    // Preserve natural room tone and breath by only reducing very low-level noise slightly
+    const GATE_THRESH = 0.00001; // ~ -50 dBFS (lower threshold = more noise preserved)
+    const ATTACK_MS = 5; // Faster attack for immediate response
+    const RELEASE_MS = 500; // Very slow release to avoid pumping artifacts
 
-    const attackMs = 10;
-    const releaseMs = 300; // Slower release for natural fade
-    const alphaAttack = Math.exp(-1 / (sampleRate * (attackMs / 1000)));
-    const alphaRelease = Math.exp(-1 / (sampleRate * (releaseMs / 1000)));
+    const alphaAttack = Math.exp(-1 / (sampleRate * (ATTACK_MS / 1000)));
+    const alphaRelease = Math.exp(-1 / (sampleRate * (RELEASE_MS / 1000)));
 
     for (let i = 0; i < out.length; i++) {
         const energy = out[i] * out[i];
@@ -563,8 +561,8 @@ function applyDcBlockAndPreemphasis(samples: Float32Array, sampleRate: number): 
             ? alphaAttack * expEnv + (1 - alphaAttack) * energy
             : alphaRelease * expEnv + (1 - alphaRelease) * energy;
 
-        // Target gain: 1.0 for voice, 0.5 for background noise
-        const targetGain = expEnv > GATE_THRESH ? 1.0 : 0.5;
+        // Target gain: 1.0 for voice, 0.85 for background noise (very subtle reduction)
+        const targetGain = expEnv > GATE_THRESH ? 1.0 : 0.85;
 
         expGain = targetGain > expGain
             ? alphaAttack * expGain + (1 - alphaAttack) * targetGain
@@ -579,12 +577,12 @@ function applyDcBlockAndPreemphasis(samples: Float32Array, sampleRate: number): 
         let s = out[i] - PREEMPH_MU * preemphPrev;
         preemphPrev = out[i];
 
-        // Soft clipper (analog limiter emulation)
-        // Gracefully rounds off shouts/transients instead of letting them hard digital clip
-        if (s > 0.9) {
-            s = 0.9 + 0.1 * Math.tanh((s - 0.9) / 0.1);
-        } else if (s < -0.9) {
-            s = -0.9 + 0.1 * Math.tanh((s + 0.9) / 0.1);
+        // Very Gentle Soft Clipper
+        // Preserves transients by only clipping at very high levels with a gentle curve
+        if (s > 0.95) {
+            s = 0.95 + 0.05 * Math.tanh((s - 0.95) / 0.05);
+        } else if (s < -0.95) {
+            s = -0.95 + 0.05 * Math.tanh((s + 0.95) / 0.05);
         }
 
         preout[i] = s;

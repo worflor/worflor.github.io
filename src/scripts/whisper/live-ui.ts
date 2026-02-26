@@ -1303,6 +1303,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let micDeferred: "send" | "discard" | null = null;
   let micAudioCtx: AudioContext | null = null;
   let micWorkletNode: AudioWorkletNode | null = null;
+  let micSourceNode: MediaStreamAudioSourceNode | null = null;
 
   // Dedicated singleton context for playback to prevent recording teardowns from closing it
   let playbackCtx: AudioContext | null = null;
@@ -1369,39 +1370,43 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       recordingStream = stream;
       pcmChunks = [];
-      recordingStart = Date.now();
-      pcmSampleRate = stream.getAudioTracks()[0]?.getSettings().sampleRate ?? 48000;
+      // recordingStart set after setup finishes
+
+      // Fallback: If started without pointer event, create context here (it might be suspended and blocked, but fail gracefully)
+      if (!micAudioCtx) micAudioCtx = new AudioContext();
+      if (micAudioCtx.state === "suspended") void micAudioCtx.resume();
+
+      pcmSampleRate = micAudioCtx.sampleRate;
 
       // Build AudioContext + worklet
       const blobUrl = getWorkletBlobUrl();
+      const ctx = micAudioCtx; // capture local assertion
       try {
-        micAudioCtx = new AudioContext({ sampleRate: pcmSampleRate });
-        if (micAudioCtx.state === "suspended") void micAudioCtx.resume();
-        await micAudioCtx.audioWorklet.addModule(blobUrl);
+        await ctx.audioWorklet.addModule(blobUrl);
         URL.revokeObjectURL(blobUrl);
 
-        const source = micAudioCtx.createMediaStreamSource(stream);
-        micWorkletNode = new AudioWorkletNode(micAudioCtx, "whisper-pcm-capture");
+        const source = ctx.createMediaStreamSource(stream);
+        micSourceNode = source; // Prevent GC
+        micWorkletNode = new AudioWorkletNode(ctx, "whisper-pcm-capture");
         micWorkletNode.port.onmessage = (ev) => {
-          if (ev.data?.samples instanceof Float32Array) {
+          if (ev.data?.samples) {
             pcmChunks.push(ev.data.samples);
           }
         };
         source.connect(micWorkletNode);
         // Connect to destination with zero gain — keeps the audio graph alive
         // without audible feedback
-        const silentGain = micAudioCtx.createGain();
+        const silentGain = ctx.createGain();
         silentGain.gain.value = 0;
         micWorkletNode.connect(silentGain);
-        silentGain.connect(micAudioCtx.destination);
+        silentGain.connect(ctx.destination);
       } catch (e) {
         // AudioWorklet unavailable (very old browsers) — fall back to ScriptProcessor
-        // Note: ScriptProcessorNode is deprecated but still works universally.
+        // @ts-ignore
+        console.warn("AudioWorklet failed, using fallback:", e);
         URL.revokeObjectURL(blobUrl);
-        const ctx = micAudioCtx ?? new AudioContext({ sampleRate: pcmSampleRate });
-        if (ctx.state === "suspended") void ctx.resume();
-        micAudioCtx = ctx;
         const source = ctx.createMediaStreamSource(stream);
+        micSourceNode = source; // Prevent GC
         // @ts-ignore – deprecated but universal fallback
         const proc = ctx.createScriptProcessor(4096, 1, 1);
         // @ts-ignore
@@ -1425,6 +1430,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         }, { once: true });
       }
 
+      recordingStart = Date.now();
+
       opts.chatMicWrap.setAttribute("data-recording", "true");
       opts.chatMicCancel.tabIndex = 0;
       opts.chatMicSend.tabIndex = 0;
@@ -1443,7 +1450,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       if (micDeferred === "send") {
         micDeferred = null;
-        stopRecording();
+        // Wait at least a few ms for some samples to arrive before checking the length
+        setTimeout(() => stopRecording(), 50);
       }
     }).catch((err) => {
       micPending = false;
@@ -1469,9 +1477,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       try { micWorkletNode.disconnect(); } catch { }
       micWorkletNode = null;
     }
-    if (micAudioCtx) {
-      micAudioCtx.close().catch(() => { });
-      micAudioCtx = null;
+    if (micSourceNode) {
+      try { micSourceNode.disconnect(); } catch { }
+      micSourceNode = null;
     }
     if (recordingStream) {
       for (const t of recordingStream.getTracks()) t.stop();
@@ -3198,6 +3206,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   opts.chatMicBtn.addEventListener("pointerdown", (e) => {
     if (opts.chatMicBtn.disabled || e.button !== 0) return;
     if (micPointerId !== -1) return;           // already tracking a pointer
+
+    // Create and resume AudioContext synchronously with user gesture
+    if (!micAudioCtx) micAudioCtx = new AudioContext();
+    if (micAudioCtx.state === "suspended") void micAudioCtx.resume();
+
     e.preventDefault();
     micPointerId = e.pointerId;
     opts.chatMicBtn.setPointerCapture(e.pointerId);
