@@ -343,14 +343,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   let typingSendTimer: ReturnType<typeof setTimeout> | null = null;
   let peerTypingTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Typing debounce scaled to current network — reads live so it adapts
-   *  if the connection changes (e.g. wifi → cellular). Constrained networks
-   *  get a longer window; good connections stay at the original 3s default. */
+
+  /** Active-typing debounce scaled to current network. Reads live so it adapts
+   *  if the connection shifts (e.g. wifi → cellular). */
   function typingSendDebounce(): number {
     return env.constrainedNetwork ? 6_000 : Math.min(6_000, Math.max(3_000, env.rtt * 4));
-  }
-  function typingDisplayTimeout(): number {
-    return env.constrainedNetwork ? 6_000 : 4_000;
   }
 
   // ── Clear-history (voted operation) ─────────────────────────
@@ -377,6 +374,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     onState: (state) => { opts.chatClearBtn.dataset.clearState = state; updateControls(); },
   });
 
+  const campfireVote = new VoteTopic({
+    timeoutMs: 60_000,
+    onExecute: () => {
+      window.dispatchEvent(new CustomEvent("whisper-live-funnel", {
+        detail: { mode: "campfire", bootstrap: true },
+      }));
+      appendLog("campfire vote passed — opening shared campfire session");
+    },
+    onState: (state) => {
+      opts.funnelCampfireBtn.dataset.voteState = state;
+      const labels: Record<string, string> = {
+        idle: "start a campfire",
+        "pending-out": "campfire vote sent",
+        "pending-in": "campfire invite — press to accept",
+      };
+      opts.funnelCampfireBtn.textContent = labels[state] ?? "start a campfire";
+      updateControls();
+    },
+  });
+
   // ── Ctrl dispatch ─────────────────────────────────────────
   // Route inbound ctrl frames to the right handler.
   // Adding a new voted feature = new VoteTopic + two lines here.
@@ -385,6 +402,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     switch (opcode) {
       case CTRL_OP.CLEAR_VOTE:   clearVote.receivePeer(); break;
       case CTRL_OP.CLEAR_CANCEL: clearVote.cancelPeer();  break;
+      case CTRL_OP.CAMPFIRE_VOTE:   campfireVote.receivePeer(); break;
+      case CTRL_OP.CAMPFIRE_CANCEL: campfireVote.cancelPeer();  break;
     }
   }
 
@@ -419,7 +438,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const typing = {
     intensity: 0,       // 0→1 opacity
     phase: 0,           // oscillator radians
-    target: 0,          // 1 when peer is typing
+    target: 0,          // 1 when peer is typing or composing
+    idle: false,        // true = peer idle with unsent text (gentler animation)
     phaseVelocity: 0,   // external impulse (send ripple kick)
     amplitude: 0,       // 0→1 swing width
     sustain: 0,         // 0→1 warmth from duration
@@ -554,16 +574,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // ── Typing indicator (amplitude-modulated pendulum) ──
     const t = typing;
     const tOn = t.target > 0.5;
+    const tIdle = t.idle;
+
+    // Idle composing: reduced intensity + amplitude targets for a gentle pulse
+    const intensityTarget = tOn ? (tIdle ? 0.45 : 1) : 0;
+    const amplitudeTarget = tOn ? (tIdle ? 0.25 : 1) : 0;
 
     // Intensity + amplitude: independent rates so amplitude winds down before opacity fades
-    t.intensity += ((tOn ? 1 : 0) - t.intensity) * Math.min(1, (tOn ? 4.5 : 1.8) * dt);
+    t.intensity += (intensityTarget - t.intensity) * Math.min(1, (tOn ? 4.5 : 1.8) * dt);
     t.intensity = Math.max(0, Math.min(1, t.intensity));
-    t.amplitude += ((tOn ? 1 : 0) - t.amplitude) * Math.min(1, (tOn ? 1.4 : 2.8) * dt);
+    t.amplitude += (amplitudeTarget - t.amplitude) * Math.min(1, (tOn ? 1.4 : 2.8) * dt);
     t.amplitude = Math.max(0, Math.min(1, t.amplitude));
 
-    // Sustain warmth
+    // Sustain warmth — idle composing caps lower
     t.sustain = tOn
-      ? Math.min(1, t.sustain + dt * 0.14)
+      ? Math.min(tIdle ? 0.3 : 1, t.sustain + dt * (tIdle ? 0.06 : 0.14))
       : t.sustain * Math.exp(-dt * 0.5);
 
     if (t.intensity > 0.01) {
@@ -571,7 +596,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const edgeDist = 1 - Math.abs(pos - 0.5) * 2;
       const windDown = 0.3 + t.amplitude * 0.7;
       t.phaseVelocity *= Math.exp(-dt * 3.5);
-      t.phase += dt * ((1.8 + edgeDist * 1.4) * (1 - send.energy * 0.3) * windDown + t.phaseVelocity);
+      // Idle composing: slower pendulum speed
+      const baseSpeed = tIdle ? 0.7 : 1.8;
+      const edgeBoost = tIdle ? 0.4 : 1.4;
+      t.phase += dt * ((baseSpeed + edgeDist * edgeBoost) * (1 - send.energy * 0.3) * windDown + t.phaseVelocity);
       t.speed = Math.abs(Math.cos(t.phase)) * t.amplitude;
     } else {
       t.phaseVelocity = 0; t.amplitude = 0; t.sustain = 0; t.speed = 0;
@@ -592,7 +620,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     composeActivity = 0; composeActivityTarget = 0; composeActivityVelocity = 0;
     send.energy = 0; send.velocity = 0; send.fillTarget = 0;
     send.phase = "idle"; send.acks.clear(); send.timestamps.clear(); send.peakEnergy = 0;
-    t.intensity = 0; t.phaseVelocity = 0; t.amplitude = 0; t.sustain = 0; t.speed = 0;
+    t.intensity = 0; t.idle = false; t.phaseVelocity = 0; t.amplitude = 0; t.sustain = 0; t.speed = 0;
     syncCSSVars();
     composeActivityRaf = 0; composeActivityLastTick = 0;
   }
@@ -738,6 +766,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     if (liveSurface) {
       liveSurface.classList.toggle("wl-connected", el === opts.chatSection);
+      liveSurface.classList.remove("wl-preview");
     }
   }
 
@@ -1125,31 +1154,104 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     } catch { /* Audio not available — silent fallback */ }
   }
 
-  /* ── Typing indicator ──────────────────────────────────── */
+  /* ── Compose state protocol ──────────────────────────────
+   *
+   * Three states sent as a 1-byte payload on LIVE_MSG.TYPING:
+   *   0x00  ACTIVE   keystroke happened (debounced ~3s)
+   *   0x01  IDLE     no keystrokes but unsent text remains
+   *   0x02  CLEARED  text sent or deleted — hide indicator
+   *
+   * Send strategy — transitions only, not heartbeats:
+   *   active typing  →  0x00 per debounce window (~3s)
+   *   stop typing    →  0x01 once, then keepalive every 8s
+   *   send / delete  →  0x02 once
+   *
+   * Receive strategy — hold state, single safety net:
+   *   any signal resets a 15s safety timeout
+   *   0x02 clears immediately
+   */
 
-  function showPeerTyping(): void {
+  const COMPOSE_ACTIVE  = 0x00;
+  const COMPOSE_IDLE    = 0x01;
+  const COMPOSE_CLEARED = 0x02;
+
+  const IDLE_KEEPALIVE_MS = 8_000;
+  const SAFETY_TIMEOUT_MS = 15_000;
+
+  /* ── Receive ── */
+
+  function handlePeerCompose(state: number): void {
+    if (state === COMPOSE_CLEARED) { hidePeerTyping(); return; }
+
     typing.target = 1;
-    // Each typing signal nudges the pendulum — keeps it feeling alive
-    if (typing.amplitude > 0.3) typing.phaseVelocity += 0.3;
+    typing.idle = state === COMPOSE_IDLE;
+
+    // Active signals nudge the pendulum — keeps it feeling alive between debounces
+    if (!typing.idle && typing.amplitude > 0.3) typing.phaseVelocity += 0.3;
+
+    // Every inbound signal resets the single safety timeout
     if (peerTypingTimer) clearTimeout(peerTypingTimer);
-    peerTypingTimer = setTimeout(hidePeerTyping, typingDisplayTimeout());
-    exciteComposeActivity(0.18);
+    peerTypingTimer = setTimeout(hidePeerTyping, SAFETY_TIMEOUT_MS);
+
+    exciteComposeActivity(typing.idle ? 0.06 : 0.18);
     ensureRaf();
   }
 
   function hidePeerTyping(): void {
     if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
     typing.target = 0;
+    typing.idle = false;
+  }
+
+  /* ── Send ── */
+
+  let composing = false;
+  let idleKeepAlive: ReturnType<typeof setInterval> | null = null;
+
+  function startIdleKeepAlive(): void {
+    stopIdleKeepAlive();
+    idleKeepAlive = setInterval(() => {
+      // Session gone or text cleared while we were idle → clean exit
+      if (!session || !composing || !opts.chatInput.value.trim()) {
+        emitCleared();
+        return;
+      }
+      session.sendTyping(COMPOSE_IDLE);
+    }, IDLE_KEEPALIVE_MS);
+  }
+
+  function stopIdleKeepAlive(): void {
+    if (idleKeepAlive) { clearInterval(idleKeepAlive); idleKeepAlive = null; }
   }
 
   function emitTyping(): void {
     if (typingSendTimer || !session) return;
-    // Typing signals are ephemeral — skip entirely when the browser says
-    // "conserve bandwidth" (save-data) or the network can barely carry content.
     if (env.saveData || env.constrainedNetwork) return;
-    session.sendTyping();
-    typingSendTimer = setTimeout(() => { typingSendTimer = null; }, typingSendDebounce());
+
+    composing = true;
+    stopIdleKeepAlive();
+    session.sendTyping(COMPOSE_ACTIVE);
+
+    typingSendTimer = setTimeout(() => {
+      typingSendTimer = null;
+      if (!session) { composing = false; return; }
+      if (opts.chatInput.value.trim()) {
+        session.sendTyping(COMPOSE_IDLE);
+        startIdleKeepAlive();
+      } else {
+        emitCleared();
+      }
+    }, typingSendDebounce());
+
     exciteComposeActivity(0.22);
+  }
+
+  function emitCleared(): void {
+    stopIdleKeepAlive();
+    if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
+    if (!composing) return;
+    composing = false;
+    if (session) session.sendTyping(COMPOSE_CLEARED);
   }
 
   /* ── Smart scroll ──────────────────────────────────────── */
@@ -1286,7 +1388,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onFingerprint: handleFingerprint,
       onMessage: handleMessage,
       onLog: appendLog,
-      onPeerTyping: showPeerTyping,
+      onPeerTyping: handlePeerCompose,
       onAck: handleAck,
       onSendProgress: (sent, total) => sendProgress(sent / total),
       onConnectionStats: handleConnectionStats,
@@ -1318,7 +1420,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     switch (state) {
       case "idle":
-        enterPhase(opts.liveSection, "ready to connect", false, false);
+        enterPhase(opts.liveSection, "", false, false);
         break;
 
       case "offering":
@@ -1354,8 +1456,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         // 1:1 is always symmetric — both parties are equal.
         // Campfire: founders get elevated weight via setWeights(2, 1, partyCount).
         if (session) clearVote.setWeights(1, 1);
-        enterPhase(opts.chatSection, "secure session live · end-to-end encrypted", false, false);
-        opts.liveStatusLine.classList.add("whisper-status--ready");
+        // Founding 1:1 peers are symmetric hosts: both sides weight 2.
+        campfireVote.setWeights(2, 2);
+        enterPhase(opts.chatSection, "", false, false);
+        liveSurface?.classList.remove("wl-recovering");
         opts.chatInput.disabled = false;
         opts.chatInput.placeholder = "whisper something...";
         opts.chatInput.focus();
@@ -1372,7 +1476,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       case "recovering":
         showPhase(opts.chatSection);
-        updateStatus("reconnecting...");
+        liveSurface?.classList.add("wl-recovering");
+        updateStatus("");
         setLogActive(true);
         opts.chatSendBtn.disabled = true;
         opts.chatFileBtn.disabled = true;
@@ -1444,6 +1549,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       session.disconnect();
       session = null;
     }
+    composing = false;
+    stopIdleKeepAlive();
+    if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
+    hidePeerTyping();
     pendingDelivery.clear();
     clearNode(opts.chatMessages);
     // Restore empty-state hint
@@ -1457,12 +1566,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     skippedIceCandidates = 0;
     currentLiveState = "idle";
     clearVote.reset();
+    campfireVote.reset();
+    opts.funnelCampfireBtn.textContent = "start a campfire";
+    delete opts.funnelCampfireBtn.dataset.voteState;
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
     resetFpChip();
     showPhase(opts.liveSection);
     if (opts.relayAssistToggle) applyModeSwitch(currentIdleMode);
-    updateStatus("ready to connect");
+    updateStatus("");
     setLogActive(false);
     setBusy(false);
     updateControls();
@@ -1863,7 +1975,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   opts.funnelCampfireBtn.addEventListener("click", () => {
-    window.dispatchEvent(new CustomEvent("whisper-live-funnel", { detail: { mode: "campfire" } }));
+    if (!session) {
+      window.dispatchEvent(new CustomEvent("whisper-live-funnel", { detail: { mode: "campfire" } }));
+      return;
+    }
+    if (campfireVote.state === "pending-out") {
+      campfireVote.cancelLocal();
+      session.sendCtrl(CTRL_OP.CAMPFIRE_CANCEL);
+      return;
+    }
+    if (campfireVote.localVoted) return;
+    session.sendCtrl(CTRL_OP.CAMPFIRE_VOTE);
+    campfireVote.castLocal();
   }, { signal });
 
   if (opts.relayConnectBtn) {
@@ -1875,7 +1998,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       e.preventDefault();
       e.stopPropagation();
       showPhase(opts.chatSection);
-      updateStatus("chat preview · for testing");
+      liveSurface?.classList.add("wl-preview");
+      updateStatus("");
       setLogActive(false);
       setBusy(false);
       updateControls();
@@ -1915,7 +2039,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     flareExtinguishBtn.addEventListener("click", () => {
       extinguishFlare();
       if (session) { session.disconnect(); session = null; }
-      updateStatus("ready to connect");
+      updateStatus("");
       setLogActive(false);
       setBusy(false);
       updateControls();
@@ -2068,6 +2192,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!text) return;
     opts.chatInput.value = "";
     opts.chatInput.focus();
+    emitCleared();
     updateControls();
     if (!session) {
       // Preview mode — simulate the full send lifecycle visually
@@ -2100,7 +2225,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const peerText = opts.chatInput.value.trim();
       opts.chatInput.value = "";
       updateControls();
-      showPeerTyping();
+      handlePeerCompose(COMPOSE_ACTIVE);
       if (peerText) {
         setTimeout(() => {
           hidePeerTyping();
@@ -2120,7 +2245,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   };
   enterSubmit(opts.joinInput, opts.joinBtn);
   enterSubmit(opts.answerInput, opts.answerApplyBtn);
-  opts.chatInput.addEventListener("input", () => { updateControls(); emitTyping(); }, { signal });
+  opts.chatInput.addEventListener("input", () => {
+    updateControls();
+    if (opts.chatInput.value.trim()) emitTyping();
+    else emitCleared();
+  }, { signal });
 
   // Toggle 12h/24h on timestamp tap
   opts.chatMessages.addEventListener("click", (e) => {
@@ -2368,6 +2497,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       session.disconnect();
       session = null;
     }
+    composing = false;
+    stopIdleKeepAlive();
     if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
     if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
     if (composeIntentTimer) { clearTimeout(composeIntentTimer); composeIntentTimer = null; }

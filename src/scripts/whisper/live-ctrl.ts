@@ -16,6 +16,8 @@
 export const CTRL_OP = {
   CLEAR_VOTE:   0x01,
   CLEAR_CANCEL: 0x02,
+  CAMPFIRE_VOTE:   0x03,
+  CAMPFIRE_CANCEL: 0x04,
 } as const;
 
 /* ── Wire format ─────────────────────────────────────────── */

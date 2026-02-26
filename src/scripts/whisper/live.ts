@@ -102,8 +102,8 @@ export interface WhisperLiveCallbacks {
   onLog: (line: string) => void;
   /** When set and flags & 0x02 (campfire bit), decrypted plaintext is forwarded here instead of onMessage. */
   onRawDecrypted?: (plaintext: Uint8Array) => void;
-  /** Peer is actively typing. Fires at most once per ~3s. UI should auto-clear after ~4s of silence. */
-  onPeerTyping?: () => void;
+  /** Peer compose state. 0x00 = actively typing, 0x01 = idle with unsent text, 0x02 = cleared. */
+  onPeerTyping?: (state: number) => void;
   /** A message we sent was successfully decrypted by the peer. Counter identifies which message. */
   onAck?: (counter: number) => void;
   /** Progress during chunked send (file transfers). */
@@ -939,7 +939,7 @@ export class WhisperLiveSession {
         this.lastPongReceived = Date.now();
         break;
       case LIVE_MSG.TYPING:
-        if (this.onPeerTyping) this.onPeerTyping();
+        if (this.onPeerTyping) this.onPeerTyping(bytes.length >= 2 ? bytes[1] : 0x00);
         break;
       case LIVE_MSG.ACK: {
         if (bytes.length >= 5 && this.onAck) {
@@ -1060,10 +1060,10 @@ export class WhisperLiveSession {
 
   /* ── Sending ────────────────────────────────────────────── */
 
-  /** Signal that we're actively typing. Callers should debounce (~3s). */
-  sendTyping(): void {
+  /** Signal compose state. 0x00 = actively typing, 0x01 = idle with unsent text. */
+  sendTyping(state: number = 0x00): void {
     if (!this.isLiveState()) return;
-    this.send(LIVE_MSG.TYPING);
+    this.send(LIVE_MSG.TYPING, new Uint8Array([state]));
   }
 
   /** Send a control frame to the peer. */

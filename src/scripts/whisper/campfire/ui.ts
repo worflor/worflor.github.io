@@ -6,6 +6,7 @@
  */
 
 import { CampfireNode } from "./gossip";
+import { hostCampfireViaFlare, joinCampfireViaFlare } from "./flare";
 import { type CampfireState, type CampfireMessage, ContentType } from "./types";
 import { TD } from "../live-crypto";
 import { toHex } from "../wasm";
@@ -37,6 +38,12 @@ export interface CampfireUIOptions {
   nameInput: HTMLInputElement;
   joinInput: HTMLInputElement;
   joinBtn: HTMLButtonElement;
+  flarePhraseInput: HTMLInputElement;
+  flareJoinBtn: HTMLButtonElement;
+  hostFlarePhraseInput: HTMLInputElement;
+  hostFlareToggleBtn: HTMLButtonElement;
+  hostFlareToggleActiveBtn: HTMLButtonElement;
+  hostFlareState: HTMLElement;
   externalAssistToggle: HTMLInputElement;
 
   /* Waiting phase — show room code, wait for answer */
@@ -80,6 +87,11 @@ export interface CampfireUIOptions {
   newCampfireBtn: HTMLButtonElement;
 }
 
+interface CampfireBootstrapDetail {
+  source?: string;
+  phrase?: string;
+}
+
 export const CAMPFIRE_IDS = {
   statusLine: "wl-status-line", // shared with Live
   idleSection: "cf-idle-phase",
@@ -87,6 +99,12 @@ export const CAMPFIRE_IDS = {
   nameInput: "cf-name",
   joinInput: "cf-join-input",
   joinBtn: "cf-join",
+  flarePhraseInput: "cf-flare-phrase",
+  flareJoinBtn: "cf-flare-join",
+  hostFlarePhraseInput: "cf-host-flare-phrase",
+  hostFlareToggleBtn: "cf-host-flare-toggle",
+  hostFlareToggleActiveBtn: "cf-host-flare-toggle-active",
+  hostFlareState: "cf-host-flare-state",
   externalAssistToggle: "cf-external-assist",
   waitingSection: "cf-waiting-section",
   roomCode: "cf-room-code",
@@ -144,6 +162,12 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
   const nameInput = asInput(q(root, IDS.nameInput));
   const joinInput = asInput(q(root, IDS.joinInput));
   const joinBtn = asButton(q(root, IDS.joinBtn));
+  const flarePhraseInput = asInput(q(root, IDS.flarePhraseInput));
+  const flareJoinBtn = asButton(q(root, IDS.flareJoinBtn));
+  const hostFlarePhraseInput = asInput(q(root, IDS.hostFlarePhraseInput));
+  const hostFlareToggleBtn = asButton(q(root, IDS.hostFlareToggleBtn));
+  const hostFlareToggleActiveBtn = asButton(q(root, IDS.hostFlareToggleActiveBtn));
+  const hostFlareState = q(root, IDS.hostFlareState);
   const externalAssistToggle = asInput(q(root, IDS.externalAssistToggle));
 
   const waitingSection = q(root, IDS.waitingSection);
@@ -182,7 +206,10 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
 
   if (
     !page || !logOutput || !logDot || !statusLine ||
-    !idleSection || !createBtn || !nameInput || !joinInput || !joinBtn || !externalAssistToggle ||
+    !idleSection || !createBtn || !nameInput || !joinInput || !joinBtn ||
+    !flarePhraseInput || !flareJoinBtn ||
+    !hostFlarePhraseInput || !hostFlareToggleBtn || !hostFlareToggleActiveBtn || !hostFlareState ||
+    !externalAssistToggle ||
     !waitingSection || !roomCode || !roomCodeCopyBtn || !answerInput || !answerApplyBtn ||
     !roomCodeShareBtn ||
     !connectingSection || !connectingStatus || !joinerAnswerPanel || !joinerCode || !joinerCopyBtn ||
@@ -197,7 +224,10 @@ export function resolveCampfireUIOptions(root: ParentNode = document): CampfireU
 
   return {
     page, logOutput, logDot, statusLine,
-    idleSection, createBtn, nameInput, joinInput, joinBtn, externalAssistToggle,
+    idleSection, createBtn, nameInput, joinInput, joinBtn,
+    flarePhraseInput, flareJoinBtn,
+    hostFlarePhraseInput, hostFlareToggleBtn, hostFlareToggleActiveBtn, hostFlareState,
+    externalAssistToggle,
     waitingSection, roomCode, roomCodeCopyBtn, roomCodeShareBtn, answerInput, answerApplyBtn,
     connectingSection, connectingStatus, joinerAnswerPanel, joinerCode, joinerCopyBtn, joinerShareBtn,
     activeSection, chatMessages, chatInput, chatSendBtn, peerList, disconnectBtn,
@@ -216,7 +246,35 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   const { signal } = ac;
   let node: CampfireNode | null = null;
   let dmTargetHex: string | null = null;
+  let flareAbort: AbortController | null = null;
+  let flareMode: "host" | "join" | null = null;
   let busy = false;
+  let knownPeerNames = new Map<string, string>();
+
+  const onBootstrap = (event: Event) => {
+    const custom = event as CustomEvent<CampfireBootstrapDetail>;
+    if (opts.page.dataset.mode !== "live") return;
+
+    const liveVisible = opts.idleSection.style.display !== "none"
+      || opts.waitingSection.style.display !== "none"
+      || opts.connectingSection.style.display !== "none"
+      || opts.activeSection.style.display !== "none";
+    if (!liveVisible) return;
+
+    if (custom.detail?.phrase) {
+      opts.hostFlarePhraseInput.value = custom.detail.phrase;
+      opts.flarePhraseInput.value = custom.detail.phrase;
+    }
+
+    if (!node || node.getRole() !== "root") return;
+    if (node.state !== "waiting" && node.state !== "active") return;
+    if (flareAbort === null) {
+      const phrase = opts.hostFlarePhraseInput.value.trim();
+      if (phrase) startHostFlareGate(phrase);
+    }
+  };
+
+  window.addEventListener("whisper-campfire-bootstrap", onBootstrap as EventListener, { signal });
 
   /* ── Phase management ─────────────────────────────────── */
 
@@ -272,14 +330,91 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     const hasAnswerCode = opts.answerInput.value.trim().length > 0;
     const hasChatText = opts.chatInput.value.trim().length > 0;
     const hasNode = node !== null;
+    const hasFlarePhrase = opts.flarePhraseInput.value.trim().length > 0;
+    const hasHostFlarePhrase = opts.hostFlarePhraseInput.value.trim().length > 0;
+    const flareActive = flareAbort !== null;
+    const hostGateOpen = flareActive && flareMode === "host";
+    const hostCanGate = hasNode && node?.getRole() === "root";
 
-    opts.createBtn.disabled = busy || !hasName;
-    opts.joinBtn.disabled = busy || !hasJoinCode || !hasName;
+    opts.createBtn.disabled = busy || flareActive || !hasName;
+    opts.joinBtn.disabled = busy || flareActive || !hasJoinCode || !hasName;
+    opts.flareJoinBtn.disabled = busy || flareActive || !hasName || !hasFlarePhrase;
+    opts.hostFlarePhraseInput.disabled = busy || !hostCanGate || hostGateOpen;
+    opts.hostFlareToggleBtn.disabled = busy || !hostCanGate || (!hostGateOpen && !hasHostFlarePhrase);
+    opts.hostFlareToggleActiveBtn.disabled = busy || !hostCanGate;
+    opts.hostFlareToggleBtn.textContent = hostGateOpen ? "Close gate" : "Open gate";
+    opts.hostFlareToggleActiveBtn.textContent = hostGateOpen ? "Close gate" : "Open gate";
+    opts.hostFlareToggleActiveBtn.style.display = hostCanGate ? "" : "none";
+    opts.hostFlareState.textContent = hostGateOpen ? "gate open" : "gate closed";
     opts.answerApplyBtn.disabled = busy || !hasNode || !hasAnswerCode;
     opts.roomCodeShareBtn.disabled = (opts.roomCode.textContent ?? "").trim().length === 0;
     opts.joinerShareBtn.disabled = (opts.joinerCode.textContent ?? "").trim().length === 0;
     opts.chatSendBtn.disabled = busy || !hasNode || !hasChatText;
     opts.disconnectBtn.disabled = busy || !hasNode;
+    opts.dmSendBtn.disabled = busy || !hasNode || !dmTargetHex || opts.dmInput.value.trim().length === 0;
+    opts.externalAssistToggle.disabled = flareActive;
+  }
+
+  function clearFlareState(): void {
+    if (flareAbort) {
+      flareAbort.abort();
+      flareAbort = null;
+    }
+    flareMode = null;
+    updateControls();
+  }
+
+  function startHostFlareGate(phrase: string): void {
+    if (!node) return;
+    clearFlareState();
+    flareAbort = new AbortController();
+    flareMode = "host";
+    appendLog("campfire gate opened via flare");
+    updateStatus("campfire gate open");
+    updateControls();
+
+    void hostCampfireViaFlare({
+      phrase,
+      getCurrentOfferCode: () => node?.getCurrentOfferCode() ?? null,
+      applyAnswerCode: async (answerCode: string) => {
+        if (!node) throw new Error("node-unavailable");
+        await node.applyAnswer(answerCode);
+      },
+      onStatus: updateStatus,
+      onLog: appendLog,
+      signal: flareAbort.signal,
+    }).catch((err) => {
+      const raw = err instanceof Error ? err.message : "unknown";
+      if (raw !== "Aborted") {
+        appendLog(`campfire gate failed: ${raw}`);
+        handleStateChange("ended", flareFriendlyError(raw));
+      }
+    }).finally(() => {
+      if (flareMode === "host") {
+        flareAbort = null;
+        flareMode = null;
+        if (node && node.state === "waiting") {
+          updateStatus("room open, waiting for peers");
+        }
+        updateControls();
+      }
+    });
+  }
+
+  function flareFriendlyError(raw: string): string {
+    if (raw.includes("peer-not-found")) {
+      return "couldn't find that campfire flare. check phrase and try again";
+    }
+    if (raw.includes("relay-unavailable")) {
+      return "relay unavailable right now. try again in a moment";
+    }
+    if (raw.includes("no-offer-code")) {
+      return "host flare is warming up. wait a second and try again";
+    }
+    if (raw.includes("handshake-failed")) {
+      return "flare handshake failed. retry with the same phrase";
+    }
+    return raw;
   }
 
   /* ── Chat rendering ───────────────────────────────────── */
@@ -312,6 +447,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   /* ── Peer list rendering ──────────────────────────────── */
 
   function renderPeerList(peers: ReadonlyArray<{ peerId: Uint8Array; name: string }>): void {
+    knownPeerNames = new Map(peers.map((p) => [toHex(p.peerId), p.name]));
     clearNode(opts.peerList);
     for (const p of peers) {
       const hex = toHex(p.peerId);
@@ -342,6 +478,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     clearNode(opts.dmMessages);
     opts.dmOverlay.style.display = "";
     opts.dmInput.focus();
+    updateControls();
 
     // Initiate DM session if not already connected
     node?.startDm(peerHex);
@@ -350,6 +487,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   function closeDmPanel(): void {
     dmTargetHex = null;
     opts.dmOverlay.style.display = "none";
+    opts.dmInput.value = "";
+    updateControls();
   }
 
   /* ── Callbacks ────────────────────────────────────────── */
@@ -376,6 +515,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
         updateStatus("room open, waiting for peers");
         setLogActive(false);
         setBusy(false);
+        opts.hostFlareToggleActiveBtn.style.display = "";
         updateControls();
         break;
 
@@ -393,19 +533,44 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
         setLogActive(false);
         opts.chatInput.disabled = false;
         setBusy(false);
+        opts.hostFlareToggleActiveBtn.style.display = node?.getRole() === "root" ? "" : "none";
         opts.chatInput.focus();
         addChatMessage("", "you're in. everything here is end-to-end encrypted", Date.now(), "system");
         break;
 
       case "ended":
+        clearFlareState();
         showPhase(opts.endedSection);
         opts.endedMessage.textContent = detail ?? "the campfire is out. nothing remains.";
         updateStatus("session closed");
         setLogActive(false);
         setBusy(false);
+        opts.hostFlareToggleActiveBtn.style.display = "none";
         closeDmPanel();
         break;
     }
+  }
+
+  function createNodeInstance(): CampfireNode {
+    if (node) {
+      node.destroy();
+      node = null;
+    }
+
+    return new CampfireNode({
+      onStateChange: handleStateChange,
+      onMessage: handleMessage,
+      onPeerJoin: handlePeerJoin,
+      onPeerLeave: handlePeerLeave,
+      onPeerListUpdate: renderPeerList,
+      onLog: appendLog,
+      onRoomCodeUpdate: (code: string) => {
+        opts.roomCode.textContent = code;
+        updateControls();
+      },
+      onDmMessage: handleDmMessage,
+      onSubCampfireInvite: () => {},
+    });
   }
 
   function handleMessage(msg: CampfireMessage): void {
@@ -414,7 +579,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
     if (msg.contentType === ContentType.Text) {
       const text = TD.decode(msg.plaintext);
-      addChatMessage(msg.senderName, text, msg.timestamp, "peer");
+      const display = knownPeerNames.get(msg.senderIdHex) ?? `${msg.senderIdHex.slice(0, 8)}...`;
+      addChatMessage(display, text, msg.timestamp, "peer");
     } else if (msg.contentType === ContentType.System) {
       const text = TD.decode(msg.plaintext);
       addChatMessage("", text, msg.timestamp, "system");
@@ -432,6 +598,10 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   function handleDmMessage(fromPeerId: Uint8Array, msg: { type: "text"; text: string; timestamp: number }): void {
     const hex = toHex(fromPeerId);
+    const fromName = knownPeerNames.get(hex) ?? `${hex.slice(0, 8)}...`;
+    if (dmTargetHex !== hex || opts.dmOverlay.style.display === "none") {
+      openDmPanel(hex, fromName);
+    }
     if (dmTargetHex === hex && opts.dmOverlay.style.display !== "none") {
       // Show in DM panel
       const div = document.createElement("div");
@@ -452,6 +622,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   /* ── Reset to idle ──────────────────────────────────────── */
 
   function resetToIdle(): void {
+    clearFlareState();
     if (node) {
       node.destroy();
       node = null;
@@ -460,6 +631,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     clearNode(opts.peerList);
     opts.roomCode.textContent = "";
     opts.joinInput.value = "";
+    opts.flarePhraseInput.value = "";
+    opts.hostFlarePhraseInput.value = "";
     opts.answerInput.value = "";
     opts.chatInput.value = "";
     opts.endedMessage.textContent = "";
@@ -470,6 +643,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     updateStatus("ready");
     setLogActive(false);
     setBusy(false);
+    opts.hostFlareToggleActiveBtn.style.display = "none";
     updateControls();
   }
 
@@ -479,16 +653,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   opts.createBtn.addEventListener("click", async () => {
     const name = opts.nameInput.value.trim() || "someone";
     const useStun = opts.externalAssistToggle.checked;
-    node = new CampfireNode({
-      onStateChange: handleStateChange,
-      onMessage: handleMessage,
-      onPeerJoin: handlePeerJoin,
-      onPeerLeave: handlePeerLeave,
-      onPeerListUpdate: renderPeerList,
-      onLog: appendLog,
-      onDmMessage: handleDmMessage,
-      onSubCampfireInvite: () => {},
-    });
+    node = createNodeInstance();
     try {
       const code = await node.createCampfire(name, useStun);
       opts.roomCode.textContent = code;
@@ -574,16 +739,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     const name = opts.nameInput.value.trim() || "someone";
     if (!offerCode) return;
     const useStun = opts.externalAssistToggle.checked;
-    node = new CampfireNode({
-      onStateChange: handleStateChange,
-      onMessage: handleMessage,
-      onPeerJoin: handlePeerJoin,
-      onPeerLeave: handlePeerLeave,
-      onPeerListUpdate: renderPeerList,
-      onLog: appendLog,
-      onDmMessage: handleDmMessage,
-      onSubCampfireInvite: () => {},
-    });
+    node = createNodeInstance();
     try {
       const answerCode = await node.joinCampfire(offerCode, name, useStun);
       // Show answer code so joiner can copy it back to root
@@ -596,6 +752,75 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       handleStateChange("ended", "could not join the room");
     }
   }, { signal });
+
+  // Join campfire via flare backend
+  opts.flareJoinBtn.addEventListener("click", async () => {
+    const phrase = opts.flarePhraseInput.value.trim();
+    const name = opts.nameInput.value.trim() || "someone";
+    if (!phrase) {
+      opts.flarePhraseInput.focus();
+      return;
+    }
+    if (flareAbort) return;
+
+    const useStun = opts.externalAssistToggle.checked;
+    node = createNodeInstance();
+
+    flareAbort = new AbortController();
+    flareMode = "join";
+    try {
+      updateStatus("searching for campfire flare...");
+      setBusy(true);
+      updateControls();
+
+      await joinCampfireViaFlare({
+        phrase,
+        acceptOfferCode: async (offerCode: string) => {
+          if (!node) throw new Error("node-unavailable");
+          return node.joinCampfire(offerCode, name, useStun);
+        },
+        onStatus: updateStatus,
+        onLog: appendLog,
+        signal: flareAbort.signal,
+      });
+
+      setBusy(false);
+      appendLog("joined campfire via flare");
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : "unknown";
+      if (raw !== "Aborted") {
+        appendLog(`campfire flare join failed: ${raw}`);
+        handleStateChange("ended", flareFriendlyError(raw));
+      }
+    } finally {
+      if (flareMode === "join") {
+        flareAbort = null;
+        flareMode = null;
+        updateControls();
+      }
+    }
+  }, { signal });
+
+  const toggleHostGate = () => {
+    if (!node || node.getRole() !== "root") return;
+    const hostGateOpen = flareAbort !== null && flareMode === "host";
+    if (hostGateOpen) {
+      appendLog("campfire gate closed");
+      clearFlareState();
+      updateStatus(node.state === "waiting" ? "room open, waiting for peers" : "in the room, encrypted");
+      return;
+    }
+
+    const phrase = opts.hostFlarePhraseInput.value.trim();
+    if (!phrase) {
+      opts.hostFlarePhraseInput.focus();
+      return;
+    }
+    startHostFlareGate(phrase);
+  };
+
+  opts.hostFlareToggleBtn.addEventListener("click", toggleHostGate, { signal });
+  opts.hostFlareToggleActiveBtn.addEventListener("click", toggleHostGate, { signal });
 
   // Send chat message
   const sendMessage = async () => {
@@ -622,6 +847,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   // Input change tracking
   opts.nameInput.addEventListener("input", updateControls, { signal });
   opts.joinInput.addEventListener("input", updateControls, { signal });
+  opts.hostFlarePhraseInput.addEventListener("input", updateControls, { signal });
+  opts.flarePhraseInput.addEventListener("input", updateControls, { signal });
   opts.answerInput.addEventListener("input", updateControls, { signal });
   opts.chatInput.addEventListener("input", updateControls, { signal });
 
@@ -661,6 +888,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       opts.dmSendBtn.click();
     }
   }, { signal });
+
+  opts.dmInput.addEventListener("input", updateControls, { signal });
 
   // DM close
   opts.dmCloseBtn.addEventListener("click", closeDmPanel, { signal });

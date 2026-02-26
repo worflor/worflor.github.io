@@ -21,6 +21,7 @@ import {
   CF_DM_SDP_RELAY,
   CF_SUB_INVITE,
   CF_SUB_SDP,
+  CF_RING_WANT,
   PEER_ID_LEN,
   GROUP_KEY_LEN,
   MSG_ID_LEN,
@@ -70,23 +71,23 @@ export function buildRootHeartbeat(epoch: number, peerCount: number, rootPeerId:
 }
 
 /**
- * 0x51 GROUP_MSG: [msgId 32B][senderId 16B][senderNameLen 1B][name][timestamp 8B]
+ * 0x51 GROUP_MSG: [msgId 32B][senderId 16B][timestamp 8B]
  *                 [hopCount 1B][epoch 4B][nonce 12B][contentType 1B][ciphertext...]
  *
+ * Sender names are NOT transported in GROUP_MSG. Names are local metadata from
+ * JOIN_ANNOUNCE / PEER_LIST to keep the hot message path lightweight.
  * Content is encrypted with the group key (AES-256-GCM).
  */
 export async function buildGroupMsg(
-  msgId: Uint8Array, senderId: Uint8Array, senderName: string,
+  msgId: Uint8Array, senderId: Uint8Array,
   timestamp: number, hopCount: number, epoch: number,
   contentType: number, plaintext: Uint8Array, groupKey: Uint8Array,
 ): Promise<Uint8Array> {
-  const nameBytes = TE.encode(senderName);
   const nonce = randomBytes(12);
   const ciphertext = await aesGcmEncrypt(groupKey, plaintext, nonce);
   return concatBytes(
     new Uint8Array([CF_GROUP_MSG]),
     msgId, senderId,
-    new Uint8Array([nameBytes.length]), nameBytes,
     f64LE(timestamp),
     new Uint8Array([hopCount]),
     u32LE(epoch),
@@ -99,10 +100,9 @@ export async function buildGroupMsg(
 /** Re-wrap a GROUP_MSG for forwarding — increment hop count but keep the encrypted payload intact. */
 export function rewrapGroupMsg(raw: Uint8Array, newHopCount: number): Uint8Array {
   // raw starts at sub-type byte 0x51
-  // [0] subtype | [1..32] msgId | [33..48] senderId | [49] nameLen | [50..50+nameLen-1] name
-  // [50+nameLen..57+nameLen] timestamp | [58+nameLen] hopCount | ...
-  const nameLen = raw[49];
-  const hopOffset = 50 + nameLen + 8; // after timestamp
+  // [0] subtype | [1..32] msgId | [33..48] senderId
+  // [49..56] timestamp | [57] hopCount | ...
+  const hopOffset = 57;
   const out = new Uint8Array(raw);
   out[hopOffset] = newHopCount;
   return out;
@@ -150,11 +150,17 @@ export function buildPeerList(peers: Array<{ peerId: Uint8Array; name: string }>
   return concatBytes(...parts);
 }
 
-/** 0x58 DM_SDP_RELAY: [targetPeerId 16B][sdpType 1B][sdpCode...] */
-export function buildDmSdpRelay(targetPeerId: Uint8Array, sdpType: number, sdpCode: string): Uint8Array {
+/** 0x58 DM_SDP_RELAY: [targetPeerId 16B][originPeerId 16B][sdpType 1B][sdpCode...] */
+export function buildDmSdpRelay(
+  targetPeerId: Uint8Array,
+  originPeerId: Uint8Array,
+  sdpType: number,
+  sdpCode: string,
+): Uint8Array {
   return concatBytes(
     new Uint8Array([CF_DM_SDP_RELAY]),
     targetPeerId,
+    originPeerId,
     new Uint8Array([sdpType]),
     TE.encode(sdpCode),
   );
@@ -177,6 +183,17 @@ export function buildSubSdp(subId: Uint8Array, targetPeerId: Uint8Array, sdpType
   );
 }
 
+/** 0x5B RING_WANT: [originPeerId 16B][targetPeerId 16B][fromSeq 4B][toSeq 4B] */
+export function buildRingWant(originPeerId: Uint8Array, targetPeerId: Uint8Array, fromSeq: number, toSeq: number): Uint8Array {
+  return concatBytes(
+    new Uint8Array([CF_RING_WANT]),
+    originPeerId,
+    targetPeerId,
+    u32LE(fromSeq),
+    u32LE(toSeq),
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    Parsers
    ═══════════════════════════════════════════════════════════════════ */
@@ -192,7 +209,7 @@ export function parseRootHeartbeat(data: Uint8Array): ParsedRootHeartbeat {
 }
 
 export interface ParsedGroupMsg {
-  msgId: Uint8Array; senderId: Uint8Array; senderName: string;
+  msgId: Uint8Array; senderId: Uint8Array;
   timestamp: number; hopCount: number; epoch: number;
   nonce: Uint8Array; contentType: number; ciphertext: Uint8Array;
 }
@@ -200,15 +217,13 @@ export function parseGroupMsgHeader(data: Uint8Array): ParsedGroupMsg {
   let o = 0;
   const msgId = data.subarray(o, o + MSG_ID_LEN); o += MSG_ID_LEN;
   const senderId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
-  const nameLen = data[o]; o += 1;
-  const senderName = TD.decode(data.subarray(o, o + nameLen)); o += nameLen;
   const timestamp = readF64LE(data, o); o += 8;
   const hopCount = data[o]; o += 1;
   const epoch = readU32LE(data, o); o += 4;
   const nonce = data.subarray(o, o + 12); o += 12;
   const contentType = data[o]; o += 1;
   const ciphertext = data.subarray(o);
-  return { msgId, senderId, senderName, timestamp, hopCount, epoch, nonce, contentType, ciphertext };
+  return { msgId, senderId, timestamp, hopCount, epoch, nonce, contentType, ciphertext };
 }
 
 /** Decrypt a GROUP_MSG ciphertext with a group key. */
@@ -274,8 +289,20 @@ export function parsePeerList(data: Uint8Array): ParsedPeerList {
   return { peers };
 }
 
-export function parseDmSdpRelay(data: Uint8Array): ParsedSdpRelay {
-  return parseSdpRelay(data); // same format
+export interface ParsedDmSdpRelay {
+  targetPeerId: Uint8Array;
+  originPeerId: Uint8Array;
+  sdpType: number;
+  sdpCode: string;
+}
+
+export function parseDmSdpRelay(data: Uint8Array): ParsedDmSdpRelay {
+  return {
+    targetPeerId: data.subarray(0, PEER_ID_LEN),
+    originPeerId: data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2),
+    sdpType: data[PEER_ID_LEN * 2],
+    sdpCode: TD.decode(data.subarray(PEER_ID_LEN * 2 + 1)),
+  };
 }
 
 export interface ParsedSubInvite { subId: Uint8Array; inviterPeerId: Uint8Array; invitees: Uint8Array[] }
@@ -298,5 +325,21 @@ export function parseSubSdp(data: Uint8Array): ParsedSubSdp {
     targetPeerId: data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2),
     sdpType: data[PEER_ID_LEN * 2],
     sdpCode: TD.decode(data.subarray(PEER_ID_LEN * 2 + 1)),
+  };
+}
+
+export interface ParsedRingWant {
+  originPeerId: Uint8Array;
+  targetPeerId: Uint8Array;
+  fromSeq: number;
+  toSeq: number;
+}
+
+export function parseRingWant(data: Uint8Array): ParsedRingWant {
+  return {
+    originPeerId: data.subarray(0, PEER_ID_LEN),
+    targetPeerId: data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2),
+    fromSeq: readU32LE(data, PEER_ID_LEN * 2),
+    toSeq: readU32LE(data, PEER_ID_LEN * 2 + 4),
   };
 }

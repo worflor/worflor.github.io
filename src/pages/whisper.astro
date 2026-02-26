@@ -340,7 +340,16 @@ const seo = {
       <!-- Live mode content (all phases live inside the same section) -->
       <div class="whisper-op-live" id="wl-section">
         <div class="wl-head whisper-panel" aria-label="Whisper Live status">
-          <h2 class="wl-head-title">Whisper Live <span class="wl-e2e-badge" aria-label="end-to-end encrypted, peer-to-peer">p2p · e2e</span></h2>
+          <div class="wl-head-title-row">
+            <h2 class="wl-head-title">Whisper Live <span class="wl-e2e-badge" aria-label="end-to-end encrypted, peer-to-peer"><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e</span></h2>
+            <div class="wl-fp-wrap">
+              <button id="wl-fp-chip" class="wl-fp-chip" type="button" aria-label="Name this peer">
+                <span id="wl-fp-chip-emoji" class="wl-fp-chip-emoji" aria-hidden="true"></span>
+                <span id="wl-fp-chip-name" class="wl-fp-chip-name" aria-hidden="true"></span>
+              </button>
+              <input id="wl-fp-nickname" class="wl-fp-nickname-input" type="text" placeholder="..." maxlength="32" autocomplete="off" spellcheck="false" />
+            </div>
+          </div>
           <p class="wl-head-subtitle">encrypted peer-to-peer chat, no accounts, no servers</p>
           <div class="wl-head-right">
             <div class="cf-live-mode-toggle" role="group" aria-label="Live controls">
@@ -349,18 +358,8 @@ const seo = {
             </div>
           </div>
 
-          <div class="wl-status-row">
-            <div class="wl-status-chip" role="status" aria-live="polite">
-              <span class="wl-status-dot" aria-hidden="true"></span>
-              <span id="wl-status-line" class="wl-status-text">ready to connect</span>
-            </div>
-            <div class="wl-fp-wrap">
-              <button id="wl-fp-chip" class="wl-fp-chip" type="button" aria-label="Name this peer">
-                <span id="wl-fp-chip-emoji" class="wl-fp-chip-emoji" aria-hidden="true"></span>
-                <span id="wl-fp-chip-name" class="wl-fp-chip-name" aria-hidden="true"></span>
-              </button>
-              <input id="wl-fp-nickname" class="wl-fp-nickname-input" type="text" placeholder="..." maxlength="32" autocomplete="off" spellcheck="false" />
-            </div>
+          <div class="wl-status-row" role="status" aria-live="polite">
+            <span id="wl-status-line" class="wl-status-text"></span>
           </div>
         </div>
 
@@ -643,7 +642,7 @@ const seo = {
         <!-- Phase: disconnected -->
         <div class="wl-phase" id="wl-disconnected-section" style="display:none">
           <div class="whisper-panel wl-end-panel">
-            <p class="wl-end-text">session ended. no trace remains.</p>
+            <p class="wl-end-text">no trace remains.</p>
             <button id="wl-new-session" type="button" class="whisper-mini-btn">Start over</button>
           </div>
         </div>
@@ -701,6 +700,25 @@ const seo = {
                 </span>
               </label>
             </div>
+
+            <div class="whisper-field">
+              <span class="whisper-field-label">campfire flare join <span class="whisper-field-hint">(find an open host gate by phrase)</span></span>
+              <div class="wl-join-row">
+                <input
+                  id="cf-flare-phrase"
+                  type="text"
+                  class="whisper-input wl-code-input"
+                  placeholder="host gate phrase"
+                  autocomplete="new-password"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
+                />
+                <button id="cf-flare-join" type="button" class="whisper-mini-btn">Join flare</button>
+              </div>
+            </div>
           </div>
 
         </div>
@@ -739,6 +757,26 @@ const seo = {
                 />
                 <button id="cf-answer-apply" type="button" class="whisper-mini-btn wl-primary">Connect</button>
               </div>
+
+              <div class="whisper-field" style="margin-top:.8rem">
+                <span class="whisper-field-label">flare gate <span class="whisper-field-hint">(host-controlled door)</span></span>
+                <div class="wl-join-row">
+                  <input
+                    id="cf-host-flare-phrase"
+                    type="text"
+                    class="whisper-input wl-code-input"
+                    placeholder="phrase for this gate"
+                    autocomplete="new-password"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-form-type="other"
+                  />
+                  <button id="cf-host-flare-toggle" type="button" class="whisper-mini-btn">Open gate</button>
+                </div>
+                <p id="cf-host-flare-state" class="whisper-field-hint">gate closed</p>
+              </div>
             </div>
           </div>
         </div>
@@ -772,6 +810,7 @@ const seo = {
                 <div id="cf-peer-list" class="cf-peer-list" role="list"></div>
               </div>
               <div class="cf-header-actions">
+                <button id="cf-host-flare-toggle-active" type="button" class="whisper-mini-btn" style="display:none">Open gate</button>
                 <button id="cf-sub-create" type="button" class="whisper-mini-btn" title="split off with selected peers">Split</button>
                 <button id="cf-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">Leave</button>
               </div>
@@ -1131,6 +1170,7 @@ const seo = {
 
         if (mode === "campfire") {
           for (const phase of livePhases) phase.style.display = "none";
+          document.getElementById("wl-section")?.classList.remove("wl-connected", "wl-recovering");
           if (!hasVisiblePhase(campfirePhases)) {
             const cfIdle = document.getElementById("cf-idle-phase");
             if (cfIdle instanceof HTMLElement) cfIdle.style.display = "";
@@ -1155,10 +1195,19 @@ const seo = {
       });
 
       window.addEventListener("whisper-live-funnel", (event: Event) => {
-        const custom = event as CustomEvent<{ mode?: "1:1" | "campfire" }>;
+        const custom = event as CustomEvent<{ mode?: "1:1" | "campfire"; bootstrap?: boolean }>;
         const mode = custom.detail?.mode === "campfire" ? "campfire" : "1:1";
         sessionStorage.setItem("whisper-live-submode", mode);
         syncLiveSubmode(mode);
+
+        if (mode === "campfire" && custom.detail?.bootstrap) {
+          window.dispatchEvent(new CustomEvent("whisper-campfire-bootstrap", {
+            detail: {
+              source: "live-vote",
+              phrase: (document.getElementById("wl-phrase") as HTMLInputElement | null)?.value?.trim() ?? "",
+            },
+          }));
+        }
       }, { signal: submodeSignal });
 
       const savedSubmode = sessionStorage.getItem("whisper-live-submode");
@@ -2282,17 +2331,26 @@ const seo = {
       box-shadow var(--duration-normal) var(--ease-out);
   }
 
+  .wl-head-title-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-width: 0;
+    grid-column: 1;
+    grid-row: 1;
+  }
+
   .wl-head-title {
     margin: 0;
     font-size: var(--text-base);
     letter-spacing: 0.015em;
     color: rgb(var(--color-text-rgb) / 0.86);
-    grid-column: 1;
-    grid-row: 1;
   }
 
   .wl-e2e-badge {
-    display: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
     font-size: calc(var(--text-sm) * 0.66);
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -2306,8 +2364,60 @@ const seo = {
     user-select: none;
   }
 
+  .wl-e2e-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: var(--radius-full);
+    background: rgb(var(--color-text-rgb) / 0.24);
+    flex: 0 0 auto;
+  }
+
   .whisper-op-live.wl-connected .wl-e2e-badge {
-    display: inline-flex;
+    color: rgb(var(--chromatic-cyan));
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+    background: rgb(var(--chromatic-cyan) / 0.06);
+  }
+
+  .whisper-op-live.wl-connected .wl-e2e-dot {
+    background: rgb(var(--chromatic-cyan));
+    box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.45);
+  }
+
+  .whisper-op-live.wl-connected .wl-status-chip,
+  .whisper-op-live.wl-recovering .wl-status-chip {
+    display: none;
+  }
+
+  .whisper-op-live.wl-preview .wl-e2e-badge {
+    color: rgb(var(--color-text-rgb) / 0.18);
+    border-color: rgb(var(--color-text-rgb) / 0.06);
+    background: rgb(var(--color-text-rgb) / 0.04);
+  }
+
+  .whisper-op-live.wl-preview .wl-e2e-dot {
+    background: rgb(var(--color-text-rgb) / 0.24);
+    box-shadow: none;
+  }
+
+  .whisper-op-live.wl-recovering .wl-e2e-badge {
+    animation: wl-badge-amber-flash 1.1s ease-in-out infinite;
+  }
+
+  .whisper-op-live.wl-recovering .wl-e2e-dot {
+    background: rgb(var(--tool-status-warning));
+  }
+
+  @keyframes wl-badge-amber-flash {
+    0%, 100% {
+      color: rgb(var(--tool-status-warning) / 0.5);
+      border-color: rgb(var(--tool-status-warning) / 0.18);
+      background: rgb(var(--tool-status-warning) / 0.04);
+    }
+    50% {
+      color: rgb(var(--tool-status-warning));
+      border-color: rgb(var(--tool-status-warning) / 0.4);
+      background: rgb(var(--tool-status-warning) / 0.1);
+    }
   }
 
   .wl-head-right {
@@ -2321,10 +2431,12 @@ const seo = {
 
   .whisper-op-live.wl-connected .wl-head {
     grid-template-columns: 1fr auto;
+    grid-template-rows: auto;
   }
 
   .whisper-op-live.wl-connected .wl-head-right {
     display: flex;
+    grid-row: 1;
   }
 
   .whisper-op-live.wl-connected .wl-head-subtitle {
@@ -2336,6 +2448,8 @@ const seo = {
     border-bottom-right-radius: 0;
     border-bottom-color: rgb(var(--color-text-rgb) / 0.08);
     box-shadow: none;
+    padding-top: calc(var(--space-sm) * 0.6);
+    padding-bottom: calc(var(--space-sm) * 0.6);
   }
 
   .wl-head-subtitle {
@@ -2356,11 +2470,7 @@ const seo = {
   }
 
   .wl-status-row {
-    grid-column: 1;
-    grid-row: 3;
-    display: flex;
-    align-items: center;
-    gap: 0.5em;
+    display: none;
   }
 
   .wl-status-chip {
@@ -3756,7 +3866,7 @@ const seo = {
       grid-template-rows: auto auto auto;
     }
 
-    .wl-head-title {
+    .wl-head-title-row {
       grid-column: 1 / -1;
     }
 
@@ -3776,6 +3886,10 @@ const seo = {
       grid-row: 3;
       justify-self: end;
       align-self: center;
+    }
+
+    .whisper-op-live.wl-connected .wl-head-right {
+      grid-row: 1;
     }
 
     .cf-live-mode-toggle {
