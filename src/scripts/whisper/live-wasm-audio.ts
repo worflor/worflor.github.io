@@ -303,17 +303,23 @@ function buildEncodeBody(): number[] {
         ...GET(framePeak), ...DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
         ...GET(i), ...GET(half_end), ...LT_u, ...IF,
-        // -- Half A --
+        // -- Half A (Harmonic Resonators) --
+        // M0: pred = val
         ...zigzag(i32_val, z), ...updateMaxZ(z, mzA0),
-        ...GET(i32_val), ...GET(p1_sim), ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzA1),
-        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHL, ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzA2),
-        ...GET(i32_val), ...GET(p1_sim), ...CI32(3), ...MUL, ...GET(p2_sim), ...CI32(3), ...MUL, ...SUB, ...GET(p3_sim), ...ADD, ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzA3),
+        // M1: pred = 2*p1 - p2 
+        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHL, ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzA1),
+        // M2: pred = p1 - p2
+        ...GET(i32_val), ...GET(p1_sim), ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzA2),
+        // M3: pred = -p1/2 - p2
+        // We write: delta = val - (-p1/2 - p2) = val + (p1>>1) + p2
+        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHR_s, ...ADD, ...GET(p2_sim), ...ADD, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzA3),
         ...ELSE,
-        // -- Half B --
+        // -- Half B (Harmonic Resonators) --
         ...zigzag(i32_val, z), ...updateMaxZ(z, mzB0),
-        ...GET(i32_val), ...GET(p1_sim), ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzB1),
-        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHL, ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzB2),
-        ...GET(i32_val), ...GET(p1_sim), ...CI32(3), ...MUL, ...GET(p2_sim), ...CI32(3), ...MUL, ...SUB, ...GET(p3_sim), ...ADD, ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzB3),
+        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHL, ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzB1),
+        ...GET(i32_val), ...GET(p1_sim), ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzB2),
+        // M3: pred = -p1/2 - p2
+        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHR_s, ...ADD, ...GET(p2_sim), ...ADD, ...SET(delta), ...zigzag(delta, z), ...updateMaxZ(z, mzB3),
         ...END,
 
         ...GET(p2_sim), ...SET(p3_sim), ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
@@ -419,11 +425,21 @@ function buildEncodeBody(): number[] {
         ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
         ...GET(framePeak), ...DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        // Predict
-        ...GET(curr_mode), ...CI32(0), ...EQ, ...IF, ...GET(i32_val), ...SET(delta), ...ELSE,
-        ...GET(curr_mode), ...CI32(1), ...EQ, ...IF, ...GET(i32_val), ...GET(prev1), ...SUB, ...SET(delta), ...ELSE,
-        ...GET(curr_mode), ...CI32(2), ...EQ, ...IF, ...GET(i32_val), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...SUB, ...SET(delta), ...ELSE,
-        ...GET(i32_val), ...GET(prev1), ...CI32(3), ...MUL, ...GET(prev2), ...CI32(3), ...MUL, ...SUB, ...GET(prev3), ...ADD, ...SUB, ...SET(delta),
+        // Predict (Harmonic Resonators)
+        // Mode 0: pred = val (0th order/flat)
+        ...GET(curr_mode), ...CI32(0), ...EQ, ...IF,
+        ...GET(i32_val), ...SET(delta),
+        ...ELSE,
+        // Mode 1: pred = 2*p1 - p2 (C = 2.0, low frequency)
+        ...GET(curr_mode), ...CI32(1), ...EQ, ...IF,
+        ...GET(i32_val), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...SUB, ...SET(delta),
+        ...ELSE,
+        // Mode 2: pred = p1 - p2 (C = 1.0, mid frequency)
+        ...GET(curr_mode), ...CI32(2), ...EQ, ...IF,
+        ...GET(i32_val), ...GET(prev1), ...GET(prev2), ...SUB, ...SUB, ...SET(delta),
+        ...ELSE,
+        // Mode 3: pred = -p1/2 - p2 (C = -0.5, very high frequency)
+        ...GET(i32_val), ...CI32(0), ...SET(compact), ...GET(compact), ...GET(prev1), ...CI32(1), ...SHR_s, ...SUB, ...GET(prev2), ...SUB, ...SUB, ...SET(delta),
         ...END, ...END, ...END,
 
         // ZigZag
@@ -723,12 +739,22 @@ function buildDecodeBody(): number[] {
         // delta = (z >>> 1) ^ (0 - (z & 1))
         ...GET(z), ...CI32(1), ...SHR_u, ...CI32(0), ...GET(z), ...CI32(1), ...AND, ...SUB, ...XOR, ...SET(delta),
 
-        // Inverse prediction based on curr_mode
-        ...GET(curr_mode), ...CI32(0), ...EQ, ...IF, ...GET(delta), ...SET(i32_val), ...ELSE,
-        ...GET(curr_mode), ...CI32(1), ...EQ, ...IF, ...GET(delta), ...GET(prev1), ...ADD, ...SET(i32_val), ...ELSE,
-        ...GET(curr_mode), ...CI32(2), ...EQ, ...IF, ...GET(delta), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...ADD, ...SET(i32_val), ...ELSE,
-        // order 3: val = delta + 3*p1 - 3*p2 + p3
-        ...GET(delta), ...GET(prev1), ...CI32(3), ...MUL, ...ADD, ...GET(prev2), ...CI32(3), ...MUL, ...SUB, ...GET(prev3), ...ADD, ...SET(i32_val),
+        // Inverse prediction based on curr_mode (Harmonic Resonators)
+        // Mode 0: val = delta (0th order)
+        ...GET(curr_mode), ...CI32(0), ...EQ, ...IF,
+        ...GET(delta), ...SET(i32_val),
+        ...ELSE,
+        // Mode 1: val = delta + 2*p1 - p2 (C = 2.0)
+        ...GET(curr_mode), ...CI32(1), ...EQ, ...IF,
+        ...GET(delta), ...GET(prev1), ...CI32(1), ...SHL, ...ADD, ...GET(prev2), ...SUB, ...SET(i32_val),
+        ...ELSE,
+        // Mode 2: val = delta + p1 - p2 (C = 1.0)
+        ...GET(curr_mode), ...CI32(2), ...EQ, ...IF,
+        ...GET(delta), ...GET(prev1), ...ADD, ...GET(prev2), ...SUB, ...SET(i32_val),
+        ...ELSE,
+        // Mode 3: val = delta + (-p1/2) - p2 (C = -0.5)
+        // We calculate: val = delta - (p1 >> 1) - p2
+        ...GET(delta), ...GET(prev1), ...CI32(1), ...SHR_s, ...SUB, ...GET(prev2), ...SUB, ...SET(i32_val),
         ...END, ...END, ...END,
 
         // Update state
