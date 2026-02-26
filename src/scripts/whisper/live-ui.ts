@@ -1416,6 +1416,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  function recorderBytesEstimate(): number {
+    let total = 0;
+    for (const b of micRecorderChunks) total += b.size;
+    return total;
+  }
+
   async function extractPcmFromRecorder(): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
     const rec = micRecorder;
     if (!rec) return null;
@@ -1480,74 +1486,79 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       startRecorderCapture(stream);
       // recordingStart set after setup finishes
 
-      // Fallback: If started without pointer event, create context here (it might be suspended and blocked, but fail gracefully)
-      if (!micAudioCtx) micAudioCtx = new AudioContext();
-      if (micAudioCtx.state !== "running") {
-        try { await micAudioCtx.resume(); } catch { }
-      }
+      // Prefer MediaRecorder pipeline when available — it is generally the most
+      // cross-browser reliable capture path. Keep WebAudio path as compatibility
+      // fallback only when MediaRecorder cannot start.
+      if (!micRecorder) {
+        // Fallback: If started without pointer event, create context here (it might be suspended and blocked, but fail gracefully)
+        if (!micAudioCtx) micAudioCtx = new AudioContext();
+        if (micAudioCtx.state !== "running") {
+          try { await micAudioCtx.resume(); } catch { }
+        }
 
-      if (micAudioCtx.state !== "running") {
-        appendLog("mic audio blocked by browser. tap mic again after allowing autoplay/audio.");
-        for (const t of stream.getTracks()) t.stop();
-        recordingStream = null;
-        return;
-      }
+        if (micAudioCtx.state !== "running") {
+          appendLog("mic audio blocked by browser. tap mic again after allowing autoplay/audio.");
+          for (const t of stream.getTracks()) t.stop();
+          recordingStream = null;
+          return;
+        }
 
-      pcmSampleRate = micAudioCtx.sampleRate;
+        pcmSampleRate = micAudioCtx.sampleRate;
 
-      // Build AudioContext + worklet
-      const blobUrl = getWorkletBlobUrl();
-      const ctx = micAudioCtx; // capture local assertion
-      try {
-        await ctx.audioWorklet.addModule(blobUrl);
-        URL.revokeObjectURL(blobUrl);
+        // Build AudioContext + worklet
+        const blobUrl = getWorkletBlobUrl();
+        const ctx = micAudioCtx; // capture local assertion
+        try {
+          await ctx.audioWorklet.addModule(blobUrl);
+          URL.revokeObjectURL(blobUrl);
 
-        const source = ctx.createMediaStreamSource(stream);
-        micSourceNode = source; // Prevent GC
-        micWorkletNode = new AudioWorkletNode(ctx, "whisper-pcm-capture");
-        micWorkletNode.port.onmessage = (ev) => {
-          const payload = ev.data;
-          if (payload instanceof Float32Array) {
-            pcmChunks.push(payload);
-            return;
-          }
-          // Back-compat with older message shape
-          const samples = payload?.samples;
-          if (samples instanceof Float32Array) pcmChunks.push(samples);
-        };
-        source.connect(micWorkletNode);
-        // Connect to destination with zero gain — keeps the audio graph alive
-        // without audible feedback
-        micSinkNode = ctx.createGain();
-        micSinkNode.gain.value = 0;
-        micWorkletNode.connect(micSinkNode);
-        micSinkNode.connect(ctx.destination);
+          const source = ctx.createMediaStreamSource(stream);
+          micSourceNode = source; // Prevent GC
+          micWorkletNode = new AudioWorkletNode(ctx, "whisper-pcm-capture");
+          micWorkletNode.port.onmessage = (ev) => {
+            const payload = ev.data;
+            if (payload instanceof Float32Array) {
+              pcmChunks.push(payload);
+              return;
+            }
+            // Back-compat with older message shape
+            const samples = payload?.samples;
+            if (samples instanceof Float32Array) pcmChunks.push(samples);
+          };
+          source.connect(micWorkletNode);
+          // Connect to destination with zero gain — keeps the audio graph alive
+          // without audible feedback
+          micSinkNode = ctx.createGain();
+          micSinkNode.gain.value = 0;
+          micWorkletNode.connect(micSinkNode);
+          micSinkNode.connect(ctx.destination);
 
-        // Browser-specific guard: some engines create the worklet graph but never
-        // deliver frames. If nothing arrives quickly, auto-fallback.
-        if (micCaptureWatchdog) { clearTimeout(micCaptureWatchdog); micCaptureWatchdog = null; }
-        micCaptureWatchdog = setTimeout(() => {
-          micCaptureWatchdog = null;
-          if (!recordingStream || pcmChunks.length > 0) return;
-          appendLog("mic worklet produced no frames. using compatibility capture mode.");
-          try { micWorkletNode?.disconnect(); } catch { }
-          micWorkletNode = null;
-          try { micSourceNode?.disconnect(); } catch { }
-          micSourceNode = null;
-          try { micSinkNode?.disconnect(); } catch { }
-          micSinkNode = null;
-          try {
-            startScriptProcessorCapture(ctx, stream);
-          } catch (err) {
-            appendLog(`mic fallback capture failed: ${errMsg(err)}`);
-          }
-        }, 700);
-      } catch (e) {
-        // AudioWorklet unavailable (very old browsers) — fall back to ScriptProcessor
-        // @ts-ignore
-        console.warn("AudioWorklet failed, using fallback:", e);
-        URL.revokeObjectURL(blobUrl);
-        startScriptProcessorCapture(ctx, stream);
+          // Browser-specific guard: some engines create the worklet graph but never
+          // deliver frames. If nothing arrives quickly, auto-fallback.
+          if (micCaptureWatchdog) { clearTimeout(micCaptureWatchdog); micCaptureWatchdog = null; }
+          micCaptureWatchdog = setTimeout(() => {
+            micCaptureWatchdog = null;
+            if (!recordingStream || pcmChunks.length > 0) return;
+            appendLog("mic worklet produced no frames. using compatibility capture mode.");
+            try { micWorkletNode?.disconnect(); } catch { }
+            micWorkletNode = null;
+            try { micSourceNode?.disconnect(); } catch { }
+            micSourceNode = null;
+            try { micSinkNode?.disconnect(); } catch { }
+            micSinkNode = null;
+            try {
+              startScriptProcessorCapture(ctx, stream);
+            } catch (err) {
+              appendLog(`mic fallback capture failed: ${errMsg(err)}`);
+            }
+          }, 700);
+        } catch (e) {
+          // AudioWorklet unavailable (very old browsers) — fall back to ScriptProcessor
+          // @ts-ignore
+          console.warn("AudioWorklet failed, using fallback:", e);
+          URL.revokeObjectURL(blobUrl);
+          startScriptProcessorCapture(ctx, stream);
+        }
       }
 
       // Drive track-ended cleanup
@@ -1572,9 +1583,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       recordingTimer = setInterval(() => {
         const dur = formatRecordDuration(Date.now() - recordingStart);
-        // Rough byte estimate: adpcm = numSamples / 2
+        // Byte estimate from whichever capture pipeline is active.
         const totalSamples = pcmChunks.reduce((s, c) => s + c.length, 0);
-        const estBytes = Math.ceil(totalSamples / 2);
+        const estBytes = totalSamples > 0
+          ? Math.ceil(totalSamples / 2)
+          : recorderBytesEstimate();
         const size = estBytes > 0 ? ` · ${formatBytes(estBytes)}` : "";
         opts.chatInput.placeholder = `recording... ${dur}${size}`;
       }, 1000);
@@ -1638,12 +1651,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const elapsed = Date.now() - recordingStart;
     const chunks = pcmChunks;
     pcmChunks = [];
-    const recovered = chunks.length === 0 ? await extractPcmFromRecorder() : null;
+    const recovered = await extractPcmFromRecorder();
     cleanupRecordingStream();
 
     // Discard sub-500ms squeaks
     if (elapsed < 500) return;
-    if (chunks.length === 0 && !recovered) {
+    if (!recovered && chunks.length === 0) {
       haptic("send-failed");
       appendLog("audio capture failed: no mic samples received");
       pulseComposeIntent("error", 1100);
@@ -1652,16 +1665,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     haptic("recording-stop");
 
     let flat: Float32Array;
-    if (chunks.length > 0) {
+    if (recovered) {
+      flat = recovered.pcm;
+      pcmSampleRate = recovered.sampleRate;
+    } else if (chunks.length > 0) {
       // Flatten accumulated 128-sample Float32 chunks into one
       const totalSamples = chunks.reduce((n, c) => n + c.length, 0);
       flat = new Float32Array(totalSamples);
       let off = 0;
       for (const c of chunks) { flat.set(c, off); off += c.length; }
     } else {
-      flat = recovered!.pcm;
-      pcmSampleRate = recovered!.sampleRate;
-      appendLog("mic PCM recovered via media recorder fallback");
+      haptic("send-failed");
+      appendLog("audio capture failed: no usable samples after extraction");
+      pulseComposeIntent("error", 1100);
+      return;
     }
 
     const name = `audio-${Date.now()}.wadpcm`;
@@ -1743,7 +1760,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /** Generate waveform amplitudes directly from decoded PCM float array. */
   function extractWaveformFromPcm(raw: Float32Array, numBars: number): Float32Array {
-    const blockSize = Math.max(1, Math.floor(raw.length / numBars));
+    if (raw.length === 0 || numBars <= 0) return new Float32Array(Math.max(0, numBars));
+
+    // Trim tiny edge regions to avoid container/codec priming transients
+    // (commonly visible as a single leading spike in otherwise silent clips).
+    const edgeTrim = Math.min(Math.floor(raw.length * 0.02), 2048);
+    const start = Math.min(edgeTrim, Math.max(0, raw.length - 1));
+    const endBound = raw.length - edgeTrim;
+    const end = Math.max(start + 1, endBound);
+    const src = raw.subarray(start, end);
+
+    if (src.length === 0) return new Float32Array(numBars);
+
+    const blockSize = Math.max(1, Math.floor(src.length / numBars));
     const amps = new Float32Array(numBars);
 
     // Step 1-2: mean absolute amplitude per block
@@ -1751,11 +1780,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     for (let i = 0; i < numBars; i++) {
       let sum = 0;
       const off = i * blockSize;
-      const end = Math.min(off + blockSize, raw.length);
-      for (let j = off; j < end; j++) sum += Math.abs(raw[j]);
-      amps[i] = sum / (end - off);
+      const stop = Math.min(off + blockSize, src.length);
+      for (let j = off; j < stop; j++) sum += Math.abs(src[j]);
+      amps[i] = sum / Math.max(1, (stop - off));
       if (amps[i] > peak) peak = amps[i];
     }
+
+    // Near-silence gate for cleaner visual silence on headless/no-input captures.
+    if (peak < 0.003) return new Float32Array(numBars);
 
     // Step 3: normalise to 0–1
     if (peak > 0) for (let i = 0; i < numBars; i++) amps[i] /= peak;
