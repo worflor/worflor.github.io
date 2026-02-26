@@ -1321,6 +1321,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let micAudioCtx: AudioContext | null = null;
   let micWorkletNode: AudioWorkletNode | null = null;
   let micSourceNode: MediaStreamAudioSourceNode | null = null;
+  let micSinkNode: GainNode | null = null;
+  let micCaptureWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let micRecorder: MediaRecorder | null = null;
+  let micRecorderChunks: Blob[] = [];
 
   // Dedicated singleton context for playback to prevent recording teardowns from closing it
   let playbackCtx: AudioContext | null = null;
@@ -1359,9 +1363,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         process(inputs) {
           const ch = inputs[0]?.[0];
           if (ch && ch.length > 0) {
-            // Transfer the underlying ArrayBuffer — zero copy
-            const copy = ch.slice();
-            this.port.postMessage({ samples: copy }, [copy.buffer]);
+            // Clone frame and post it directly. Avoid transfer semantics here,
+            // which can be flaky across browsers/worklet implementations.
+            this.port.postMessage(new Float32Array(ch));
           }
           return true;
         }
@@ -1369,6 +1373,92 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       registerProcessor('whisper-pcm-capture', WhisperPcmCapture);
     `;
     return URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
+  }
+
+  function startScriptProcessorCapture(ctx: AudioContext, stream: MediaStream): void {
+    const source = ctx.createMediaStreamSource(stream);
+    micSourceNode = source; // Prevent GC
+    // @ts-ignore – deprecated but still the most cross-browser capture fallback
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    // @ts-ignore
+    proc.onaudioprocess = (ev: AudioProcessingEvent) => {
+      const ch = ev.inputBuffer.getChannelData(0);
+      pcmChunks.push(ch.slice());
+    };
+    source.connect(proc);
+    micSinkNode = ctx.createGain();
+    micSinkNode.gain.value = 0;
+    proc.connect(micSinkNode);
+    micSinkNode.connect(ctx.destination);
+    micWorkletNode = proc as unknown as AudioWorkletNode;
+  }
+
+  function startRecorderCapture(stream: MediaStream): void {
+    if (typeof MediaRecorder === "undefined") return;
+    try {
+      const types = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+      ];
+      const mimeType = types.find((t) => {
+        try { return MediaRecorder.isTypeSupported(t); } catch { return false; }
+      });
+      micRecorderChunks = [];
+      micRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      micRecorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) micRecorderChunks.push(ev.data);
+      };
+      micRecorder.start(250);
+    } catch {
+      micRecorder = null;
+      micRecorderChunks = [];
+    }
+  }
+
+  async function extractPcmFromRecorder(): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
+    const rec = micRecorder;
+    if (!rec) return null;
+
+    const finishDecode = async (): Promise<{ pcm: Float32Array; sampleRate: number } | null> => {
+      micRecorder = null;
+      const blobs = micRecorderChunks;
+      micRecorderChunks = [];
+      if (blobs.length === 0) return null;
+      try {
+        const blob = new Blob(blobs, { type: rec.mimeType || "audio/webm" });
+        const ab = await blob.arrayBuffer();
+        const actx = new AudioContext();
+        const decoded = await actx.decodeAudioData(ab.slice(0));
+        const pcm = decoded.getChannelData(0).slice();
+        const sampleRate = decoded.sampleRate;
+        void actx.close();
+        return { pcm, sampleRate };
+      } catch {
+        return null;
+      }
+    };
+
+    return await new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        void finishDecode().then(resolve);
+      };
+      rec.addEventListener("stop", done, { once: true });
+      try {
+        if (rec.state !== "inactive") {
+          rec.requestData();
+          rec.stop();
+        } else {
+          done();
+        }
+      } catch {
+        done();
+      }
+      setTimeout(done, 800);
+    });
   }
 
   function startRecording(): void {
@@ -1387,11 +1477,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       recordingStream = stream;
       pcmChunks = [];
+      startRecorderCapture(stream);
       // recordingStart set after setup finishes
 
       // Fallback: If started without pointer event, create context here (it might be suspended and blocked, but fail gracefully)
       if (!micAudioCtx) micAudioCtx = new AudioContext();
-      if (micAudioCtx.state === "suspended") void micAudioCtx.resume();
+      if (micAudioCtx.state !== "running") {
+        try { await micAudioCtx.resume(); } catch { }
+      }
+
+      if (micAudioCtx.state !== "running") {
+        appendLog("mic audio blocked by browser. tap mic again after allowing autoplay/audio.");
+        for (const t of stream.getTracks()) t.stop();
+        recordingStream = null;
+        return;
+      }
 
       pcmSampleRate = micAudioCtx.sampleRate;
 
@@ -1406,34 +1506,48 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         micSourceNode = source; // Prevent GC
         micWorkletNode = new AudioWorkletNode(ctx, "whisper-pcm-capture");
         micWorkletNode.port.onmessage = (ev) => {
-          if (ev.data?.samples) {
-            pcmChunks.push(ev.data.samples);
+          const payload = ev.data;
+          if (payload instanceof Float32Array) {
+            pcmChunks.push(payload);
+            return;
           }
+          // Back-compat with older message shape
+          const samples = payload?.samples;
+          if (samples instanceof Float32Array) pcmChunks.push(samples);
         };
         source.connect(micWorkletNode);
         // Connect to destination with zero gain — keeps the audio graph alive
         // without audible feedback
-        const silentGain = ctx.createGain();
-        silentGain.gain.value = 0;
-        micWorkletNode.connect(silentGain);
-        silentGain.connect(ctx.destination);
+        micSinkNode = ctx.createGain();
+        micSinkNode.gain.value = 0;
+        micWorkletNode.connect(micSinkNode);
+        micSinkNode.connect(ctx.destination);
+
+        // Browser-specific guard: some engines create the worklet graph but never
+        // deliver frames. If nothing arrives quickly, auto-fallback.
+        if (micCaptureWatchdog) { clearTimeout(micCaptureWatchdog); micCaptureWatchdog = null; }
+        micCaptureWatchdog = setTimeout(() => {
+          micCaptureWatchdog = null;
+          if (!recordingStream || pcmChunks.length > 0) return;
+          appendLog("mic worklet produced no frames. using compatibility capture mode.");
+          try { micWorkletNode?.disconnect(); } catch { }
+          micWorkletNode = null;
+          try { micSourceNode?.disconnect(); } catch { }
+          micSourceNode = null;
+          try { micSinkNode?.disconnect(); } catch { }
+          micSinkNode = null;
+          try {
+            startScriptProcessorCapture(ctx, stream);
+          } catch (err) {
+            appendLog(`mic fallback capture failed: ${errMsg(err)}`);
+          }
+        }, 700);
       } catch (e) {
         // AudioWorklet unavailable (very old browsers) — fall back to ScriptProcessor
         // @ts-ignore
         console.warn("AudioWorklet failed, using fallback:", e);
         URL.revokeObjectURL(blobUrl);
-        const source = ctx.createMediaStreamSource(stream);
-        micSourceNode = source; // Prevent GC
-        // @ts-ignore – deprecated but universal fallback
-        const proc = ctx.createScriptProcessor(4096, 1, 1);
-        // @ts-ignore
-        proc.onaudioprocess = (ev: AudioProcessingEvent) => {
-          const ch = ev.inputBuffer.getChannelData(0);
-          pcmChunks.push(ch.slice());
-        };
-        source.connect(proc);
-        proc.connect(ctx.destination);
-        micWorkletNode = proc as unknown as AudioWorkletNode;
+        startScriptProcessorCapture(ctx, stream);
       }
 
       // Drive track-ended cleanup
@@ -1490,6 +1604,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function cleanupRecordingStream(): void {
+    if (micRecorder) {
+      try {
+        if (micRecorder.state !== "inactive") micRecorder.stop();
+      } catch { }
+      micRecorder = null;
+    }
+    micRecorderChunks = [];
+    if (micCaptureWatchdog) {
+      clearTimeout(micCaptureWatchdog);
+      micCaptureWatchdog = null;
+    }
+    if (micSinkNode) {
+      try { micSinkNode.disconnect(); } catch { }
+      micSinkNode = null;
+    }
     if (micWorkletNode) {
       try { micWorkletNode.disconnect(); } catch { }
       micWorkletNode = null;
@@ -1504,26 +1633,42 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
-  function stopRecording(): void {
+  async function stopRecording(): Promise<void> {
     teardownRecordingUI();
     const elapsed = Date.now() - recordingStart;
     const chunks = pcmChunks;
     pcmChunks = [];
+    const recovered = chunks.length === 0 ? await extractPcmFromRecorder() : null;
     cleanupRecordingStream();
 
     // Discard sub-500ms squeaks
-    if (elapsed < 500 || chunks.length === 0) return;
+    if (elapsed < 500) return;
+    if (chunks.length === 0 && !recovered) {
+      haptic("send-failed");
+      appendLog("audio capture failed: no mic samples received");
+      pulseComposeIntent("error", 1100);
+      return;
+    }
     haptic("recording-stop");
 
-    // Flatten accumulated 128-sample Float32 chunks into one
-    const totalSamples = chunks.reduce((n, c) => n + c.length, 0);
-    const flat = new Float32Array(totalSamples);
-    let off = 0;
-    for (const c of chunks) { flat.set(c, off); off += c.length; }
+    let flat: Float32Array;
+    if (chunks.length > 0) {
+      // Flatten accumulated 128-sample Float32 chunks into one
+      const totalSamples = chunks.reduce((n, c) => n + c.length, 0);
+      flat = new Float32Array(totalSamples);
+      let off = 0;
+      for (const c of chunks) { flat.set(c, off); off += c.length; }
+    } else {
+      flat = recovered!.pcm;
+      pcmSampleRate = recovered!.sampleRate;
+      appendLog("mic PCM recovered via media recorder fallback");
+    }
 
     const name = `audio-${Date.now()}.wadpcm`;
 
-    encodeAdpcm(flat, pcmSampleRate).then((adpcmBytes) => {
+    const encKey = session ? session.audioKey : undefined;
+
+    encodeAdpcm(flat, pcmSampleRate, encKey).then((adpcmBytes) => {
       if (!session) {
         addChatMessage({
           type: "file", direction: "self",
@@ -1535,6 +1680,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       sendBeginFill();
       session.sendAudio(name, ADPCM_MIME, adpcmBytes).then((msgId) => {
+        if (msgId <= 0) {
+          send.phase = "delivered"; send.velocity = -4;
+          haptic("send-failed");
+          appendLog(`audio send skipped: session not ready (${session?.state ?? "unknown"})`);
+          pulseComposeIntent("error", 1100);
+          return;
+        }
         sendInFlight(msgId);
       }).catch((err) => {
         send.phase = "delivered"; send.velocity = -4;
@@ -1958,7 +2110,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
         try {
           if (isWhisperCodec) {
-            const decoded = await decodeAdpcm(new Uint8Array(abCopy));
+            const decKey = session ? session.audioKey : undefined;
+            const decoded = await decodeAdpcm(new Uint8Array(abCopy), decKey);
+            if (decoded.tampered) {
+               throw new Error("Audio payload failed MAC verification. Packet was tampered with.");
+            }
             pcmData = decoded.pcm;
             durationSeconds = decoded.pcm.length / decoded.sampleRate;
             // Store sampleRate so the AudioBuffer uses the right rate

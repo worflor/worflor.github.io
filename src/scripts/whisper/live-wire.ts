@@ -16,7 +16,9 @@
  *   [4+N..]  file type (null-terminated) + file bytes
  */
 
-import { TE, TD } from "./live-crypto";
+import { TD } from "./live-crypto";
+
+const TE = new TextEncoder();
 
 export const HEADER_SIZE = 86;
 const PUBKEY_LEN = 65;

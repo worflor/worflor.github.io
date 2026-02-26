@@ -3,8 +3,9 @@
 // Local private identity key is fingerprint-protected at rest in IndexedDB.
 
 import { sha256, randomBytes, toArrayBuffer } from "./wasm";
-import { hkdf, aesGcmEncrypt, aesGcmDecrypt, TE, TD } from "./live-crypto";
+import { hkdf, aesGcmEncrypt, aesGcmDecrypt, TD } from "./live-crypto";
 
+const TE = new TextEncoder();
 const WS2_PREFIX = "WS2:";
 const WS2_DB_NAME = "whisper-seal";
 const WS2_DB_VERSION = 2;

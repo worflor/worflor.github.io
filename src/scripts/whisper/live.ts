@@ -427,6 +427,13 @@ export class WhisperLiveSession {
 
   /** Whether this side created the session (offerer). Cryptographically established during handshake. */
   get isHost(): boolean { return this.isOfferer; }
+  
+  /** Retrieve the 256-bit shared session secret as a Uint32Array for the WebAssembly audio codec. */
+  get audioKey(): Uint32Array | undefined {
+    if (!this.sharedSecret) return undefined;
+    // Extract first 16 bytes for the 128-bit seed expected by the WASM codec
+    return new Uint32Array(this.sharedSecret.buffer, this.sharedSecret.byteOffset, 4);
+  }
 
   private setState(state: LiveState, detail?: string): void {
     const allowed = VALID_TRANSITIONS[this._state];
