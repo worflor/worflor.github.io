@@ -102,10 +102,8 @@ export interface WhisperLiveUIOptions {
   disconnectBtn: HTMLButtonElement;
   fpChip: HTMLButtonElement;
   fpChipEmoji: HTMLElement;
-  fpPopover: HTMLElement;
-  fpPopoverEmoji: HTMLElement;
-  fpCopyBtn: HTMLButtonElement;
-  fpCloseBtn: HTMLButtonElement;
+  fpChipName: HTMLElement;
+  fpNicknameInput: HTMLInputElement;
 
   /* Silent phase */
   silentSection: HTMLElement;
@@ -177,10 +175,8 @@ const WHISPER_LIVE_IDS = {
   disconnectBtn: "wl-disconnect",
   fpChip: "wl-fp-chip",
   fpChipEmoji: "wl-fp-chip-emoji",
-  fpPopover: "wl-fp-popover",
-  fpPopoverEmoji: "wl-fp-popover-emoji",
-  fpCopyBtn: "wl-fp-copy",
-  fpCloseBtn: "wl-fp-close",
+  fpChipName: "wl-fp-chip-name",
+  fpNicknameInput: "wl-fp-nickname",
   silentSection: "wl-silent-section",
   silentSecret: "wl-silent-secret",
   silentCopyBtn: "wl-silent-copy",
@@ -293,9 +289,8 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     chatInput: inp(I.chatInput), chatSendBtn: btn(I.chatSendBtn),
     chatFileInput: inp(I.chatFileInput), chatFileBtn: btn(I.chatFileBtn),
     disconnectBtn: btn(I.disconnectBtn),
-    fpChip: btn(I.fpChip), fpChipEmoji: el(I.fpChipEmoji),
-    fpPopover: el(I.fpPopover), fpPopoverEmoji: el(I.fpPopoverEmoji),
-    fpCopyBtn: btn(I.fpCopyBtn), fpCloseBtn: btn(I.fpCloseBtn),
+    fpChip: btn(I.fpChip), fpChipEmoji: el(I.fpChipEmoji), fpChipName: el(I.fpChipName),
+    fpNicknameInput: inp(I.fpNicknameInput),
     silentSection: el(I.silentSection), silentSecret: el(I.silentSecret),
     silentCopyBtn: btn(I.silentCopyBtn), silentDisconnectBtn: btn(I.silentDisconnectBtn),
     disconnectedSection: el(I.disconnectedSection), newSessionBtn: btn(I.newSessionBtn),
@@ -388,9 +383,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     s.setProperty("--wl-velocity", Math.min(1, Math.abs(composeActivityVelocity) * 0.18).toFixed(3));
     s.setProperty("--wl-flow", `${(((Math.sin(composeFlow) + 1) * 0.5) * 100).toFixed(2)}%`);
 
-    // Send energy + velocity-driven glow
-    s.setProperty("--wl-send-energy", se.toFixed(3));
+    // Send energy: CSS sees 0→1, overflow handles the >1 effects separately
+    const seFill = Math.min(1, se);
+    const overflow = Math.min(1, Math.max(0, se - 1) * 3.3);
+    s.setProperty("--wl-send-energy", seFill.toFixed(3));
     s.setProperty("--wl-send-velocity", Math.min(1, Math.abs(send.velocity) * 0.15).toFixed(3));
+    s.setProperty("--wl-send-overflow", overflow.toFixed(3));
 
     // Typing: position with amplitude → smoothstep
     const rawPos = 0.5 + typing.amplitude * 0.5 * Math.sin(typing.phase);
@@ -403,10 +401,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     s.setProperty("--wl-typing-width", (1 + (1 - spd) * 0.18 + spd * 0.28 + typing.sustain * 0.06).toFixed(3));
     s.setProperty("--wl-typing-glow", (spd * 0.5 + typing.sustain * 0.3).toFixed(3));
 
-    // Cross-system interaction (only computed when both are active)
-    const interaction = (se > 0.02 && ti > 0.02) ? se * ti : 0;
+    // Cross-system interaction (clamped energy for typing interaction math)
+    const seClamped = Math.min(1, se);
+    const interaction = (seClamped > 0.02 && ti > 0.02) ? seClamped * ti : 0;
     s.setProperty("--wl-energy-center", (0.5 + (eased - 0.5) * 0.12 * interaction).toFixed(4));
-    s.setProperty("--wl-typing-squeeze", (1 - se * 0.45).toFixed(3));
+    s.setProperty("--wl-typing-squeeze", (1 - seClamped * 0.45).toFixed(3));
     s.setProperty("--wl-interaction", interaction.toFixed(3));
 
     // Suppress border-top when energy bar is active
@@ -449,7 +448,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         send.energy = 0; send.velocity = 0; send.phase = "idle";
       }
     }
-    send.energy = Math.max(0, Math.min(1, send.energy));
+    // Allow overshoot above 1.0 — heavy spam pools at the edges and compresses back.
+    send.energy = Math.max(0, Math.min(1.3, send.energy));
 
     // ── Typing indicator (amplitude-modulated pendulum) ──
     const t = typing;
@@ -566,6 +566,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (sentAt) {
       send.ackLatency = send.ackLatency * 0.7 + (Date.now() - sentAt) * 0.3;
       send.timestamps.delete(counter);
+    }
+    // Mark message as delivered in DOM
+    const msgEl = pendingDelivery.get(counter);
+    if (msgEl) {
+      msgEl.classList.add("wl-msg--delivered");
+      pendingDelivery.delete(counter);
     }
     send.acks.delete(counter);
     if (send.acks.size === 0 && send.phase === "in-flight") sendDelivered();
@@ -992,6 +998,30 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     document.title = originalTitle;
   }
 
+  /* ── Peer message nudge (tiny synthesized click) ──────── */
+
+  let audioCtx: AudioContext | null = null;
+
+  /** Play a very short, soft tick — only when attention is elsewhere. */
+  function nudgeAudio(): void {
+    if (reduceMotion) return;
+    if (hasFocus && isNearBottom()) return;
+    try {
+      if (!audioCtx) audioCtx = new AudioContext();
+      const ctx = audioCtx;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.06);
+      gain.gain.setValueAtTime(0.04, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.08);
+    } catch { /* Audio not available — silent fallback */ }
+  }
+
   /* ── Typing indicator ──────────────────────────────────── */
 
   function showPeerTyping(): void {
@@ -1025,13 +1055,24 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function smartScroll(): void {
     if (isNearBottom()) {
-      opts.chatMessages.scrollTop = opts.chatMessages.scrollHeight;
+      opts.chatMessages.scrollTo({
+        top: opts.chatMessages.scrollHeight,
+        behavior: "smooth",
+      });
     }
   }
 
   /* ── Chat rendering ───────────────────────────────────── */
 
-  function addChatMessage(msg: LiveMessage): void {
+  const chatEmpty = opts.chatMessages.querySelector<HTMLElement>("#wl-chat-empty");
+
+  /** Maps send counter → message DOM element for delivery confirmation. */
+  const pendingDelivery = new Map<number, HTMLElement>();
+
+  function addChatMessage(msg: LiveMessage, sendCounter?: number): void {
+    // Hide empty-state hint on first real message
+    if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
+
     const div = document.createElement("div");
     div.className = `wl-msg wl-msg--${msg.direction}`;
 
@@ -1085,9 +1126,25 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (msg.direction === "peer") hidePeerTyping();
 
     opts.chatMessages.appendChild(div);
-    smartScroll();
 
-    if (msg.direction === "peer") bumpUnread();
+    // Self → always snap to bottom (deferred so layout includes the new node)
+    // System → smooth-scroll if already near bottom
+    // Peer → never auto-scroll
+    if (msg.direction === "self") {
+      requestAnimationFrame(() => {
+        opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
+      });
+    } else if (msg.direction === "system") {
+      smartScroll();
+    }
+
+    if (msg.direction === "self" && sendCounter !== undefined) {
+      pendingDelivery.set(sendCounter, div);
+    }
+    if (msg.direction === "peer") {
+      bumpUnread();
+      nudgeAudio();
+    }
   }
 
   /* ── Session creation ─────────────────────────────────── */
@@ -1191,7 +1248,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         enterPhase(opts.chatSection, "secure session live · end-to-end encrypted", false, false);
         opts.liveStatusLine.classList.add("whisper-status--ready");
         opts.chatInput.disabled = false;
-        opts.chatInput.placeholder = "type a message";
+        opts.chatInput.placeholder = "whisper something...";
         opts.chatInput.focus();
         opts.fpChip.classList.remove("wl-fp-chip--recovering");
         opts.fpChip.classList.add("wl-fp-chip--verified");
@@ -1216,6 +1273,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatSendBtn.disabled = true;
         opts.chatFileBtn.disabled = true;
         opts.chatInput.disabled = true;
+        opts.chatInput.placeholder = "reconnecting...";
         opts.fpChip.classList.remove("wl-fp-chip--verified");
         opts.fpChip.classList.add("wl-fp-chip--recovering");
         addChatMessage({ type: "system", direction: "system", text: "connection interrupted, reconnecting...", timestamp: Date.now() });
@@ -1235,21 +1293,37 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function handleFingerprint(emoji: string): void {
-    opts.fingerprintDisplay.textContent = emoji;   // existing verify panel
-    opts.fpChipEmoji.textContent = emoji;           // chip
-    opts.fpPopoverEmoji.textContent = emoji;        // popover
+    opts.fingerprintDisplay.textContent = emoji;
+    opts.fpChipEmoji.textContent = emoji;
+  }
+
+  let peerNickname = "";
+
+  function applyNickname(name: string): void {
+    peerNickname = name.trim();
+    if (peerNickname) {
+      opts.fpChipName.textContent = peerNickname;
+      opts.fpChip.classList.add("wl-fp-chip--named");
+    } else {
+      opts.fpChipName.textContent = "";
+      opts.fpChip.classList.remove("wl-fp-chip--named");
+    }
   }
 
   function resetFpChip(): void {
     opts.fpChip.classList.remove("wl-fp-chip--verified", "wl-fp-chip--recovering");
+    applyNickname("");
+    opts.fpNicknameInput.value = "";
     opts.fpChipEmoji.textContent = "";
-    opts.fpPopoverEmoji.textContent = "";
-    opts.fpPopover.hidden = true;
-    opts.fpChip.setAttribute("aria-expanded", "false");
+    opts.fpNicknameInput.parentElement?.classList.remove("wl-fp-wrap--editing");
   }
 
+  /** Counters queued for the next self-message to pair with delivery tracking. */
+  const selfCounterQueue: number[] = [];
+
   function handleMessage(msg: LiveMessage): void {
-    addChatMessage(msg);
+    const counter = msg.direction === "self" ? selfCounterQueue.shift() : undefined;
+    addChatMessage(msg, counter);
   }
 
   /* ── Reset to idle ─────────────────────────────────────── */
@@ -1270,7 +1344,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       session.disconnect();
       session = null;
     }
+    pendingDelivery.clear();
+    selfCounterQueue.length = 0;
     clearNode(opts.chatMessages);
+    // Restore empty-state hint
+    if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
     for (const el of [opts.offerCode, opts.answerCode, opts.fingerprintDisplay,
                        opts.silentSecret, opts.joinQrStatus, opts.offerQrStatus,
                        opts.answerQrStatus, opts.errorMessage]) el.textContent = "";
@@ -1865,30 +1943,29 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     session?.rejectFingerprint();
   }, { signal });
 
-  // ── Fingerprint chip ──────────────────────────────────────
+  // ── Fingerprint chip — click to edit in place ─────────────
+  const fpWrap = opts.fpChip.parentElement!;
+
   opts.fpChip.addEventListener("click", () => {
-    const open = !opts.fpPopover.hidden;
-    opts.fpPopover.hidden = open;
-    opts.fpChip.setAttribute("aria-expanded", String(!open));
+    opts.fpNicknameInput.value = peerNickname;
+    fpWrap.classList.add("wl-fp-wrap--editing");
+    opts.fpNicknameInput.focus();
+    opts.fpNicknameInput.select();
   }, { signal });
 
-  opts.fpCopyBtn.addEventListener("click", () => {
-    const emoji = opts.fpChipEmoji.textContent ?? "";
-    if (!emoji) return;
-    copyToClipboard(emoji)
-      .then(() => flashText(opts.fpCopyBtn, "copied!"))
-      .catch(() => flashText(opts.fpCopyBtn, "failed"));
+  opts.fpNicknameInput.addEventListener("input", () => {
+    applyNickname(opts.fpNicknameInput.value);
   }, { signal });
 
-  opts.fpCloseBtn.addEventListener("click", () => {
-    opts.fpPopover.hidden = true;
-    opts.fpChip.setAttribute("aria-expanded", "false");
-  }, { signal });
+  const commitEdit = () => {
+    fpWrap.classList.remove("wl-fp-wrap--editing");
+  };
 
-  document.addEventListener("click", (e) => {
-    if (!opts.fpPopover.hidden && !opts.fpChip.contains(e.target as Node) && !opts.fpPopover.contains(e.target as Node)) {
-      opts.fpPopover.hidden = true;
-      opts.fpChip.setAttribute("aria-expanded", "false");
+  opts.fpNicknameInput.addEventListener("blur", commitEdit, { signal });
+  opts.fpNicknameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === "Escape") {
+      if (e.key === "Escape") applyNickname(peerNickname); // revert on escape
+      opts.fpNicknameInput.blur();
     }
   }, { signal });
 
@@ -1896,6 +1973,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const text = opts.chatInput.value.trim();
     if (!text) return;
     opts.chatInput.value = "";
+    opts.chatInput.focus();
     updateControls();
     if (!session) {
       // Preview mode — simulate the full send lifecycle visually
@@ -1905,6 +1983,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     // Phase 1: encrypt + buffer begins
     const counter = session.sendCounter;
+    selfCounterQueue.push(counter);
     sendBeginFill();
     try {
       await session.sendText(text);
@@ -2000,6 +2079,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!file || !session) return;
     opts.chatFileInput.value = "";
     const counter = session.sendCounter;
+    selfCounterQueue.push(counter);
     sendBeginFill();
     try {
       await session.sendFile(file);
@@ -2029,6 +2109,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const file = (e as DragEvent).dataTransfer?.files?.[0];
     if (!file || !session) return;
     const counter = session.sendCounter;
+    selfCounterQueue.push(counter);
     sendBeginFill();
     try {
       await session.sendFile(file);

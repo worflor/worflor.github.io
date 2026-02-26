@@ -349,21 +349,17 @@ const seo = {
             </div>
           </div>
 
-          <div class="wl-status-chip" role="status" aria-live="polite">
-            <span class="wl-status-dot" aria-hidden="true"></span>
-            <span id="wl-status-line" class="wl-status-text">ready to connect</span>
+          <div class="wl-status-row">
+            <div class="wl-status-chip" role="status" aria-live="polite">
+              <span class="wl-status-dot" aria-hidden="true"></span>
+              <span id="wl-status-line" class="wl-status-text">ready to connect</span>
+            </div>
             <div class="wl-fp-wrap">
-              <button id="wl-fp-chip" class="wl-fp-chip" type="button" aria-label="View session fingerprint" aria-expanded="false">
+              <button id="wl-fp-chip" class="wl-fp-chip" type="button" aria-label="Name this peer">
                 <span id="wl-fp-chip-emoji" class="wl-fp-chip-emoji" aria-hidden="true"></span>
+                <span id="wl-fp-chip-name" class="wl-fp-chip-name" aria-hidden="true"></span>
               </button>
-              <div id="wl-fp-popover" class="wl-fp-popover" hidden>
-                <p id="wl-fp-popover-emoji" class="wl-fp-popover-emoji" aria-live="polite"></p>
-                <p class="wl-fp-popover-hint">compare with your peer through another channel — if they see the same emoji, you're secure</p>
-                <div class="wl-fp-popover-actions">
-                  <button id="wl-fp-copy" type="button" class="whisper-mini-btn">copy</button>
-                  <button id="wl-fp-close" type="button" class="whisper-mini-btn">close</button>
-                </div>
-              </div>
+              <input id="wl-fp-nickname" class="wl-fp-nickname-input" type="text" placeholder="..." maxlength="32" autocomplete="off" spellcheck="false" />
             </div>
           </div>
         </div>
@@ -597,14 +593,16 @@ const seo = {
         <!-- Phase: live chat -->
         <div class="wl-phase wl-phase--chat" id="wl-chat-section" style="display:none">
           <div class="whisper-panel wl-chat-panel">
-            <div id="wl-chat-messages" class="wl-chat-messages" aria-live="polite" aria-relevant="additions"></div>
+            <div id="wl-chat-messages" class="wl-chat-messages" aria-live="polite" aria-relevant="additions">
+              <p class="wl-chat-empty" id="wl-chat-empty"></p>
+            </div>
 
             <div class="wl-chat-compose">
               <input
                 id="wl-chat-input"
                 type="text"
                 class="whisper-input wl-chat-text-input"
-                placeholder="type a message"
+                placeholder="whisper something..."
                 autocomplete="off"
                 spellcheck="false"
               />
@@ -2325,9 +2323,15 @@ const seo = {
     white-space: nowrap;
   }
 
-  .wl-status-chip {
+  .wl-status-row {
     grid-column: 1;
     grid-row: 3;
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+  }
+
+  .wl-status-chip {
     display: inline-flex;
     align-items: center;
     gap: 0.5em;
@@ -2986,11 +2990,6 @@ const seo = {
   }
 
   /* ── Fingerprint chip (status bar) ── */
-  .wl-fp-wrap {
-    position: relative;
-    margin-left: calc(var(--space-xs) * 0.5);
-  }
-
   /* Hidden by default; only shown in verified/live state */
   .wl-fp-chip {
     display: none;
@@ -3004,9 +3003,8 @@ const seo = {
     transition: border-color var(--duration-normal) var(--ease-out),
                 background var(--duration-normal) var(--ease-out);
   }
-  .wl-fp-chip--verified {
-    display: inline-flex;
-  }
+  .wl-fp-chip--verified { display: inline-flex; }
+  .wl-fp-chip--recovering { display: inline-flex; }
   .wl-fp-chip:hover {
     border-color: rgb(var(--color-text-rgb) / 0.2);
     background: rgb(10 10 10 / 0.85);
@@ -3020,55 +3018,40 @@ const seo = {
     filter: saturate(0.4) opacity(0.6);
     transition: filter var(--duration-normal) var(--ease-out);
   }
+  .wl-fp-chip--verified .wl-fp-chip-emoji { filter: saturate(1) opacity(0.85); }
+  .wl-fp-chip--recovering .wl-fp-chip-emoji { filter: saturate(0.2) opacity(0.4); }
 
-  /* Live — emoji fully saturated */
-  .wl-fp-chip--verified .wl-fp-chip-emoji {
-    filter: saturate(1) opacity(0.85);
+  /* Nickname label inside chip */
+  .wl-fp-chip-name {
+    display: none;
+    font-size: 0.78rem;
+    font-weight: 500;
+    max-width: 8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: rgb(var(--color-text-rgb) / 0.85);
   }
+  .wl-fp-chip--named .wl-fp-chip-emoji { display: none; }
+  .wl-fp-chip--named .wl-fp-chip-name  { display: inline-block; }
 
-  /* Recovering — chip stays visible, emoji fades back */
-  .wl-fp-chip--recovering {
-    display: inline-flex;
+  /* Nickname input — replaces the chip in place when editing */
+  .wl-fp-nickname-input {
+    display: none;
+    width: 8rem;
+    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.8);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.2);
+    background: rgb(10 10 10 / 0.6);
+    font-size: 0.85rem;
+    color: rgb(var(--color-text-rgb) / 0.9);
+    outline: none;
+    box-shadow: none;
   }
-  .wl-fp-chip--recovering .wl-fp-chip-emoji {
-    filter: saturate(0.2) opacity(0.4);
-  }
-
-  /* Popover */
-  .wl-fp-popover {
-    position: absolute;
-    top: calc(100% + 0.5rem);
-    left: 0;
-    z-index: 20;
-    min-width: 220px;
-    padding: var(--space-sm);
-    border-radius: var(--whisper-radius);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
-    background: rgb(14 14 14 / 0.97);
-    box-shadow: 0 8px 32px rgb(0 0 0 / 0.5);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-  .wl-fp-popover[hidden] { display: none; }
-
-  .wl-fp-popover-emoji {
-    margin: 0;
-    font-size: 2rem;
-    letter-spacing: 0.3em;
-    text-align: center;
-  }
-  .wl-fp-popover-hint {
-    margin: 0;
-    font-size: var(--text-xs);
-    color: rgb(var(--color-text-rgb) / 0.5);
-    line-height: 1.5;
-  }
-  .wl-fp-popover-actions {
-    display: flex;
-    gap: var(--space-xs);
-    justify-content: flex-end;
-  }
+  .wl-fp-nickname-input:focus { outline: none; box-shadow: none; }
+  .wl-fp-wrap--editing .wl-fp-chip         { display: none !important; }
+  .wl-fp-wrap--editing .wl-fp-nickname-input { display: inline-block; }
+  .wl-fp-nickname-input::placeholder { color: rgb(var(--color-text-rgb) / 0.3); }
 
   /* ── Chat ───────────────────────────────────────────────── */
   .wl-chat-panel {
@@ -3122,6 +3105,22 @@ const seo = {
     flex-direction: column;
     gap: calc(var(--space-xs) * 0.42);
     scrollbar-width: thin;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0px,
+      black 14px,
+      black calc(100% - 14px),
+      transparent 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0px,
+      black 14px,
+      black calc(100% - 14px),
+      transparent 100%
+    );
     transition: background var(--duration-normal) var(--ease-out);
     background:
       linear-gradient(
@@ -3130,6 +3129,30 @@ const seo = {
         transparent 50%
       ),
       rgb(10 10 10 / 0.92);
+  }
+
+  /* Custom scrollbar only for pointer devices — touch keeps native overlay */
+  @media (hover: hover) {
+    .wl-chat-messages::-webkit-scrollbar { width: 4px; }
+    .wl-chat-messages::-webkit-scrollbar-track { background: transparent; }
+    .wl-chat-messages::-webkit-scrollbar-thumb {
+      background: rgb(var(--color-text-rgb) / 0.12);
+      border-radius: 4px;
+    }
+    .wl-chat-messages::-webkit-scrollbar-thumb:hover {
+      background: rgb(var(--color-text-rgb) / 0.22);
+    }
+  }
+
+  .wl-chat-empty {
+    margin: auto 0;
+    text-align: center;
+    font-size: calc(var(--text-sm) * 0.78);
+    color: rgb(var(--color-text-rgb) / 0.16);
+    font-style: italic;
+    user-select: none;
+    pointer-events: none;
+    letter-spacing: 0.01em;
   }
 
   .wl-chat-messages:global(.wl-chat-drop-active) {
@@ -3142,6 +3165,7 @@ const seo = {
     flex-direction: column;
     gap: 0.1rem;
     max-width: 80%;
+    animation: wl-msg-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .wl-chat-messages :global(.wl-msg + .wl-msg) {
@@ -3151,6 +3175,7 @@ const seo = {
   .wl-chat-messages :global(.wl-msg--self) {
     align-self: flex-end;
     align-items: flex-end;
+    animation-name: wl-msg-in-right;
   }
 
   .wl-chat-messages :global(.wl-msg--peer) {
@@ -3163,6 +3188,7 @@ const seo = {
     align-self: center;
     align-items: center;
     max-width: 90%;
+    animation-name: wl-msg-in-center;
   }
 
   .wl-chat-messages :global(.wl-msg-text) {
@@ -3178,6 +3204,16 @@ const seo = {
 
   .wl-chat-messages :global(.wl-msg--self .wl-msg-text) {
     border-bottom-right-radius: calc(var(--whisper-radius) * 0.15);
+    transition: color 400ms ease-out, border-color 400ms ease-out;
+  }
+
+  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-text) {
+    color: rgb(var(--color-text-rgb) / 0.88);
+    border-color: rgb(var(--color-text-rgb) / 0.22);
+  }
+
+  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-file) {
+    border-color: rgb(var(--color-text-rgb) / 0.22);
   }
 
   .wl-chat-messages :global(.wl-msg--peer .wl-msg-text) {
@@ -3192,6 +3228,26 @@ const seo = {
     text-align: center;
     border: none;
     background: none;
+  }
+
+  /* Hide timestamp on grouped messages — show only on the last in a run */
+  .wl-chat-messages :global(.wl-msg--self:has(+ .wl-msg--self) .wl-msg-time),
+  .wl-chat-messages :global(.wl-msg--peer:has(+ .wl-msg--peer) .wl-msg-time) {
+    display: none;
+  }
+
+  /* Tighter spacing within a group */
+  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self),
+  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer) {
+    margin-top: calc(var(--space-xs) * 0.1);
+  }
+
+  /* Soften corner between grouped bubbles */
+  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-text) {
+    border-top-right-radius: calc(var(--whisper-radius) * 0.2);
+  }
+  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-text) {
+    border-top-left-radius: calc(var(--whisper-radius) * 0.2);
   }
 
   .wl-chat-messages :global(.wl-msg-time) {
@@ -3271,19 +3327,30 @@ const seo = {
     top: -1px;
     left: 0;
     right: 0;
-    height: 1px;
+    /* Bar thickens slightly on overflow — energy has nowhere to go */
+    height: calc(1px + var(--wl-send-overflow, 0) * 1px);
     pointer-events: none;
-    background: rgb(var(--tool-status-success) / calc(var(--wl-send-energy) * 0.9));
-    /* Energy center tugged by typing position — subtle asymmetric fill.
-       base = 50% * (1 - energy). Tug shifts center ±6% max via --wl-energy-center.
-       right-inset shrinks when center > 0.5, left-inset shrinks when center < 0.5. */
+    /* On overflow the center fades — energy pools at the edges like hitting a wall.
+       Edges stay full-bright while the middle hollows out. */
+    --_alpha: calc(var(--wl-send-energy) * 0.9 + var(--wl-send-overflow, 0) * 0.1);
+    --_hollow: calc(var(--wl-send-overflow, 0) * 0.7);
+    background:
+      linear-gradient(
+        90deg,
+        rgb(var(--tool-status-success) / var(--_alpha)) 0%,
+        rgb(var(--tool-status-success) / calc(var(--_alpha) * (1 - var(--_hollow)))) 35%,
+        rgb(var(--tool-status-success) / calc(var(--_alpha) * (1 - var(--_hollow)))) 65%,
+        rgb(var(--tool-status-success) / var(--_alpha)) 100%
+      );
+    /* Clip-path: energy 0→1 fills center→edges. No overflow inset needed —
+       the gradient handles the pooling visual. */
     --_base: calc(50% * (1 - var(--wl-send-energy)));
     --_shift: calc((var(--wl-energy-center, 0.5) - 0.5) * 100%);
     clip-path: inset(0 calc(var(--_base) - var(--_shift)) 0 calc(var(--_base) + var(--_shift)));
-    /* Glow scales with velocity — faster motion = wider/brighter bloom */
+    /* Glow: velocity bloom + overflow bloom (heavy spam = bright edges) */
     box-shadow:
-      0 0 calc((var(--wl-send-energy) * 4px) + (var(--wl-send-velocity, 0) * 8px)) rgb(var(--tool-status-success) / calc(var(--wl-send-energy) * 0.5)),
-      0 0 calc((var(--wl-send-energy) * 8px) + (var(--wl-send-velocity, 0) * 18px)) rgb(var(--tool-status-success) / calc(var(--wl-send-energy) * (0.15 + var(--wl-send-velocity, 0) * 0.15)));
+      0 0 calc((var(--wl-send-energy) * 4px) + (var(--wl-send-velocity, 0) * 8px) + (var(--wl-send-overflow, 0) * 6px)) rgb(var(--tool-status-success) / calc(var(--wl-send-energy) * 0.5 + var(--wl-send-overflow, 0) * 0.3)),
+      0 0 calc((var(--wl-send-energy) * 8px) + (var(--wl-send-velocity, 0) * 18px) + (var(--wl-send-overflow, 0) * 14px)) rgb(var(--tool-status-success) / calc(var(--wl-send-energy) * 0.15 + var(--wl-send-overflow, 0) * 0.12));
   }
 
   .wl-chat-compose::after {
@@ -3462,6 +3529,12 @@ const seo = {
     border-color: rgb(var(--chromatic-cyan) / 0.5);
   }
 
+  .wl-chat-send-btn:active:not(:disabled) {
+    transform: scale(0.96);
+    background: rgb(var(--chromatic-cyan) / 0.28);
+    transition-duration: 40ms;
+  }
+
   .wl-chat-file-btn {
     min-height: auto;
     padding: 0.48rem;
@@ -3470,11 +3543,17 @@ const seo = {
     justify-content: center;
     flex: 0 0 auto;
     border-color: rgb(var(--color-text-rgb) / 0.18);
+    transition: transform 120ms linear, border-color var(--duration-normal) var(--ease-out);
   }
 
+  .wl-chat-file-btn:hover:not(:disabled) {
+    border-color: rgb(var(--color-text-rgb) / 0.3);
+  }
 
-
- 
+  .wl-chat-file-btn:active:not(:disabled) {
+    transform: scale(0.94);
+    transition-duration: 40ms;
+  }
 
   .wl-file-icon {
     width: 1rem;
@@ -3488,10 +3567,25 @@ const seo = {
     100% { transform: translateX(0); }
   }
 
+  /* Message entrance: peer slides from left, self from right, system fades */
+  @keyframes wl-msg-in {
+    from { opacity: 0; transform: translateX(-6px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes wl-msg-in-right {
+    from { opacity: 0; transform: translateX(6px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes wl-msg-in-center {
+    from { opacity: 0; transform: scale(0.97); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .wl-chat-compose,
     .wl-chat-text-input,
-    .wl-chat-send-btn {
+    .wl-chat-send-btn,
+    .wl-chat-messages :global(.wl-msg) {
       animation: none !important;
       transition-duration: 0ms !important;
       transform: none !important;
@@ -3554,10 +3648,9 @@ const seo = {
       grid-column: 1 / -1;
     }
 
-    .wl-status-chip {
+    .wl-status-row {
       grid-row: 3;
       grid-column: 1;
-      display: flex;
       flex-wrap: wrap;
       gap: calc(var(--space-xs) * 0.5);
     }
