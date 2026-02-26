@@ -13,7 +13,7 @@ import {
   type LiveState,
   type LiveMessage,
 } from "./live";
-import { CTRL_OP } from "./live-ctrl";
+import { CTRL_OP, VoteTopic } from "./live-ctrl";
 import {
   q,
   asInput,
@@ -353,34 +353,37 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return env.constrainedNetwork ? 6_000 : 4_000;
   }
 
-  type ClearState = "idle" | "pending-out" | "pending-in";
-  let clearState: ClearState = "idle";
-  let clearTimer: ReturnType<typeof setTimeout> | null = null;
-  const CLEAR_TIMEOUT_MS = 30_000;
+  // ── Clear-history (voted operation) ─────────────────────────
 
-  function setClearState(next: ClearState): void {
-    clearState = next;
-    opts.chatClearBtn.dataset.clearState = next;
-  }
-  function armClearTimer(): void {
-    if (clearTimer) clearTimeout(clearTimer);
-    clearTimer = setTimeout(() => { clearTimer = null; setClearState("idle"); }, CLEAR_TIMEOUT_MS);
-  }
-  function clearClearTimer(): void {
-    if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
-  }
   function executeClearHistory(): void {
-    clearNode(opts.chatMessages);
-    if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
-    clearClearTimer();
-    setClearState("idle");
-    updateControls();
+    const msgs = Array.from(opts.chatMessages.children) as HTMLElement[];
+    if (msgs.length === 0 || (msgs.length === 1 && msgs[0].classList.contains("wl-chat-empty"))) {
+      updateControls();
+      return;
+    }
+    msgs.forEach((el, i) => el.style.setProperty("--msg-idx", String(Math.min(i, 10))));
+    opts.chatMessages.dataset.clearing = "1";
+    setTimeout(() => {
+      delete opts.chatMessages.dataset.clearing;
+      clearNode(opts.chatMessages);
+      if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
+      updateControls();
+    }, 320);
   }
+
+  const clearVote = new VoteTopic({
+    onExecute: executeClearHistory,
+    onState: (state) => { opts.chatClearBtn.dataset.clearState = state; updateControls(); },
+  });
+
+  // ── Ctrl dispatch ─────────────────────────────────────────
+  // Route inbound ctrl frames to the right handler.
+  // Adding a new voted feature = new VoteTopic + two lines here.
+
   function handleCtrl(opcode: number, _payload: Uint8Array): void {
-    if (opcode === CTRL_OP.CLEAR_REQ && clearState === "idle") {
-      setClearState("pending-in"); armClearTimer();
-    } else if (opcode === CTRL_OP.CLEAR_CONFIRM && clearState === "pending-out") {
-      executeClearHistory();
+    switch (opcode) {
+      case CTRL_OP.CLEAR_VOTE:   clearVote.receivePeer(); break;
+      case CTRL_OP.CLEAR_CANCEL: clearVote.cancelPeer();  break;
     }
   }
 
@@ -438,7 +441,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const env = {
     get conn() {
       return (navigator as any).connection as
-        { effectiveType?: string; rtt?: number; saveData?: boolean } | undefined;
+        (EventTarget & { effectiveType?: string; rtt?: number; saveData?: boolean }) | undefined;
     },
     /** User explicitly asked their browser to use less data. */
     get saveData(): boolean { return this.conn?.saveData === true; },
@@ -456,12 +459,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   };
 
   // Reduced-motion: composite of explicit preference + device/network.
-  // Mutable so we can react to live media-query changes.
+  // Mutable — reacts to live media-query and connection changes.
   let reduceMotion = lightDevice;
   const motionMq = window.matchMedia("(prefers-reduced-motion: reduce)");
   const syncMotion = () => { reduceMotion = motionMq.matches || env.lightDevice || env.constrainedNetwork; };
   syncMotion();
   motionMq.addEventListener("change", syncMotion, { signal });
+  // Connection can change mid-session (wifi → cellular, fast → slow).
+  // effectiveType: "slow-2g" | "2g" | "3g" | "4g" (no 5g — fast networks all report 4g).
+  // Re-sync reduceMotion so animations stop/resume when the network shifts.
+  try { env.conn?.addEventListener("change", syncMotion, { signal }); } catch {}
 
   /** Push all animation state to CSS custom properties. One place, once per frame. */
   function syncCSSVars(): void {
@@ -1457,7 +1464,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (flarePhraseInput) flarePhraseInput.value = "";
     skippedIceCandidates = 0;
     currentLiveState = "idle";
-    clearClearTimer(); setClearState("idle");
+    clearVote.reset();
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
     resetFpChip();
@@ -2201,16 +2208,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       executeClearHistory();
       return;
     }
-    if (clearState === "idle") {
-      session.sendCtrl(CTRL_OP.CLEAR_REQ);
-      setClearState("pending-out"); armClearTimer();
-    } else if (clearState === "pending-in") {
-      session.sendCtrl(CTRL_OP.CLEAR_CONFIRM);
-      executeClearHistory();
-    } else {
-      // pending-out: second click cancels
-      clearClearTimer(); setClearState("idle");
+    if (clearVote.state === "pending-out") {
+      clearVote.cancelLocal();
+      session.sendCtrl(CTRL_OP.CLEAR_CANCEL);
+      return;
     }
+    if (clearVote.localVoted) return;
+    session.sendCtrl(CTRL_OP.CLEAR_VOTE);
+    clearVote.castLocal();
   }, { signal });
 
   opts.chatFileInput.addEventListener("change", async () => {

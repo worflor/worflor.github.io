@@ -2,7 +2,7 @@
  * Whisper Live — control protocol (CTRL frames).
  *
  * Opcode ranges:
- *   0x01–0x0F  history/storage    CLEAR_REQ=0x01, CLEAR_CONFIRM=0x02
+ *   0x01–0x0F  history/storage    CLEAR_VOTE=0x01, CLEAR_CANCEL=0x02
  *   0x10–0x1F  presence/status    (future)
  *   0x20–0x2F  reactions          (future)
  *   0x30–0x3F  session policy     (future)
@@ -14,9 +14,11 @@
  */
 
 export const CTRL_OP = {
-  CLEAR_REQ:     0x01,
-  CLEAR_CONFIRM: 0x02,
+  CLEAR_VOTE:   0x01,
+  CLEAR_CANCEL: 0x02,
 } as const;
+
+/* ── Wire format ─────────────────────────────────────────── */
 
 export function encodeCtrl(opcode: number, payload?: Uint8Array): Uint8Array {
   const n = payload?.length ?? 0;
@@ -32,4 +34,140 @@ export function decodeCtrl(bytes: Uint8Array): { opcode: number; payload: Uint8A
   const payloadLen = bytes[1];
   if (bytes.length < 2 + payloadLen) return null;
   return { opcode: bytes[0], payload: bytes.subarray(2, 2 + payloadLen) };
+}
+
+/* ── Vote topic ──────────────────────────────────────────── */
+
+/**
+ * Generic voted operation. Encapsulates the symmetric voting state machine:
+ * both parties must agree before an action executes.
+ *
+ * Usage:
+ *   const clear = new VoteTopic({ parties: 2, timeoutMs: 30_000, onExecute, onState });
+ *   // user clicks button  → clear.castLocal()   → returns { send: voteOpcode } or { execute: true }
+ *   // peer sends vote     → clear.receivePeer()  → may trigger execute
+ *   // user cancels        → clear.cancelLocal()  → returns { send: cancelOpcode }
+ *   // peer cancels        → clear.cancelPeer()
+ *   // session ends        → clear.reset()
+ */
+export type VoteState = "idle" | "pending-out" | "pending-in";
+
+export interface VoteTopicOptions {
+  /** Total participants (default 2 for 1:1). */
+  parties?: number;
+  /** Timeout in ms before votes expire (default 30s). */
+  timeoutMs?: number;
+  /** Called when the vote threshold is met — execute the action. */
+  onExecute: () => void;
+  /** Called on every state transition. Wire this to your UI. */
+  onState: (state: VoteState) => void;
+}
+
+export class VoteTopic {
+  readonly threshold: number;
+
+  private _state: VoteState = "idle";
+  private _local = false;
+  private _peer = 0;
+  private _maxPeer: number;
+  private _timer: ReturnType<typeof setTimeout> | null = null;
+  private _timeoutMs: number;
+  private _onExecute: () => void;
+  private _onState: (state: VoteState) => void;
+
+  constructor(opts: VoteTopicOptions) {
+    const parties = opts.parties ?? 2;
+    this.threshold = Math.floor(parties / 2) + 1;
+    this._maxPeer = parties - 1;
+    this._timeoutMs = opts.timeoutMs ?? 30_000;
+    this._onExecute = opts.onExecute;
+    this._onState = opts.onState;
+  }
+
+  get state(): VoteState { return this._state; }
+  get localVoted(): boolean { return this._local; }
+
+  /** Cast this client's vote. Returns true if threshold met (action executed). */
+  castLocal(): boolean {
+    if (this._local) return false;
+    this._local = true;
+    if (this._tally() >= this.threshold) {
+      this._execute();
+      return true;
+    }
+    this._transition("pending-out");
+    this._arm();
+    return false;
+  }
+
+  /** Retract this client's vote. */
+  cancelLocal(): void {
+    if (!this._local) return;
+    this._local = false;
+    this._clearTimer();
+    this._transition(this._peer > 0 ? "pending-in" : "idle");
+  }
+
+  /** Register a peer's vote. Returns true if threshold met (action executed). */
+  receivePeer(): boolean {
+    this._peer = Math.min(this._peer + 1, this._maxPeer);
+    if (this._tally() >= this.threshold) {
+      this._execute();
+      return true;
+    }
+    this._transition("pending-in");
+    this._arm();
+    return false;
+  }
+
+  /** Register a peer's cancellation. */
+  cancelPeer(): void {
+    this._peer = Math.max(this._peer - 1, 0);
+    if (this._tally() < this.threshold) {
+      this._clearTimer();
+      this._transition(this._local ? "pending-out" : "idle");
+    }
+  }
+
+  /** Reset all state — call on disconnect / session teardown. */
+  reset(): void {
+    this._local = false;
+    this._peer = 0;
+    this._clearTimer();
+    this._transition("idle");
+  }
+
+  /** Clean up timer without state change. */
+  destroy(): void {
+    this._clearTimer();
+  }
+
+  private _tally(): number { return (this._local ? 1 : 0) + this._peer; }
+
+  private _transition(next: VoteState): void {
+    if (this._state === next) return;
+    this._state = next;
+    this._onState(next);
+  }
+
+  private _execute(): void {
+    this._local = false;
+    this._peer = 0;
+    this._clearTimer();
+    this._state = "idle";
+    this._onExecute();
+    this._onState("idle");
+  }
+
+  private _arm(): void {
+    this._clearTimer();
+    this._timer = setTimeout(() => {
+      this._timer = null;
+      this.reset();
+    }, this._timeoutMs);
+  }
+
+  private _clearTimer(): void {
+    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+  }
 }
