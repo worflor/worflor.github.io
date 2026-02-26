@@ -423,44 +423,7 @@ export function getAdpcmWasm(): Promise<AdpcmWasmExports> {
     return _wasmPromise;
 }
 
-export const WASM_BUF = BUF_START;
-
-const DC_ALPHA = 0.9995;
-let dcXPrev = 0;
-let dcYPrev = 0;
-
-export function resetAdpcmFilters(): void {
-    dcXPrev = 0;
-    dcYPrev = 0;
-}
-
-function applyDcBlockAndPreemphasis(samples: Float32Array): Float32Array {
-    const len = samples.length;
-    let dcX = dcXPrev;
-    let dcY = dcYPrev;
-    const dcAlpha = DC_ALPHA;
-
-    for (let i = 0; i < len; i++) {
-        const x = samples[i];
-        const dc = x - dcX + dcAlpha * dcY;
-        dcX = x;
-        dcY = dc;
-        
-        let s = dc;
-        if (s > 0.98) {
-            s = 0.98 + 0.02 * Math.tanh((s - 0.98) / 0.02);
-        } else if (s < -0.98) {
-            s = -0.98 + 0.02 * Math.tanh((s + 0.98) / 0.02);
-        }
-        
-        samples[i] = s;
-    }
-
-    dcXPrev = dcX;
-    dcYPrev = dcY;
-
-    return samples;
-}
+const WASM_BUF = BUF_START;
 
 export async function encodeAdpcm(
     float32Samples: Float32Array,
@@ -486,17 +449,13 @@ export async function encodeAdpcm(
         wasm.reset_encoder_state(0xDEADBEEF, 0x1337C0DE, 0x8BADF00D, 0x0DEFACED);
     }
     
-    resetAdpcmFilters();
-
     const pcmPtr = WASM_BUF;
     const outPtr = WASM_BUF + pcmBytes;
 
-    const conditioned = applyDcBlockAndPreemphasis(float32Samples);
-
-    // Bypass Int16 completely - write raw float32 directly
-    const f32View = new Float32Array(mem.buffer, pcmPtr, numSamples);    
+    // Caller must pre-apply dcBlock() from live-audio-dsp.ts before passing samples.
+    const f32View = new Float32Array(mem.buffer, pcmPtr, numSamples);
     for (let i = 0; i < numSamples; i++) {
-        f32View[i] = conditioned[i];
+        f32View[i] = float32Samples[i];
     }
     
     const bytesWritten = wasm.encode_adpcm(pcmPtr, numSamples, outPtr);
@@ -534,8 +493,6 @@ export async function decodeAdpcm(
     } else {
         wasm.reset_decoder_state(0xDEADBEEF, 0x1337C0DE, 0x8BADF00D, 0x0DEFACED);
     }
-    resetAdpcmFilters();
-
     const inPtr = WASM_BUF;
     const outPtr = WASM_BUF + inBytes;
 
@@ -552,43 +509,9 @@ export async function decodeAdpcm(
         for (let i = 0; i < samplesDecoded; i++) {
             pcm[i] = f32View[i];
         }
+        // Caller must post-apply inverseDcBlock() from live-audio-dsp.ts.
     }
 
     return { pcm, sampleRate, tampered };
 }
 
-export function wavFromPcm(pcm: Float32Array, sampleRate: number): Uint8Array {
-    const numSamples = pcm.length;
-    const byteRate = sampleRate * 2;
-    const dataBytes = numSamples * 2;
-    const buf = new ArrayBuffer(44 + dataBytes);
-    const dv = new DataView(buf);
-
-    dv.setUint32(0, 0x52494646, false);
-    dv.setUint32(4, 36 + dataBytes, true);
-    dv.setUint32(8, 0x57415645, false);
-    dv.setUint32(12, 0x666d7420, false);
-    dv.setUint32(16, 16, true);
-    dv.setUint16(20, 1, true);
-    dv.setUint16(22, 1, true);
-    dv.setUint32(24, sampleRate, true);
-    dv.setUint32(28, byteRate, true);
-    dv.setUint16(32, 2, true);
-    dv.setUint16(34, 16, true);
-    dv.setUint32(36, 0x64617461, false);
-    dv.setUint32(40, dataBytes, true);
-
-    let off = 44;
-    for (let i = 0; i < numSamples; i++) {
-        const s = Math.max(-1, Math.min(1, pcm[i]));
-        dv.setInt16(off, s < 0 ? s * 32768 : s * 32767, true);
-        off += 2;
-    }
-    return new Uint8Array(buf);
-}
-
-export async function adpcmToWav(adpcmBytes: Uint8Array): Promise<Blob> {
-    const { pcm, sampleRate } = await decodeAdpcm(adpcmBytes);
-    const wav = wavFromPcm(pcm, sampleRate);
-    return new Blob([wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength) as ArrayBuffer], { type: "audio/wav" });
-}

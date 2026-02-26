@@ -13,7 +13,8 @@ import {
   type LiveState,
   type LiveMessage,
 } from "./live";
-import { encodeAdpcm, decodeAdpcm, adpcmToWav } from "./live-wasm-audio";
+import { encodeAdpcm, decodeAdpcm } from "./live-wasm-audio";
+import { dcBlock, inverseDcBlock, wavFromPcm } from "./live-audio-dsp";
 import {
   CTRL_OP, VoteTopic,
   encodeSeenPayload, decodeSeenPayload,
@@ -1306,7 +1307,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let recordingStream: MediaStream | null = null;
   let recordingStart = 0;
   let recordingTimer: ReturnType<typeof setInterval> | null = null;
-  let activeAudio: { stop: () => void; btn: HTMLButtonElement; wrap: HTMLElement; redraw: (p: number) => void; raf: number } | null = null;
+  let activeAudio: { stop: () => void; stopLoop: () => void; btn: HTMLButtonElement; wrap: HTMLElement; redraw: (p: number) => void } | null = null;
 
   // Raw PCM accumulator — filled live while the worklet fires
   let pcmChunks: Float32Array[] = [];
@@ -1326,10 +1327,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let micRecorder: MediaRecorder | null = null;
   let micRecorderChunks: Blob[] = [];
 
-  // Dedicated singleton context for playback to prevent recording teardowns from closing it
-  let playbackCtx: AudioContext | null = null;
-
-  const micSupported = !!navigator.mediaDevices?.getUserMedia;
+const micSupported = !!navigator.mediaDevices?.getUserMedia;
   if (!micSupported) opts.chatMicWrap.setAttribute("data-hidden", "");
 
   function formatRecordDuration(ms: number): string {
@@ -1685,6 +1683,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     const encKey = session ? session.audioKey : undefined;
 
+    dcBlock(flat); // remove mic DC bias before encryption
     encodeAdpcm(flat, pcmSampleRate, encKey).then((adpcmBytes) => {
       if (!session) {
         addChatMessage({
@@ -1728,7 +1727,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function stopAllAudio(): void {
     if (activeAudio) {
-      cancelAnimationFrame(activeAudio.raf);
+      activeAudio.stopLoop();
       activeAudio.stop();
       setPlayIcon(activeAudio.btn, false);
       activeAudio.wrap.removeAttribute("data-playing");
@@ -2021,7 +2020,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       let pcmData: Float32Array | null = null;
       let durationSeconds = 0;
 
-      let sourceNode: AudioBufferSourceNode | null = null;
+      let audioElement: HTMLAudioElement | null = null;
+      let wavBlobUrl: string | null = null;
       let playbackStartTime = 0;
       let pauseOffset = 0;
       let isPlaying = false;
@@ -2047,8 +2047,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       /** rAF loop while audio is playing — reads currentTime for smooth sweep. */
       function playbackTick(): void {
-        if (isPlaying && durationSeconds > 0) {
-          const elapsed = (playbackCtx?.currentTime ?? 0) - playbackStartTime + pauseOffset;
+        if (isPlaying && durationSeconds > 0 && audioElement) {
+          const elapsed = audioElement.currentTime;
           const p = Math.min(1, Math.max(0, elapsed / durationSeconds));
           redraw(p);
           durLabel.textContent = formatAudioDuration(elapsed);
@@ -2147,10 +2147,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
             if (decoded.tampered) {
                throw new Error("Audio payload failed MAC verification. Packet was tampered with.");
             }
+            inverseDcBlock(decoded.pcm); // reconstruct signal prior to encode-side DC block
             pcmData = decoded.pcm;
             durationSeconds = decoded.pcm.length / decoded.sampleRate;
-            // Store sampleRate so the AudioBuffer uses the right rate
-            (playBtn as HTMLButtonElement & { _sr: number })._sr = decoded.sampleRate;
+            const wav = wavFromPcm(decoded.pcm, decoded.sampleRate);
+            wavBlobUrl = URL.createObjectURL(new Blob([wav.buffer.slice(0) as ArrayBuffer], { type: "audio/wav" }));
+            objectUrls.add(wavBlobUrl);
           } else {
             // Unused fallback, since we only send ADPCM now
             const actx = new AudioContext();
@@ -2169,30 +2171,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         }
       });
 
-      // ── WebAudio Playback via AudioContext ──
+      // ── HTMLAudioElement Playback ──
 
-      function getAudioContext(): AudioContext {
-        if (!playbackCtx) playbackCtx = new AudioContext(); // Use browser default sample rate for playback sink
-        if (playbackCtx.state === "suspended") playbackCtx.resume();
-        return playbackCtx;
-      }
-
-      function stopInternal() {
-        if (sourceNode) {
-          try { sourceNode.stop(); } catch { }
-          sourceNode = null;
+      function stopInternal(): void {
+        if (audioElement) {
+          try { audioElement.pause(); } catch { }
         }
         isPlaying = false;
         // Note: pauseOffset is NOT reset here — callers manage it.
         // stopAllAudio() and onended reset it to 0; pause path preserves it.
       }
 
-      playBtn.addEventListener("click", () => {
-        if (!pcmData) return; // not decoded yet
+      playBtn.addEventListener("click", async () => {
+        if (!pcmData || !wavBlobUrl) return; // not decoded yet
 
         if (isPlaying) {
-          const ctx = getAudioContext();
-          pauseOffset += ctx.currentTime - playbackStartTime;
+          if (audioElement) pauseOffset = audioElement.currentTime;
           stopInternal(); // preserves pauseOffset
 
           stopPlaybackLoop();
@@ -2204,49 +2198,48 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
         // Start playback
         stopAllAudio();
-        const ctx = getAudioContext();
 
-        const sr = (playBtn as HTMLButtonElement & { _sr: number })._sr ?? 48000;
-        const audioBuf = ctx.createBuffer(1, pcmData.length, sr);
-        audioBuf.getChannelData(0).set(pcmData);
-
-        sourceNode = ctx.createBufferSource();
-        sourceNode.buffer = audioBuf;
-        sourceNode.connect(ctx.destination);
+        if (!audioElement) {
+          audioElement = new Audio(wavBlobUrl);
+          audioElement.onended = () => {
+            if (!isPlaying) return; // called by manual stop
+            pauseOffset = 0; // reset to start on next play
+            stopInternal();
+            stopPlaybackLoop();
+            setPlayIcon(playBtn, false);
+            audioEl.removeAttribute("data-playing");
+            redraw(0);
+            durLabel.textContent = formatAudioDuration(durationSeconds);
+            if (activeAudio?.btn === playBtn) activeAudio = null;
+          };
+        }
 
         // If we reached the end, loop back around
         if (pauseOffset >= durationSeconds - 0.05) pauseOffset = 0;
 
-        playbackStartTime = ctx.currentTime;
-        sourceNode.start(0, pauseOffset);
-        isPlaying = true;
-
-        sourceNode.onended = () => {
-          if (!isPlaying) return; // called by manual stop
-          pauseOffset = 0; // reset to start on next play
+        audioElement.currentTime = pauseOffset;
+        playbackStartTime = performance.now() / 1000 - pauseOffset;
+        
+        try {
+          await audioElement.play();
+          isPlaying = true;
+          setPlayIcon(playBtn, true);
+          audioEl.setAttribute("data-playing", "");
+          startPlaybackLoop();
+          activeAudio = { stop: stopInternal, stopLoop: stopPlaybackLoop, btn: playBtn, wrap: audioEl, redraw };
+        } catch (err) {
+          console.error("[whisper] audio playback failed:", err);
           stopInternal();
-          stopPlaybackLoop();
           setPlayIcon(playBtn, false);
-          audioEl.removeAttribute("data-playing");
-          redraw(0);
-          durLabel.textContent = formatAudioDuration(durationSeconds);
-          if (activeAudio?.btn === playBtn) activeAudio = null;
-        };
-
-        setPlayIcon(playBtn, true);
-        audioEl.setAttribute("data-playing", "");
-        startPlaybackLoop();
-        activeAudio = { stop: stopInternal, btn: playBtn, wrap: audioEl, redraw, raf: playRaf };
+        }
       }, { signal });
 
       dlBtn.addEventListener("click", async () => {
-        if (!isWhisperCodec || dlBtn.disabled) return;
+        if (!isWhisperCodec || dlBtn.disabled || !wavBlobUrl) return;
         dlBtn.disabled = true;
         try {
-          // Decode proprietary ADPCM payload to standard PCM, wrap in a RIFF WAV container Blob
-          const wavBlob = await adpcmToWav(fileData);
-          const url = URL.createObjectURL(wavBlob);
-          objectUrls.add(url);
+          // Use the same WAV blob we created for playback
+          const url = wavBlobUrl;
 
           const a = document.createElement("a");
           a.style.display = "none";
@@ -2259,11 +2252,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           document.body.appendChild(a);
           a.click();
 
-          // Cleanup
-          setTimeout(() => {
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-          }, 1000);
+          // Cleanup anchor — don't revoke wavBlobUrl, it's shared with the playback element
+          setTimeout(() => document.body.removeChild(a), 1000);
         } catch (e) {
           console.error("Failed to convert audio for download", e);
         } finally {
@@ -2273,18 +2263,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       // Click on canvas to seek
       canvas.addEventListener("click", (e) => {
-        if (!pcmData || !durationSeconds) return;
+        if (!pcmData || !durationSeconds || !audioElement) return;
         const rect = canvas.getBoundingClientRect();
         const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
         pauseOffset = ratio * durationSeconds;
+        audioElement.currentTime = pauseOffset;
         redraw(ratio);
         durLabel.textContent = formatAudioDuration(pauseOffset);
-
-        if (isPlaying) {
-          // Restart playback at new offset
-          playBtn.click(); // stop
-          playBtn.click(); // play
-        }
       }, { signal });
 
       div.appendChild(audioEl);

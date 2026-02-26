@@ -96,8 +96,8 @@ function avalanche(reg: number): number[] {
 const ENC_STATE_ADDR = 0x0100;
 const DEC_STATE_ADDR = 0x0200;
 const BUF_START = 0x0300;
-const HEADER_SIZE = 12; // width(u16), height(u16), frameIdx(u32), flags(u32)
-const MAC_SIZE = 8;
+export const HEADER_SIZE = 12; // width(u16), height(u16), frameIdx(u32), flags(u32)
+export const MAC_SIZE = 8;
 
 function QROUND(a: number, b: number, c: number, d: number): number[] {
     return [
@@ -149,6 +149,58 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
     ];
 }
 
+/** Per-frame setup: nonce from frame counter, reset block counter, write header frameIdx */
+function buildFrameSetup(stateAddr: number, outPtrLocal?: number): number[] {
+    return [
+        // Set nonce word 0 from frame counter
+        ...CI32(0),
+        ...CI32(0), ...LOAD32(2, stateAddr + 144),
+        ...STORE32(2, stateAddr + 52),
+        // Write frame counter to packet header (encode only)
+        ...(outPtrLocal !== undefined ? [
+            ...GET(outPtrLocal),
+            ...CI32(0), ...LOAD32(2, stateAddr + 144),
+            ...STORE32(2, 4),
+        ] : []),
+        // Increment frame counter
+        ...CI32(0),
+        ...CI32(0), ...LOAD32(2, stateAddr + 144), ...CI32(1), ...ADD,
+        ...STORE32(2, stateAddr + 144),
+        // Reset block counter for new frame
+        ...CI32(0), ...CI32(0), ...STORE32(2, stateAddr + 48),
+    ];
+}
+
+/** PRF-based ratchet: generates a ChaCha block, copies output to all 8 key words,
+ *  mixes MAC into nonce for forward secrecy binding, re-keys MAC. */
+function buildRatchet(stateAddr: number, v: number[], mac0: number, mac1: number, temp: number): number[] {
+    const copyKeyFromOutput: number[] = [];
+    for (let j = 0; j < 8; j++) {
+        copyKeyFromOutput.push(
+            ...CI32(0),
+            ...CI32(0), ...LOAD32(2, stateAddr + 64 + j * 4),
+            ...STORE32(2, stateAddr + 16 + j * 4),
+        );
+    }
+    return [
+        // Generate ratchet block (consumes one ChaCha counter value)
+        ...buildChaChaBlock(stateAddr, v),
+        // Full 256-bit key refresh from PRF output
+        ...copyKeyFromOutput,
+        // Mix MAC snapshot into nonce for forward secrecy binding
+        // (use temp as scratch — don't modify mac0/mac1, MAC must cover entire frame)
+        ...GET(mac0), ...SET(temp), ...avalanche(temp),
+        ...CI32(0),
+        ...CI32(0), ...LOAD32(2, stateAddr + 52), ...GET(temp), ...XOR,
+        ...STORE32(2, stateAddr + 52),
+        ...GET(mac1), ...SET(temp), ...avalanche(temp),
+        ...CI32(0),
+        ...CI32(0), ...LOAD32(2, stateAddr + 56), ...GET(temp), ...XOR,
+        ...STORE32(2, stateAddr + 56),
+        // MAC continues accumulating — never reset mid-frame
+    ];
+}
+
 function buildEncodeBody(): number[] {
     const i = 3, pixel = 4, outLen = 5, idx = 6, keystream_word = 7, pixel_count = 8, mac0 = 9, mac1 = 10, temp = 11, remainder = 12;
     const v = [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
@@ -160,8 +212,8 @@ function buildEncodeBody(): number[] {
 
         // Keystream XOR
         ...CI32(0), ...CI32(ENC_STATE_ADDR + 64), ...CI32(blockOffset), ...ADD,
-        ...LOAD32(2, 0), ...SET(idx),
-        ...GET(temp), ...GET(idx), ...XOR, ...SET(temp),
+        ...LOAD32(2, 0), ...SET(idx), // idx is 6 (i32)
+        ...GET(temp), ...GET(idx), ...XOR, ...SET(temp), // temp is 11 (i32)
 
         // MAC Update
         ...GET(mac0), ...GET(temp), ...ADD, ...SET(mac0),
@@ -225,6 +277,9 @@ function buildEncodeBody(): number[] {
     }
 
     const body = [
+        // Per-frame setup: nonce from counter, reset block counter, write header
+        ...buildFrameSetup(ENC_STATE_ADDR, 2),
+
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 132), ...SET(pixel_count),
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 136), ...SET(mac0),
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 140), ...SET(mac1),
@@ -239,24 +294,41 @@ function buildEncodeBody(): number[] {
         ...buildChaChaBlock(ENC_STATE_ADDR, v),
         ...unrolled,
 
-        // Periodic ratchet (every 4096 pixels)
+        // PRF-based ratchet every 4096 pixels — full 256-bit key refresh
         ...GET(pixel_count), ...CI32(4095), ...AND, ...CI32(0), ...EQ,
         ...IF,
-        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 16), ...GET(mac0), ...XOR, ...SET(temp), ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, ENC_STATE_ADDR + 16),
-        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 20), ...GET(mac1), ...XOR, ...SET(temp), ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, ENC_STATE_ADDR + 20),
-        ...CI32(0), ...SET(mac0), ...CI32(0), ...SET(mac1), // Clear MAC after ratchet
+        ...buildRatchet(ENC_STATE_ADDR, v, mac0, mac1, temp),
         ...END,
 
         ...BR(0),
         ...END, ...END,
 
-        // Remainder loop (1 pixel at a time)
+        // Remainder loop (1 pixel at a time, dynamic keystream offset)
         ...GET(i), ...GET(1), ...GE_s, ...CI32(0), ...EQ,
         ...IF,
         ...buildChaChaBlock(ENC_STATE_ADDR, v),
+        ...CI32(0), ...SET(idx), // idx = keystream byte offset within block
         ...BLOCK, ...LOOP,
         ...GET(i), ...GET(1), ...GE_s, ...BRIF(1),
-        ...processPixel(0),
+
+        // Read pixel
+        ...GET(0), ...GET(i), ...CI32(2), ...SHL, ...ADD,
+        ...LOAD32(2, 0), ...SET(temp),
+        // Keystream XOR (dynamic offset: mem[idx + STATE+64])
+        ...GET(idx), ...LOAD32(2, ENC_STATE_ADDR + 64), ...SET(remainder),
+        ...GET(temp), ...GET(remainder), ...XOR, ...SET(temp),
+        // MAC
+        ...GET(mac0), ...GET(temp), ...ADD, ...SET(mac0),
+        ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
+        ...GET(mac1), ...CI32(17), ...ROTL, ...GET(temp), ...ADD, ...SET(mac1),
+        // Write encrypted pixel
+        ...GET(2), ...GET(outLen), ...ADD, ...GET(temp), ...STORE32(2, 0),
+        ...GET(outLen), ...CI32(4), ...ADD, ...SET(outLen),
+        // Advance
+        ...GET(pixel_count), ...CI32(1), ...ADD, ...SET(pixel_count),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i),
+        ...GET(idx), ...CI32(4), ...ADD, ...SET(idx),
+
         ...BR(0),
         ...END, ...END,
         ...END,
@@ -274,30 +346,52 @@ function buildEncodeBody(): number[] {
         ...GET(outLen),
         ...END,
     ];
-    return funcBody([{ count: 32, type: I32 }], body);
+
+    // Locals definition:
+    // 3: i (i32)
+    // 4: pixel (v128)
+    // 5: outLen (i32)
+    // 6: idx (i32)
+    // 7: keystream_word (v128)
+    // 8: pixel_count (i32)
+    // 9: mac0 (i32)
+    // 10: mac1 (i32)
+    // 11: temp (i32)
+    // 12: remainder (i32)
+    // 13-28: v (i32 x 16)
+
+    const localDecls = [
+        { count: 1, type: I32 },  // 3: i
+        { count: 1, type: V128 }, // 4: pixel
+        { count: 2, type: I32 },  // 5: outLen, 6: idx
+        { count: 1, type: V128 }, // 7: keystream_word
+        { count: 21, type: I32 }  // 8..28: pixel_count, mac0, mac1, temp, remainder, v[16]
+    ];
+
+    return funcBody(localDecls, body);
 }
 
 function buildDecodeBody(): number[] {
-    const i = 3, inPixel = 4, decodedCount = 5, pixel_count = 6, mac0 = 7, mac1 = 8, temp = 9, totalPixels = 10, expMac0 = 11, expMac1 = 12, remainder = 13;
-    const v = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+    const i = 3, inPixel = 4, ks_v128 = 5, decodedCount = 6, pixel_count = 7, mac0 = 8, mac1 = 9, temp = 10, totalPixels = 11, expMac0 = 12, expMac1 = 13, remainder = 14;
+    const v = [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30];
 
     const processPixel = (blockOffset: number) => [
         ...GET(0), ...CI32(HEADER_SIZE), ...ADD, ...GET(i), ...CI32(2), ...SHL, ...ADD,
-        ...LOAD32(2, 0), ...SET(temp),
+        ...LOAD32(2, 0), ...SET(expMac0), // expMac0 (11) is i32
 
         // Update MAC with cipher text FIRST
-        ...GET(mac0), ...GET(temp), ...ADD, ...SET(mac0),
+        ...GET(mac0), ...GET(expMac0), ...ADD, ...SET(mac0),
         ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
-        ...GET(mac1), ...CI32(17), ...ROTL, ...GET(temp), ...ADD, ...SET(mac1),
+        ...GET(mac1), ...CI32(17), ...ROTL, ...GET(expMac0), ...ADD, ...SET(mac1),
 
         // Keystream XOR
         ...CI32(0), ...CI32(DEC_STATE_ADDR + 64), ...CI32(blockOffset), ...ADD,
-        ...LOAD32(2, 0), ...SET(remainder),
-        ...GET(temp), ...GET(remainder), ...XOR, ...SET(temp),
+        ...LOAD32(2, 0), ...SET(remainder), // remainder (13) is i32
+        ...GET(expMac0), ...GET(remainder), ...XOR, ...SET(expMac0),
 
         // Write decrypted pixel
         ...GET(2), ...GET(decodedCount), ...CI32(2), ...SHL, ...ADD,
-        ...GET(temp), ...STORE32(2, 0),
+        ...GET(expMac0), ...STORE32(2, 0),
 
         ...GET(decodedCount), ...CI32(1), ...ADD, ...SET(decodedCount),
         ...GET(pixel_count), ...CI32(1), ...ADD, ...SET(pixel_count),
@@ -330,8 +424,8 @@ function buildDecodeBody(): number[] {
 
         // Keystream XOR
         ...CI32(0), ...CI32(DEC_STATE_ADDR + 64), ...CI32(blockOffset), ...ADD,
-        ...V128_LOAD(4, 0), ...SET(temp), // temp is keystream_word v128
-        ...GET(inPixel), ...GET(temp), ...V128_XOR, ...SET(inPixel),
+        ...V128_LOAD(4, 0), ...SET(ks_v128),
+        ...GET(inPixel), ...GET(ks_v128), ...V128_XOR, ...SET(inPixel),
 
         // Write decrypted 128-bit block
         ...GET(2), ...GET(decodedCount), ...CI32(2), ...SHL, ...ADD,
@@ -348,6 +442,9 @@ function buildDecodeBody(): number[] {
     }
 
     const body = [
+        // Per-frame setup: nonce from counter, reset block counter
+        ...buildFrameSetup(DEC_STATE_ADDR),
+
         ...GET(0), ...LOAD16u(1, 0), ...SET(totalPixels), // width
         ...GET(0), ...LOAD16u(1, 2), ...GET(totalPixels), ...MUL, ...SET(totalPixels), // width * height
 
@@ -364,23 +461,42 @@ function buildDecodeBody(): number[] {
         ...buildChaChaBlock(DEC_STATE_ADDR, v),
         ...unrolled,
 
+        // PRF-based ratchet every 4096 pixels — full 256-bit key refresh
         ...GET(pixel_count), ...CI32(4095), ...AND, ...CI32(0), ...EQ,
         ...IF,
-        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 16), ...GET(mac0), ...XOR, ...SET(temp), ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, DEC_STATE_ADDR + 16),
-        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 20), ...GET(mac1), ...XOR, ...SET(temp), ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, DEC_STATE_ADDR + 20),
-        ...CI32(0), ...SET(mac0), ...CI32(0), ...SET(mac1), // Clear MAC after ratchet
+        ...buildRatchet(DEC_STATE_ADDR, v, mac0, mac1, temp),
         ...END,
 
         ...BR(0),
         ...END, ...END,
 
-        // Remainder loop
+        // Remainder loop (dynamic keystream offset)
         ...GET(decodedCount), ...GET(totalPixels), ...GE_s, ...CI32(0), ...EQ,
         ...IF,
         ...buildChaChaBlock(DEC_STATE_ADDR, v),
+        ...CI32(0), ...SET(temp), // temp = keystream byte offset within block
         ...BLOCK, ...LOOP,
         ...GET(decodedCount), ...GET(totalPixels), ...GE_s, ...BRIF(1),
-        ...processPixel(0),
+
+        // Read ciphertext
+        ...GET(0), ...CI32(HEADER_SIZE), ...ADD, ...GET(i), ...CI32(2), ...SHL, ...ADD,
+        ...LOAD32(2, 0), ...SET(expMac0),
+        // MAC with ciphertext FIRST
+        ...GET(mac0), ...GET(expMac0), ...ADD, ...SET(mac0),
+        ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
+        ...GET(mac1), ...CI32(17), ...ROTL, ...GET(expMac0), ...ADD, ...SET(mac1),
+        // Keystream XOR (dynamic offset: mem[temp + STATE+64])
+        ...GET(temp), ...LOAD32(2, DEC_STATE_ADDR + 64), ...SET(remainder),
+        ...GET(expMac0), ...GET(remainder), ...XOR, ...SET(expMac0),
+        // Write decrypted pixel
+        ...GET(2), ...GET(decodedCount), ...CI32(2), ...SHL, ...ADD,
+        ...GET(expMac0), ...STORE32(2, 0),
+        // Advance
+        ...GET(decodedCount), ...CI32(1), ...ADD, ...SET(decodedCount),
+        ...GET(pixel_count), ...CI32(1), ...ADD, ...SET(pixel_count),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i),
+        ...GET(temp), ...CI32(4), ...ADD, ...SET(temp),
+
         ...BR(0),
         ...END, ...END,
         ...END,
@@ -400,38 +516,45 @@ function buildDecodeBody(): number[] {
         ...END,
     ];
     const localDecls = [
-        { count: 1, type: I32 }, // 3: i
-        { count: 1, type: V128 },// 4: inPixel
-        { count: 4, type: I32 }, // 5: decodedCount, 6: pixel_count, 7: mac0, 8: mac1
-        { count: 1, type: V128 },// 9: temp
-        { count: 20, type: I32 },// 10: totalPixels, 11: expMac0, 12: expMac1, 13: remainder, 14-29: Chacha state
+        { count: 1, type: I32 },  // 3: i
+        { count: 2, type: V128 }, // 4: inPixel, 5: ks_v128
+        { count: 9, type: I32 },  // 6-14: decodedCount, pixel_count, mac0, mac1, temp, totalPixels, expMac0, expMac1, remainder
+        { count: 16, type: I32 }, // 15-30: v[16] ChaCha state
     ];
     return funcBody(localDecls, body);
 }
 
 function buildResetStateBody(addr: number): number[] {
-    const k0 = 0, k1 = 1, k2 = 2, k3 = 3;
+    // 8 params: k0..k7 = full 256-bit key (RFC 8439 ChaCha20)
+    const k0 = 0, k1 = 1, k2 = 2, k3 = 3, k4 = 4, k5 = 5, k6 = 6, k7 = 7;
     return funcBody([], [
+        // "expand 32-byte k" constants
         ...CI32(0), ...CI32(0x61707865), ...STORE32(2, addr + 0),
         ...CI32(0), ...CI32(0x3320646e), ...STORE32(2, addr + 4),
         ...CI32(0), ...CI32(0x79622d32), ...STORE32(2, addr + 8),
         ...CI32(0), ...CI32(0x6b206574), ...STORE32(2, addr + 12),
+        // Key (256 bits = 8 words)
         ...CI32(0), ...GET(k0), ...STORE32(2, addr + 16),
         ...CI32(0), ...GET(k1), ...STORE32(2, addr + 20),
         ...CI32(0), ...GET(k2), ...STORE32(2, addr + 24),
         ...CI32(0), ...GET(k3), ...STORE32(2, addr + 28),
-        ...CI32(0), ...GET(k0), ...CI32(0xDEADBEEF), ...XOR, ...STORE32(2, addr + 32),
-        ...CI32(0), ...GET(k1), ...CI32(0x1337C0DE), ...XOR, ...STORE32(2, addr + 36),
-        ...CI32(0), ...GET(k2), ...CI32(0x8BADF00D), ...XOR, ...STORE32(2, addr + 40),
-        ...CI32(0), ...GET(k3), ...CI32(0x0DEFACED), ...XOR, ...STORE32(2, addr + 44),
+        ...CI32(0), ...GET(k4), ...STORE32(2, addr + 32),
+        ...CI32(0), ...GET(k5), ...STORE32(2, addr + 36),
+        ...CI32(0), ...GET(k6), ...STORE32(2, addr + 40),
+        ...CI32(0), ...GET(k7), ...STORE32(2, addr + 44),
+        // Counter = 0
         ...CI32(0), ...CI32(0), ...STORE32(2, addr + 48),
-        ...CI32(0), ...CI32(1), ...STORE32(2, addr + 52),
-        ...CI32(0), ...CI32(2), ...STORE32(2, addr + 56),
-        ...CI32(0), ...CI32(3), ...STORE32(2, addr + 60),
-        ...CI32(0), ...CI32(64), ...STORE32(2, addr + 128),
-        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 132),
-        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 136),
-        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 140),
+        // Nonce (word 0 set per-frame from frame counter; words 1-2 static seed)
+        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 52),
+        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 56),
+        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 60),
+        // Extended state
+        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 128),
+        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 132), // pixel_count
+        // Keyed MAC seed (derived from key, domain-separated)
+        ...CI32(0), ...GET(k0), ...CI32(0x736f6d65), ...XOR, ...STORE32(2, addr + 136),
+        ...CI32(0), ...GET(k1), ...CI32(0x646f7261), ...XOR, ...STORE32(2, addr + 140),
+        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 144), // frame_counter
         ...END,
     ]);
 }
@@ -445,10 +568,9 @@ const V128_XOR = [0xfd, 0x51];
 export function buildVideoWasmBytes(): Uint8Array {
     const magic = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
     const typeSection = section(1, [
-        ...encodeULEB(3),
-        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32,
-        0x60, ...encodeULEB(4), I32, I32, I32, I32, ...encodeULEB(0),
-        0x60, ...encodeULEB(0), ...encodeULEB(0),
+        ...encodeULEB(2),
+        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32,  // type 0: (i32,i32,i32)->i32
+        0x60, ...encodeULEB(8), I32, I32, I32, I32, I32, I32, I32, I32, ...encodeULEB(0), // type 1: (i32 x 8)->void
     ]);
     const funcSection = section(3, [
         ...encodeULEB(4),
@@ -488,8 +610,8 @@ export interface VideoWasmExports {
     memory: WebAssembly.Memory;
     encode_video: (pixelsPtr: number, numPixels: number, outPtr: number) => number;
     decode_video: (packetPtr: number, packetLen: number, outPtr: number) => number;
-    reset_encoder_state: (k0: number, k1: number, k2: number, k3: number) => void;
-    reset_decoder_state: (k0: number, k1: number, k2: number, k3: number) => void;
+    reset_encoder_state: (k0: number, k1: number, k2: number, k3: number, k4: number, k5: number, k6: number, k7: number) => void;
+    reset_decoder_state: (k0: number, k1: number, k2: number, k3: number, k4: number, k5: number, k6: number, k7: number) => void;
 }
 
 let _wasmPromise: Promise<VideoWasmExports> | null = null;
@@ -503,18 +625,45 @@ export function getVideoWasm(): Promise<VideoWasmExports> {
     return _wasmPromise;
 }
 
+export interface PacketHeader {
+    width: number;
+    height: number;
+    frameIdx: number;
+    flags: number;
+}
+
 export class VideoCodec {
     public wasm: VideoWasmExports | null = null;
     private initialized = false;
 
     async init(encryptionKey: Uint32Array) {
+        if (encryptionKey.length < 8) throw new Error("Key must be 256 bits (Uint32Array of 8)");
         this.wasm = await getVideoWasm();
-        this.wasm.reset_encoder_state(encryptionKey[0], encryptionKey[1], encryptionKey[2], encryptionKey[3]);
-        this.wasm.reset_decoder_state(encryptionKey[0], encryptionKey[1], encryptionKey[2], encryptionKey[3]);
+        const k = encryptionKey;
+        this.wasm.reset_encoder_state(k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]);
+        this.wasm.reset_decoder_state(k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]);
         this.initialized = true;
     }
 
-    async encode(pixels: Uint8Array, width: number, height: number): Promise<Uint8Array> {
+    /** Exact packet size for a given resolution. Use to pre-allocate buffers. */
+    static packetSize(width: number, height: number): number {
+        return HEADER_SIZE + width * height * 4 + MAC_SIZE;
+    }
+
+    /** Read packet header without decrypting. Useful for routing, stats, drop detection. */
+    static peekHeader(packet: Uint8Array): PacketHeader {
+        if (packet.length < HEADER_SIZE) throw new Error("Packet too short for header");
+        const dv = new DataView(packet.buffer, packet.byteOffset, HEADER_SIZE);
+        return {
+            width: dv.getUint16(0, true),
+            height: dv.getUint16(2, true),
+            frameIdx: dv.getUint32(4, true),
+            flags: dv.getUint32(8, true),
+        };
+    }
+
+    /** Encrypt a frame. Returns a new Uint8Array packet. */
+    encode(pixels: Uint8Array, width: number, height: number): Uint8Array {
         if (!this.wasm) throw new Error("Codec not initialized");
         const numPixels = width * height;
         const pixelBytes = numPixels * 4;
@@ -534,14 +683,46 @@ export class VideoCodec {
         const dv = new DataView(mem.buffer, outPtr, HEADER_SIZE);
         dv.setUint16(0, width, true);
         dv.setUint16(2, height, true);
-        dv.setUint32(4, 0, true);
-        dv.setUint32(8, 0, true);
+        dv.setUint32(8, 0, true); // flags
 
         const bytesWritten = this.wasm.encode_video(pixelsPtr, numPixels, outPtr);
         return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
     }
 
-    async decode(packet: Uint8Array): Promise<{ pixels: Uint8Array; width: number; height: number; tampered: boolean }> {
+    /**
+     * Encrypt a frame directly into a pre-allocated buffer. Zero-alloc hot path.
+     * `out` must be at least `VideoCodec.packetSize(width, height)` bytes.
+     * Returns the number of bytes written.
+     */
+    encodeInto(pixels: Uint8Array, width: number, height: number, out: Uint8Array): number {
+        if (!this.wasm) throw new Error("Codec not initialized");
+        const numPixels = width * height;
+        const pixelBytes = numPixels * 4;
+        const outMaxBytes = HEADER_SIZE + pixelBytes + MAC_SIZE;
+        const totalNeeded = BUF_START + pixelBytes + outMaxBytes;
+
+        const mem = this.wasm.memory;
+        if (mem.buffer.byteLength < totalNeeded) {
+            this.wasm.memory.grow(Math.ceil((totalNeeded - mem.buffer.byteLength) / 65536));
+        }
+
+        const pixelsPtr = BUF_START;
+        const outPtr = BUF_START + pixelBytes;
+
+        new Uint8Array(mem.buffer).set(pixels, pixelsPtr);
+
+        const dv = new DataView(mem.buffer, outPtr, HEADER_SIZE);
+        dv.setUint16(0, width, true);
+        dv.setUint16(2, height, true);
+        dv.setUint32(8, 0, true);
+
+        const bytesWritten = this.wasm.encode_video(pixelsPtr, numPixels, outPtr);
+        out.set(new Uint8Array(mem.buffer, outPtr, bytesWritten));
+        return bytesWritten;
+    }
+
+    /** Decrypt a packet. Returns a new Uint8Array for the pixels. */
+    decode(packet: Uint8Array): { pixels: Uint8Array; width: number; height: number; tampered: boolean } {
         if (!this.wasm) throw new Error("Codec not initialized");
         if (packet.length < HEADER_SIZE + MAC_SIZE) throw new Error("Video packet too short");
 
@@ -571,18 +752,46 @@ export class VideoCodec {
 
         return { pixels, width, height, tampered };
     }
-}
 
-// Keep the old functional wrappers for the harness but make them use a shared instance
-const _sharedCodec = new VideoCodec();
-let _sharedInit = false;
+    /**
+     * Decrypt a packet directly into a pre-allocated buffer. Zero-alloc hot path.
+     * `out` must be at least `width * height * 4` bytes (read width/height from peekHeader).
+     * Returns { width, height, tampered }. If !tampered, `out` contains the decoded RGBA pixels.
+     */
+    decodeInto(packet: Uint8Array, out: Uint8Array): { width: number; height: number; tampered: boolean } {
+        if (!this.wasm) throw new Error("Codec not initialized");
+        if (packet.length < HEADER_SIZE + MAC_SIZE) throw new Error("Video packet too short");
 
-export async function encodeVideoFrame(pixels: Uint8Array, width: number, height: number, key: Uint32Array) {
-    if (!_sharedInit) { await _sharedCodec.init(key); _sharedInit = true; }
-    return _sharedCodec.encode(pixels, width, height);
-}
+        const dvHdr = new DataView(packet.buffer, packet.byteOffset, HEADER_SIZE);
+        const width = dvHdr.getUint16(0, true);
+        const height = dvHdr.getUint16(2, true);
+        const numPixels = width * height;
 
-export async function decodeVideoFrame(packet: Uint8Array, key: Uint32Array) {
-    if (!_sharedInit) { await _sharedCodec.init(key); _sharedInit = true; }
-    return _sharedCodec.decode(packet);
+        const totalNeeded = BUF_START + packet.length + numPixels * 4;
+        const mem = this.wasm.memory;
+        if (mem.buffer.byteLength < totalNeeded) {
+            this.wasm.memory.grow(Math.ceil((totalNeeded - mem.buffer.byteLength) / 65536));
+        }
+
+        const packetPtr = BUF_START;
+        const outPtr = BUF_START + packet.length;
+
+        new Uint8Array(mem.buffer).set(packet, packetPtr);
+
+        const pixelsDecoded = this.wasm.decode_video(packetPtr, packet.length, outPtr);
+        const tampered = pixelsDecoded === 0;
+
+        if (!tampered) {
+            out.set(new Uint8Array(mem.buffer, outPtr, pixelsDecoded * 4));
+        }
+
+        return { width, height, tampered };
+    }
+
+    /** Convenience: decode to ImageData for direct canvas rendering. Browser-only. */
+    decodeToImageData(packet: Uint8Array): ImageData | null {
+        const { pixels, width, height, tampered } = this.decode(packet);
+        if (tampered) return null;
+        return new ImageData(new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength), width, height);
+    }
 }
