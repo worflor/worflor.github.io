@@ -10,33 +10,44 @@ const seo = {
 ---
 
 <Layout seo={seo}>
-  <div class="whisper-page" id="whisper-page" data-mode="live" data-busy="0" data-breadcrumb-controller>
+  <div
+    class="whisper-page"
+    id="whisper-page"
+    data-mode="live"
+    data-busy="0"
+    data-breadcrumb-controller
+  >
     <script is:inline>
-      (function(){var p=document.getElementById("whisper-page");if(!p)return;
-        var m=sessionStorage.getItem("whisper-mode");
-        if(m==="embed"||m==="extract"||m==="hunt"||m==="live")p.dataset.mode=m;
-        if(m==="embed")p.dataset.carrier=sessionStorage.getItem("whisper-carrier")==="file"?"file":"url";
+      (function () {
+        var p = document.getElementById("whisper-page");
+        if (!p) return;
+        var m = sessionStorage.getItem("whisper-mode");
+        if (m === "embed" || m === "extract" || m === "hunt" || m === "live")
+          p.dataset.mode = m;
+        if (m === "embed")
+          p.dataset.carrier =
+            sessionStorage.getItem("whisper-carrier") === "file"
+              ? "file"
+              : "url";
       })();
     </script>
     <!-- ── Hero ─────────────────────────────────────────────── -->
-    <section
-      class="mt-8 content-section whisper-intro"
-    >
+    <section class="mt-8 content-section whisper-intro">
       <div class="whisper-title-row">
         <h1 class="page-title whisper-title" id="whisper-title">Whisper</h1>
         <span class="whisper-alpha-badge" id="whisper-alpha-badge">ALPHA</span>
       </div>
-      <p class="whisper-tagline">carrier-bound encryption and sealed messaging</p>
+      <p class="whisper-tagline">
+        carrier-bound encryption and sealed messaging
+      </p>
       <p class="whisper-privacy-badge">
         <span class="privacy-dot"></span>
-       local to this browser
+        local to this browser
       </p>
     </section>
 
     <!-- ── Mode Selector ────────────────────────────────────── -->
-    <section
-      class="mt-[var(--space-md)] content-section"
-    >
+    <section class="mt-[var(--space-md)] content-section">
       <div class="whisper-mode-bar" role="group" aria-label="Whisper mode">
         <button
           class="whisper-mode-btn whisper-mode-btn--active"
@@ -44,8 +55,17 @@ const seo = {
           aria-pressed="true"
           type="button"
         >
-          <svg class="whisper-mode-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
-            <path d="M4 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2"></path>
+          <svg
+            class="whisper-mode-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.2"
+            aria-hidden="true"
+          >
+            <path
+              d="M4 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2"
+            ></path>
             <path d="M2 4h12"></path>
             <path d="M5.5 9.5h5M8 7v5"></path>
           </svg>
@@ -57,8 +77,17 @@ const seo = {
           aria-pressed="false"
           type="button"
         >
-          <svg class="whisper-mode-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
-            <path d="M4 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2"></path>
+          <svg
+            class="whisper-mode-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.2"
+            aria-hidden="true"
+          >
+            <path
+              d="M4 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2"
+            ></path>
             <path d="M2 11h12"></path>
             <path d="M5.5 6.5h5"></path>
           </svg>
@@ -70,7 +99,14 @@ const seo = {
           aria-pressed="false"
           type="button"
         >
-          <svg class="whisper-mode-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+          <svg
+            class="whisper-mode-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.2"
+            aria-hidden="true"
+          >
             <circle cx="7" cy="7" r="4"></circle>
             <path d="M10 10l3.5 3.5"></path>
           </svg>
@@ -82,7 +118,15 @@ const seo = {
           aria-pressed="false"
           type="button"
         >
-          <svg class="whisper-mode-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" aria-hidden="true">
+          <svg
+            class="whisper-mode-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
             <path d="M9.5 2L6.5 8h3L6.5 14"></path>
           </svg>
           Live
@@ -91,9 +135,7 @@ const seo = {
     </section>
 
     <!-- ── Upload Zone (carrier) ────────────────────────────── -->
-    <section
-      class="mt-[var(--space-sm)] content-section whisper-section--solo"
-    >
+    <section class="mt-[var(--space-sm)] content-section whisper-section--solo">
       <div
         class="whisper-upload-zone"
         id="whisper-upload-zone"
@@ -116,9 +158,13 @@ const seo = {
             <circle cx="7" cy="19" r="0.5" fill="currentColor"></circle>
           </svg>
         </div>
-        <p class="upload-text" id="whisper-upload-text">drop a carrier file here</p>
+        <p class="upload-text" id="whisper-upload-text">
+          drop a carrier file here
+        </p>
         <p class="upload-subtext">or click / paste to browse</p>
-        <p class="upload-formats">PNG &middot; JPEG &middot; TIFF &middot; BMP &middot; any file</p>
+        <p class="upload-formats">
+          PNG &middot; JPEG &middot; TIFF &middot; BMP &middot; any file
+        </p>
         <p class="upload-file-meta" id="whisper-upload-meta"></p>
         <input
           type="file"
@@ -130,44 +176,95 @@ const seo = {
     </section>
 
     <!-- ── Operation Panel ──────────────────────────────────── -->
-    <section
-      class="mt-[var(--space-sm)] content-section"
-    >
+    <section class="mt-[var(--space-sm)] content-section">
       <!-- Solo mode content (embed / extract / hunt) -->
       <div class="whisper-op-solo">
         <div class="whisper-panel">
           <div class="whisper-panel-header">
             <h2 class="whisper-panel-title" id="whisper-op-title">
-              <span class="whisper-op whisper-op--idle whisper-op--embed">Embed</span>
-              <span class="whisper-op whisper-op--idle whisper-op--extract">Extract</span>
-              <span class="whisper-op whisper-op--idle whisper-op--hunt">Hunt</span>
+              <span class="whisper-op whisper-op--idle whisper-op--embed"
+                >Embed</span
+              >
+              <span class="whisper-op whisper-op--idle whisper-op--extract"
+                >Extract</span
+              >
+              <span class="whisper-op whisper-op--idle whisper-op--hunt"
+                >Hunt</span
+              >
 
-              <span class="whisper-op whisper-op--busy whisper-op--embedding">Embedding</span>
-              <span class="whisper-op whisper-op--busy whisper-op--extracting">Extracting</span>
-              <span class="whisper-op whisper-op--busy whisper-op--hunting">Hunting</span>
+              <span class="whisper-op whisper-op--busy whisper-op--embedding"
+                >Embedding</span
+              >
+              <span class="whisper-op whisper-op--busy whisper-op--extracting"
+                >Extracting</span
+              >
+              <span class="whisper-op whisper-op--busy whisper-op--hunting"
+                >Hunting</span
+              >
             </h2>
-            <span class="whisper-panel-mode" id="whisper-status-line">drop a carrier file to begin</span>
+            <span class="whisper-panel-mode" id="whisper-status-line"
+              >drop a carrier file to begin</span
+            >
           </div>
 
           <!-- Carrier type toggle (embed mode only) -->
-          <div class="whisper-field whisper-field--embed ws-carrier-toggle-wrap">
+          <div
+            class="whisper-field whisper-field--embed ws-carrier-toggle-wrap"
+          >
             <span class="whisper-field-label">carrier</span>
-            <div class="ws-carrier-toggle" role="radiogroup" aria-label="Carrier type">
+            <div
+              class="ws-carrier-toggle"
+              role="radiogroup"
+              aria-label="Carrier type"
+            >
               <label class="ws-carrier-opt">
-                <input type="radio" name="ws-carrier-type" value="file" class="ws-carrier-radio" />
+                <input
+                  type="radio"
+                  name="ws-carrier-type"
+                  value="file"
+                  class="ws-carrier-radio"
+                />
                 <span class="ws-carrier-label">File</span>
               </label>
               <label class="ws-carrier-opt">
-                <input type="radio" name="ws-carrier-type" value="url" checked class="ws-carrier-radio" />
+                <input
+                  type="radio"
+                  name="ws-carrier-type"
+                  value="url"
+                  checked
+                  class="ws-carrier-radio"
+                />
                 <span class="ws-carrier-label">URL</span>
               </label>
-              <button id="ws-my-seal-btn" type="button" class="whisper-mini-btn ws-my-seal-btn ws-seal-mode-chip ws-seal-mode-chip--stable" aria-pressed="false" title="switch seal mode">Stable seal</button>
-              <span id="ws-my-seal-inline" class="ws-my-seal-inline" style="display:none" role="button" tabindex="0" title="copy full seal"></span>
+              <button
+                id="ws-my-seal-btn"
+                type="button"
+                class="whisper-mini-btn ws-my-seal-btn ws-seal-mode-chip ws-seal-mode-chip--stable"
+                aria-pressed="false"
+                title="switch seal mode">Stable seal</button
+              >
+              <span
+                id="ws-my-seal-inline"
+                class="ws-my-seal-inline"
+                style="display:none"
+                role="button"
+                tabindex="0"
+                title="copy full seal"></span>
             </div>
-            <div id="ws-my-seal-inline-panel" class="ws-my-seal-inline-panel" style="display:none">
+            <div
+              id="ws-my-seal-inline-panel"
+              class="ws-my-seal-inline-panel"
+              style="display:none"
+            >
               <div class="ws-seal-qr-wrap">
-                <canvas id="ws-seal-qr-canvas" class="ws-seal-qr-canvas" data-qr-size="180" aria-label="QR code for your full WS2 public key"></canvas>
-                <p id="ws-seal-qr-status" class="ws-seal-hint">share this to let someone message you.</p>
+                <canvas
+                  id="ws-seal-qr-canvas"
+                  class="ws-seal-qr-canvas"
+                  data-qr-size="180"
+                  aria-label="QR code for your full WS2 public key"></canvas>
+                <p id="ws-seal-qr-status" class="ws-seal-hint">
+                  share this to let someone message you.
+                </p>
               </div>
             </div>
           </div>
@@ -176,60 +273,169 @@ const seo = {
           <div class="ws-seal-fields" id="ws-seal-fields">
             <label class="whisper-field ws-url-only" for="ws-recipient-seal">
               <span class="whisper-field-label">recipient's seal</span>
-              <input id="ws-recipient-seal" type="text" class="whisper-input" placeholder="recipient code (WS2:...)" autocomplete="off" spellcheck="false" />
+              <input
+                id="ws-recipient-seal"
+                type="text"
+                class="whisper-input"
+                placeholder="recipient code (WS2:...)"
+                autocomplete="off"
+                spellcheck="false"
+              />
             </label>
-            <div class="wl-join-tools ws-recipient-tools ws-url-only" role="group" aria-label="Seal tools">
-              <button id="ws-recipient-paste" type="button" class="wl-tool-link" aria-label="Paste a valid seal code from clipboard">paste</button>
+            <div
+              class="wl-join-tools ws-recipient-tools ws-url-only"
+              role="group"
+              aria-label="Seal tools"
+            >
+              <button
+                id="ws-recipient-paste"
+                type="button"
+                class="wl-tool-link"
+                aria-label="Paste a valid seal code from clipboard"
+                >paste</button
+              >
               <span class="wl-tool-sep" aria-hidden="true">/</span>
-              <button id="ws-recipient-qr-scan" type="button" class="wl-tool-link">scan</button>
+              <button
+                id="ws-recipient-qr-scan"
+                type="button"
+                class="wl-tool-link">scan</button
+              >
               <span class="wl-tool-sep" aria-hidden="true">/</span>
-              <button id="ws-recipient-qr-image" type="button" class="wl-tool-link">image</button>
-              <button id="ws-recipient-qr-stop" type="button" class="wl-tool-link wl-tool-link--stop" style="display:none">stop</button>
-              <input id="ws-recipient-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
+              <button
+                id="ws-recipient-qr-image"
+                type="button"
+                class="wl-tool-link">image</button
+              >
+              <button
+                id="ws-recipient-qr-stop"
+                type="button"
+                class="wl-tool-link wl-tool-link--stop"
+                style="display:none">stop</button
+              >
+              <input
+                id="ws-recipient-qr-file"
+                type="file"
+                class="sr-only"
+                accept="image/*"
+                aria-hidden="true"
+              />
             </div>
-            <div id="ws-recipient-qr-panel" class="ws-recipient-qr-panel ws-url-only" style="display:none">
-              <video id="ws-recipient-qr-video" class="ws-recipient-qr-video" playsinline muted></video>
+            <div
+              id="ws-recipient-qr-panel"
+              class="ws-recipient-qr-panel ws-url-only"
+              style="display:none"
+            >
+              <video
+                id="ws-recipient-qr-video"
+                class="ws-recipient-qr-video"
+                playsinline
+                muted></video>
             </div>
-            <span id="ws-recipient-qr-status" class="whisper-field-hint ws-recipient-qr-status ws-url-only"></span>
-            <span id="ws-seal-validation" class="ws-seal-validation ws-url-only"></span>
+            <span
+              id="ws-recipient-qr-status"
+              class="whisper-field-hint ws-recipient-qr-status ws-url-only"
+            ></span>
+            <span id="ws-seal-validation" class="ws-seal-validation ws-url-only"
+            ></span>
 
             <label class="whisper-field" for="ws-message">
               <span class="whisper-field-label">your message</span>
-              <textarea id="ws-message" class="whisper-input ws-textarea" rows="6" placeholder="your secret message..." maxlength="48000"></textarea>
+              <textarea
+                id="ws-message"
+                class="whisper-input ws-textarea"
+                rows="6"
+                placeholder="your secret message..."
+                maxlength="48000"></textarea>
             </label>
             <span id="ws-char-count" class="ws-char-count">0 / 48,000</span>
 
             <label class="whisper-field ws-url-only" for="ws-extra-password">
-              <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(optional)</span></span>
-              <input id="ws-extra-password" type="password" class="whisper-input" placeholder="a short phrase between friends" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" />
+              <span class="whisper-field-label"
+                >shared phrase <span class="whisper-field-hint">(optional)</span
+                ></span
+              >
+              <input
+                id="ws-extra-password"
+                type="password"
+                class="whisper-input"
+                placeholder="a short phrase between friends"
+                autocomplete="new-password"
+                autocapitalize="off"
+                spellcheck="false"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-form-type="other"
+              />
             </label>
 
             <div class="whisper-field ws-url-only">
               <span class="whisper-field-label">expires after</span>
-              <div class="ws-expiry-pills" id="ws-expiry" role="radiogroup" aria-label="Expiry duration">
+              <div
+                class="ws-expiry-pills"
+                id="ws-expiry"
+                role="radiogroup"
+                aria-label="Expiry duration"
+              >
                 <label class="ws-expiry-pill">
-                  <input type="radio" name="ws-expiry" value="3600000" class="ws-expiry-radio" />
+                  <input
+                    type="radio"
+                    name="ws-expiry"
+                    value="3600000"
+                    class="ws-expiry-radio"
+                  />
                   <span class="ws-expiry-pill-label">1h</span>
                 </label>
                 <label class="ws-expiry-pill">
-                  <input type="radio" name="ws-expiry" value="86400000" class="ws-expiry-radio" checked />
+                  <input
+                    type="radio"
+                    name="ws-expiry"
+                    value="86400000"
+                    class="ws-expiry-radio"
+                    checked
+                  />
                   <span class="ws-expiry-pill-label">24h</span>
                 </label>
                 <label class="ws-expiry-pill">
-                  <input type="radio" name="ws-expiry" value="604800000" class="ws-expiry-radio" />
+                  <input
+                    type="radio"
+                    name="ws-expiry"
+                    value="604800000"
+                    class="ws-expiry-radio"
+                  />
                   <span class="ws-expiry-pill-label">7d</span>
                 </label>
                 <label class="ws-expiry-pill">
-                  <input type="radio" name="ws-expiry" value="0" class="ws-expiry-radio" />
+                  <input
+                    type="radio"
+                    name="ws-expiry"
+                    value="0"
+                    class="ws-expiry-radio"
+                  />
                   <span class="ws-expiry-pill-label">never</span>
                 </label>
                 <label class="ws-expiry-pill">
-                  <input type="radio" name="ws-expiry" value="custom" class="ws-expiry-radio" />
+                  <input
+                    type="radio"
+                    name="ws-expiry"
+                    value="custom"
+                    class="ws-expiry-radio"
+                  />
                   <span class="ws-expiry-pill-label">custom</span>
                 </label>
                 <div id="ws-expiry-custom" class="ws-expiry-custom">
-                  <input id="ws-expiry-custom-val" type="number" class="whisper-input ws-expiry-custom-input" min="1" value="12" tabindex="-1" />
-                  <select id="ws-expiry-custom-unit" class="whisper-input ws-select ws-expiry-custom-unit" tabindex="-1">
+                  <input
+                    id="ws-expiry-custom-val"
+                    type="number"
+                    class="whisper-input ws-expiry-custom-input"
+                    min="1"
+                    value="12"
+                    tabindex="-1"
+                  />
+                  <select
+                    id="ws-expiry-custom-unit"
+                    class="whisper-input ws-select ws-expiry-custom-unit"
+                    tabindex="-1"
+                  >
                     <option value="60000">min</option>
                     <option value="3600000" selected>hr</option>
                     <option value="86400000">days</option>
@@ -238,31 +444,77 @@ const seo = {
               </div>
             </div>
 
-            <button id="ws-seal-it" type="button" class="whisper-mini-btn wl-primary ws-url-only" disabled>Seal it</button>
+            <button
+              id="ws-seal-it"
+              type="button"
+              class="whisper-mini-btn wl-primary ws-url-only"
+              disabled>Seal it</button
+            >
 
-            <div id="ws-sealed-result" class="ws-sealed-result ws-url-only" style="display:none">
+            <div
+              id="ws-sealed-result"
+              class="ws-sealed-result ws-url-only"
+              style="display:none"
+            >
               <span class="ws-sealed-result-label">sealed url</span>
-              <pre id="ws-sealed-url-inline" class="ws-sealed-url-inline" role="button" tabindex="0" title="copy sealed url"></pre>
+              <pre
+                id="ws-sealed-url-inline"
+                class="ws-sealed-url-inline"
+                role="button"
+                tabindex="0"
+                title="copy sealed url">
+              </pre>
               <div class="ws-sealed-result-meta">
                 <span id="ws-sealed-result-info"></span>
-                <span id="ws-sealed-result-warning" class="ws-sealed-result-warning" style="display:none"></span>
+                <span
+                  id="ws-sealed-result-warning"
+                  class="ws-sealed-result-warning"
+                  style="display:none"></span>
               </div>
             </div>
           </div>
 
           <!-- Hunt multi-file input hook (driven by the main upload zone) -->
-          <input id="whisper-hunt-carrier-input" type="file" multiple class="sr-only" aria-hidden="true" />
-          <span id="whisper-hunt-label" class="sr-only" aria-hidden="true">choose files&hellip;</span>
+          <input
+            id="whisper-hunt-carrier-input"
+            type="file"
+            multiple
+            class="sr-only"
+            aria-hidden="true"
+          />
+          <span id="whisper-hunt-label" class="sr-only" aria-hidden="true"
+            >choose files&hellip;</span
+          >
 
           <!-- Hidden legacy payload hook (intentionally not shown in UI) -->
-          <input id="whisper-payload-input" type="file" class="sr-only" aria-hidden="true" tabindex="-1" />
-          <span id="whisper-payload-label" class="sr-only" aria-hidden="true">choose file&hellip;</span>
+          <input
+            id="whisper-payload-input"
+            type="file"
+            class="sr-only"
+            aria-hidden="true"
+            tabindex="-1"
+          />
+          <span id="whisper-payload-label" class="sr-only" aria-hidden="true"
+            >choose file&hellip;</span
+          >
 
-          <textarea id="whisper-embed-message" class="sr-only" aria-hidden="true" tabindex="-1" maxlength="48000"></textarea>
-          <span id="whisper-embed-message-count" class="sr-only" aria-hidden="true">0 / 48,000</span>
+          <textarea
+            id="whisper-embed-message"
+            class="sr-only"
+            aria-hidden="true"
+            tabindex="-1"
+            maxlength="48000"></textarea>
+          <span
+            id="whisper-embed-message-count"
+            class="sr-only"
+            aria-hidden="true">0 / 48,000</span
+          >
 
           <!-- Password (file-based modes) -->
-          <label class="whisper-field whisper-field--file-password" for="whisper-password-input">
+          <label
+            class="whisper-field whisper-field--file-password"
+            for="whisper-password-input"
+          >
             <span class="whisper-field-label">password</span>
             <div class="whisper-password-row">
               <input
@@ -277,37 +529,60 @@ const seo = {
                 data-form-type="other"
                 placeholder="password to encrypt"
               />
-              <div class="whisper-password-tools" role="group" aria-label="Password tools">
+              <div
+                class="whisper-password-tools"
+                role="group"
+                aria-label="Password tools"
+              >
                 <button
                   id="whisper-password-gen"
                   class="whisper-mini-btn"
                   type="button"
                   aria-label="Generate a strong random password"
-                  title="Generate"
-                >Generate</button>
+                  title="Generate">Generate</button
+                >
                 <button
                   id="whisper-password-copy"
                   class="whisper-mini-btn"
                   type="button"
                   aria-label="Copy password to clipboard"
-                  title="Copy"
-                >Copy</button>
+                  title="Copy">Copy</button
+                >
               </div>
             </div>
-            <div class="wl-join-tools whisper-password-paste-tools" role="group" aria-label="Paste helper">
-              <button id="whisper-password-paste" type="button" class="wl-tool-link">paste</button>
+            <div
+              class="wl-join-tools whisper-password-paste-tools"
+              role="group"
+              aria-label="Paste helper"
+            >
+              <button
+                id="whisper-password-paste"
+                type="button"
+                class="wl-tool-link">paste</button
+              >
             </div>
-            <p id="whisper-password-meta" class="whisper-password-meta whisper-field-hint" aria-live="polite"></p>
+            <p
+              id="whisper-password-meta"
+              class="whisper-password-meta whisper-field-hint"
+              aria-live="polite"
+            >
+            </p>
           </label>
 
           <!-- Privacy toggle (embed only) -->
           <div class="whisper-field whisper-field--embed">
             <span class="whisper-field-label">privacy</span>
             <label class="whisper-toggle" for="whisper-only-decode-here">
-              <input id="whisper-only-decode-here" type="checkbox" class="whisper-toggle-input" />
+              <input
+                id="whisper-only-decode-here"
+                type="checkbox"
+                class="whisper-toggle-input"
+              />
               <span class="whisper-toggle-text">
                 only decodes here
-                <span class="whisper-field-hint">(locks decryption to this browser's fingerprint)</span>
+                <span class="whisper-field-hint"
+                  >(locks decryption to this browser's fingerprint)</span
+                >
               </span>
             </label>
           </div>
@@ -316,17 +591,31 @@ const seo = {
           <div class="whisper-field whisper-field--embed">
             <span class="whisper-field-label">embed</span>
             <label class="whisper-toggle" for="whisper-allow-tail-fallback">
-              <input id="whisper-allow-tail-fallback" type="checkbox" class="whisper-toggle-input" checked />
+              <input
+                id="whisper-allow-tail-fallback"
+                type="checkbox"
+                class="whisper-toggle-input"
+                checked
+              />
               <span class="whisper-toggle-text">
                 allow tail attaching
-                <span class="whisper-field-hint">(fallback if no inert slot fits)</span>
+                <span class="whisper-field-hint"
+                  >(fallback if no inert slot fits)</span
+                >
               </span>
             </label>
           </div>
 
           <!-- Clue -->
-          <label class="whisper-field whisper-field--hunt" for="whisper-clue-input">
-            <span class="whisper-field-label">filter <span class="whisper-field-hint">(optional, skip payloads that don't match)</span></span>
+          <label
+            class="whisper-field whisper-field--hunt"
+            for="whisper-clue-input"
+          >
+            <span class="whisper-field-label"
+              >filter <span class="whisper-field-hint"
+                >(optional, skip payloads that don't match)</span
+              ></span
+            >
             <input
               id="whisper-clue-input"
               type="text"
@@ -341,21 +630,72 @@ const seo = {
       <div class="whisper-op-live" id="wl-section">
         <div class="wl-head whisper-panel" aria-label="Whisper Live status">
           <div class="wl-head-title-row">
-            <h2 class="wl-head-title">Whisper Live <span class="wl-e2e-badge" aria-label="end-to-end encrypted, peer-to-peer"><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e</span></h2>
+            <h2 class="wl-head-title">
+              Whisper Live <span
+                class="wl-e2e-badge"
+                aria-label="end-to-end encrypted, peer-to-peer"
+                ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e</span>
+            </h2>
             <div class="wl-fp-wrap">
-              <button id="wl-fp-chip" class="wl-fp-chip" type="button" aria-label="Name this peer">
-                <span id="wl-fp-chip-emoji" class="wl-fp-chip-emoji" aria-hidden="true"></span>
-                <span id="wl-fp-chip-name" class="wl-fp-chip-name" aria-hidden="true"></span>
+              <button
+                id="wl-fp-chip"
+                class="wl-fp-chip"
+                type="button"
+                aria-label="Name this peer"
+              >
+                <span
+                  id="wl-fp-chip-emoji"
+                  class="wl-fp-chip-emoji"
+                  aria-hidden="true"></span>
+                <span
+                  id="wl-fp-chip-name"
+                  class="wl-fp-chip-name"
+                  aria-hidden="true"></span>
               </button>
-              <input id="wl-fp-nickname" class="wl-fp-nickname-input" type="text" placeholder="..." maxlength="32" autocomplete="off" spellcheck="false" />
+              <input
+                id="wl-fp-nickname"
+                class="wl-fp-nickname-input"
+                type="text"
+                placeholder="..."
+                maxlength="32"
+                autocomplete="off"
+                spellcheck="false"
+              />
             </div>
           </div>
-          <p class="wl-head-subtitle">encrypted peer-to-peer chat, no accounts, no servers</p>
+          <p class="wl-head-subtitle">
+            encrypted peer-to-peer chat, no accounts, no servers
+          </p>
           <div class="wl-head-right">
-            <div class="cf-live-mode-toggle" role="group" aria-label="Live controls">
-              <button id="wl-funnel-campfire" type="button" class="whisper-mini-btn cf-head-btn">start a campfire</button>
-              <button id="wl-disconnect" type="button" class="whisper-mini-btn cf-head-btn wl-disconnect-btn" aria-label="Quit">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+            <div
+              class="cf-live-mode-toggle"
+              role="group"
+              aria-label="Live controls"
+            >
+              <button
+                id="wl-funnel-campfire"
+                type="button"
+                class="whisper-mini-btn cf-head-btn">start a campfire</button
+              >
+              <button
+                id="wl-disconnect"
+                type="button"
+                class="whisper-mini-btn cf-head-btn wl-disconnect-btn"
+                aria-label="Quit"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                  ><line x1="4" y1="4" x2="12" y2="12"></line><line
+                    x1="12"
+                    y1="4"
+                    x2="4"
+                    y2="12"></line></svg
+                >
               </button>
             </div>
           </div>
@@ -367,7 +707,9 @@ const seo = {
 
         <!-- Phase: idle — create or join -->
         <div class="wl-phase" id="wl-idle-phase">
-          <p class="wl-phase-lede" id="wl-idle-lede">know a phrase, connect at the same time. thats it.</p>
+          <p class="wl-phase-lede" id="wl-idle-lede">
+            know a phrase, connect at the same time. thats it.
+          </p>
 
           <!-- Relay mode: phrase + connect (the default, clean view) -->
           <div class="whisper-panel wl-relay-panel" id="wl-relay-panel">
@@ -386,81 +728,185 @@ const seo = {
                   data-1p-ignore="true"
                   data-form-type="other"
                 />
-                <button id="wl-relay-connect" type="button" class="whisper-mini-btn wl-primary">Connect</button>
+                <button
+                  id="wl-relay-connect"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Connect</button
+                >
               </div>
             </label>
-            <p class="wl-relay-hint">the relay that matches you is blind. it never sees your messages.</p>
+            <p class="wl-relay-hint">
+              the relay that matches you is blind. it never sees your messages.
+            </p>
           </div>
 
           <!-- Signal Flare panel — long-lived presence mode -->
-          <div class="whisper-panel wl-flare-panel" id="wl-flare-panel" style="display:none">
+          <div
+            class="whisper-panel wl-flare-panel"
+            id="wl-flare-panel"
+            style="display:none"
+          >
             <div class="wl-flare-head">
               <span class="wl-flare-title">Signal Flare</span>
             </div>
-            <p class="wl-flare-lede">leave the door open. they'll find you when they're ready.</p>
-            <label class="whisper-field wl-flare-phrase-field" for="wl-flare-phrase">
+            <p class="wl-flare-lede">
+              leave the door open. they'll find you when they're ready.
+            </p>
+            <label
+              class="whisper-field wl-flare-phrase-field"
+              for="wl-flare-phrase"
+            >
               <span class="whisper-field-label">shared phrase</span>
               <div class="wl-relay-connect-row">
-                <input id="wl-flare-phrase" type="text" class="whisper-input"
+                <input
+                  id="wl-flare-phrase"
+                  type="text"
+                  class="whisper-input"
                   placeholder="a rendezvous phrase between friends"
-                  autocomplete="new-password" autocapitalize="off" spellcheck="false"
-                  data-lpignore="true" data-1p-ignore="true" data-form-type="other" />
-                <button id="wl-flare-fire" type="button" class="whisper-mini-btn wl-flare-fire-btn">Fire</button>
+                  autocomplete="new-password"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
+                />
+                <button
+                  id="wl-flare-fire"
+                  type="button"
+                  class="whisper-mini-btn wl-flare-fire-btn">Fire</button
+                >
               </div>
             </label>
 
             <!-- Burning state (shown while flare is active) -->
-            <div id="wl-flare-burning" class="wl-flare-burning" style="display:none">
+            <div
+              id="wl-flare-burning"
+              class="wl-flare-burning"
+              style="display:none"
+            >
               <div class="wl-flare-burning-indicator">
                 <span class="wl-flare-ember" aria-hidden="true"></span>
                 <span class="wl-flare-burning-text">flare is burning</span>
                 <span id="wl-flare-elapsed" class="wl-flare-elapsed"></span>
-                <button id="wl-flare-extinguish" type="button" class="whisper-mini-btn wl-flare-extinguish-btn">Extinguish</button>
+                <button
+                  id="wl-flare-extinguish"
+                  type="button"
+                  class="whisper-mini-btn wl-flare-extinguish-btn"
+                  >Extinguish</button
+                >
               </div>
             </div>
 
             <!-- Peer arrived state -->
-            <div id="wl-flare-arrived" class="wl-flare-arrived" style="display:none">
+            <div
+              id="wl-flare-arrived"
+              class="wl-flare-arrived"
+              style="display:none"
+            >
               <p class="wl-flare-arrived-text">someone found your flare.</p>
               <div class="wl-flare-arrived-actions">
-                <button id="wl-flare-accept" type="button" class="whisper-mini-btn wl-primary">Connect</button>
-                <button id="wl-flare-ignore" type="button" class="whisper-mini-btn">Ignore</button>
+                <button
+                  id="wl-flare-accept"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Connect</button
+                >
+                <button
+                  id="wl-flare-ignore"
+                  type="button"
+                  class="whisper-mini-btn">Ignore</button
+                >
               </div>
             </div>
           </div>
 
           <!-- Manual mode: create/join + options (hidden by default) -->
-          <div class="whisper-panel wl-actions-panel" id="wl-manual-panel" style="display:none">
+          <div
+            class="whisper-panel wl-actions-panel"
+            id="wl-manual-panel"
+            style="display:none"
+          >
             <div class="wl-actions-row">
               <div class="wl-action-create">
                 <span class="wl-action-label">Create</span>
-                <button id="wl-create" type="button" class="whisper-mini-btn wl-primary">Create channel</button>
+                <button
+                  id="wl-create"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Create channel</button
+                >
               </div>
               <span class="wl-actions-divider" aria-hidden="true"></span>
               <div class="wl-action-join">
                 <span class="wl-action-label">Join</span>
                 <div class="wl-join-row">
-                  <input id="wl-join-input" type="text" class="whisper-input wl-code-input" placeholder="connection code" autocomplete="off" spellcheck="false" />
-                  <button id="wl-join" type="button" class="whisper-mini-btn">Join</button>
+                  <input
+                    id="wl-join-input"
+                    type="text"
+                    class="whisper-input wl-code-input"
+                    placeholder="connection code"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button id="wl-join" type="button" class="whisper-mini-btn"
+                    >Join</button
+                  >
                 </div>
-                <div class="wl-join-tools" role="group" aria-label="Join code helpers">
-                  <button id="wl-join-paste" type="button" class="wl-tool-link">paste</button>
+                <div
+                  class="wl-join-tools"
+                  role="group"
+                  aria-label="Join code helpers"
+                >
+                  <button id="wl-join-paste" type="button" class="wl-tool-link"
+                    >paste</button
+                  >
                   <span class="wl-tool-sep" aria-hidden="true">/</span>
-                  <button id="wl-join-qr-scan" type="button" class="wl-tool-link">scan</button>
+                  <button
+                    id="wl-join-qr-scan"
+                    type="button"
+                    class="wl-tool-link">scan</button
+                  >
                   <span class="wl-tool-sep" aria-hidden="true">/</span>
-                  <button id="wl-join-qr-image" type="button" class="wl-tool-link">image</button>
-                  <button id="wl-join-qr-stop" type="button" class="wl-tool-link wl-tool-link--stop" style="display:none">stop</button>
-                  <input id="wl-join-qr-file" type="file" class="sr-only" accept="image/*" aria-hidden="true" />
+                  <button
+                    id="wl-join-qr-image"
+                    type="button"
+                    class="wl-tool-link">image</button
+                  >
+                  <button
+                    id="wl-join-qr-stop"
+                    type="button"
+                    class="wl-tool-link wl-tool-link--stop"
+                    style="display:none">stop</button
+                  >
+                  <input
+                    id="wl-join-qr-file"
+                    type="file"
+                    class="sr-only"
+                    accept="image/*"
+                    aria-hidden="true"
+                  />
                 </div>
-                <div id="wl-join-qr-panel" class="wl-join-qr-panel" style="display:none">
-                  <video id="wl-join-qr-video" class="wl-join-qr-video" playsinline muted></video>
+                <div
+                  id="wl-join-qr-panel"
+                  class="wl-join-qr-panel"
+                  style="display:none"
+                >
+                  <video
+                    id="wl-join-qr-video"
+                    class="wl-join-qr-video"
+                    playsinline
+                    muted></video>
                 </div>
-                <span id="wl-join-qr-status" class="whisper-field-hint wl-join-qr-status"></span>
+                <span
+                  id="wl-join-qr-status"
+                  class="whisper-field-hint wl-join-qr-status"></span>
               </div>
             </div>
             <div class="wl-manual-options">
               <label class="whisper-field" for="wl-manual-phrase">
-                <span class="whisper-field-label">shared phrase <span class="whisper-field-hint">(optional)</span></span>
+                <span class="whisper-field-label"
+                  >shared phrase <span class="whisper-field-hint"
+                    >(optional)</span
+                  ></span
+                >
                 <input
                   id="wl-manual-phrase"
                   type="password"
@@ -477,10 +923,16 @@ const seo = {
               <div class="whisper-field">
                 <span class="whisper-field-label">network</span>
                 <label class="whisper-toggle" for="wl-external-assist">
-                  <input id="wl-external-assist" type="checkbox" class="whisper-toggle-input" />
+                  <input
+                    id="wl-external-assist"
+                    type="checkbox"
+                    class="whisper-toggle-input"
+                  />
                   <span class="whisper-toggle-text">
                     external assist (stun)
-                    <span class="whisper-field-hint">(helps connect across networks)</span>
+                    <span class="whisper-field-hint"
+                      >(helps connect across networks)</span
+                    >
                   </span>
                 </label>
               </div>
@@ -488,37 +940,81 @@ const seo = {
           </div>
 
           <!-- Hidden relay state (not visible, drives logic) -->
-          <input id="wl-relay-assist" type="checkbox" class="sr-only" checked aria-hidden="true" />
+          <input
+            id="wl-relay-assist"
+            type="checkbox"
+            class="sr-only"
+            checked
+            aria-hidden="true"
+          />
 
           <!-- Mode switch links -->
           <p class="wl-mode-switch" id="wl-mode-switch">
-            <button type="button" class="wl-mode-switch-btn" id="wl-flare-switch-btn">try a signal flare</button>
+            <button
+              type="button"
+              class="wl-mode-switch-btn"
+              id="wl-flare-switch-btn">try a signal flare</button
+            >
             <span class="wl-mode-switch-sep" aria-hidden="true">&middot;</span>
-            <button type="button" class="wl-mode-switch-btn" id="wl-mode-switch-btn">or connect manually</button>
+            <button
+              type="button"
+              class="wl-mode-switch-btn"
+              id="wl-mode-switch-btn">or connect manually</button
+            >
           </p>
         </div>
 
         <!-- Phase: offering — show offer code, wait for answer -->
         <div class="wl-phase" id="wl-offer-section" style="display:none">
-          <p class="wl-phase-lede">send your offer to the other peer, then paste their reply to complete the handshake.</p>
+          <p class="wl-phase-lede">
+            send your offer to the other peer, then paste their reply to
+            complete the handshake.
+          </p>
           <div class="wl-grid wl-grid--offer">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Send</h3>
                 <span class="whisper-panel-mode">offer code</span>
               </div>
-              <p class="wl-inline-hint">share this with your peer through any channel.</p>
+              <p class="wl-inline-hint">
+                share this with your peer through any channel.
+              </p>
               <div class="wl-code-display-wrap">
                 <pre id="wl-offer-code" class="wl-code-display"></pre>
-                <button id="wl-offer-copy" type="button" class="whisper-mini-btn">Copy</button>
-                <button id="wl-offer-share" type="button" class="whisper-mini-btn">Share</button>
+                <button
+                  id="wl-offer-copy"
+                  type="button"
+                  class="whisper-mini-btn">Copy</button
+                >
+                <button
+                  id="wl-offer-share"
+                  type="button"
+                  class="whisper-mini-btn">Share</button
+                >
               </div>
               <div class="wl-live-qr-toggle-row">
-                <button id="wl-offer-qr-toggle" type="button" class="whisper-mini-btn" aria-expanded="false">Show QR</button>
+                <button
+                  id="wl-offer-qr-toggle"
+                  type="button"
+                  class="whisper-mini-btn"
+                  aria-expanded="false">Show QR</button
+                >
               </div>
-              <div id="wl-offer-qr-panel" class="wl-live-qr-wrap" style="display:none">
-                <canvas id="wl-offer-qr-canvas" class="ws-seal-qr-canvas" data-qr-size="132" aria-label="QR code for this Whisper Live offer"></canvas>
-                <p id="wl-offer-qr-status" class="ws-seal-hint wl-live-qr-status"></p>
+              <div
+                id="wl-offer-qr-panel"
+                class="wl-live-qr-wrap"
+                style="display:none"
+              >
+                <canvas
+                  id="wl-offer-qr-canvas"
+                  class="ws-seal-qr-canvas"
+                  data-qr-size="132"
+                  aria-label="QR code for this Whisper Live offer"></canvas>
+                <p
+                  id="wl-offer-qr-status"
+                  class="ws-seal-hint wl-live-qr-status"
+                >
+                </p>
               </div>
             </div>
 
@@ -527,7 +1023,9 @@ const seo = {
                 <h3 class="whisper-panel-title">Receive</h3>
                 <span class="whisper-panel-mode">paste reply</span>
               </div>
-              <p class="wl-inline-hint">paste their answer code here, then connect.</p>
+              <p class="wl-inline-hint">
+                paste their answer code here, then connect.
+              </p>
               <div class="wl-join-row">
                 <input
                   id="wl-answer-input"
@@ -537,35 +1035,68 @@ const seo = {
                   autocomplete="off"
                   spellcheck="false"
                 />
-                <button id="wl-answer-apply" type="button" class="whisper-mini-btn wl-primary">Connect</button>
+                <button
+                  id="wl-answer-apply"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Connect</button
+                >
               </div>
             </div>
           </div>
           <div class="wl-offer-actions">
-            <button id="wl-offer-back" type="button" class="whisper-mini-btn">Back</button>
+            <button id="wl-offer-back" type="button" class="whisper-mini-btn"
+              >Back</button
+            >
           </div>
         </div>
 
         <!-- Phase: answering — show answer code to copy back -->
         <div class="wl-phase" id="wl-answer-section" style="display:none">
-          <p class="wl-phase-lede">send this answer code back to the creator to finish connecting.</p>
+          <p class="wl-phase-lede">
+            send this answer code back to the creator to finish connecting.
+          </p>
           <div class="whisper-panel wl-answer-only">
             <div class="whisper-panel-header">
               <h3 class="whisper-panel-title">Send back</h3>
               <span class="whisper-panel-mode">answer code</span>
             </div>
-            <p class="wl-inline-hint">keep this tab open until the creator confirms connection.</p>
+            <p class="wl-inline-hint">
+              keep this tab open until the creator confirms connection.
+            </p>
             <div class="wl-code-display-wrap">
               <pre id="wl-answer-code" class="wl-code-display"></pre>
-              <button id="wl-answer-copy" type="button" class="whisper-mini-btn">Copy</button>
-              <button id="wl-answer-share" type="button" class="whisper-mini-btn">Share</button>
+              <button id="wl-answer-copy" type="button" class="whisper-mini-btn"
+                >Copy</button
+              >
+              <button
+                id="wl-answer-share"
+                type="button"
+                class="whisper-mini-btn">Share</button
+              >
             </div>
             <div class="wl-live-qr-toggle-row">
-              <button id="wl-answer-qr-toggle" type="button" class="whisper-mini-btn" aria-expanded="false">Show QR</button>
+              <button
+                id="wl-answer-qr-toggle"
+                type="button"
+                class="whisper-mini-btn"
+                aria-expanded="false">Show QR</button
+              >
             </div>
-            <div id="wl-answer-qr-panel" class="wl-live-qr-wrap" style="display:none">
-              <canvas id="wl-answer-qr-canvas" class="ws-seal-qr-canvas" data-qr-size="132" aria-label="QR code for this Whisper Live answer"></canvas>
-              <p id="wl-answer-qr-status" class="ws-seal-hint wl-live-qr-status"></p>
+            <div
+              id="wl-answer-qr-panel"
+              class="wl-live-qr-wrap"
+              style="display:none"
+            >
+              <canvas
+                id="wl-answer-qr-canvas"
+                class="ws-seal-qr-canvas"
+                data-qr-size="132"
+                aria-label="QR code for this Whisper Live answer"></canvas>
+              <p
+                id="wl-answer-qr-status"
+                class="ws-seal-hint wl-live-qr-status"
+              >
+              </p>
             </div>
           </div>
         </div>
@@ -574,7 +1105,9 @@ const seo = {
         <div class="wl-phase" id="wl-connecting-section" style="display:none">
           <div class="whisper-panel wl-connecting-panel">
             <div class="wl-spinner" aria-hidden="true"></div>
-            <p id="wl-connecting-status" class="wl-connecting-text">establishing connection...</p>
+            <p id="wl-connecting-status" class="wl-connecting-text">
+              establishing connection...
+            </p>
           </div>
         </div>
 
@@ -582,19 +1115,39 @@ const seo = {
         <div class="wl-phase" id="wl-verify-section" style="display:none">
           <div class="whisper-panel wl-verify-panel">
             <h2 class="whisper-panel-title">Security check</h2>
-            <p class="whisper-field-hint">ask your peer: do they see the same emoji? if not, stop.</p>
-            <p id="wl-fingerprint" class="wl-fingerprint" aria-live="polite"></p>
+            <p class="whisper-field-hint">
+              ask your peer: do they see the same emoji? if not, stop.
+            </p>
+            <p id="wl-fingerprint" class="wl-fingerprint" aria-live="polite">
+            </p>
             <div class="wl-verify-actions">
-              <button id="wl-confirm" type="button" class="whisper-mini-btn wl-confirm-btn">Match · continue</button>
-              <button id="wl-reject" type="button" class="whisper-mini-btn wl-reject-btn">No match · stop</button>
+              <button
+                id="wl-confirm"
+                type="button"
+                class="whisper-mini-btn wl-confirm-btn">Match · continue</button
+              >
+              <button
+                id="wl-reject"
+                type="button"
+                class="whisper-mini-btn wl-reject-btn">No match · stop</button
+              >
             </div>
           </div>
         </div>
 
         <!-- Phase: live chat -->
-        <div class="wl-phase wl-phase--chat" id="wl-chat-section" style="display:none">
+        <div
+          class="wl-phase wl-phase--chat"
+          id="wl-chat-section"
+          style="display:none"
+        >
           <div class="whisper-panel wl-chat-panel">
-            <div id="wl-chat-messages" class="wl-chat-messages" aria-live="polite" aria-relevant="additions">
+            <div
+              id="wl-chat-messages"
+              class="wl-chat-messages"
+              aria-live="polite"
+              aria-relevant="additions"
+            >
               <p class="wl-chat-empty" id="wl-chat-empty"></p>
             </div>
 
@@ -609,21 +1162,59 @@ const seo = {
                   spellcheck="false"
                 />
                 <div class="wl-mic-wrap" id="wl-chat-mic-wrap">
-                  <button id="wl-chat-mic-cancel" type="button" class="wl-mic-split wl-mic-cancel" aria-label="Cancel recording" tabindex="-1">
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <button
+                    id="wl-chat-mic-cancel"
+                    type="button"
+                    class="wl-mic-split wl-mic-cancel"
+                    aria-label="Cancel recording"
+                    tabindex="-1"
+                  >
+                    <svg
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      aria-hidden="true"
+                    >
                       <path d="M4 4l8 8M12 4l-8 8"></path>
                     </svg>
                   </button>
-                  <button id="wl-chat-mic-btn" type="button" class="wl-chat-mic-btn"
-                    aria-label="Record audio message" title="record audio" disabled>
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" class="wl-mic-icon" aria-hidden="true">
-                      <rect x="5.5" y="1.5" width="5" height="9" rx="2.5"></rect>
+                  <button
+                    id="wl-chat-mic-btn"
+                    type="button"
+                    class="wl-chat-mic-btn"
+                    aria-label="Record audio message"
+                    title="record audio"
+                    disabled
+                  >
+                    <svg
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.3"
+                      class="wl-mic-icon"
+                      aria-hidden="true"
+                    >
+                      <rect x="5.5" y="1.5" width="5" height="9" rx="2.5"
+                      ></rect>
                       <path d="M3 7.5a5 5 0 0010 0"></path>
                       <path d="M8 13v2"></path>
                     </svg>
                   </button>
-                  <button id="wl-chat-mic-send" type="button" class="wl-mic-split wl-mic-send" aria-label="Send recording" tabindex="-1">
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <button
+                    id="wl-chat-mic-send"
+                    type="button"
+                    class="wl-mic-split wl-mic-send"
+                    aria-label="Send recording"
+                    tabindex="-1"
+                  >
+                    <svg
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      aria-hidden="true"
+                    >
                       <path d="M3 8l4 4 6-7"></path>
                     </svg>
                   </button>
@@ -637,15 +1228,38 @@ const seo = {
                 title="request to clear history"
                 data-clear-state="idle"
                 disabled
-              ><span class="wl-clear-icon" aria-hidden="true">↺</span></button>
-              <button id="wl-chat-file-btn" type="button" class="whisper-mini-btn wl-chat-file-btn" aria-label="Send a file" title="send file">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" class="wl-file-icon" aria-hidden="true">
+                ><span class="wl-clear-icon" aria-hidden="true">↺</span></button
+              >
+              <button
+                id="wl-chat-file-btn"
+                type="button"
+                class="whisper-mini-btn wl-chat-file-btn"
+                aria-label="Send a file"
+                title="send file"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  class="wl-file-icon"
+                  aria-hidden="true"
+                >
                   <path d="M8 2v8M4 6l4-4 4 4"></path>
                   <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3"></path>
                 </svg>
               </button>
-              <input id="wl-chat-file-input" type="file" class="sr-only" aria-hidden="true" />
-              <button id="wl-chat-send" type="button" class="whisper-mini-btn wl-chat-send-btn">Send</button>
+              <input
+                id="wl-chat-file-input"
+                type="file"
+                class="sr-only"
+                aria-hidden="true"
+              />
+              <button
+                id="wl-chat-send"
+                type="button"
+                class="whisper-mini-btn wl-chat-send-btn">Send</button
+              >
             </div>
           </div>
         </div>
@@ -654,12 +1268,24 @@ const seo = {
         <div class="wl-phase" id="wl-silent-section" style="display:none">
           <div class="whisper-panel wl-silent-panel">
             <h2 class="whisper-panel-title">Shared secret</h2>
-            <p class="whisper-field-hint">use this as your Whisper password for solo-mode dead drops through any channel</p>
+            <p class="whisper-field-hint">
+              use this as your Whisper password for solo-mode dead drops through
+              any channel
+            </p>
             <div class="wl-code-display-wrap">
-              <pre id="wl-silent-secret" class="wl-code-display wl-secret-display"></pre>
-              <button id="wl-silent-copy" type="button" class="whisper-mini-btn">Copy</button>
+              <pre
+                id="wl-silent-secret"
+                class="wl-code-display wl-secret-display">
+              </pre>
+              <button id="wl-silent-copy" type="button" class="whisper-mini-btn"
+                >Copy</button
+              >
             </div>
-            <button id="wl-silent-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">End session</button>
+            <button
+              id="wl-silent-disconnect"
+              type="button"
+              class="whisper-mini-btn wl-disconnect-btn">End session</button
+            >
           </div>
         </div>
 
@@ -667,7 +1293,9 @@ const seo = {
         <div class="wl-phase" id="wl-disconnected-section" style="display:none">
           <div class="whisper-panel wl-end-panel">
             <p class="wl-end-text">no trace remains.</p>
-            <button id="wl-new-session" type="button" class="whisper-mini-btn">Start over</button>
+            <button id="wl-new-session" type="button" class="whisper-mini-btn"
+              >Start over</button
+            >
           </div>
         </div>
 
@@ -675,7 +1303,9 @@ const seo = {
         <div class="wl-phase" id="wl-error-section" style="display:none">
           <div class="whisper-panel wl-error-panel">
             <p id="wl-error-message" class="wl-error-text"></p>
-            <button id="wl-error-retry" type="button" class="whisper-mini-btn">Try again</button>
+            <button id="wl-error-retry" type="button" class="whisper-mini-btn"
+              >Try again</button
+            >
           </div>
         </div>
 
@@ -683,19 +1313,35 @@ const seo = {
 
         <!-- Campfire: idle -->
         <div class="wl-phase" id="cf-idle-phase" style="display:none">
-          <p class="wl-phase-lede">one person creates the room, shares the code, then everyone joins directly.</p>
+          <p class="wl-phase-lede">
+            one person creates the room, shares the code, then everyone joins
+            directly.
+          </p>
           <div class="whisper-panel wl-actions-panel">
             <div class="wl-actions-row">
               <div class="wl-action-create">
                 <span class="wl-action-label">Create</span>
-                <button id="cf-create" type="button" class="whisper-mini-btn wl-primary">Create room</button>
+                <button
+                  id="cf-create"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Create room</button
+                >
               </div>
               <span class="wl-actions-divider" aria-hidden="true"></span>
               <div class="wl-action-join">
                 <span class="wl-action-label">Join</span>
                 <div class="wl-join-row">
-                  <input id="cf-join-input" type="text" class="whisper-input wl-code-input" placeholder="room code" autocomplete="off" spellcheck="false" />
-                  <button id="cf-join" type="button" class="whisper-mini-btn">Join</button>
+                  <input
+                    id="cf-join-input"
+                    type="text"
+                    class="whisper-input wl-code-input"
+                    placeholder="room code"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button id="cf-join" type="button" class="whisper-mini-btn"
+                    >Join</button
+                  >
                 </div>
               </div>
             </div>
@@ -703,7 +1349,11 @@ const seo = {
 
           <div class="whisper-panel wl-phrase-panel">
             <label class="whisper-field" for="cf-name">
-              <span class="whisper-field-label">display name <span class="whisper-field-hint">(visible to the group)</span></span>
+              <span class="whisper-field-label"
+                >display name <span class="whisper-field-hint"
+                  >(visible to the group)</span
+                ></span
+              >
               <input
                 id="cf-name"
                 type="text"
@@ -717,16 +1367,27 @@ const seo = {
             <div class="whisper-field">
               <span class="whisper-field-label">network</span>
               <label class="whisper-toggle" for="cf-external-assist">
-                <input id="cf-external-assist" type="checkbox" class="whisper-toggle-input" />
+                <input
+                  id="cf-external-assist"
+                  type="checkbox"
+                  class="whisper-toggle-input"
+                />
                 <span class="whisper-toggle-text">
                   external assist (stun)
-                  <span class="whisper-field-hint">(helps connect across networks. may expose network metadata during setup. turns off after connect)</span>
+                  <span class="whisper-field-hint"
+                    >(helps connect across networks. may expose network metadata
+                    during setup. turns off after connect)</span
+                  >
                 </span>
               </label>
             </div>
 
             <div class="whisper-field">
-              <span class="whisper-field-label">campfire flare join <span class="whisper-field-hint">(find an open host gate by phrase)</span></span>
+              <span class="whisper-field-label"
+                >campfire flare join <span class="whisper-field-hint"
+                  >(find an open host gate by phrase)</span
+                ></span
+              >
               <div class="wl-join-row">
                 <input
                   id="cf-flare-phrase"
@@ -740,27 +1401,41 @@ const seo = {
                   data-1p-ignore="true"
                   data-form-type="other"
                 />
-                <button id="cf-flare-join" type="button" class="whisper-mini-btn">Join flare</button>
+                <button
+                  id="cf-flare-join"
+                  type="button"
+                  class="whisper-mini-btn">Join flare</button
+                >
               </div>
             </div>
           </div>
-
         </div>
 
         <!-- Campfire: waiting -->
         <div class="wl-phase" id="cf-waiting-section" style="display:none">
-          <p class="wl-phase-lede">share the room code. when someone sends back their reply, paste it here to let them in.</p>
+          <p class="wl-phase-lede">
+            share the room code. when someone sends back their reply, paste it
+            here to let them in.
+          </p>
           <div class="wl-grid wl-grid--offer">
             <div class="whisper-panel wl-card">
               <div class="whisper-panel-header">
                 <h3 class="whisper-panel-title">Room code</h3>
                 <span class="whisper-panel-mode">send this to peers</span>
               </div>
-              <p class="wl-inline-hint">anyone with this code can request to join.</p>
+              <p class="wl-inline-hint">
+                anyone with this code can request to join.
+              </p>
               <div class="wl-code-display-wrap">
                 <pre id="cf-room-code" class="wl-code-display"></pre>
-                <button id="cf-room-copy" type="button" class="whisper-mini-btn">Copy</button>
-                <button id="cf-room-share" type="button" class="whisper-mini-btn">Share</button>
+                <button id="cf-room-copy" type="button" class="whisper-mini-btn"
+                  >Copy</button
+                >
+                <button
+                  id="cf-room-share"
+                  type="button"
+                  class="whisper-mini-btn">Share</button
+                >
               </div>
             </div>
 
@@ -769,7 +1444,9 @@ const seo = {
                 <h3 class="whisper-panel-title">Accept</h3>
                 <span class="whisper-panel-mode">paste peer reply</span>
               </div>
-              <p class="wl-inline-hint">paste a peer's reply code to finish connecting them.</p>
+              <p class="wl-inline-hint">
+                paste a peer's reply code to finish connecting them.
+              </p>
               <div class="wl-join-row">
                 <input
                   id="cf-answer-input"
@@ -779,11 +1456,19 @@ const seo = {
                   autocomplete="off"
                   spellcheck="false"
                 />
-                <button id="cf-answer-apply" type="button" class="whisper-mini-btn wl-primary">Connect</button>
+                <button
+                  id="cf-answer-apply"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Connect</button
+                >
               </div>
 
               <div class="whisper-field" style="margin-top:.8rem">
-                <span class="whisper-field-label">flare gate <span class="whisper-field-hint">(host-controlled door)</span></span>
+                <span class="whisper-field-label"
+                  >flare gate <span class="whisper-field-hint"
+                    >(host-controlled door)</span
+                  ></span
+                >
                 <div class="wl-join-row">
                   <input
                     id="cf-host-flare-phrase"
@@ -797,9 +1482,15 @@ const seo = {
                     data-1p-ignore="true"
                     data-form-type="other"
                   />
-                  <button id="cf-host-flare-toggle" type="button" class="whisper-mini-btn">Open gate</button>
+                  <button
+                    id="cf-host-flare-toggle"
+                    type="button"
+                    class="whisper-mini-btn">Open gate</button
+                  >
                 </div>
-                <p id="cf-host-flare-state" class="whisper-field-hint">gate closed</p>
+                <p id="cf-host-flare-state" class="whisper-field-hint">
+                  gate closed
+                </p>
               </div>
             </div>
           </div>
@@ -809,18 +1500,33 @@ const seo = {
         <div class="wl-phase" id="cf-connecting-section" style="display:none">
           <div class="whisper-panel wl-connecting-panel">
             <div class="wl-spinner" aria-hidden="true"></div>
-            <p id="cf-connecting-status" class="wl-connecting-text">joining the room...</p>
+            <p id="cf-connecting-status" class="wl-connecting-text">
+              joining the room...
+            </p>
           </div>
-          <div class="whisper-panel wl-card" id="cf-joiner-answer" style="display:none">
+          <div
+            class="whisper-panel wl-card"
+            id="cf-joiner-answer"
+            style="display:none"
+          >
             <div class="whisper-panel-header">
               <h3 class="whisper-panel-title">Reply code</h3>
               <span class="whisper-panel-mode">send back to the host</span>
             </div>
-            <p class="wl-inline-hint">copy this and send it to whoever created the room. keep this tab open.</p>
+            <p class="wl-inline-hint">
+              copy this and send it to whoever created the room. keep this tab
+              open.
+            </p>
             <div class="wl-code-display-wrap">
               <pre id="cf-joiner-code" class="wl-code-display"></pre>
-              <button id="cf-joiner-copy" type="button" class="whisper-mini-btn">Copy</button>
-              <button id="cf-joiner-share" type="button" class="whisper-mini-btn">Share</button>
+              <button id="cf-joiner-copy" type="button" class="whisper-mini-btn"
+                >Copy</button
+              >
+              <button
+                id="cf-joiner-share"
+                type="button"
+                class="whisper-mini-btn">Share</button
+              >
             </div>
           </div>
         </div>
@@ -834,12 +1540,27 @@ const seo = {
                 <div id="cf-peer-list" class="cf-peer-list" role="list"></div>
               </div>
               <div class="cf-header-actions">
-                <button id="cf-host-flare-toggle-active" type="button" class="whisper-mini-btn" style="display:none">Open gate</button>
-                <button id="cf-disconnect" type="button" class="whisper-mini-btn wl-disconnect-btn">Leave</button>
+                <button
+                  id="cf-host-flare-toggle-active"
+                  type="button"
+                  class="whisper-mini-btn"
+                  style="display:none">Open gate</button
+                >
+                <button
+                  id="cf-disconnect"
+                  type="button"
+                  class="whisper-mini-btn wl-disconnect-btn">Leave</button
+                >
               </div>
             </div>
 
-            <div id="cf-chat-messages" class="wl-chat-messages" aria-live="polite" aria-relevant="additions"></div>
+            <div
+              id="cf-chat-messages"
+              class="wl-chat-messages"
+              aria-live="polite"
+              aria-relevant="additions"
+            >
+            </div>
 
             <div class="wl-chat-compose">
               <input
@@ -850,7 +1571,11 @@ const seo = {
                 autocomplete="off"
                 spellcheck="false"
               />
-              <button id="cf-chat-send" type="button" class="whisper-mini-btn wl-chat-send-btn">Send</button>
+              <button
+                id="cf-chat-send"
+                type="button"
+                class="whisper-mini-btn wl-chat-send-btn">Send</button
+              >
             </div>
           </div>
         </div>
@@ -859,10 +1584,15 @@ const seo = {
         <div id="cf-dm-overlay" class="cf-dm-overlay" style="display:none">
           <div class="whisper-panel cf-dm-panel">
             <div class="cf-dm-header">
-              <span class="cf-dm-label"><strong id="cf-dm-target-name"></strong></span>
-              <button id="cf-dm-close" type="button" class="whisper-mini-btn">Close</button>
+              <span class="cf-dm-label"
+                ><strong id="cf-dm-target-name"></strong></span
+              >
+              <button id="cf-dm-close" type="button" class="whisper-mini-btn"
+                >Close</button
+              >
             </div>
-            <div id="cf-dm-messages" class="wl-chat-messages cf-dm-messages"></div>
+            <div id="cf-dm-messages" class="wl-chat-messages cf-dm-messages">
+            </div>
             <div class="wl-chat-compose">
               <input
                 id="cf-dm-input"
@@ -872,7 +1602,11 @@ const seo = {
                 autocomplete="off"
                 spellcheck="false"
               />
-              <button id="cf-dm-send" type="button" class="whisper-mini-btn wl-chat-send-btn">Send</button>
+              <button
+                id="cf-dm-send"
+                type="button"
+                class="whisper-mini-btn wl-chat-send-btn">Send</button
+              >
             </div>
           </div>
         </div>
@@ -880,8 +1614,12 @@ const seo = {
         <!-- Campfire: ended -->
         <div class="wl-phase" id="cf-ended-section" style="display:none">
           <div class="whisper-panel wl-end-panel">
-            <p id="cf-ended-message" class="wl-end-text">the campfire is out. nothing remains.</p>
-            <button id="cf-new-campfire" type="button" class="whisper-mini-btn">New session</button>
+            <p id="cf-ended-message" class="wl-end-text">
+              the campfire is out. nothing remains.
+            </p>
+            <button id="cf-new-campfire" type="button" class="whisper-mini-btn"
+              >New session</button
+            >
           </div>
         </div>
       </div>
@@ -889,7 +1627,11 @@ const seo = {
       <!-- Seal overlay panels (computing, my-seal, result, unseal) -->
       <div class="ws-overlay" id="ws-overlay" style="display:none">
         <!-- Computing fingerprint -->
-        <div class="ws-overlay-panel" id="ws-computing-phase" style="display:none">
+        <div
+          class="ws-overlay-panel"
+          id="ws-computing-phase"
+          style="display:none"
+        >
           <div class="whisper-panel ws-computing-panel">
             <div class="wl-spinner" aria-hidden="true"></div>
             <p class="ws-computing-text">computing your browser seal...</p>
@@ -897,21 +1639,42 @@ const seo = {
         </div>
 
         <!-- My seal — display seal code -->
-        <div class="ws-overlay-panel" id="ws-my-seal-phase" style="display:none">
+        <div
+          class="ws-overlay-panel"
+          id="ws-my-seal-phase"
+          style="display:none"
+        >
           <div class="whisper-panel ws-seal-display-panel">
             <h3 class="whisper-panel-title">Your WS2 Public Seal</h3>
             <div class="ws-seal-code-wrap">
               <span id="ws-seal-code" class="ws-seal-code"></span>
             </div>
             <div class="ws-seal-qr-wrap">
-              <canvas id="ws-seal-qr-canvas-overlay" class="ws-seal-qr-canvas" data-qr-size="220" aria-label="QR code for your full WS2 public key"></canvas>
-              <p id="ws-seal-qr-status-overlay" class="ws-seal-hint">share this to let someone message you.</p>
+              <canvas
+                id="ws-seal-qr-canvas-overlay"
+                class="ws-seal-qr-canvas"
+                data-qr-size="220"
+                aria-label="QR code for your full WS2 public key"></canvas>
+              <p id="ws-seal-qr-status-overlay" class="ws-seal-hint">
+                share this to let someone message you.
+              </p>
             </div>
-            <p class="ws-seal-hint">Share this full WS2 code to receive messages.</p>
-            <p class="ws-seal-hint">Only the browser profile with the matching private key can open messages sealed to this key.</p>
+            <p class="ws-seal-hint">
+              Share this full WS2 code to receive messages.
+            </p>
+            <p class="ws-seal-hint">
+              Only the browser profile with the matching private key can open
+              messages sealed to this key.
+            </p>
             <div class="ws-seal-actions">
-              <button id="ws-seal-copy" type="button" class="whisper-mini-btn wl-primary">Copy seal</button>
-              <button id="ws-seal-back" type="button" class="whisper-mini-btn">Done</button>
+              <button
+                id="ws-seal-copy"
+                type="button"
+                class="whisper-mini-btn wl-primary">Copy seal</button
+              >
+              <button id="ws-seal-back" type="button" class="whisper-mini-btn"
+                >Done</button
+              >
             </div>
           </div>
         </div>
@@ -922,20 +1685,41 @@ const seo = {
             <h3 class="whisper-panel-title">Message Sealed</h3>
 
             <div class="ws-url-display-wrap">
-              <pre id="ws-sealed-url" class="wl-code-display ws-url-display"></pre>
-              <button id="ws-url-copy" type="button" class="whisper-mini-btn">Copy URL</button>
+              <pre id="ws-sealed-url" class="wl-code-display ws-url-display">
+              </pre>
+              <button id="ws-url-copy" type="button" class="whisper-mini-btn"
+                >Copy URL</button
+              >
             </div>
 
             <div class="ws-result-checks">
-              <p class="ws-check"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> Only <strong id="ws-result-seal-target"></strong> can open this</p>
-              <p class="ws-check"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> <span id="ws-result-expiry-text">Expires in 24 hours</span></p>
-              <p class="ws-check"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> No data stored anywhere</p>
+              <p class="ws-check">
+                <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> Only
+                <strong id="ws-result-seal-target"></strong> can open this
+              </p>
+              <p class="ws-check">
+                <span class="ws-check-icon" aria-hidden="true">&#x2713;</span>
+                <span id="ws-result-expiry-text">Expires in 24 hours</span>
+              </p>
+              <p class="ws-check">
+                <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> No
+                data stored anywhere
+              </p>
             </div>
 
-            <p id="ws-result-url-warning" class="ws-result-url-length-warning" style="display:none"></p>
-            <p class="ws-result-warning">Once you leave this page, this URL cannot be recovered.</p>
+            <p
+              id="ws-result-url-warning"
+              class="ws-result-url-length-warning"
+              style="display:none"
+            >
+            </p>
+            <p class="ws-result-warning">
+              Once you leave this page, this URL cannot be recovered.
+            </p>
 
-            <button id="ws-result-done" type="button" class="whisper-mini-btn">Done</button>
+            <button id="ws-result-done" type="button" class="whisper-mini-btn"
+              >Done</button
+            >
           </div>
         </div>
 
@@ -947,69 +1731,187 @@ const seo = {
               <p class="ws-computing-text">checking your seal...</p>
             </div>
 
-            <div id="ws-unseal-success" class="ws-status-screen" style="display:none">
-              <div class="ws-status-icon ws-status-icon--success" aria-hidden="true">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                  <polyline points="22 4 12 14.01 9 11.01"/>
+            <div
+              id="ws-unseal-success"
+              class="ws-status-screen"
+              style="display:none"
+            >
+              <div
+                class="ws-status-icon ws-status-icon--success"
+                aria-hidden="true"
+              >
+                <svg
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
                 </svg>
               </div>
-              <h3 class="whisper-panel-title ws-status-title">Sealed Message</h3>
+              <h3 class="whisper-panel-title ws-status-title">
+                Sealed Message
+              </h3>
               <div class="ws-message-display">
                 <pre id="ws-decrypted-message" class="ws-decrypted-text"></pre>
               </div>
-              <p class="ws-unseal-meta"><span class="ws-check-icon" aria-hidden="true">&#x2713;</span> decrypted locally with your seal. this message won't be here when you leave.</p>
+              <p class="ws-unseal-meta">
+                <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> decrypted
+                locally with your seal. this message won't be here when you leave.
+              </p>
               <div class="ws-status-meta" data-meta="success"></div>
               <div class="ws-unseal-actions">
-                <button id="ws-msg-copy" type="button" class="whisper-mini-btn wl-primary">Copy content</button>
-                <button id="ws-unseal-done" type="button" class="whisper-mini-btn">Close</button>
+                <button
+                  id="ws-msg-copy"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Copy content</button
+                >
+                <button
+                  id="ws-unseal-done"
+                  type="button"
+                  class="whisper-mini-btn">Close</button
+                >
               </div>
             </div>
 
-            <div id="ws-unseal-fail" class="ws-status-screen" style="display:none">
-              <div class="ws-status-icon ws-status-icon--locked" aria-hidden="true">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            <div
+              id="ws-unseal-fail"
+              class="ws-status-screen"
+              style="display:none"
+            >
+              <div
+                class="ws-status-icon ws-status-icon--locked"
+                aria-hidden="true"
+              >
+                <svg
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"
+                  ></rect>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
                 </svg>
               </div>
               <h3 class="whisper-panel-title ws-status-title">Cannot Open</h3>
-              <p class="ws-fail-text">this one's not for you. or at least, not this browser.</p>
-              <p class="ws-fail-detail">try opening it in the browser where your seal was created.</p>
+              <p class="ws-fail-text">
+                this one's not for you. or at least, not this browser.
+              </p>
+              <p class="ws-fail-detail">
+                try opening it in the browser where your seal was created.
+              </p>
               <div class="ws-status-meta" data-meta="fail"></div>
-              <button id="ws-fail-back" type="button" class="whisper-mini-btn">Back</button>
+              <button id="ws-fail-back" type="button" class="whisper-mini-btn"
+                >Back</button
+              >
             </div>
 
-            <div id="ws-unseal-expired" class="ws-status-screen" style="display:none">
-              <div class="ws-status-icon ws-status-icon--expired" aria-hidden="true">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10"/>
-                  <polyline points="12 6 12 12 16 14"/>
+            <div
+              id="ws-unseal-expired"
+              class="ws-status-screen"
+              style="display:none"
+            >
+              <div
+                class="ws-status-icon ws-status-icon--expired"
+                aria-hidden="true"
+              >
+                <svg
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
                 </svg>
               </div>
               <h3 class="whisper-panel-title ws-status-title">Expired</h3>
-              <p class="ws-fail-text">this sealed message has expired and can no longer be opened.</p>
-              <p class="ws-fail-detail">this one had a time limit... and it passed.</p>
+              <p class="ws-fail-text">
+                this sealed message has expired and can no longer be opened.
+              </p>
+              <p class="ws-fail-detail">
+                this one had a time limit... and it passed.
+              </p>
               <div class="ws-status-meta" data-meta="expired"></div>
-              <button id="ws-expired-back" type="button" class="whisper-mini-btn">Back</button>
+              <button
+                id="ws-expired-back"
+                type="button"
+                class="whisper-mini-btn">Back</button
+              >
             </div>
 
-            <div id="ws-unseal-password" class="ws-status-screen" style="display:none">
-              <div class="ws-status-icon ws-status-icon--phrase" aria-hidden="true">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+            <div
+              id="ws-unseal-password"
+              class="ws-status-screen"
+              style="display:none"
+            >
+              <div
+                class="ws-status-icon ws-status-icon--phrase"
+                aria-hidden="true"
+              >
+                <svg
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path
+                    d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"
+                  ></path>
                 </svg>
               </div>
-              <h3 class="whisper-panel-title ws-status-title">Shared Phrase Required</h3>
-              <p class="ws-fail-detail">this sealed message was locked with a shared phrase. enter it below to decrypt.</p>
+              <h3 class="whisper-panel-title ws-status-title">
+                Shared Phrase Required
+              </h3>
+              <p class="ws-fail-detail">
+                this sealed message was locked with a shared phrase. enter it
+                below to decrypt.
+              </p>
               <div class="ws-status-meta" data-meta="password"></div>
               <label class="whisper-field" for="ws-unseal-pw-input">
-                <input id="ws-unseal-pw-input" type="password" class="whisper-input" placeholder="enter shared phrase" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" />
+                <input
+                  id="ws-unseal-pw-input"
+                  type="password"
+                  class="whisper-input"
+                  placeholder="enter shared phrase"
+                  autocomplete="new-password"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
+                />
               </label>
               <div class="wl-join-tools" role="group" aria-label="Paste helper">
-                <button id="ws-unseal-pw-paste" type="button" class="wl-tool-link">paste</button>
+                <button
+                  id="ws-unseal-pw-paste"
+                  type="button"
+                  class="wl-tool-link">paste</button
+                >
               </div>
-              <button id="ws-unseal-pw-submit" type="button" class="whisper-mini-btn wl-primary">Decrypt</button>
+              <button
+                id="ws-unseal-pw-submit"
+                type="button"
+                class="whisper-mini-btn wl-primary">Decrypt</button
+              >
             </div>
           </div>
         </div>
@@ -1017,7 +1919,11 @@ const seo = {
     </section>
 
     <!-- ── Progress Bar ─────────────────────────────────────── -->
-    <section class="mt-[var(--space-sm)] content-section whisper-section--solo" id="whisper-progress-section" style="display:none">
+    <section
+      class="mt-[var(--space-sm)] content-section whisper-section--solo"
+      id="whisper-progress-section"
+      style="display:none"
+    >
       <div class="whisper-progress">
         <div class="whisper-progress-fill" id="whisper-progress-fill"></div>
       </div>
@@ -1025,21 +1931,38 @@ const seo = {
 
     <!-- ── Results ──────────────────────────────────────────── -->
     <section class="mt-[var(--space-sm)] content-section whisper-section--solo">
-      <div id="whisper-results" class="whisper-results" aria-live="polite"></div>
+      <div id="whisper-results" class="whisper-results" aria-live="polite">
+      </div>
       <div id="whisper-download-area" class="whisper-downloads"></div>
     </section>
 
     <!-- ── Runtime Log ──────────────────────────────────────── -->
-    <section class="mt-[var(--space-sm)] content-section whisper-section--shared">
+    <section
+      class="mt-[var(--space-sm)] content-section whisper-section--shared"
+    >
       <div class="whisper-log-wrap" id="whisper-log-wrap">
-        <div class="whisper-log-header" role="button" tabindex="0"
-          aria-expanded="true" aria-controls="whisper-log-output">
+        <div
+          class="whisper-log-header"
+          role="button"
+          tabindex="0"
+          aria-expanded="true"
+          aria-controls="whisper-log-output"
+        >
           <p class="whisper-log-title">runtime log</p>
           <span class="whisper-log-header-right">
             <span class="whisper-log-dot" id="whisper-log-dot"></span>
-            <svg class="whisper-log-chevron" viewBox="0 0 12 12" aria-hidden="true">
-              <path d="M3 4.5 L6 7.5 L9 4.5" fill="none" stroke="currentColor"
-                stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <svg
+              class="whisper-log-chevron"
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+            >
+              <path
+                d="M3 4.5 L6 7.5 L9 4.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"></path>
             </svg>
           </span>
         </div>
@@ -1048,22 +1971,26 @@ const seo = {
     </section>
 
     <!-- ── Insights ─────────────────────────────────────────── -->
-    <section class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section whisper-section--solo">
+    <section
+      class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section whisper-section--solo"
+    >
       <div class="whisper-insights">
         <h2 class="insights-title">what does this do?</h2>
         <p class="insights-text">
-          whisper takes a normal file (a "carrier"), and hides something secret inside it. the secret payload is injected into padding, gaps, and dead space most formats already have. the carrier file retiains full functionality. if there's
-          not enough room, it can attach as a tail.
+          whisper takes a normal file (a "carrier"), and hides something secret
+          inside it. the secret payload is injected into padding, gaps, and dead
+          space most formats already have. the carrier file retiains full
+          functionality. if there's not enough room, it can attach as a tail.
         </p>
         <p class="insights-text">
           it’s intentionally fragile. edit the carrier, re-save it, recompress
-          it, or move the bytes around even a little and it won’t decrypt anymore. the payload
-          is bound to that exact file.
+          it, or move the bytes around even a little and it won’t decrypt
+          anymore. the payload is bound to that exact file.
         </p>
         <p class="insights-text">
-          everything runs locally. nothing gets uploaded. embed hides a payload, 
-          extract pulls it back out, hunt checks whether one is
-          present, and live combines these so you can do it peer to peer between browsers.
+          everything runs locally. nothing gets uploaded. embed hides a payload,
+          extract pulls it back out, hunt checks whether one is present, and
+          live combines these so you can do it peer to peer between browsers.
         </p>
       </div>
     </section>
@@ -1080,13 +2007,11 @@ const seo = {
         class="action-btn action-btn--primary"
         id="whisper-action-run"
         type="button"
-        disabled
-      >Embed</button>
-      <button
-        class="action-btn"
-        id="whisper-action-upload"
-        type="button"
-      >New File</button>
+        disabled>Embed</button
+      >
+      <button class="action-btn" id="whisper-action-upload" type="button"
+        >New File</button
+      >
       <button
         class="action-btn action-btn--icon"
         id="whisper-action-lens"
@@ -1117,16 +2042,28 @@ const seo = {
         class="action-btn"
         id="whisper-action-clear"
         type="button"
-        disabled
-      >Clear</button>
+        disabled>Clear</button
+      >
     </div>
   </div>
 
   <script>
-    import { initWhisper, resolveWhisperUIOptions } from "../scripts/whisper/ui";
-    import { initWhisperLive, resolveWhisperLiveUIOptions } from "../scripts/whisper/live-ui";
-    import { initWhisperSeal, resolveWhisperSealUIOptions } from "../scripts/whisper/seal-ui";
-    import { initCampfire, resolveCampfireUIOptions } from "../scripts/whisper/campfire/ui";
+    import {
+      initWhisper,
+      resolveWhisperUIOptions,
+    } from "../scripts/whisper/ui";
+    import {
+      initWhisperLive,
+      resolveWhisperLiveUIOptions,
+    } from "../scripts/whisper/live-ui";
+    import {
+      initWhisperSeal,
+      resolveWhisperSealUIOptions,
+    } from "../scripts/whisper/seal-ui";
+    import {
+      initCampfire,
+      resolveCampfireUIOptions,
+    } from "../scripts/whisper/campfire/ui";
 
     const WHISPER_LIFECYCLE_KEY = "__whisperLifecycle";
     type WhisperLifecycle = {
@@ -1140,7 +2077,10 @@ const seo = {
     let cleanupSeal: (() => void) | null = null;
     let cleanupCampfire: (() => void) | null = null;
     let submodeAbort: AbortController | null = null;
-    const whisperWindow = window as unknown as Record<string, WhisperLifecycle | undefined>;
+    const whisperWindow = window as unknown as Record<
+      string,
+      WhisperLifecycle | undefined
+    >;
 
     const MESSAGE_PLACEHOLDERS = [
       "your secret message...",
@@ -1150,8 +2090,13 @@ const seo = {
 
     function boot() {
       teardown();
-      const msgArea = document.querySelector<HTMLTextAreaElement>("#ws-message");
-      if (msgArea) msgArea.placeholder = MESSAGE_PLACEHOLDERS[Math.floor(Math.random() * MESSAGE_PLACEHOLDERS.length)];
+      const msgArea =
+        document.querySelector<HTMLTextAreaElement>("#ws-message");
+      if (msgArea)
+        msgArea.placeholder =
+          MESSAGE_PLACEHOLDERS[
+            Math.floor(Math.random() * MESSAGE_PLACEHOLDERS.length)
+          ];
       const whisperOptions = resolveWhisperUIOptions(document);
       if (whisperOptions) cleanupWhisper = initWhisper(whisperOptions);
       const liveOptions = resolveWhisperLiveUIOptions(document);
@@ -1163,7 +2108,9 @@ const seo = {
 
       // Wire up collapsible runtime log
       const logWrap = document.getElementById("whisper-log-wrap");
-      const logHeader = logWrap?.querySelector<HTMLElement>(".whisper-log-header");
+      const logHeader = logWrap?.querySelector<HTMLElement>(
+        ".whisper-log-header",
+      );
       if (logWrap && logHeader) {
         const STORAGE_KEY = "whisper-log-collapsed";
         if (localStorage.getItem(STORAGE_KEY) === "1") {
@@ -1184,7 +2131,9 @@ const seo = {
       }
 
       // Wire up Live sub-mode toggle (1:1 vs Campfire)
-      const submodeRadios = document.querySelectorAll<HTMLInputElement>('input[name="wl-live-submode"]');
+      const submodeRadios = document.querySelectorAll<HTMLInputElement>(
+        'input[name="wl-live-submode"]',
+      );
       const livePhaseIds = [
         "wl-idle-phase",
         "wl-offer-section",
@@ -1222,7 +2171,9 @@ const seo = {
 
         if (mode === "campfire") {
           for (const phase of livePhases) phase.style.display = "none";
-          document.getElementById("wl-section")?.classList.remove("wl-connected", "wl-recovering");
+          document
+            .getElementById("wl-section")
+            ?.classList.remove("wl-connected", "wl-recovering");
           if (!hasVisiblePhase(campfirePhases)) {
             const cfIdle = document.getElementById("cf-idle-phase");
             if (cfIdle instanceof HTMLElement) cfIdle.style.display = "";
@@ -1238,36 +2189,58 @@ const seo = {
       }
 
       submodeRadios.forEach((radio) => {
-        radio.addEventListener("change", () => {
-          if (!radio.checked) return;
-          const mode = radio.value === "campfire" ? "campfire" : "1:1";
-          sessionStorage.setItem("whisper-live-submode", mode);
-          syncLiveSubmode(mode);
-        }, { signal: submodeSignal });
+        radio.addEventListener(
+          "change",
+          () => {
+            if (!radio.checked) return;
+            const mode = radio.value === "campfire" ? "campfire" : "1:1";
+            sessionStorage.setItem("whisper-live-submode", mode);
+            syncLiveSubmode(mode);
+          },
+          { signal: submodeSignal },
+        );
       });
 
-      window.addEventListener("whisper-live-funnel", (event: Event) => {
-        const custom = event as CustomEvent<{ mode?: "1:1" | "campfire"; bootstrap?: boolean }>;
-        const mode = custom.detail?.mode === "campfire" ? "campfire" : "1:1";
-        sessionStorage.setItem("whisper-live-submode", mode);
-        syncLiveSubmode(mode);
+      window.addEventListener(
+        "whisper-live-funnel",
+        (event: Event) => {
+          const custom = event as CustomEvent<{
+            mode?: "1:1" | "campfire";
+            bootstrap?: boolean;
+          }>;
+          const mode = custom.detail?.mode === "campfire" ? "campfire" : "1:1";
+          sessionStorage.setItem("whisper-live-submode", mode);
+          syncLiveSubmode(mode);
 
-        if (mode === "campfire" && custom.detail?.bootstrap) {
-          window.dispatchEvent(new CustomEvent("whisper-campfire-bootstrap", {
-            detail: {
-              source: "live-vote",
-              phrase: (document.getElementById("wl-phrase") as HTMLInputElement | null)?.value?.trim() ?? "",
-            },
-          }));
-        }
-      }, { signal: submodeSignal });
+          if (mode === "campfire" && custom.detail?.bootstrap) {
+            window.dispatchEvent(
+              new CustomEvent("whisper-campfire-bootstrap", {
+                detail: {
+                  source: "live-vote",
+                  phrase:
+                    (
+                      document.getElementById(
+                        "wl-phrase",
+                      ) as HTMLInputElement | null
+                    )?.value?.trim() ?? "",
+                },
+              }),
+            );
+          }
+        },
+        { signal: submodeSignal },
+      );
 
       const savedSubmode = sessionStorage.getItem("whisper-live-submode");
       if (savedSubmode === "campfire" || savedSubmode === "1:1") {
-        const target = Array.from(submodeRadios).find((r) => r.value === savedSubmode);
+        const target = Array.from(submodeRadios).find(
+          (r) => r.value === savedSubmode,
+        );
         if (target) target.checked = true;
       }
-      const checkedMode = Array.from(submodeRadios).find((r) => r.checked)?.value;
+      const checkedMode = Array.from(submodeRadios).find(
+        (r) => r.checked,
+      )?.value;
       syncLiveSubmode(checkedMode === "campfire" ? "campfire" : "1:1");
     }
 
@@ -1340,11 +2313,11 @@ const seo = {
     gap: calc(var(--space-xs) * 0.7);
   }
 
-    .whisper-title-row {
-      display: flex;
-      align-items: center;
-      gap: calc(var(--space-xs) * 0.7);
-    }
+  .whisper-title-row {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.7);
+  }
 
   .whisper-title {
     margin: 0;
@@ -1352,22 +2325,22 @@ const seo = {
     letter-spacing: -0.018em;
   }
 
-    .whisper-alpha-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 auto;
-      min-height: calc(var(--touch-target) * 0.5);
-      padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
-      border-radius: calc(var(--whisper-radius) * 0.55);
-      border: 1px solid rgb(var(--chromatic-red) / 0.35);
-      background: rgb(var(--chromatic-red) / 0.1);
-      color: rgb(var(--chromatic-red));
-      font-size: calc(var(--text-sm) * 0.66);
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      user-select: none;
-    }
+  .whisper-alpha-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-height: calc(var(--touch-target) * 0.5);
+    padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    border: 1px solid rgb(var(--chromatic-red) / 0.35);
+    background: rgb(var(--chromatic-red) / 0.1);
+    color: rgb(var(--chromatic-red));
+    font-size: calc(var(--text-sm) * 0.66);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    user-select: none;
+  }
 
   .whisper-tagline {
     margin: 0;
@@ -1614,7 +2587,8 @@ const seo = {
     transition: color var(--duration-normal) var(--ease-out);
   }
 
-  .whisper-upload-zone:global(.whisper-upload-zone--compact):hover .upload-file-meta {
+  .whisper-upload-zone:global(.whisper-upload-zone--compact):hover
+    .upload-file-meta {
     color: rgb(var(--chromatic-cyan) / 0.55);
   }
 
@@ -1890,32 +2864,57 @@ const seo = {
   }
 
   /* Carrier toggle: only visible in embed mode */
-  .whisper-page:not([data-mode="embed"]) .ws-carrier-toggle-wrap { display: none; }
+  .whisper-page:not([data-mode="embed"]) .ws-carrier-toggle-wrap {
+    display: none;
+  }
 
   /* When carrier=url: hide file-specific embed fields, upload zone, and file password */
-  .whisper-page[data-mode="embed"][data-carrier="url"] .whisper-field--embed:not(.ws-carrier-toggle-wrap):not([for="ws-message"]) { display: none; }
-  .whisper-page[data-mode="embed"][data-carrier="url"] #whisper-upload-zone { display: none; }
-  .whisper-page[data-mode="embed"][data-carrier="url"] .whisper-field--file-password { display: none; }
+  .whisper-page[data-mode="embed"][data-carrier="url"]
+    .whisper-field--embed:not(.ws-carrier-toggle-wrap):not([for="ws-message"]) {
+    display: none;
+  }
+  .whisper-page[data-mode="embed"][data-carrier="url"] #whisper-upload-zone {
+    display: none;
+  }
+  .whisper-page[data-mode="embed"][data-carrier="url"]
+    .whisper-field--file-password {
+    display: none;
+  }
 
   /* When carrier=file (default): hide URL-only seal fields */
-  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-url-only { display: none; }
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-url-only {
+    display: none;
+  }
 
   /* Seal fields hidden in non-embed modes */
-  .whisper-page:not([data-mode="embed"]) .ws-seal-fields { display: none; }
+  .whisper-page:not([data-mode="embed"]) .ws-seal-fields {
+    display: none;
+  }
 
   /* Seal mode chip + inline code only when carrier=url */
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-btn,
   .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline,
-  .whisper-page[data-mode="embed"]:not([data-carrier="url"]) .ws-my-seal-inline-panel { display: none; }
+  .whisper-page[data-mode="embed"]:not([data-carrier="url"])
+    .ws-my-seal-inline-panel {
+    display: none;
+  }
 
   /* Password tools (generate/copy) only in embed mode; paste link only in extract/hunt */
-  .whisper-page:not([data-mode="embed"]) .whisper-password-tools { display: none; }
+  .whisper-page:not([data-mode="embed"]) .whisper-password-tools {
+    display: none;
+  }
 
   /* Overlay hides solo panel when active (JS-managed via style) */
-  .ws-overlay { display: grid; gap: var(--space-sm); min-width: 0; }
+  .ws-overlay {
+    display: grid;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
 
   /* Hide overlay in live mode */
-  .whisper-page[data-mode="live"] .ws-overlay { display: none; }
+  .whisper-page[data-mode="live"] .ws-overlay {
+    display: none;
+  }
 
   /* ── Progress ──────────────────────────────────────────── */
   .whisper-progress {
@@ -2086,9 +3085,10 @@ const seo = {
   }
 
   .whisper-log-output {
-    transition: max-height var(--duration-normal) var(--ease-out),
-                min-height var(--duration-normal) var(--ease-out),
-                padding var(--duration-normal) var(--ease-out);
+    transition:
+      max-height var(--duration-normal) var(--ease-out),
+      min-height var(--duration-normal) var(--ease-out),
+      padding var(--duration-normal) var(--ease-out);
   }
 
   .whisper-log-title {
@@ -2122,8 +3122,13 @@ const seo = {
   }
 
   @keyframes whisper-log-blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
   }
 
   .whisper-log-output {
@@ -2173,7 +3178,9 @@ const seo = {
     backdrop-filter: blur(16px) saturate(1.2);
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     border-radius: var(--whisper-radius);
-    box-shadow: var(--edge-highlight), 0 4px 20px rgba(0, 0, 0, 0.25);
+    box-shadow:
+      var(--edge-highlight),
+      0 4px 20px rgba(0, 0, 0, 0.25);
     z-index: 40;
     white-space: nowrap;
     overflow-x: auto;
@@ -2232,7 +3239,11 @@ const seo = {
 
   .action-btn--primary:global(.action-btn--ran) {
     animation: whisper-run-ack 900ms var(--ease-spring);
-    background: linear-gradient(180deg, rgb(var(--chromatic-cyan) / 0.22) 0%, rgb(var(--chromatic-cyan) / 0.1) 100%);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan) / 0.22) 0%,
+      rgb(var(--chromatic-cyan) / 0.1) 100%
+    );
     color: rgb(var(--chromatic-cyan));
     border: 1px solid rgb(var(--chromatic-cyan) / 0.35);
   }
@@ -2511,7 +3522,8 @@ const seo = {
   }
 
   @keyframes wl-badge-amber-flash {
-    0%, 100% {
+    0%,
+    100% {
       color: rgb(var(--tool-status-warning) / 0.5);
       border-color: rgb(var(--tool-status-warning) / 0.18);
       background: rgb(var(--tool-status-warning) / 0.04);
@@ -2846,8 +3858,15 @@ const seo = {
   }
 
   @keyframes wl-flare-pulse {
-    0%, 100% { opacity: 0.6; box-shadow: 0 0 4px rgb(var(--chromatic-flare) / 0.3); }
-    50% { opacity: 1; box-shadow: 0 0 10px rgb(var(--chromatic-flare) / 0.6); }
+    0%,
+    100% {
+      opacity: 0.6;
+      box-shadow: 0 0 4px rgb(var(--chromatic-flare) / 0.3);
+    }
+    50% {
+      opacity: 1;
+      box-shadow: 0 0 10px rgb(var(--chromatic-flare) / 0.6);
+    }
   }
 
   .wl-flare-burning-text {
@@ -2884,8 +3903,12 @@ const seo = {
   }
 
   @keyframes wl-flare-arrived-flash {
-    0% { background: rgb(var(--chromatic-flare) / 0.18); }
-    100% { background: rgb(var(--chromatic-flare) / 0.06); }
+    0% {
+      background: rgb(var(--chromatic-flare) / 0.18);
+    }
+    100% {
+      background: rgb(var(--chromatic-flare) / 0.06);
+    }
   }
 
   .wl-flare-arrived-text {
@@ -2977,7 +4000,6 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.18);
     user-select: none;
   }
-
 
   /* wl-phrase-panel still used by campfire */
   .wl-phrase-panel {
@@ -3178,7 +4200,9 @@ const seo = {
   }
 
   @keyframes wl-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .wl-connecting-text {
@@ -3245,11 +4269,16 @@ const seo = {
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     background: rgb(10 10 10 / 0.6);
     cursor: pointer;
-    transition: border-color var(--duration-normal) var(--ease-out),
-                background var(--duration-normal) var(--ease-out);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
   }
-  .wl-fp-chip--verified { display: inline-flex; }
-  .wl-fp-chip--recovering { display: inline-flex; }
+  .wl-fp-chip--verified {
+    display: inline-flex;
+  }
+  .wl-fp-chip--recovering {
+    display: inline-flex;
+  }
   .wl-fp-chip:hover {
     border-color: rgb(var(--color-text-rgb) / 0.2);
     background: rgb(10 10 10 / 0.85);
@@ -3263,8 +4292,12 @@ const seo = {
     filter: saturate(0.4) opacity(0.6);
     transition: filter var(--duration-normal) var(--ease-out);
   }
-  .wl-fp-chip--verified .wl-fp-chip-emoji { filter: saturate(1) opacity(0.85); }
-  .wl-fp-chip--recovering .wl-fp-chip-emoji { filter: saturate(0.2) opacity(0.4); }
+  .wl-fp-chip--verified .wl-fp-chip-emoji {
+    filter: saturate(1) opacity(0.85);
+  }
+  .wl-fp-chip--recovering .wl-fp-chip-emoji {
+    filter: saturate(0.2) opacity(0.4);
+  }
 
   /* Nickname label inside chip */
   .wl-fp-chip-name {
@@ -3277,8 +4310,12 @@ const seo = {
     white-space: nowrap;
     color: rgb(var(--color-text-rgb) / 0.85);
   }
-  .wl-fp-chip--named .wl-fp-chip-emoji { display: none; }
-  .wl-fp-chip--named .wl-fp-chip-name  { display: inline-block; }
+  .wl-fp-chip--named .wl-fp-chip-emoji {
+    display: none;
+  }
+  .wl-fp-chip--named .wl-fp-chip-name {
+    display: inline-block;
+  }
 
   /* Nickname input — replaces the chip in place when editing */
   .wl-fp-nickname-input {
@@ -3293,10 +4330,19 @@ const seo = {
     outline: none;
     box-shadow: none;
   }
-  .wl-fp-nickname-input:focus { outline: none; box-shadow: none; }
-  .wl-fp-wrap--editing .wl-fp-chip         { display: none !important; }
-  .wl-fp-wrap--editing .wl-fp-nickname-input { display: inline-block; }
-  .wl-fp-nickname-input::placeholder { color: rgb(var(--color-text-rgb) / 0.3); }
+  .wl-fp-nickname-input:focus {
+    outline: none;
+    box-shadow: none;
+  }
+  .wl-fp-wrap--editing .wl-fp-chip {
+    display: none !important;
+  }
+  .wl-fp-wrap--editing .wl-fp-nickname-input {
+    display: inline-block;
+  }
+  .wl-fp-nickname-input::placeholder {
+    color: rgb(var(--color-text-rgb) / 0.3);
+  }
 
   /* ── Chat ───────────────────────────────────────────────── */
   .wl-chat-panel {
@@ -3377,8 +4423,12 @@ const seo = {
 
   /* Custom scrollbar only for pointer devices — touch keeps native overlay */
   @media (hover: hover) {
-    .wl-chat-messages::-webkit-scrollbar { width: 4px; }
-    .wl-chat-messages::-webkit-scrollbar-track { background: transparent; }
+    .wl-chat-messages::-webkit-scrollbar {
+      width: 4px;
+    }
+    .wl-chat-messages::-webkit-scrollbar-track {
+      background: transparent;
+    }
     .wl-chat-messages::-webkit-scrollbar-thumb {
       background: rgb(var(--color-text-rgb) / 0.12);
       border-radius: 4px;
@@ -3453,7 +4503,9 @@ const seo = {
   }
 
   .wl-chat-messages :global(.wl-msg--self .wl-msg-text) {
-    transition: color 400ms ease-out, border-color 400ms ease-out;
+    transition:
+      color 400ms ease-out,
+      border-color 400ms ease-out;
   }
 
   .wl-chat-messages :global(.wl-msg--delivered .wl-msg-text),
@@ -3514,6 +4566,133 @@ const seo = {
     user-select: none;
   }
 
+  /* ── Reaction shelf — hidden until message is tapped ──────── */
+  /* Zero chrome at rest: invisible, collapsed, pointer events off */
+  .wl-chat-messages :global(.wl-react-shelf) {
+    display: flex;
+    align-items: center;
+    gap: 0.22rem;
+    padding: 0 0.2rem;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transform: translateY(-3px);
+    transition:
+      max-height 200ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 160ms ease,
+      transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: none;
+  }
+
+  /* Shelf open: slides down from under the bubble */
+  .wl-chat-messages :global([data-shelf-open] .wl-react-shelf) {
+    max-height: 2.6rem;
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  /* Individual emoji quick-pick + more button */
+  .wl-chat-messages :global(.wl-react-btn) {
+    width: 1.85rem;
+    height: 1.85rem;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    background: rgb(var(--color-text-rgb) / 0.04);
+    font-size: 1rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition:
+      background 130ms ease,
+      border-color 130ms ease,
+      transform 100ms ease;
+    flex-shrink: 0;
+  }
+
+  .wl-chat-messages :global(.wl-react-btn:hover) {
+    background: rgb(var(--color-text-rgb) / 0.1);
+    border-color: rgb(var(--color-text-rgb) / 0.22);
+    transform: scale(1.16);
+  }
+
+  .wl-chat-messages :global(.wl-react-btn:active) {
+    transform: scale(0.88);
+  }
+
+  /* "＋" more-emoji button: slightly muted */
+  .wl-chat-messages :global(.wl-react-btn--more) {
+    font-size: 0.75rem;
+    color: rgb(var(--color-text-rgb) / 0.42);
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+
+  .wl-chat-messages :global(.wl-react-btn--more:hover) {
+    color: rgb(var(--color-text-rgb) / 0.72);
+  }
+
+  /* ── Reaction pills (placed below message after reacting) ── */
+  .wl-chat-messages :global(.wl-msg-reactions) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.18rem;
+    padding: 0.12rem 0.2rem 0;
+  }
+
+  .wl-chat-messages :global(.wl-reaction) {
+    font-size: 0.8rem;
+    padding: 0.07rem 0.32rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    background: rgb(var(--color-text-rgb) / 0.04);
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      border-color 120ms ease,
+      transform 80ms ease;
+    line-height: 1.4;
+  }
+
+  .wl-chat-messages :global(.wl-reaction:hover) {
+    background: rgb(var(--color-text-rgb) / 0.1);
+    border-color: rgb(var(--color-text-rgb) / 0.22);
+  }
+
+  .wl-chat-messages :global(.wl-reaction:active) {
+    transform: scale(0.9);
+  }
+
+  /* Self reaction: cyan tint */
+  .wl-chat-messages :global(.wl-reaction--self) {
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+    background: rgb(var(--chromatic-cyan) / 0.09);
+  }
+
+  .wl-chat-messages :global(.wl-reaction--self:hover) {
+    background: rgb(var(--chromatic-cyan) / 0.16);
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+  }
+
+  /* Peer reaction: purple tint */
+  .wl-chat-messages :global(.wl-reaction--peer) {
+    border-color: rgb(var(--pride-purple) / 0.3);
+    background: rgb(var(--pride-purple) / 0.07);
+  }
+
+  /* Both self + peer: blended */
+  .wl-chat-messages :global(.wl-reaction--self.wl-reaction--peer) {
+    border-color: rgb(var(--chromatic-cyan) / 0.4);
+    background: linear-gradient(
+      90deg,
+      rgb(var(--chromatic-cyan) / 0.1),
+      rgb(var(--pride-purple) / 0.08)
+    );
+  }
+
   .wl-chat-messages :global(.wl-msg-file) {
     display: grid;
     gap: calc(var(--space-xs) * 0.15);
@@ -3554,14 +4733,15 @@ const seo = {
     padding: 0.45rem 0.7rem;
     border-radius: calc(var(--whisper-radius) * 0.55);
     border: 1px solid rgb(var(--msg-accent) / 0.14);
-    background:
-      linear-gradient(
-        135deg,
-        rgb(var(--msg-accent) / 0.07) 0%,
-        rgb(var(--msg-accent) / 0.03) 100%
-      );
+    background: linear-gradient(
+      135deg,
+      rgb(var(--msg-accent) / 0.07) 0%,
+      rgb(var(--msg-accent) / 0.03) 100%
+    );
     min-width: 11rem;
-    transition: border-color 300ms ease, box-shadow 300ms ease;
+    transition:
+      border-color 300ms ease,
+      box-shadow 300ms ease;
   }
 
   /* Subtle glow when playing */
@@ -3583,7 +4763,11 @@ const seo = {
     justify-content: center;
     padding: 0;
     cursor: pointer;
-    transition: background 200ms ease, border-color 200ms ease, color 200ms ease, transform 120ms ease;
+    transition:
+      background 200ms ease,
+      border-color 200ms ease,
+      color 200ms ease,
+      transform 120ms ease;
   }
 
   .wl-chat-messages :global(.wl-audio-play-btn:hover) {
@@ -3665,25 +4849,54 @@ const seo = {
     pointer-events: none;
     /* On overflow the center fades — energy pools at the edges like hitting a wall.
        Edges stay full-bright while the middle hollows out. */
-    --_alpha: calc(var(--wl-send-energy) * 0.9 + var(--wl-send-overflow, 0) * 0.1);
+    --_alpha: calc(
+      var(--wl-send-energy) * 0.9 + var(--wl-send-overflow, 0) * 0.1
+    );
     --_hollow: calc(var(--wl-send-overflow, 0) * 0.7);
-    background:
-      linear-gradient(
-        90deg,
-        rgb(var(--tool-status-success) / var(--_alpha)) 0%,
-        rgb(var(--tool-status-success) / calc(var(--_alpha) * (1 - var(--_hollow)))) 35%,
-        rgb(var(--tool-status-success) / calc(var(--_alpha) * (1 - var(--_hollow)))) 65%,
-        rgb(var(--tool-status-success) / var(--_alpha)) 100%
-      );
+    background: linear-gradient(
+      90deg,
+      rgb(var(--tool-status-success) / var(--_alpha)) 0%,
+      rgb(
+          var(--tool-status-success) /
+            calc(var(--_alpha) * (1 - var(--_hollow)))
+        )
+        35%,
+      rgb(
+          var(--tool-status-success) /
+            calc(var(--_alpha) * (1 - var(--_hollow)))
+        )
+        65%,
+      rgb(var(--tool-status-success) / var(--_alpha)) 100%
+    );
     /* Clip-path: energy 0→1 fills center→edges. No overflow inset needed —
        the gradient handles the pooling visual. */
     --_base: calc(50% * (1 - var(--wl-send-energy)));
     --_shift: calc((var(--wl-energy-center, 0.5) - 0.5) * 100%);
-    clip-path: inset(0 calc(var(--_base) - var(--_shift)) 0 calc(var(--_base) + var(--_shift)));
+    clip-path: inset(
+      0 calc(var(--_base) - var(--_shift)) 0 calc(var(--_base) + var(--_shift))
+    );
     /* Glow: velocity bloom + overflow bloom (heavy spam = bright edges) */
     box-shadow:
-      0 0 calc((var(--wl-send-energy) * 4px) + (var(--wl-send-velocity, 0) * 8px) + (var(--wl-send-overflow, 0) * 6px)) rgb(var(--tool-status-success) / calc(var(--wl-send-energy) * 0.5 + var(--wl-send-overflow, 0) * 0.3)),
-      0 0 calc((var(--wl-send-energy) * 8px) + (var(--wl-send-velocity, 0) * 18px) + (var(--wl-send-overflow, 0) * 14px)) rgb(var(--tool-status-success) / calc(var(--wl-send-energy) * 0.15 + var(--wl-send-overflow, 0) * 0.12));
+      0 0
+        calc(
+          (var(--wl-send-energy) * 4px) + (var(--wl-send-velocity, 0) * 8px) +
+            (var(--wl-send-overflow, 0) * 6px)
+        )
+        rgb(
+          var(--tool-status-success) /
+            calc(var(--wl-send-energy) * 0.5 + var(--wl-send-overflow, 0) * 0.3)
+        ),
+      0 0
+        calc(
+          (var(--wl-send-energy) * 8px) + (var(--wl-send-velocity, 0) * 18px) +
+            (var(--wl-send-overflow, 0) * 14px)
+        )
+        rgb(
+          var(--tool-status-success) /
+            calc(
+              var(--wl-send-energy) * 0.15 + var(--wl-send-overflow, 0) * 0.12
+            )
+        );
   }
 
   .wl-chat-compose::after {
@@ -3698,19 +4911,52 @@ const seo = {
     /* Width: base * squeeze (send interaction) * width (breath/stretch/sustain).
        Blob swells at edges (pooling), stretches at center (motion blur),
        and widens subtly during sustained typing (warmth). */
-    background:
-      radial-gradient(
-        ellipse calc((12% + var(--wl-peer-typing) * 4%) * var(--wl-typing-squeeze, 1) * var(--wl-typing-width, 1)) 100%
-        at calc(var(--wl-typing-pos) * 100%) 50%,
-        rgb(var(--pride-purple) / 0.95) 0%,
-        rgb(var(--pride-purple) / calc(0.4 + var(--wl-interaction, 0) * 0.25)) 40%,
-        transparent 100%
-      );
+    background: radial-gradient(
+      ellipse
+        calc(
+          (12% + var(--wl-peer-typing) * 4%) * var(--wl-typing-squeeze, 1) *
+            var(--wl-typing-width, 1)
+        )
+        100% at calc(var(--wl-typing-pos) * 100%) 50%,
+      rgb(var(--pride-purple) / 0.95) 0%,
+      rgb(var(--pride-purple) / calc(0.4 + var(--wl-interaction, 0) * 0.25)) 40%,
+      transparent 100%
+    );
     /* Glow: base + interaction boost + speed/sustain bloom.
        Fast motion = wider trail, sustained typing = warmer ambient. */
     box-shadow:
-      0 0 calc(var(--wl-peer-typing) * (8px + var(--wl-interaction, 0) * 4px + var(--wl-typing-glow, 0) * 6px)) rgb(var(--pride-purple) / calc(var(--wl-peer-typing) * (0.35 + var(--wl-interaction, 0) * 0.2 + var(--wl-typing-glow, 0) * 0.15))),
-      0 0 calc(var(--wl-peer-typing) * (16px + var(--wl-interaction, 0) * 6px + var(--wl-typing-glow, 0) * 10px)) rgb(var(--pride-purple) / calc(var(--wl-peer-typing) * (0.12 + var(--wl-typing-glow, 0) * 0.06)));
+      0 0
+        calc(
+          var(--wl-peer-typing) *
+            (
+              8px + var(--wl-interaction, 0) * 4px + var(--wl-typing-glow, 0) *
+                6px
+            )
+        )
+        rgb(
+          var(--pride-purple) /
+            calc(
+              var(--wl-peer-typing) *
+                (
+                  0.35 + var(--wl-interaction, 0) * 0.2 +
+                    var(--wl-typing-glow, 0) * 0.15
+                )
+            )
+        ),
+      0 0
+        calc(
+          var(--wl-peer-typing) *
+            (
+              16px + var(--wl-interaction, 0) * 6px + var(--wl-typing-glow, 0) *
+                10px
+            )
+        )
+        rgb(
+          var(--pride-purple) /
+            calc(
+              var(--wl-peer-typing) * (0.12 + var(--wl-typing-glow, 0) * 0.06)
+            )
+        );
   }
 
   .wl-chat-compose:focus-within {
@@ -3740,9 +4986,12 @@ const seo = {
     background:
       linear-gradient(
         110deg,
-        rgb(var(--chromatic-cyan) / calc(0.025 + (var(--wl-activity) * 0.06))) 0%,
-        rgb(var(--tool-action-load) / calc(0.02 + (var(--wl-activity) * 0.05))) var(--wl-flow),
-        rgb(var(--chromatic-cyan) / calc(0.025 + (var(--wl-activity) * 0.06))) 100%
+        rgb(var(--chromatic-cyan) / calc(0.025 + (var(--wl-activity) * 0.06)))
+          0%,
+        rgb(var(--tool-action-load) / calc(0.02 + (var(--wl-activity) * 0.05)))
+          var(--wl-flow),
+        rgb(var(--chromatic-cyan) / calc(0.025 + (var(--wl-activity) * 0.06)))
+          100%
       ),
       linear-gradient(
         180deg,
@@ -3750,8 +4999,14 @@ const seo = {
         rgb(var(--color-text-rgb) / 0.008) 100%
       ),
       rgb(10 10 10 / 0.94);
-    background-size: calc(100% + (var(--wl-velocity) * 110%)) 100%, 100% 100%, 100% 100%;
-    background-position: calc((var(--wl-flow) - 50%) * 0.2) 0, 0 0, 0 0;
+    background-size:
+      calc(100% + (var(--wl-velocity) * 110%)) 100%,
+      100% 100%,
+      100% 100%;
+    background-position:
+      calc((var(--wl-flow) - 50%) * 0.2) 0,
+      0 0,
+      0 0;
     transition:
       border-top-color var(--duration-normal) var(--ease-out),
       box-shadow var(--duration-normal) var(--ease-out),
@@ -3822,7 +5077,13 @@ const seo = {
     justify-content: center;
     padding: 0;
     cursor: pointer;
-    transition: background 200ms ease, border-color 200ms ease, color 200ms ease, box-shadow 200ms ease, width 200ms ease, opacity 200ms ease;
+    transition:
+      background 200ms ease,
+      border-color 200ms ease,
+      color 200ms ease,
+      box-shadow 200ms ease,
+      width 200ms ease,
+      opacity 200ms ease;
     touch-action: none;
   }
 
@@ -3851,7 +5112,11 @@ const seo = {
     justify-content: center;
     padding: 0;
     cursor: pointer;
-    transition: width 200ms ease, opacity 200ms ease, background 200ms ease, border-color 200ms ease;
+    transition:
+      width 200ms ease,
+      opacity 200ms ease,
+      background 200ms ease,
+      border-color 200ms ease;
   }
 
   .wl-mic-split svg {
@@ -3910,8 +5175,13 @@ const seo = {
   }
 
   @keyframes wl-mic-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--chromatic-red) / 0.25); }
-    50% { box-shadow: 0 0 0 4px rgb(var(--chromatic-red) / 0); }
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgb(var(--chromatic-red) / 0.25);
+    }
+    50% {
+      box-shadow: 0 0 0 4px rgb(var(--chromatic-red) / 0);
+    }
   }
 
   .wl-mic-icon {
@@ -3929,7 +5199,8 @@ const seo = {
   }
 
   .wl-chat-compose[data-intent="typing"] .wl-chat-text-input {
-    transform: translateY(calc(var(--wl-activity) * -0.35px)) scaleY(calc(1 + (var(--wl-velocity) * 0.01)));
+    transform: translateY(calc(var(--wl-activity) * -0.35px))
+      scaleY(calc(1 + (var(--wl-velocity) * 0.01)));
   }
 
   .wl-chat-compose[data-intent="drop"] .wl-chat-text-input {
@@ -3965,7 +5236,8 @@ const seo = {
   }
 
   .wl-chat-compose[data-intent="typing"] .wl-chat-send-btn {
-    transform: translateY(calc(var(--wl-activity) * -0.6px)) scale(calc(1 + (var(--wl-velocity) * 0.018)));
+    transform: translateY(calc(var(--wl-activity) * -0.6px))
+      scale(calc(1 + (var(--wl-velocity) * 0.018)));
   }
 
   .wl-chat-compose[data-intent="connecting"] .wl-chat-send-btn {
@@ -4009,7 +5281,9 @@ const seo = {
     justify-content: center;
     flex: 0 0 auto;
     border-color: rgb(var(--color-text-rgb) / 0.18);
-    transition: transform 120ms linear, border-color var(--duration-normal) var(--ease-out);
+    transition:
+      transform 120ms linear,
+      border-color var(--duration-normal) var(--ease-out);
   }
 
   .wl-chat-file-btn:hover:not(:disabled) {
@@ -4024,9 +5298,10 @@ const seo = {
   .wl-chat-clear-btn {
     flex: 0 0 auto;
     font-size: 0.95rem;
-    transition: border-color var(--duration-normal) var(--ease-out),
-                box-shadow var(--duration-normal) var(--ease-out),
-                transform var(--duration-normal) var(--ease-out);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out),
+      transform var(--duration-normal) var(--ease-out);
   }
 
   /* The ↺ glyph — animated independently so the button border stays still */
@@ -4039,8 +5314,12 @@ const seo = {
 
   /* pending-out: slow spin — "waiting for peer to agree" */
   @keyframes wl-clear-spin {
-    from { transform: rotate(0deg); }
-    to   { transform: rotate(360deg); }
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
   .wl-chat-clear-btn[data-clear-state="pending-out"] {
     border-color: rgb(var(--color-text-rgb) / 0.25);
@@ -4051,12 +5330,15 @@ const seo = {
 
   /* pending-in: scale pulse + cyan glow — "your turn, act now" */
   @keyframes wl-clear-call {
-    0%,100% {
+    0%,
+    100% {
       box-shadow: 0 0 0 1px rgb(var(--chromatic-cyan) / 0.2);
       transform: scale(1);
     }
     50% {
-      box-shadow: 0 0 0 3px rgb(var(--chromatic-cyan) / 0.35), 0 0 10px 2px rgb(var(--chromatic-cyan) / 0.18);
+      box-shadow:
+        0 0 0 3px rgb(var(--chromatic-cyan) / 0.35),
+        0 0 10px 2px rgb(var(--chromatic-cyan) / 0.18);
       transform: scale(1.07);
     }
   }
@@ -4066,9 +5348,16 @@ const seo = {
   }
   /* Icon counter-rotates slightly — gives it a "ringing" feel */
   @keyframes wl-clear-icon-shake {
-    0%,100% { transform: rotate(0deg); }
-    25%     { transform: rotate(-14deg); }
-    75%     { transform: rotate(14deg); }
+    0%,
+    100% {
+      transform: rotate(0deg);
+    }
+    25% {
+      transform: rotate(-14deg);
+    }
+    75% {
+      transform: rotate(14deg);
+    }
   }
   .wl-chat-clear-btn[data-clear-state="pending-in"] .wl-clear-icon {
     animation: wl-clear-icon-shake 0.85s ease-in-out infinite;
@@ -4076,14 +5365,32 @@ const seo = {
 
   /* Chat clear animation — messages fade + drift down, container flashes */
   @keyframes wl-msg-clear {
-    0%   { opacity: 1; transform: translateY(0) scale(1); filter: blur(0px); }
-    30%  { opacity: 0.7; transform: translateY(2px) scale(0.99); filter: blur(0px); }
-    100% { opacity: 0; transform: translateY(8px) scale(0.97); filter: blur(3px); }
+    0% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: blur(0px);
+    }
+    30% {
+      opacity: 0.7;
+      transform: translateY(2px) scale(0.99);
+      filter: blur(0px);
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(8px) scale(0.97);
+      filter: blur(3px);
+    }
   }
   @keyframes wl-chat-clear-flash {
-    0%   { background-color: transparent; }
-    18%  { background-color: rgb(var(--chromatic-cyan) / 0.05); }
-    100% { background-color: transparent; }
+    0% {
+      background-color: transparent;
+    }
+    18% {
+      background-color: rgb(var(--chromatic-cyan) / 0.05);
+    }
+    100% {
+      background-color: transparent;
+    }
   }
   .wl-chat-messages[data-clearing] {
     animation: wl-chat-clear-flash 320ms ease-out forwards;
@@ -4101,24 +5408,50 @@ const seo = {
   }
 
   @keyframes wl-intent-error {
-    0% { transform: translateX(0); }
-    25% { transform: translateX(-1px); }
-    50% { transform: translateX(1px); }
-    100% { transform: translateX(0); }
+    0% {
+      transform: translateX(0);
+    }
+    25% {
+      transform: translateX(-1px);
+    }
+    50% {
+      transform: translateX(1px);
+    }
+    100% {
+      transform: translateX(0);
+    }
   }
 
   /* Message entrance: peer slides from left, self from right, system fades */
   @keyframes wl-msg-in {
-    from { opacity: 0; transform: translateX(-6px); }
-    to   { opacity: 1; transform: translateX(0); }
+    from {
+      opacity: 0;
+      transform: translateX(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
   }
   @keyframes wl-msg-in-right {
-    from { opacity: 0; transform: translateX(6px); }
-    to   { opacity: 1; transform: translateX(0); }
+    from {
+      opacity: 0;
+      transform: translateX(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
   }
   @keyframes wl-msg-in-center {
-    from { opacity: 0; transform: scale(0.97); }
-    to   { opacity: 1; transform: scale(1); }
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -4129,21 +5462,44 @@ const seo = {
       animation: none !important;
       transition-duration: 0ms !important;
       transform: none !important;
-      background-size: 100% 100%, 100% 100%, 100% 100% !important;
-      background-position: 0 0, 0 0, 0 0 !important;
+      background-size:
+        100% 100%,
+        100% 100%,
+        100% 100% !important;
+      background-position:
+        0 0,
+        0 0,
+        0 0 !important;
     }
     .wl-chat-compose::before,
     .wl-chat-compose::after {
       display: none !important;
     }
-    .wl-chat-mic-btn { animation: none !important; transition: none !important; }
-    .wl-mic-wrap { animation: none !important; }
-    .wl-mic-split { transition: none !important; }
+    .wl-chat-mic-btn {
+      animation: none !important;
+      transition: none !important;
+    }
+    .wl-mic-wrap {
+      animation: none !important;
+    }
+    .wl-mic-split {
+      transition: none !important;
+    }
     .wl-chat-clear-btn,
-    .wl-clear-icon { animation: none !important; transform: none !important; }
-    .wl-chat-clear-btn[data-clear-state="pending-out"] { opacity: 0.55; }
-    .wl-chat-clear-btn[data-clear-state="pending-in"] { outline: 2px solid rgb(var(--chromatic-cyan) / 0.65); }
-    .wl-chat-messages[data-clearing] :global(.wl-msg) { animation: none !important; opacity: 0 !important; }
+    .wl-clear-icon {
+      animation: none !important;
+      transform: none !important;
+    }
+    .wl-chat-clear-btn[data-clear-state="pending-out"] {
+      opacity: 0.55;
+    }
+    .wl-chat-clear-btn[data-clear-state="pending-in"] {
+      outline: 2px solid rgb(var(--chromatic-cyan) / 0.65);
+    }
+    .wl-chat-messages[data-clearing] :global(.wl-msg) {
+      animation: none !important;
+      opacity: 0 !important;
+    }
   }
 
   /* ── Silent mode ─────────────────────────────────────────── */
@@ -4312,7 +5668,6 @@ const seo = {
     .wl-chat-messages :global(.wl-msg) {
       max-width: 90%;
     }
-
   }
 
   @media (max-height: 760px) {
@@ -4472,8 +5827,14 @@ const seo = {
 
   /* Copy-confirm pulse — used on My Seal btn and inline seal code */
   @keyframes ws-copy-pulse {
-    0%   { background: rgb(var(--ws-copy-pulse-rgb, var(--chromatic-cyan)) / 0.25); border-color: rgb(var(--ws-copy-pulse-rgb, var(--chromatic-cyan)) / 0.5); }
-    100% { background: transparent; border-color: rgb(var(--color-text-rgb) / 0.14); }
+    0% {
+      background: rgb(var(--ws-copy-pulse-rgb, var(--chromatic-cyan)) / 0.25);
+      border-color: rgb(var(--ws-copy-pulse-rgb, var(--chromatic-cyan)) / 0.5);
+    }
+    100% {
+      background: transparent;
+      border-color: rgb(var(--color-text-rgb) / 0.14);
+    }
   }
 
   .ws-copy-pulse {
@@ -4482,8 +5843,14 @@ const seo = {
 
   /* Reject pulse — red flash for invalid actions (matches ws-copy-pulse pattern) */
   @keyframes ws-reject-pulse {
-    0%   { background: rgb(var(--chromatic-red) / 0.25); border-color: rgb(var(--chromatic-red) / 0.5); }
-    100% { background: transparent; border-color: rgb(var(--color-text-rgb) / 0.14); }
+    0% {
+      background: rgb(var(--chromatic-red) / 0.25);
+      border-color: rgb(var(--chromatic-red) / 0.5);
+    }
+    100% {
+      background: transparent;
+      border-color: rgb(var(--color-text-rgb) / 0.14);
+    }
   }
 
   .ws-reject-pulse {
@@ -4492,9 +5859,18 @@ const seo = {
 
   /* Computing shimmer — repeating border glow while working */
   @keyframes ws-computing-shimmer {
-    0%   { border-color: rgb(var(--chromatic-cyan) / 0.15); box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0); }
-    50%  { border-color: rgb(var(--chromatic-cyan) / 0.5); box-shadow: 0 0 6px 0 rgb(var(--chromatic-cyan) / 0.15); }
-    100% { border-color: rgb(var(--chromatic-cyan) / 0.15); box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0); }
+    0% {
+      border-color: rgb(var(--chromatic-cyan) / 0.15);
+      box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0);
+    }
+    50% {
+      border-color: rgb(var(--chromatic-cyan) / 0.5);
+      box-shadow: 0 0 6px 0 rgb(var(--chromatic-cyan) / 0.15);
+    }
+    100% {
+      border-color: rgb(var(--chromatic-cyan) / 0.15);
+      box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0);
+    }
   }
 
   .ws-computing {
@@ -4733,8 +6109,12 @@ const seo = {
     display: none;
   }
 
-  .ws-seal-validation[data-valid="true"] { color: rgb(var(--tool-status-success)); }
-  .ws-seal-validation[data-valid="false"] { color: rgb(var(--chromatic-red)); }
+  .ws-seal-validation[data-valid="true"] {
+    color: rgb(var(--tool-status-success));
+  }
+  .ws-seal-validation[data-valid="false"] {
+    color: rgb(var(--chromatic-red));
+  }
 
   /* Select dropdown */
   .ws-select {
@@ -4833,7 +6213,9 @@ const seo = {
     -webkit-appearance: none;
     margin: 0;
   }
-  .ws-expiry-custom-input { -moz-appearance: textfield; }
+  .ws-expiry-custom-input {
+    -moz-appearance: textfield;
+  }
 
   /* URL display (truncated with scroll) */
   .ws-url-display {
@@ -4850,13 +6232,18 @@ const seo = {
   }
 
   /* Result checks list */
-  .ws-result-checks { margin: var(--space-sm) 0; }
+  .ws-result-checks {
+    margin: var(--space-sm) 0;
+  }
   .ws-check {
     font-size: var(--text-sm);
     margin: var(--space-xs) 0;
     color: rgb(var(--color-text-rgb) / 0.55);
   }
-  .ws-check-icon { color: rgb(var(--tool-status-success)); margin-right: 0.3em; }
+  .ws-check-icon {
+    color: rgb(var(--tool-status-success));
+    margin-right: 0.3em;
+  }
 
   /* Warning text */
   .ws-result-warning {
@@ -4949,8 +6336,13 @@ const seo = {
   }
 
   @keyframes ws-expired-glow {
-    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--tool-status-warning) / 0); }
-    50%      { box-shadow: 0 0 12px 0 rgb(var(--tool-status-warning) / 0.08); }
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgb(var(--tool-status-warning) / 0);
+    }
+    50% {
+      box-shadow: 0 0 12px 0 rgb(var(--tool-status-warning) / 0.08);
+    }
   }
 
   /* Locked / Cannot Open — red tone */
@@ -4969,8 +6361,13 @@ const seo = {
   }
 
   @keyframes ws-phrase-shimmer {
-    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0); }
-    50%      { box-shadow: 0 0 10px 0 rgb(var(--chromatic-cyan) / 0.06); }
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0);
+    }
+    50% {
+      box-shadow: 0 0 10px 0 rgb(var(--chromatic-cyan) / 0.06);
+    }
   }
 
   /* Success — green tone */
@@ -5045,7 +6442,9 @@ const seo = {
     padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
     font-size: calc(var(--text-sm) * 0.82);
     color: var(--whisper-muted);
-    transition: background 0.15s, color 0.15s;
+    transition:
+      background 0.15s,
+      color 0.15s;
     user-select: none;
     white-space: nowrap;
   }
@@ -5211,7 +6610,6 @@ const seo = {
   }
 
   @media (max-width: 520px) {
-
     .cf-header-actions {
       justify-content: stretch;
     }
@@ -5237,7 +6635,8 @@ const seo = {
 
     .cf-dm-panel {
       max-height: 62vh;
-      border-radius: calc(var(--whisper-radius) * 0.85) calc(var(--whisper-radius) * 0.85) 0 0;
+      border-radius: calc(var(--whisper-radius) * 0.85)
+        calc(var(--whisper-radius) * 0.85) 0 0;
     }
   }
 </style>

@@ -13,6 +13,7 @@ import {
   type LiveState,
   type LiveMessage,
 } from "./live";
+import { encodeAdpcm, decodeAdpcm } from "./live-wasm-audio";
 import {
   CTRL_OP, VoteTopic,
   encodeSeenPayload, decodeSeenPayload,
@@ -414,10 +415,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function handleCtrl(opcode: number, payload: Uint8Array): void {
     switch (opcode) {
-      case CTRL_OP.CLEAR_VOTE:   clearVote.receivePeer(); break;
-      case CTRL_OP.CLEAR_CANCEL: clearVote.cancelPeer();  break;
-      case CTRL_OP.CAMPFIRE_VOTE:   campfireVote.receivePeer(); break;
-      case CTRL_OP.CAMPFIRE_CANCEL: campfireVote.cancelPeer();  break;
+      case CTRL_OP.CLEAR_VOTE: clearVote.receivePeer(); break;
+      case CTRL_OP.CLEAR_CANCEL: clearVote.cancelPeer(); break;
+      case CTRL_OP.CAMPFIRE_VOTE: campfireVote.receivePeer(); break;
+      case CTRL_OP.CAMPFIRE_CANCEL: campfireVote.cancelPeer(); break;
       case CTRL_OP.SEEN: {
         const msgId = decodeSeenPayload(payload);
         if (msgId !== null) markSeen(msgId);
@@ -494,15 +495,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * we key by emoji string in data-emoji.
    */
   function toggleSelfReaction(msgId: number, emoji: string): void {
-    if (!session) return;
     const el = msgById.get(msgId);
     const pill = el?.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
-    if (pill?.dataset.self === "1") {
-      session.sendCtrl(CTRL_OP.UNREACT, encodeReactPayload(msgId, emoji));
-      removeReaction(msgId, emoji, "self");
+    const isUnreact = pill?.dataset.self === "1";
+    if (session) {
+      // Live: send over the wire
+      if (isUnreact) {
+        session.sendCtrl(CTRL_OP.UNREACT, encodeReactPayload(msgId, emoji));
+        removeReaction(msgId, emoji, "self");
+      } else {
+        session.sendCtrl(CTRL_OP.REACT, encodeReactPayload(msgId, emoji));
+        applyReaction(msgId, emoji, "self");
+      }
     } else {
-      session.sendCtrl(CTRL_OP.REACT, encodeReactPayload(msgId, emoji));
-      applyReaction(msgId, emoji, "self");
+      // Preview mode: local-only reaction, no network
+      if (isUnreact) removeReaction(msgId, emoji, "self");
+      else applyReaction(msgId, emoji, "self");
     }
   }
 
@@ -588,7 +596,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // Connection can change mid-session (wifi → cellular, fast → slow).
   // effectiveType: "slow-2g" | "2g" | "3g" | "4g" (no 5g — fast networks all report 4g).
   // Re-sync reduceMotion so animations stop/resume when the network shifts.
-  try { env.conn?.addEventListener("change", syncMotion, { signal }); } catch {}
+  try { env.conn?.addEventListener("change", syncMotion, { signal }); } catch { }
 
   /** Push all animation state to CSS custom properties. One place, once per frame. */
   function syncCSSVars(): void {
@@ -805,7 +813,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (stats.rtt > 0) send.rtt = send.rtt * 0.75 + stats.rtt * 0.25;
   }
 
-  /** Preview mode: simulate the send lifecycle without a real connection. */
+  /** Preview mode: simulate the send lifecycle without a real connection.
+   *  Negative IDs avoid collisions with real session msgIds (which start at 0+). */
   let previewSendId = 0;
   function simulateSendEnergy(): void {
     if (!chatCompose || reduceMotion) return;
@@ -1070,14 +1079,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function updateProgressFromLog(line: string): void {
     const n = line.toLowerCase();
-    if (n.includes("gathering network candidates"))    { setConnecting("finding the best direct path..."); updateStatus("checking network paths..."); }
-    else if (n.includes("offer code ready"))           { updateStatus("step 1/2: send your invite code"); }
-    else if (n.includes("answer code ready"))          { updateStatus("step 2/2: send your reply code"); }
-    else if (n.includes("applying answer code"))       { setConnecting("verifying peer reply..."); updateStatus("applying peer reply..."); }
-    else if (n.includes("connecting peer-to-peer"))    { setConnecting("opening direct channel..."); updateStatus("opening direct channel..."); }
-    else if (n.includes("secure channel open"))        { setConnecting("starting end-to-end key exchange..."); updateStatus("starting key exchange..."); }
-    else if (n.includes("fingerprint:"))               { updateStatus("security check: compare emoji with your peer"); }
-    else if (n.includes("fingerprint confirmed"))      { updateStatus("secure session is live"); }
+    if (n.includes("gathering network candidates")) { setConnecting("finding the best direct path..."); updateStatus("checking network paths..."); }
+    else if (n.includes("offer code ready")) { updateStatus("step 1/2: send your invite code"); }
+    else if (n.includes("answer code ready")) { updateStatus("step 2/2: send your reply code"); }
+    else if (n.includes("applying answer code")) { setConnecting("verifying peer reply..."); updateStatus("applying peer reply..."); }
+    else if (n.includes("connecting peer-to-peer")) { setConnecting("opening direct channel..."); updateStatus("opening direct channel..."); }
+    else if (n.includes("secure channel open")) { setConnecting("starting end-to-end key exchange..."); updateStatus("starting key exchange..."); }
+    else if (n.includes("fingerprint:")) { updateStatus("security check: compare emoji with your peer"); }
+    else if (n.includes("fingerprint confirmed")) { updateStatus("secure session is live"); }
   }
 
   function appendLog(line: string): void {
@@ -1159,7 +1168,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.joinPasteBtn.disabled = busy;
     opts.answerApplyBtn.disabled = busy || !hasSession || !answerHasCode;
 
-      opts.externalAssistToggle.disabled = busy || hasSession;
+    opts.externalAssistToggle.disabled = busy || hasSession;
 
     opts.offerCopyBtn.disabled = (opts.offerCode.textContent ?? "").trim().length === 0;
     if (opts.offerShareBtn) {
@@ -1254,30 +1263,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     } catch { /* Audio not available — silent fallback */ }
   }
 
-  /* ── Audio recording ────────────────────────────────────── */
+  /* ── Audio recording (WASM ADPCM pipeline) ──────────────── */
 
-  let mediaRecorder: MediaRecorder | null = null;
-  let recordingStream: MediaStream | null = null;
-  let recordingChunks: Blob[] = [];
-  let recordingChunksBytes = 0;
-  let recordingStart = 0;
-  let recordingTimer: ReturnType<typeof setInterval> | null = null;
-  let activeAudio: { el: HTMLAudioElement; btn: HTMLButtonElement; wrap: HTMLElement; redraw: (p: number) => void; raf: number } | null = null;
-
-  /** Timeslice (ms) — MediaRecorder flushes ondataavailable periodically.
-   *  Keeps encoded data flowing out of the encoder's internal buffer so the
-   *  browser can manage memory (Chrome stores Blob data out-of-process and can
-   *  page it). Also lets us track accumulated size for the duration display.
-   *  1 s is frequent enough to be useful, infrequent enough to avoid overhead. */
-  const RECORDING_TIMESLICE = 1_000;
-
-  /** Voice-optimized audio constraints. echoCancellation + noiseSuppression +
-   *  autoGainControl are enabled for clean voice capture regardless of mic
-   *  quality. Mono (channelCount:1) halves bandwidth with no perceptual loss
-   *  for speech — most mics are mono anyway. sampleRate is intentionally
-   *  omitted — forcing a non-native rate triggers resampling which degrades
-   *  quality. The browser's native rate (48 kHz Chrome/Firefox, 44.1 kHz Safari)
-   *  is fed directly to the Opus encoder which handles any rate natively. */
+  /** Voice constraints. Mono, echoCancellation and noiseSuppression on for
+   *  clean voice. No codec or bitrate constraints — we do our own encoding. */
   const VOICE_CONSTRAINTS: MediaTrackConstraints = {
     echoCancellation: true,
     noiseSuppression: true,
@@ -1285,34 +1274,29 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     channelCount: 1,
   };
 
-  const micSupported = typeof MediaRecorder !== "undefined";
-  if (!micSupported) {
-    opts.chatMicWrap.setAttribute("data-hidden", "");
-  }
+  const ADPCM_MIME = "audio/x-whisper-adpcm";
 
-  /** Preferred MIME types in priority order.
-   *  1. webm/opus  — Chrome, Firefox, Edge, Safari 18.4+. Opus is the gold
-   *     standard: perceptually transparent at 128 kbps VBR, ~10x smaller than
-   *     PCM, better quality-per-bit than AAC/Vorbis/MP3 at every bitrate.
-   *  2. ogg/opus   — Firefox fallback (same Opus codec, different container).
-   *  3. mp4/opus   — future Safari / Chrome 132+ (MP4 container, same codec).
-   *  4. webm (bare) — lets the browser pick the codec (usually Opus anyway).
-   *  5. mp4 (bare)  — Safari <18.4 falls here → AAC. Worse quality-per-bit
-   *     than Opus but still a real codec; playback works everywhere. */
-  const AUDIO_MIME_PREFS = [
-    "audio/webm;codecs=opus",
-    "audio/ogg;codecs=opus",
-    "audio/mp4;codecs=opus",
-    "audio/webm",
-    "audio/mp4",
-  ] as const;
+  // AudioWorklet-based PTT state
+  let recordingStream: MediaStream | null = null;
+  let recordingStart = 0;
+  let recordingTimer: ReturnType<typeof setInterval> | null = null;
+  let activeAudio: { stop: () => void; btn: HTMLButtonElement; wrap: HTMLElement; redraw: (p: number) => void; raf: number } | null = null;
 
-  function getAudioMimeType(): string {
-    for (const t of AUDIO_MIME_PREFS) {
-      if (MediaRecorder.isTypeSupported(t)) return t;
-    }
-    return "";
-  }
+  // Raw PCM accumulator — filled live while the worklet fires
+  let pcmChunks: Float32Array[] = [];
+  let pcmSampleRate = 48000;
+
+  // Mic state tracking
+  let micPending = false;
+  let micHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let micHoldMode = false;
+  let micPointerId = -1;
+  let micDeferred: "send" | "discard" | null = null;
+  let micAudioCtx: AudioContext | null = null;
+  let micWorkletNode: AudioWorkletNode | null = null;
+
+  const micSupported = !!navigator.mediaDevices?.getUserMedia;
+  if (!micSupported) opts.chatMicWrap.setAttribute("data-hidden", "");
 
   function formatRecordDuration(ms: number): string {
     const s = Math.floor(ms / 1000);
@@ -1326,33 +1310,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return `${(b / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  /** Concatenate recorded Blob chunks into a single Uint8Array without the
-   *  peak memory doubling of Blob→arrayBuffer(). Each chunk is read
-   *  individually (~16 KB at 128 kbps, 1 s timeslice) so overhead above the
-   *  final array is never more than one chunk's worth — O(1) extra, not O(n). */
-  async function concatChunks(chunks: Blob[], totalBytes: number): Promise<Uint8Array> {
-    const out = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      const ab = await chunk.arrayBuffer();
-      out.set(new Uint8Array(ab), offset);
-      offset += ab.byteLength;
-    }
-    return out;
-  }
-
-  let micPending = false;
-  let micHoldTimer: ReturnType<typeof setTimeout> | null = null;
-  let micHoldMode = false;
-  /** Pointer ID that initiated the current press; -1 when idle. */
-  let micPointerId = -1;
-  /**
-   * Deferred action when getUserMedia resolves after the user already acted:
-   * - "send"    — hold-mode pointerup arrived before stream → auto-send on resolve
-   * - "discard" — cancel fired while getUserMedia pending → discard the stream
-   */
-  let micDeferred: "send" | "discard" | null = null;
-
   function resetMicState(): void {
     micHoldMode = false;
     micDeferred = null;
@@ -1360,114 +1317,99 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (micHoldTimer) { clearTimeout(micHoldTimer); micHoldTimer = null; }
   }
 
+  /**
+   * Inline AudioWorkletProcessor code as a Blob URL so we need no extra file.
+   * The processor forwards each 128-sample Float32 buffer to the main scope
+   * via postMessage. No SharedArrayBuffer required — PTT is not latency-critical
+   * in the same way as real-time call mode would be.
+   */
+  function getWorkletBlobUrl(): string {
+    const code = `
+      class WhisperPcmCapture extends AudioWorkletProcessor {
+        process(inputs) {
+          const ch = inputs[0]?.[0];
+          if (ch && ch.length > 0) {
+            // Transfer the underlying ArrayBuffer — zero copy
+            const copy = ch.slice();
+            this.port.postMessage({ samples: copy }, [copy.buffer]);
+          }
+          return true;
+        }
+      }
+      registerProcessor('whisper-pcm-capture', WhisperPcmCapture);
+    `;
+    return URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
+  }
+
   function startRecording(): void {
-    if (!micSupported || micPending || mediaRecorder) return;
-    const mimeType = getAudioMimeType();
-    if (!mimeType) return;
+    if (!micSupported || micPending || recordingStream) return;
 
     micPending = true;
-    navigator.mediaDevices.getUserMedia({ audio: VOICE_CONSTRAINTS }).then((stream) => {
+    navigator.mediaDevices.getUserMedia({ audio: VOICE_CONSTRAINTS }).then(async (stream) => {
       micPending = false;
 
-      // Cancelled while awaiting permission (e.g. Escape during browser prompt)
       if (micDeferred === "discard") {
         micDeferred = null;
-        for (const track of stream.getTracks()) track.stop();
+        for (const t of stream.getTracks()) t.stop();
         return;
       }
 
       recordingStream = stream;
-      recordingChunks = [];
-      recordingChunksBytes = 0;
+      pcmChunks = [];
       recordingStart = Date.now();
+      pcmSampleRate = stream.getAudioTracks()[0]?.getSettings().sampleRate ?? 48000;
 
-      // 128 kbps VBR — perceptually transparent for Opus (indistinguishable
-      // from lossless in listening tests). For AAC fallback on older Safari
-      // this is also a high-quality tier. VBR is the default audioBitrateMode.
-      const mr = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 });
-      mediaRecorder = mr;
+      // Build AudioContext + worklet
+      const blobUrl = getWorkletBlobUrl();
+      try {
+        micAudioCtx = new AudioContext({ sampleRate: pcmSampleRate });
+        await micAudioCtx.audioWorklet.addModule(blobUrl);
+        URL.revokeObjectURL(blobUrl);
 
-      // --- ondataavailable: accumulate encoded chunks ---
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          recordingChunks.push(e.data);
-          recordingChunksBytes += e.data.size;
-        }
-      };
-
-      // --- onerror: encoder failure, codec crash, etc. ---
-      // Modern browsers fire ErrorEvent; legacy may fire MediaRecorderErrorEvent.
-      mr.onerror = (e) => {
-        const detail = (e as ErrorEvent).message
-          || ((e as any).error as DOMException)?.message
-          || "unknown";
-        appendLog(`recording error: ${detail}`);
-        cancelRecording();
-      };
-
-      // --- onstop: finalize and send ---
-      mr.onstop = () => {
-        const elapsed = Date.now() - recordingStart;
-        const chunks = recordingChunks;
-        const totalBytes = recordingChunksBytes;
-        recordingChunks = [];
-        recordingChunksBytes = 0;
-        cleanupRecordingStream();
-
-        // Discard short recordings (< 500ms)
-        if (elapsed < 500 || chunks.length === 0) return;
-
-        const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("ogg") ? "ogg" : "m4a";
-        const name = `audio-${Date.now()}.${ext}`;
-
-        // Concatenate chunks directly into a Uint8Array — avoids the peak
-        // memory doubling of Blob→arrayBuffer(). Each ~16 KB chunk is read
-        // individually so overhead is O(1), not O(n).
-        concatChunks(chunks, totalBytes).then((bytes) => {
-          // Release chunk Blob references now that bytes are copied out
-          chunks.length = 0;
-
-          if (!session) {
-            addChatMessage({
-              type: "file", direction: "self",
-              fileName: name, fileSize: bytes.length, fileType: mimeType,
-              fileData: bytes, timestamp: Date.now(),
-            });
-            simulateSendEnergy();
-            return;
+        const source = micAudioCtx.createMediaStreamSource(stream);
+        micWorkletNode = new AudioWorkletNode(micAudioCtx, "whisper-pcm-capture");
+        micWorkletNode.port.onmessage = (ev) => {
+          if (ev.data?.samples instanceof Float32Array) {
+            pcmChunks.push(ev.data.samples);
           }
-          sendBeginFill();
-          session.sendAudio(name, mimeType, bytes).then((msgId) => {
-            sendInFlight(msgId);
-          }).catch((err) => {
-            send.phase = "delivered"; send.velocity = -4;
-            appendLog(`audio send failed: ${errMsg(err)}`);
-            pulseComposeIntent("error", 1100);
-          });
-        }).catch((err) => {
-          appendLog(`audio encode failed: ${errMsg(err)}`);
-        });
-      };
+        };
+        source.connect(micWorkletNode);
+        // Connect to destination with zero gain — keeps the audio graph alive
+        // without audible feedback
+        const silentGain = micAudioCtx.createGain();
+        silentGain.gain.value = 0;
+        micWorkletNode.connect(silentGain);
+        silentGain.connect(micAudioCtx.destination);
+      } catch (e) {
+        // AudioWorklet unavailable (very old browsers) — fall back to ScriptProcessor
+        // Note: ScriptProcessorNode is deprecated but still works universally.
+        URL.revokeObjectURL(blobUrl);
+        const ctx = micAudioCtx ?? new AudioContext({ sampleRate: pcmSampleRate });
+        micAudioCtx = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        // @ts-ignore – deprecated but universal fallback
+        const proc = ctx.createScriptProcessor(4096, 1, 1);
+        // @ts-ignore
+        proc.onaudioprocess = (ev: AudioProcessingEvent) => {
+          const ch = ev.inputBuffer.getChannelData(0);
+          pcmChunks.push(ch.slice());
+        };
+        source.connect(proc);
+        proc.connect(ctx.destination);
+        micWorkletNode = proc as unknown as AudioWorkletNode;
+      }
 
-      // --- Track ended: mic disconnected, OS revoked, another app took device.
-      //     Per spec, MediaRecorder auto-stops when all tracks end, but browser
-      //     implementations are inconsistent (iOS Safari onstop may not fire).
-      //     Explicit stop ensures clean teardown on every platform. ---
+      // Drive track-ended cleanup
       const track = stream.getAudioTracks()[0];
       if (track) {
         track.addEventListener("ended", () => {
-          if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          if (recordingStream) {
             appendLog("mic disconnected — sending recorded audio");
             stopRecording();
           }
         }, { once: true });
       }
 
-      // --- Start with timeslice: encoder flushes data every interval so
-      //     chunks flow to JS incrementally. This lets the browser manage
-      //     memory (Chrome pages Blob data out-of-process) and prevents the
-      //     entire recording from sitting in one opaque encoder buffer. ---
-      mr.start(RECORDING_TIMESLICE);
       opts.chatMicWrap.setAttribute("data-recording", "true");
       opts.chatMicCancel.tabIndex = 0;
       opts.chatMicSend.tabIndex = 0;
@@ -1475,17 +1417,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       opts.chatInput.disabled = true;
       opts.chatInput.placeholder = "recording... 0:00";
 
-      // Timer uses Date.now() deltas, not tick counting — immune to setInterval
-      // throttling when the tab is backgrounded (Chrome: 1 s minimum in
-      // background, 1 min after 5 min hidden; mobile: may be frozen entirely).
-      // The display catches up correctly when the tab regains focus.
       recordingTimer = setInterval(() => {
         const dur = formatRecordDuration(Date.now() - recordingStart);
-        const size = recordingChunksBytes > 0 ? ` · ${formatBytes(recordingChunksBytes)}` : "";
+        // Rough byte estimate: adpcm = numSamples / 2
+        const totalSamples = pcmChunks.reduce((s, c) => s + c.length, 0);
+        const estBytes = Math.ceil(totalSamples / 2);
+        const size = estBytes > 0 ? ` · ${formatBytes(estBytes)}` : "";
         opts.chatInput.placeholder = `recording... ${dur}${size}`;
       }, 1000);
 
-      // Hold-mode: user already released finger while getUserMedia was pending
       if (micDeferred === "send") {
         micDeferred = null;
         stopRecording();
@@ -1497,18 +1437,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     });
   }
 
-  // --- Page visibility: flush encoder buffer before OS may freeze the tab ---
-  // requestData() forces a synchronous ondataavailable with whatever the
-  // encoder has buffered. If the OS freezes/kills the page after this, at least
-  // the chunks array is up-to-date (though JS memory is lost anyway on kill —
-  // this mainly helps with the resume-from-freeze case on Android Chrome).
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden && mediaRecorder?.state === "recording") {
-      try { mediaRecorder.requestData(); } catch { /* not recording */ }
-    }
-  }, { signal });
-
-  /** Shared UI teardown for ending any recording state. */
+  /** Shared UI teardown. */
   function teardownRecordingUI(): void {
     if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
     opts.chatMicWrap.removeAttribute("data-recording");
@@ -1520,40 +1449,67 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.chatInput.placeholder = "whisper something...";
   }
 
+  function cleanupRecordingStream(): void {
+    if (micWorkletNode) {
+      try { micWorkletNode.disconnect(); } catch { }
+      micWorkletNode = null;
+    }
+    if (micAudioCtx) {
+      micAudioCtx.close().catch(() => { });
+      micAudioCtx = null;
+    }
+    if (recordingStream) {
+      for (const t of recordingStream.getTracks()) t.stop();
+      recordingStream = null;
+    }
+  }
+
   function stopRecording(): void {
     teardownRecordingUI();
-    const mr = mediaRecorder;
-    mediaRecorder = null;
-    if (mr && mr.state !== "inactive") {
-      try { mr.stop(); } catch {
-        // Encoder already dead — onstop won't fire, clean up manually
-        cleanupRecordingStream();
+    const elapsed = Date.now() - recordingStart;
+    const chunks = pcmChunks;
+    pcmChunks = [];
+    cleanupRecordingStream();
+
+    // Discard sub-500ms squeaks
+    if (elapsed < 500 || chunks.length === 0) return;
+
+    // Flatten accumulated 128-sample Float32 chunks into one
+    const totalSamples = chunks.reduce((n, c) => n + c.length, 0);
+    const flat = new Float32Array(totalSamples);
+    let off = 0;
+    for (const c of chunks) { flat.set(c, off); off += c.length; }
+
+    const name = `audio-${Date.now()}.wadpcm`;
+
+    encodeAdpcm(flat).then((adpcmBytes) => {
+      if (!session) {
+        addChatMessage({
+          type: "file", direction: "self",
+          fileName: name, fileSize: adpcmBytes.length, fileType: ADPCM_MIME,
+          fileData: adpcmBytes, timestamp: Date.now(),
+        });
+        simulateSendEnergy();
+        return;
       }
-    } else {
-      // Already inactive or null — ensure stream tracks are stopped
-      cleanupRecordingStream();
-    }
+      sendBeginFill();
+      session.sendAudio(name, ADPCM_MIME, adpcmBytes).then((msgId) => {
+        sendInFlight(msgId);
+      }).catch((err) => {
+        send.phase = "delivered"; send.velocity = -4;
+        appendLog(`audio send failed: ${errMsg(err)}`);
+        pulseComposeIntent("error", 1100);
+      });
+    }).catch((err) => {
+      appendLog(`audio encode (wasm) failed: ${errMsg(err)}`);
+    });
   }
 
   function cancelRecording(): void {
     teardownRecordingUI();
-    recordingChunks = [];
-    recordingChunksBytes = 0;
-    const mr = mediaRecorder;
-    mediaRecorder = null;
-    if (mr && mr.state !== "inactive") {
-      mr.onstop = null;
-      try { mr.stop(); } catch { /* already dead */ }
-    }
+    pcmChunks = [];
     cleanupRecordingStream();
     if (micPending) micDeferred = "discard";
-  }
-
-  function cleanupRecordingStream(): void {
-    if (recordingStream) {
-      for (const track of recordingStream.getTracks()) track.stop();
-      recordingStream = null;
-    }
   }
 
   /* ── Active audio management ────────────────────────────── */
@@ -1561,8 +1517,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function stopAllAudio(): void {
     if (activeAudio) {
       cancelAnimationFrame(activeAudio.raf);
-      activeAudio.el.pause();
-      activeAudio.el.currentTime = 0;
+      activeAudio.stop();
       setPlayIcon(activeAudio.btn, false);
       activeAudio.wrap.removeAttribute("data-playing");
       activeAudio.redraw(0);
@@ -1588,59 +1543,40 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Waveform extraction & rendering ────────────────────── */
 
   const WAVE_BAR_W = 3;
-  const WAVE_GAP   = 2.5;
+  const WAVE_GAP = 2.5;
   const WAVE_MIN_H = 3;
 
-  /** Decode audio blob → array of amplitudes normalised to 0–1.
-   *
-   *  Algorithm (CSS-Tricks / SoundCloud style):
-   *  1. Divide PCM into N equal blocks
-   *  2. Per block: mean of |sample| (absolute amplitude, not RMS — gives
-   *     more visual contrast between loud and quiet sections)
-   *  3. Normalise so loudest block = 1.0
-   *  4. Apply √ curve to spread dynamic range — without this, voice audio
-   *     produces a handful of tall bars and many near-zero bars ("square"
-   *     look) because energy is concentrated in speech bursts
-   *  5. Light 3-tap moving-average smooth to soften harsh jumps between
-   *     adjacent bars */
-  function extractWaveform(blob: Blob, numBars: number): Promise<Float32Array> {
-    return blob.arrayBuffer().then((buf) => {
-      const actx = new AudioContext();
-      return actx.decodeAudioData(buf).then((decoded) => {
-        void actx.close();
-        const raw = decoded.getChannelData(0);
-        const blockSize = Math.max(1, Math.floor(raw.length / numBars));
-        const amps = new Float32Array(numBars);
+  /** Generate waveform amplitudes directly from decoded PCM float array. */
+  function extractWaveformFromPcm(raw: Float32Array, numBars: number): Float32Array {
+    const blockSize = Math.max(1, Math.floor(raw.length / numBars));
+    const amps = new Float32Array(numBars);
 
-        // Step 1-2: mean absolute amplitude per block
-        let peak = 0;
-        for (let i = 0; i < numBars; i++) {
-          let sum = 0;
-          const off = i * blockSize;
-          const end = Math.min(off + blockSize, raw.length);
-          for (let j = off; j < end; j++) sum += Math.abs(raw[j]);
-          amps[i] = sum / (end - off);
-          if (amps[i] > peak) peak = amps[i];
-        }
+    // Step 1-2: mean absolute amplitude per block
+    let peak = 0;
+    for (let i = 0; i < numBars; i++) {
+      let sum = 0;
+      const off = i * blockSize;
+      const end = Math.min(off + blockSize, raw.length);
+      for (let j = off; j < end; j++) sum += Math.abs(raw[j]);
+      amps[i] = sum / (end - off);
+      if (amps[i] > peak) peak = amps[i];
+    }
 
-        // Step 3: normalise to 0–1
-        if (peak > 0) for (let i = 0; i < numBars; i++) amps[i] /= peak;
+    // Step 3: normalise to 0–1
+    if (peak > 0) for (let i = 0; i < numBars; i++) amps[i] /= peak;
 
-        // Step 4: sqrt curve — compresses dynamic range so quiet sections
-        // are still visible while loud sections stay tall
-        for (let i = 0; i < numBars; i++) amps[i] = Math.sqrt(amps[i]);
+    // Step 4: sqrt curve — compresses dynamic range
+    for (let i = 0; i < numBars; i++) amps[i] = Math.sqrt(amps[i]);
 
-        // Step 5: 3-tap moving-average smooth
-        const smoothed = new Float32Array(numBars);
-        for (let i = 0; i < numBars; i++) {
-          const prev = i > 0 ? amps[i - 1] : amps[i];
-          const next = i < numBars - 1 ? amps[i + 1] : amps[i];
-          smoothed[i] = prev * 0.2 + amps[i] * 0.6 + next * 0.2;
-        }
+    // Step 5: 3-tap moving-average smooth
+    const smoothed = new Float32Array(numBars);
+    for (let i = 0; i < numBars; i++) {
+      const prev = i > 0 ? amps[i - 1] : amps[i];
+      const next = i < numBars - 1 ? amps[i + 1] : amps[i];
+      smoothed[i] = prev * 0.2 + amps[i] * 0.6 + next * 0.2;
+    }
 
-        return smoothed;
-      });
-    });
+    return smoothed;
   }
 
   /** Spring integrator matching the site's compose system: accel = ω²(target-x) − 2ζω·v
@@ -1705,8 +1641,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    *   0x02 clears immediately
    */
 
-  const COMPOSE_ACTIVE  = 0x00;
-  const COMPOSE_IDLE    = 0x01;
+  const COMPOSE_ACTIVE = 0x00;
+  const COMPOSE_IDLE = 0x01;
   const COMPOSE_CLEARED = 0x02;
 
   const IDLE_KEEPALIVE_MS = 8_000;
@@ -1842,14 +1778,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       audioEl.append(playBtn, canvas, durLabel);
 
-      // Build blob with real MIME type — audio types are safe (not executable)
+      // We don't need a blob URL for custom WASM ADPCM playback
+      const isAdpcm = msg.fileType === ADPCM_MIME;
       const abCopy = new ArrayBuffer(msg.fileData.byteLength);
       new Uint8Array(abCopy).set(msg.fileData);
-      const blob = new Blob([abCopy], { type: msg.fileType });
-      const url = URL.createObjectURL(blob);
-      objectUrls.add(url);
 
-      let audio: HTMLAudioElement | null = null;
+      let pcmData: Float32Array | null = null;
+      let durationSeconds = 0;
+
+      let sourceNode: AudioBufferSourceNode | null = null;
+      let playbackStartTime = 0;
+      let pauseOffset = 0;
+      let isPlaying = false;
+
       let waveform: Float32Array | null = null;
       let barHeights: Float32Array | null = null;   // spring-animated heights
       let barVelocities: Float32Array | null = null;
@@ -1871,10 +1812,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       /** rAF loop while audio is playing — reads currentTime for smooth sweep. */
       function playbackTick(): void {
-        if (audio && !audio.paused && audio.duration) {
-          const p = audio.currentTime / audio.duration;
+        if (isPlaying && durationSeconds > 0) {
+          const elapsed = (micAudioCtx?.currentTime ?? 0) - playbackStartTime + pauseOffset;
+          const p = Math.min(1, Math.max(0, elapsed / durationSeconds));
           redraw(p);
-          durLabel.textContent = formatAudioDuration(audio.currentTime);
+          durLabel.textContent = formatAudioDuration(elapsed);
         }
         playRaf = requestAnimationFrame(playbackTick);
       }
@@ -1947,12 +1889,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
 
       // Kick off waveform extraction + canvas init after DOM insertion
-      requestAnimationFrame(() => {
+      requestAnimationFrame(async () => {
         if (!sizeCanvas()) return;
         readColors();
-        // Bar count: enough to fill the width without being cramped
+
         const numBars = Math.min(64, Math.max(12, Math.round(canvasW / (WAVE_BAR_W + WAVE_GAP))));
-        // Seeded pseudo-random placeholder while decoding (visually interesting)
         const ph = new Float32Array(numBars);
         let seed = msg.timestamp & 0xffff;
         for (let i = 0; i < numBars; i++) {
@@ -1964,55 +1905,109 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         barVelocities = new Float32Array(numBars);
         redraw(0);
 
-        extractWaveform(blob, numBars).then((amps) => {
-          waveform = amps;
+        try {
+          if (isAdpcm) {
+            pcmData = await decodeAdpcm(new Uint8Array(abCopy));
+          } else {
+            // Unused fallback, since we only send ADPCM now
+            const actx = new AudioContext();
+            const decoded = await actx.decodeAudioData(abCopy.slice(0));
+            pcmData = decoded.getChannelData(0);
+            void actx.close();
+          }
+
+          durationSeconds = pcmData.length / 48000;
+          durLabel.textContent = formatAudioDuration(durationSeconds);
+
+          waveform = extractWaveformFromPcm(pcmData, numBars);
           revealWaveform();
-        }).catch(() => {
-          // Decoding failed — keep placeholder bars (still functional for progress)
-        });
+        } catch {
+          // Decoding failed — keep placeholder bars
+        }
       });
 
-      // ── Audio element + event wiring (lazy) ──
+      // ── WebAudio Playback via AudioContext ──
+
+      function getAudioContext(): AudioContext {
+        if (!micAudioCtx) micAudioCtx = new AudioContext({ sampleRate: 48000 });
+        if (micAudioCtx.state === "suspended") micAudioCtx.resume();
+        return micAudioCtx;
+      }
+
+      function stopInternal() {
+        if (sourceNode) {
+          try { sourceNode.stop(); } catch { }
+          sourceNode = null;
+        }
+        isPlaying = false;
+        pauseOffset = 0;
+      }
 
       playBtn.addEventListener("click", () => {
-        if (!audio) {
-          audio = new Audio(url);
-          audio.addEventListener("loadedmetadata", () => {
-            durLabel.textContent = formatAudioDuration(audio!.duration);
-          });
-          audio.addEventListener("ended", () => {
-            stopPlaybackLoop();
-            setPlayIcon(playBtn, false);
-            audioEl.removeAttribute("data-playing");
-            redraw(0);
-            durLabel.textContent = formatAudioDuration(audio!.duration);
-            if (activeAudio?.el === audio) activeAudio = null;
-          });
-        }
+        if (!pcmData) return; // not decoded yet
 
-        if (audio.paused) {
-          stopAllAudio();
-          audio.play().catch(() => { setPlayIcon(playBtn, false); audioEl.removeAttribute("data-playing"); });
-          setPlayIcon(playBtn, true);
-          audioEl.setAttribute("data-playing", "");
-          startPlaybackLoop();
-          activeAudio = { el: audio, btn: playBtn, wrap: audioEl, redraw, raf: playRaf };
-        } else {
+        if (isPlaying) {
+          const ctx = getAudioContext();
+          pauseOffset += ctx.currentTime - playbackStartTime;
+          stopInternal();
+
           stopPlaybackLoop();
           audioEl.removeAttribute("data-playing");
-          audio.pause();
           setPlayIcon(playBtn, false);
-          if (activeAudio?.el === audio) activeAudio = null;
+          if (activeAudio?.btn === playBtn) activeAudio = null;
+          return;
         }
+
+        // Start playback
+        stopAllAudio();
+        const ctx = getAudioContext();
+
+        // Create a new buffer source for the decoded PCM
+        const audioBuf = ctx.createBuffer(1, pcmData.length, 48000);
+        audioBuf.getChannelData(0).set(pcmData);
+
+        sourceNode = ctx.createBufferSource();
+        sourceNode.buffer = audioBuf;
+        sourceNode.connect(ctx.destination);
+
+        // If we reached the end, loop back around
+        if (pauseOffset >= durationSeconds - 0.05) pauseOffset = 0;
+
+        playbackStartTime = ctx.currentTime;
+        sourceNode.start(0, pauseOffset);
+        isPlaying = true;
+
+        sourceNode.onended = () => {
+          if (!isPlaying) return; // called by manual stop
+          stopInternal();
+          stopPlaybackLoop();
+          setPlayIcon(playBtn, false);
+          audioEl.removeAttribute("data-playing");
+          redraw(0);
+          durLabel.textContent = formatAudioDuration(durationSeconds);
+          if (activeAudio?.btn === playBtn) activeAudio = null;
+        };
+
+        setPlayIcon(playBtn, true);
+        audioEl.setAttribute("data-playing", "");
+        startPlaybackLoop();
+        activeAudio = { stop: stopInternal, btn: playBtn, wrap: audioEl, redraw, raf: playRaf };
       }, { signal });
 
       // Click on canvas to seek
       canvas.addEventListener("click", (e) => {
-        if (!audio || !audio.duration) return;
+        if (!pcmData || !durationSeconds) return;
         const rect = canvas.getBoundingClientRect();
         const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-        audio.currentTime = ratio * audio.duration;
+        pauseOffset = ratio * durationSeconds;
         redraw(ratio);
+        durLabel.textContent = formatAudioDuration(pauseOffset);
+
+        if (isPlaying) {
+          // Restart playback at new offset
+          playBtn.click(); // stop
+          playBtn.click(); // play
+        }
       }, { signal });
 
       div.appendChild(audioEl);
@@ -2030,7 +2025,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       fileEl.append(nameEl, sizeEl);
 
-        if (msg.fileData) {
+      if (msg.fileData) {
         const ab = new ArrayBuffer(msg.fileData.byteLength);
         new Uint8Array(ab).set(msg.fileData);
         // Always use octet-stream for received files — never let the browser interpret
@@ -2081,105 +2076,82 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       div.dataset.msgId = String(msg.msgId);
       msgById.set(msg.msgId, div);
 
-      // Emoji picker — button that opens a dropdown with predefined reactions and emoji picker
-      const picker = document.createElement("div");
-      picker.className = "wl-react-picker";
-      picker.setAttribute("aria-label", "React");
-      
-      const pickerBtn = document.createElement("button");
-      pickerBtn.type = "button";
-      pickerBtn.className = "wl-react-pick-btn";
-      pickerBtn.textContent = "+";
-      pickerBtn.title = "React with emoji";
-      pickerBtn.setAttribute("aria-label", "React with emoji");
-      
-      const dropdown = document.createElement("div");
-      dropdown.className = "wl-react-dropdown";
-      dropdown.setAttribute("role", "menu");
-      dropdown.setAttribute("aria-label", "Reaction options");
-      
-      // Predefined reactions
-      const predefined = ["👍", "👎", "❤️"];
-      // Get last used emoji from localStorage
+      // ── Reaction shelf — hidden until message is tapped ──
+      // The shelf has zero visual presence at rest; CSS transitions it in
+      // when data-shelf-open is present on the parent .wl-msg element.
+      const shelf = document.createElement("div");
+      shelf.className = "wl-react-shelf";
+      shelf.setAttribute("role", "toolbar");
+      shelf.setAttribute("aria-label", "React");
+
+      // Predefined + last-used quick-picks
+      const predefined = ["👍", "👎", "❤️", "😂"];
       const lastUsed = localStorage.getItem("wl-last-reaction");
-      if (lastUsed && !predefined.includes(lastUsed)) {
-        predefined.push(lastUsed);
-      }
-      
+      if (lastUsed && !predefined.includes(lastUsed)) predefined.push(lastUsed);
+
       predefined.forEach((emoji) => {
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "wl-react-option";
+        btn.className = "wl-react-btn";
         btn.textContent = emoji;
-        btn.setAttribute("role", "menuitem");
         btn.setAttribute("aria-label", `React with ${emoji}`);
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
           toggleSelfReaction(msg.msgId!, emoji);
           localStorage.setItem("wl-last-reaction", emoji);
-          dropdown.style.display = "none";
-        });
-        dropdown.appendChild(btn);
+          div.removeAttribute("data-shelf-open");
+        }, { signal });
+        shelf.appendChild(btn);
       });
-      
-      // Emoji picker button (opens OS emoji picker)
-      const emojiPickerBtn = document.createElement("button");
-      emojiPickerBtn.type = "button";
-      emojiPickerBtn.className = "wl-react-emoji-picker";
-      emojiPickerBtn.textContent = "😀";
-      emojiPickerBtn.title = "Pick any emoji";
-      emojiPickerBtn.setAttribute("aria-label", "Pick any emoji");
-      
+
+      // OS emoji picker button + offscreen input
+      const emojiBtn = document.createElement("button");
+      emojiBtn.type = "button";
+      emojiBtn.className = "wl-react-btn wl-react-btn--more";
+      emojiBtn.textContent = "＋";
+      emojiBtn.setAttribute("aria-label", "Pick any emoji");
+
       const hiddenInput = document.createElement("input");
       hiddenInput.type = "text";
-      hiddenInput.className = "wl-react-hidden-input";
-      hiddenInput.style.position = "absolute";
-      hiddenInput.style.left = "-9999px";
-      hiddenInput.style.top = "-9999px";
       hiddenInput.setAttribute("aria-hidden", "true");
+      hiddenInput.style.cssText = "position:absolute;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;";
       hiddenInput.addEventListener("input", (e) => {
         e.stopPropagation();
         const raw = hiddenInput.value;
         hiddenInput.value = "";
         if (!raw || msg.msgId === undefined) return;
-        // Extract the first grapheme cluster
         const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
         const first = seg[Symbol.iterator]().next().value;
         const emoji = first?.segment ?? raw[0];
         if (emoji) {
           toggleSelfReaction(msg.msgId!, emoji);
           localStorage.setItem("wl-last-reaction", emoji);
-          dropdown.style.display = "none";
+          div.removeAttribute("data-shelf-open");
         }
-      });
-      
-      emojiPickerBtn.addEventListener("click", () => {
-        hiddenInput.focus();
-        // Trigger OS emoji picker (works on most browsers/OSes)
-        if ("execCommand" in document) {
-          // For older browsers
-          document.execCommand("insertText", false, "");
-        }
-      });
-      
-      dropdown.appendChild(emojiPickerBtn);
-      picker.appendChild(pickerBtn);
-      picker.appendChild(dropdown);
-      picker.appendChild(hiddenInput);
-      div.appendChild(picker);
-      
-      // Toggle dropdown on button click
-      pickerBtn.addEventListener("click", (e) => {
+      }, { signal });
+
+      emojiBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        dropdown.style.display = dropdown.style.display === "block" ? "none" : "block";
-      });
-      
-      // Close dropdown when clicking outside
-      const closeDropdown = (e: MouseEvent) => {
-        if (!picker.contains(e.target as Node)) {
-          dropdown.style.display = "none";
-        }
-      };
-      document.addEventListener("click", closeDropdown, { signal });
+        hiddenInput.focus();
+      }, { signal });
+
+      shelf.appendChild(emojiBtn);
+      shelf.appendChild(hiddenInput);
+      div.appendChild(shelf);
+
+      // Tap the message bubble to reveal / hide the shelf.
+      // One shelf at a time: close the previously open one first.
+      div.addEventListener("click", (e) => {
+        // Ignore clicks on shelf buttons themselves (handled above)
+        if ((e.target as HTMLElement).closest(".wl-react-shelf")) return;
+        // Ignore clicks on reaction pills
+        if ((e.target as HTMLElement).closest(".wl-reaction")) return;
+        const isOpen = div.hasAttribute("data-shelf-open");
+        // Close any globally open shelf
+        const prev = opts.chatMessages.querySelector("[data-shelf-open]");
+        if (prev) prev.removeAttribute("data-shelf-open");
+        if (!isOpen) div.setAttribute("data-shelf-open", "");
+      }, { signal });
     }
 
     if (msg.direction === "peer") {
@@ -2390,8 +2362,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Restore empty-state hint
     if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
     for (const el of [opts.offerCode, opts.answerCode, opts.fingerprintDisplay,
-                       opts.silentSecret, opts.joinQrStatus, opts.offerQrStatus,
-                       opts.answerQrStatus, opts.errorMessage]) el.textContent = "";
+    opts.silentSecret, opts.joinQrStatus, opts.offerQrStatus,
+    opts.answerQrStatus, opts.errorMessage]) el.textContent = "";
     for (const el of [opts.joinInput, opts.answerInput, opts.phraseInput, opts.chatInput]) el.value = "";
     if (manualPhraseInput) manualPhraseInput.value = "";
     if (flarePhraseInput) flarePhraseInput.value = "";
@@ -2559,7 +2531,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     session = createSession();
 
     try {
-        const offerCode = await session.createOffer(phrase);
+      const offerCode = await session.createOffer(phrase);
       if (aborted()) return;
 
       opts.connectingStatus.textContent = "connecting to relay...";
@@ -3027,8 +2999,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     emitCleared();
     updateControls();
     if (!session) {
-      // Preview mode — simulate the full send lifecycle visually
-      addChatMessage({ type: "text", direction: "self", text, timestamp: Date.now() });
+      // Preview mode — simulate the full send lifecycle visually.
+      // Assign a synthetic negative msgId so the shelf is built for this message.
+      const previewMsgId = -(++previewSendId);
+      addChatMessage({ type: "text", direction: "self", text, timestamp: Date.now(), msgId: previewMsgId });
       simulateSendEnergy();
       return;
     }
@@ -3060,7 +3034,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (peerText) {
         setTimeout(() => {
           hidePeerTyping();
-          addChatMessage({ type: "text", direction: "peer", text: peerText, timestamp: Date.now() });
+          const peerPreviewId = -(++previewSendId);
+          addChatMessage({ type: "text", direction: "peer", text: peerText, timestamp: Date.now(), msgId: peerPreviewId });
         }, 800 + Math.random() * 600);
       }
     }
@@ -3173,8 +3148,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!micHoldMode) {
       // Short click — start recording (click-to-toggle mode).
       // Split buttons take over once recording is active.
-      if (!mediaRecorder && !micPending) startRecording();
-    } else if (mediaRecorder) {
+      if (!recordingStream && !micPending) startRecording();
+    } else if (recordingStream) {
       // Release after hold — send
       stopRecording();
     } else if (micPending) {
@@ -3203,7 +3178,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   // Escape cancels recording (any mode)
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && (mediaRecorder || micPending)) {
+    if (e.key === "Escape" && (recordingStream || micPending)) {
       cancelRecording();
     }
   }, { signal });
@@ -3370,6 +3345,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   setOfferQrExpanded(false);
   setAnswerQrExpanded(false);
   updateControls();
+
+  // Close any open reaction shelf when clicking outside the chat messages area
+  document.addEventListener("click", (e) => {
+    if (opts.chatMessages.contains(e.target as Node)) return;
+    const open = opts.chatMessages.querySelector("[data-shelf-open]");
+    if (open) open.removeAttribute("data-shelf-open");
+  }, { signal });
 
   /* ── Teardown ───────────────────────────────────────────── */
 

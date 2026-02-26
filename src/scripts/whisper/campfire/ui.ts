@@ -445,105 +445,76 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       msgById.set(displayId, div);
       msgIdFullById.set(displayId, msgIdFull);
 
-        // Emoji picker — button that opens a dropdown with predefined reactions and emoji picker
-        const picker = document.createElement("div");
-        picker.className = "wl-react-picker";
-        picker.setAttribute("aria-label", "React");
-        
-        const pickerBtn = document.createElement("button");
-        pickerBtn.type = "button";
-        pickerBtn.className = "wl-react-pick-btn";
-        pickerBtn.textContent = "+";
-        pickerBtn.title = "React with emoji";
-        pickerBtn.setAttribute("aria-label", "React with emoji");
-        
-        const dropdown = document.createElement("div");
-        dropdown.className = "wl-react-dropdown";
-        dropdown.setAttribute("role", "menu");
-        dropdown.setAttribute("aria-label", "Reaction options");
-        
-        // Predefined reactions
-        const predefined = ["👍", "👎", "❤️"];
-        // Get last used emoji from localStorage
-        const lastUsed = localStorage.getItem("cf-last-reaction");
-        if (lastUsed && !predefined.includes(lastUsed)) {
-          predefined.push(lastUsed);
+      // ── Reaction shelf — hidden until message is tapped ──
+      const shelf = document.createElement("div");
+      shelf.className = "wl-react-shelf";
+      shelf.setAttribute("role", "toolbar");
+      shelf.setAttribute("aria-label", "React");
+
+      // Predefined + last-used quick-picks
+      const predefined = ["👍", "👎", "❤️", "😂"];
+      const lastUsed = localStorage.getItem("cf-last-reaction");
+      if (lastUsed && !predefined.includes(lastUsed)) predefined.push(lastUsed);
+
+      predefined.forEach((emoji) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "wl-react-btn";
+        btn.textContent = emoji;
+        btn.setAttribute("aria-label", `React with ${emoji}`);
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          toggleCfReaction(displayId!, emoji);
+          localStorage.setItem("cf-last-reaction", emoji);
+          div.removeAttribute("data-shelf-open");
+        });
+        shelf.appendChild(btn);
+      });
+
+      // OS emoji picker button + offscreen input
+      const emojiBtn = document.createElement("button");
+      emojiBtn.type = "button";
+      emojiBtn.className = "wl-react-btn wl-react-btn--more";
+      emojiBtn.textContent = "＋";
+      emojiBtn.setAttribute("aria-label", "Pick any emoji");
+
+      const hiddenInput = document.createElement("input");
+      hiddenInput.type = "text";
+      hiddenInput.setAttribute("aria-hidden", "true");
+      hiddenInput.style.cssText = "position:absolute;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;";
+      hiddenInput.addEventListener("input", (e) => {
+        e.stopPropagation();
+        const raw = hiddenInput.value;
+        hiddenInput.value = "";
+        if (!raw || displayId === undefined) return;
+        const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
+        const first = seg[Symbol.iterator]().next().value;
+        const emoji = first?.segment ?? raw[0];
+        if (emoji) {
+          toggleCfReaction(displayId!, emoji);
+          localStorage.setItem("cf-last-reaction", emoji);
+          div.removeAttribute("data-shelf-open");
         }
-        
-        predefined.forEach((emoji) => {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "wl-react-option";
-          btn.textContent = emoji;
-          btn.setAttribute("role", "menuitem");
-          btn.setAttribute("aria-label", `React with ${emoji}`);
-          btn.addEventListener("click", () => {
-            toggleCfReaction(displayId!, emoji);
-            localStorage.setItem("cf-last-reaction", emoji);
-            dropdown.style.display = "none";
-          });
-          dropdown.appendChild(btn);
-        });
-        
-        // Emoji picker button (opens OS emoji picker)
-        const emojiPickerBtn = document.createElement("button");
-        emojiPickerBtn.type = "button";
-        emojiPickerBtn.className = "wl-react-emoji-picker";
-        emojiPickerBtn.textContent = "😀";
-        emojiPickerBtn.title = "Pick any emoji";
-        emojiPickerBtn.setAttribute("aria-label", "Pick any emoji");
-        
-        const hiddenInput = document.createElement("input");
-        hiddenInput.type = "text";
-        hiddenInput.className = "wl-react-hidden-input";
-        hiddenInput.style.position = "absolute";
-        hiddenInput.style.left = "-9999px";
-        hiddenInput.style.top = "-9999px";
-        hiddenInput.setAttribute("aria-hidden", "true");
-        hiddenInput.addEventListener("input", (e) => {
-          e.stopPropagation();
-          const raw = hiddenInput.value;
-          hiddenInput.value = "";
-          if (!raw || displayId === undefined) return;
-          // Extract the first grapheme cluster
-          const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
-          const first = seg[Symbol.iterator]().next().value;
-          const emoji = first?.segment ?? raw[0];
-          if (emoji) {
-            toggleCfReaction(displayId!, emoji);
-            localStorage.setItem("cf-last-reaction", emoji);
-            dropdown.style.display = "none";
-          }
-        });
-        
-        emojiPickerBtn.addEventListener("click", () => {
-          hiddenInput.focus();
-          // Trigger OS emoji picker (works on most browsers/OSes)
-          if ("execCommand" in document) {
-            // For older browsers
-            document.execCommand("insertText", false, "");
-          }
-        });
-        
-        dropdown.appendChild(emojiPickerBtn);
-        picker.appendChild(pickerBtn);
-        picker.appendChild(dropdown);
-        picker.appendChild(hiddenInput);
-        div.appendChild(picker);
-        
-        // Toggle dropdown on button click
-        pickerBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          dropdown.style.display = dropdown.style.display === "block" ? "none" : "block";
-        });
-        
-        // Close dropdown when clicking outside
-        const closeDropdown = (e: MouseEvent) => {
-          if (!picker.contains(e.target as Node)) {
-            dropdown.style.display = "none";
-          }
-        };
-        document.addEventListener("click", closeDropdown);
+      });
+
+      emojiBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        hiddenInput.focus();
+      });
+
+      shelf.appendChild(emojiBtn);
+      shelf.appendChild(hiddenInput);
+      div.appendChild(shelf);
+
+      // Tap the bubble to reveal / hide the shelf — one shelf open at a time
+      div.addEventListener("click", (e) => {
+        if ((e.target as HTMLElement).closest(".wl-react-shelf")) return;
+        if ((e.target as HTMLElement).closest(".wl-reaction")) return;
+        const isOpen = div.hasAttribute("data-shelf-open");
+        const prev = opts.chatMessages.querySelector("[data-shelf-open]");
+        if (prev) prev.removeAttribute("data-shelf-open");
+        if (!isOpen) div.setAttribute("data-shelf-open", "");
+      });
     }
 
     opts.chatMessages.appendChild(div);
@@ -1070,6 +1041,13 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   showPhase(opts.idleSection);
   updateControls();
+
+  // Close any open reaction shelf when clicking outside the chat messages area
+  document.addEventListener("click", (e) => {
+    if (opts.chatMessages.contains(e.target as Node)) return;
+    const open = opts.chatMessages.querySelector("[data-shelf-open]");
+    if (open) open.removeAttribute("data-shelf-open");
+  }, { signal });
 
   /* ── Teardown ────────────────────────────────────────────── */
 
