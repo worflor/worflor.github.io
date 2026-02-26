@@ -13,7 +13,7 @@ import {
   type LiveState,
   type LiveMessage,
 } from "./live";
-import { encodeAdpcm, decodeAdpcm } from "./live-wasm-audio";
+import { encodeAdpcm, decodeAdpcm, adpcmToWav } from "./live-wasm-audio";
 import {
   CTRL_OP, VoteTopic,
   encodeSeenPayload, decodeSeenPayload,
@@ -1376,6 +1376,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const blobUrl = getWorkletBlobUrl();
       try {
         micAudioCtx = new AudioContext({ sampleRate: pcmSampleRate });
+        if (micAudioCtx.state === "suspended") void micAudioCtx.resume();
         await micAudioCtx.audioWorklet.addModule(blobUrl);
         URL.revokeObjectURL(blobUrl);
 
@@ -1398,6 +1399,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         // Note: ScriptProcessorNode is deprecated but still works universally.
         URL.revokeObjectURL(blobUrl);
         const ctx = micAudioCtx ?? new AudioContext({ sampleRate: pcmSampleRate });
+        if (ctx.state === "suspended") void ctx.resume();
         micAudioCtx = ctx;
         const source = ctx.createMediaStreamSource(stream);
         // @ts-ignore – deprecated but universal fallback
@@ -1792,7 +1794,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       durLabel.className = "wl-audio-duration";
       durLabel.textContent = "0:00";
 
-      audioEl.append(playBtn, canvas, durLabel);
+      const dlBtn = document.createElement("button");
+      dlBtn.type = "button";
+      dlBtn.className = "wl-audio-dl-btn";
+      dlBtn.title = "Download as WAV";
+      dlBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+
+      audioEl.append(playBtn, canvas, durLabel, dlBtn);
 
       // We don't need a blob URL for custom WASM ADPCM playback
       const isAdpcm = msg.fileType === ADPCM_MIME;
@@ -2014,6 +2022,38 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         audioEl.setAttribute("data-playing", "");
         startPlaybackLoop();
         activeAudio = { stop: stopInternal, btn: playBtn, wrap: audioEl, redraw, raf: playRaf };
+      }, { signal });
+
+      dlBtn.addEventListener("click", async () => {
+        if (!isAdpcm || dlBtn.disabled) return;
+        dlBtn.disabled = true;
+        try {
+          // Decode proprietary ADPCM payload to standard PCM, wrap in a RIFF WAV container Blob
+          const wavBlob = await adpcmToWav(msg.fileData!);
+          const url = URL.createObjectURL(wavBlob);
+          objectUrls.add(url);
+
+          const a = document.createElement("a");
+          a.style.display = "none";
+          a.href = url;
+          // Clean filename based on message timestamp or current time
+          a.download = msg.fileName && msg.fileName.endsWith(".wadpcm")
+            ? msg.fileName.replace(".wadpcm", ".wav")
+            : `audio-${msg.timestamp || Date.now()}.wav`;
+
+          document.body.appendChild(a);
+          a.click();
+
+          // Cleanup
+          setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 1000);
+        } catch (e) {
+          console.error("Failed to convert audio for download", e);
+        } finally {
+          dlBtn.disabled = false;
+        }
       }, { signal });
 
       // Click on canvas to seek

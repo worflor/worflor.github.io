@@ -11,8 +11,8 @@
  * Memory map (first page, 64 KB):
  *   0x0000 – 0x000F : INDEX_TABLE  (16 × i8)
  *   0x0010 – 0x00C1 : STEP_TABLE   (89 × i16, little-endian)
- *   0x0110 – 0x0117 : ENC_STATE    (valpred:i32, index:i32)
- *   0x0118 – 0x011F : DEC_STATE    (valpred:i32, index:i32)
+ *   0x00C4 – 0x00CB : ENC_STATE    (valpred:i32, index:i32)
+ *   0x00CC – 0x00D3 : DEC_STATE    (valpred:i32, index:i32)
  *   0x0200+         : caller-managed PCM/ADPCM buffers
  *
  * Input PCM: Int16 (signed 16-bit), mono.
@@ -74,6 +74,8 @@ const BR = (l: number) => [0x0c, ...encodeULEB(l)];
 const BRIF = (l: number) => [0x0d, ...encodeULEB(l)];
 const BLOCK = [0x02, VOID];
 const LOOP = [0x03, VOID];
+const IF = [0x04, VOID];
+const ELSE = [0x05];
 const END = [0x0b];
 
 // Memory ops
@@ -123,8 +125,8 @@ const INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
 
 const IDX_TBL_ADDR = 0x0000;
 const STEP_TBL_ADDR = 0x0010;
-const ENC_STATE_ADDR = 0x0110;
-const DEC_STATE_ADDR = 0x0118;
+const ENC_STATE_ADDR = 0x00C4;
+const DEC_STATE_ADDR = 0x00CC;
 const BUF_START = 0x0200;
 
 // HEADER_SIZE updated to 8 bytes (u32 numSamples + u16 sampleRate + 2 reserved)
@@ -147,8 +149,8 @@ function buildEncodeBody(): number[] {
         ...GET(2), ...CI32(0), ...STORE16(0, 6),
 
         // load state from memory for streaming support
-        ...CI32(0), ...LOAD32(ENC_STATE_ADDR, 0), ...SET(valpred),
-        ...CI32(0), ...LOAD32(ENC_STATE_ADDR, 4), ...SET(index),
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR), ...SET(valpred),
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 4), ...SET(index),
         ...CI32(0), ...SET(i),
         ...CI32(0), ...SET(outByte),
         ...CI32(0), ...SET(odd),
@@ -176,8 +178,7 @@ function buildEncodeBody(): number[] {
 
         // if diff < 0: diff = -diff
         ...GET(diff), ...CI32(0), ...LT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(0), ...GET(diff), ...SUB, ...SET(diff),
         ...END,
 
@@ -187,8 +188,7 @@ function buildEncodeBody(): number[] {
 
         // successive approximation: 3 bits of magnitude
         ...GET(diff), ...GET(step), ...GE_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...GET(delta), ...CI32(4), ...OR, ...SET(delta),
         ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
         ...GET(diff), ...GET(step), ...SUB, ...SET(diff),
@@ -196,8 +196,7 @@ function buildEncodeBody(): number[] {
         ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
 
         ...GET(diff), ...GET(step), ...GE_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...GET(delta), ...CI32(2), ...OR, ...SET(delta),
         ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
         ...GET(diff), ...GET(step), ...SUB, ...SET(diff),
@@ -205,8 +204,7 @@ function buildEncodeBody(): number[] {
         ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
 
         ...GET(diff), ...GET(step), ...GE_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...GET(delta), ...CI32(1), ...OR, ...SET(delta),
         ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
         ...END,
@@ -216,22 +214,19 @@ function buildEncodeBody(): number[] {
 
         // update valpred
         ...GET(sign), ...CI32(0), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...GET(valpred), ...GET(vpdiff), ...SUB, ...SET(valpred),
-        ...BR(1),
-        ...END,
+        ...IF,
         ...GET(valpred), ...GET(vpdiff), ...ADD, ...SET(valpred),
+        ...ELSE,
+        ...GET(valpred), ...GET(vpdiff), ...SUB, ...SET(valpred),
+        ...END,
 
         // clamp valpred
         ...GET(valpred), ...CI32(-32768), ...LT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(-32768), ...SET(valpred),
         ...END,
         ...GET(valpred), ...CI32(32767), ...GT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(32767), ...SET(valpred),
         ...END,
 
@@ -242,42 +237,38 @@ function buildEncodeBody(): number[] {
 
         // clamp index
         ...GET(index), ...CI32(0), ...LT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(0), ...SET(index),
         ...END,
         ...GET(index), ...CI32(88), ...GT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(88), ...SET(index),
         ...END,
 
         // pack nibble (low nibble first)
         ...GET(odd), ...CI32(0), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...GET(nibble), ...CI32(0x0F), ...AND, ...SET(outByte),
         ...CI32(1), ...SET(odd),
-        ...BR(1),
-        ...END,
+        ...ELSE,
         ...GET(outByte), ...GET(nibble), ...CI32(0x0F), ...AND, ...CI32(4), ...SHL, ...OR, ...SET(outByte),
         ...GET(2), ...GET(outLen), ...ADD, ...GET(outByte), ...STORE8(0, 0),
         ...GET(outLen), ...CI32(1), ...ADD, ...SET(outLen),
         ...CI32(0), ...SET(outByte),
         ...CI32(0), ...SET(odd),
+        ...END,
 
         ...GET(i), ...CI32(1), ...ADD, ...SET(i),
         ...BR(0),
         ...END, ...END,
 
         // save state to memory for streaming support
-        ...CI32(0), ...GET(valpred), ...STORE32(ENC_STATE_ADDR, 0),
-        ...CI32(0), ...GET(index), ...STORE32(ENC_STATE_ADDR, 4),
+        ...CI32(0), ...GET(valpred), ...STORE32(2, ENC_STATE_ADDR),
+        ...CI32(0), ...GET(index), ...STORE32(2, ENC_STATE_ADDR + 4),
 
         // flush last half-byte if numSamples is odd
         ...GET(odd), ...CI32(1), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...GET(2), ...GET(outLen), ...ADD, ...GET(outByte), ...STORE8(0, 0),
         ...GET(outLen), ...CI32(1), ...ADD, ...SET(outLen),
         ...END,
@@ -300,8 +291,8 @@ function buildDecodeBody(): number[] {
         ...GET(0), ...LOAD32(2, 0), ...SET(numSamples),
 
         // load state from memory for streaming support
-        ...CI32(0), ...LOAD32(DEC_STATE_ADDR, 0), ...SET(valpred),
-        ...CI32(0), ...LOAD32(DEC_STATE_ADDR, 4), ...SET(index),
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR), ...SET(valpred),
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 4), ...SET(index),
         ...CI32(0), ...SET(i),
         ...CI32(0), ...SET(decoded),
 
@@ -318,12 +309,11 @@ function buildDecodeBody(): number[] {
 
         // nibble: low nibble first (i&1==0 → high byte → wait, nibble order: i=0 → low nibble)
         ...GET(i), ...CI32(1), ...AND, ...CI32(0), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...GET(byteVal), ...CI32(4), ...SHR_u, ...CI32(0xF), ...AND, ...SET(nibble),
-        ...BR(1),
-        ...END,
+        ...IF,
         ...GET(byteVal), ...CI32(0xF), ...AND, ...SET(nibble),
+        ...ELSE,
+        ...GET(byteVal), ...CI32(4), ...SHR_u, ...CI32(0xF), ...AND, ...SET(nibble),
+        ...END,
 
         // step = STEP_TABLE[index]
         ...CI32(STEP_TBL_ADDR), ...GET(index), ...CI32(1), ...SHL, ...ADD,
@@ -338,43 +328,37 @@ function buildDecodeBody(): number[] {
         ...GET(step), ...CI32(3), ...SHR_s, ...SET(vpdiff),
 
         ...GET(delta), ...CI32(4), ...AND,
-        ...BLOCK, ...BLOCK,
-        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
         ...END,
         ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
 
         ...GET(delta), ...CI32(2), ...AND,
-        ...BLOCK, ...BLOCK,
-        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
         ...END,
         ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
 
         ...GET(delta), ...CI32(1), ...AND,
-        ...BLOCK, ...BLOCK,
-        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
         ...END,
 
         // update valpred
         ...GET(sign), ...CI32(0), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...GET(valpred), ...GET(vpdiff), ...SUB, ...SET(valpred),
-        ...BR(1),
-        ...END,
+        ...IF,
         ...GET(valpred), ...GET(vpdiff), ...ADD, ...SET(valpred),
+        ...ELSE,
+        ...GET(valpred), ...GET(vpdiff), ...SUB, ...SET(valpred),
+        ...END,
 
         // clamp valpred
         ...GET(valpred), ...CI32(-32768), ...LT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(-32768), ...SET(valpred),
         ...END,
         ...GET(valpred), ...CI32(32767), ...GT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(32767), ...SET(valpred),
         ...END,
 
@@ -385,13 +369,11 @@ function buildDecodeBody(): number[] {
 
         // clamp index
         ...GET(index), ...CI32(0), ...LT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(0), ...SET(index),
         ...END,
         ...GET(index), ...CI32(88), ...GT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
+        ...IF,
         ...CI32(88), ...SET(index),
         ...END,
 
@@ -405,8 +387,8 @@ function buildDecodeBody(): number[] {
         ...END, ...END,
 
         // save state to memory for streaming support
-        ...CI32(0), ...GET(valpred), ...STORE32(DEC_STATE_ADDR, 0),
-        ...CI32(0), ...GET(index), ...STORE32(DEC_STATE_ADDR, 4),
+        ...CI32(0), ...GET(valpred), ...STORE32(2, DEC_STATE_ADDR),
+        ...CI32(0), ...GET(index), ...STORE32(2, DEC_STATE_ADDR + 4),
 
         ...GET(decoded),
         ...END,
@@ -417,8 +399,9 @@ function buildDecodeBody(): number[] {
 // Signature: () -> ()
 function buildResetStateBody(addr: number): number[] {
     return funcBody([], [
-        ...CI32(0), ...CI32(0), ...STORE32(addr, 0),
-        ...CI32(0), ...CI32(0), ...STORE32(addr, 4),
+        ...CI32(0), ...CI32(0), ...STORE32(2, addr),
+        ...CI32(0), ...CI32(0), ...STORE32(2, addr + 4),
+        ...END,
     ]);
 }
 
@@ -428,18 +411,17 @@ export function buildAdpcmWasmBytes(): Uint8Array {
     const magic = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
     const typeSection = section(1, [
-        ...encodeULEB(3),
+        ...encodeULEB(2),
         0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32, // encode/decode
-        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32, // (duplicate artifact)
         0x60, ...encodeULEB(0), ...encodeULEB(0),                     // void reset
     ]);
 
     const funcSection = section(3, [
         ...encodeULEB(4),
-        ...encodeULEB(0), // encode
-        ...encodeULEB(1), // decode
-        ...encodeULEB(2), // reset_encode
-        ...encodeULEB(2), // reset_decode
+        ...encodeULEB(0), // encode (type 0)
+        ...encodeULEB(0), // decode (type 0)
+        ...encodeULEB(1), // reset_encode (type 1)
+        ...encodeULEB(1), // reset_decode (type 1)
     ]);
     const memSection = section(5, [...encodeULEB(1), 0x01, ...encodeULEB(1), ...encodeULEB(2048)]);
 
@@ -479,8 +461,13 @@ export function buildAdpcmWasmBytes(): Uint8Array {
     ]);
 
     return new Uint8Array([
-        ...magic, ...typeSection, ...funcSection,
-        ...memSection, ...exportSection, ...dataSection, ...codeSection,
+        ...magic,
+        ...typeSection,
+        ...funcSection,
+        ...memSection,
+        ...exportSection,
+        ...codeSection,
+        ...dataSection,
     ]);
 }
 
@@ -722,4 +709,52 @@ export async function decodeAdpcm(
     }
 
     return { pcm, sampleRate };
+}
+
+// ── WAV export ────────────────────────────────────────────────────────────────
+
+/**
+ * Encode Float32 PCM into a standard RIFF WAV (16-bit, mono).
+ * Universally playable — every OS, every media player.
+ */
+export function wavFromPcm(pcm: Float32Array, sampleRate: number): Uint8Array {
+    const numSamples = pcm.length;
+    const byteRate = sampleRate * 2;      // 1 ch × 16-bit = 2 bytes/sample
+    const dataBytes = numSamples * 2;
+    const buf = new ArrayBuffer(44 + dataBytes);
+    const dv = new DataView(buf);
+
+    // RIFF header
+    dv.setUint32(0, 0x52494646, false);   // "RIFF"
+    dv.setUint32(4, 36 + dataBytes, true);
+    dv.setUint32(8, 0x57415645, false);   // "WAVE"
+    // fmt chunk
+    dv.setUint32(12, 0x666d7420, false);   // "fmt "
+    dv.setUint32(16, 16, true);            // chunk size
+    dv.setUint16(20, 1, true);            // PCM
+    dv.setUint16(22, 1, true);            // mono
+    dv.setUint32(24, sampleRate, true);
+    dv.setUint32(28, byteRate, true);
+    dv.setUint16(32, 2, true);            // block align
+    dv.setUint16(34, 16, true);            // bits per sample
+    // data chunk
+    dv.setUint32(36, 0x64617461, false);   // "data"
+    dv.setUint32(40, dataBytes, true);
+
+    let off = 44;
+    for (let i = 0; i < numSamples; i++) {
+        const s = Math.max(-1, Math.min(1, pcm[i]));
+        dv.setInt16(off, s < 0 ? s * 32768 : s * 32767, true);
+        off += 2;
+    }
+    return new Uint8Array(buf);
+}
+
+/**
+ * Convert Whisper ADPCM bytes → WAV Blob ready for URL.createObjectURL().
+ */
+export async function adpcmToWav(adpcmBytes: Uint8Array): Promise<Blob> {
+    const { pcm, sampleRate } = await decodeAdpcm(adpcmBytes);
+    const wav = wavFromPcm(pcm, sampleRate);
+    return new Blob([wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength) as ArrayBuffer], { type: "audio/wav" });
 }
