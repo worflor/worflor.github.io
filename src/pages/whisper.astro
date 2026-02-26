@@ -340,7 +340,7 @@ const seo = {
       <!-- Live mode content (all phases live inside the same section) -->
       <div class="whisper-op-live" id="wl-section">
         <div class="wl-head whisper-panel" aria-label="Whisper Live status">
-          <h2 class="wl-head-title">Whisper Live</h2>
+          <h2 class="wl-head-title">Whisper Live <span class="wl-e2e-badge" aria-label="end-to-end encrypted, peer-to-peer">p2p · e2e</span></h2>
           <p class="wl-head-subtitle">encrypted peer-to-peer chat, no accounts, no servers</p>
           <div class="wl-head-right">
             <div class="cf-live-mode-toggle" role="group" aria-label="Live controls">
@@ -2282,6 +2282,25 @@ const seo = {
     grid-row: 1;
   }
 
+  .wl-e2e-badge {
+    display: none;
+    font-size: calc(var(--text-sm) * 0.66);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgb(var(--color-text-rgb) / 0.18);
+    background: rgb(var(--color-text-rgb) / 0.04);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    padding: calc(var(--space-xs) * 0.15) calc(var(--space-xs) * 0.6);
+    vertical-align: middle;
+    user-select: none;
+  }
+
+  .whisper-op-live.wl-connected .wl-e2e-badge {
+    display: inline-flex;
+  }
+
   .wl-head-right {
     display: none;
     flex: 0 0 auto;
@@ -2297,6 +2316,10 @@ const seo = {
 
   .whisper-op-live.wl-connected .wl-head-right {
     display: flex;
+  }
+
+  .whisper-op-live.wl-connected .wl-head-subtitle {
+    display: none;
   }
 
   .whisper-op-live.wl-connected .wl-head {
@@ -3105,7 +3128,6 @@ const seo = {
     flex-direction: column;
     gap: calc(var(--space-xs) * 0.42);
     scrollbar-width: thin;
-    overscroll-behavior-y: contain;
     -webkit-overflow-scrolling: touch;
     mask-image: linear-gradient(
       to bottom,
