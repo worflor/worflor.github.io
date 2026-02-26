@@ -2850,14 +2850,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     },
     flare: {
       lede: "light a flare and wait for a signal",
-      flareLink: "try relay assist",
+      flareLink: "use relay assist",
       manualLink: "or connect manually",
       relayAssist: true,
     },
     manual: {
       lede: "encrypted peer-to-peer messaging. create a channel or join one.",
       flareLink: "light a signal flare",
-      manualLink: "try relay assist",
+      manualLink: "use relay assist",
       relayAssist: false,
     },
   };
