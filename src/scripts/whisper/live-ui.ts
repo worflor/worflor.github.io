@@ -1736,6 +1736,126 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
     }
   }
 
+  // ── Ogg/Opus encoder (browser-only, WebCodecs) ───────────────────────────
+
+  /** CRC32 for Ogg pages — poly 0x04C11DB7, non-reflected. */
+  function oggCrc32(data: Uint8Array): number {
+    let crc = 0;
+    for (let i = 0; i < data.length; i++) {
+      crc ^= data[i] << 24;
+      for (let j = 0; j < 8; j++) {
+        crc = (crc & 0x80000000) ? (crc << 1) ^ 0x04C11DB7 : crc << 1;
+        crc >>>= 0;
+      }
+    }
+    return crc >>> 0;
+  }
+
+  function oggPage(packet: Uint8Array, serial: number, seq: number, granule: bigint, flags: number): Uint8Array {
+    const segs: number[] = [];
+    let rem = packet.length;
+    while (rem >= 255) { segs.push(255); rem -= 255; }
+    segs.push(rem);
+    const hdrLen = 27 + segs.length;
+    const page = new Uint8Array(hdrLen + packet.length);
+    const dv = new DataView(page.buffer);
+    page[0] = 0x4F; page[1] = 0x67; page[2] = 0x67; page[3] = 0x53; // "OggS"
+    page[4] = 0; page[5] = flags;
+    dv.setBigInt64(6, granule, true);
+    dv.setUint32(14, serial, true);
+    dv.setUint32(18, seq, true);
+    dv.setUint32(22, 0, true);
+    page[26] = segs.length;
+    for (let i = 0; i < segs.length; i++) page[27 + i] = segs[i];
+    page.set(packet, hdrLen);
+    dv.setUint32(22, oggCrc32(page), true);
+    return page;
+  }
+
+  function opusHead(channels: number, preSkip: number, inputSampleRate: number): Uint8Array {
+    const out = new Uint8Array(19);
+    out.set([0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64]); // "OpusHead"
+    const dv = new DataView(out.buffer);
+    out[8] = 1; out[9] = channels;
+    dv.setUint16(10, preSkip, true);
+    dv.setUint32(12, inputSampleRate, true);
+    dv.setInt16(16, 0, true); out[18] = 0;
+    return out;
+  }
+
+  function opusTags(): Uint8Array {
+    // "whisper" as ASCII bytes — avoids TextEncoder allocation
+    const vendor = new Uint8Array([0x77, 0x68, 0x69, 0x73, 0x70, 0x65, 0x72]);
+    const out = new Uint8Array(8 + 4 + vendor.length + 4);
+    out.set([0x4F, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73]); // "OpusTags"
+    new DataView(out.buffer).setUint32(8, vendor.length, true);
+    out.set(vendor, 12);
+    return out;
+  }
+
+  /**
+   * Encode float32 mono PCM → Ogg/Opus bytes using WebCodecs AudioEncoder.
+   * Throws if WebCodecs is unavailable (old browsers).
+   */
+  async function opusFromPcm(pcm: Float32Array, sampleRate: number): Promise<Uint8Array> {
+    // AudioEncoder / AudioData are WebCodecs APIs — not in all TypeScript DOM libs.
+    // We access them via globalThis to avoid compile errors on older lib versions.
+    type AudioEncoderLike = new (init: object) => {
+      configure(c: object): void;
+      encode(d: object): void;
+      flush(): Promise<void>;
+      close(): void;
+    };
+    type AudioDataLike = new (init: object) => { close(): void };
+    const AE = (globalThis as Record<string, unknown>)["AudioEncoder"] as AudioEncoderLike | undefined;
+    const AD = (globalThis as Record<string, unknown>)["AudioData"] as AudioDataLike | undefined;
+    if (!AE || !AD) throw new Error("WebCodecs unavailable");
+    const FRAME = 960; // 20 ms @ 48 kHz
+    const SERIAL = 0x77685352;
+    const frames: Uint8Array[] = [];
+    let preSkip = 312;
+    await new Promise<void>((resolve, reject) => {
+      const enc = new AE({
+        output(chunk: { byteLength: number; copyTo(b: Uint8Array): void }, meta: { decoderConfig?: { description?: ArrayBuffer } }) {
+          if (frames.length === 0 && meta?.decoderConfig?.description) {
+            const desc = new Uint8Array(meta.decoderConfig.description);
+            if (desc.length >= 12) preSkip = new DataView(desc.buffer, desc.byteOffset).getUint16(10, true);
+          }
+          const buf = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(buf);
+          frames.push(buf);
+        },
+        error: reject,
+      });
+      enc.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: 1, bitrate: 64000 });
+      const n = Math.ceil(pcm.length / FRAME);
+      for (let f = 0; f < n; f++) {
+        const data = new Float32Array(FRAME);
+        data.set(pcm.subarray(f * FRAME, Math.min((f + 1) * FRAME, pcm.length)));
+        const ad = new AD({ format: "f32-planar", sampleRate, numberOfFrames: FRAME, numberOfChannels: 1, timestamp: Math.round(f * FRAME * 1_000_000 / sampleRate), data });
+        enc.encode(ad);
+        ad.close();
+      }
+      enc.flush().then(() => { enc.close(); resolve(); }).catch(reject);
+    });
+    const pages: Uint8Array[] = [];
+    let seq = 0;
+    pages.push(oggPage(opusHead(1, preSkip, sampleRate), SERIAL, seq++, 0n, 0x02));
+    pages.push(oggPage(opusTags(),                       SERIAL, seq++, 0n, 0x00));
+    for (let i = 0; i < frames.length; i++) {
+      const end = i === frames.length - 1 ? pcm.length : (i + 1) * FRAME;
+      const eos = i === frames.length - 1 ? 0x04 : 0x00;
+      pages.push(oggPage(frames[i], SERIAL, seq++, BigInt(end + preSkip), eos));
+    }
+    const total = pages.reduce((s, p) => s + p.byteLength, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of pages) { out.set(p, off); off += p.byteLength; }
+    return out;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+
   function formatAudioDuration(seconds: number): string {
     if (!isFinite(seconds)) return "0:00";
     const m = Math.floor(seconds / 60);
@@ -2018,10 +2138,12 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
       new Uint8Array(abCopy).set(fileData);
 
       let pcmData: Float32Array | null = null;
+      let pcmSampleRate = 48000;
       let durationSeconds = 0;
 
       let audioElement: HTMLAudioElement | null = null;
-      let wavBlobUrl: string | null = null;
+      let opusBlobUrl: string | null = null; // for playback (HTMLAudioElement)
+      let wavBlobUrl: string | null = null;  // for download (lossless)
       let playbackStartTime = 0;
       let pauseOffset = 0;
       let isPlaying = false;
@@ -2149,10 +2271,29 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
             }
             inverseDcBlock(decoded.pcm); // reconstruct signal prior to encode-side DC block
             pcmData = decoded.pcm;
+            pcmSampleRate = decoded.sampleRate;
             durationSeconds = decoded.pcm.length / decoded.sampleRate;
+
+            // WAV — lossless, always available, used for download
             const wav = wavFromPcm(decoded.pcm, decoded.sampleRate);
             wavBlobUrl = URL.createObjectURL(new Blob([wav.buffer.slice(0) as ArrayBuffer], { type: "audio/wav" }));
             objectUrls.add(wavBlobUrl);
+
+            // Opus — for playback; only if the browser can actually play Ogg/Opus.
+            // Safari has AudioEncoder but doesn't support the Ogg container, so we
+            // must check canPlayType before encoding, not just check for AudioEncoder.
+            const canPlayOpus = new Audio().canPlayType("audio/ogg; codecs=opus") !== "";
+            if (canPlayOpus) {
+              try {
+                const opus = await opusFromPcm(decoded.pcm, decoded.sampleRate);
+                opusBlobUrl = URL.createObjectURL(new Blob([opus.buffer.slice(0) as ArrayBuffer], { type: "audio/ogg; codecs=opus" }));
+                objectUrls.add(opusBlobUrl);
+              } catch {
+                opusBlobUrl = wavBlobUrl;
+              }
+            } else {
+              opusBlobUrl = wavBlobUrl;
+            }
           } else {
             // Unused fallback, since we only send ADPCM now
             const actx = new AudioContext();
@@ -2183,7 +2324,7 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
       }
 
       playBtn.addEventListener("click", async () => {
-        if (!pcmData || !wavBlobUrl) return; // not decoded yet
+        if (!pcmData || !opusBlobUrl) return; // not decoded yet
 
         if (isPlaying) {
           if (audioElement) pauseOffset = audioElement.currentTime;
@@ -2200,7 +2341,7 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
         stopAllAudio();
 
         if (!audioElement) {
-          audioElement = new Audio(wavBlobUrl);
+          audioElement = new Audio(opusBlobUrl);
           audioElement.onended = () => {
             if (!isPlaying) return; // called by manual stop
             pauseOffset = 0; // reset to start on next play
@@ -2238,24 +2379,18 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
         if (!isWhisperCodec || dlBtn.disabled || !wavBlobUrl) return;
         dlBtn.disabled = true;
         try {
-          // Use the same WAV blob we created for playback
-          const url = wavBlobUrl;
-
+          const base = msg.fileName?.endsWith(".wadpcm")
+            ? msg.fileName.slice(0, -7)
+            : `audio-${msg.timestamp || Date.now()}`;
           const a = document.createElement("a");
           a.style.display = "none";
-          a.href = url;
-          // Clean filename based on message timestamp or current time
-          a.download = msg.fileName && msg.fileName.endsWith(".wadpcm")
-            ? msg.fileName.replace(".wadpcm", ".wav")
-            : `audio-${msg.timestamp || Date.now()}.wav`;
-
+          a.href = wavBlobUrl;
+          a.download = `${base}.wav`;
           document.body.appendChild(a);
           a.click();
-
-          // Cleanup anchor — don't revoke wavBlobUrl, it's shared with the playback element
           setTimeout(() => document.body.removeChild(a), 1000);
         } catch (e) {
-          console.error("Failed to convert audio for download", e);
+          console.error("Failed to export audio for download", e);
         } finally {
           dlBtn.disabled = false;
         }
