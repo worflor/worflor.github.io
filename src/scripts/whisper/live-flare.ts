@@ -208,11 +208,13 @@ export async function maintainFlare(
       let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
         connectTimer = null;
         if (closeHandled) return;
+        closeHandled = true;
         const sock = sockets.get(url);
+        if (sock) sockets.delete(url);
         if (sock) {
           try { sock.close(); } catch { /* noop */ }
         }
-        scheduleReconnect(url);
+        if (!done) scheduleReconnect(url);
       }, WS_CONNECT_TIMEOUT);
 
       let ws: WebSocket;
@@ -233,7 +235,8 @@ export async function maintainFlare(
         if (cur === ws) sockets.delete(url);
         if (!done) {
           if (opened) callbacks.onLog(`flare connection dropped via ${host}, reconnecting...`);
-          callbacks.onStatus("reconnecting...");
+          const anyOpen = [...sockets.values()].some(s => s.readyState === WebSocket.OPEN);
+          if (!anyOpen) callbacks.onStatus("reconnecting...");
           scheduleReconnect(url);
         }
       };
@@ -257,8 +260,9 @@ export async function maintainFlare(
         if (!maintenanceTimer) {
           maintenanceTimer = setInterval(() => {
             if (done) return;
-            void refreshEpochPresence();
-            sendAll(makeAnnouncePayloads(currentHashes));
+            void refreshEpochPresence().then(() => {
+              if (!done) sendAll(makeAnnouncePayloads(currentHashes));
+            });
           }, EPOCH_CHECK_INTERVAL);
         }
       };

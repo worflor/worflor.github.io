@@ -251,11 +251,13 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
     let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       connectTimer = null;
       if (closeHandled) return;
+      closeHandled = true;
       const s = sockets.get(url);
+      if (s) sockets.delete(url);
       if (s) {
         try { s.close(); } catch { /* noop */ }
       }
-      scheduleReconnect(url);
+      if (!opts.signal.aborted && !finished) scheduleReconnect(url);
     }, WS_CONNECT_TIMEOUT);
 
     let ws: WebSocket;
@@ -300,8 +302,9 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
       if (!epochTimer) {
         epochTimer = setInterval(() => {
           if (opts.signal.aborted || finished) return;
-          void refreshEpochPresence();
-          sendAll(makeAnnounce());
+          void refreshEpochPresence().then(() => {
+            if (!opts.signal.aborted && !finished) sendAll(makeAnnounce());
+          });
         }, EPOCH_CHECK_INTERVAL);
       }
     };
