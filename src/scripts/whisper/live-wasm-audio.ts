@@ -103,6 +103,7 @@ const LT_u = [0x48];
 const EQ = [0x46];
 
 const F32_ABS = [0x8b];
+const F32_NEAREST = [0x90];
 const F32_MAX = [0x97];
 const F32_CONST = (v: number): number[] => {
     const buf = new ArrayBuffer(4);
@@ -190,31 +191,37 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
 
 function buildEncodeBody(): number[] {
     const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar = 3; // args (scalar is f32)
+    // locals — ALL i32 grouped first, then f32, then i64
     const i = 4, packedLen = 5, prev1 = 6, w = 7, i32_val = 8, delta = 9, z = 10;
-    const crypto_i = 11, crypto_words = 12, cipher = 13, idx = 14, sample_count = 15, mac0 = 16, mac1 = 17, temp = 18;
-    const v = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34];
+    const bit_cnt = 11; // i32
+    const crypto_i = 12, crypto_words = 13, cipher = 14, idx = 15, sample_count = 16, mac0 = 17, mac1 = 18, temp = 19;
+    const v = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35];
+    const prev2 = 36, prev3 = 37; // i32
+    const block_start = 38; // i32
+    const block_end = 39; // i32
+    const cost0 = 40; const cost1 = 41; const cost2 = 42; const cost3 = 43; // i32
+    const best_mode = 44; // i32
+    const p1_sim = 45; const p2_sim = 46; const p3_sim = 47; // i32
 
-    // Helper: push i64 val into bit_buf and add nbits to bit_cnt, then drain full bytes
+    const framePeak = 48; // f32
+    const f32_sample = 49; // f32
+
+    const bit_buf = 50; // i64
+
+    // Helper macro to fuse w-bit payload
     function emitBits(valueInstr: number[], nbitsInstr: number[]): number[] {
         return [
-            // bit_buf |= ((i64)val << bit_cnt)
-            ...CI32(0), // addr for STORE64
-            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256),
-            ...valueInstr, ...I64_EXTEND_I32_U,
-            ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...I64_EXTEND_I32_U, ...I64_SHL,
-            ...I64_OR,
-            ...STORE64(3, Z_BLOCK + 256),
-            // bit_cnt += nbits
-            ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...nbitsInstr, ...ADD, ...STORE32(2, Z_BLOCK + 264),
-
-            // drain complete bytes
+            ...GET(bit_buf),
+            ...valueInstr, ...I64_EXTEND_I32_U, ...GET(bit_cnt), ...I64_EXTEND_I32_U, ...I64_SHL,
+            ...I64_OR, ...SET(bit_buf),
+            ...GET(bit_cnt), ...nbitsInstr, ...ADD, ...SET(bit_cnt),
             ...BLOCK, ...LOOP,
-            ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...LT_u, ...BRIF(1),
+            ...GET(bit_cnt), ...CI32(8), ...LT_u, ...BRIF(1),
             ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD,
-            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64, ...STORE8(0, 0),
+            ...GET(bit_buf), ...I32_WRAP_I64, ...STORE8(0, 0),
             ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
-            ...CI32(0), ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...CI64(8), ...I64_SHR_u, ...STORE64(3, Z_BLOCK + 256),
-            ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...SUB, ...STORE32(2, Z_BLOCK + 264),
+            ...GET(bit_buf), ...CI64(8), ...I64_SHR_u, ...SET(bit_buf),
+            ...GET(bit_cnt), ...CI32(8), ...SUB, ...SET(bit_cnt),
             ...BR(0), ...END, ...END,
         ];
     }
@@ -227,41 +234,108 @@ function buildEncodeBody(): number[] {
 
         // 2. Load ADPCM state
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 144), ...SET(prev1),
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 148), ...SET(prev2),
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 152), ...SET(prev3),
 
-        // 3. Single-pass per-sample variable bit-width encoding
-        // Format: 5-bit prefix (w-1) + w-bit ZigZag payload per sample
-        // w = 32 - clz(z | 1), exact minimum bits needed (1..32)
-        ...CI32(0), ...SET(i), ...CI32(0), ...SET(packedLen),
-        ...CI32(0), ...CI64(0), ...STORE64(3, Z_BLOCK + 256), // bit_buf
-        ...CI32(0), ...CI32(0), ...STORE32(2, Z_BLOCK + 264), // bit_cnt
-
+        // 3. Peak Normalization (find framePeak)
+        ...F32_CONST(0.001), ...SET(framePeak),
+        ...CI32(0), ...SET(i),
         ...BLOCK, ...LOOP,
         ...GET(i), ...GET(numSamples), ...GE_s, ...BRIF(1),
+        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...F32_ABS,
+        ...GET(framePeak), ...F32_MAX, ...SET(framePeak),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
+        ...END, ...END,
 
-        // quantize
+        // 4. ADPCM Compression Pass (Microblock loop, 64 samples per block)
+        ...CI32(0), ...SET(block_start), ...CI32(0), ...SET(packedLen),
+        ...CI64(0), ...SET(bit_buf), ...CI32(0), ...SET(bit_cnt),
+
+        ...BLOCK, ...LOOP, // block loop
+        ...GET(block_start), ...GET(numSamples), ...GE_s, ...BRIF(1),
+
+        ...GET(block_start), ...CI32(64), ...ADD, ...SET(block_end),
+        ...GET(block_end), ...GET(numSamples), ...GT_u, ...IF, ...GET(numSamples), ...SET(block_end), ...END,
+
+        // Step 4a: Determine Best Predictor for Block
+        ...CI32(0), ...SET(cost0), ...CI32(0), ...SET(cost1), ...CI32(0), ...SET(cost2), ...CI32(0), ...SET(cost3),
+        ...GET(prev1), ...SET(p1_sim), ...GET(prev2), ...SET(p2_sim), ...GET(prev3), ...SET(p3_sim),
+        ...GET(block_start), ...SET(i),
+
+        ...BLOCK, ...LOOP, // sim loop
+        ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
+        // qval
         ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
-        ...GET(scalar), ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
+        ...GET(framePeak), ...DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        // 1st-order diff + ZigZag
-        ...GET(i32_val), ...GET(prev1), ...SUB, ...SET(delta),
-        ...GET(i32_val), ...SET(prev1),
+        // sim 0 (cost0): delta = val
+        ...GET(i32_val), ...CI32(1), ...SHL, ...GET(i32_val), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        ...GET(cost0), ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...CI32(5), ...ADD, ...ADD, ...SET(cost0),
+
+        // sim 1 (cost1): delta = val - p1_sim
+        ...GET(i32_val), ...GET(p1_sim), ...SUB, ...SET(delta),
         ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        ...GET(cost1), ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...CI32(5), ...ADD, ...ADD, ...SET(cost1),
 
-        // w = 32 - clz(z | 1)
+        // sim 2 (cost2): delta = val - (2*p1_sim - p2_sim)
+        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHL, ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta),
+        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        ...GET(cost2), ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...CI32(5), ...ADD, ...ADD, ...SET(cost2),
+
+        // sim 3 (cost3): delta = val - (3*p1_sim - 3*p2_sim + p3_sim)  [Pascal row 3]
+        ...GET(i32_val), ...GET(p1_sim), ...CI32(3), ...MUL, ...GET(p2_sim), ...CI32(3), ...MUL, ...SUB, ...GET(p3_sim), ...ADD, ...SUB, ...SET(delta),
+        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        ...GET(cost3), ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...CI32(5), ...ADD, ...ADD, ...SET(cost3),
+
+        ...GET(p2_sim), ...SET(p3_sim), ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
+        ...END, ...END,
+
+        // Select best mode (cascaded min)
+        ...CI32(0), ...SET(best_mode),
+        ...GET(cost1), ...GET(cost0), ...LT_u, ...IF, ...CI32(1), ...SET(best_mode), ...GET(cost1), ...SET(cost0), ...END,
+        ...GET(cost2), ...GET(cost0), ...LT_u, ...IF, ...CI32(2), ...SET(best_mode), ...GET(cost2), ...SET(cost0), ...END,
+        ...GET(cost3), ...GET(cost0), ...LT_u, ...IF, ...CI32(3), ...SET(best_mode), ...END,
+
+        // Step 4b: Emit Block Header (2 bits for predictor choice)
+        ...emitBits([...GET(best_mode)], [...CI32(2)]),
+
+        // Step 4c: Real Encode Pass
+        ...GET(block_start), ...SET(i),
+        ...BLOCK, ...LOOP, // encode loop
+        ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
+        // qval
+        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
+        ...GET(framePeak), ...DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
+
+        // predict based on best_mode
+        ...GET(best_mode), ...CI32(0), ...EQ, ...IF, ...GET(i32_val), ...SET(delta), ...ELSE,
+        ...GET(best_mode), ...CI32(1), ...EQ, ...IF, ...GET(i32_val), ...GET(prev1), ...SUB, ...SET(delta), ...ELSE,
+        ...GET(best_mode), ...CI32(2), ...EQ, ...IF, ...GET(i32_val), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...SUB, ...SET(delta), ...ELSE,
+        // order 3: delta = val - (3*p1 - 3*p2 + p3)
+        ...GET(i32_val), ...GET(prev1), ...CI32(3), ...MUL, ...GET(prev2), ...CI32(3), ...MUL, ...SUB, ...GET(prev3), ...ADD, ...SUB, ...SET(delta),
+        ...END, ...END, ...END,
+
+        // update state
+        ...GET(prev2), ...SET(prev3), ...GET(prev1), ...SET(prev2), ...GET(i32_val), ...SET(prev1),
+
+        // convert to z and pack
+        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
         ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...SET(w),
 
-        // emit 5-bit prefix (w - 1)
         ...emitBits([...GET(w), ...CI32(1), ...SUB], [...CI32(5)]),
-        // emit w-bit z value
         ...emitBits([...GET(z)], [...GET(w)]),
 
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END,
 
+        ...GET(block_end), ...SET(block_start), ...BR(0),
+        ...END, ...END,
+
         // Flush remaining bits
-        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(0), ...GT_u, ...IF,
+        ...GET(bit_cnt), ...CI32(0), ...GT_u, ...IF,
         ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD,
-        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64, ...STORE8(0, 0),
+        ...GET(bit_buf), ...I32_WRAP_I64, ...STORE8(0, 0),
         ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
         ...END,
 
@@ -274,6 +348,8 @@ function buildEncodeBody(): number[] {
 
         // Save ADPCM state
         ...CI32(0), ...GET(prev1), ...STORE32(2, ENC_STATE_ADDR + 144),
+        ...CI32(0), ...GET(prev2), ...STORE32(2, ENC_STATE_ADDR + 148),
+        ...CI32(0), ...GET(prev3), ...STORE32(2, ENC_STATE_ADDR + 152),
 
         // 4. Cryptography Pass
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 128), ...SET(idx),
@@ -327,40 +403,58 @@ function buildEncodeBody(): number[] {
         ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD, ...GET(mac0), ...STORE32(2, 0),
         ...GET(outPtr), ...CI32(12), ...ADD, ...GET(packedLen), ...ADD, ...GET(mac1), ...STORE32(2, 0),
 
+        // Append f32 framePeak (4 bytes)
+        ...GET(outPtr), ...CI32(16), ...ADD, ...GET(packedLen), ...ADD, ...GET(framePeak), ...STOREF32(2, 0),
+
         // Save Crypto state
         ...CI32(0), ...GET(idx), ...STORE32(2, ENC_STATE_ADDR + 128),
         ...CI32(0), ...GET(sample_count), ...STORE32(2, ENC_STATE_ADDR + 132),
         ...CI32(0), ...GET(mac0), ...STORE32(2, ENC_STATE_ADDR + 136),
         ...CI32(0), ...GET(mac1), ...STORE32(2, ENC_STATE_ADDR + 140),
 
-        // 5. Return size (Header + Payload + MAC)
-        ...GET(packedLen), ...CI32(HEADER_SIZE + MAC_SIZE), ...ADD,
+        // 5. Return size (Header + Payload + MAC + framePeak)
+        ...GET(packedLen), ...CI32(HEADER_SIZE + MAC_SIZE + 4), ...ADD,
         ...END,
     ];
-    return funcBody([{ count: 32, type: I32 }], body);
+    return funcBody([
+        { count: 44, type: I32 }, // locals 4..47 (i32s)
+        { count: 2, type: F32 },  // locals 48..49
+        { count: 1, type: I64 }   // local 50
+    ], body);
 }
 
 function buildDecodeBody(): number[] {
     const adpcmPtr = 0, numBytes = 1, outPtr = 2, scalar = 3; // args (scalar is f32)
+
+    // locals 4..43 are I32 (40 locals total)
     const numSamples = 4, packedLen = 5, prev1 = 6, w = 7;
     const i32_val = 8, delta = 9, z = 10, crypto_i = 11, crypto_words = 12;
     const cipher = 13, idx = 14, sample_count = 15, mac0 = 16, mac1 = 17, temp = 18;
     const expMac0 = 19, expMac1 = 20, i = 21;
-    const v = [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
+    const bit_cnt = 22; // i32
+    const v = [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38];
+    const prev2 = 39, prev3 = 40; // i32
+    const block_start = 41; // i32
+    const block_end = 42; // i32
+    const best_mode = 43; // i32
+
+    // local 44 is F32
+    const framePeak = 44; // f32
+
+    // local 45 is I64
+    const bit_buf = 45; // i64
 
     // Helper: refill i64 bit_buf from payload bytes until bit_cnt >= needed
     function refillBits(neededInstr: number[]): number[] {
         return [
             ...BLOCK, ...LOOP,
-            ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...neededInstr, ...GE_s, ...BRIF(1),
+            ...GET(bit_cnt), ...neededInstr, ...GE_s, ...BRIF(1),
             // bit_buf |= (byte << bit_cnt)
-            ...CI32(0),
-            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256),
+            ...GET(bit_buf),
             ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD8u(0, 0), ...I64_EXTEND_I32_U,
-            ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...I64_EXTEND_I32_U, ...I64_SHL,
-            ...I64_OR,
-            ...STORE64(3, Z_BLOCK + 256),
-            ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...ADD, ...STORE32(2, Z_BLOCK + 264),
+            ...GET(bit_cnt), ...I64_EXTEND_I32_U, ...I64_SHL,
+            ...I64_OR, ...SET(bit_buf),
+            ...GET(bit_cnt), ...CI32(8), ...ADD, ...SET(bit_cnt),
             ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i),
             ...BR(0), ...END, ...END,
         ];
@@ -370,15 +464,13 @@ function buildDecodeBody(): number[] {
     function extractBits(nbitsInstr: number[]): number[] {
         return [
             // mask = (1 << n) - 1; val = bit_buf_lo & mask
-            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64,
+            ...GET(bit_buf), ...I32_WRAP_I64,
             ...CI32(1), ...nbitsInstr, ...SHL, ...CI32(1), ...SUB, // (1<<n)-1
             ...AND, // masked val on stack
             // bit_buf >>= n
-            ...CI32(0),
-            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...nbitsInstr, ...I64_EXTEND_I32_U, ...I64_SHR_u,
-            ...STORE64(3, Z_BLOCK + 256),
+            ...GET(bit_buf), ...nbitsInstr, ...I64_EXTEND_I32_U, ...I64_SHR_u, ...SET(bit_buf),
             // bit_cnt -= n
-            ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...nbitsInstr, ...SUB, ...STORE32(2, Z_BLOCK + 264),
+            ...GET(bit_cnt), ...nbitsInstr, ...SUB, ...SET(bit_cnt),
         ];
     }
 
@@ -392,7 +484,9 @@ function buildDecodeBody(): number[] {
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 140), ...SET(mac1),
 
         // 2. Cryptography Pass (In-place Decryption)
-        ...GET(numBytes), ...CI32(HEADER_SIZE + MAC_SIZE), ...SUB, ...SET(packedLen),
+        // Note: The appended framePeak (if present) is at the very end and NOT covered by the MAC nor encrypted
+        // So packedLen = numBytes - (HEADER_SIZE + MAC_SIZE + 4)
+        ...GET(numBytes), ...CI32(HEADER_SIZE + MAC_SIZE + 4), ...SUB, ...SET(packedLen),
         ...GET(packedLen), ...CI32(2), ...SHR_u, ...SET(crypto_words),
         ...CI32(0), ...SET(crypto_i),
 
@@ -401,12 +495,12 @@ function buildDecodeBody(): number[] {
 
         ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(cipher),
 
-        // MAC UPDATE (OVER CIPHERTEXT BEFORE DECRYPTION)
+        // MAC UPDATE
         ...GET(mac0), ...GET(cipher), ...ADD, ...SET(mac0),
         ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
         ...GET(mac1), ...CI32(17), ...ROTL, ...GET(cipher), ...ADD, ...SET(mac1),
 
-        // GENERATE KEYSTREAM
+        // KEYSTREAM
         ...GET(idx), ...CI32(64), ...GE_s, ...IF,
         ...buildChaChaBlock(DEC_STATE_ADDR, v),
         ...CI32(0), ...SET(idx),
@@ -417,7 +511,7 @@ function buildDecodeBody(): number[] {
         ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(temp), ...STORE32(2, 0),
         ...GET(idx), ...CI32(4), ...ADD, ...SET(idx),
 
-        // Ratchet (same as encode)
+        // Ratchet
         ...GET(sample_count), ...CI32(1023), ...AND, ...CI32(0), ...EQ, ...IF,
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 16), ...GET(mac0), ...XOR, ...SET(temp),
         ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, DEC_STATE_ADDR + 16),
@@ -432,8 +526,9 @@ function buildDecodeBody(): number[] {
         ...END, ...END,
 
         // 3. Verify MAC
-        ...GET(adpcmPtr), ...GET(numBytes), ...CI32(8), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac0),
-        ...GET(adpcmPtr), ...GET(numBytes), ...CI32(4), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac1),
+        // MAC is 8 bytes before the last 4 bytes (framePeak), so offsets are -12 and -8 from numBytes
+        ...GET(adpcmPtr), ...GET(numBytes), ...CI32(12), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac0),
+        ...GET(adpcmPtr), ...GET(numBytes), ...CI32(8), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac1),
 
         ...GET(mac0), ...GET(expMac0), ...EQ, ...GET(mac1), ...GET(expMac1), ...EQ, ...AND, ...CI32(0), ...EQ, ...IF,
         ...CI32(0), ...RETURN,
@@ -445,14 +540,33 @@ function buildDecodeBody(): number[] {
         ...CI32(0), ...GET(mac0), ...STORE32(2, DEC_STATE_ADDR + 136),
         ...CI32(0), ...GET(mac1), ...STORE32(2, DEC_STATE_ADDR + 140),
 
-        // 4. ADPCM Decompression — per-sample variable bit-width decode
-        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 144), ...SET(prev1),
-        ...CI32(0), ...SET(i), ...CI32(0), ...SET(crypto_i),
-        ...CI32(0), ...CI32(0), ...STORE32(2, Z_BLOCK + 264),
-        ...CI32(0), ...CI64(0), ...STORE64(3, Z_BLOCK + 256),
+        // Read appended framePeak (it's at the very end of numBytes)
+        // Offset is numBytes - 4
+        ...GET(adpcmPtr), ...GET(numBytes), ...CI32(4), ...SUB, ...ADD, ...LOADF32(2, 0), ...SET(framePeak),
 
-        ...BLOCK, ...LOOP,
-        ...GET(i), ...GET(numSamples), ...GE_s, ...BRIF(1),
+        // 4. ADPCM Decompression — microblock dynamic LPC decode
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 144), ...SET(prev1),
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 148), ...SET(prev2),
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 152), ...SET(prev3),
+        ...CI32(0), ...SET(i), ...CI32(0), ...SET(crypto_i),
+        ...CI32(0), ...SET(bit_cnt),
+        ...CI64(0), ...SET(bit_buf),
+        ...CI32(0), ...SET(block_start),
+
+        ...BLOCK, ...LOOP, // block loop
+        ...GET(block_start), ...GET(numSamples), ...GE_s, ...BRIF(1),
+
+        ...GET(block_start), ...CI32(64), ...ADD, ...SET(block_end),
+        ...GET(block_end), ...GET(numSamples), ...GT_u, ...IF, ...GET(numSamples), ...SET(block_end), ...END,
+
+        // Read 2-bit block header
+        ...refillBits([...CI32(2)]),
+        ...extractBits([...CI32(2)]), ...SET(best_mode),
+
+        // Decode block
+        ...GET(block_start), ...SET(i),
+        ...BLOCK, ...LOOP, // decode loop
+        ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
         // Refill until bit_cnt >= 5 (for prefix), extract 5-bit prefix → w = prefix + 1
         ...refillBits([...CI32(5)]),
@@ -467,23 +581,39 @@ function buildDecodeBody(): number[] {
         // delta = (z >>> 1) ^ (0 - (z & 1))
         ...GET(z), ...CI32(1), ...SHR_u, ...CI32(0), ...GET(z), ...CI32(1), ...AND, ...SUB, ...XOR, ...SET(delta),
 
-        // 1st-order inverse: val = delta + prev1
-        ...GET(delta), ...GET(prev1), ...ADD, ...SET(i32_val),
-        ...GET(i32_val), ...SET(prev1),
+        // Inverse prediction based on best_mode
+        ...GET(best_mode), ...CI32(0), ...EQ, ...IF, ...GET(delta), ...SET(i32_val), ...ELSE,
+        ...GET(best_mode), ...CI32(1), ...EQ, ...IF, ...GET(delta), ...GET(prev1), ...ADD, ...SET(i32_val), ...ELSE,
+        ...GET(best_mode), ...CI32(2), ...EQ, ...IF, ...GET(delta), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...ADD, ...SET(i32_val), ...ELSE,
+        // order 3: val = delta + 3*p1 - 3*p2 + p3
+        ...GET(delta), ...GET(prev1), ...CI32(3), ...MUL, ...ADD, ...GET(prev2), ...CI32(3), ...MUL, ...SUB, ...GET(prev3), ...ADD, ...SET(i32_val),
+        ...END, ...END, ...END,
 
-        // f32 output: val / scalar
+        // Update state
+        ...GET(prev2), ...SET(prev3), ...GET(prev1), ...SET(prev2), ...GET(i32_val), ...SET(prev1),
+
+        // f32 output: (val / scalar) * framePeak
         ...GET(outPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD,
-        ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...DIV, ...STOREF32(2, 0),
+        ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...DIV, ...GET(framePeak), ...F32_MUL, ...STOREF32(2, 0),
 
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END,
 
+        ...GET(block_end), ...SET(block_start), ...BR(0),
+        ...END, ...END,
+
         ...CI32(0), ...GET(prev1), ...STORE32(2, DEC_STATE_ADDR + 144),
+        ...CI32(0), ...GET(prev2), ...STORE32(2, DEC_STATE_ADDR + 148),
+        ...CI32(0), ...GET(prev3), ...STORE32(2, DEC_STATE_ADDR + 152),
 
         ...GET(numSamples),
         ...END,
     ];
-    return funcBody([{ count: 34, type: I32 }], body);
+    return funcBody([
+        { count: 40, type: I32 }, // locals 4..43
+        { count: 1, type: F32 },  // local 44
+        { count: 1, type: I64 },  // local 45
+    ], body);
 }
 
 function buildEncodeRawBody(): number[] {
@@ -770,22 +900,8 @@ export async function encodeAdpcm(
         return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
     }
 
-    // Physics-based VBR: normalize by frame peak amplitude
-    // This gives quiet speakers the same relative SNR as loud speakers (no quality loss),
-    // while CLZ packing naturally adapts bitrate to signal complexity.
-    let framePeak = 0;
-    for (let k = 0; k < numSamples; k++) {
-        const a = Math.abs(float32Samples[k]);
-        if (a > framePeak) framePeak = a;
-    }
-    framePeak = Math.max(framePeak, 1e-10); // avoid division by zero
-
-    const normalized = new Float32Array(numSamples);
-    for (let k = 0; k < numSamples; k++) {
-        normalized[k] = float32Samples[k] / framePeak;
-    }
-
-    new Float32Array(mem.buffer, pcmPtr, numSamples).set(normalized);
+    // Physics-based VBR: WASM Handles frame peak normalization internally
+    new Float32Array(mem.buffer, pcmPtr, numSamples).set(float32Samples);
     const bytesWritten = wasm.encode_adpcm(pcmPtr, numSamples, outPtr, scalar);
 
     const view = new DataView(mem.buffer);
@@ -793,11 +909,7 @@ export async function encodeAdpcm(
     const flags = ((quality & 0xFF) << 8) | 1;
     view.setUint16(outPtr + 6, flags, true);
 
-    // Append framePeak as f32 after encoded payload (4 bytes)
-    const result = new Uint8Array(bytesWritten + 4);
-    result.set(new Uint8Array(mem.buffer, outPtr, bytesWritten));
-    new DataView(result.buffer).setFloat32(bytesWritten, framePeak, true);
-    return result;
+    return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
 }
 
 export async function decodeAdpcm(
@@ -817,17 +929,7 @@ export async function decodeAdpcm(
     const quality = (flags >> 8) & 0xFF;
     const scalar = Math.max(1, Math.floor(Math.pow(2, (quality / 100) * 15)));
 
-    // For compressed mode, framePeak is appended as last 4 bytes
-    let framePeak = 1.0;
-    let wasmInput = adpcmBytes;
-    if (!isRaw && adpcmBytes.length > HEADER_SIZE + MAC_SIZE + 4) {
-        framePeak = new DataView(
-            adpcmBytes.buffer, adpcmBytes.byteOffset + adpcmBytes.length - 4, 4
-        ).getFloat32(0, true);
-        wasmInput = adpcmBytes.slice(0, adpcmBytes.length - 4);
-    }
-
-    const inBytes = wasmInput.length;
+    const inBytes = adpcmBytes.length;
     const outBytes = numSamples * 4;
     const totalNeeded = WASM_BUF + inBytes + outBytes;
 
@@ -844,23 +946,16 @@ export async function decodeAdpcm(
     const inPtr = WASM_BUF;
     const outPtr = WASM_BUF + inBytes;
 
-    new Uint8Array(mem.buffer).set(wasmInput, inPtr);
+    new Uint8Array(mem.buffer).set(adpcmBytes, inPtr);
 
     const samplesDecoded = isRaw
         ? wasm.decode_raw(inPtr, inBytes, outPtr)
         : wasm.decode_adpcm(inPtr, inBytes, outPtr, scalar);
 
     const tampered = samplesDecoded === 0;
-    let pcm: Float32Array;
-    if (tampered) {
-        pcm = new Float32Array(numSamples);
-    } else {
-        pcm = new Float32Array(mem.buffer, outPtr, samplesDecoded).slice();
-        // Denormalize: scale back by frame peak amplitude
-        if (!isRaw && framePeak !== 1.0) {
-            for (let k = 0; k < pcm.length; k++) pcm[k] *= framePeak;
-        }
-    }
+    const pcm = tampered
+        ? new Float32Array(numSamples)
+        : new Float32Array(mem.buffer, outPtr, samplesDecoded).slice();
 
     return { pcm, sampleRate, tampered };
 }
