@@ -372,6 +372,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   const clearVote = new VoteTopic({
+    timeoutMs: 60_000,
     onExecute: executeClearHistory,
     onState: (state) => { opts.chatClearBtn.dataset.clearState = state; updateControls(); },
   });
@@ -1366,11 +1367,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatInput.focus();
         opts.fpChip.classList.remove("wl-fp-chip--recovering");
         opts.fpChip.classList.add("wl-fp-chip--verified");
-        addChatMessage({
-          type: "system", direction: "system",
-          text: wasRecovering ? "reconnected" : "connected. messages are end-to-end encrypted",
-          timestamp: Date.now(),
-        });
         break;
 
       case "silent": {
