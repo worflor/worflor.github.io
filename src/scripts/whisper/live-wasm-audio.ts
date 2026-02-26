@@ -191,24 +191,27 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
 
 function buildEncodeBody(): number[] {
     const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar = 3; // args (scalar is f32)
-    // locals — ALL i32 grouped first, then f32, then i64
+    // All i32 locals grouped first, then f32, then i64
     const i = 4, packedLen = 5, prev1 = 6, w = 7, i32_val = 8, delta = 9, z = 10;
-    const bit_cnt = 11; // i32
+    const bit_cnt = 11;
     const crypto_i = 12, crypto_words = 13, cipher = 14, idx = 15, sample_count = 16, mac0 = 17, mac1 = 18, temp = 19;
     const v = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35];
-    const prev2 = 36, prev3 = 37; // i32
-    const block_start = 38; // i32
-    const block_end = 39; // i32
-    const cost0 = 40; const cost1 = 41; const cost2 = 42; const cost3 = 43; // i32
-    const best_mode = 44; // i32
-    const p1_sim = 45; const p2_sim = 46; const p3_sim = 47; // i32
+    const prev2 = 36, prev3 = 37;
+    const block_start = 38, block_end = 39;
+    const cost0 = 40, cost1 = 41, cost2 = 42, cost3 = 43;
+    const best_mode = 44;
+    const p1_sim = 45, p2_sim = 46, p3_sim = 47;
+    // max_z per predictor: tracks whether a block qualifies for compact encoding
+    const mz0 = 48, mz1 = 49, mz2 = 50, mz3 = 51;
+    // compact flag: 1 if winning predictor had max_z <= 3 (all deltas fit in 2 bits)
+    const compact = 52;
 
-    const framePeak = 48; // f32
-    const f32_sample = 49; // f32
+    const framePeak = 53; // f32
+    const f32_sample = 54; // f32 (unused but reserved for future)
 
-    const bit_buf = 50; // i64
+    const bit_buf = 55; // i64
 
-    // Helper macro to fuse w-bit payload
+    // Helper: shift value into bit buffer, drain full bytes
     function emitBits(valueInstr: number[], nbitsInstr: number[]): number[] {
         return [
             ...GET(bit_buf),
@@ -226,18 +229,32 @@ function buildEncodeBody(): number[] {
         ];
     }
 
+    // Helper: zigzag encode delta → z = (delta << 1) ^ (delta >> 31)
+    function zigzag(deltaReg: number, zReg: number): number[] {
+        return [
+            ...GET(deltaReg), ...CI32(1), ...SHL,
+            ...GET(deltaReg), ...CI32(31), ...SHR_s,
+            ...XOR, ...SET(zReg),
+        ];
+    }
+
+    // Helper: track max z for a predictor's mz register
+    function updateMaxZ(zReg: number, mzReg: number): number[] {
+        return [...GET(zReg), ...GET(mzReg), ...GT_u, ...IF, ...GET(zReg), ...SET(mzReg), ...END];
+    }
+
     const body = [
         // 1. Write Header
         ...GET(outPtr), ...GET(numSamples), ...STORE32(2, 0),
         ...GET(outPtr), ...CI32(0), ...STORE16(1, 4),
         ...GET(outPtr), ...CI32(0), ...STORE16(0, 6),
 
-        // 2. Load ADPCM state
+        // 2. Load ADPCM predictor state
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 144), ...SET(prev1),
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 148), ...SET(prev2),
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 152), ...SET(prev3),
 
-        // 3. Peak Normalization (find framePeak)
+        // 3. Peak Normalization — find max |amplitude| across frame, floor at -60dB
         ...F32_CONST(0.001), ...SET(framePeak),
         ...CI32(0), ...SET(i),
         ...BLOCK, ...LOOP,
@@ -247,90 +264,127 @@ function buildEncodeBody(): number[] {
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END,
 
-        // 4. ADPCM Compression Pass (Microblock loop, 64 samples per block)
+        // 4. ADPCM Compression — microblock loop (64 samples per block)
         ...CI32(0), ...SET(block_start), ...CI32(0), ...SET(packedLen),
         ...CI64(0), ...SET(bit_buf), ...CI32(0), ...SET(bit_cnt),
 
-        ...BLOCK, ...LOOP, // block loop
+        ...BLOCK, ...LOOP, // outer: block loop
         ...GET(block_start), ...GET(numSamples), ...GE_s, ...BRIF(1),
 
+        // Clamp block to frame boundary
         ...GET(block_start), ...CI32(64), ...ADD, ...SET(block_end),
         ...GET(block_end), ...GET(numSamples), ...GT_u, ...IF, ...GET(numSamples), ...SET(block_end), ...END,
 
-        // Step 4a: Determine Best Predictor for Block
+        // ── Simulation pass: evaluate all 4 predictors simultaneously ──────────
+        // Reset costs and max-z per predictor, reset sim state from current prev history
         ...CI32(0), ...SET(cost0), ...CI32(0), ...SET(cost1), ...CI32(0), ...SET(cost2), ...CI32(0), ...SET(cost3),
+        ...CI32(0), ...SET(mz0), ...CI32(0), ...SET(mz1), ...CI32(0), ...SET(mz2), ...CI32(0), ...SET(mz3),
         ...GET(prev1), ...SET(p1_sim), ...GET(prev2), ...SET(p2_sim), ...GET(prev3), ...SET(p3_sim),
         ...GET(block_start), ...SET(i),
 
-        ...BLOCK, ...LOOP, // sim loop
+        ...BLOCK, ...LOOP, // inner: sim loop
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
-        // qval
+
+        // Quantize sample to integer domain (normalized + nearest-rounding for centred quant error)
         ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
         ...GET(framePeak), ...DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        // sim 0 (cost0): delta = val
-        ...GET(i32_val), ...CI32(1), ...SHL, ...GET(i32_val), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        // Predictor 0 — identity: cost = bit_width(val)
+        ...zigzag(i32_val, z),
         ...GET(cost0), ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...CI32(5), ...ADD, ...ADD, ...SET(cost0),
+        ...updateMaxZ(z, mz0),
 
-        // sim 1 (cost1): delta = val - p1_sim
-        ...GET(i32_val), ...GET(p1_sim), ...SUB, ...SET(delta),
-        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        // Predictor 1 — 1st-order: cost = bit_width(val - prev)
+        ...GET(i32_val), ...GET(p1_sim), ...SUB, ...SET(delta), ...zigzag(delta, z),
         ...GET(cost1), ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...CI32(5), ...ADD, ...ADD, ...SET(cost1),
+        ...updateMaxZ(z, mz1),
 
-        // sim 2 (cost2): delta = val - (2*p1_sim - p2_sim)
-        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHL, ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta),
-        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        // Predictor 2 — 2nd-order: cost = bit_width(val - (2p1 - p2))
+        ...GET(i32_val), ...GET(p1_sim), ...CI32(1), ...SHL, ...GET(p2_sim), ...SUB, ...SUB, ...SET(delta), ...zigzag(delta, z),
         ...GET(cost2), ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...CI32(5), ...ADD, ...ADD, ...SET(cost2),
+        ...updateMaxZ(z, mz2),
 
-        // sim 3 (cost3): delta = val - (3*p1_sim - 3*p2_sim + p3_sim)  [Pascal row 3]
-        ...GET(i32_val), ...GET(p1_sim), ...CI32(3), ...MUL, ...GET(p2_sim), ...CI32(3), ...MUL, ...SUB, ...GET(p3_sim), ...ADD, ...SUB, ...SET(delta),
-        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        // Predictor 3 — 3rd-order (Pascal row 3): cost = bit_width(val - (3p1 - 3p2 + p3))
+        ...GET(i32_val), ...GET(p1_sim), ...CI32(3), ...MUL, ...GET(p2_sim), ...CI32(3), ...MUL, ...SUB, ...GET(p3_sim), ...ADD, ...SUB, ...SET(delta), ...zigzag(delta, z),
         ...GET(cost3), ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...CI32(5), ...ADD, ...ADD, ...SET(cost3),
+        ...updateMaxZ(z, mz3),
 
+        // Advance sim state (same arithmetic as real encode state update)
         ...GET(p2_sim), ...SET(p3_sim), ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END,
+        ...END, ...END, // end sim loop
 
-        // Select best mode (cascaded min)
+        // ── Select winner: cascaded minimum ──────────────────────────────────────
         ...CI32(0), ...SET(best_mode),
         ...GET(cost1), ...GET(cost0), ...LT_u, ...IF, ...CI32(1), ...SET(best_mode), ...GET(cost1), ...SET(cost0), ...END,
         ...GET(cost2), ...GET(cost0), ...LT_u, ...IF, ...CI32(2), ...SET(best_mode), ...GET(cost2), ...SET(cost0), ...END,
         ...GET(cost3), ...GET(cost0), ...LT_u, ...IF, ...CI32(3), ...SET(best_mode), ...END,
 
-        // Step 4b: Emit Block Header (2 bits for predictor choice)
-        ...emitBits([...GET(best_mode)], [...CI32(2)]),
+        // ── Compact detection: does winning predictor's max_z fit in 2 bits? ─────
+        // compact = 1 if max_z_best ≤ 3 (delta ∈ {-2,-1,0,1}, 4 values fit in 2 bits exactly)
+        // Reuse cost0 as a temp to hold max_z of winner before finalising compact flag
+        ...GET(mz3), ...SET(cost0), // default to mz3 (mode 3)
+        ...GET(best_mode), ...CI32(2), ...EQ, ...IF, ...GET(mz2), ...SET(cost0), ...END,
+        ...GET(best_mode), ...CI32(1), ...EQ, ...IF, ...GET(mz1), ...SET(cost0), ...END,
+        ...GET(best_mode), ...CI32(0), ...EQ, ...IF, ...GET(mz0), ...SET(cost0), ...END,
+        // compact = (max_z_best < 4) i.e. fits in 2 bits
+        ...GET(cost0), ...CI32(4), ...LT_u, ...SET(compact),
 
-        // Step 4c: Real Encode Pass
+        // ── Emit 3-bit block header: [compact | mode_hi | mode_lo] ──────────────
+        // compact occupies the top bit; mode occupies bits [1:0]
+        ...emitBits([...GET(compact), ...CI32(2), ...SHL, ...GET(best_mode), ...OR], [...CI32(3)]),
+
+        // ── Real encode pass — two specialised inner loops ───────────────────────
         ...GET(block_start), ...SET(i),
-        ...BLOCK, ...LOOP, // encode loop
+
+        ...GET(compact), ...IF,
+        // ── COMPACT PATH: 2 bits per sample (no prefix overhead) ────────────────
+        ...BLOCK, ...LOOP,
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
-        // qval
+        // Quantize
         ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
         ...GET(framePeak), ...DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
-
-        // predict based on best_mode
+        // Predict (same branching as normal path)
         ...GET(best_mode), ...CI32(0), ...EQ, ...IF, ...GET(i32_val), ...SET(delta), ...ELSE,
         ...GET(best_mode), ...CI32(1), ...EQ, ...IF, ...GET(i32_val), ...GET(prev1), ...SUB, ...SET(delta), ...ELSE,
         ...GET(best_mode), ...CI32(2), ...EQ, ...IF, ...GET(i32_val), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...SUB, ...SET(delta), ...ELSE,
-        // order 3: delta = val - (3*p1 - 3*p2 + p3)
         ...GET(i32_val), ...GET(prev1), ...CI32(3), ...MUL, ...GET(prev2), ...CI32(3), ...MUL, ...SUB, ...GET(prev3), ...ADD, ...SUB, ...SET(delta),
         ...END, ...END, ...END,
-
-        // update state
+        // ZigZag → emit exactly 2 bits (z guaranteed ≤ 3 by compact detection)
+        ...zigzag(delta, z),
+        ...emitBits([...GET(z)], [...CI32(2)]),
+        // Advance state
         ...GET(prev2), ...SET(prev3), ...GET(prev1), ...SET(prev2), ...GET(i32_val), ...SET(prev1),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
+        ...END, ...END, // end compact loop
 
-        // convert to z and pack
-        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        ...ELSE,
+        // ── NORMAL PATH: variable-width (5-bit prefix + w payload bits) ──────────
+        ...BLOCK, ...LOOP,
+        ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
+        // Quantize
+        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
+        ...GET(framePeak), ...DIV, ...GET(scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
+        // Predict
+        ...GET(best_mode), ...CI32(0), ...EQ, ...IF, ...GET(i32_val), ...SET(delta), ...ELSE,
+        ...GET(best_mode), ...CI32(1), ...EQ, ...IF, ...GET(i32_val), ...GET(prev1), ...SUB, ...SET(delta), ...ELSE,
+        ...GET(best_mode), ...CI32(2), ...EQ, ...IF, ...GET(i32_val), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...SUB, ...SET(delta), ...ELSE,
+        ...GET(i32_val), ...GET(prev1), ...CI32(3), ...MUL, ...GET(prev2), ...CI32(3), ...MUL, ...SUB, ...GET(prev3), ...ADD, ...SUB, ...SET(delta),
+        ...END, ...END, ...END,
+        // ZigZag → 5-bit CLZ prefix + w payload bits
+        ...zigzag(delta, z),
         ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...SET(w),
-
         ...emitBits([...GET(w), ...CI32(1), ...SUB], [...CI32(5)]),
         ...emitBits([...GET(z)], [...GET(w)]),
-
+        // Advance state
+        ...GET(prev2), ...SET(prev3), ...GET(prev1), ...SET(prev2), ...GET(i32_val), ...SET(prev1),
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END,
+        ...END, ...END, // end normal loop
+
+        ...END, // end compact/normal branch
 
         ...GET(block_end), ...SET(block_start), ...BR(0),
-        ...END, ...END,
+        ...END, ...END, // end block loop
 
         // Flush remaining bits
         ...GET(bit_cnt), ...CI32(0), ...GT_u, ...IF,
@@ -417,9 +471,9 @@ function buildEncodeBody(): number[] {
         ...END,
     ];
     return funcBody([
-        { count: 44, type: I32 }, // locals 4..47 (i32s)
-        { count: 2, type: F32 },  // locals 48..49
-        { count: 1, type: I64 }   // local 50
+        { count: 49, type: I32 }, // locals 4..52 (i32: prev, block, cost, sim, mz, compact)
+        { count: 2, type: F32 },  // locals 53..54 (framePeak, f32_sample)
+        { count: 1, type: I64 }   // local 55 (bit_buf)
     ], body);
 }
 
@@ -433,16 +487,15 @@ function buildDecodeBody(): number[] {
     const expMac0 = 19, expMac1 = 20, i = 21;
     const bit_cnt = 22; // i32
     const v = [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38];
-    const prev2 = 39, prev3 = 40; // i32
-    const block_start = 41; // i32
-    const block_end = 42; // i32
-    const best_mode = 43; // i32
+    const prev2 = 39, prev3 = 40;
+    const block_start = 41, block_end = 42;
+    const best_mode = 43, compact = 44; // compact: 1 if block uses 2-bit/sample encoding
 
-    // local 44 is F32
-    const framePeak = 44; // f32
+    // local 45 is F32
+    const framePeak = 45; // f32
 
-    // local 45 is I64
-    const bit_buf = 45; // i64
+    // local 46 is I64
+    const bit_buf = 46; // i64
 
     // Helper: refill i64 bit_buf from payload bytes until bit_cnt >= needed
     function refillBits(neededInstr: number[]): number[] {
@@ -559,45 +612,66 @@ function buildDecodeBody(): number[] {
         ...GET(block_start), ...CI32(64), ...ADD, ...SET(block_end),
         ...GET(block_end), ...GET(numSamples), ...GT_u, ...IF, ...GET(numSamples), ...SET(block_end), ...END,
 
-        // Read 2-bit block header
-        ...refillBits([...CI32(2)]),
-        ...extractBits([...CI32(2)]), ...SET(best_mode),
+        // Read 3-bit block header: bits[1:0] = mode, bit[2] = compact flag
+        ...refillBits([...CI32(3)]),
+        ...extractBits([...CI32(3)]), ...SET(best_mode), // header in best_mode temporarily
+        ...GET(best_mode), ...CI32(2), ...SHR_u, ...SET(compact),       // compact = header >> 2
+        ...GET(best_mode), ...CI32(3), ...AND, ...SET(best_mode),        // mode   = header & 3
 
-        // Decode block
+        // Decode block — choose compact (2 bits/sample) or normal (5+w bits/sample) path
         ...GET(block_start), ...SET(i),
-        ...BLOCK, ...LOOP, // decode loop
+
+        ...GET(compact), ...IF,
+        // ── COMPACT DECODE: 2 bits per sample ───────────────────────────────────
+        ...BLOCK, ...LOOP,
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
-
-        // Refill until bit_cnt >= 5 (for prefix), extract 5-bit prefix → w = prefix + 1
-        ...refillBits([...CI32(5)]),
-        ...extractBits([...CI32(5)]),
-        ...CI32(1), ...ADD, ...SET(w), // w = prefix + 1
-
-        // Refill until bit_cnt >= w, extract w bits → z
-        ...refillBits([...GET(w)]),
-        ...extractBits([...GET(w)]),
+        // Read 2 bits as ZigZag value
+        ...refillBits([...CI32(2)]),
+        ...extractBits([...CI32(2)]),
         ...SET(z),
-
-        // delta = (z >>> 1) ^ (0 - (z & 1))
+        // Inverse ZigZag: delta = (z >>> 1) ^ (0 - (z & 1))
         ...GET(z), ...CI32(1), ...SHR_u, ...CI32(0), ...GET(z), ...CI32(1), ...AND, ...SUB, ...XOR, ...SET(delta),
-
-        // Inverse prediction based on best_mode
+        // Inverse prediction
         ...GET(best_mode), ...CI32(0), ...EQ, ...IF, ...GET(delta), ...SET(i32_val), ...ELSE,
         ...GET(best_mode), ...CI32(1), ...EQ, ...IF, ...GET(delta), ...GET(prev1), ...ADD, ...SET(i32_val), ...ELSE,
         ...GET(best_mode), ...CI32(2), ...EQ, ...IF, ...GET(delta), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...ADD, ...SET(i32_val), ...ELSE,
-        // order 3: val = delta + 3*p1 - 3*p2 + p3
         ...GET(delta), ...GET(prev1), ...CI32(3), ...MUL, ...ADD, ...GET(prev2), ...CI32(3), ...MUL, ...SUB, ...GET(prev3), ...ADD, ...SET(i32_val),
         ...END, ...END, ...END,
-
-        // Update state
         ...GET(prev2), ...SET(prev3), ...GET(prev1), ...SET(prev2), ...GET(i32_val), ...SET(prev1),
-
-        // f32 output: (val / scalar) * framePeak
+        // Write f32 output
         ...GET(outPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD,
         ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...DIV, ...GET(framePeak), ...F32_MUL, ...STOREF32(2, 0),
-
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END,
+        ...END, ...END, // end compact decode loop
+
+        ...ELSE,
+        // ── NORMAL DECODE: 5-bit prefix + w payload bits per sample ─────────────
+        ...BLOCK, ...LOOP,
+        ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
+        // Read 5-bit prefix → w = prefix + 1
+        ...refillBits([...CI32(5)]),
+        ...extractBits([...CI32(5)]),
+        ...CI32(1), ...ADD, ...SET(w),
+        // Read w-bit payload → z
+        ...refillBits([...GET(w)]),
+        ...extractBits([...GET(w)]),
+        ...SET(z),
+        // Inverse ZigZag
+        ...GET(z), ...CI32(1), ...SHR_u, ...CI32(0), ...GET(z), ...CI32(1), ...AND, ...SUB, ...XOR, ...SET(delta),
+        // Inverse prediction
+        ...GET(best_mode), ...CI32(0), ...EQ, ...IF, ...GET(delta), ...SET(i32_val), ...ELSE,
+        ...GET(best_mode), ...CI32(1), ...EQ, ...IF, ...GET(delta), ...GET(prev1), ...ADD, ...SET(i32_val), ...ELSE,
+        ...GET(best_mode), ...CI32(2), ...EQ, ...IF, ...GET(delta), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...ADD, ...SET(i32_val), ...ELSE,
+        ...GET(delta), ...GET(prev1), ...CI32(3), ...MUL, ...ADD, ...GET(prev2), ...CI32(3), ...MUL, ...SUB, ...GET(prev3), ...ADD, ...SET(i32_val),
+        ...END, ...END, ...END,
+        ...GET(prev2), ...SET(prev3), ...GET(prev1), ...SET(prev2), ...GET(i32_val), ...SET(prev1),
+        // Write f32 output
+        ...GET(outPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD,
+        ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...DIV, ...GET(framePeak), ...F32_MUL, ...STOREF32(2, 0),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
+        ...END, ...END, // end normal decode loop
+
+        ...END, // end compact/normal branch
 
         ...GET(block_end), ...SET(block_start), ...BR(0),
         ...END, ...END,
@@ -610,9 +684,9 @@ function buildDecodeBody(): number[] {
         ...END,
     ];
     return funcBody([
-        { count: 40, type: I32 }, // locals 4..43
-        { count: 1, type: F32 },  // local 44
-        { count: 1, type: I64 },  // local 45
+        { count: 41, type: I32 }, // locals 4..44 (best_mode, compact at end)
+        { count: 1, type: F32 },  // local 45 (framePeak)
+        { count: 1, type: I64 },  // local 46 (bit_buf)
     ], body);
 }
 
