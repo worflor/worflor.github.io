@@ -20,6 +20,7 @@ import {
   flashText,
   appendToLog,
   setLogDotActive,
+  haptic,
 } from "../ui-helpers";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -523,27 +524,37 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   /* ── Reaction helpers ─────────────────────────────────── */
 
+  /** Max distinct emoji reactions tracked per message. */
+  const MAX_CF_REACTIONS = 5;
+
   function applyCfReaction(displayId: number, emoji: string, who: "self" | "peer"): void {
     const el = msgById.get(displayId);
     if (!el || !emoji) return;
+    // Clip to first grapheme cluster
+    const seg = new Intl.Segmenter();
+    const firstCluster = seg.segment(emoji)[Symbol.iterator]().next().value?.segment;
+    if (!firstCluster) return;
+    const normEmoji = firstCluster;
     let bar = el.querySelector<HTMLElement>(".wl-msg-reactions");
     if (!bar) {
       bar = document.createElement("div");
       bar.className = "wl-msg-reactions";
       el.appendChild(bar);
     }
-    let pill = bar.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    let pill = bar.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(normEmoji)}"]`);
     if (!pill) {
+      if (bar.children.length >= MAX_CF_REACTIONS) return;
       const btn = document.createElement("button");
       btn.type = "button";
       pill = btn;
-      pill.className = "wl-reaction";
-      pill.dataset.emoji = emoji;
+      pill.className = "wl-reaction wl-reaction--entering";
+      pill.dataset.emoji = normEmoji;
       pill.dataset.self = "0";
       pill.dataset.peer = "0";
-      pill.textContent = emoji;
-      pill.addEventListener("click", () => toggleCfReaction(displayId, emoji));
+      pill.textContent = normEmoji;
+      pill.addEventListener("click", () => toggleCfReaction(displayId, normEmoji));
       bar.appendChild(pill);
+      pill.addEventListener("animationend", () => pill!.classList.remove("wl-reaction--entering"), { once: true });
     }
     pill.dataset[who] = "1";
     pill.classList.toggle("wl-reaction--self", pill.dataset.self === "1");
@@ -564,6 +575,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   }
 
   function toggleCfReaction(displayId: number, emoji: string): void {
+    haptic("reaction");
     if (!node) return;
     const msgIdFull = msgIdFullById.get(displayId);
     if (!msgIdFull) return;
@@ -713,6 +725,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     const direction = isSelf ? "self" : "peer";
 
     if (msg.contentType === ContentType.Text) {
+      if (!isSelf) haptic("msg-received");
       const text = TD.decode(msg.plaintext);
       const display = isSelf
         ? (node?.getDisplayName() ?? "you")
@@ -972,6 +985,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       await node.broadcastText(text);
       // Message display is handled by cb.onMessage → handleMessage
     } catch (err) {
+      haptic("send-failed");
       appendLog(`send failed: ${err instanceof Error ? err.message : "unknown"}`);
     }
   };

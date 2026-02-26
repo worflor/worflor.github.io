@@ -24,13 +24,13 @@
  */
 
 export const CTRL_OP = {
-  CLEAR_VOTE:      0x01,
-  CLEAR_CANCEL:    0x02,
-  CAMPFIRE_VOTE:   0x03,
+  CLEAR_VOTE: 0x01,
+  CLEAR_CANCEL: 0x02,
+  CAMPFIRE_VOTE: 0x03,
   CAMPFIRE_CANCEL: 0x04,
-  SEEN:            0x81,  // payload: [msgId:4B LE]
-  REACT:           0x82,  // payload: [msgId:4B LE][emoji:utf8]
-  UNREACT:         0x83,  // payload: [msgId:4B LE][emoji:utf8]
+  SEEN: 0x81,  // payload: [msgId:4B LE]
+  REACT: 0x82,  // payload: [msgId:4B LE][emoji:utf8]
+  UNREACT: 0x83,  // payload: [msgId:4B LE][emoji:utf8]
 } as const;
 
 /* ── Wire format ─────────────────────────────────────────── */
@@ -242,8 +242,16 @@ export function encodeReactPayload(msgId: number, emoji: string): Uint8Array {
 
 export function decodeReactPayload(payload: Uint8Array): { msgId: number; emoji: string } | null {
   if (payload.length < 5) return null;
+  // Guard: emoji field must not exceed 32 bytes (largest real emoji sequence is ~28 bytes)
+  const emojiByteLen = payload.length - 4;
+  if (emojiByteLen > 32) return null;
+  const raw = new TextDecoder().decode(payload.subarray(4));
+  // Normalise to exactly one grapheme cluster — protects against multi-emoji attacks
+  const seg = new Intl.Segmenter();
+  const first = seg.segment(raw)[Symbol.iterator]().next().value;
+  if (!first?.segment) return null;
   return {
     msgId: new DataView(payload.buffer, payload.byteOffset).getUint32(0, true),
-    emoji: new TextDecoder().decode(payload.subarray(4)),
+    emoji: first.segment,
   };
 }

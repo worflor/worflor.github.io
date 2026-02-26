@@ -634,7 +634,8 @@ const seo = {
               Whisper Live <span
                 class="wl-e2e-badge"
                 aria-label="end-to-end encrypted, peer-to-peer"
-                ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e</span>
+                ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e</span
+              >
             </h2>
             <div class="wl-fp-wrap">
               <button
@@ -4691,6 +4692,28 @@ const seo = {
       rgb(var(--chromatic-cyan) / 0.1),
       rgb(var(--pride-purple) / 0.08)
     );
+  }
+
+  @keyframes reaction-pop {
+    0% {
+      transform: scale(0.4);
+      opacity: 0;
+    }
+    60% {
+      transform: scale(1.22);
+      opacity: 1;
+    }
+    80% {
+      transform: scale(0.9);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+
+  /* Applied to a pill the moment it's added to the DOM */
+  .wl-chat-messages :global(.wl-reaction--entering) {
+    animation: reaction-pop 280ms cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
   }
 
   .wl-chat-messages :global(.wl-msg-file) {

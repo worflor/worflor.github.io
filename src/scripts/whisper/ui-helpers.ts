@@ -1,5 +1,50 @@
 // Shared UI helpers for Whisper + Whisper Live.
 
+/* ── Haptic vocabulary ───────────────────────────────────────
+ *
+ * Uses the full Vibration API pattern syntax: [on, off, on, …]
+ * Each event has a distinct "feel" so users subconsciously learn
+ * them over time. All calls are no-ops on unsupported platforms.
+ *
+ * Patterns are conservatively short — no pattern exceeds ~200ms
+ * total duration. Never annoying, always intentional.
+ */
+export type HapticEvent =
+  | "msg-received"      // peer sent a text message: soft double-tap
+  | "msg-sent"          // our message delivered: micro-tick
+  | "file-received"     // peer sent file/audio: heavier double-tap
+  | "connected"         // session went live: ascending two-tap
+  | "disconnected"      // session ended/lost: single firm thud
+  | "recording-start"   // mic capture begins: soft click
+  | "recording-stop"    // voice note sent: two-part end+dispatch
+  | "recording-cancel"  // voice note discarded: triple skip
+  | "reaction"          // emoji toggled (self): crisp tap
+  | "send-failed"       // message or file failed to send: error double-pulse
+  | "clear-history";    // history wiped: heavy two-step
+
+const HAPTIC_PATTERNS: Record<HapticEvent, VibratePattern> = {
+  "msg-received": [6, 50, 4],
+  "msg-sent": 4,
+  "file-received": [8, 40, 8],
+  "connected": [12, 60, 20],
+  "disconnected": 30,
+  "recording-start": 8,
+  "recording-stop": [6, 40, 10],
+  "recording-cancel": [4, 30, 4, 30, 4],
+  "reaction": 10,
+  "send-failed": [20, 60, 20],
+  "clear-history": [15, 80, 25],
+};
+
+/**
+ * Fire a named haptic pattern. Safe to call unconditionally —
+ * the Vibration API check is inside so callers need zero guards.
+ */
+export function haptic(event: HapticEvent): void {
+  if (!navigator.vibrate) return;
+  navigator.vibrate(HAPTIC_PATTERNS[event]);
+}
+
 export function q(root: ParentNode, id: string): HTMLElement | null {
   return root.querySelector<HTMLElement>(`#${id}`);
 }

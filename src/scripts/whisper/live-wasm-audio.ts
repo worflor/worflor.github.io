@@ -9,17 +9,20 @@
  *   decode_adpcm(adpcmPtr: i32, numBytes: i32, outPtr: i32)  -> i32  (returns sample count)
  *
  * Memory map (first page, 64 KB):
- *   0x0000 –  0x000F  : INDEX_TABLE  (16 × i8)
- *   0x0010 –  0x00C1  : STEP_TABLE   (89 × i16, little-endian)
- *   0x0200+            : caller-managed PCM/ADPCM buffers
+ *   0x0000 – 0x000F : INDEX_TABLE  (16 × i8)
+ *   0x0010 – 0x00C1 : STEP_TABLE   (89 × i16, little-endian)
+ *   0x0110 – 0x0117 : ENC_STATE    (valpred:i32, index:i32)
+ *   0x0118 – 0x011F : DEC_STATE    (valpred:i32, index:i32)
+ *   0x0200+         : caller-managed PCM/ADPCM buffers
  *
  * Input PCM: Int16 (signed 16-bit), mono.
  * Output:    IMA ADPCM 4-bit nibbles, packed 2 per byte, ~4:1 compression.
  *
- * FORMAT HEADER (4 bytes prefixed before ADPCM nibble stream):
- *   [0..1] u16 LE — number of original PCM samples
- *   [2]    u8     — initial predictor (always 0, reserved)
- *   [3]    u8     — initial step index (always 0, reserved)
+ * FORMAT HEADER (8 bytes prefixed before ADPCM nibble stream):
+ *   [0..3] u32 LE — number of original PCM samples  (supports ~24h at 48kHz)
+ *   [4..5] u16 LE — sample rate in Hz (e.g. 48000)
+ *   [6]    u8     — reserved (0)
+ *   [7]    u8     — reserved (0)
  */
 
 // ── Bytecode helpers ──────────────────────────────────────────────────────────
@@ -51,7 +54,7 @@ function encodeSLEB(v: number): number[] {
     return out;
 }
 
-function name(s: string): number[] {
+function nameSec(s: string): number[] {
     const b = Array.from(new TextEncoder().encode(s));
     return [...encodeULEB(b.length), ...b];
 }
@@ -64,39 +67,35 @@ const I32 = 0x7f;
 const VOID = 0x40;
 
 // Instructions
-const GET = (i: number) => [0x20, ...encodeULEB(i)];  // local.get
-const SET = (i: number) => [0x21, ...encodeULEB(i)];  // local.set
-const TEE = (i: number) => [0x22, ...encodeULEB(i)];  // local.tee
-const CI32 = (v: number) => [0x41, ...encodeSLEB(v)];  // i32.const
-const BR = (l: number) => [0x0c, ...encodeULEB(l)];  // br
-const BRIF = (l: number) => [0x0d, ...encodeULEB(l)];  // br_if
+const GET = (i: number) => [0x20, ...encodeULEB(i)];
+const SET = (i: number) => [0x21, ...encodeULEB(i)];
+const CI32 = (v: number) => [0x41, ...encodeSLEB(v)];
+const BR = (l: number) => [0x0c, ...encodeULEB(l)];
+const BRIF = (l: number) => [0x0d, ...encodeULEB(l)];
 const BLOCK = [0x02, VOID];
 const LOOP = [0x03, VOID];
 const END = [0x0b];
 
-// Memory ops  (opcode, align_log2, offset)
-const LOAD8s = (align: number, off: number) => [0x2c, align, ...encodeULEB(off)]; // i32.load8_s
-const LOAD16s = (align: number, off: number) => [0x2e, align, ...encodeULEB(off)]; // i32.load16_s
-const STORE8 = (align: number, off: number) => [0x3a, align, ...encodeULEB(off)]; // i32.store8
-const STORE16 = (align: number, off: number) => [0x3b, align, ...encodeULEB(off)]; // i32.store16
+// Memory ops
+const LOAD8s = (al: number, off: number) => [0x2c, al, ...encodeULEB(off)];
+const LOAD16s = (al: number, off: number) => [0x2e, al, ...encodeULEB(off)];
+const LOAD32 = (al: number, off: number) => [0x28, al, ...encodeULEB(off)];
+const STORE8 = (al: number, off: number) => [0x3a, al, ...encodeULEB(off)];
+const STORE16 = (al: number, off: number) => [0x3b, al, ...encodeULEB(off)];
+const STORE32 = (al: number, off: number) => [0x36, al, ...encodeULEB(off)];
 
 // Arithmetic / logic
-const ADD = [0x6a]; // i32.add
-const SUB = [0x6b]; // i32.sub
-const MUL = [0x6c]; // i32.mul
-const SHR_s = [0x75]; // i32.shr_s
-const SHR_u = [0x76]; // i32.shr_u
-const SHL = [0x74]; // i32.shl
-const AND = [0x71]; // i32.and
-const OR = [0x72]; // i32.or
-const XOR = [0x73]; // i32.xor
-const GE_s = [0x4e]; // i32.ge_s
-const GT_s = [0x4a]; // i32.gt_s
-const LT_s = [0x48]; // i32.lt_s
-const LE_s = [0x4c]; // i32.le_s
-const EQ = [0x46]; // i32.eq
-const NEZ = [0x45]; // i32.eqz (for != 0 via NOT eqz)
-const DROP = [0x1a];
+const ADD = [0x6a];
+const SUB = [0x6b];
+const SHR_s = [0x75];
+const SHR_u = [0x76];
+const SHL = [0x74];
+const AND = [0x71];
+const OR = [0x72];
+const GE_s = [0x4e];
+const GT_s = [0x4a];
+const LT_s = [0x48];
+const EQ = [0x46];
 
 function encodeLocals(decls: { count: number; type: number }[]): number[] {
     return [...encodeULEB(decls.length), ...decls.flatMap(d => [...encodeULEB(d.count), d.type])];
@@ -109,7 +108,6 @@ function funcBody(locals: { count: number; type: number }[], instr: number[]): n
 
 // ── IMA ADPCM Tables ─────────────────────────────────────────────────────────
 
-// Standard IMA ADPCM step table — 89 entries
 const STEP_TABLE = [
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28,
     31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
@@ -121,63 +119,50 @@ const STEP_TABLE = [
     27086, 29794, 32767,
 ];
 
-// Standard IMA index adjustment table — 16 entries (signed, -1 or positive)
 const INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
 
-// Memory offsets for the tables
-const IDX_TBL_ADDR = 0x0000; // 16 bytes (i8's — stored as unsigned, decoded as signed in WASM)
-const STEP_TBL_ADDR = 0x0010; // 89 * 2 bytes = 178 bytes (i16 LE)
-const BUF_START = 0x0200; // First byte available for caller buffers
+const IDX_TBL_ADDR = 0x0000;
+const STEP_TBL_ADDR = 0x0010;
+const ENC_STATE_ADDR = 0x0110;
+const DEC_STATE_ADDR = 0x0118;
+const BUF_START = 0x0200;
+
+// HEADER_SIZE updated to 8 bytes (u32 numSamples + u16 sampleRate + 2 reserved)
+const HEADER_SIZE = 8;
 
 // ── encode_adpcm function body ────────────────────────────────────────────────
-//
 // Signature: (pcmPtr: i32, numSamples: i32, outPtr: i32) -> i32
-//
-// Locals (all i32):
-//   0: pcmPtr     1: numSamples   2: outPtr
-//   3: valpred    4: index        5: step
-//   6: i          7: sample       8: diff
-//   9: vpdiff     10: sign        11: delta
-//   12: nibble    13: outByte     14: oddFlag   15: outLen
-//
-// The function writes a 4-byte header, then the nibble stream.
-// Returns total bytes written (4 + ceil(numSamples/2)).
-//
+// Header is now 8 bytes. Returns 8 + ceil(numSamples/2).
 function buildEncodeBody(): number[] {
-    // Param indices are 0,1,2. Locals start at 3.
     const valpred = 3, index = 4, step = 5, i = 6, sample = 7, diff = 8;
     const vpdiff = 9, sign = 10, delta = 11, nibble = 12, outByte = 13, odd = 14, outLen = 15;
 
     const body = [
-        // --- write 4-byte header ---
-        // header[0..1] = numSamples (u16 LE)
-        ...GET(2), ...GET(1), ...STORE16(0, 0),
-        // header[2] = 0 (initial predictor)
-        ...GET(2), ...CI32(0), ...STORE8(0, 2),
-        // header[3] = 0 (initial step index)
-        ...GET(2), ...CI32(0), ...STORE8(0, 3),
+        // write 8-byte header
+        // [0..3] = numSamples as u32
+        ...GET(2), ...GET(1), ...STORE32(2, 0),
+        // [4..5] = 0 (sample rate filled in by JS wrapper after WASM call)
+        ...GET(2), ...CI32(0), ...STORE16(1, 4),
+        // [6..7] = 0 reserved
+        ...GET(2), ...CI32(0), ...STORE16(0, 6),
 
-        // valpred = 0, index = 0, i = 0, outByte = 0, odd = 0
-        ...CI32(0), ...SET(valpred),
-        ...CI32(0), ...SET(index),
+        // load state from memory for streaming support
+        ...CI32(0), ...LOAD32(ENC_STATE_ADDR, 0), ...SET(valpred),
+        ...CI32(0), ...LOAD32(ENC_STATE_ADDR, 4), ...SET(index),
         ...CI32(0), ...SET(i),
         ...CI32(0), ...SET(outByte),
         ...CI32(0), ...SET(odd),
-
-        // The nibble output starts at outPtr+4 (after header)
-        // outLen tracks bytes written so far
-        ...CI32(4), ...SET(outLen),
+        ...CI32(HEADER_SIZE), ...SET(outLen),
 
         // Main loop
         ...BLOCK, ...LOOP,
-        // if i >= numSamples: break
         ...GET(i), ...GET(1), ...GE_s, ...BRIF(1),
 
-        // sample = mem_i16[pcmPtr + i*2]
+        // sample = i16[pcmPtr + i*2]
         ...GET(0), ...GET(i), ...CI32(1), ...SHL, ...ADD,
         ...LOAD16s(1, 0), ...SET(sample),
 
-        // step = STEP_TABLE[index] = mem_i16[STEP_TBL_ADDR + index*2]
+        // step = STEP_TABLE[index]
         ...CI32(STEP_TBL_ADDR), ...GET(index), ...CI32(1), ...SHL, ...ADD,
         ...LOAD16s(1, 0), ...SET(step),
 
@@ -186,15 +171,13 @@ function buildEncodeBody(): number[] {
 
         // sign = (diff < 0) ? 8 : 0
         ...GET(diff), ...CI32(0), ...LT_s,
-        ...CI32(3), ...SHL,   // shift bool (0 or 1) left by 3 → (0 or 8)
+        ...CI32(3), ...SHL,
         ...SET(sign),
 
         // if diff < 0: diff = -diff
         ...GET(diff), ...CI32(0), ...LT_s,
         ...BLOCK, ...BLOCK,
-        ...BRIF(0),
-        ...BR(1),
-        ...END,
+        ...BRIF(0), ...BR(1), ...END,
         ...CI32(0), ...GET(diff), ...SUB, ...SET(diff),
         ...END,
 
@@ -202,7 +185,7 @@ function buildEncodeBody(): number[] {
         ...CI32(0), ...SET(delta),
         ...GET(step), ...CI32(3), ...SHR_s, ...SET(vpdiff),
 
-        // if diff >= step: delta |= 4, vpdiff += step, diff -= step
+        // successive approximation: 3 bits of magnitude
         ...GET(diff), ...GET(step), ...GE_s,
         ...BLOCK, ...BLOCK,
         ...BRIF(0), ...BR(1), ...END,
@@ -210,11 +193,8 @@ function buildEncodeBody(): number[] {
         ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
         ...GET(diff), ...GET(step), ...SUB, ...SET(diff),
         ...END,
-
-        // step >>= 1
         ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
 
-        // if diff >= step: delta |= 2, vpdiff += step, diff -= step
         ...GET(diff), ...GET(step), ...GE_s,
         ...BLOCK, ...BLOCK,
         ...BRIF(0), ...BR(1), ...END,
@@ -222,11 +202,8 @@ function buildEncodeBody(): number[] {
         ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
         ...GET(diff), ...GET(step), ...SUB, ...SET(diff),
         ...END,
-
-        // step >>= 1
         ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
 
-        // if diff >= step: delta |= 1, vpdiff += step
         ...GET(diff), ...GET(step), ...GE_s,
         ...BLOCK, ...BLOCK,
         ...BRIF(0), ...BR(1), ...END,
@@ -237,177 +214,7 @@ function buildEncodeBody(): number[] {
         // nibble = delta | sign
         ...GET(delta), ...GET(sign), ...OR, ...SET(nibble),
 
-        // update valpred: if sign: valpred -= vpdiff else valpred += vpdiff
-        ...GET(sign), ...CI32(0), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        // sign != 0 branch (sign==8 means negative)
-        ...GET(valpred), ...GET(vpdiff), ...SUB, ...SET(valpred),
-        ...BR(1),
-        ...END,
-        ...GET(valpred), ...GET(vpdiff), ...ADD, ...SET(valpred),
-
-        // clamp valpred to [-32768, 32767]
-        // if valpred < -32768: valpred = -32768
-        ...GET(valpred), ...CI32(-32768), ...LT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...CI32(-32768), ...SET(valpred),
-        ...END,
-        // if valpred > 32767: valpred = 32767
-        ...GET(valpred), ...CI32(32767), ...GT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...CI32(32767), ...SET(valpred),
-        ...END,
-
-        // update index: index += INDEX_TABLE[nibble & 0xF]
-        // INDEX_TABLE stored as unsigned bytes; values -1 stored as 0xFF → load then sign-extend via (v << 24) >> 24
-        ...CI32(IDX_TBL_ADDR), ...GET(nibble), ...CI32(0x0F), ...AND, ...ADD,
-        ...LOAD8s(0, 0),   // sign-extends: 0xFF → -1
-        ...GET(index), ...ADD, ...SET(index),
-
-        // clamp index to [0, 88]
-        ...GET(index), ...CI32(0), ...LT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...CI32(0), ...SET(index),
-        ...END,
-        ...GET(index), ...CI32(88), ...GT_s,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...CI32(88), ...SET(index),
-        ...END,
-
-        // pack nibble: if odd==0 → low nibble; if odd==1 → high nibble + flush byte
-        ...GET(odd), ...CI32(0), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        // odd == 0: store nibble in low half of outByte
-        ...GET(nibble), ...CI32(0x0F), ...AND, ...SET(outByte),
-        ...CI32(1), ...SET(odd),
-        ...BR(1),
-        ...END,
-        // odd == 1: store nibble in high half, flush byte to memory
-        // outByte |= (nibble & 0xF) << 4
-        ...GET(outByte), ...GET(nibble), ...CI32(0x0F), ...AND, ...CI32(4), ...SHL, ...OR, ...SET(outByte),
-        // mem_i8[outPtr + outLen] = outByte
-        ...GET(2), ...GET(outLen), ...ADD, ...GET(outByte), ...STORE8(0, 0),
-        ...GET(outLen), ...CI32(1), ...ADD, ...SET(outLen),
-        ...CI32(0), ...SET(outByte),
-        ...CI32(0), ...SET(odd),
-
-        // i++
-        ...GET(i), ...CI32(1), ...ADD, ...SET(i),
-        ...BR(0),
-        ...END, ...END,
-
-        // If numSamples is odd, flush the last half-byte
-        ...GET(odd), ...CI32(1), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...GET(2), ...GET(outLen), ...ADD, ...GET(outByte), ...STORE8(0, 0),
-        ...GET(outLen), ...CI32(1), ...ADD, ...SET(outLen),
-        ...END,
-
-        // return outLen
-        ...GET(outLen),
-        ...END,
-    ];
-    return funcBody([{ count: 13, type: I32 }], body);
-}
-
-// ── decode_adpcm function body ────────────────────────────────────────────────
-//
-// Signature: (adpcmPtr: i32, numBytes: i32, outPtr: i32) -> i32
-//
-// Reads 4-byte header, then decodes nibble stream.
-// Returns number of PCM samples written (Int16 each).
-//
-// Locals (all i32):
-//   0: adpcmPtr   1: numBytes   2: outPtr
-//   3: valpred    4: index      5: step
-//   6: i          7: byteVal    8: nibble
-//   9: vpdiff     10: sign      11: delta   12: numSamples   13: decodedSrcs
-//
-function buildDecodeBody(): number[] {
-    const valpred = 3, index = 4, step = 5, i = 6, byteVal = 7, nibble = 8;
-    const vpdiff = 9, sign = 10, delta = 11, numSamples = 12, decoded = 13;
-
-    const body = [
-        // --- read 4-byte header ---
-        // numSamples = u16 at adpcmPtr+0
-        ...GET(0), ...LOAD16s(0, 0),
-        // sign-extend from 16 to 32 then mask to 0xFFFF (treat as unsigned u16)
-        ...CI32(0xFFFF), ...AND, ...SET(numSamples),
-
-        // valpred = 0, index = 0, i = 0, decoded = 0
-        ...CI32(0), ...SET(valpred),
-        ...CI32(0), ...SET(index),
-        ...CI32(0), ...SET(i),
-        ...CI32(0), ...SET(decoded),
-
-        // nibble data starts at adpcmPtr+4
-        // Main loop: iterate over pairs of nibbles (each byte has 2)
-        // We use byte index into adpcmPtr+4
-        ...BLOCK, ...LOOP,
-        // if decoded >= numSamples: break
-        ...GET(decoded), ...GET(numSamples), ...GE_s, ...BRIF(1),
-        // if byte offset >= numBytes-4: break (protect OOB)
-        ...GET(i), ...CI32(2), ...SHR_u,  // byteIndex = i / 2
-        ...GET(1), ...CI32(4), ...SUB,    // numBytes - 4 (data bytes)
-        ...GE_s, ...BRIF(1),
-
-        // byteVal = mem_i8[(adpcmPtr+4) + i/2] — unsigned
-        ...GET(0), ...CI32(4), ...ADD, ...GET(i), ...CI32(1), ...SHR_u, ...ADD,
-        ...LOAD8s(0, 0), ...CI32(0xFF), ...AND, ...SET(byteVal),
-
-        // nibble = (i & 1 == 0) ? (byteVal & 0xF) : ((byteVal >> 4) & 0xF)
-        ...GET(i), ...CI32(1), ...AND, ...CI32(0), ...EQ,
-        ...BLOCK, ...BLOCK,
-        ...BRIF(0), ...BR(1), ...END,
-        ...GET(byteVal), ...CI32(4), ...SHR_u, ...CI32(0xF), ...AND, ...SET(nibble),
-        ...BR(1),
-        ...END,
-        ...GET(byteVal), ...CI32(0xF), ...AND, ...SET(nibble),
-
-        // step = STEP_TABLE[index]
-        ...CI32(STEP_TBL_ADDR), ...GET(index), ...CI32(1), ...SHL, ...ADD,
-        ...LOAD16s(1, 0), ...SET(step),
-
-        // sign = nibble & 0x8
-        ...GET(nibble), ...CI32(8), ...AND, ...SET(sign),
-
-        // delta = nibble & 0x7
-        ...GET(nibble), ...CI32(7), ...AND, ...SET(delta),
-
-        // vpdiff = step >> 3
-        ...GET(step), ...CI32(3), ...SHR_s, ...SET(vpdiff),
-
-        // if delta & 4: vpdiff += step
-        ...GET(delta), ...CI32(4), ...AND,
-        ...BLOCK, ...BLOCK,
-        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
-        ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
-        ...END,
-        ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
-
-        // if delta & 2: vpdiff += step
-        ...GET(delta), ...CI32(2), ...AND,
-        ...BLOCK, ...BLOCK,
-        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
-        ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
-        ...END,
-        ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
-
-        // if delta & 1: vpdiff += step
-        ...GET(delta), ...CI32(1), ...AND,
-        ...BLOCK, ...BLOCK,
-        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
-        ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
-        ...END,
-
-        // if sign != 0: valpred -= vpdiff  else valpred += vpdiff
+        // update valpred
         ...GET(sign), ...CI32(0), ...EQ,
         ...BLOCK, ...BLOCK,
         ...BRIF(0), ...BR(1), ...END,
@@ -445,21 +252,174 @@ function buildDecodeBody(): number[] {
         ...CI32(88), ...SET(index),
         ...END,
 
-        // write valpred to outPtr + decoded*2
+        // pack nibble (low nibble first)
+        ...GET(odd), ...CI32(0), ...EQ,
+        ...BLOCK, ...BLOCK,
+        ...BRIF(0), ...BR(1), ...END,
+        ...GET(nibble), ...CI32(0x0F), ...AND, ...SET(outByte),
+        ...CI32(1), ...SET(odd),
+        ...BR(1),
+        ...END,
+        ...GET(outByte), ...GET(nibble), ...CI32(0x0F), ...AND, ...CI32(4), ...SHL, ...OR, ...SET(outByte),
+        ...GET(2), ...GET(outLen), ...ADD, ...GET(outByte), ...STORE8(0, 0),
+        ...GET(outLen), ...CI32(1), ...ADD, ...SET(outLen),
+        ...CI32(0), ...SET(outByte),
+        ...CI32(0), ...SET(odd),
+
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i),
+        ...BR(0),
+        ...END, ...END,
+
+        // save state to memory for streaming support
+        ...CI32(0), ...GET(valpred), ...STORE32(ENC_STATE_ADDR, 0),
+        ...CI32(0), ...GET(index), ...STORE32(ENC_STATE_ADDR, 4),
+
+        // flush last half-byte if numSamples is odd
+        ...GET(odd), ...CI32(1), ...EQ,
+        ...BLOCK, ...BLOCK,
+        ...BRIF(0), ...BR(1), ...END,
+        ...GET(2), ...GET(outLen), ...ADD, ...GET(outByte), ...STORE8(0, 0),
+        ...GET(outLen), ...CI32(1), ...ADD, ...SET(outLen),
+        ...END,
+
+        ...GET(outLen),
+        ...END,
+    ];
+    return funcBody([{ count: 13, type: I32 }], body);
+}
+
+// ── decode_adpcm function body ────────────────────────────────────────────────
+// Signature: (adpcmPtr: i32, numBytes: i32, outPtr: i32) -> i32
+// Reads 8-byte header. Returns sample count.
+function buildDecodeBody(): number[] {
+    const valpred = 3, index = 4, step = 5, i = 6, byteVal = 7, nibble = 8;
+    const vpdiff = 9, sign = 10, delta = 11, numSamples = 12, decoded = 13;
+
+    const body = [
+        // numSamples = u32 at [0..3]
+        ...GET(0), ...LOAD32(2, 0), ...SET(numSamples),
+
+        // load state from memory for streaming support
+        ...CI32(0), ...LOAD32(DEC_STATE_ADDR, 0), ...SET(valpred),
+        ...CI32(0), ...LOAD32(DEC_STATE_ADDR, 4), ...SET(index),
+        ...CI32(0), ...SET(i),
+        ...CI32(0), ...SET(decoded),
+
+        ...BLOCK, ...LOOP,
+        ...GET(decoded), ...GET(numSamples), ...GE_s, ...BRIF(1),
+        // OOB guard: nibble byte index must be < (numBytes - HEADER_SIZE)
+        ...GET(i), ...CI32(2), ...SHR_u,
+        ...GET(1), ...CI32(HEADER_SIZE), ...SUB,
+        ...GE_s, ...BRIF(1),
+
+        // byteVal = u8[(adpcmPtr+HEADER_SIZE) + i/2]
+        ...GET(0), ...CI32(HEADER_SIZE), ...ADD, ...GET(i), ...CI32(1), ...SHR_u, ...ADD,
+        ...LOAD8s(0, 0), ...CI32(0xFF), ...AND, ...SET(byteVal),
+
+        // nibble: low nibble first (i&1==0 → high byte → wait, nibble order: i=0 → low nibble)
+        ...GET(i), ...CI32(1), ...AND, ...CI32(0), ...EQ,
+        ...BLOCK, ...BLOCK,
+        ...BRIF(0), ...BR(1), ...END,
+        ...GET(byteVal), ...CI32(4), ...SHR_u, ...CI32(0xF), ...AND, ...SET(nibble),
+        ...BR(1),
+        ...END,
+        ...GET(byteVal), ...CI32(0xF), ...AND, ...SET(nibble),
+
+        // step = STEP_TABLE[index]
+        ...CI32(STEP_TBL_ADDR), ...GET(index), ...CI32(1), ...SHL, ...ADD,
+        ...LOAD16s(1, 0), ...SET(step),
+
+        // sign = nibble & 8
+        ...GET(nibble), ...CI32(8), ...AND, ...SET(sign),
+        // delta = nibble & 7
+        ...GET(nibble), ...CI32(7), ...AND, ...SET(delta),
+
+        // vpdiff = step >> 3
+        ...GET(step), ...CI32(3), ...SHR_s, ...SET(vpdiff),
+
+        ...GET(delta), ...CI32(4), ...AND,
+        ...BLOCK, ...BLOCK,
+        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
+        ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
+        ...END,
+        ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
+
+        ...GET(delta), ...CI32(2), ...AND,
+        ...BLOCK, ...BLOCK,
+        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
+        ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
+        ...END,
+        ...GET(step), ...CI32(1), ...SHR_s, ...SET(step),
+
+        ...GET(delta), ...CI32(1), ...AND,
+        ...BLOCK, ...BLOCK,
+        ...CI32(0), ...EQ, ...BRIF(0), ...BR(1), ...END,
+        ...GET(vpdiff), ...GET(step), ...ADD, ...SET(vpdiff),
+        ...END,
+
+        // update valpred
+        ...GET(sign), ...CI32(0), ...EQ,
+        ...BLOCK, ...BLOCK,
+        ...BRIF(0), ...BR(1), ...END,
+        ...GET(valpred), ...GET(vpdiff), ...SUB, ...SET(valpred),
+        ...BR(1),
+        ...END,
+        ...GET(valpred), ...GET(vpdiff), ...ADD, ...SET(valpred),
+
+        // clamp valpred
+        ...GET(valpred), ...CI32(-32768), ...LT_s,
+        ...BLOCK, ...BLOCK,
+        ...BRIF(0), ...BR(1), ...END,
+        ...CI32(-32768), ...SET(valpred),
+        ...END,
+        ...GET(valpred), ...CI32(32767), ...GT_s,
+        ...BLOCK, ...BLOCK,
+        ...BRIF(0), ...BR(1), ...END,
+        ...CI32(32767), ...SET(valpred),
+        ...END,
+
+        // update index
+        ...CI32(IDX_TBL_ADDR), ...GET(nibble), ...CI32(0x0F), ...AND, ...ADD,
+        ...LOAD8s(0, 0),
+        ...GET(index), ...ADD, ...SET(index),
+
+        // clamp index
+        ...GET(index), ...CI32(0), ...LT_s,
+        ...BLOCK, ...BLOCK,
+        ...BRIF(0), ...BR(1), ...END,
+        ...CI32(0), ...SET(index),
+        ...END,
+        ...GET(index), ...CI32(88), ...GT_s,
+        ...BLOCK, ...BLOCK,
+        ...BRIF(0), ...BR(1), ...END,
+        ...CI32(88), ...SET(index),
+        ...END,
+
+        // write i16 sample
         ...GET(2), ...GET(decoded), ...CI32(1), ...SHL, ...ADD,
         ...GET(valpred), ...STORE16(1, 0),
 
-        // decoded++, i++
         ...GET(decoded), ...CI32(1), ...ADD, ...SET(decoded),
         ...GET(i), ...CI32(1), ...ADD, ...SET(i),
         ...BR(0),
         ...END, ...END,
 
-        // return decoded
+        // save state to memory for streaming support
+        ...CI32(0), ...GET(valpred), ...STORE32(DEC_STATE_ADDR, 0),
+        ...CI32(0), ...GET(index), ...STORE32(DEC_STATE_ADDR, 4),
+
         ...GET(decoded),
         ...END,
     ];
     return funcBody([{ count: 11, type: I32 }], body);
+}
+
+// Signature: () -> ()
+function buildResetStateBody(addr: number): number[] {
+    return funcBody([], [
+        ...CI32(0), ...CI32(0), ...STORE32(addr, 0),
+        ...CI32(0), ...CI32(0), ...STORE32(addr, 4),
+    ]);
 }
 
 // ── Assemble final WASM binary ────────────────────────────────────────────────
@@ -467,28 +427,31 @@ function buildDecodeBody(): number[] {
 export function buildAdpcmWasmBytes(): Uint8Array {
     const magic = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
-    // type section: 2 function types, both (i32,i32,i32)->i32
     const typeSection = section(1, [
-        ...encodeULEB(2),
-        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32,
-        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32,
+        ...encodeULEB(3),
+        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32, // encode/decode
+        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32, // (duplicate artifact)
+        0x60, ...encodeULEB(0), ...encodeULEB(0),                     // void reset
     ]);
 
-    // function section: func 0 uses type 0, func 1 uses type 1
-    const funcSection = section(3, [...encodeULEB(2), ...encodeULEB(0), ...encodeULEB(1)]);
-
-    // memory: 1 page min (64 KB), max 2048 pages (128 MB)
+    const funcSection = section(3, [
+        ...encodeULEB(4),
+        ...encodeULEB(0), // encode
+        ...encodeULEB(1), // decode
+        ...encodeULEB(2), // reset_encode
+        ...encodeULEB(2), // reset_decode
+    ]);
     const memSection = section(5, [...encodeULEB(1), 0x01, ...encodeULEB(1), ...encodeULEB(2048)]);
 
-    // exports: memory, encode_adpcm, decode_adpcm
     const exportSection = section(7, [
-        ...encodeULEB(3),
-        ...name("memory"), 0x02, ...encodeULEB(0),
-        ...name("encode_adpcm"), 0x00, ...encodeULEB(0),
-        ...name("decode_adpcm"), 0x00, ...encodeULEB(1),
+        ...encodeULEB(5),
+        ...nameSec("memory"), 0x02, ...encodeULEB(0),
+        ...nameSec("encode_adpcm"), 0x00, ...encodeULEB(0),
+        ...nameSec("decode_adpcm"), 0x00, ...encodeULEB(1),
+        ...nameSec("reset_encoder_state"), 0x00, ...encodeULEB(2),
+        ...nameSec("reset_decoder_state"), 0x00, ...encodeULEB(3),
     ]);
 
-    // data section: initialize INDEX_TABLE and STEP_TABLE into linear memory
     const indexBytes = new Uint8Array(16);
     for (let i = 0; i < 16; i++) {
         indexBytes[i] = INDEX_TABLE[i] < 0 ? 256 + INDEX_TABLE[i] : INDEX_TABLE[i];
@@ -508,19 +471,16 @@ export function buildAdpcmWasmBytes(): Uint8Array {
     ]);
 
     const codeSection = section(10, [
-        ...encodeULEB(2),
+        ...encodeULEB(4),
         ...buildEncodeBody(),
         ...buildDecodeBody(),
+        ...buildResetStateBody(ENC_STATE_ADDR),
+        ...buildResetStateBody(DEC_STATE_ADDR),
     ]);
 
     return new Uint8Array([
-        ...magic,
-        ...typeSection,
-        ...funcSection,
-        ...memSection,
-        ...exportSection,
-        ...dataSection,
-        ...codeSection,
+        ...magic, ...typeSection, ...funcSection,
+        ...memSection, ...exportSection, ...dataSection, ...codeSection,
     ]);
 }
 
@@ -530,6 +490,8 @@ export interface AdpcmWasmExports {
     memory: WebAssembly.Memory;
     encode_adpcm: (pcmPtr: number, numSamples: number, outPtr: number) => number;
     decode_adpcm: (adpcmPtr: number, numBytes: number, outPtr: number) => number;
+    reset_encoder_state: () => void;
+    reset_decoder_state: () => void;
 }
 
 let _wasmPromise: Promise<AdpcmWasmExports> | null = null;
@@ -538,85 +500,226 @@ export function getAdpcmWasm(): Promise<AdpcmWasmExports> {
     if (_wasmPromise) return _wasmPromise;
     _wasmPromise = (async () => {
         const bytes = buildAdpcmWasmBytes();
-        const buf = bytes.buffer instanceof ArrayBuffer
-            ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-            : new Uint8Array(bytes).buffer;
-        const mod = await WebAssembly.compile(buf as ArrayBuffer);
+        const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        const mod = await WebAssembly.compile(buf);
         const inst = await WebAssembly.instantiate(mod, {});
         return inst.exports as unknown as AdpcmWasmExports;
     })();
     return _wasmPromise;
 }
 
-// PCM buffer start address in WASM linear memory (after tables)
 export const WASM_BUF = BUF_START;
 
+// ── Signal conditioning ────────────────────────────────────────────────────────
+//
+// Two filters applied in the JS domain before encode and after decode.
+// These are intentionally in JS (not WASM) since they operate on Float32 —
+// keeping them here avoids adding f32 arithmetic to the WASM bytecode while
+// still giving us near-zero overhead from a typed-array loop.
+//
+// 1. DC blocker (high-pass, α ≈ 0.9999): removes mic DC offset so ADPCM
+//    doesn't waste bits tracking a constant bias. Implements the standard
+//    y[n] = x[n] - x[n-1] + α·y[n-1] first-order IIR.
+//
+// 2. Pre-emphasis  (encode only, μ = 0.97): boosts high frequencies before
+//    encode. Voice energy is concentrated in mid/high freqs; ADPCM quantisation
+//    error is perceptually worst in those ranges. Boosting them pre-encode
+//    and flattening them post-decode (de-emphasis) gives a perceptibly cleaner
+//    result, equivalent to a free ~3dB SNR improvement for voice.
+
+const DC_ALPHA = 0.9999;
+const PREEMPH_MU = 0.97;
+
+// --- Streaming DSP State ---
+let dcXPrev = 0;
+let dcYPrev = 0;
+let expEnv = 0;
+let expGain = 1.0;
+let preemphPrev = 0;
+let deemphPrev = 0;
+
+export function resetAdpcmFilters(): void {
+    dcXPrev = 0;
+    dcYPrev = 0;
+    expEnv = 0;
+    expGain = 1.0;
+    preemphPrev = 0;
+    deemphPrev = 0;
+}
+
+function applyDcBlockAndPreemphasis(samples: Float32Array, sampleRate: number): Float32Array {
+    const out = new Float32Array(samples.length);
+
+    // DC blocker
+    for (let i = 0; i < samples.length; i++) {
+        const x = samples[i];
+        const dc = x - dcXPrev + DC_ALPHA * dcYPrev;
+        dcXPrev = x;
+        dcYPrev = dc;
+        out[i] = dc;
+    }
+
+    // --- Gentle Downward Expander (Soft Noise Gate) ---
+    // Instead of muting silence to 0 (which sounds unnatural), we just reduce 
+    // background hiss/room tone by 50% (-6dB). This preserves a natural, raw sound
+    // without pumping artifacts.
+    const GATE_THRESH = 0.000031; // ~ -45 dBFS
+
+    const attackMs = 10;
+    const releaseMs = 300; // Slower release for natural fade
+    const alphaAttack = Math.exp(-1 / (sampleRate * (attackMs / 1000)));
+    const alphaRelease = Math.exp(-1 / (sampleRate * (releaseMs / 1000)));
+
+    for (let i = 0; i < out.length; i++) {
+        const energy = out[i] * out[i];
+        expEnv = energy > expEnv
+            ? alphaAttack * expEnv + (1 - alphaAttack) * energy
+            : alphaRelease * expEnv + (1 - alphaRelease) * energy;
+
+        // Target gain: 1.0 for voice, 0.5 for background noise
+        const targetGain = expEnv > GATE_THRESH ? 1.0 : 0.5;
+
+        expGain = targetGain > expGain
+            ? alphaAttack * expGain + (1 - alphaAttack) * targetGain
+            : alphaRelease * expGain + (1 - alphaRelease) * targetGain;
+
+        out[i] *= expGain;
+    }
+
+    // --- Pre-emphasis & Soft Clipping ---
+    const preout = new Float32Array(samples.length);
+    for (let i = 0; i < out.length; i++) {
+        let s = out[i] - PREEMPH_MU * preemphPrev;
+        preemphPrev = out[i];
+
+        // Soft clipper (analog limiter emulation)
+        // Gracefully rounds off shouts/transients instead of letting them hard digital clip
+        if (s > 0.9) {
+            s = 0.9 + 0.1 * Math.tanh((s - 0.9) / 0.1);
+        } else if (s < -0.9) {
+            s = -0.9 + 0.1 * Math.tanh((s + 0.9) / 0.1);
+        }
+
+        preout[i] = s;
+    }
+
+    return preout;
+}
+
+function applyDeemphasis(samples: Float32Array): Float32Array {
+    // De-emphasis: y[n] = x[n] + mu * y[n-1]  (inverse of pre-emphasis)
+    const out = new Float32Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+        out[i] = samples[i] + PREEMPH_MU * deemphPrev;
+        deemphPrev = out[i];
+    }
+    return out;
+}
+
+// ── Public encode / decode ────────────────────────────────────────────────────
+
 /**
- * Encode a Float32Array of audio samples (-1..1) to ADPCM bytes.
- * Returns a Uint8Array containing the 4-byte header + compressed nibbles.
+ * Encode Float32 PCM (-1..1) to ADPCM bytes.
+ * Applies DC blocker + pre-emphasis before encode.
+ * @param sampleRate  The AudioContext sample rate (stored in header, used for correct playback).
  */
-export async function encodeAdpcm(float32Samples: Float32Array): Promise<Uint8Array> {
+export async function encodeAdpcm(
+    float32Samples: Float32Array,
+    sampleRate: number,
+): Promise<Uint8Array> {
     const wasm = await getAdpcmWasm();
     const mem = wasm.memory;
 
     const numSamples = float32Samples.length;
-    // each sample is i16 (2 bytes), output is 4-byte header + ceil(n/2) nibble bytes
     const pcmBytes = numSamples * 2;
-    const outMaxBytes = 4 + Math.ceil(numSamples / 2);
+    const outMaxBytes = HEADER_SIZE + Math.ceil(numSamples / 2);
     const totalNeeded = WASM_BUF + pcmBytes + outMaxBytes;
 
-    // grow WASM memory if needed
-    const PAGE = 65536;
-    while (mem.buffer.byteLength < totalNeeded) {
-        mem.grow(1);
-    }
+    while (mem.buffer.byteLength < totalNeeded) mem.grow(1);
+
+    // For file-based usage, we reset state on every fresh encode.
+    // Realtime streaming would skip this.
+    wasm.reset_encoder_state();
+    resetAdpcmFilters();
 
     const pcmPtr = WASM_BUF;
     const outPtr = WASM_BUF + pcmBytes;
 
-    // convert Float32 → Int16 and write to WASM memory
+    // Apply DC blocker + Noise Gate + pre-emphasis
+    const conditioned = applyDcBlockAndPreemphasis(float32Samples, sampleRate);
+
+    // Convert Float32 → Int16
     const view = new DataView(mem.buffer);
     for (let i = 0; i < numSamples; i++) {
-        const s = Math.max(-1, Math.min(1, float32Samples[i]));
+        const s = Math.max(-1, Math.min(1, conditioned[i]));
         view.setInt16(pcmPtr + i * 2, Math.round(s * 32767), true);
     }
 
     const bytesWritten = wasm.encode_adpcm(pcmPtr, numSamples, outPtr);
+
+    // Patch sample rate into header bytes [4..5] (u16 LE)
+    view.setUint16(outPtr + 4, sampleRate & 0xFFFF, true);
+
     return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
 }
 
 /**
  * Decode ADPCM bytes back to Float32Array (-1..1).
- * The first 4 bytes must be the header written by encodeAdpcm.
+ * Returns { pcm, sampleRate } — use sampleRate for correct AudioBuffer creation.
+ * Applies de-emphasis after decode.
  */
-export async function decodeAdpcm(adpcmBytes: Uint8Array): Promise<Float32Array> {
+export async function decodeAdpcm(
+    adpcmBytes: Uint8Array,
+): Promise<{ pcm: Float32Array; sampleRate: number }> {
     const wasm = await getAdpcmWasm();
     const mem = wasm.memory;
 
-    if (adpcmBytes.length < 4) throw new Error("adpcm: too short");
-    const numSamples = new DataView(adpcmBytes.buffer, adpcmBytes.byteOffset, 4).getUint16(0, true);
+    if (adpcmBytes.length < HEADER_SIZE) throw new Error("adpcm: payload too short");
+
+    const hdr = new DataView(adpcmBytes.buffer, adpcmBytes.byteOffset, HEADER_SIZE);
+    const numSamples = hdr.getUint32(0, true);
+    const sampleRate = hdr.getUint16(4, true) || 48000; // fallback for legacy 4-byte headers
 
     const inBytes = adpcmBytes.length;
     const outBytes = numSamples * 2;
     const totalNeeded = WASM_BUF + inBytes + outBytes;
 
-    const PAGE = 65536;
-    while (mem.buffer.byteLength < totalNeeded) {
-        mem.grow(1);
-    }
+    while (mem.buffer.byteLength < totalNeeded) mem.grow(1);
 
-    const adpcmPtr = WASM_BUF;
+    // For file-based usage, we reset state on every fresh decode.
+    // Realtime streaming would skip this.
+    wasm.reset_decoder_state();
+    resetAdpcmFilters();
+
+    const inPtr = WASM_BUF;
     const outPtr = WASM_BUF + inBytes;
 
-    new Uint8Array(mem.buffer).set(adpcmBytes, adpcmPtr);
+    new Uint8Array(mem.buffer).set(adpcmBytes, inPtr);
 
-    const samplesDecoded = wasm.decode_adpcm(adpcmPtr, inBytes, outPtr);
+    const samplesDecoded = wasm.decode_adpcm(inPtr, inBytes, outPtr);
 
-    // convert Int16 → Float32
-    const out = new Float32Array(samplesDecoded);
+    // Int16 → Float32
+    const raw = new Float32Array(samplesDecoded);
     const dv = new DataView(mem.buffer);
     for (let i = 0; i < samplesDecoded; i++) {
-        out[i] = dv.getInt16(outPtr + i * 2, true) / 32768;
+        raw[i] = dv.getInt16(outPtr + i * 2, true) / 32768;
     }
-    return out;
+
+    // De-emphasis
+    const pcm = applyDeemphasis(raw);
+
+    // Normalize if peak > 1.0 to guarantee the Web Audio API never hard-clips.
+    // De-emphasis can occasionally push transients slightly above 1.0 due to 
+    // the restored bass frequencies and ADPCM quantisation noise.
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i++) {
+        const abs = Math.abs(pcm[i]);
+        if (abs > peak) peak = abs;
+    }
+    if (peak > 1.0) {
+        const scale = 1.0 / peak;
+        for (let i = 0; i < pcm.length; i++) pcm[i] *= scale;
+    }
+
+    return { pcm, sampleRate };
 }

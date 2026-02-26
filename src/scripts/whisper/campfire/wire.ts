@@ -348,6 +348,11 @@ export function parseCfReact(data: Uint8Array): ParsedCfReact | null {
   const targetMsgIdFull = data.subarray(o, o + MSG_ID_LEN); o += MSG_ID_LEN;
   const senderId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
   const hopCount = data[o]; o += 1;
-  const emoji = TD.decode(data.subarray(o));
-  return { targetMsgIdFull, senderId, hopCount, emoji };
+  const emojiBytes = data.subarray(o);
+  // Guard: cap emoji bytes, then normalise to first grapheme cluster
+  if (emojiBytes.length === 0 || emojiBytes.length > 32) return null;
+  const raw = TD.decode(emojiBytes);
+  const first = new Intl.Segmenter().segment(raw)[Symbol.iterator]().next().value;
+  if (!first?.segment) return null;
+  return { targetMsgIdFull, senderId, hopCount, emoji: first.segment };
 }

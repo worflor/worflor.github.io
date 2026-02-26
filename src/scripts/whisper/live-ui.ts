@@ -30,6 +30,7 @@ import {
   flashText,
   appendToLog,
   setLogDotActive,
+  haptic,
 } from "./ui-helpers";
 import {
   createQrDetector,
@@ -373,6 +374,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       updateControls();
       return;
     }
+    haptic("clear-history");
     msgs.forEach((el, i) => el.style.setProperty("--msg-idx", String(Math.min(i, 10))));
     opts.chatMessages.dataset.clearing = "1";
     setTimeout(() => {
@@ -443,28 +445,39 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     el.classList.add("wl-msg--seen");
   }
 
+  /** Max distinct emoji reactions tracked per message. Keeps the UI elegant. */
+  const MAX_REACTIONS = 5;
+
   function applyReaction(msgId: number, emoji: string, who: "self" | "peer"): void {
     const el = msgById.get(msgId);
     if (!el || !emoji) return;
+    // Clip to first grapheme cluster — peer could send multi-emoji or malformed string
+    const seg = new Intl.Segmenter();
+    const firstCluster = seg.segment(emoji)[Symbol.iterator]().next().value?.segment;
+    if (!firstCluster) return;
+    const normEmoji = firstCluster;
     let bar = el.querySelector<HTMLElement>(".wl-msg-reactions");
     if (!bar) {
       bar = document.createElement("div");
       bar.className = "wl-msg-reactions";
       el.appendChild(bar);
     }
-    // Use emoji string as the stable key — CSS.escape handles any exotic codepoints in selectors
-    let pill = bar.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    let pill = bar.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(normEmoji)}"]`);
     if (!pill) {
+      // Enforce cap: only allow MAX_REACTIONS distinct emojis per message
+      if (bar.children.length >= MAX_REACTIONS) return;
       const btn = document.createElement("button");
       btn.type = "button";
       pill = btn;
-      pill.className = "wl-reaction";
-      pill.dataset.emoji = emoji;
+      pill.className = "wl-reaction wl-reaction--entering";
+      pill.dataset.emoji = normEmoji;
       pill.dataset.self = "0";
       pill.dataset.peer = "0";
-      pill.textContent = emoji;
-      pill.addEventListener("click", () => toggleSelfReaction(msgId, emoji));
+      pill.textContent = normEmoji;
+      pill.addEventListener("click", () => toggleSelfReaction(msgId, normEmoji));
       bar.appendChild(pill);
+      // Remove entering class after animation completes so it's reusable
+      pill.addEventListener("animationend", () => pill!.classList.remove("wl-reaction--entering"), { once: true });
     }
     pill.dataset[who] = "1";
     updateReactionPill(pill);
@@ -495,6 +508,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * we key by emoji string in data-emoji.
    */
   function toggleSelfReaction(msgId: number, emoji: string): void {
+    haptic("reaction");
     const el = msgById.get(msgId);
     const pill = el?.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
     const isUnreact = pill?.dataset.self === "1";
@@ -783,6 +797,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function sendDelivered(): void {
+    haptic("msg-sent");
     if (!chatCompose || reduceMotion) return;
     send.phase = "delivered";
     const af = Math.min(1, send.ackLatency / 300);
@@ -1239,38 +1254,32 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     document.title = originalTitle;
   }
 
-  /* ── Peer message nudge (tiny synthesized click) ──────── */
+  /* ── Peer message nudge ─────────────────────────────────── */
 
+  /**
+   * Audio nudge — disabled until sound design is ready.
+   * Haptics (haptic("msg-received")) handle the notification feel for now.
+   * To re-enable: implement a proper sound here and remove the early return.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let audioCtx: AudioContext | null = null;
 
-  /** Play a very short, soft tick — only when attention is elsewhere. */
   function nudgeAudio(): void {
-    if (reduceMotion) return;
-    if (hasFocus && isNearBottom()) return;
-    try {
-      if (!audioCtx) audioCtx = new AudioContext();
-      const ctx = audioCtx;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.06);
-      gain.gain.setValueAtTime(0.04, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.08);
-    } catch { /* Audio not available — silent fallback */ }
+    // Sound effects are intentionally off — haptics are the primary feedback.
+    return;
   }
 
   /* ── Audio recording (WASM ADPCM pipeline) ──────────────── */
 
-  /** Voice constraints. Mono, echoCancellation and noiseSuppression on for
-   *  clean voice. No codec or bitrate constraints — we do our own encoding. */
+  /** Voice constraints. Mono, 48kHz (if supported). 
+   *  We explicitly disable the browser's echo cancellation, noise suppression, 
+   *  and AGC. Browser implementations are meant for web-conferencing and often 
+   *  cause aggressive robotic artifacts, pumping, and word-chopping. We want 
+   *  raw natural sound, conditioned gently by our own WASM pipeline. */
   const VOICE_CONSTRAINTS: MediaTrackConstraints = {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
     channelCount: 1,
   };
 
@@ -1294,6 +1303,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let micDeferred: "send" | "discard" | null = null;
   let micAudioCtx: AudioContext | null = null;
   let micWorkletNode: AudioWorkletNode | null = null;
+
+  // Dedicated singleton context for playback to prevent recording teardowns from closing it
+  let playbackCtx: AudioContext | null = null;
 
   const micSupported = !!navigator.mediaDevices?.getUserMedia;
   if (!micSupported) opts.chatMicWrap.setAttribute("data-hidden", "");
@@ -1345,6 +1357,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!micSupported || micPending || recordingStream) return;
 
     micPending = true;
+    haptic("recording-start");
     navigator.mediaDevices.getUserMedia({ audio: VOICE_CONSTRAINTS }).then(async (stream) => {
       micPending = false;
 
@@ -1473,6 +1486,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     // Discard sub-500ms squeaks
     if (elapsed < 500 || chunks.length === 0) return;
+    haptic("recording-stop");
 
     // Flatten accumulated 128-sample Float32 chunks into one
     const totalSamples = chunks.reduce((n, c) => n + c.length, 0);
@@ -1482,7 +1496,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     const name = `audio-${Date.now()}.wadpcm`;
 
-    encodeAdpcm(flat).then((adpcmBytes) => {
+    encodeAdpcm(flat, pcmSampleRate).then((adpcmBytes) => {
       if (!session) {
         addChatMessage({
           type: "file", direction: "self",
@@ -1497,6 +1511,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         sendInFlight(msgId);
       }).catch((err) => {
         send.phase = "delivered"; send.velocity = -4;
+        haptic("send-failed");
         appendLog(`audio send failed: ${errMsg(err)}`);
         pulseComposeIntent("error", 1100);
       });
@@ -1506,6 +1521,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function cancelRecording(): void {
+    haptic("recording-cancel");
     teardownRecordingUI();
     pcmChunks = [];
     cleanupRecordingStream();
@@ -1813,7 +1829,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       /** rAF loop while audio is playing — reads currentTime for smooth sweep. */
       function playbackTick(): void {
         if (isPlaying && durationSeconds > 0) {
-          const elapsed = (micAudioCtx?.currentTime ?? 0) - playbackStartTime + pauseOffset;
+          const elapsed = (playbackCtx?.currentTime ?? 0) - playbackStartTime + pauseOffset;
           const p = Math.min(1, Math.max(0, elapsed / durationSeconds));
           redraw(p);
           durLabel.textContent = formatAudioDuration(elapsed);
@@ -1907,16 +1923,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
         try {
           if (isAdpcm) {
-            pcmData = await decodeAdpcm(new Uint8Array(abCopy));
+            const decoded = await decodeAdpcm(new Uint8Array(abCopy));
+            pcmData = decoded.pcm;
+            durationSeconds = decoded.pcm.length / decoded.sampleRate;
+            // Store sampleRate so the AudioBuffer uses the right rate
+            (playBtn as HTMLButtonElement & { _sr: number })._sr = decoded.sampleRate;
           } else {
             // Unused fallback, since we only send ADPCM now
             const actx = new AudioContext();
             const decoded = await actx.decodeAudioData(abCopy.slice(0));
             pcmData = decoded.getChannelData(0);
+            durationSeconds = decoded.duration;
+            (playBtn as HTMLButtonElement & { _sr: number })._sr = decoded.sampleRate;
             void actx.close();
           }
-
-          durationSeconds = pcmData.length / 48000;
           durLabel.textContent = formatAudioDuration(durationSeconds);
 
           waveform = extractWaveformFromPcm(pcmData, numBars);
@@ -1929,9 +1949,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       // ── WebAudio Playback via AudioContext ──
 
       function getAudioContext(): AudioContext {
-        if (!micAudioCtx) micAudioCtx = new AudioContext({ sampleRate: 48000 });
-        if (micAudioCtx.state === "suspended") micAudioCtx.resume();
-        return micAudioCtx;
+        if (!playbackCtx) playbackCtx = new AudioContext(); // Use browser default sample rate for playback sink
+        if (playbackCtx.state === "suspended") playbackCtx.resume();
+        return playbackCtx;
       }
 
       function stopInternal() {
@@ -1940,7 +1960,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           sourceNode = null;
         }
         isPlaying = false;
-        pauseOffset = 0;
+        // Note: pauseOffset is NOT reset here — callers manage it.
+        // stopAllAudio() and onended reset it to 0; pause path preserves it.
       }
 
       playBtn.addEventListener("click", () => {
@@ -1949,7 +1970,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (isPlaying) {
           const ctx = getAudioContext();
           pauseOffset += ctx.currentTime - playbackStartTime;
-          stopInternal();
+          stopInternal(); // preserves pauseOffset
 
           stopPlaybackLoop();
           audioEl.removeAttribute("data-playing");
@@ -1962,8 +1983,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         stopAllAudio();
         const ctx = getAudioContext();
 
-        // Create a new buffer source for the decoded PCM
-        const audioBuf = ctx.createBuffer(1, pcmData.length, 48000);
+        const sr = (playBtn as HTMLButtonElement & { _sr: number })._sr ?? 48000;
+        const audioBuf = ctx.createBuffer(1, pcmData.length, sr);
         audioBuf.getChannelData(0).set(pcmData);
 
         sourceNode = ctx.createBufferSource();
@@ -1979,6 +2000,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
         sourceNode.onended = () => {
           if (!isPlaying) return; // called by manual stop
+          pauseOffset = 0; // reset to start on next play
           stopInternal();
           stopPlaybackLoop();
           setPlayIcon(playBtn, false);
@@ -2155,6 +2177,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     if (msg.direction === "peer") {
+      // Haptic: distinguish text from file/audio messages
+      if (msg.type === "file") haptic("file-received");
+      else if (msg.type === "text") haptic("msg-received");
       bumpUnread();
       nudgeAudio();
       // Send SEEN immediately if tab is focused.
@@ -2262,6 +2287,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (session) clearVote.setWeights(1, 1);
         // Founding 1:1 peers are symmetric hosts: both sides weight 2.
         campfireVote.setWeights(2, 2);
+        haptic("connected");
         enterPhase(opts.chatSection, "", false, false);
         liveSurface?.classList.remove("wl-recovering");
         opts.chatInput.disabled = false;
@@ -2293,6 +2319,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "disconnected":
+        haptic("disconnected");
         enterPhase(opts.disconnectedSection, "session ended", false, false);
         resetFpChip();
         break;
@@ -3013,6 +3040,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       sendInFlight(msgId);
     } catch (err) {
       send.phase = "delivered"; send.velocity = -4;
+      haptic("send-failed");
       appendLog(`send failed: ${errMsg(err)}`);
       pulseComposeIntent("error", 1100);
     }
