@@ -57,6 +57,7 @@ const BRIF = (l: number) => [0x0d, ...encodeULEB(l)];
 const BLOCK = [0x02, VOID];
 const LOOP = [0x03, VOID];
 const IF = [0x04, VOID];
+const IF_I32 = [0x04, I32];
 const ELSE = [0x05];
 const END = [0x0b];
 const RETURN = [0x0f];
@@ -73,6 +74,15 @@ const I32_REINTERPRET_F32 = [0xbc];
 const F32_REINTERPRET_I32 = [0xbe];
 const I32_TRUNC_SAT_F32_S = [0xfc, 0x00];
 const F32_CONVERT_I32_S = [0xb2];
+
+const LOAD64 = (al: number, off: number) => [0x29, al, ...encodeULEB(off)];
+const STORE64 = (al: number, off: number) => [0x37, al, ...encodeULEB(off)];
+const I64_EXTEND_I32_U = [0xad];
+const I32_WRAP_I64 = [0xa7];
+const I64_SHL = [0x86];
+const I64_SHR_u = [0x88];
+const I64_OR = [0x84];
+const CI64 = (v: number) => [0x42, ...encodeSLEB(v)];
 
 const ADD = [0x6a];
 const SUB = [0x6b];
