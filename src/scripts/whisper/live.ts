@@ -133,7 +133,7 @@ export interface WhisperLiveSessionOptions {
 
 /* ── Visual Fingerprint ──── */
 
-const FINGERPRINT_EMOJI = [
+export const FINGERPRINT_EMOJI = [
   // forest & nature
   "\u{1F332}", // evergreen tree
   "\u{1F333}", // deciduous tree
@@ -213,11 +213,19 @@ const FINGERPRINT_EMOJI = [
 const PHRASE_KDF_INFO = TE.encode("whisper-live-keyed");
 const ZERO_SALT_32 = new Uint8Array(32);
 
-async function deriveFingerprint(sharedSecret: Uint8Array): Promise<string> {
+export async function deriveFingerprint(sharedSecret: Uint8Array): Promise<string> {
   const hash = await sha256(concatBytes(TE.encode("whisper-fp-v1"), sharedSecret));
-  return Array.from(hash.subarray(0, 4))
-    .map((b) => FINGERPRINT_EMOJI[b % FINGERPRINT_EMOJI.length])
-    .join("");
+  const n = FINGERPRINT_EMOJI.length;
+  const pool = Array.from({ length: n }, (_, i) => i);
+  let result = "";
+  for (let i = 0; i < 4; i++) {
+    // 2 hash bytes per pick → 16-bit range (65536), bias < 1 in 6500
+    const v = (hash[i * 2] << 8) | hash[i * 2 + 1];
+    const j = i + (v % (n - i));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+    result += FINGERPRINT_EMOJI[pool[i]];
+  }
+  return result;
 }
 
 /* ── WhisperLiveSession ──── */
@@ -294,6 +302,7 @@ export class WhisperLiveSession {
   private dc: RTCDataChannel | null = null;
   private ratchetState: RatchetState | null = null;
   private sharedSecret: Uint8Array | null = null;
+  private consecutiveDecryptFailures = 0;
   private sharedPhrase: string | null = "";
   private transportMode: TransportMode = "naked";
   private assembler = new ChunkAssembler();
@@ -399,6 +408,9 @@ export class WhisperLiveSession {
   }
 
   get state(): LiveState { return this._state; }
+
+  /** Current send counter — the counter of the next message that will be sent. */
+  get sendCounter(): number { return this.ratchetState?.nSend ?? 0; }
 
   private setState(state: LiveState, detail?: string): void {
     const allowed = VALID_TRANSITIONS[this._state];
@@ -838,12 +850,10 @@ export class WhisperLiveSession {
 
       this.setState("verifying");
 
-      // Auto-confirm for programmatic connections (Campfire neighbor links)
-      // Offerer can confirm immediately (ratchet already initialized above).
-      // Answerer must wait for RATCHET_INIT from offerer (handled in handleRatchetInit).
-      if (this.autoConfirm && this.isOfferer) {
-        this.confirmFingerprint();
-      }
+      // Answerer auto-confirm is deferred to handleRatchetInit (after chainKeySend is set).
+      // Offerer auto-confirm is also deferred to handleRatchetInit so that chainKeySend
+      // is guaranteed initialized before entering "live" — avoids a silent send-failure
+      // race where the offerer is "live" but the send chain isn't ready yet.
     } catch (err) {
       this.onLog(`key derivation failed: ${errorMessage(err, "unknown error")}`);
       this.setState("error", "Key derivation failed");
@@ -869,6 +879,10 @@ export class WhisperLiveSession {
       if (this.ratchetState) {
         await dhRatchetStep(this.ratchetState, peerRatchetPubKey);
         this.onLog("encryption ready");
+        // Confirm only after dhRatchetStep — chainKeySend is now initialized.
+        if (this.autoConfirm && this._state === "verifying") {
+          this.confirmFingerprint();
+        }
       }
     }
   }
@@ -982,6 +996,7 @@ export class WhisperLiveSession {
         throw decryptErr;
       }
       messageKey.fill(0); // wipe message key after use
+      this.consecutiveDecryptFailures = 0; // reset on successful decrypt
 
       const ackPayload = new Uint8Array(4);
       new DataView(ackPayload.buffer).setUint32(0, header.counter, true);
@@ -1015,7 +1030,13 @@ export class WhisperLiveSession {
         });
       }
     } catch (err) {
+      this.consecutiveDecryptFailures++;
       this.onLog(`decrypt failed: ${errorMessage(err)}`);
+      if (this.consecutiveDecryptFailures >= 3) {
+        this.onLog("3 consecutive decryption failures — possible desync or tampering. disconnecting");
+        this.setState("error", "Encryption desync — session terminated for safety");
+        this.cleanupConnection();
+      }
     }
   }
 
@@ -1048,7 +1069,9 @@ export class WhisperLiveSession {
   /** Enqueue a send job — serializes through sendQueue so ratchet state is never concurrent. */
   private enqueueSend(job: () => Promise<void>): Promise<void> {
     const wrapped = () => job().catch((err) => {
-      this.onLog(`send failed: ${errorMessage(err)}`);
+      const msg = errorMessage(err);
+      this.onLog(`send failed: ${msg}`);
+      this.onMessage({ type: "system", direction: "system", text: `message not sent: ${msg}`, timestamp: Date.now() });
     });
     this.sendQueue = this.sendQueue.then(wrapped);
     return this.sendQueue;
@@ -1370,6 +1393,7 @@ export class WhisperLiveSession {
     }
 
     this.sharedPhrase = null;
+    this.consecutiveDecryptFailures = 0;
     this.assembler.reset();
 
     if (this.recoveryResolve) {

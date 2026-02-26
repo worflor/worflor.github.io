@@ -9,6 +9,7 @@ import {
   WhisperLiveSession,
   WHISPER_LIVE_RTC_LOCAL_ONLY,
   WHISPER_LIVE_RTC_PUBLIC_STUN,
+  deriveFingerprint,
   type LiveState,
   type LiveMessage,
 } from "./live";
@@ -99,6 +100,12 @@ export interface WhisperLiveUIOptions {
   chatFileInput: HTMLInputElement;
   chatFileBtn: HTMLButtonElement;
   disconnectBtn: HTMLButtonElement;
+  fpChip: HTMLButtonElement;
+  fpChipEmoji: HTMLElement;
+  fpPopover: HTMLElement;
+  fpPopoverEmoji: HTMLElement;
+  fpCopyBtn: HTMLButtonElement;
+  fpCloseBtn: HTMLButtonElement;
 
   /* Silent phase */
   silentSection: HTMLElement;
@@ -168,6 +175,12 @@ const WHISPER_LIVE_IDS = {
   chatFileInput: "wl-chat-file-input",
   chatFileBtn: "wl-chat-file-btn",
   disconnectBtn: "wl-disconnect",
+  fpChip: "wl-fp-chip",
+  fpChipEmoji: "wl-fp-chip-emoji",
+  fpPopover: "wl-fp-popover",
+  fpPopoverEmoji: "wl-fp-popover-emoji",
+  fpCopyBtn: "wl-fp-copy",
+  fpCloseBtn: "wl-fp-close",
   silentSection: "wl-silent-section",
   silentSecret: "wl-silent-secret",
   silentCopyBtn: "wl-silent-copy",
@@ -220,6 +233,28 @@ function extractLiveCodeCandidate(raw: string, expectedKind?: LiveQrKind): strin
   return fallback[0];
 }
 
+/* ── Preview seed ────────────────────────────────────────── */
+
+/**
+ * Stable 32-byte seed tied to this browser profile, persisted in localStorage.
+ * Means the preview fingerprint is the same every visit on the same device,
+ * derived through the exact same pipeline as a real session fingerprint.
+ */
+function getPreviewSeed(): Uint8Array {
+  const KEY = "wl-preview-seed";
+  try {
+    const stored = localStorage.getItem(KEY);
+    if (stored && stored.length === 64 && /^[0-9a-f]+$/.test(stored)) {
+      return new Uint8Array(stored.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
+    }
+  } catch { /* storage unavailable */ }
+
+  const seed = crypto.getRandomValues(new Uint8Array(32));
+  const hex = Array.from(seed).map((b) => b.toString(16).padStart(2, "0")).join("");
+  try { localStorage.setItem(KEY, hex); } catch { /* storage unavailable */ }
+  return seed;
+}
+
 /* ── Resolve ──────────────────────────────────────────────── */
 
 export function resolveWhisperLiveUIOptions(root: ParentNode = document): WhisperLiveUIOptions | null {
@@ -258,6 +293,9 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     chatInput: inp(I.chatInput), chatSendBtn: btn(I.chatSendBtn),
     chatFileInput: inp(I.chatFileInput), chatFileBtn: btn(I.chatFileBtn),
     disconnectBtn: btn(I.disconnectBtn),
+    fpChip: btn(I.fpChip), fpChipEmoji: el(I.fpChipEmoji),
+    fpPopover: el(I.fpPopover), fpPopoverEmoji: el(I.fpPopoverEmoji),
+    fpCopyBtn: btn(I.fpCopyBtn), fpCloseBtn: btn(I.fpCloseBtn),
     silentSection: el(I.silentSection), silentSecret: el(I.silentSecret),
     silentCopyBtn: btn(I.silentCopyBtn), silentDisconnectBtn: btn(I.silentDisconnectBtn),
     disconnectedSection: el(I.disconnectedSection), newSessionBtn: btn(I.newSessionBtn),
@@ -301,7 +339,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const originalTitle = document.title;
   let unreadCount = 0;
   let hasFocus = document.hasFocus();
-  type ComposeIntent = "idle" | "connecting" | "ready" | "typing" | "sending" | "success" | "error" | "drop";
+  type ComposeIntent = "idle" | "connecting" | "ready" | "typing" | "error" | "drop";
   const chatCompose = opts.chatInput.closest<HTMLElement>(".wl-chat-compose");
   let composeIntentTimer: ReturnType<typeof setTimeout> | null = null;
   let composeIntentOverride: ComposeIntent | null = null;
@@ -311,25 +349,73 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let composeActivityRaf = 0;
   let composeActivityLastTick = 0;
   let composeFlow = 0;
-  let sendEnergy = 0;
-  let sendEnergyVelocity = 0;
-  let peerTypingIntensity = 0;    // 0→1 fade in/out
-  let peerTypingPhase = 0;        // oscillator phase (radians)
-  let peerTypingTarget = 0;       // 1 when typing, 0 when not
+  // Send energy — 3-phase animation driven by real networking events.
+  const send = {
+    energy: 0,          // 0→1 visual fill
+    velocity: 0,        // spring velocity
+    phase: "idle" as "idle" | "filling" | "in-flight" | "delivered",
+    fillTarget: 0,      // additive target from onSendProgress
+    inflightStart: 0,   // timestamp when data was buffered
+    peakEnergy: 0,      // snapshot at delivery for kick scaling
+    acks: new Set<number>(),           // message counters awaiting ACK
+    timestamps: new Map<number, number>(), // counter → send time
+    rtt: 80,            // ms, EMA from ICE stats
+    ackLatency: 100,    // ms, EMA of send→ACK round-trip
+  };
+
+  // Typing indicator — amplitude-modulated pendulum.
+  const typing = {
+    intensity: 0,       // 0→1 opacity
+    phase: 0,           // oscillator radians
+    target: 0,          // 1 when peer is typing
+    phaseVelocity: 0,   // external impulse (send ripple kick)
+    amplitude: 0,       // 0→1 swing width
+    sustain: 0,         // 0→1 warmth from duration
+    speed: 0,           // 0→1 instantaneous motion speed
+  };
   let currentLiveState: LiveState = "idle";
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  function syncComposeActivityVar(): void {
+  /** Push all animation state to CSS custom properties. One place, once per frame. */
+  function syncCSSVars(): void {
     if (!chatCompose) return;
-    chatCompose.style.setProperty("--wl-activity", composeActivity.toFixed(3));
-    chatCompose.style.setProperty("--wl-velocity", Math.min(1, Math.abs(composeActivityVelocity) * 0.18).toFixed(3));
-    chatCompose.style.setProperty("--wl-flow", `${(((Math.sin(composeFlow) + 1) * 0.5) * 100).toFixed(2)}%`);
-    chatCompose.style.setProperty("--wl-send-energy", sendEnergy.toFixed(3));
-    chatCompose.style.setProperty("--wl-peer-typing", peerTypingIntensity.toFixed(3));
-    // Eased sine — slow at edges, fast through middle (honey weight)
-    const raw = (Math.sin(peerTypingPhase) + 1) * 0.5;
-    const eased = raw * raw * (3 - 2 * raw); // smoothstep
-    chatCompose.style.setProperty("--wl-typing-pos", eased.toFixed(4));
+    const s = chatCompose.style;
+    const se = send.energy;
+    const ti = typing.intensity;
+
+    // Compose activity
+    s.setProperty("--wl-activity", composeActivity.toFixed(3));
+    s.setProperty("--wl-velocity", Math.min(1, Math.abs(composeActivityVelocity) * 0.18).toFixed(3));
+    s.setProperty("--wl-flow", `${(((Math.sin(composeFlow) + 1) * 0.5) * 100).toFixed(2)}%`);
+
+    // Send energy + velocity-driven glow
+    s.setProperty("--wl-send-energy", se.toFixed(3));
+    s.setProperty("--wl-send-velocity", Math.min(1, Math.abs(send.velocity) * 0.15).toFixed(3));
+
+    // Typing: position with amplitude → smoothstep
+    const rawPos = 0.5 + typing.amplitude * 0.5 * Math.sin(typing.phase);
+    const eased = rawPos * rawPos * (3 - 2 * rawPos);
+    s.setProperty("--wl-peer-typing", ti.toFixed(3));
+    s.setProperty("--wl-typing-pos", eased.toFixed(4));
+
+    // Typing: width modulation (breath at edges, stretch at center, sustain warmth)
+    const spd = typing.speed;
+    s.setProperty("--wl-typing-width", (1 + (1 - spd) * 0.18 + spd * 0.28 + typing.sustain * 0.06).toFixed(3));
+    s.setProperty("--wl-typing-glow", (spd * 0.5 + typing.sustain * 0.3).toFixed(3));
+
+    // Cross-system interaction (only computed when both are active)
+    const interaction = (se > 0.02 && ti > 0.02) ? se * ti : 0;
+    s.setProperty("--wl-energy-center", (0.5 + (eased - 0.5) * 0.12 * interaction).toFixed(4));
+    s.setProperty("--wl-typing-squeeze", (1 - se * 0.45).toFixed(3));
+    s.setProperty("--wl-interaction", interaction.toFixed(3));
+
+    // Suppress border-top when energy bar is active
+    s.borderTopColor = se > 0.01 ? "transparent" : "";
+  }
+
+  /** Shared spring integrator: accel = ω²(target - x) − 2ζω·v */
+  function springAccel(x: number, v: number, target: number, omega: number, zeta: number): number {
+    return omega * omega * (target - x) - 2 * zeta * omega * v;
   }
 
   function stepComposeActivity(ts: number): void {
@@ -337,71 +423,85 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const dt = Math.min(0.04, Math.max(0.001, rawDt || (1 / 60)));
     composeActivityLastTick = ts;
 
-    // Exponentially decay target energy so motion naturally settles.
+    // ── Compose activity spring ──
     composeActivityTarget *= Math.exp(-dt * 2.6);
+    composeActivityVelocity += springAccel(composeActivity, composeActivityVelocity, composeActivityTarget, 13, 0.72) * dt;
+    composeActivity = Math.max(0, Math.min(1, composeActivity + composeActivityVelocity * dt));
+    composeFlow += dt * (2.4 + composeActivity * 6.2);
 
-    // 2nd-order spring dynamics (mass-spring-damper).
-    const omega = 13;   // natural frequency
-    const zeta = 0.72;  // damping ratio (under-damped, pleasant overshoot)
-    const accel = (omega * omega * (composeActivityTarget - composeActivity))
-      - (2 * zeta * omega * composeActivityVelocity);
+    // ── Send energy (RTT-derived physics) ──
+    const rttFactor = Math.max(0, Math.min(1, (send.rtt - 30) / 170));
 
-    composeActivityVelocity += accel * dt;
-    composeActivity += composeActivityVelocity * dt;
-    composeActivity = Math.max(0, Math.min(1, composeActivity));
+    if (send.phase === "filling") {
+      const w = 14 - rttFactor * 4, z = 0.65 + rttFactor * 0.1;
+      send.velocity += springAccel(send.energy, send.velocity, send.fillTarget, w, z) * dt;
+      send.energy += send.velocity * dt;
+    } else if (send.phase === "in-flight") {
+      const breathPeriod = Math.max(120, send.rtt * 1.5);
+      const breath = 0.92 + 0.08 * Math.sin((Date.now() - send.inflightStart) / breathPeriod);
+      send.energy += (breath - send.energy) * Math.min(1, (10 - rttFactor * 4) * dt);
+      send.velocity *= Math.exp(-dt * (6 + rttFactor * 4));
+    } else if (send.phase === "delivered") {
+      const af = Math.max(0, Math.min(1, (send.ackLatency - 50) / 250));
+      send.velocity += springAccel(send.energy, send.velocity, 0, 9 - af * 3, 0.45 + af * 0.15) * dt;
+      send.energy += send.velocity * dt;
+      if (send.energy < 0.005 && Math.abs(send.velocity) < 0.005) {
+        send.energy = 0; send.velocity = 0; send.phase = "idle";
+      }
+    }
+    send.energy = Math.max(0, Math.min(1, send.energy));
 
-    // Procedural phase progression tied to current energy.
-    composeFlow += dt * (2.4 + (composeActivity * 6.2));
+    // ── Typing indicator (amplitude-modulated pendulum) ──
+    const t = typing;
+    const tOn = t.target > 0.5;
 
-    // Send energy: spring toward 0 — fills on impulse, ripples back naturally.
-    const seOmega = 8;
-    const seZeta = 0.55;
-    const seAccel = (seOmega * seOmega * (0 - sendEnergy))
-      - (2 * seZeta * seOmega * sendEnergyVelocity);
-    sendEnergyVelocity += seAccel * dt;
-    sendEnergy += sendEnergyVelocity * dt;
-    sendEnergy = Math.max(0, Math.min(1, sendEnergy));
+    // Intensity + amplitude: independent rates so amplitude winds down before opacity fades
+    t.intensity += ((tOn ? 1 : 0) - t.intensity) * Math.min(1, (tOn ? 4.5 : 1.8) * dt);
+    t.intensity = Math.max(0, Math.min(1, t.intensity));
+    t.amplitude += ((tOn ? 1 : 0) - t.amplitude) * Math.min(1, (tOn ? 1.4 : 2.8) * dt);
+    t.amplitude = Math.max(0, Math.min(1, t.amplitude));
 
-    // Peer typing: smooth fade in/out, weighted oscillator for scanning.
-    // Intensity lerps toward target (1=typing, 0=stopped).
-    const fadeSpeed = peerTypingTarget > 0.5 ? 4.5 : 2.8; // faster in, slower out
-    peerTypingIntensity += (peerTypingTarget - peerTypingIntensity) * Math.min(1, fadeSpeed * dt);
-    peerTypingIntensity = Math.max(0, Math.min(1, peerTypingIntensity));
+    // Sustain warmth
+    t.sustain = tOn
+      ? Math.min(1, t.sustain + dt * 0.14)
+      : t.sustain * Math.exp(-dt * 0.5);
 
-    // Phase advances only while visible — variable speed for organic feel.
-    // Slower at edges (honey weight), base period ~2.8s.
-    if (peerTypingIntensity > 0.01) {
-      const pos = (Math.sin(peerTypingPhase) + 1) * 0.5;
-      // Speed up in the middle, decelerate at edges — weighted pendulum feel.
-      const edgeDist = 1 - Math.abs(pos - 0.5) * 2; // 0 at edges, 1 at center
-      const speed = 1.8 + edgeDist * 1.4;
-      peerTypingPhase += dt * speed;
+    if (t.intensity > 0.01) {
+      const pos = 0.5 + t.amplitude * 0.5 * Math.sin(t.phase);
+      const edgeDist = 1 - Math.abs(pos - 0.5) * 2;
+      const windDown = 0.3 + t.amplitude * 0.7;
+      t.phaseVelocity *= Math.exp(-dt * 3.5);
+      t.phase += dt * ((1.8 + edgeDist * 1.4) * (1 - send.energy * 0.3) * windDown + t.phaseVelocity);
+      t.speed = Math.abs(Math.cos(t.phase)) * t.amplitude;
+    } else {
+      t.phaseVelocity = 0; t.amplitude = 0; t.sustain = 0; t.speed = 0;
     }
 
-    syncComposeActivityVar();
+    syncCSSVars();
 
-    const active =
-      composeActivity > 0.006
-      || composeActivityTarget > 0.006
+    // Keep loop alive while anything is in motion
+    if (composeActivity > 0.006 || composeActivityTarget > 0.006
       || Math.abs(composeActivityVelocity) > 0.006
-      || sendEnergy > 0.006
-      || Math.abs(sendEnergyVelocity) > 0.006
-      || peerTypingIntensity > 0.006;
-
-    if (active) {
+      || send.energy > 0.006 || Math.abs(send.velocity) > 0.006
+      || t.intensity > 0.006 || t.amplitude > 0.006) {
       composeActivityRaf = requestAnimationFrame(stepComposeActivity);
       return;
     }
 
-    composeActivity = 0;
-    composeActivityTarget = 0;
-    composeActivityVelocity = 0;
-    sendEnergy = 0;
-    sendEnergyVelocity = 0;
-    peerTypingIntensity = 0;
-    syncComposeActivityVar();
-    composeActivityRaf = 0;
-    composeActivityLastTick = 0;
+    // Full reset
+    composeActivity = 0; composeActivityTarget = 0; composeActivityVelocity = 0;
+    send.energy = 0; send.velocity = 0; send.fillTarget = 0;
+    send.phase = "idle"; send.acks.clear(); send.timestamps.clear(); send.peakEnergy = 0;
+    t.intensity = 0; t.phaseVelocity = 0; t.amplitude = 0; t.sustain = 0; t.speed = 0;
+    syncCSSVars();
+    composeActivityRaf = 0; composeActivityLastTick = 0;
+  }
+
+  /** Kick the rAF loop if not already running. Single gate for all animation. */
+  function ensureRaf(): void {
+    if (!composeActivityRaf && chatCompose && !reduceMotion) {
+      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
+    }
   }
 
   function exciteComposeActivity(boost: number): void {
@@ -409,21 +509,92 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const b = Math.max(0, Math.min(1, boost));
     composeActivityTarget = Math.min(1, composeActivityTarget + b);
     composeActivityVelocity += b * 2.25;
-    syncComposeActivityVar();
-    if (!composeActivityRaf) {
-      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
-    }
+    syncCSSVars();
+    ensureRaf();
   }
 
-  function pulseSendEnergy(): void {
+  // ── Send energy lifecycle ──
+
+  function sendBeginFill(): void {
     if (!chatCompose || reduceMotion) return;
-    // Additive: if already in motion, stack energy and add velocity kick
-    sendEnergy = Math.min(1, sendEnergy + (1 - sendEnergy) * 0.8 + 0.2);
-    sendEnergyVelocity += 3.5;
-    syncComposeActivityVar();
-    if (!composeActivityRaf) {
-      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
+    send.phase = "filling";
+    send.fillTarget = Math.min(1, Math.max(send.fillTarget, send.energy) + 0.15);
+    send.velocity = Math.max(send.velocity, 2.0 - Math.min(1, send.rtt / 200) * 0.5);
+    ensureRaf();
+  }
+
+  function sendProgress(fraction: number): void {
+    if (send.phase !== "filling") return;
+    send.fillTarget = Math.max(send.fillTarget, send.energy + (1 - send.energy) * fraction);
+  }
+
+  function sendInFlight(counter: number): void {
+    if (!chatCompose || reduceMotion) return;
+    const now = Date.now();
+    send.acks.add(counter);
+    send.timestamps.set(counter, now);
+    send.phase = "in-flight";
+    send.fillTarget = 1;
+    send.inflightStart = now;
+    send.peakEnergy = send.energy;
+    ensureRaf();
+    // Safety: auto-release if ACK never arrives
+    setTimeout(() => {
+      if (send.acks.delete(counter) && send.acks.size === 0) {
+        send.timestamps.delete(counter);
+        sendDelivered();
+      }
+    }, 5000);
+  }
+
+  function sendDelivered(): void {
+    if (!chatCompose || reduceMotion) return;
+    send.phase = "delivered";
+    const af = Math.min(1, send.ackLatency / 300);
+    send.velocity = -((1.8 - af * 0.4) + send.peakEnergy * 2.2);
+
+    // Ripple shoves the typing pendulum outward
+    if (typing.intensity > 0.05) {
+      const dir = Math.sin(typing.phase) > 0 ? 1 : -1;
+      typing.phaseVelocity += dir * (1.2 + send.peakEnergy * 2.0);
     }
+    ensureRaf();
+  }
+
+  function handleAck(counter: number): void {
+    const sentAt = send.timestamps.get(counter);
+    if (sentAt) {
+      send.ackLatency = send.ackLatency * 0.7 + (Date.now() - sentAt) * 0.3;
+      send.timestamps.delete(counter);
+    }
+    send.acks.delete(counter);
+    if (send.acks.size === 0 && send.phase === "in-flight") sendDelivered();
+  }
+
+  function handleConnectionStats(stats: { rtt: number; bytesSent: number; bytesReceived: number }): void {
+    if (stats.rtt > 0) send.rtt = send.rtt * 0.75 + stats.rtt * 0.25;
+  }
+
+  /** Preview mode: simulate the send lifecycle without a real connection. */
+  let previewSendId = 0;
+  function simulateSendEnergy(): void {
+    if (!chatCompose || reduceMotion) return;
+    sendBeginFill();
+    const myId = ++previewSendId;
+    let t = 0;
+    const step = () => {
+      t += 0.12;
+      sendProgress(Math.min(1, t));
+      if (t < 1) { requestAnimationFrame(step); return; }
+      if (myId !== previewSendId) return;
+      send.phase = "in-flight";
+      send.peakEnergy = send.energy;
+      send.inflightStart = Date.now();
+      setTimeout(() => {
+        if (myId === previewSendId && send.phase === "in-flight") sendDelivered();
+      }, 100 + Math.random() * 80);
+    };
+    requestAnimationFrame(step);
   }
 
   type QrScanStopReason = "accepted" | "cancelled" | "error" | "teardown";
@@ -824,21 +995,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Typing indicator ──────────────────────────────────── */
 
   function showPeerTyping(): void {
-    peerTypingTarget = 1;
-    // Reset auto-clear timer
+    typing.target = 1;
+    // Each typing signal nudges the pendulum — keeps it feeling alive
+    if (typing.amplitude > 0.3) typing.phaseVelocity += 0.3;
     if (peerTypingTimer) clearTimeout(peerTypingTimer);
     peerTypingTimer = setTimeout(hidePeerTyping, TYPING_DISPLAY_TIMEOUT);
     exciteComposeActivity(0.18);
-    // Ensure rAF loop is running
-    if (!composeActivityRaf && chatCompose && !reduceMotion) {
-      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
-    }
+    ensureRaf();
   }
 
   function hidePeerTyping(): void {
     if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
-    peerTypingTarget = 0;
-    // rAF loop will continue until intensity fades to 0
+    typing.target = 0;
   }
 
   function emitTyping(): void {
@@ -951,8 +1119,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onMessage: handleMessage,
       onLog: appendLog,
       onPeerTyping: showPeerTyping,
+      onAck: handleAck,
+      onSendProgress: (sent, total) => sendProgress(sent / total),
+      onConnectionStats: handleConnectionStats,
     }, {
       rtcConfig,
+      autoConfirmFingerprint: true,
     });
   }
 
@@ -1012,7 +1184,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "verifying":
-        enterPhase(opts.verifySection, "security check: compare emoji with your peer", false, false);
+        // auto-confirmed — stay on connecting screen, transition to live is immediate
         break;
 
       case "live":
@@ -1021,6 +1193,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatInput.disabled = false;
         opts.chatInput.placeholder = "type a message";
         opts.chatInput.focus();
+        opts.fpChip.classList.remove("wl-fp-chip--recovering");
+        opts.fpChip.classList.add("wl-fp-chip--verified");
         addChatMessage({
           type: "system", direction: "system",
           text: wasRecovering ? "reconnected" : "connected. messages are end-to-end encrypted",
@@ -1042,22 +1216,36 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatSendBtn.disabled = true;
         opts.chatFileBtn.disabled = true;
         opts.chatInput.disabled = true;
+        opts.fpChip.classList.remove("wl-fp-chip--verified");
+        opts.fpChip.classList.add("wl-fp-chip--recovering");
         addChatMessage({ type: "system", direction: "system", text: "connection interrupted, reconnecting...", timestamp: Date.now() });
         break;
 
       case "disconnected":
         enterPhase(opts.disconnectedSection, "session ended", false, false);
+        resetFpChip();
         break;
 
       case "error":
         enterPhase(opts.errorSection, "couldn't connect", false, false);
         opts.errorMessage.textContent = detail ?? "something went wrong";
+        resetFpChip();
         break;
     }
   }
 
   function handleFingerprint(emoji: string): void {
-    opts.fingerprintDisplay.textContent = emoji;
+    opts.fingerprintDisplay.textContent = emoji;   // existing verify panel
+    opts.fpChipEmoji.textContent = emoji;           // chip
+    opts.fpPopoverEmoji.textContent = emoji;        // popover
+  }
+
+  function resetFpChip(): void {
+    opts.fpChip.classList.remove("wl-fp-chip--verified", "wl-fp-chip--recovering");
+    opts.fpChipEmoji.textContent = "";
+    opts.fpPopoverEmoji.textContent = "";
+    opts.fpPopover.hidden = true;
+    opts.fpChip.setAttribute("aria-expanded", "false");
   }
 
   function handleMessage(msg: LiveMessage): void {
@@ -1093,6 +1281,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     currentLiveState = "idle";
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
+    resetFpChip();
     showPhase(opts.liveSection);
     if (opts.relayAssistToggle) applyModeSwitch(currentIdleMode);
     updateStatus("ready to connect");
@@ -1159,7 +1348,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     relayAssist: boolean;
   }> = {
     relay: {
-      lede: "know a phrase, connect at the same time. thats it.",
+      lede: "know a phrase, and connect at the same time. thats it.",
       flareLink: "try a signal flare",
       manualLink: "or connect manually",
       relayAssist: true,
@@ -1518,6 +1707,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       setLogActive(false);
       setBusy(false);
       updateControls();
+      void deriveFingerprint(getPreviewSeed()).then((emoji) => {
+        handleFingerprint(emoji);
+        opts.fpChip.classList.add("wl-fp-chip--verified");
+      });
       try { opts.chatInput.focus(); } catch { /* noop */ }
     }, { signal });
   }
@@ -1672,29 +1865,54 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     session?.rejectFingerprint();
   }, { signal });
 
+  // ── Fingerprint chip ──────────────────────────────────────
+  opts.fpChip.addEventListener("click", () => {
+    const open = !opts.fpPopover.hidden;
+    opts.fpPopover.hidden = open;
+    opts.fpChip.setAttribute("aria-expanded", String(!open));
+  }, { signal });
+
+  opts.fpCopyBtn.addEventListener("click", () => {
+    const emoji = opts.fpChipEmoji.textContent ?? "";
+    if (!emoji) return;
+    copyToClipboard(emoji)
+      .then(() => flashText(opts.fpCopyBtn, "copied!"))
+      .catch(() => flashText(opts.fpCopyBtn, "failed"));
+  }, { signal });
+
+  opts.fpCloseBtn.addEventListener("click", () => {
+    opts.fpPopover.hidden = true;
+    opts.fpChip.setAttribute("aria-expanded", "false");
+  }, { signal });
+
+  document.addEventListener("click", (e) => {
+    if (!opts.fpPopover.hidden && !opts.fpChip.contains(e.target as Node) && !opts.fpPopover.contains(e.target as Node)) {
+      opts.fpPopover.hidden = true;
+      opts.fpChip.setAttribute("aria-expanded", "false");
+    }
+  }, { signal });
+
   const sendMessage = async () => {
     const text = opts.chatInput.value.trim();
     if (!text) return;
     opts.chatInput.value = "";
     updateControls();
-    pulseSendEnergy();
     if (!session) {
-      // Preview mode — render locally without a connection
+      // Preview mode — simulate the full send lifecycle visually
       addChatMessage({ type: "text", direction: "self", text, timestamp: Date.now() });
-      pulseComposeIntent("success", 700);
-      exciteComposeActivity(0.35);
+      simulateSendEnergy();
       return;
     }
-    pulseComposeIntent("sending", 500);
-    exciteComposeActivity(0.45);
+    // Phase 1: encrypt + buffer begins
+    const counter = session.sendCounter;
+    sendBeginFill();
     try {
       await session.sendText(text);
-      pulseComposeIntent("success", 700);
-      exciteComposeActivity(0.35);
+      sendInFlight(counter);
     } catch (err) {
+      send.phase = "delivered"; send.velocity = -4;
       appendLog(`send failed: ${errMsg(err)}`);
       pulseComposeIntent("error", 1100);
-      exciteComposeActivity(0.4);
     }
   };
 
@@ -1781,10 +1999,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const file = opts.chatFileInput.files?.[0];
     if (!file || !session) return;
     opts.chatFileInput.value = "";
+    const counter = session.sendCounter;
+    sendBeginFill();
     try {
       await session.sendFile(file);
+      sendInFlight(counter);
     } catch (err) {
+      send.phase = "delivered"; send.velocity = -4;
       appendLog(`file send failed: ${errMsg(err)}`);
+      pulseComposeIntent("error", 1100);
     }
   }, { signal });
 
@@ -1792,7 +2015,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     e.preventDefault();
     opts.chatMessages.classList.add("wl-chat-drop-active");
     syncComposeIntent();
-    exciteComposeActivity(0.2);
   }, { signal });
 
   opts.chatMessages.addEventListener("dragleave", () => {
@@ -1806,14 +2028,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     syncComposeIntent();
     const file = (e as DragEvent).dataTransfer?.files?.[0];
     if (!file || !session) return;
+    const counter = session.sendCounter;
+    sendBeginFill();
     try {
       await session.sendFile(file);
-      pulseComposeIntent("success", 700);
-      exciteComposeActivity(0.36);
+      sendInFlight(counter);
     } catch (err) {
+      send.phase = "delivered"; send.velocity = -4;
       appendLog(`file send failed: ${errMsg(err)}`);
       pulseComposeIntent("error", 1100);
-      exciteComposeActivity(0.42);
     }
   }, { signal });
 
