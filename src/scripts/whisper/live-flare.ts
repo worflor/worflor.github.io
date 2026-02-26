@@ -251,12 +251,14 @@ export async function maintainFlare(
         // Announce on this tracker connection.
         sendOnSocket(ws, makeAnnouncePayloads(currentHashes));
 
-        // Start low-chatter maintenance loop.
-        // We only refresh presence on epoch rotation; no periodic re-announce spam.
+        // Periodic re-announce: keeps the tracker socket alive (servers drop
+        // idle connections after ~60s) and re-advertises our offer so late
+        // joiners can discover us.
         if (!maintenanceTimer) {
           maintenanceTimer = setInterval(() => {
             if (done) return;
             void refreshEpochPresence();
+            sendAll(makeAnnouncePayloads(currentHashes));
           }, EPOCH_CHECK_INTERVAL);
         }
       };

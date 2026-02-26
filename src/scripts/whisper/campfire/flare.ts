@@ -299,7 +299,9 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
 
       if (!epochTimer) {
         epochTimer = setInterval(() => {
+          if (opts.signal.aborted || finished) return;
           void refreshEpochPresence();
+          sendAll(makeAnnounce());
         }, EPOCH_CHECK_INTERVAL);
       }
     };
