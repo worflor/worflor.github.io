@@ -34,12 +34,14 @@ export const TRACKER_URLS = [
 const WS_CONNECT_TIMEOUT = 5_000;
 const PEER_DISCOVERY_TIMEOUT = 30_000;
 const TOTAL_TIMEOUT = 45_000;
+const TRACKER_SECOND_ATTEMPT_DELAY = 300;
 export const EPOCH_WINDOW = 2 * 60 * 1000;
 const EPOCH_BOUNDARY_MARGIN = 15_000;
 export const PADDED_CODE_LEN = 1024;
 export const PAD_CHAR = ".";
 export const MIN_CODE_LEN = 40;
 export const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+export const TRACKER_MAX_MESSAGE_LEN = 8192;
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
@@ -79,6 +81,41 @@ export function unpadCode(code: string): string {
   return idx === -1 ? code : code.slice(0, idx);
 }
 
+export function makeTrackerAnnouncePayloads(
+  infoHashes: string[],
+  peerId: string,
+  offerId: string,
+  paddedOffer: string,
+): string[] {
+  return infoHashes.map((h) => JSON.stringify({
+    action: "announce",
+    info_hash: h,
+    peer_id: peerId,
+    numwant: 1,
+    offers: [{ offer_id: offerId, offer: { type: "offer", sdp: paddedOffer } }],
+  }));
+}
+
+export function makeTrackerStoppedPayloads(infoHashes: string[], peerId: string): string[] {
+  return infoHashes.map((h) => JSON.stringify({
+    action: "announce",
+    info_hash: h,
+    peer_id: peerId,
+    event: "stopped",
+  }));
+}
+
+export function parseTrackerMessage(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw !== "string" || raw.length > TRACKER_MAX_MESSAGE_LEN) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 /* ── Main exchange function ───────────────────────────────── */
 
 export async function exchangeViaTracker(
@@ -106,12 +143,24 @@ export async function exchangeViaTracker(
     signal.addEventListener("abort", () => totalAc.abort(), { once: true });
   }
 
-  // Race all trackers — each opens ONE socket and multiplexes all hashes
-  // on it. The first tracker to yield a result wins; losers are torn down
-  // immediately via the AbortController in `finally`.
+  // Stagger tracker attempts to reduce simultaneous socket load on public relays,
+  // while retaining fast fallback when the first tracker is slow/unavailable.
   try {
-    const attempts = TRACKER_URLS.map((url) =>
-      connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal),
+    const attempts = TRACKER_URLS.map((url, index) =>
+      (index === 0)
+        ? connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal)
+        : new Promise<TrackerSignalResult>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal)
+              .then(resolve)
+              .catch(reject);
+          }, TRACKER_SECOND_ATTEMPT_DELAY * index);
+
+          totalAc.signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        }),
     );
     return await Promise.any(attempts);
   } catch (err) {
@@ -155,21 +204,10 @@ function connectToTracker(
     let discoveryTimer: ReturnType<typeof setTimeout>;
 
     // Pre-serialize announce payloads — one per hash, reused as-is
-    const announcePayloads = infoHashes.map((h) => JSON.stringify({
-      action: "announce",
-      info_hash: h,
-      peer_id: peerId,
-      numwant: 1,
-      offers: [{ offer_id: offerId, offer: { type: "offer", sdp: paddedOffer } }],
-    }));
+    const announcePayloads = makeTrackerAnnouncePayloads(infoHashes, peerId, offerId, paddedOffer);
 
     // Pre-serialize stopped payloads
-    const stoppedPayloads = infoHashes.map((h) => JSON.stringify({
-      action: "announce",
-      info_hash: h,
-      peer_id: peerId,
-      event: "stopped",
-    }));
+    const stoppedPayloads = makeTrackerStoppedPayloads(infoHashes, peerId);
 
     const finish = (result?: TrackerSignalResult, error?: Error) => {
       if (done) return;
@@ -231,11 +269,8 @@ function connectToTracker(
 
       // Text frames arrive as strings — no coercion needed.
       // Binary frames (unexpected from a WebTorrent tracker) are ignored.
-      const raw = event.data;
-      if (typeof raw !== "string" || raw.length > 8192) return;
-
-      let msg: Record<string, unknown>;
-      try { msg = JSON.parse(raw); } catch { return; }
+      const msg = parseTrackerMessage(event.data);
+      if (!msg) return;
 
       if (msg["failure reason"]) {
         callbacks.onLog(`relay message: ${msg["failure reason"]}`);
@@ -249,18 +284,24 @@ function connectToTracker(
         const peerOfferCode = unpadCode(String(offer.sdp ?? ""));
         const peerOfferId = String(msg.offer_id ?? "");
         const peerPeerId = String(msg.peer_id ?? "");
+        const toPeerId = String(msg.to_peer_id ?? "");
+        const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : "";
 
         if (!peerOfferCode || peerOfferCode.length < MIN_CODE_LEN) return;
+        if (!peerOfferId) return;
+        if (!peerPeerId) return;
+        if (toPeerId && toPeerId !== peerId) return;
         if (peerPeerId === peerId) return;
+        if (infoHash && !infoHashes.includes(infoHash)) return;
         if (!BASE64URL_RE.test(peerOfferCode)) return;
         if (offerAccepted) return;
-        offerAccepted = true;
 
         // Tie-break: lower peer_id becomes answerer
         if (peerId > peerPeerId) {
           callbacks.onLog("resolving connection order...");
           return;
         }
+        offerAccepted = true;
 
         callbacks.onStatus("found your peer!");
         callbacks.onLog("peer found, accepting their offer");
@@ -298,7 +339,15 @@ function connectToTracker(
       if (msg.answer && typeof msg.answer === "object") {
         const answer = msg.answer as Record<string, unknown>;
         const peerAnswerCode = unpadCode(String(answer.sdp ?? ""));
+        const fromPeerId = String(msg.peer_id ?? "");
+        const toPeerId = String(msg.to_peer_id ?? "");
+        const incomingOfferId = String(msg.offer_id ?? "");
+        const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : "";
         if (!peerAnswerCode || peerAnswerCode.length < MIN_CODE_LEN) return;
+        if (!fromPeerId || fromPeerId === peerId) return;
+        if (toPeerId && toPeerId !== peerId) return;
+        if (!incomingOfferId || incomingOfferId !== offerId) return;
+        if (infoHash && !infoHashes.includes(infoHash)) return;
         if (!BASE64URL_RE.test(peerAnswerCode)) return;
 
         callbacks.onStatus("found your peer!");

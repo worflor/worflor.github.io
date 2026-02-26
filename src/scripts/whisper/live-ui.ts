@@ -1297,8 +1297,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     });
   }
 
-  let previousState: LiveState = "idle";
-
   function handleStateChange(state: LiveState, detail?: string): void {
     // During relay/flare exchange, suppress intermediate session states that would
     // overwrite the UI. The handler manages the connecting phase display itself
@@ -1308,15 +1306,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         "offering", "waiting-for-answer", "answering", "connecting", "disconnected",
       ];
       if (suppressed.includes(state)) {
-        previousState = state;
         return;
       }
     }
 
     currentLiveState = state;
-
-    const wasRecovering = previousState === "recovering";
-    previousState = state;
 
     const enterPhase = (el: HTMLElement, status: string, log: boolean, isBusy: boolean) => {
       showPhase(el); updateStatus(status); setLogActive(log); setBusy(isBusy); updateControls();
@@ -1474,8 +1468,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     updateControls();
   }
 
-  function handleExternalResetRequest(event: Event): void {
-    const custom = event as CustomEvent<{ reason?: string }>;
+  function handleExternalResetRequest(_event: Event): void {
     if (opts.page.dataset.mode !== "live") return;
     if (busy) return;
 
@@ -1577,11 +1570,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     updateControls();
-  }
-
-  // Backwards-compat shim used by existing relay logic
-  function applyRelayToggle(checked: boolean): void {
-    applyModeSwitch(checked ? "relay" : "manual");
   }
 
   /** Get the phrase from the active mode's input. */

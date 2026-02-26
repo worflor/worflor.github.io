@@ -250,12 +250,12 @@ export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
     { urls: [
       "stun:stun.l.google.com:19302",
       "stun:stun1.l.google.com:19302",
-      "stun:stun2.l.google.com:19302",
-      "stun:stun3.l.google.com:19302",
-      "stun:stun4.l.google.com:19302",
+      "stun:stun.cloudflare.com:3478",
     ] },
   ],
-  iceCandidatePoolSize: 2,
+  // Keep pre-gathering modest to reduce load on shared STUN infra.
+  // This remains a good reliability/latency balance for chat setup.
+  iceCandidatePoolSize: 1,
 };
 
 // Timeout for ICE gathering (ms)
