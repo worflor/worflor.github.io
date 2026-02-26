@@ -177,9 +177,8 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
 }
 
 function buildEncodeBody(): number[] {
-    const pcmPtr = 0, numSamples = 1, outPtr = 2; // args
-    // locals:
-    const i = 3, packedLen = 4, prev1 = 5, prev2 = 6, mode = 7, max_z = 8, block_len = 9;
+    const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar = 3; // args
+    const i = 4, packedLen = 5, prev1 = 6, mode = 7, max_z = 8, block_len = 9;
     const j = 10, i32_val = 11, delta = 12, z = 13, crypto_i = 14, crypto_words = 15;
     const cipher = 16, idx = 17, sample_count = 18, mac0 = 19, mac1 = 20, temp = 21;
     const v = [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
@@ -192,10 +191,13 @@ function buildEncodeBody(): number[] {
 
         // 2. Load ADPCM state
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 144), ...SET(prev1),
-        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 148), ...SET(prev2),
 
         // 3. ADPCM Compression Pass
         ...CI32(0), ...SET(i), ...CI32(0), ...SET(packedLen),
+
+        ...CI32(0), ...CI64(0), ...STORE64(3, Z_BLOCK + 256), // bit_buf (i64)
+        ...CI32(0), ...CI32(0), ...STORE32(2, Z_BLOCK + 264), // bit_cnt (i32)
+
         ...BLOCK, ...LOOP, // Main block loop
         ...GET(i), ...GET(numSamples), ...GE_s, ...BRIF(1),
 
@@ -210,11 +212,10 @@ function buildEncodeBody(): number[] {
 
         // f32 to scaled i32 (trunc_sat automatically handles clipping huge float values)
         ...GET(pcmPtr), ...GET(i), ...GET(j), ...ADD, ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
-        ...CI32(32767), ...F32_CONVERT_I32_S, ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
+        ...GET(scalar), ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        // delta = i32_val - (2*prev1 - prev2)
-        ...GET(i32_val), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...SUB, ...SET(delta),
-        ...GET(prev1), ...SET(prev2),
+        // 1st-order diff equation: delta = val - prev1
+        ...GET(i32_val), ...GET(prev1), ...SUB, ...SET(delta),
         ...GET(i32_val), ...SET(prev1),
 
         // z = (delta << 1) ^ (delta >>s 31)
@@ -244,22 +245,47 @@ function buildEncodeBody(): number[] {
         ...GET(j), ...GET(block_len), ...GE_s, ...BRIF(1),
         ...CI32(Z_BLOCK), ...GET(j), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(z),
 
-        ...GET(mode), ...CI32(1), ...EQ, ...IF,
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD, ...GET(z), ...STORE8(0, 0),
+        // bit_buf (i64 via 2x i32 words in memory) |= (z << bit_cnt)
+        // Use a tee pattern: we compute the new i64 and store it
+        // bit_buf_new = bit_buf | ((i64)z << bit_cnt)
+        // Encode: load buf, OR with shifted z, store back
+        ...CI32(0), // address for STORE64
+        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), // load existing bit_buf
+        ...GET(z), ...I64_EXTEND_I32_U,
+        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...I64_EXTEND_I32_U, ...I64_SHL,
+        ...I64_OR,
+        ...STORE64(3, Z_BLOCK + 256), // store updated bit_buf
+
+        // bit_cnt += mode * 8
+        ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...GET(mode), ...CI32(3), ...SHL, ...ADD, ...STORE32(2, Z_BLOCK + 264),
+
+        ...BLOCK, ...LOOP,
+        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...LT_u, ...BRIF(1), // while (bit_cnt >= 8)
+
+        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD,
+        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64, ...STORE8(0, 0), // write 8 bits
         ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
-        ...ELSE, ...GET(mode), ...CI32(2), ...EQ, ...IF,
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD, ...GET(z), ...STORE16(1, 0),
-        ...GET(packedLen), ...CI32(2), ...ADD, ...SET(packedLen),
-        ...ELSE,
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD, ...GET(z), ...STORE32(2, 0),
-        ...GET(packedLen), ...CI32(4), ...ADD, ...SET(packedLen),
-        ...END, ...END,
+
+        // bit_buf >>= 8
+        ...CI32(0), // address for STORE64
+        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...CI64(8), ...I64_SHR_u,
+        ...STORE64(3, Z_BLOCK + 256),
+        // bit_cnt -= 8
+        ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...SUB, ...STORE32(2, Z_BLOCK + 264),
+        ...BR(0), ...END, ...END,
 
         ...GET(j), ...CI32(1), ...ADD, ...SET(j), ...BR(0),
         ...END, ...END,
 
         ...GET(i), ...GET(block_len), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END,
+
+        // Flush remaining bits
+        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(0), ...GT_u, ...IF,
+        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD,
+        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64, ...STORE8(0, 0),
+        ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
+        ...END,
 
         // Pad packedLen to multiple of 4
         ...BLOCK, ...LOOP, // pad loop
@@ -270,7 +296,6 @@ function buildEncodeBody(): number[] {
 
         // Save ADPCM state
         ...CI32(0), ...GET(prev1), ...STORE32(2, ENC_STATE_ADDR + 144),
-        ...CI32(0), ...GET(prev2), ...STORE32(2, ENC_STATE_ADDR + 148),
 
         // 4. Cryptography Pass
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 128), ...SET(idx),
@@ -334,12 +359,12 @@ function buildEncodeBody(): number[] {
         ...GET(packedLen), ...CI32(HEADER_SIZE + MAC_SIZE), ...ADD,
         ...END,
     ];
-    return funcBody([{ count: 38, type: I32 }], body);
+    return funcBody([{ count: 34, type: I32 }], body);
 }
 
 function buildDecodeBody(): number[] {
-    const adpcmPtr = 0, numBytes = 1, outPtr = 2; // args
-    const numSamples = 3, packedLen = 4, prev1 = 5, prev2 = 6, mode = 7;
+    const adpcmPtr = 0, numBytes = 1, outPtr = 2, scalar = 3; // args
+    const numSamples = 4, packedLen = 5, prev1 = 6, mode = 7;
     const block_len = 8, j = 9, i32_val = 10, delta = 11, z = 12, crypto_i = 13, crypto_words = 14;
     const cipher = 15, idx = 16, sample_count = 17, mac0 = 18, mac1 = 19, temp = 20;
     const expMac0 = 21, expMac1 = 22, i = 23;
@@ -411,8 +436,10 @@ function buildDecodeBody(): number[] {
 
         // 4. ADPCM Decompression Pass
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 144), ...SET(prev1),
-        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 148), ...SET(prev2),
         ...CI32(0), ...SET(i), ...CI32(0), ...SET(crypto_i), // reusing crypto_i for packed byte offset
+
+        ...CI32(0), ...CI32(0), ...STORE32(2, Z_BLOCK + 264), // set bit_cnt = 0
+        ...CI32(0), ...CI64(0), ...STORE64(3, Z_BLOCK + 256), // set bit_buf = 0
 
         ...BLOCK, ...LOOP,
         ...GET(i), ...GET(numSamples), ...GE_s, ...BRIF(1),
@@ -428,29 +455,43 @@ function buildDecodeBody(): number[] {
         ...BLOCK, ...LOOP,
         ...GET(j), ...GET(block_len), ...GE_s, ...BRIF(1),
 
-        ...GET(mode), ...CI32(1), ...EQ, ...IF,
-        ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD8u(0, 0), ...SET(z),
+        // Load bits dynamically via I64 buffer
+        ...BLOCK, ...LOOP, // while bit_cnt < mode * 8
+        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...GET(mode), ...CI32(3), ...SHL, ...GE_s, ...BRIF(1),
+
+        // bit_buf |= (byte << bit_cnt)
+        ...CI32(0), // address for STORE64
+        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256),
+        ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD8u(0, 0), ...I64_EXTEND_I32_U,
+        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...I64_EXTEND_I32_U, ...I64_SHL,
+        ...I64_OR,
+        ...STORE64(3, Z_BLOCK + 256),
+
+        ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...ADD, ...STORE32(2, Z_BLOCK + 264), // bit_cnt += 8
         ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i),
-        ...ELSE, ...GET(mode), ...CI32(2), ...EQ, ...IF,
-        ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD16u(1, 0), ...SET(z),
-        ...GET(crypto_i), ...CI32(2), ...ADD, ...SET(crypto_i),
-        ...ELSE,
-        ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD32(2, 0), ...SET(z),
-        ...GET(crypto_i), ...CI32(4), ...ADD, ...SET(crypto_i),
-        ...END, ...END,
+        ...BR(0), ...END, ...END,
+
+        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64, // get bit_buf lower 32
+        ...CI32(32), ...GET(mode), ...CI32(3), ...SHL, ...SUB, ...SHL, // << (32 - mode*8)
+        ...CI32(32), ...GET(mode), ...CI32(3), ...SHL, ...SUB, ...SHR_u, // >>> (32 - mode*8) (this masks it nicely)
+        ...SET(z),
+
+        // bit_buf >>= mode*8
+        ...CI32(0), // address for STORE64
+        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...GET(mode), ...CI32(3), ...SHL, ...I64_EXTEND_I32_U, ...I64_SHR_u,
+        ...STORE64(3, Z_BLOCK + 256),
+        ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...GET(mode), ...CI32(3), ...SHL, ...SUB, ...STORE32(2, Z_BLOCK + 264),
 
         // delta = (z >>> 1) ^ (0 - (z & 1))
         ...GET(z), ...CI32(1), ...SHR_u, ...CI32(0), ...GET(z), ...CI32(1), ...AND, ...SUB, ...XOR, ...SET(delta),
 
-        // i32_val = delta + (2*prev1 - prev2)
-        ...GET(delta), ...GET(prev1), ...CI32(1), ...SHL, ...GET(prev2), ...SUB, ...ADD, ...SET(i32_val),
-
-        ...GET(prev1), ...SET(prev2),
+        // 1st-order diff equation: val = delta + prev1
+        ...GET(delta), ...GET(prev1), ...ADD, ...SET(i32_val),
         ...GET(i32_val), ...SET(prev1),
 
-        // f32_val = float(i32_val) / 32767.0
-        ...GET(outPtr), ...GET(i), ...GET(j), ...ADD, ...CI32(2), ...SHL, ...ADD, // outPtr addr
-        ...GET(i32_val), ...F32_CONVERT_I32_S, ...CI32(32767), ...F32_CONVERT_I32_S, ...DIV, ...STOREF32(2, 0),
+        // float(val) / dynamic scalar multiplier
+        ...GET(outPtr), ...GET(i), ...GET(j), ...ADD, ...CI32(2), ...SHL, ...ADD,
+        ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...DIV, ...STOREF32(2, 0),
 
         ...GET(j), ...CI32(1), ...ADD, ...SET(j), ...BR(0),
         ...END, ...END,
@@ -459,12 +500,141 @@ function buildDecodeBody(): number[] {
         ...END, ...END,
 
         ...CI32(0), ...GET(prev1), ...STORE32(2, DEC_STATE_ADDR + 144),
-        ...CI32(0), ...GET(prev2), ...STORE32(2, DEC_STATE_ADDR + 148),
 
         ...GET(numSamples),
         ...END,
     ];
-    return funcBody([{ count: 40, type: I32 }], body);
+    return funcBody([{ count: 36, type: I32 }], body);
+}
+
+function buildEncodeRawBody(): number[] {
+    const pcmPtr = 0, numSamples = 1, outPtr = 2; // args
+    const i = 3, inSample = 4, cipher = 5, crypto_i = 6, crypto_words = 7, temp = 8;
+    const idx = 9, sample_count = 10, mac0 = 11, mac1 = 12;
+    const v = [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
+
+    const body = [
+        ...GET(outPtr), ...GET(numSamples), ...STORE32(2, 0),
+        ...GET(outPtr), ...CI32(0), ...STORE16(1, 4),
+        ...GET(outPtr), ...CI32(0), ...STORE16(0, 6), // flags: 0 (Raw)
+
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 128), ...SET(idx),
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 132), ...SET(sample_count),
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 136), ...SET(mac0),
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 140), ...SET(mac1),
+
+        ...GET(numSamples), ...SET(crypto_words),
+        ...CI32(0), ...SET(crypto_i),
+        ...BLOCK, ...LOOP,
+        ...GET(crypto_i), ...GET(crypto_words), ...GE_s, ...BRIF(1),
+
+        ...GET(pcmPtr), ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(inSample),
+
+        ...GET(idx), ...CI32(64), ...GE_s, ...IF,
+        ...buildChaChaBlock(ENC_STATE_ADDR, v),
+        ...CI32(0), ...SET(idx),
+        ...END,
+
+        ...CI32(0), ...CI32(ENC_STATE_ADDR + 64), ...GET(idx), ...ADD, ...LOAD32(2, 0), ...GET(inSample), ...XOR, ...SET(cipher),
+        ...GET(idx), ...CI32(4), ...ADD, ...SET(idx),
+
+        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(cipher), ...STORE32(2, 0),
+
+        ...GET(mac0), ...GET(cipher), ...ADD, ...SET(mac0),
+        ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
+        ...GET(mac1), ...CI32(17), ...ROTL, ...GET(cipher), ...ADD, ...SET(mac1),
+
+        ...GET(sample_count), ...CI32(1023), ...AND, ...CI32(0), ...EQ, ...IF,
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 16), ...GET(mac0), ...XOR, ...SET(temp),
+        ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, ENC_STATE_ADDR + 16),
+        ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 20), ...GET(mac1), ...XOR, ...SET(temp),
+        ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, ENC_STATE_ADDR + 20),
+        ...GET(mac0), ...CI32(0xDEADBEEF), ...XOR, ...SET(mac0),
+        ...GET(mac1), ...CI32(0x1337C0DE), ...XOR, ...SET(mac1),
+        ...END,
+
+        ...GET(sample_count), ...CI32(1), ...ADD, ...SET(sample_count),
+        ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i), ...BR(0),
+        ...END, ...END,
+
+        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(numSamples), ...CI32(2), ...SHL, ...ADD, ...GET(mac0), ...STORE32(2, 0),
+        ...GET(outPtr), ...CI32(12), ...ADD, ...GET(numSamples), ...CI32(2), ...SHL, ...ADD, ...GET(mac1), ...STORE32(2, 0),
+
+        ...CI32(0), ...GET(idx), ...STORE32(2, ENC_STATE_ADDR + 128),
+        ...CI32(0), ...GET(sample_count), ...STORE32(2, ENC_STATE_ADDR + 132),
+        ...CI32(0), ...GET(mac0), ...STORE32(2, ENC_STATE_ADDR + 136),
+        ...CI32(0), ...GET(mac1), ...STORE32(2, ENC_STATE_ADDR + 140),
+
+        ...GET(numSamples), ...CI32(2), ...SHL, ...CI32(HEADER_SIZE + MAC_SIZE), ...ADD,
+        ...END
+    ];
+    return funcBody([{ count: 26, type: I32 }], body);
+}
+
+function buildDecodeRawBody(): number[] {
+    const rawPtr = 0, numBytes = 1, outPtr = 2; // args
+    const numSamples = 3, crypto_i = 4, cipher = 5, crypto_words = 6, temp = 7;
+    const idx = 8, sample_count = 9, mac0 = 10, mac1 = 11, expMac0 = 12, expMac1 = 13;
+    const v = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+
+    const body = [
+        ...GET(rawPtr), ...LOAD32(2, 0), ...SET(numSamples),
+
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 128), ...SET(idx),
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 132), ...SET(sample_count),
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 136), ...SET(mac0),
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 140), ...SET(mac1),
+
+        ...GET(numBytes), ...CI32(HEADER_SIZE + MAC_SIZE), ...SUB, ...CI32(2), ...SHR_u, ...SET(crypto_words),
+        ...CI32(0), ...SET(crypto_i),
+
+        ...BLOCK, ...LOOP,
+        ...GET(crypto_i), ...GET(crypto_words), ...GE_s, ...BRIF(1),
+
+        ...GET(rawPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(cipher),
+
+        ...GET(mac0), ...GET(cipher), ...ADD, ...SET(mac0),
+        ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
+        ...GET(mac1), ...CI32(17), ...ROTL, ...GET(cipher), ...ADD, ...SET(mac1),
+
+        ...GET(idx), ...CI32(64), ...GE_s, ...IF,
+        ...buildChaChaBlock(DEC_STATE_ADDR, v),
+        ...CI32(0), ...SET(idx),
+        ...END,
+
+        ...CI32(0), ...CI32(DEC_STATE_ADDR + 64), ...GET(idx), ...ADD, ...LOAD32(2, 0), ...GET(cipher), ...XOR, ...SET(temp),
+        ...GET(outPtr), ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(temp), ...STORE32(2, 0),
+        ...GET(idx), ...CI32(4), ...ADD, ...SET(idx),
+
+        ...GET(sample_count), ...CI32(1023), ...AND, ...CI32(0), ...EQ, ...IF,
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 16), ...GET(mac0), ...XOR, ...SET(temp),
+        ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, DEC_STATE_ADDR + 16),
+        ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 20), ...GET(mac1), ...XOR, ...SET(temp),
+        ...avalanche(temp), ...CI32(0), ...GET(temp), ...STORE32(2, DEC_STATE_ADDR + 20),
+        ...GET(mac0), ...CI32(0xDEADBEEF), ...XOR, ...SET(mac0),
+        ...GET(mac1), ...CI32(0x1337C0DE), ...XOR, ...SET(mac1),
+        ...END,
+
+        ...GET(sample_count), ...CI32(1), ...ADD, ...SET(sample_count),
+        ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i), ...BR(0),
+        ...END, ...END,
+
+        ...GET(rawPtr), ...GET(numBytes), ...CI32(8), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac0),
+        ...GET(rawPtr), ...GET(numBytes), ...CI32(4), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac1),
+
+        ...GET(mac0), ...GET(expMac0), ...EQ, ...GET(mac1), ...GET(expMac1), ...EQ, ...AND, ...CI32(0), ...EQ, ...IF,
+        ...CI32(0), ...RETURN,
+        ...END,
+
+        ...CI32(0), ...GET(idx), ...STORE32(2, DEC_STATE_ADDR + 128),
+        ...CI32(0), ...GET(sample_count), ...STORE32(2, DEC_STATE_ADDR + 132),
+        ...CI32(0), ...GET(mac0), ...STORE32(2, DEC_STATE_ADDR + 136),
+        ...CI32(0), ...GET(mac1), ...STORE32(2, DEC_STATE_ADDR + 140),
+
+        ...GET(numSamples),
+        ...END
+    ];
+    return funcBody([{ count: 27, type: I32 }], body);
 }
 
 function buildResetStateBody(addr: number): number[] {
@@ -505,34 +675,41 @@ export function buildAdpcmWasmBytes(): Uint8Array {
     const magic = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
     const typeSection = section(1, [
-        ...encodeULEB(3),
-        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32,
-        0x60, ...encodeULEB(0), ...encodeULEB(0),
-        0x60, ...encodeULEB(4), I32, I32, I32, I32, ...encodeULEB(0),
+        ...encodeULEB(4),
+        0x60, ...encodeULEB(4), I32, I32, I32, 0x7d, ...encodeULEB(1), I32, // type 0
+        0x60, ...encodeULEB(0), ...encodeULEB(0), // type 1
+        0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32, // type 2
+        0x60, ...encodeULEB(4), I32, I32, I32, I32, ...encodeULEB(0), // type 3
     ]);
 
     const funcSection = section(3, [
-        ...encodeULEB(4),
-        ...encodeULEB(0),
-        ...encodeULEB(0),
-        ...encodeULEB(2),
-        ...encodeULEB(2),
+        ...encodeULEB(6),
+        ...encodeULEB(0), // encode_adpcm
+        ...encodeULEB(0), // decode_adpcm
+        ...encodeULEB(2), // encode_raw
+        ...encodeULEB(2), // decode_raw
+        ...encodeULEB(3), // reset_enc
+        ...encodeULEB(3), // reset_dec
     ]);
     const memSection = section(5, [...encodeULEB(1), 0x01, ...encodeULEB(2), ...encodeULEB(2048)]);
 
     const exportSection = section(7, [
-        ...encodeULEB(5),
+        ...encodeULEB(7),
         ...nameSec("memory"), 0x02, ...encodeULEB(0),
         ...nameSec("encode_adpcm"), 0x00, ...encodeULEB(0),
         ...nameSec("decode_adpcm"), 0x00, ...encodeULEB(1),
-        ...nameSec("reset_encoder_state"), 0x00, ...encodeULEB(2),
-        ...nameSec("reset_decoder_state"), 0x00, ...encodeULEB(3),
+        ...nameSec("encode_raw"), 0x00, ...encodeULEB(2),
+        ...nameSec("decode_raw"), 0x00, ...encodeULEB(3),
+        ...nameSec("reset_encoder_state"), 0x00, ...encodeULEB(4),
+        ...nameSec("reset_decoder_state"), 0x00, ...encodeULEB(5),
     ]);
 
     const codeSection = section(10, [
-        ...encodeULEB(4),
+        ...encodeULEB(6),
         ...buildEncodeBody(),
         ...buildDecodeBody(),
+        ...buildEncodeRawBody(),
+        ...buildDecodeRawBody(),
         ...buildResetStateBody(ENC_STATE_ADDR),
         ...buildResetStateBody(DEC_STATE_ADDR),
     ]);
@@ -549,8 +726,10 @@ export function buildAdpcmWasmBytes(): Uint8Array {
 
 export interface AdpcmWasmExports {
     memory: WebAssembly.Memory;
-    encode_adpcm: (pcmPtr: number, numSamples: number, outPtr: number) => number;
-    decode_adpcm: (adpcmPtr: number, numBytes: number, outPtr: number) => number;
+    encode_adpcm: (pcmPtr: number, numSamples: number, outPtr: number, scalar: number) => number;
+    decode_adpcm: (adpcmPtr: number, numBytes: number, outPtr: number, scalar: number) => number;
+    encode_raw: (pcmPtr: number, numSamples: number, outPtr: number) => number;
+    decode_raw: (rawPtr: number, numBytes: number, outPtr: number) => number;
     reset_encoder_state: (k0: number, k1: number, k2: number, k3: number) => void;
     reset_decoder_state: (k0: number, k1: number, k2: number, k3: number) => void;
 }
@@ -573,9 +752,15 @@ export async function encodeAdpcm(
     float32Samples: Float32Array,
     sampleRate: number,
     encryptionKey?: Uint32Array,
+    options?: { quality?: number },
 ): Promise<Uint8Array> {
     const wasm = await getAdpcmWasm();
     const mem = wasm.memory;
+
+    const quality = options?.quality ?? 80;
+    const isRaw = quality >= 100;
+    // scalar: at quality 80 -> ~32767, at quality 30 -> ~1024, at quality 100 -> raw path
+    const scalar = Math.max(1, Math.floor(Math.pow(2, (quality / 100) * 15)));
 
     const numSamples = float32Samples.length;
     const pcmBytes = numSamples * 4;
@@ -598,10 +783,15 @@ export async function encodeAdpcm(
 
     new Float32Array(mem.buffer, pcmPtr, numSamples).set(float32Samples);
 
-    const bytesWritten = wasm.encode_adpcm(pcmPtr, numSamples, outPtr);
+    const bytesWritten = isRaw
+        ? wasm.encode_raw(pcmPtr, numSamples, outPtr)
+        : wasm.encode_adpcm(pcmPtr, numSamples, outPtr, scalar);
 
     const view = new DataView(mem.buffer);
     view.setUint16(outPtr + 4, sampleRate & 0xFFFF, true);
+    // Pack quality into upper 8 bits of flags; bit0 = compressed flag
+    const flags = isRaw ? 0 : (((quality & 0xFF) << 8) | 1);
+    view.setUint16(outPtr + 6, flags, true);
 
     return new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
 }
@@ -618,6 +808,10 @@ export async function decodeAdpcm(
     const hdr = new DataView(adpcmBytes.buffer, adpcmBytes.byteOffset, HEADER_SIZE);
     const numSamples = hdr.getUint32(0, true);
     const sampleRate = hdr.getUint16(4, true) || 48000;
+    const flags = hdr.getUint16(6, true);
+    const isRaw = (flags & 1) === 0;
+    const quality = (flags >> 8) & 0xFF;
+    const scalar = Math.max(1, Math.floor(Math.pow(2, (quality / 100) * 15)));
 
     const inBytes = adpcmBytes.length;
     const outBytes = numSamples * 4;
@@ -638,7 +832,9 @@ export async function decodeAdpcm(
 
     new Uint8Array(mem.buffer).set(adpcmBytes, inPtr);
 
-    const samplesDecoded = wasm.decode_adpcm(inPtr, inBytes, outPtr);
+    const samplesDecoded = isRaw
+        ? wasm.decode_raw(inPtr, inBytes, outPtr)
+        : wasm.decode_adpcm(inPtr, inBytes, outPtr, scalar);
 
     const tampered = samplesDecoded === 0;
     const pcm = tampered
