@@ -94,7 +94,9 @@ const SHR_s = [0x75];
 const SHR_u = [0x76];
 const ROTL = [0x77];
 const AND = [0x71];
+const OR = [0x72];
 const XOR = [0x73];
+const CLZ = [0x67]; // i32.clz — number of leading zeros
 const GE_s = [0x4e];
 const GT_u = [0x4b];
 const LT_u = [0x48];
@@ -177,11 +179,35 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
 }
 
 function buildEncodeBody(): number[] {
-    const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar = 3; // args
-    const i = 4, packedLen = 5, prev1 = 6, mode = 7, max_z = 8, block_len = 9;
-    const j = 10, i32_val = 11, delta = 12, z = 13, crypto_i = 14, crypto_words = 15;
-    const cipher = 16, idx = 17, sample_count = 18, mac0 = 19, mac1 = 20, temp = 21;
-    const v = [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
+    const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar = 3; // args (scalar is f32)
+    const i = 4, packedLen = 5, prev1 = 6, w = 7, i32_val = 8, delta = 9, z = 10;
+    const crypto_i = 11, crypto_words = 12, cipher = 13, idx = 14, sample_count = 15, mac0 = 16, mac1 = 17, temp = 18;
+    const v = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34];
+
+    // Helper: push i64 val into bit_buf and add nbits to bit_cnt, then drain full bytes
+    function emitBits(valueInstr: number[], nbitsInstr: number[]): number[] {
+        return [
+            // bit_buf |= ((i64)val << bit_cnt)
+            ...CI32(0), // addr for STORE64
+            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256),
+            ...valueInstr, ...I64_EXTEND_I32_U,
+            ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...I64_EXTEND_I32_U, ...I64_SHL,
+            ...I64_OR,
+            ...STORE64(3, Z_BLOCK + 256),
+            // bit_cnt += nbits
+            ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...nbitsInstr, ...ADD, ...STORE32(2, Z_BLOCK + 264),
+
+            // drain complete bytes
+            ...BLOCK, ...LOOP,
+            ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...LT_u, ...BRIF(1),
+            ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD,
+            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64, ...STORE8(0, 0),
+            ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
+            ...CI32(0), ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...CI64(8), ...I64_SHR_u, ...STORE64(3, Z_BLOCK + 256),
+            ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...SUB, ...STORE32(2, Z_BLOCK + 264),
+            ...BR(0), ...END, ...END,
+        ];
+    }
 
     const body = [
         // 1. Write Header
@@ -192,92 +218,34 @@ function buildEncodeBody(): number[] {
         // 2. Load ADPCM state
         ...CI32(0), ...LOAD32(2, ENC_STATE_ADDR + 144), ...SET(prev1),
 
-        // 3. ADPCM Compression Pass
+        // 3. Single-pass per-sample variable bit-width encoding
+        // Format: 5-bit prefix (w-1) + w-bit ZigZag payload per sample
+        // w = 32 - clz(z | 1), exact minimum bits needed (1..32)
         ...CI32(0), ...SET(i), ...CI32(0), ...SET(packedLen),
-
-        ...CI32(0), ...CI64(0), ...STORE64(3, Z_BLOCK + 256), // bit_buf (i64)
-        ...CI32(0), ...CI32(0), ...STORE32(2, Z_BLOCK + 264), // bit_cnt (i32)
-
-        ...BLOCK, ...LOOP, // Main block loop
-        ...GET(i), ...GET(numSamples), ...GE_s, ...BRIF(1),
-
-        // block_len = min(64, numSamples - i)
-        ...GET(numSamples), ...GET(i), ...SUB, ...CI32(64), ...LT_u, // if numSamples-i < 64
-        ...IF, ...GET(numSamples), ...GET(i), ...SUB, ...SET(block_len), ...ELSE, ...CI32(64), ...SET(block_len), ...END,
-
-        // Pass 1: compute Z, find max_z
-        ...CI32(0), ...SET(j), ...CI32(0), ...SET(max_z),
-        ...BLOCK, ...LOOP, // inner block loop
-        ...GET(j), ...GET(block_len), ...GE_s, ...BRIF(1),
-
-        // f32 to scaled i32 (trunc_sat automatically handles clipping huge float values)
-        ...GET(pcmPtr), ...GET(i), ...GET(j), ...ADD, ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
-        ...GET(scalar), ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
-
-        // 1st-order diff equation: delta = val - prev1
-        ...GET(i32_val), ...GET(prev1), ...SUB, ...SET(delta),
-        ...GET(i32_val), ...SET(prev1),
-
-        // z = (delta << 1) ^ (delta >>s 31)
-        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
-
-        // store z
-        ...CI32(Z_BLOCK), ...GET(j), ...CI32(2), ...SHL, ...ADD, ...GET(z), ...STORE32(2, 0),
-
-        // max_z = max(max_z, z)
-        ...GET(z), ...GET(max_z), ...GT_u, ...IF, ...GET(z), ...SET(max_z), ...END,
-
-        ...GET(j), ...CI32(1), ...ADD, ...SET(j), ...BR(0),
-        ...END, ...END,
-
-        // Determine mode based on max_z
-        ...GET(max_z), ...CI32(256), ...LT_u, ...IF, ...CI32(1), ...SET(mode),
-        ...ELSE, ...GET(max_z), ...CI32(65536), ...LT_u, ...IF, ...CI32(2), ...SET(mode),
-        ...ELSE, ...CI32(4), ...SET(mode), ...END, ...END,
-
-        // Write mode byte
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD, ...GET(mode), ...STORE8(0, 0),
-        ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
-
-        // Pass 2: Write bitstream
-        ...CI32(0), ...SET(j),
-        ...BLOCK, ...LOOP, // pack loop
-        ...GET(j), ...GET(block_len), ...GE_s, ...BRIF(1),
-        ...CI32(Z_BLOCK), ...GET(j), ...CI32(2), ...SHL, ...ADD, ...LOAD32(2, 0), ...SET(z),
-
-        // bit_buf (i64 via 2x i32 words in memory) |= (z << bit_cnt)
-        // Use a tee pattern: we compute the new i64 and store it
-        // bit_buf_new = bit_buf | ((i64)z << bit_cnt)
-        // Encode: load buf, OR with shifted z, store back
-        ...CI32(0), // address for STORE64
-        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), // load existing bit_buf
-        ...GET(z), ...I64_EXTEND_I32_U,
-        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...I64_EXTEND_I32_U, ...I64_SHL,
-        ...I64_OR,
-        ...STORE64(3, Z_BLOCK + 256), // store updated bit_buf
-
-        // bit_cnt += mode * 8
-        ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...GET(mode), ...CI32(3), ...SHL, ...ADD, ...STORE32(2, Z_BLOCK + 264),
+        ...CI32(0), ...CI64(0), ...STORE64(3, Z_BLOCK + 256), // bit_buf
+        ...CI32(0), ...CI32(0), ...STORE32(2, Z_BLOCK + 264), // bit_cnt
 
         ...BLOCK, ...LOOP,
-        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...LT_u, ...BRIF(1), // while (bit_cnt >= 8)
+        ...GET(i), ...GET(numSamples), ...GE_s, ...BRIF(1),
 
-        ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD,
-        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64, ...STORE8(0, 0), // write 8 bits
-        ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
+        // quantize
+        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0),
+        ...GET(scalar), ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        // bit_buf >>= 8
-        ...CI32(0), // address for STORE64
-        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...CI64(8), ...I64_SHR_u,
-        ...STORE64(3, Z_BLOCK + 256),
-        // bit_cnt -= 8
-        ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...SUB, ...STORE32(2, Z_BLOCK + 264),
-        ...BR(0), ...END, ...END,
+        // 1st-order diff + ZigZag
+        ...GET(i32_val), ...GET(prev1), ...SUB, ...SET(delta),
+        ...GET(i32_val), ...SET(prev1),
+        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
 
-        ...GET(j), ...CI32(1), ...ADD, ...SET(j), ...BR(0),
-        ...END, ...END,
+        // w = 32 - clz(z | 1)
+        ...CI32(32), ...GET(z), ...CI32(1), ...OR, ...CLZ, ...SUB, ...SET(w),
 
-        ...GET(i), ...GET(block_len), ...ADD, ...SET(i), ...BR(0),
+        // emit 5-bit prefix (w - 1)
+        ...emitBits([...GET(w), ...CI32(1), ...SUB], [...CI32(5)]),
+        // emit w-bit z value
+        ...emitBits([...GET(z)], [...GET(w)]),
+
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END,
 
         // Flush remaining bits
@@ -287,9 +255,9 @@ function buildEncodeBody(): number[] {
         ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
         ...END,
 
-        // Pad packedLen to multiple of 4
-        ...BLOCK, ...LOOP, // pad loop
-        ...GET(packedLen), ...CI32(3), ...AND, ...CI32(0), ...EQ, ...BRIF(1), // if packedLen % 4 == 0, break
+        // Pad to 4-byte alignment
+        ...BLOCK, ...LOOP,
+        ...GET(packedLen), ...CI32(3), ...AND, ...CI32(0), ...EQ, ...BRIF(1),
         ...GET(outPtr), ...CI32(8), ...ADD, ...GET(packedLen), ...ADD, ...CI32(0), ...STORE8(0, 0),
         ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
         ...BR(0), ...END, ...END,
@@ -359,16 +327,50 @@ function buildEncodeBody(): number[] {
         ...GET(packedLen), ...CI32(HEADER_SIZE + MAC_SIZE), ...ADD,
         ...END,
     ];
-    return funcBody([{ count: 34, type: I32 }], body);
+    return funcBody([{ count: 32, type: I32 }], body);
 }
 
 function buildDecodeBody(): number[] {
-    const adpcmPtr = 0, numBytes = 1, outPtr = 2, scalar = 3; // args
-    const numSamples = 4, packedLen = 5, prev1 = 6, mode = 7;
-    const block_len = 8, j = 9, i32_val = 10, delta = 11, z = 12, crypto_i = 13, crypto_words = 14;
-    const cipher = 15, idx = 16, sample_count = 17, mac0 = 18, mac1 = 19, temp = 20;
-    const expMac0 = 21, expMac1 = 22, i = 23;
-    const v = [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39];
+    const adpcmPtr = 0, numBytes = 1, outPtr = 2, scalar = 3; // args (scalar is f32)
+    const numSamples = 4, packedLen = 5, prev1 = 6, w = 7;
+    const i32_val = 8, delta = 9, z = 10, crypto_i = 11, crypto_words = 12;
+    const cipher = 13, idx = 14, sample_count = 15, mac0 = 16, mac1 = 17, temp = 18;
+    const expMac0 = 19, expMac1 = 20, i = 21;
+    const v = [22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
+
+    // Helper: refill i64 bit_buf from payload bytes until bit_cnt >= needed
+    function refillBits(neededInstr: number[]): number[] {
+        return [
+            ...BLOCK, ...LOOP,
+            ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...neededInstr, ...GE_s, ...BRIF(1),
+            // bit_buf |= (byte << bit_cnt)
+            ...CI32(0),
+            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256),
+            ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD8u(0, 0), ...I64_EXTEND_I32_U,
+            ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...I64_EXTEND_I32_U, ...I64_SHL,
+            ...I64_OR,
+            ...STORE64(3, Z_BLOCK + 256),
+            ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...ADD, ...STORE32(2, Z_BLOCK + 264),
+            ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i),
+            ...BR(0), ...END, ...END,
+        ];
+    }
+
+    // Helper: extract n bits from bit_buf, consuming them. Result on stack as i32.
+    function extractBits(nbitsInstr: number[]): number[] {
+        return [
+            // mask = (1 << n) - 1; val = bit_buf_lo & mask
+            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64,
+            ...CI32(1), ...nbitsInstr, ...SHL, ...CI32(1), ...SUB, // (1<<n)-1
+            ...AND, // masked val on stack
+            // bit_buf >>= n
+            ...CI32(0),
+            ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...nbitsInstr, ...I64_EXTEND_I32_U, ...I64_SHR_u,
+            ...STORE64(3, Z_BLOCK + 256),
+            // bit_cnt -= n
+            ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...nbitsInstr, ...SUB, ...STORE32(2, Z_BLOCK + 264),
+        ];
+    }
 
     const body = [
         ...GET(adpcmPtr), ...LOAD32(2, 0), ...SET(numSamples),
@@ -401,7 +403,7 @@ function buildDecodeBody(): number[] {
         ...END,
 
         // XOR AND OVERWRITE
-        ...CI32(0), ...CI32(DEC_STATE_ADDR + 64), ...GET(idx), ...ADD, ...LOAD32(2, 0), ...GET(cipher), ...XOR, ...SET(temp), // temp is plaintext
+        ...CI32(0), ...CI32(DEC_STATE_ADDR + 64), ...GET(idx), ...ADD, ...LOAD32(2, 0), ...GET(cipher), ...XOR, ...SET(temp),
         ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...CI32(2), ...SHL, ...ADD, ...GET(temp), ...STORE32(2, 0),
         ...GET(idx), ...CI32(4), ...ADD, ...SET(idx),
 
@@ -424,8 +426,7 @@ function buildDecodeBody(): number[] {
         ...GET(adpcmPtr), ...GET(numBytes), ...CI32(4), ...SUB, ...ADD, ...LOAD32(2, 0), ...SET(expMac1),
 
         ...GET(mac0), ...GET(expMac0), ...EQ, ...GET(mac1), ...GET(expMac1), ...EQ, ...AND, ...CI32(0), ...EQ, ...IF,
-        // MAC FAILED
-        ...CI32(0), ...RETURN, // return 0 samples
+        ...CI32(0), ...RETURN,
         ...END,
 
         // Save Crypto state
@@ -434,69 +435,37 @@ function buildDecodeBody(): number[] {
         ...CI32(0), ...GET(mac0), ...STORE32(2, DEC_STATE_ADDR + 136),
         ...CI32(0), ...GET(mac1), ...STORE32(2, DEC_STATE_ADDR + 140),
 
-        // 4. ADPCM Decompression Pass
+        // 4. ADPCM Decompression — per-sample variable bit-width decode
         ...CI32(0), ...LOAD32(2, DEC_STATE_ADDR + 144), ...SET(prev1),
-        ...CI32(0), ...SET(i), ...CI32(0), ...SET(crypto_i), // reusing crypto_i for packed byte offset
-
-        ...CI32(0), ...CI32(0), ...STORE32(2, Z_BLOCK + 264), // set bit_cnt = 0
-        ...CI32(0), ...CI64(0), ...STORE64(3, Z_BLOCK + 256), // set bit_buf = 0
+        ...CI32(0), ...SET(i), ...CI32(0), ...SET(crypto_i),
+        ...CI32(0), ...CI32(0), ...STORE32(2, Z_BLOCK + 264),
+        ...CI32(0), ...CI64(0), ...STORE64(3, Z_BLOCK + 256),
 
         ...BLOCK, ...LOOP,
         ...GET(i), ...GET(numSamples), ...GE_s, ...BRIF(1),
 
-        // block_len = min(64, numSamples - i)
-        ...GET(numSamples), ...GET(i), ...SUB, ...CI32(64), ...LT_u,
-        ...IF, ...GET(numSamples), ...GET(i), ...SUB, ...SET(block_len), ...ELSE, ...CI32(64), ...SET(block_len), ...END,
+        // Refill until bit_cnt >= 5 (for prefix), extract 5-bit prefix → w = prefix + 1
+        ...refillBits([...CI32(5)]),
+        ...extractBits([...CI32(5)]),
+        ...CI32(1), ...ADD, ...SET(w), // w = prefix + 1
 
-        ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD8u(0, 0), ...SET(mode),
-        ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i),
-
-        ...CI32(0), ...SET(j),
-        ...BLOCK, ...LOOP,
-        ...GET(j), ...GET(block_len), ...GE_s, ...BRIF(1),
-
-        // Load bits dynamically via I64 buffer
-        ...BLOCK, ...LOOP, // while bit_cnt < mode * 8
-        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...GET(mode), ...CI32(3), ...SHL, ...GE_s, ...BRIF(1),
-
-        // bit_buf |= (byte << bit_cnt)
-        ...CI32(0), // address for STORE64
-        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256),
-        ...GET(adpcmPtr), ...CI32(8), ...ADD, ...GET(crypto_i), ...ADD, ...LOAD8u(0, 0), ...I64_EXTEND_I32_U,
-        ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...I64_EXTEND_I32_U, ...I64_SHL,
-        ...I64_OR,
-        ...STORE64(3, Z_BLOCK + 256),
-
-        ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...CI32(8), ...ADD, ...STORE32(2, Z_BLOCK + 264), // bit_cnt += 8
-        ...GET(crypto_i), ...CI32(1), ...ADD, ...SET(crypto_i),
-        ...BR(0), ...END, ...END,
-
-        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...I32_WRAP_I64, // get bit_buf lower 32
-        ...CI32(32), ...GET(mode), ...CI32(3), ...SHL, ...SUB, ...SHL, // << (32 - mode*8)
-        ...CI32(32), ...GET(mode), ...CI32(3), ...SHL, ...SUB, ...SHR_u, // >>> (32 - mode*8) (this masks it nicely)
+        // Refill until bit_cnt >= w, extract w bits → z
+        ...refillBits([...GET(w)]),
+        ...extractBits([...GET(w)]),
         ...SET(z),
-
-        // bit_buf >>= mode*8
-        ...CI32(0), // address for STORE64
-        ...CI32(0), ...LOAD64(3, Z_BLOCK + 256), ...GET(mode), ...CI32(3), ...SHL, ...I64_EXTEND_I32_U, ...I64_SHR_u,
-        ...STORE64(3, Z_BLOCK + 256),
-        ...CI32(0), ...CI32(0), ...LOAD32(2, Z_BLOCK + 264), ...GET(mode), ...CI32(3), ...SHL, ...SUB, ...STORE32(2, Z_BLOCK + 264),
 
         // delta = (z >>> 1) ^ (0 - (z & 1))
         ...GET(z), ...CI32(1), ...SHR_u, ...CI32(0), ...GET(z), ...CI32(1), ...AND, ...SUB, ...XOR, ...SET(delta),
 
-        // 1st-order diff equation: val = delta + prev1
+        // 1st-order inverse: val = delta + prev1
         ...GET(delta), ...GET(prev1), ...ADD, ...SET(i32_val),
         ...GET(i32_val), ...SET(prev1),
 
-        // float(val) / dynamic scalar multiplier
-        ...GET(outPtr), ...GET(i), ...GET(j), ...ADD, ...CI32(2), ...SHL, ...ADD,
+        // f32 output: val / scalar
+        ...GET(outPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD,
         ...GET(i32_val), ...F32_CONVERT_I32_S, ...GET(scalar), ...DIV, ...STOREF32(2, 0),
 
-        ...GET(j), ...CI32(1), ...ADD, ...SET(j), ...BR(0),
-        ...END, ...END,
-
-        ...GET(i), ...GET(block_len), ...ADD, ...SET(i), ...BR(0),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END,
 
         ...CI32(0), ...GET(prev1), ...STORE32(2, DEC_STATE_ADDR + 144),
@@ -504,7 +473,7 @@ function buildDecodeBody(): number[] {
         ...GET(numSamples),
         ...END,
     ];
-    return funcBody([{ count: 36, type: I32 }], body);
+    return funcBody([{ count: 34, type: I32 }], body);
 }
 
 function buildEncodeRawBody(): number[] {

@@ -1327,7 +1327,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let micRecorder: MediaRecorder | null = null;
   let micRecorderChunks: Blob[] = [];
 
-const micSupported = !!navigator.mediaDevices?.getUserMedia;
+  const micSupported = !!navigator.mediaDevices?.getUserMedia;
   if (!micSupported) opts.chatMicWrap.setAttribute("data-hidden", "");
 
   function formatRecordDuration(ms: number): string {
@@ -1841,7 +1841,7 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
     const pages: Uint8Array[] = [];
     let seq = 0;
     pages.push(oggPage(opusHead(1, preSkip, sampleRate), SERIAL, seq++, 0n, 0x02));
-    pages.push(oggPage(opusTags(),                       SERIAL, seq++, 0n, 0x00));
+    pages.push(oggPage(opusTags(), SERIAL, seq++, 0n, 0x00));
     for (let i = 0; i < frames.length; i++) {
       const end = i === frames.length - 1 ? pcm.length : (i + 1) * FRAME;
       const eos = i === frames.length - 1 ? 0x04 : 0x00;
@@ -2267,7 +2267,7 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
             const decKey = session ? session.audioKey : undefined;
             const decoded = await decodeAdpcm(new Uint8Array(abCopy), decKey);
             if (decoded.tampered) {
-               throw new Error("Audio payload failed MAC verification. Packet was tampered with.");
+              throw new Error("Audio payload failed MAC verification. Packet was tampered with.");
             }
             inverseDcBlock(decoded.pcm); // reconstruct signal prior to encode-side DC block
             pcmData = decoded.pcm;
@@ -2360,7 +2360,7 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
 
         audioElement.currentTime = pauseOffset;
         playbackStartTime = performance.now() / 1000 - pauseOffset;
-        
+
         try {
           await audioElement.play();
           isPlaying = true;
@@ -2844,19 +2844,19 @@ const micSupported = !!navigator.mediaDevices?.getUserMedia;
   }> = {
     relay: {
       lede: "know a phrase, and connect at the same time. thats it.",
-      flareLink: "try a signal flare",
+      flareLink: "light a signal flare",
       manualLink: "or connect manually",
       relayAssist: true,
     },
     flare: {
-      lede: "fire a flare and wait for a signal",
+      lede: "light a flare and wait for a signal",
       flareLink: "try relay assist",
       manualLink: "or connect manually",
       relayAssist: true,
     },
     manual: {
       lede: "encrypted peer-to-peer messaging. create a channel or join one.",
-      flareLink: "try a signal flare",
+      flareLink: "light a signal flare",
       manualLink: "try relay assist",
       relayAssist: false,
     },
