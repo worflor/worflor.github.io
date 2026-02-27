@@ -6,7 +6,7 @@ this license applies to the Whisper Protocol and its components:
 
 - **Whisper Protocol**, the encrypted communication system and its specification
 - **Whisper Harmonic**, audio codec (`live-wasm-audio.ts`)
-- **Whisper Spatial**, video codec (`live-wasm-video.ts`, `video-simd.ts`, `video-simd-bin.ts`)
+- **Whisper Lumen**, video codec (`live-wasm-video.ts`, `video-simd.ts`, `video-simd-bin.ts`)
 - all supporting files, documentation, and protocol specifications in this directory
 
 ---

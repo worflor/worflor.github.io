@@ -1,7 +1,7 @@
 /**
  * live-wasm-audio.ts
  *
- * the Whisper Harmonic Physics Audio Codec
+ * the Whisper Harmonic Audio Codec by Woflo / MB
  *
  * every audio block runs through a physical equation of motion:
  *   pred = (Tension * p1) - (Friction * p2)

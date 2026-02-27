@@ -7,29 +7,35 @@ encrypted communication with physics-based compression. the codecs model the phy
 ```
 Whisper Protocol
 ├── Whisper Harmonic  - audio codec (harmonic oscillator model)
-├── Whisper Spatial    - video codec (surface geometry model)
-├── Live + Campfire    - real-time messaging
-├── Async messaging    - store-and-forward encrypted messages
-└── Ratcheting layer   - per-frame cryptographic forward secrecy
+├── Whisper Lumen     - video codec (surface geometry model)
+├── Live + Campfire   - real-time messaging
+├── Async messaging   - store-and-forward encrypted messages
+└── Ratcheting layer  - per-frame cryptographic forward secrecy
 ```
 
 ## components
 
 ### Whisper Harmonic (`live-wasm-audio.ts`)
+
 models sound as a damped harmonic oscillator:
+
 ```
 pred = Tension × p1 − Friction × p2
 ```
+
 - 228x realtime encoding
 - per-chunk cryptographic ratcheting
 - Mid/Side stereo decomposition
 - WASM SIMD acceleration
 
 ### Whisper Spatial (`live-wasm-video.ts`)
+
 models images as physical surfaces via second-order Taylor expansion:
+
 ```
 pred = D + α·(L−D) + β·(A−D) + γ·(fyy + fxx + fxy)
 ```
+
 - 8-25x compression (scales with resolution)
 - per-frame cryptographic ratcheting
 - SUB-delta temporal encoding

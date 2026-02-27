@@ -1,7 +1,7 @@
 /**
  * live-wasm-video.ts
  *
- * the Whisper Spatial Physics Video Codec
+ * the Whisper Lumen Video Codec by Woflo / MB
  *
  * every 8x8 block is modelled as a physical surface. the encoder fits the
  * second-order causal Taylor expansion of that surface:
@@ -657,9 +657,9 @@ function pseudoDims(n: number): [number, number] {
 
 // --- flags field layout (32 bits) ---
 const FLAG_COMPRESSED = 1 << 0;
-const FLAG_KEYFRAME   = 1 << 1;
+const FLAG_KEYFRAME = 1 << 1;
 const FLAG_QUALITY_SHIFT = 2;
-const FLAG_QUALITY_MASK  = 0x7F; // 7 bits, values 1-100
+const FLAG_QUALITY_MASK = 0x7F; // 7 bits, values 1-100
 
 function encodeFlags(compressed: boolean, keyframe: boolean, quality: number): number {
     let f = 0;
@@ -927,8 +927,8 @@ function blockEncode(data: Uint8Array, width: number, height: number): Uint8Arra
                     const b3 = fyy + fxx + fxy;
                     const target = val - D;
                     m00 += b1 * b1; m01 += b1 * b2; m02 += b1 * b3;
-                                    m11 += b2 * b2; m12 += b2 * b3;
-                                                    m22 += b3 * b3;
+                    m11 += b2 * b2; m12 += b2 * b3;
+                    m22 += b3 * b3;
                     r0 += b1 * target; r1 += b2 * target; r2 += b3 * target;
                 }
             }
@@ -1057,7 +1057,7 @@ function blockDecode(bitstream: Uint8Array, width: number, height: number): Uint
 }
 
 /** blockEncodeMulti: P-frame encoder. independent blocks, 30-bit header + W-bit residuals each. */
-function blockEncodeMulti(blockData: Uint8Array, blockDims: {w: number; h: number}[]): Uint8Array {
+function blockEncodeMulti(blockData: Uint8Array, blockDims: { w: number; h: number }[]): Uint8Array {
     const buf = new Uint8Array(Math.ceil(blockData.length * 10 / 8) + blockDims.length * 4 + 16);
     let bytePos = 0, bitBuf = 0, bitCount = 0;
 
@@ -1109,7 +1109,7 @@ function blockEncodeMulti(blockData: Uint8Array, blockDims: {w: number; h: numbe
 }
 
 /** blockDecodeMulti: P-frame decoder. */
-function blockDecodeMulti(bitstream: Uint8Array, blockDims: {w: number; h: number}[], totalPixels: number): Uint8Array {
+function blockDecodeMulti(bitstream: Uint8Array, blockDims: { w: number; h: number }[], totalPixels: number): Uint8Array {
     const out = new Uint8Array(totalPixels);
     let bytePos = 0, bitBuf = 0, bitCount = 0;
 
@@ -1148,8 +1148,8 @@ function buildChangedBlockDims(
     bitmap: Uint8Array, blocksX: number, blocksY: number,
     blockSize: number, planeW: number, planeH: number,
     uvBlockSize: number, uvW: number, uvH: number
-): {w: number; h: number}[] {
-    const dims: {w: number; h: number}[] = [];
+): { w: number; h: number }[] {
+    const dims: { w: number; h: number }[] = [];
     // Y plane blocks
     for (let by = 0; by < blocksY; by++) {
         for (let bx = 0; bx < blocksX; bx++) {
