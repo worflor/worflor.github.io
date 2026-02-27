@@ -3556,6 +3556,7 @@ const seo = {
 
   .whisper-op-live.wl-recovering .wl-e2e-dot {
     background: rgb(var(--tool-status-warning));
+    box-shadow: 0 0 6px rgb(var(--tool-status-warning) / 0.45);
   }
 
   @keyframes wl-badge-amber-flash {
@@ -4326,6 +4327,7 @@ const seo = {
     font-size: 0.85rem;
     letter-spacing: 0.15em;
     line-height: 1;
+    white-space: nowrap;
     filter: saturate(0.4) opacity(0.6);
     transition: filter var(--duration-normal) var(--ease-out);
   }
@@ -4528,6 +4530,7 @@ const seo = {
     font-size: var(--text-sm);
     line-height: 1.42;
     word-break: break-word;
+    white-space: pre-wrap;
     border: 1px solid rgb(var(--msg-accent) / 0.16);
     background: rgb(var(--msg-accent) / 0.06);
     color: rgb(var(--color-text-rgb) / 0.72);

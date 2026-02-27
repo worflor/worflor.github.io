@@ -1334,6 +1334,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let micWorkletNode: AudioWorkletNode | null = null;
   let micSourceNode: MediaStreamAudioSourceNode | null = null;
   let micSinkNode: GainNode | null = null;
+  let micAnalyserNode: AnalyserNode | null = null;
   let micCaptureWatchdog: ReturnType<typeof setTimeout> | null = null;
   let micRecorder: MediaRecorder | null = null;
   let micRecorderChunks: Blob[] = [];
@@ -1372,8 +1373,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         process(inputs) {
           const ch = inputs[0]?.[0];
           if (ch && ch.length > 0) {
-            // Clone frame and post it directly. Avoid transfer semantics here,
-            // which can be flaky across browsers/worklet implementations.
             this.port.postMessage(new Float32Array(ch));
           }
           return true;
@@ -1387,6 +1386,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function startScriptProcessorCapture(ctx: AudioContext, stream: MediaStream): void {
     const source = ctx.createMediaStreamSource(stream);
     micSourceNode = source; // Prevent GC
+    if (micAnalyserNode) source.connect(micAnalyserNode);
     // @ts-ignore – deprecated but still the most cross-browser capture fallback
     const proc = ctx.createScriptProcessor(4096, 1, 1);
     // @ts-ignore
@@ -1400,6 +1400,58 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     proc.connect(micSinkNode);
     micSinkNode.connect(ctx.destination);
     micWorkletNode = proc as unknown as AudioWorkletNode;
+  }
+
+  let smoothedBass = 0, smoothedMid = 0, smoothedTreble = 0;
+  let micGlowRafId: number | null = null;
+
+  function runMicGlowRaf(): void {
+    if (!micAnalyserNode || !recordingStream) return;
+    micGlowRafId = requestAnimationFrame(runMicGlowRaf);
+
+    const data = new Uint8Array(micAnalyserNode.frequencyBinCount);
+    micAnalyserNode.getByteFrequencyData(data);
+
+    let b = 0, m = 0, t = 0;
+    for (let i = 0; i <= 1; i++) b += data[i];
+    for (let i = 2; i <= 12; i++) m += data[i];
+    for (let i = 13; i <= 40; i++) t += data[i];
+
+    const rawBass = Math.min(1, (b / 2) / 255 * 1.5);
+    const rawMid = Math.min(1, (m / 11) / 255 * 1.5);
+    const rawTreble = Math.min(1, (t / 28) / 255 * 1.5);
+
+    smoothedBass = smoothedBass * 0.7 + rawBass * 0.3;
+    smoothedMid = smoothedMid * 0.8 + rawMid * 0.2;
+    smoothedTreble = smoothedTreble * 0.85 + rawTreble * 0.15;
+
+    const btn = opts.chatMicBtn;
+    if (!btn) return;
+
+    const baseSpread = 2;
+    const baseAlpha = 0.15;
+
+    const midSpread = baseSpread + smoothedMid * 6;
+    const midAlpha = baseAlpha + smoothedMid * 0.4;
+    const layer1 = `0 0 ${midSpread}px ${midSpread + 2}px rgb(var(--chromatic-red) / ${midAlpha})`;
+
+    const trebSpread = 1 + smoothedTreble * 3;
+    const trebAlpha = smoothedTreble * 0.6;
+    const layer2 = `0 0 ${trebSpread}px ${trebSpread}px rgb(var(--chromatic-red) / ${trebAlpha})`;
+
+    const bassSpread = midSpread + 4 + smoothedBass * 12;
+    const bassAlpha = smoothedBass * 0.25;
+    const layer3 = `0 0 ${bassSpread}px ${bassSpread}px rgb(var(--chromatic-red) / ${bassAlpha})`;
+
+    btn.style.boxShadow = `${layer1}, ${layer2}, ${layer3}`;
+  }
+
+  /** Clear mic button glow. */
+  function clearMicGlow(): void {
+    if (micGlowRafId) { cancelAnimationFrame(micGlowRafId); micGlowRafId = null; }
+    smoothedBass = 0; smoothedMid = 0; smoothedTreble = 0;
+    const btn = opts.chatMicBtn;
+    if (btn) btn.style.boxShadow = "";
   }
 
   function startRecorderCapture(stream: MediaStream): void {
@@ -1514,6 +1566,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
         pcmSampleRate = micAudioCtx.sampleRate;
 
+        micAnalyserNode = micAudioCtx.createAnalyser();
+        micAnalyserNode.fftSize = 256;
+        micAnalyserNode.smoothingTimeConstant = 0.4;
+
+        runMicGlowRaf();
+
         // Build AudioContext + worklet
         const blobUrl = getWorkletBlobUrl();
         const ctx = micAudioCtx; // capture local assertion
@@ -1523,6 +1581,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
           const source = ctx.createMediaStreamSource(stream);
           micSourceNode = source; // Prevent GC
+          source.connect(micAnalyserNode);
           micWorkletNode = new AudioWorkletNode(ctx, "whisper-pcm-capture");
           micWorkletNode.port.onmessage = (ev) => {
             const payload = ev.data;
@@ -1531,8 +1590,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
               return;
             }
             // Back-compat with older message shape
-            const samples = payload?.samples;
-            if (samples instanceof Float32Array) pcmChunks.push(samples);
+            if (payload?.samples instanceof Float32Array) pcmChunks.push(payload.samples);
           };
           source.connect(micWorkletNode);
           // Connect to destination with zero gain — keeps the audio graph alive
@@ -1623,6 +1681,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     resetMicState();
     opts.chatInput.disabled = false;
     opts.chatInput.placeholder = "whisper something...";
+    clearMicGlow();
   }
 
   function cleanupRecordingStream(): void {
@@ -1644,6 +1703,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (micWorkletNode) {
       try { micWorkletNode.disconnect(); } catch { }
       micWorkletNode = null;
+    }
+    if (micAnalyserNode) {
+      try { micAnalyserNode.disconnect(); } catch { }
+      micAnalyserNode = null;
     }
     if (micSourceNode) {
       try { micSourceNode.disconnect(); } catch { }
@@ -3237,10 +3300,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       updateStatus("");
       setLogActive(false);
       setBusy(false);
-      updateControls();
       void deriveFingerprint(getPreviewSeed()).then((emoji) => {
         handleFingerprint(emoji);
         opts.fpChip.classList.add("wl-fp-chip--verified");
+
+        // Simulate welcome messages in preview mode
+        handlePeerCompose(COMPOSE_ACTIVE);
+        setTimeout(() => {
+          hidePeerTyping();
+          const peerPreviewId = -(++previewSendId);
+          addChatMessage({ type: "text", direction: "peer", text: "this is a preview chat.\ntip: use shift+enter to send simulated peer messages.", timestamp: Date.now(), msgId: peerPreviewId });
+        }, 800 + Math.random() * 600);
       });
       try { opts.chatInput.focus(); } catch { /* noop */ }
     }, { signal });
