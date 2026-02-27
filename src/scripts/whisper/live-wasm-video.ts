@@ -1,14 +1,25 @@
 /**
  * live-wasm-video.ts
  *
- * Whisper Video Codec
+ * the Whisper Spatial Physics Video Codec
  *
- * ChaCha20-AEAD encrypted video pipeline with integrated 256-bit Symmetric
- * Double Ratchet. Adaptive compression: YUV420, MED spatial prediction,
- * subtraction-delta P-frames with block skip, chroma-aware quantization,
- * zigzag transform, and hybrid Rice entropy coding with per-frame adaptive k.
- * Scene-change detection auto-promotes P-frames to I-frames when beneficial.
+ * every 8x8 block is modelled as a physical surface. the encoder fits the
+ * second-order causal Taylor expansion of that surface:
+ *
+ *   pred = D + α·(L-D) + β·(A-D) + γ·(fyy + fxx + fxy)
+ *
+ * α is horizontal gradient (fy), β is vertical gradient (fx), and γ covers the
+ * full Hessian correction ½ΔᵀHΔ, all three second-order curvature terms at once.
+ * a 3x3 normal equation solver (Gaussian elimination) fits these per block.
+ * whatever the surface model can't explain becomes the residual.
+ *
+ * a digital twin of light. the wire carries surface geometry, the decoder
+ * reconstructs pixels from physics.
+ *
+ * all hot-path functions (color conversion, delta, zigzag, PQ, quantization,
+ * block ops, dithering) run in hand-written WebAssembly with v128 SIMD.
  */
+import * as simd from "./video-simd";
 
 function encodeULEB(v: number): number[] {
     v = v >>> 0;
@@ -151,7 +162,7 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
     ];
 }
 
-/** Per-frame setup: nonce from frame counter, reset block counter, write header frameIdx */
+/** per-frame setup: nonce from frame counter, reset block counter, write header frameIdx */
 function buildFrameSetup(stateAddr: number, outPtrLocal?: number): number[] {
     return [
         // Set nonce word 0 from frame counter
@@ -174,7 +185,7 @@ function buildFrameSetup(stateAddr: number, outPtrLocal?: number): number[] {
 }
 
 /** PRF-based ratchet: generates a ChaCha block, copies output to all 8 key words,
- *  mixes MAC into nonce for forward secrecy binding, re-keys MAC. */
+ *  mixes MAC into nonce for forward secrecy binding, re-keys MAC */
 function buildRatchet(stateAddr: number, v: number[], mac0: number, mac1: number, temp: number): number[] {
     const copyKeyFromOutput: number[] = [];
     for (let j = 0; j < 8; j++) {
@@ -190,7 +201,7 @@ function buildRatchet(stateAddr: number, v: number[], mac0: number, mac1: number
         // Full 256-bit key refresh from PRF output
         ...copyKeyFromOutput,
         // Mix MAC snapshot into nonce for forward secrecy binding
-        // (use temp as scratch — don't modify mac0/mac1, MAC must cover entire frame)
+        // (use temp as scratch, don't modify mac0/mac1, MAC must cover entire frame)
         ...GET(mac0), ...SET(temp), ...avalanche(temp),
         ...CI32(0),
         ...CI32(0), ...LOAD32(2, stateAddr + 52), ...GET(temp), ...XOR,
@@ -199,7 +210,7 @@ function buildRatchet(stateAddr: number, v: number[], mac0: number, mac1: number
         ...CI32(0),
         ...CI32(0), ...LOAD32(2, stateAddr + 56), ...GET(temp), ...XOR,
         ...STORE32(2, stateAddr + 56),
-        // MAC continues accumulating — never reset mid-frame
+        // MAC continues accumulating, never reset mid-frame
     ];
 }
 
@@ -296,7 +307,7 @@ function buildEncodeBody(): number[] {
         ...buildChaChaBlock(ENC_STATE_ADDR, v),
         ...unrolled,
 
-        // PRF-based ratchet every 4096 pixels — full 256-bit key refresh
+        // PRF-based ratchet every 4096 pixels, full 256-bit key refresh
         ...GET(pixel_count), ...CI32(4095), ...AND, ...CI32(0), ...EQ,
         ...IF,
         ...buildRatchet(ENC_STATE_ADDR, v, mac0, mac1, temp),
@@ -463,7 +474,7 @@ function buildDecodeBody(): number[] {
         ...buildChaChaBlock(DEC_STATE_ADDR, v),
         ...unrolled,
 
-        // PRF-based ratchet every 4096 pixels — full 256-bit key refresh
+        // PRF-based ratchet every 4096 pixels, full 256-bit key refresh
         ...GET(pixel_count), ...CI32(4095), ...AND, ...CI32(0), ...EQ,
         ...IF,
         ...buildRatchet(DEC_STATE_ADDR, v, mac0, mac1, temp),
@@ -634,9 +645,9 @@ export interface PacketHeader {
     flags: number;
 }
 
-// --- Pseudo-dimension helpers for WASM ---
+// --- pseudo-dimension helpers for WASM ---
 // WASM decode reads width(u16)*height(u16) from header to get pixel count.
-// For compressed packets, we need to fit pseudoPixels into two u16 fields.
+// for compressed packets, we need to fit pseudoPixels into two u16 fields.
 function pseudoDims(n: number): [number, number] {
     if (n <= 65535) return [n, 1];
     const h = Math.ceil(n / 65535);
@@ -644,244 +655,89 @@ function pseudoDims(n: number): [number, number] {
     return [w, h];
 }
 
-// --- Flags field layout (32 bits) ---
+// --- flags field layout (32 bits) ---
 const FLAG_COMPRESSED = 1 << 0;
 const FLAG_KEYFRAME   = 1 << 1;
 const FLAG_QUALITY_SHIFT = 2;
 const FLAG_QUALITY_MASK  = 0x7F; // 7 bits, values 1-100
-const FLAG_RUNK_SHIFT = 9;
-const FLAG_RUNK_MASK  = 0x07;   // 3 bits, values 0-7
-const FLAG_VALK_SHIFT = 12;
-const FLAG_VALK_MASK  = 0x07;   // 3 bits, values 0-7
-const FLAG_NOMED      = 1 << 15; // bit 15: I-frame encoded without MED prediction
 
-function encodeFlags(
-    compressed: boolean, keyframe: boolean, quality: number,
-    runK: number, valK: number, noMed = false
-): number {
+function encodeFlags(compressed: boolean, keyframe: boolean, quality: number): number {
     let f = 0;
     if (compressed) f |= FLAG_COMPRESSED;
     if (keyframe) f |= FLAG_KEYFRAME;
-    if (noMed) f |= FLAG_NOMED;
     f |= (quality & FLAG_QUALITY_MASK) << FLAG_QUALITY_SHIFT;
-    f |= (runK & FLAG_RUNK_MASK) << FLAG_RUNK_SHIFT;
-    f |= (valK & FLAG_VALK_MASK) << FLAG_VALK_SHIFT;
     return f;
 }
 
 function decodeFlags(flags: number): {
     compressed: boolean; keyframe: boolean; quality: number;
-    runK: number; valK: number; noMed: boolean;
 } {
     return {
         compressed: (flags & FLAG_COMPRESSED) !== 0,
         keyframe: (flags & FLAG_KEYFRAME) !== 0,
-        noMed: (flags & FLAG_NOMED) !== 0,
         quality: (flags >>> FLAG_QUALITY_SHIFT) & FLAG_QUALITY_MASK,
-        runK: (flags >>> FLAG_RUNK_SHIFT) & FLAG_RUNK_MASK,
-        valK: (flags >>> FLAG_VALK_SHIFT) & FLAG_VALK_MASK,
     };
 }
 
-// --- Color space conversion ---
+// --- color space conversion ---
 
 function rgbaToYuv420(rgba: Uint8Array, w: number, h: number): Uint8Array {
-    const ySize = w * h;
-    const uvW = w >> 1, uvH = h >> 1;
-    const uvSize = uvW * uvH;
-    const yuv = new Uint8Array(ySize + uvSize * 2);
-    // Y plane
-    for (let j = 0; j < h; j++) {
-        for (let i = 0; i < w; i++) {
-            const idx = (j * w + i) * 4;
-            const r = rgba[idx], g = rgba[idx + 1], b = rgba[idx + 2];
-            yuv[j * w + i] = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-        }
-    }
-    // U and V planes (subsampled 2x2)
-    const uOff = ySize, vOff = ySize + uvSize;
-    for (let j = 0; j < uvH; j++) {
-        for (let i = 0; i < uvW; i++) {
-            let rSum = 0, gSum = 0, bSum = 0;
-            for (let dy = 0; dy < 2; dy++) {
-                for (let dx = 0; dx < 2; dx++) {
-                    const sy = j * 2 + dy, sx = i * 2 + dx;
-                    const idx = (sy * w + sx) * 4;
-                    rSum += rgba[idx]; gSum += rgba[idx + 1]; bSum += rgba[idx + 2];
-                }
-            }
-            const r = rSum >> 2, g = gSum >> 2, b = bSum >> 2;
-            yuv[uOff + j * uvW + i] = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-            yuv[vOff + j * uvW + i] = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-        }
-    }
-    return yuv;
+    return simd.rgbaToYuv420(rgba, w, h);
 }
 
 function yuv420ToRgba(yuv: Uint8Array, w: number, h: number): Uint8Array {
-    const ySize = w * h;
-    const uvW = w >> 1, uvH = h >> 1;
-    const uvSize = uvW * uvH;
-    const uOff = ySize, vOff = ySize + uvSize;
-    const rgba = new Uint8Array(w * h * 4);
-
-    // Bilinear UV upsampling: interpolate chroma between sample centers
-    // to eliminate blocky color transitions. Each UV sample sits at the
-    // center of its 2x2 luma block, so sub-pixel offsets are (0.5, 0.5).
-    for (let j = 0; j < h; j++) {
-        // UV coordinate and fractional position
-        const fj = (j - 0.5) * 0.5; // map luma position to UV space
-        const uj0 = Math.max(0, fj | 0);
-        const uj1 = Math.min(uvH - 1, uj0 + 1);
-        const fv = Math.max(0, Math.min(1, fj - uj0)); // vertical blend factor
-
-        for (let i = 0; i < w; i++) {
-            const fi = (i - 0.5) * 0.5;
-            const ui0 = Math.max(0, fi | 0);
-            const ui1 = Math.min(uvW - 1, ui0 + 1);
-            const fu = Math.max(0, Math.min(1, fi - ui0)); // horizontal blend factor
-
-            // Bilinear interpolation of U and V
-            const w00 = (1 - fu) * (1 - fv), w10 = fu * (1 - fv);
-            const w01 = (1 - fu) * fv, w11 = fu * fv;
-            const u = (
-                yuv[uOff + uj0 * uvW + ui0] * w00 +
-                yuv[uOff + uj0 * uvW + ui1] * w10 +
-                yuv[uOff + uj1 * uvW + ui0] * w01 +
-                yuv[uOff + uj1 * uvW + ui1] * w11
-            ) - 128;
-            const v = (
-                yuv[vOff + uj0 * uvW + ui0] * w00 +
-                yuv[vOff + uj0 * uvW + ui1] * w10 +
-                yuv[vOff + uj1 * uvW + ui0] * w01 +
-                yuv[vOff + uj1 * uvW + ui1] * w11
-            ) - 128;
-
-            const y = yuv[j * w + i] - 16;
-            const c = 298 * y;
-            const idx = (j * w + i) * 4;
-            rgba[idx]     = Math.max(0, Math.min(255, (c + 409 * v + 128) >> 8));
-            rgba[idx + 1] = Math.max(0, Math.min(255, (c - 100 * u - 208 * v + 128) >> 8));
-            rgba[idx + 2] = Math.max(0, Math.min(255, (c + 516 * u + 128) >> 8));
-            rgba[idx + 3] = 255;
-        }
-    }
-    return rgba;
+    return simd.yuv420ToRgba(yuv, w, h);
 }
 
-// --- Delta frame engine ---
-// Subtraction delta (mod 256) instead of XOR: small changes produce small values
-// centered around 0, which quantize and Rice-encode much more efficiently.
-// XOR of 100 and 103 gives 7; subtraction gives 3 — smaller, more compressible.
+// --- delta frame engine ---
+// subtraction delta (mod 256) instead of XOR: small changes produce small values
+// centered around 0, which quantize and compress much more efficiently.
+// XOR of 100 and 103 gives 7; subtraction gives 3, smaller residual.
 
 function computeDelta(current: Uint8Array, previous: Uint8Array): Uint8Array {
-    const delta = new Uint8Array(current.length);
-    for (let i = 0; i < current.length; i++) delta[i] = (current[i] - previous[i]) & 0xFF;
-    return delta;
+    return simd.computeDelta(current, previous);
 }
 
 function applyDelta(delta: Uint8Array, previous: Uint8Array): Uint8Array {
-    const out = new Uint8Array(delta.length);
-    for (let i = 0; i < delta.length; i++) out[i] = (delta[i] + previous[i]) & 0xFF;
-    return out;
+    return simd.applyDelta(delta, previous);
 }
 
-// --- Block skip ---
-// Operates on spatial blocks across the Y plane for motion detection,
+// --- block skip ---
+// operates on spatial blocks across the Y plane for motion detection,
 // but extracts/reinserts from the full YUV420 buffer so UV planes are included.
 
 function buildBlockBitmap(
     yDelta: Uint8Array, w: number, h: number, blockSize: number, threshold: number
 ): { bitmap: Uint8Array; blocksX: number; blocksY: number; changedCount: number } {
-    const blocksX = Math.ceil(w / blockSize);
-    const blocksY = Math.ceil(h / blockSize);
-    const totalBlocks = blocksX * blocksY;
-    const bitmap = new Uint8Array(Math.ceil(totalBlocks / 8));
-    let changedCount = 0;
-    for (let by = 0; by < blocksY; by++) {
-        for (let bx = 0; bx < blocksX; bx++) {
-            const blockIdx = by * blocksX + bx;
-            let energy = 0;
-            for (let dy = 0; dy < blockSize && by * blockSize + dy < h; dy++) {
-                for (let dx = 0; dx < blockSize && bx * blockSize + dx < w; dx++) {
-                    const off = (by * blockSize + dy) * w + (bx * blockSize + dx);
-                    const d = yDelta[off];
-                    energy += d < 128 ? d : 256 - d; // signed magnitude of mod-256 delta
-                    if (energy >= threshold) break;
-                }
-                if (energy >= threshold) break;
-            }
-            if (energy >= threshold) {
-                bitmap[blockIdx >> 3] |= 1 << (blockIdx & 7);
-                changedCount++;
-            }
-        }
-    }
-    return { bitmap, blocksX, blocksY, changedCount };
+    return simd.buildBlockBitmap(yDelta, w, h, blockSize, threshold);
 }
 
-// Extract changed blocks from a planar buffer (Y, U, or V plane independently)
 function extractChangedBlocksPlane(
     data: Uint8Array, planeW: number, planeH: number,
     bitmap: Uint8Array, blocksX: number, blocksY: number,
-    blockSize: number, planeBlockSize: number
+    planeBlockSize: number
 ): Uint8Array {
-    const chunks: number[] = [];
-    for (let by = 0; by < blocksY; by++) {
-        for (let bx = 0; bx < blocksX; bx++) {
-            const blockIdx = by * blocksX + bx;
-            if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
-            for (let dy = 0; dy < planeBlockSize; dy++) {
-                const y = by * planeBlockSize + dy;
-                if (y >= planeH) break;
-                for (let dx = 0; dx < planeBlockSize; dx++) {
-                    const x = bx * planeBlockSize + dx;
-                    if (x >= planeW) break;
-                    chunks.push(data[y * planeW + x]);
-                }
-            }
-        }
-    }
-    return new Uint8Array(chunks);
+    return simd.extractChangedBlocksPlane(data, planeW, planeH, bitmap, blocksX, blocksY, planeBlockSize);
 }
 
-// Reinsert changed blocks into a planar buffer
 function reinsertChangedBlocksPlane(
     blockData: Uint8Array, readStart: number,
     planeW: number, planeH: number,
     bitmap: Uint8Array, blocksX: number, blocksY: number,
     planeBlockSize: number, base: Uint8Array
 ): number {
-    let readPos = readStart;
-    for (let by = 0; by < blocksY; by++) {
-        for (let bx = 0; bx < blocksX; bx++) {
-            const blockIdx = by * blocksX + bx;
-            if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
-            for (let dy = 0; dy < planeBlockSize; dy++) {
-                const y = by * planeBlockSize + dy;
-                if (y >= planeH) break;
-                for (let dx = 0; dx < planeBlockSize; dx++) {
-                    const x = bx * planeBlockSize + dx;
-                    if (x >= planeW) break;
-                    base[y * planeW + x] = blockData[readPos++];
-                }
-            }
-        }
-    }
-    return readPos;
+    return simd.reinsertChangedBlocksPlane(blockData, readStart, planeW, planeH, bitmap, blocksX, blocksY, planeBlockSize, base);
 }
 
-// --- Perceptual transfer function (sqrt PQ) ---
-// Human vision follows Weber's law: sensitivity to luminance changes is
-// proportional to 1/L. A sqrt transfer function (gamma=0.5) redistributes
-// quantization levels to match this, giving 2x more precision in darks
-// and correspondingly less in brights (where the eye can't tell).
-// This is the same principle as sRGB gamma, µ-law audio companding,
-// and SMPTE ST 2084 PQ. Applied ONLY to Y plane of I-frames.
-
-// Gamma=0.55: gentler than sqrt(0.5), avoids harsh bright-value inversion errors.
-// Still gives 1.8x more levels in the dark half vs linear quantization.
-// The LUTs are bijective: PQ_INV[PQ_FWD[v]] ≈ v (max error 1, from rounding).
+// --- perceptual transfer function (sqrt PQ) ---
+// human vision follows Weber's law: sensitivity scales as 1/L. sqrt transfer
+// (gamma=0.5) redistributes quantization to give 2x more precision in darks.
+// same principle as sRGB gamma, µ-law companding, SMPTE ST 2084 PQ.
+// applied to Y plane of I-frames only.
+//
+// gamma=0.55: gentler than sqrt, avoids harsh bright-value inversion errors.
+// still 1.8x more levels in the dark half vs linear. LUTs are bijective:
+// PQ_INV[PQ_FWD[v]] ≈ v (max error 1, from rounding).
 const PQ_GAMMA = 0.55;
 const PQ_GAMMA_INV = 1 / PQ_GAMMA;
 const PQ_FWD = new Uint8Array(256); // linear → perceptual
@@ -892,413 +748,491 @@ for (let i = 0; i < 256; i++) {
 }
 
 function pqForward(data: Uint8Array, offset: number, count: number): void {
-    for (let i = offset; i < offset + count; i++) data[i] = PQ_FWD[data[i]];
+    simd.pqForward(data, offset, count);
 }
 
 function pqInverse(data: Uint8Array, offset: number, count: number): void {
-    for (let i = offset; i < offset + count; i++) data[i] = PQ_INV[data[i]];
+    simd.pqInverse(data, offset, count);
 }
 
-// --- Quantization ---
-// Maps quality 1-99 to a smooth divisor curve.
-// q=99 → step=2 (lightest), q=50 → step=8, q=1 → step=128 (heaviest).
-// UV planes get a quality-scaled boost (1.0-1.2x) because human vision is
-// less sensitive to chrominance.
+// --- quantization ---
+// maps quality 1-99 to a smooth divisor curve.
+// q=99 → step=2, q=50 → step=8, q=1 → step=128.
+// UV planes get a quality-scaled boost (1.0-1.2x) since
+// human vision is less sensitive to chrominance.
 
 function qstep(quality: number): number {
-    // Exponential curve: step = 2^((100-q)/17)  clamped to [1, 128]
-    // Float step — no rounding — gives smooth quality gradient with no plateaus.
-    // Exponent 17 (was 13): gentler curve preserves 45% of luma levels at q80
-    // (up from 35% at exp=13), while q30 step=17.4 still compresses aggressively.
+    // exponential curve: step = 2^((100-q)/17) clamped to [1, 128]
+    // float step, no rounding, smooth gradient with no plateaus.
+    // exponent 17: preserves 45% of luma levels at q80, q30 step=17.4 still compresses hard.
     return Math.max(1, Math.min(128, Math.pow(2, (100 - quality) / 17)));
 }
 
 function uvQstep(quality: number): number {
     const yS = qstep(quality);
-    // Quality-adaptive chroma boost:
-    //   q>=75: boost=1.0 (no boost — color accuracy is paramount for high quality)
-    //   q<75:  ramp from 1.0 to 1.15 (saves chroma bits where eye can't tell)
-    // This gives perfect color at high quality and reasonable bitrate savings at low quality.
+    // quality-adaptive chroma boost:
+    //   q>=75: boost=1.0, color accuracy matters at high quality
+    //   q<75:  ramp from 1.0 to 1.15, saves chroma bits where the eye can't tell
     const boost = quality >= 75 ? 1.0 : 1.0 + 0.15 * ((75 - quality) / 75);
     return Math.min(128, yS * boost);
 }
 
-/** Quantize with chroma boost: Y uses yStep, UV uses uvStep. For absolute values (I-frames). */
 function quantizeChroma(data: Uint8Array, ySamples: number, quality: number): Uint8Array {
     const yS = qstep(quality), uvS = uvQstep(quality);
-    const yInv = 1 / yS, uvInv = 1 / uvS; // precompute reciprocals — division is slow
-    const out = new Uint8Array(data.length);
-    for (let i = 0; i < ySamples; i++) out[i] = (data[i] * yInv + 0.5) | 0;
-    for (let i = ySamples; i < data.length; i++) out[i] = (data[i] * uvInv + 0.5) | 0;
-    return out;
+    return simd.quantizeChroma(data, ySamples, 1 / yS, 1 / uvS);
 }
 
 function dequantizeChroma(data: Uint8Array, ySamples: number, quality: number): Uint8Array {
     const yS = qstep(quality), uvS = uvQstep(quality);
-    const out = new Uint8Array(data.length);
-    for (let i = 0; i < ySamples; i++) out[i] = Math.min(255, (data[i] * yS + 0.5) | 0);
-    for (let i = ySamples; i < data.length; i++) out[i] = Math.min(255, (data[i] * uvS + 0.5) | 0);
-    return out;
+    return simd.dequantizeChroma(data, ySamples, yS, uvS);
 }
 
-/** Signed quantize for subtraction deltas (P-frames). Values 0-127 = positive, 128-255 = negative.
- *  Uses quality-adaptive deadzone: wider at low quality (maximize zeros for compression),
- *  tighter at high quality (preserve subtle motion detail). */
 function quantizeChromaSigned(data: Uint8Array, ySamples: number, quality: number): Uint8Array {
     const yS = qstep(quality), uvS = uvQstep(quality);
-    // Deadzone width scales inversely with quality:
-    //   q90: 0.55 * step (tight — preserve detail)
-    //   q80: 0.60 * step
-    //   q50: 0.70 * step
-    //   q30: 0.80 * step (wide — maximize zeros)
     const dzFactor = 0.5 + 0.35 * (1 - quality / 100);
-    const yDZ = yS * dzFactor, uvDZ = uvS * dzFactor;
-    const yInv = 1 / yS, uvInv = 1 / uvS;
-    const out = new Uint8Array(data.length);
-    for (let i = 0; i < data.length; i++) {
-        const inv = i < ySamples ? yInv : uvInv;
-        const dz = i < ySamples ? yDZ : uvDZ;
-        const v = data[i];
-        if (v < 128) {
-            // Positive delta: apply deadzone then truncate toward 0
-            out[i] = v < dz ? 0 : ((v * inv + 0.5) | 0) & 0xFF;
-        } else {
-            // Negative delta
-            const mag = 256 - v;
-            out[i] = mag < dz ? 0 : (-(((mag * inv + 0.5) | 0))) & 0xFF;
-        }
-    }
-    return out;
+    return simd.quantizeChromaSigned(data, ySamples, 1 / yS, 1 / uvS, yS * dzFactor, uvS * dzFactor);
 }
 
 function dequantizeChromaSigned(data: Uint8Array, ySamples: number, quality: number): Uint8Array {
     const yS = qstep(quality), uvS = uvQstep(quality);
-    const out = new Uint8Array(data.length);
-    for (let i = 0; i < data.length; i++) {
-        const step = i < ySamples ? yS : uvS;
-        const v = data[i];
-        if (v < 128) {
-            out[i] = Math.min(127, (v * step + 0.5) | 0) & 0xFF;
-        } else {
-            out[i] = (-Math.min(128, ((256 - v) * step + 0.5) | 0)) & 0xFF;
-        }
-    }
-    return out;
-}
-
-// --- Ordered dithering (Bayer 4×4) ---
-// Adds spatially-patterned ±half-step noise BEFORE quantization to break banding.
-// The Bayer matrix spreads quantization error across pixels rather than creating
-// sharp step boundaries. Applied only to I-frames (P-frame deltas are already noisy).
-
-const BAYER4 = new Float32Array([
-     0/16, 8/16, 2/16, 10/16,
-    12/16, 4/16, 14/16,  6/16,
-     3/16, 11/16, 1/16,  9/16,
-    15/16, 7/16, 13/16,  5/16
-]);
-
-function ditherPlane(
-    yuv: Uint8Array, off: number, stride: number, rows: number, step: number
-): void {
-    // Gradient-adaptive: only dither pixels where local gradient exists.
-    // Uniform regions (solid colors) are left untouched for perfect compression.
-    // Strength scales with step — larger quantization bins get stronger dithering.
-    if (step < 1.5) return; // q>=90: steps so fine that banding can't happen
-    for (let j = 0; j < rows; j++) {
-        const jMod = (j & 3) << 2;
-        for (let i = 0; i < stride; i++) {
-            const idx = off + j * stride + i;
-            const v = yuv[idx];
-            // Local gradient: max |diff| to left and top neighbors
-            const left = i > 0 ? yuv[idx - 1] : v;
-            const top = j > 0 ? yuv[idx - stride] : v;
-            const grad = Math.max(Math.abs(v - left), Math.abs(v - top));
-            if (grad < 2) continue; // uniform region — skip dithering
-            // Scale dither by how much gradient there is (clamped to full strength)
-            const t = Math.min(1, grad / step);
-            const d = (BAYER4[jMod + (i & 3)] - 0.5) * step * t;
-            yuv[idx] = Math.max(0, Math.min(255, v + d + 0.5)) | 0;
-        }
-    }
+    return simd.dequantizeChromaSigned(data, ySamples, yS, uvS);
 }
 
 function ditherYUV(yuv: Uint8Array, w: number, h: number, quality: number): void {
     const yS = qstep(quality), uvS = uvQstep(quality);
-    const ySize = w * h;
-    const uvW = w >> 1, uvH = h >> 1;
-    const uvSize = uvW * uvH;
-    ditherPlane(yuv, 0, w, h, yS);
-    ditherPlane(yuv, ySize, uvW, uvH, uvS);
-    ditherPlane(yuv, ySize + uvSize, uvW, uvH, uvS);
+    simd.ditherYUV(yuv, w, h, yS, uvS);
 }
-
-// --- Temporal FRC dithering (decoder-side only) ---
-// Frame Rate Control: alternates Bayer pattern each frame so the eye averages
-// consecutive frames, perceiving ~2x the effective bit depth. This is exactly
-// how 6-bit display panels achieve 8-bit appearance, and it costs zero bits.
-// Applied AFTER reconstruction (doesn't affect reference frame → zero drift).
-//
-// Pattern cycles through 4 Bayer offsets: (0,0), (2,1), (1,2), (3,3)
-// which are maximally dispersed in the 4x4 Bayer matrix.
-const FRC_OFFSETS = [[0, 0], [2, 1], [1, 2], [3, 3]];
 
 function frcDither(
     yuv: Uint8Array, w: number, h: number, quality: number, frameNum: number
 ): void {
     const step = qstep(quality);
-    if (step < 1.5) return; // high quality: steps so fine that FRC isn't needed
-    // Quality-adaptive FRC strength: subtle at high quality, stronger at low
+    if (step < 1.5) return;
     const baseStrength = step * (0.2 + 0.15 * (1 - quality / 100));
-    const [offX, offY] = FRC_OFFSETS[frameNum & 3];
-    // Only dither Y plane, and only where there's gradient (skip flat regions)
-    for (let j = 0; j < h; j++) {
-        const bj = ((j + offY) & 3) << 2;
-        for (let i = 0; i < w; i++) {
-            const idx = j * w + i;
-            const v = yuv[idx];
-            // Only apply FRC near quantization boundaries (where banding is visible)
-            const left = i > 0 ? yuv[idx - 1] : v;
-            const top = j > 0 ? yuv[idx - w] : v;
-            const grad = Math.max(Math.abs(v - left), Math.abs(v - top));
-            if (grad < 1) continue; // perfectly flat — no banding possible
-            const d = (BAYER4[bj + ((i + offX) & 3)] - 0.5) * baseStrength;
-            yuv[idx] = Math.max(0, Math.min(255, v + d + 0.5)) | 0;
-        }
-    }
+    simd.frcDither(yuv, w, h, baseStrength, frameNum);
 }
 
-// --- Spatial prediction (LOCO-I / JPEG-LS MED predictor) ---
-// Applied AFTER quantization (on discrete values) so prediction is lossless.
-// Converts smooth gradients into near-zero residuals for better entropy coding.
-
-/** MED predict per-plane. In-place, reverse raster order. */
-function medPredict(data: Uint8Array, offset: number, stride: number, rows: number): void {
-    // Process from bottom-right to top-left so original values are available for prediction
-    for (let y = rows - 1; y >= 0; y--) {
-        for (let x = stride - 1; x >= 0; x--) {
-            const i = offset + y * stride + x;
-            const left = x > 0 ? data[offset + y * stride + (x - 1)] : 0;
-            const top = y > 0 ? data[offset + (y - 1) * stride + x] : 0;
-            const topLeft = (x > 0 && y > 0) ? data[offset + (y - 1) * stride + (x - 1)] : 0;
-            // MED: adapts to edges. Horizontal edge → predict from top.
-            // Vertical edge → predict from left. Smooth → plane predictor.
-            let pred: number;
-            if (topLeft <= Math.min(left, top)) pred = Math.max(left, top);
-            else if (topLeft >= Math.max(left, top)) pred = Math.min(left, top);
-            else pred = (left + top - topLeft);
-            data[i] = (data[i] - pred) & 0xFF;
-        }
-    }
-}
-
-/** MED unpredict per-plane. In-place, forward raster order. */
-function medUnpredict(data: Uint8Array, offset: number, stride: number, rows: number): void {
-    for (let y = 0; y < rows; y++) {
-        for (let x = 0; x < stride; x++) {
-            const i = offset + y * stride + x;
-            const left = x > 0 ? data[offset + y * stride + (x - 1)] : 0;
-            const top = y > 0 ? data[offset + (y - 1) * stride + x] : 0;
-            const topLeft = (x > 0 && y > 0) ? data[offset + (y - 1) * stride + (x - 1)] : 0;
-            let pred: number;
-            if (topLeft <= Math.min(left, top)) pred = Math.max(left, top);
-            else if (topLeft >= Math.max(left, top)) pred = Math.min(left, top);
-            else pred = (left + top - topLeft);
-            data[i] = (data[i] + pred) & 0xFF;
-        }
-    }
-}
-
-// --- Zigzag transform ---
-// After MED/left prediction, residuals are signed mod 256: value 255 means -1,
-// 254 means -2, etc. Zigzag maps signed to unsigned so small residuals stay small:
+// --- zigzag transform ---
+// residuals after spatial prediction are signed mod 256 (255 means -1, etc).
+// zigzag maps signed to unsigned so small residuals stay small:
 //   0→0, -1→1, +1→2, -2→3, +2→4, ...
-// This concentrates energy near zero for optimal Rice coding.
+// concentrates energy near zero for fixed-width coding.
 
 function zigzagEncode(data: Uint8Array): void {
-    for (let i = 0; i < data.length; i++) {
-        const v = data[i];
-        data[i] = v < 128 ? (v << 1) : (((256 - v) << 1) - 1);
-    }
+    simd.zigzagEncode(data);
 }
 
 function zigzagDecode(data: Uint8Array): void {
-    for (let i = 0; i < data.length; i++) {
-        const v = data[i];
-        data[i] = (v & 1) ? (256 - ((v + 1) >> 1)) : (v >> 1);
-    }
+    simd.zigzagDecode(data);
 }
 
-// --- Entropy coding: hybrid zero-run + Rice for non-zeros ---
-// Encodes as (zero_run_length, non_zero_value) pairs using Rice coding.
-// Rice k parameters are adaptive per-frame: computed from mean run/value
-// statistics in a single pass. Chosen k is stored in the packet flags (6 bits).
+// --- spatial physics block codec ---
+// second-order causal Taylor expansion per 8x8 block:
+//   pred = D + α·(L-D) + β·(A-D) + γ·(fyy + fxx + fxy)
+// D=diagonal, L=left, A=above. α=fy, β=fx, γ=Hessian (fyy+fxx+fxy).
+// 3x3 normal equation solver fits coefficients. W-bit residual packing.
 
-const RICE_ESCAPE = 24;  // unary escape threshold (shared for run/val)
+/** clz32: count leading zeros of a 32-bit unsigned integer */
+function clz32(v: number): number { return Math.clz32(v); }
 
-function riceEncodeWithK(data: Uint8Array, runK: number, valK: number): Uint8Array {
-    const buf = new Uint8Array(Math.ceil(data.length * 2) + 16);
-    let bytePos = 0, bitPos = 0;
+/**
+ * blockEncode: I-frame spatial physics encoder.
+ * full plane in 8x8 raster-order blocks with causal neighbors.
+ * pred = D + α·(L-D) + β·(A-D) + γ·(fyy + fxx + fxy)
+ * fyy = L-2D+AD, fxx = A-2D+DL, fxy = A-D-AA+AD.
+ * per-block header [α_q:8][β_q:8][γ_q:8][W:6] + W-bit residuals.
+ */
+function blockEncode(data: Uint8Array, width: number, height: number): Uint8Array {
+    const BS = 8;
+    const blocksX = Math.ceil(width / BS);
+    const blocksY = Math.ceil(height / BS);
+    // Worst case: 30 header bits + 8*8*8=512 data bits = 542 bits per block
+    const buf = new Uint8Array(Math.ceil(blocksX * blocksY * 542 / 8) + 16);
+    let bytePos = 0, bitBuf = 0, bitCount = 0;
 
-    function writeBit(b: number) {
-        if (b) buf[bytePos] |= (1 << bitPos);
-        if (++bitPos === 8) { bitPos = 0; bytePos++; }
+    function flushBits() {
+        while (bitCount >= 8) {
+            buf[bytePos++] = bitBuf & 0xFF;
+            bitBuf >>>= 8;
+            bitCount -= 8;
+        }
     }
 
     function writeBits(val: number, count: number) {
-        for (let i = 0; i < count; i++) writeBit((val >>> i) & 1);
+        bitBuf |= (val & ((1 << count) - 1)) << bitCount;
+        bitCount += count;
+        flushBits();
     }
 
-    function writeRice(val: number, k: number) {
-        const q = val >>> k;
-        if (q < RICE_ESCAPE) {
-            for (let j = 0; j < q; j++) writeBit(1);
-            writeBit(0);
-            if (k > 0) writeBits(val & ((1 << k) - 1), k);
-        } else {
-            for (let j = 0; j < RICE_ESCAPE; j++) writeBit(1);
-            writeBit(0);
-            writeBits(val, 16);
+    // 3×3 Gaussian elimination with partial pivoting
+    function solve3x3(
+        m00: number, m01: number, m02: number,
+        m11: number, m12: number, m22: number,
+        r0: number, r1: number, r2: number
+    ): [number, number, number] {
+        const a = [m00, m01, m02, r0];
+        const b = [m01, m11, m12, r1];
+        const c = [m02, m12, m22, r2];
+        const rows = [a, b, c];
+        for (let col = 0; col < 3; col++) {
+            let maxVal = Math.abs(rows[col][col]), maxRow = col;
+            for (let row = col + 1; row < 3; row++) {
+                const v = Math.abs(rows[row][col]);
+                if (v > maxVal) { maxVal = v; maxRow = row; }
+            }
+            if (maxVal < 1e-10) continue;
+            if (maxRow !== col) { const tmp = rows[col]; rows[col] = rows[maxRow]; rows[maxRow] = tmp; }
+            for (let row = col + 1; row < 3; row++) {
+                const f = rows[row][col] / rows[col][col];
+                for (let j = col; j < 4; j++) rows[row][j] -= f * rows[col][j];
+            }
+        }
+        const x = [0, 0, 0];
+        for (let i = 2; i >= 0; i--) {
+            if (Math.abs(rows[i][i]) < 1e-10) continue;
+            let sum = rows[i][3];
+            for (let j = i + 1; j < 3; j++) sum -= rows[i][j] * x[j];
+            x[i] = sum / rows[i][i];
+        }
+        return x as [number, number, number];
+    }
+
+    // Work buffer for reconstructed values (needed for causal prediction)
+    const recon = new Uint8Array(data);
+
+    for (let by = 0; by < blocksY; by++) {
+        for (let bx = 0; bx < blocksX; bx++) {
+            const bw = Math.min(BS, width - bx * BS);
+            const bh = Math.min(BS, height - by * BS);
+
+            // Accumulate 3×3 normal equations: M^T·M and M^T·y
+            // b1 = L-D (fy), b2 = A-D (fx), b3 = fyy+fxx+fxy (full Hessian correction)
+            let m00 = 0, m01 = 0, m02 = 0, m11 = 0, m12 = 0, m22 = 0;
+            let r0 = 0, r1 = 0, r2 = 0;
+            for (let ly = 0; ly < bh; ly++) {
+                const gy = by * BS + ly;
+                for (let lx = 0; lx < bw; lx++) {
+                    const gx = bx * BS + lx;
+                    if (gx === 0 || gy === 0) continue;
+                    const val = recon[gy * width + gx];
+                    const L = recon[gy * width + gx - 1];
+                    const A = recon[(gy - 1) * width + gx];
+                    const D = recon[(gy - 1) * width + gx - 1];
+                    const b1 = L - D;
+                    const b2 = A - D;
+                    // Full second-order correction: fyy + fxx + fxy
+                    const fyy = gy > 1 ? (L - 2 * D + recon[(gy - 2) * width + gx - 1]) : 0;
+                    const fxx = gx > 1 ? (A - 2 * D + recon[(gy - 1) * width + gx - 2]) : 0;
+                    const fxy = gy > 1 ? (A - D - recon[(gy - 2) * width + gx] + recon[(gy - 2) * width + gx - 1]) : 0;
+                    const b3 = fyy + fxx + fxy;
+                    const target = val - D;
+                    m00 += b1 * b1; m01 += b1 * b2; m02 += b1 * b3;
+                                    m11 += b2 * b2; m12 += b2 * b3;
+                                                    m22 += b3 * b3;
+                    r0 += b1 * target; r1 += b2 * target; r2 += b3 * target;
+                }
+            }
+
+            const [alpha, beta, gamma] = solve3x3(m00, m01, m02, m11, m12, m22, r0, r1, r2);
+
+            // Quantize coefficients to 8-bit signed (Q5: multiply by 32)
+            const aq = Math.max(-128, Math.min(127, Math.round(alpha * 32))) | 0;
+            const bq = Math.max(-128, Math.min(127, Math.round(beta * 32))) | 0;
+            const cq = Math.max(-128, Math.min(127, Math.round(gamma * 32))) | 0;
+
+            // Pass 2: compute predictions with quantized coefficients, zigzag residuals, find maxZ
+            let maxZ = 0;
+            const residuals = new Uint8Array(bw * bh);
+            for (let ly = 0; ly < bh; ly++) {
+                const gy = by * BS + ly;
+                for (let lx = 0; lx < bw; lx++) {
+                    const gx = bx * BS + lx;
+                    const val = recon[gy * width + gx];
+                    let pred: number;
+                    if (gx > 0 && gy > 0) {
+                        const L = recon[gy * width + gx - 1];
+                        const A = recon[(gy - 1) * width + gx];
+                        const D = recon[(gy - 1) * width + gx - 1];
+                        const fyy = gy > 1 ? (L - 2 * D + recon[(gy - 2) * width + gx - 1]) : 0;
+                        const fxx = gx > 1 ? (A - 2 * D + recon[(gy - 1) * width + gx - 2]) : 0;
+                        const fxy = gy > 1 ? (A - D - recon[(gy - 2) * width + gx] + recon[(gy - 2) * width + gx - 1]) : 0;
+                        pred = D + ((aq * (L - D) + bq * (A - D) + cq * (fyy + fxx + fxy)) >> 5);
+                    } else if (gx > 0) {
+                        pred = recon[gy * width + gx - 1];
+                    } else if (gy > 0) {
+                        pred = recon[(gy - 1) * width + gx];
+                    } else {
+                        pred = 0;
+                    }
+                    const r = (val - pred) & 0xFF;
+                    // Zigzag: signed mod 256 → unsigned
+                    const z = r < 128 ? (r << 1) : (((256 - r) << 1) - 1);
+                    residuals[ly * bw + lx] = z;
+                    if (z > maxZ) maxZ = z;
+                }
+            }
+
+            const W = maxZ > 0 ? (32 - clz32(maxZ)) : 0;
+
+            // Emit header: α_q(8) + β_q(8) + γ_q(8) + W(6) = 30 bits
+            writeBits(aq & 0xFF, 8);
+            writeBits(bq & 0xFF, 8);
+            writeBits(cq & 0xFF, 8);
+            writeBits(W, 6);
+
+            // Emit data: each residual in W bits
+            if (W > 0) {
+                for (let i = 0; i < bw * bh; i++) {
+                    writeBits(residuals[i], W);
+                }
+            }
         }
     }
 
-    let i = 0;
-    while (i < data.length) {
-        let runLen = 0;
-        while (i + runLen < data.length && data[i + runLen] === 0) runLen++;
-
-        if (i + runLen >= data.length) {
-            writeRice(runLen, runK);
-            break;
-        }
-
-        writeRice(runLen, runK);
-        i += runLen;
-        writeRice(data[i] - 1, valK);
-        i++;
-    }
-
-    const totalBytes = bitPos > 0 ? bytePos + 1 : bytePos;
-    return buf.subarray(0, totalBytes);
+    // Flush remaining bits
+    if (bitCount > 0) buf[bytePos++] = bitBuf & 0xFF;
+    return buf.subarray(0, bytePos);
 }
 
-/** Measure encoded size for a given k pair without allocating the full output. */
-function riceMeasure(data: Uint8Array, runK: number, valK: number): number {
-    let bits = 0;
-
-    function countRice(val: number, k: number) {
-        const q = val >>> k;
-        if (q < RICE_ESCAPE) {
-            bits += q + 1 + k;
-        } else {
-            bits += RICE_ESCAPE + 1 + 16;
-        }
-    }
-
-    let i = 0;
-    while (i < data.length) {
-        let runLen = 0;
-        while (i + runLen < data.length && data[i + runLen] === 0) runLen++;
-
-        if (i + runLen >= data.length) {
-            countRice(runLen, runK);
-            break;
-        }
-
-        countRice(runLen, runK);
-        i += runLen;
-        countRice(data[i] - 1, valK);
-        i++;
-    }
-
-    return Math.ceil(bits / 8);
-}
-
-/** Pick optimal Rice k from data statistics, then encode once. */
-function riceEncodeAdaptive(data: Uint8Array): { encoded: Uint8Array; runK: number; valK: number } {
-    // Single pass: collect run lengths and values
-    let runSum = 0, runCount = 0, valSum = 0, valCount = 0;
-    let i = 0;
-    while (i < data.length) {
-        let runLen = 0;
-        while (i + runLen < data.length && data[i + runLen] === 0) runLen++;
-        runSum += runLen;
-        runCount++;
-        i += runLen;
-        if (i < data.length) {
-            valSum += data[i] - 1;
-            valCount++;
-            i++;
-        }
-    }
-    // Optimal Rice k ≈ max(0, floor(log2(mean))) when mean >= 1
-    const runMean = runCount > 0 ? runSum / runCount : 0;
-    const valMean = valCount > 0 ? valSum / valCount : 0;
-    const runK = runMean >= 1 ? Math.min(7, Math.floor(Math.log2(runMean))) : 0;
-    const valK = valMean >= 1 ? Math.min(7, Math.floor(Math.log2(valMean))) : 0;
-    return { encoded: riceEncodeWithK(data, runK, valK), runK, valK };
-}
-
-function riceDecode(data: Uint8Array, expectedLen: number, runK: number, valK: number): Uint8Array {
-    const out = new Uint8Array(expectedLen);
-    let bytePos = 0, bitPos = 0;
-    let wi = 0;
-
-    function readBit(): number {
-        if (bytePos >= data.length) return 0;
-        const b = (data[bytePos] >>> bitPos) & 1;
-        if (++bitPos === 8) { bitPos = 0; bytePos++; }
-        return b;
-    }
+/** blockDecode: I-frame spatial physics decoder, mirror of blockEncode. */
+function blockDecode(bitstream: Uint8Array, width: number, height: number): Uint8Array {
+    const BS = 8;
+    const blocksX = Math.ceil(width / BS);
+    const blocksY = Math.ceil(height / BS);
+    const out = new Uint8Array(width * height);
+    let bytePos = 0, bitBuf = 0, bitCount = 0;
 
     function readBits(count: number): number {
-        let val = 0;
-        for (let i = 0; i < count; i++) val |= (readBit() << i);
+        while (bitCount < count) {
+            bitBuf |= (bytePos < bitstream.length ? bitstream[bytePos++] : 0) << bitCount;
+            bitCount += 8;
+        }
+        const val = bitBuf & ((1 << count) - 1);
+        bitBuf >>>= count;
+        bitCount -= count;
         return val;
     }
 
-    function readRice(k: number): number {
-        let q = 0;
-        while (readBit() === 1) q++;
-        if (q >= RICE_ESCAPE) return readBits(16);
-        const r = k > 0 ? readBits(k) : 0;
-        return (q << k) | r;
-    }
+    for (let by = 0; by < blocksY; by++) {
+        for (let bx = 0; bx < blocksX; bx++) {
+            const bw = Math.min(BS, width - bx * BS);
+            const bh = Math.min(BS, height - by * BS);
 
-    while (wi < expectedLen) {
-        const runLen = readRice(runK);
-        wi += runLen;
-        if (wi >= expectedLen) break;
-        out[wi++] = readRice(valK) + 1;
+            // Read header: α_q(8) + β_q(8) + γ_q(8) + W(6) = 30 bits
+            const aq = (readBits(8) << 24) >> 24; // sign extend
+            const bq = (readBits(8) << 24) >> 24;
+            const cq = (readBits(8) << 24) >> 24;
+            const W = readBits(6);
+
+            for (let ly = 0; ly < bh; ly++) {
+                const gy = by * BS + ly;
+                for (let lx = 0; lx < bw; lx++) {
+                    const gx = bx * BS + lx;
+                    let pred: number;
+                    if (gx > 0 && gy > 0) {
+                        const L = out[gy * width + gx - 1];
+                        const A = out[(gy - 1) * width + gx];
+                        const D = out[(gy - 1) * width + gx - 1];
+                        const fyy = gy > 1 ? (L - 2 * D + out[(gy - 2) * width + gx - 1]) : 0;
+                        const fxx = gx > 1 ? (A - 2 * D + out[(gy - 1) * width + gx - 2]) : 0;
+                        const fxy = gy > 1 ? (A - D - out[(gy - 2) * width + gx] + out[(gy - 2) * width + gx - 1]) : 0;
+                        pred = D + ((aq * (L - D) + bq * (A - D) + cq * (fyy + fxx + fxy)) >> 5);
+                    } else if (gx > 0) {
+                        pred = out[gy * width + gx - 1];
+                    } else if (gy > 0) {
+                        pred = out[(gy - 1) * width + gx];
+                    } else {
+                        pred = 0;
+                    }
+                    const z = W > 0 ? readBits(W) : 0;
+                    // Inverse zigzag
+                    const r = (z & 1) ? (256 - ((z + 1) >> 1)) : (z >> 1);
+                    out[gy * width + gx] = (pred + r) & 0xFF;
+                }
+            }
+        }
     }
 
     return out;
 }
 
-// --- Compressed payload assembly ---
+/** blockEncodeMulti: P-frame encoder. independent blocks, 30-bit header + W-bit residuals each. */
+function blockEncodeMulti(blockData: Uint8Array, blockDims: {w: number; h: number}[]): Uint8Array {
+    const buf = new Uint8Array(Math.ceil(blockData.length * 10 / 8) + blockDims.length * 4 + 16);
+    let bytePos = 0, bitBuf = 0, bitCount = 0;
 
-function packCompressedPayload(
-    rleData: Uint8Array, isKeyframe: boolean,
+    function flushBits() {
+        while (bitCount >= 8) {
+            buf[bytePos++] = bitBuf & 0xFF;
+            bitBuf >>>= 8;
+            bitCount -= 8;
+        }
+    }
+
+    function writeBits(val: number, count: number) {
+        bitBuf |= (val & ((1 << count) - 1)) << bitCount;
+        bitCount += count;
+        flushBits();
+    }
+
+    let readPos = 0;
+    for (const { w, h } of blockDims) {
+        const n = w * h;
+        const block = blockData.subarray(readPos, readPos + n);
+        readPos += n;
+
+        // Zigzag all residuals, find maxZ
+        let maxZ = 0;
+        const zz = new Uint8Array(n);
+        for (let i = 0; i < n; i++) {
+            const v = block[i];
+            const z = v < 128 ? (v << 1) : (((256 - v) << 1) - 1);
+            zz[i] = z;
+            if (z > maxZ) maxZ = z;
+        }
+
+        const W = maxZ > 0 ? (32 - clz32(maxZ)) : 0;
+
+        // For P-frame blocks: no spatial prediction, just α=β=γ=0
+        writeBits(0, 8); // α_q = 0
+        writeBits(0, 8); // β_q = 0
+        writeBits(0, 8); // γ_q = 0
+        writeBits(W, 6);
+
+        if (W > 0) {
+            for (let i = 0; i < n; i++) writeBits(zz[i], W);
+        }
+    }
+
+    if (bitCount > 0) buf[bytePos++] = bitBuf & 0xFF;
+    return buf.subarray(0, bytePos);
+}
+
+/** blockDecodeMulti: P-frame decoder. */
+function blockDecodeMulti(bitstream: Uint8Array, blockDims: {w: number; h: number}[], totalPixels: number): Uint8Array {
+    const out = new Uint8Array(totalPixels);
+    let bytePos = 0, bitBuf = 0, bitCount = 0;
+
+    function readBits(count: number): number {
+        while (bitCount < count) {
+            bitBuf |= (bytePos < bitstream.length ? bitstream[bytePos++] : 0) << bitCount;
+            bitCount += 8;
+        }
+        const val = bitBuf & ((1 << count) - 1);
+        bitBuf >>>= count;
+        bitCount -= count;
+        return val;
+    }
+
+    let writePos = 0;
+    for (const { w, h } of blockDims) {
+        const n = w * h;
+        // read header (α_q, β_q, γ_q are ignored for P-frame blocks, no spatial prediction)
+        readBits(8); // α_q
+        readBits(8); // β_q
+        readBits(8); // γ_q
+        const W = readBits(6);
+
+        for (let i = 0; i < n; i++) {
+            const z = W > 0 ? readBits(W) : 0;
+            // Inverse zigzag
+            out[writePos++] = (z & 1) ? (256 - ((z + 1) >> 1)) : (z >> 1);
+        }
+    }
+
+    return out;
+}
+
+/** build {w, h} dimensions for each changed block (Y + U + V). */
+function buildChangedBlockDims(
+    bitmap: Uint8Array, blocksX: number, blocksY: number,
+    blockSize: number, planeW: number, planeH: number,
+    uvBlockSize: number, uvW: number, uvH: number
+): {w: number; h: number}[] {
+    const dims: {w: number; h: number}[] = [];
+    // Y plane blocks
+    for (let by = 0; by < blocksY; by++) {
+        for (let bx = 0; bx < blocksX; bx++) {
+            const blockIdx = by * blocksX + bx;
+            if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
+            const bw = Math.min(blockSize, planeW - bx * blockSize);
+            const bh = Math.min(blockSize, planeH - by * blockSize);
+            dims.push({ w: bw, h: bh });
+        }
+    }
+    // U plane blocks
+    for (let by = 0; by < blocksY; by++) {
+        for (let bx = 0; bx < blocksX; bx++) {
+            const blockIdx = by * blocksX + bx;
+            if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
+            const bw = Math.min(uvBlockSize, uvW - bx * uvBlockSize);
+            const bh = Math.min(uvBlockSize, uvH - by * uvBlockSize);
+            dims.push({ w: bw, h: bh });
+        }
+    }
+    // V plane blocks (same dims as U)
+    for (let by = 0; by < blocksY; by++) {
+        for (let bx = 0; bx < blocksX; bx++) {
+            const blockIdx = by * blocksX + bx;
+            if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
+            const bw = Math.min(uvBlockSize, uvW - bx * uvBlockSize);
+            const bh = Math.min(uvBlockSize, uvH - by * uvBlockSize);
+            dims.push({ w: bw, h: bh });
+        }
+    }
+    return dims;
+}
+
+// --- compressed payload assembly ---
+
+/** I-frame payload: [yLen:4][yBitstream][uLen:4][uBitstream][vLen:4][vBitstream] */
+
+function packIframePayload(yBits: Uint8Array, uBits: Uint8Array, vBits: Uint8Array): Uint8Array {
+    const out = new Uint8Array(12 + yBits.length + uBits.length + vBits.length);
+    const dv = new DataView(out.buffer);
+    let off = 0;
+    dv.setUint32(off, yBits.length, true); off += 4;
+    out.set(yBits, off); off += yBits.length;
+    dv.setUint32(off, uBits.length, true); off += 4;
+    out.set(uBits, off); off += uBits.length;
+    dv.setUint32(off, vBits.length, true); off += 4;
+    out.set(vBits, off);
+    return out;
+}
+
+function unpackIframePayload(payload: Uint8Array): { yBits: Uint8Array; uBits: Uint8Array; vBits: Uint8Array } {
+    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    let off = 0;
+    const yLen = dv.getUint32(off, true); off += 4;
+    const yBits = payload.subarray(off, off + yLen); off += yLen;
+    const uLen = dv.getUint32(off, true); off += 4;
+    const uBits = payload.subarray(off, off + uLen); off += uLen;
+    const vLen = dv.getUint32(off, true); off += 4;
+    const vBits = payload.subarray(off, off + vLen);
+    return { yBits, uBits, vBits };
+}
+
+/** P-frame payload: [bitmap][blockBitstream] */
+
+function packPframePayload(
+    blockBitstream: Uint8Array,
     blocksX: number, blocksY: number, bitmap: Uint8Array
 ): Uint8Array {
-    if (isKeyframe) return rleData;
-    // P-frame: [bitmap][rleData] — blocksX/blocksY derived from w/h/blockSize
     const bitmapLen = Math.ceil(blocksX * blocksY / 8);
-    const out = new Uint8Array(bitmapLen + rleData.length);
+    const out = new Uint8Array(bitmapLen + blockBitstream.length);
     out.set(bitmap.subarray(0, bitmapLen), 0);
-    out.set(rleData, bitmapLen);
+    out.set(blockBitstream, bitmapLen);
     return out;
 }
 
-function unpackCompressedPayload(
-    payload: Uint8Array, isKeyframe: boolean,
+function unpackPframePayload(
+    payload: Uint8Array,
     blocksX: number, blocksY: number
-): { rleData: Uint8Array; bitmap: Uint8Array } {
-    if (isKeyframe) return { rleData: payload, bitmap: new Uint8Array(0) };
+): { blockBitstream: Uint8Array; bitmap: Uint8Array } {
     const bitmapLen = Math.ceil(blocksX * blocksY / 8);
     const bitmap = payload.subarray(0, bitmapLen);
-    const rleData = payload.subarray(bitmapLen);
-    return { rleData, bitmap };
+    const blockBitstream = payload.subarray(bitmapLen);
+    return { blockBitstream, bitmap };
 }
 
 export interface VideoCodecConfig {
@@ -1330,6 +1264,8 @@ export class VideoCodec {
         if (encryptionKey.length < 8) throw new Error("Key must be 256 bits (Uint32Array of 8)");
         this.config = { ...DEFAULT_CONFIG, ...config };
         if (this.config.quality < 1 || this.config.quality > 100) throw new Error("quality must be 1-100");
+        // Initialize SIMD WASM accelerator (once, shared across all instances)
+        if (simd.initVideoSimd()) simd.initPqTables(PQ_FWD, PQ_INV);
         this.wasm = await getVideoWasm();
         const k = encryptionKey;
         this.wasm.reset_encoder_state(k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]);
@@ -1359,89 +1295,59 @@ export class VideoCodec {
 
     private compressFrame(pixels: Uint8Array, w: number, h: number): { payload: Uint8Array; flags: number } {
         const { quality, keyFrameInterval, blockSize, blockThreshold: baseThreshold } = this.config;
-        // Quality-adaptive block threshold: at high quality, catch subtle changes.
-        // At low quality, ignore small deltas (they'll be quantized away anyway).
-        //   q90: 0.6x base (sensitive)  q80: 0.8x  q50: 1.4x  q30: 2.0x
         const thresholdScale = 0.5 + 1.5 * (1 - quality / 100);
         const blockThreshold = Math.max(2, (baseThreshold * thresholdScale + 0.5) | 0);
         const ySize = w * h;
         const uvW = w >> 1, uvH = h >> 1;
         const uvSize = uvW * uvH;
         const yuvSize = ySize + uvSize * 2;
-        const uvBlockSize = blockSize >> 1; // UV is 2x subsampled
+        const uvBlockSize = blockSize >> 1;
 
-        // Step 1: RGBA → YUV420
         const yuv = rgbaToYuv420(pixels, w, h);
-
-        // Step 2: Keyframe or delta?
         let isKeyframe = !this.prevFrame || this.framesSinceKey >= keyFrameInterval;
 
-        let toEncode: Uint8Array;
         let blocksX = 0, blocksY = 0;
         let bitmap = new Uint8Array(0);
 
-        // PQ forward on Y plane: all frames operate in perceptual space.
-        // prevFrame is stored in PQ space so deltas are perceptually uniform.
         pqForward(yuv, 0, ySize);
 
-        let useNoMed = false; // track which path won for flags
-
         if (isKeyframe) {
-            // I-frame: dither → quantize → adaptive MED → zigzag → RLE
-            // Try BOTH paths (with MED, without MED) and pick whichever compresses smaller.
-            // MED helps smooth/gradient content ~15x but hurts high-frequency content ~0.7x.
+            // I-frame: dither → quantize → blockEncode per plane
             ditherYUV(yuv, w, h, quality);
             const quantized = quantizeChroma(yuv, ySize, quality);
-            // Track decoder state: store what decoder will reconstruct (PQ space)
             this.prevFrame = dequantizeChroma(quantized, ySize, quality);
 
-            // Path A: with MED prediction
-            const withMed = new Uint8Array(quantized);
-            medPredict(withMed, 0, w, h);
-            medPredict(withMed, ySize, uvW, uvH);
-            medPredict(withMed, ySize + uvSize, uvW, uvH);
-            const zigMed = new Uint8Array(withMed);
-            zigzagEncode(zigMed);
-            const medResult = riceEncodeAdaptive(zigMed);
+            const yBits = blockEncode(quantized.subarray(0, ySize), w, h);
+            const uBits = blockEncode(quantized.subarray(ySize, ySize + uvSize), uvW, uvH);
+            const vBits = blockEncode(quantized.subarray(ySize + uvSize), uvW, uvH);
 
-            // Path B: without MED (just zigzag the raw quantized values)
-            const noMed = new Uint8Array(quantized);
-            zigzagEncode(noMed);
-            const noMedResult = riceEncodeAdaptive(noMed);
-
-            // Pick winner
-            if (noMedResult.encoded.length < medResult.encoded.length) {
-                toEncode = noMed;
-                useNoMed = true;
-            } else {
-                toEncode = zigMed;
-            }
+            let payload = packIframePayload(yBits, uBits, vBits);
             this.framesSinceKey = 1;
+
+            const flags = encodeFlags(true, true, quality);
+            return { payload, flags };
         } else {
-            // P-frame: delta in PQ space against encoder's reference
+            // P-frame: delta → block skip → extract → quantize → blockEncodeMulti
             const delta = computeDelta(yuv, this.prevFrame!);
 
-            // Block skip: detect motion on Y plane
             const blockInfo = buildBlockBitmap(delta.subarray(0, ySize), w, h, blockSize, blockThreshold);
             blocksX = blockInfo.blocksX;
             blocksY = blockInfo.blocksY;
             bitmap = blockInfo.bitmap;
 
-            // Extract changed blocks from ALL planes (Y + U + V)
             const yBlocks = extractChangedBlocksPlane(
                 delta.subarray(0, ySize), w, h,
-                bitmap, blocksX, blocksY, blockSize, blockSize
+                bitmap, blocksX, blocksY, blockSize
             );
             const uBlocks = extractChangedBlocksPlane(
                 delta.subarray(ySize, ySize + uvSize), uvW, uvH,
-                bitmap, blocksX, blocksY, blockSize, uvBlockSize
+                bitmap, blocksX, blocksY, uvBlockSize
             );
             const vBlocks = extractChangedBlocksPlane(
                 delta.subarray(ySize + uvSize), uvW, uvH,
-                bitmap, blocksX, blocksY, blockSize, uvBlockSize
+                bitmap, blocksX, blocksY, uvBlockSize
             );
 
-            // Concatenate Y+U+V block data
             const allBlocks = new Uint8Array(yBlocks.length + uBlocks.length + vBlocks.length);
             allBlocks.set(yBlocks, 0);
             allBlocks.set(uBlocks, yBlocks.length);
@@ -1449,15 +1355,10 @@ export class VideoCodec {
 
             const quantizedBlocks = quantizeChromaSigned(allBlocks, yBlocks.length, quality);
 
-            // Track decoder state: simulate the lossy reconstruction (BEFORE prediction)
-            const lossyDelta = new Uint8Array(yuvSize); // zeros = unchanged blocks stay zero
+            // Track decoder state
+            const lossyDelta = new Uint8Array(yuvSize);
             const lossyBlocks = dequantizeChromaSigned(quantizedBlocks, yBlocks.length, quality);
 
-            // Zigzag on quantized block data (no left-prediction: signed-quantized
-            // deltas are already concentrated at 0/±1, prediction adds noise)
-            toEncode = new Uint8Array(quantizedBlocks);
-            zigzagEncode(toEncode);
-            // Reinsert lossy blocks into all three planes
             let pos = 0;
             pos = reinsertChangedBlocksPlane(
                 lossyBlocks, pos, w, h, bitmap, blocksX, blocksY, blockSize,
@@ -1473,88 +1374,49 @@ export class VideoCodec {
             );
             this.prevFrame = applyDelta(lossyDelta, this.prevFrame!);
             this.framesSinceKey++;
-        }
 
-        // Step 5: Adaptive Rice encoding
-        let rleData: Uint8Array, runK: number, valK: number;
-        if (isKeyframe) {
-            // I-frame: already encoded via adaptive MED selection above — reuse winner
-            const winner = useNoMed ? riceEncodeAdaptive(toEncode) : riceEncodeAdaptive(toEncode);
-            // Note: toEncode was already set to the winning path's zigzagged data.
-            // We re-encode here because the original result was temporary. The cost
-            // is negligible since I-frames are infrequent (1 per keyFrameInterval).
-            rleData = winner.encoded; runK = winner.runK; valK = winner.valK;
-        } else {
-            const result = riceEncodeAdaptive(toEncode);
-            rleData = result.encoded; runK = result.runK; valK = result.valK;
-        }
+            // Encode with blockEncodeMulti
+            const dims = buildChangedBlockDims(bitmap, blocksX, blocksY, blockSize, w, h, uvBlockSize, uvW, uvH);
+            const blockBitstream = blockEncodeMulti(quantizedBlocks, dims);
 
-        // Step 6: Pack payload
-        let payload = packCompressedPayload(rleData, isKeyframe, blocksX, blocksY, bitmap);
+            let payload = packPframePayload(blockBitstream, blocksX, blocksY, bitmap);
 
-        // Step 7: Scene-change detection — if P-frame is bigger than an I-frame would be,
-        // redo as I-frame. This catches abrupt scene changes where every block is different.
-        if (!isKeyframe) {
+            // Scene-change detection: if P-frame > I-frame estimate, redo as I-frame
             const iframeEstimate = this.estimateIframeSize(yuv, w, h, ySize, uvW, uvH, uvSize, quality);
             if (payload.length > iframeEstimate) {
-                // Redo as I-frame with adaptive MED (yuv is already in PQ space)
                 isKeyframe = true;
                 ditherYUV(yuv, w, h, quality);
                 const q = quantizeChroma(yuv, ySize, quality);
                 this.prevFrame = dequantizeChroma(q, ySize, quality);
 
-                // Try both paths
-                const wM = new Uint8Array(q);
-                medPredict(wM, 0, w, h); medPredict(wM, ySize, uvW, uvH);
-                medPredict(wM, ySize + uvSize, uvW, uvH);
-                const zM = new Uint8Array(wM); zigzagEncode(zM);
-                const mR = riceEncodeAdaptive(zM);
+                const yBits = blockEncode(q.subarray(0, ySize), w, h);
+                const uBits = blockEncode(q.subarray(ySize, ySize + uvSize), uvW, uvH);
+                const vBits = blockEncode(q.subarray(ySize + uvSize), uvW, uvH);
 
-                const nM = new Uint8Array(q); zigzagEncode(nM);
-                const nR = riceEncodeAdaptive(nM);
-
-                const pickNoMed = nR.encoded.length < mR.encoded.length;
-                const iResult = pickNoMed ? nR : mR;
                 this.framesSinceKey = 1;
-                payload = packCompressedPayload(iResult.encoded, true, 0, 0, new Uint8Array(0));
-                const iFlags = encodeFlags(true, true, quality, iResult.runK, iResult.valK, pickNoMed);
-                return { payload, flags: iFlags };
+                payload = packIframePayload(yBits, uBits, vBits);
+                return { payload, flags: encodeFlags(true, true, quality) };
             }
-        }
 
-        const flags = encodeFlags(true, isKeyframe, quality, runK, valK, useNoMed);
-        return { payload, flags };
+            return { payload, flags: encodeFlags(true, false, quality) };
+        }
     }
 
-    /** Quick I-frame size estimate without full Rice allocation. */
+    /** Quick I-frame size estimate using blockEncode. */
     private estimateIframeSize(
         yuv: Uint8Array, w: number, h: number,
         ySize: number, uvW: number, uvH: number, uvSize: number,
         quality: number
     ): number {
-        // yuv is already in PQ space (caller applies PQ before if/else)
         const q = quantizeChroma(yuv, ySize, quality);
-        medPredict(q, 0, w, h);
-        medPredict(q, ySize, uvW, uvH);
-        medPredict(q, ySize + uvSize, uvW, uvH);
-        zigzagEncode(q);
-        // Use same analytical k selection as the real encoder
-        let runSum = 0, runCount = 0, valSum = 0, valCount = 0;
-        let i = 0;
-        while (i < q.length) {
-            let runLen = 0;
-            while (i + runLen < q.length && q[i + runLen] === 0) runLen++;
-            runSum += runLen; runCount++;
-            i += runLen;
-            if (i < q.length) { valSum += q[i] - 1; valCount++; i++; }
-        }
-        const rk = runCount > 0 && runSum / runCount >= 1 ? Math.min(7, Math.floor(Math.log2(runSum / runCount))) : 0;
-        const vk = valCount > 0 && valSum / valCount >= 1 ? Math.min(7, Math.floor(Math.log2(valSum / valCount))) : 0;
-        return riceMeasure(q, rk, vk);
+        const yBits = blockEncode(q.subarray(0, ySize), w, h);
+        const uBits = blockEncode(q.subarray(ySize, ySize + uvSize), uvW, uvH);
+        const vBits = blockEncode(q.subarray(ySize + uvSize), uvW, uvH);
+        return yBits.length + uBits.length + vBits.length + 12;
     }
 
     private decompressFrame(decrypted: Uint8Array, w: number, h: number, flags: number): Uint8Array {
-        const { keyframe, quality, runK, valK, noMed } = decodeFlags(flags);
+        const { keyframe, quality } = decodeFlags(flags);
         const ySize = w * h;
         const uvW = w >> 1, uvH = h >> 1;
         const uvSize = uvW * uvH;
@@ -1564,63 +1426,47 @@ export class VideoCodec {
         const blocksX = Math.ceil(w / blockSize);
         const blocksY = Math.ceil(h / blockSize);
 
-        const { rleData, bitmap } = unpackCompressedPayload(decrypted, keyframe, blocksX, blocksY);
-
         if (keyframe) {
-            // I-frame: Rice → zigzag → [MED unpredict if used] → dequantize → PQ inv → FRC → RGBA
-            const quantized = riceDecode(rleData, yuvSize, runK, valK);
-            zigzagDecode(quantized);
-            if (!noMed) {
-                medUnpredict(quantized, 0, w, h);                  // Y plane
-                medUnpredict(quantized, ySize, uvW, uvH);          // U plane
-                medUnpredict(quantized, ySize + uvSize, uvW, uvH); // V plane
-            }
+            // I-frame: blockDecode per plane → reassemble → dequantize → PQ inv → FRC → RGBA
+            const { yBits, uBits, vBits } = unpackIframePayload(decrypted);
+            const yPlane = blockDecode(yBits, w, h);
+            const uPlane = blockDecode(uBits, uvW, uvH);
+            const vPlane = blockDecode(vBits, uvW, uvH);
+
+            const quantized = new Uint8Array(yuvSize);
+            quantized.set(yPlane, 0);
+            quantized.set(uPlane, ySize);
+            quantized.set(vPlane, ySize + uvSize);
+
             const yuv = dequantizeChroma(quantized, ySize, quality);
-            this.prevDecFrame = new Uint8Array(yuv); // reference in PQ space
-            // Output path: PQ inverse → FRC dither → RGBA
+            this.prevDecFrame = new Uint8Array(yuv);
             pqInverse(yuv, 0, ySize);
             frcDither(yuv, w, h, quality, this.decFrameCount++);
             return yuv420ToRgba(yuv, w, h);
         } else {
-            // P-frame: RLE decode → dequantize → reinsert blocks (all planes) → un-delta → RGBA
+            // P-frame: unpack bitmap → blockDecodeMulti → dequantize → reinsert → un-delta → RGBA
+            const { blockBitstream, bitmap } = unpackPframePayload(decrypted, blocksX, blocksY);
 
-            // Count expected block bytes for Y plane
+            const dims = buildChangedBlockDims(bitmap, blocksX, blocksY, blockSize, w, h, uvBlockSize, uvW, uvH);
+            let totalBlockBytes = 0;
+            for (const d of dims) totalBlockBytes += d.w * d.h;
+
+            const quantizedBlocks = blockDecodeMulti(blockBitstream, dims, totalBlockBytes);
+
+            // Count Y block bytes for dequantize split
             let yBlockBytes = 0;
             for (let by = 0; by < blocksY; by++) {
                 for (let bx = 0; bx < blocksX; bx++) {
                     const blockIdx = by * blocksX + bx;
                     if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
-                    for (let dy = 0; dy < blockSize; dy++) {
-                        if (by * blockSize + dy >= h) break;
-                        for (let dx = 0; dx < blockSize; dx++) {
-                            if (bx * blockSize + dx >= w) break;
-                            yBlockBytes++;
-                        }
-                    }
-                }
-            }
-            // Count expected block bytes for one UV plane
-            let uvBlockBytes = 0;
-            for (let by = 0; by < blocksY; by++) {
-                for (let bx = 0; bx < blocksX; bx++) {
-                    const blockIdx = by * blocksX + bx;
-                    if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
-                    for (let dy = 0; dy < uvBlockSize; dy++) {
-                        if (by * uvBlockSize + dy >= uvH) break;
-                        for (let dx = 0; dx < uvBlockSize; dx++) {
-                            if (bx * uvBlockSize + dx >= uvW) break;
-                            uvBlockBytes++;
-                        }
-                    }
+                    const bw = Math.min(blockSize, w - bx * blockSize);
+                    const bh = Math.min(blockSize, h - by * blockSize);
+                    yBlockBytes += bw * bh;
                 }
             }
 
-            const totalBlockBytes = yBlockBytes + uvBlockBytes * 2;
-            const quantizedBlocks = riceDecode(rleData, totalBlockBytes, runK, valK);
-            zigzagDecode(quantizedBlocks);
             const deltaBlocks = dequantizeChromaSigned(quantizedBlocks, yBlockBytes, quality);
 
-            // Reinsert changed blocks into full YUV delta
             const fullDelta = new Uint8Array(yuvSize);
             let pos = 0;
             pos = reinsertChangedBlocksPlane(
@@ -1636,12 +1482,10 @@ export class VideoCodec {
                 fullDelta.subarray(ySize + uvSize)
             );
 
-            // Apply delta to previous frame in PQ space (all planes)
             const base = this.prevDecFrame || new Uint8Array(yuvSize);
             const yuv = applyDelta(fullDelta, base);
 
-            this.prevDecFrame = new Uint8Array(yuv); // reference in PQ space
-            // Output path: PQ inverse → FRC dither → RGBA
+            this.prevDecFrame = new Uint8Array(yuv);
             pqInverse(yuv, 0, ySize);
             frcDither(yuv, w, h, quality, this.decFrameCount++);
             return yuv420ToRgba(yuv, w, h);
@@ -1776,7 +1620,7 @@ export class VideoCodec {
         const { compressed } = decodeFlags(flags);
 
         if (!compressed) {
-            // Raw path — existing behavior
+            // raw path, existing behavior
             const numPixels = width * height;
             const totalNeeded = BUF_START + packet.length + numPixels * 4;
             const mem = this.wasm.memory;
