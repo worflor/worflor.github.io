@@ -649,9 +649,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     s.setProperty("--wl-energy-center", (0.5 + (eased - 0.5) * 0.12 * interaction).toFixed(4));
     s.setProperty("--wl-typing-squeeze", (1 - seClamped * 0.45).toFixed(3));
     s.setProperty("--wl-interaction", interaction.toFixed(3));
-
-    // Suppress border-top when energy bar is active
-    s.borderTopColor = se > 0.01 ? "transparent" : "";
   }
 
   /** Shared spring integrator: accel = ω²(target - x) − 2ζω·v */
@@ -768,8 +765,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function sendBeginFill(): void {
     if (!chatCompose || reduceMotion) return;
     send.phase = "filling";
-    send.fillTarget = Math.min(1, Math.max(send.fillTarget, send.energy) + 0.15);
-    send.velocity = Math.max(send.velocity, 2.0 - Math.min(1, send.rtt / 200) * 0.5);
+    send.fillTarget = Math.min(1, Math.max(send.fillTarget, send.energy) + 0.3); // bigger visual chunk
+    send.velocity += 2.0; // Additive click velocity for spamming
     ensureRaf();
   }
 
@@ -821,8 +818,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Mark message as delivered — reuse msgById (ACK arrives for self-sent messages)
     const msgEl = msgById.get(msgId);
     if (msgEl) msgEl.classList.add("wl-msg--delivered");
-    send.acks.delete(msgId);
-    if (send.acks.size === 0 && send.phase === "in-flight") sendDelivered();
+
+    // Check if the ack was successfully deleted (meaning it was actually in flight)
+    const wasInFlight = send.acks.delete(msgId);
+
+    if (send.acks.size === 0 && send.phase === "in-flight") {
+      sendDelivered();
+    } else if (wasInFlight && send.phase === "in-flight") {
+      // Individual message delivered but others pending. Bounce it visually!
+      haptic("msg-sent");
+      send.velocity -= 2.5;
+      if (typing.intensity > 0.05) {
+        const dir = Math.sin(typing.phase) > 0 ? 1 : -1;
+        typing.phaseVelocity += dir * (0.8 + send.peakEnergy * 1.5);
+      }
+      ensureRaf();
+    }
   }
 
   function handleConnectionStats(stats: { rtt: number; bytesSent: number; bytesReceived: number }): void {
