@@ -1979,9 +1979,9 @@ const seo = {
         <p class="insights-text">
           whisper is the idea that communication shouldn’t require permission.
           not from a company. not from a government. not even because a lack of
-          bandwidth. nothing. a passphrase becomes your gateway. the browser
-          becomes your identity. messages, calls, video -- ALL encrypted,
-          double-ratcheted, efficient, and direct.
+          bandwidth. <strong>nothing</strong>. a passphrase becomes your
+          gateway. the browser becomes your identity. messages, calls, video --
+          ALL encrypted, double-ratcheted, efficient, and direct.
         </p>
         <p class="insights-text">
           hide a secret inside an ordinary file if the situations arise;
@@ -1989,8 +1989,9 @@ const seo = {
           the secret dies with it.
         </p>
         <p class="insights-text">
-          no servers. no logs. no middleman to worry about. whisper to a friend
-          across the open net.
+          no servers. no logs. no middleman to worry about. <em
+            >whisper to a friend across the open net.</em
+          >
         </p>
       </div>
     </section>
@@ -3162,6 +3163,16 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.44);
     font-size: var(--text-sm);
     line-height: 1.65;
+  }
+
+  .insights-text strong {
+    color: rgb(var(--color-text-rgb) / 0.7);
+    font-weight: 500;
+  }
+
+  .insights-text em {
+    color: rgb(var(--color-text-rgb) / 0.65);
+    font-style: italic;
   }
 
   /* ── Fixed Action Bar ──────────────────────────────────── */
