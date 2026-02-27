@@ -10,7 +10,7 @@ Whisper Protocol is an encrypted communication system built on parametric physic
 Whisper Protocol
 ├── Whisper Harmonics  — Audio codec (physics of sound)
 ├── Whisper Spatial    — Video codec (physics of light)
-├── Campfire           — Real-time group voice/video
+├── Live + Campfire    — Real-time messaging
 ├── Async messaging    — Store-and-forward encrypted messages
 └── Ratcheting layer   — Per-frame cryptographic forward secrecy
 ```
@@ -42,11 +42,11 @@ pred = D + α·(L−D) + β·(A−D) + γ·(fyy + fxx + fxy)
 **This directory uses a custom license** — see [LICENSE.md](./LICENSE.md).
 
 Key points:
-- ✅ Free for individuals, nonprofits, education, open source
-- 💰 Commercial license required for companies >$1M revenue
+- ✅ Free for individuals, nonprofits, education, open source, bootstrapped startups
+- 💰 Commercial license required for VC-backed companies, public companies, government
 - 🚫 Prohibited: surveillance, persecution, censorship, discrimination
 
-The root repository's MIT license does **not** apply to this directory.
+The root repository does not have an MIT license. This directory has its own license above.
 
 ## How It Works
 
