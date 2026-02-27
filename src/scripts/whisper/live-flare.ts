@@ -1,8 +1,13 @@
 /**
  * Whisper Live — Signal Flares (long-lived tracker presence).
  *
+ * A flare is a passive beacon: it sits in the tracker swarm with presence-only
+ * announces (no SDP offer) and waits for a relay peer to send an offer. The
+ * flare is always the answerer, never the offerer, so the `onPeerArrived`
+ * callback fires every time a peer connects.
+ *
  * Unlike `exchangeViaTracker()` which has a 45s timeout and single announce,
- * flares maintain an open WebSocket, re-announce on epoch boundaries, and
+ * flares maintain open WebSockets, re-announce on epoch boundaries, and
  * reconnect on socket drops. Same tracker infrastructure, same encryption,
  * same zero-metadata properties.
  */
@@ -16,7 +21,7 @@ import {
   EPOCH_WINDOW,
   MIN_CODE_LEN,
   BASE64URL_RE,
-  makeTrackerAnnouncePayloads,
+  makeTrackerPresencePayloads,
   makeTrackerStoppedPayloads,
   parseTrackerMessage,
 } from "./live-tracker";
@@ -26,13 +31,12 @@ import {
 export interface FlareCallbacks {
   onStatus: (msg: string) => void;
   onLog: (msg: string) => void;
-  /** Called when a peer arrives — UI should show accept/ignore. */
+  /** Called when a peer arrives, UI should show accept/ignore. */
   onPeerArrived: () => Promise<boolean>;
 }
 
 export interface FlareResult {
-  role: "offerer" | "answerer";
-  peerAnswerCode?: string;
+  peerOfferCode: string;
 }
 
 /* ── Constants ────────────────────────────────────────────── */
@@ -41,13 +45,12 @@ const EPOCH_CHECK_INTERVAL = 30_000;
 const WS_CONNECT_TIMEOUT = 8_000;
 const RECONNECT_BASE = 2_000;
 const RECONNECT_CAP = 30_000;
-const MAX_SEEN_MESSAGES = 1024;
+const MAX_SEEN_OFFERS = 1024;
 
 /* ── Main ─────────────────────────────────────────────────── */
 
 export async function maintainFlare(
   phrase: string,
-  myOfferCode: string,
   acceptOfferFn: (peerOfferCode: string) => Promise<string>,
   callbacks: FlareCallbacks,
   signal: AbortSignal,
@@ -55,8 +58,6 @@ export async function maintainFlare(
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
   const peerId = randomBinId();
-  const offerId = randomBinId();
-  const paddedOffer = padCode(myOfferCode);
 
   let lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
   let currentHashes = await deriveInfoHashes(phrase);
@@ -70,7 +71,6 @@ export async function maintainFlare(
     const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const reconnectDelayByUrl = new Map<string, number>();
     const seenOffers = new Set<string>();
-    const seenAnswers = new Set<string>();
     let awaitingPeerDecision = false;
 
     const finish = (result?: FlareResult, error?: Error) => {
@@ -81,7 +81,7 @@ export async function maintainFlare(
       for (const t of reconnectTimers.values()) clearTimeout(t);
       reconnectTimers.clear();
 
-      // Send stopped for current hashes on all open sockets.
+      // send stopped for current hashes on all open sockets
       const stoppedPayloads = makeStoppedPayloads(currentHashes);
       for (const ws of sockets.values()) {
         if (ws.readyState === WebSocket.OPEN) {
@@ -103,8 +103,8 @@ export async function maintainFlare(
       finish(undefined, new DOMException("Aborted", "AbortError"));
     }, { once: true });
 
-    function makeAnnouncePayloads(hashes: string[]): string[] {
-      return makeTrackerAnnouncePayloads(hashes, peerId, offerId, paddedOffer);
+    function makePresencePayloads(hashes: string[]): string[] {
+      return makeTrackerPresencePayloads(hashes, peerId);
     }
 
     function makeStoppedPayloads(hashes: string[]): string[] {
@@ -127,12 +127,12 @@ export async function maintainFlare(
       }
     }
 
-    function rememberSeen(set: Set<string>, key: string): boolean {
-      if (set.has(key)) return false;
-      set.add(key);
-      if (set.size > MAX_SEEN_MESSAGES) {
-        const oldest = set.values().next().value;
-        if (oldest) set.delete(oldest);
+    function rememberSeen(key: string): boolean {
+      if (seenOffers.has(key)) return false;
+      seenOffers.add(key);
+      if (seenOffers.size > MAX_SEEN_OFFERS) {
+        const oldest = seenOffers.values().next().value;
+        if (oldest) seenOffers.delete(oldest);
       }
       return true;
     }
@@ -147,7 +147,6 @@ export async function maintainFlare(
 
       const oldHashes = currentHashes;
 
-      // Derive new first. If this fails, keep old presence unchanged.
       let nextHashes: string[];
       try {
         nextHashes = await deriveInfoHashes(phrase);
@@ -156,15 +155,11 @@ export async function maintainFlare(
         return;
       }
 
-      // Stop old hashes
+      // stop old hashes, switch, announce new
       sendAll(makeStoppedPayloads(oldHashes));
-
-      // Derive new
       lastEpoch = epoch;
       currentHashes = nextHashes;
-
-      // Announce new
-      sendAll(makeAnnouncePayloads(currentHashes));
+      sendAll(makePresencePayloads(currentHashes));
     }
 
     function scheduleReconnect(url: string): void {
@@ -182,7 +177,6 @@ export async function maintainFlare(
         if (done) return;
 
         try {
-          // Re-derive hashes in case epoch changed while disconnected.
           lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
           currentHashes = await deriveInfoHashes(phrase);
         } catch {
@@ -246,22 +240,21 @@ export async function maintainFlare(
         if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
         if (done) return;
 
-        reconnectDelayByUrl.set(url, RECONNECT_BASE); // Reset backoff on success
+        reconnectDelayByUrl.set(url, RECONNECT_BASE);
 
         callbacks.onLog(`flare connected via ${host}`);
         callbacks.onStatus("flare is burning");
 
-        // Announce on this tracker connection.
-        sendOnSocket(ws, makeAnnouncePayloads(currentHashes));
+        // presence-only announce, no SDP offer attached
+        sendOnSocket(ws, makePresencePayloads(currentHashes));
 
-        // Periodic re-announce: keeps the tracker socket alive (servers drop
-        // idle connections after ~60s) and re-advertises our offer so late
-        // joiners can discover us.
+        // periodic re-announce keeps the tracker socket alive (servers drop
+        // idle connections after ~60s) and refreshes epoch hashes
         if (!maintenanceTimer) {
           maintenanceTimer = setInterval(() => {
             if (done) return;
             void refreshEpochPresence().then(() => {
-              if (!done) sendAll(makeAnnouncePayloads(currentHashes));
+              if (!done) sendAll(makePresencePayloads(currentHashes));
             });
           }, EPOCH_CHECK_INTERVAL);
         }
@@ -278,116 +271,87 @@ export async function maintainFlare(
           return;
         }
 
-        // Keep compatibility with tracker messages that omit info_hash,
-        // but reject explicit hashes outside our active phrase window.
         const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : "";
         if (infoHash && !currentHashes.includes(infoHash)) return;
 
-        // ── Offer received → we may become the answerer ──
-        if (msg.offer && typeof msg.offer === "object") {
-          if (awaitingPeerDecision) return;
+        // flare only handles incoming offers, it never sends offers
+        if (!msg.offer || typeof msg.offer !== "object") return;
+        if (awaitingPeerDecision) return;
 
-          const offer = msg.offer as Record<string, unknown>;
-          const peerOfferCode = unpadCode(String(offer.sdp ?? ""));
-          const peerOfferId = String(msg.offer_id ?? "");
-          const peerPeerId = String(msg.peer_id ?? "");
-          const toPeerId = String(msg.to_peer_id ?? "");
-          if (!peerPeerId) return;
+        const offer = msg.offer as Record<string, unknown>;
+        const peerOfferCode = unpadCode(String(offer.sdp ?? ""));
+        const peerOfferId = String(msg.offer_id ?? "");
+        const peerPeerId = String(msg.peer_id ?? "");
+        const toPeerId = String(msg.to_peer_id ?? "");
+        if (!peerPeerId) return;
 
-          if (!peerOfferCode || peerOfferCode.length < MIN_CODE_LEN) return;
-          if (!peerOfferId) return;
-          if (toPeerId && toPeerId !== peerId) return;
-          if (peerPeerId === peerId) return;
-          if (!BASE64URL_RE.test(peerOfferCode)) return;
+        if (!peerOfferCode || peerOfferCode.length < MIN_CODE_LEN) return;
+        if (!peerOfferId) return;
+        if (toPeerId && toPeerId !== peerId) return;
+        if (peerPeerId === peerId) return;
+        if (!BASE64URL_RE.test(peerOfferCode)) return;
 
-          const offerKey = `${peerPeerId}|${peerOfferId}|${peerOfferCode.slice(0, 24)}`;
-          if (!rememberSeen(seenOffers, offerKey)) return;
+        const offerKey = `${peerPeerId}|${peerOfferId}|${peerOfferCode.slice(0, 24)}`;
+        if (!rememberSeen(offerKey)) return;
 
-          // Tie-break: lower peer_id becomes answerer
-          if (peerId > peerPeerId) {
-            callbacks.onLog("resolving connection order...");
+        callbacks.onLog("someone found your flare");
+
+        const replyHash = typeof msg.info_hash === "string" ? msg.info_hash : currentHashes[0];
+
+        // ask the UI if the user wants to accept
+        awaitingPeerDecision = true;
+        void callbacks.onPeerArrived().then(async (accepted) => {
+          awaitingPeerDecision = false;
+          if (done) return;
+          if (!accepted) {
+            callbacks.onLog("peer ignored, still listening");
+            callbacks.onStatus("flare is burning");
             return;
           }
 
-          callbacks.onLog("someone found your flare");
+          callbacks.onStatus("connecting to peer...");
+          callbacks.onLog("accepting peer offer");
 
-          const replyHash = typeof msg.info_hash === "string" ? msg.info_hash : currentHashes[0];
-
-          // Ask UI if user wants to accept
-          awaitingPeerDecision = true;
-          void callbacks.onPeerArrived().then(async (accepted) => {
-            awaitingPeerDecision = false;
+          try {
+            const myAnswerCode = await acceptOfferFn(peerOfferCode);
             if (done) return;
-            if (!accepted) {
-              callbacks.onLog("peer ignored, still listening");
-              callbacks.onStatus("flare is burning");
+            if (ws.readyState !== WebSocket.OPEN) {
+              // socket dropped while we were processing the accept, so the answer
+              // can't be delivered. clean up the entire flare so the peer isn't
+              // left waiting on a dead offer.
+              finish(undefined, new Error("flare-relay-dropped"));
               return;
             }
 
-            callbacks.onStatus("connecting to peer...");
-            callbacks.onLog("accepting peer offer");
+            ws.send(JSON.stringify({
+              action: "announce",
+              info_hash: replyHash,
+              peer_id: peerId,
+              to_peer_id: peerPeerId,
+              answer: { type: "answer", sdp: padCode(myAnswerCode) },
+              offer_id: peerOfferId,
+            }));
 
-            try {
-              const myAnswerCode = await acceptOfferFn(peerOfferCode);
-              if (done || ws.readyState !== WebSocket.OPEN) return;
-
-              ws.send(JSON.stringify({
-                action: "announce",
-                info_hash: replyHash,
-                peer_id: peerId,
-                to_peer_id: peerPeerId,
-                answer: { type: "answer", sdp: padCode(myAnswerCode) },
-                offer_id: peerOfferId,
-              }));
-
-              callbacks.onLog("exchange complete, connecting directly");
-              callbacks.onStatus("connecting directly...");
-              finish({ role: "answerer" });
-            } catch {
-              callbacks.onLog("accept failed");
-              callbacks.onStatus("flare is burning");
-            }
-          }).catch(() => {
-            awaitingPeerDecision = false;
-          });
-          return;
-        }
-
-        // ── Answer received → we stay offerer ──
-        if (msg.answer && typeof msg.answer === "object") {
-          const answer = msg.answer as Record<string, unknown>;
-          const peerAnswerCode = unpadCode(String(answer.sdp ?? ""));
-          const fromPeerId = String(msg.peer_id ?? "");
-          const toPeerId = String(msg.to_peer_id ?? "");
-          const incomingOfferId = String(msg.offer_id ?? "");
-          if (!peerAnswerCode || peerAnswerCode.length < MIN_CODE_LEN) return;
-          if (!fromPeerId || fromPeerId === peerId) return;
-          if (toPeerId && toPeerId !== peerId) return;
-          if (incomingOfferId && incomingOfferId !== offerId) return;
-          if (!BASE64URL_RE.test(peerAnswerCode)) return;
-
-          const answerKey = `${fromPeerId}|${incomingOfferId}|${peerAnswerCode.slice(0, 24)}`;
-          if (!rememberSeen(seenAnswers, answerKey)) return;
-
-          callbacks.onStatus("found your peer!");
-          callbacks.onLog("peer accepted our offer");
-          finish({ role: "offerer", peerAnswerCode });
-          return;
-        }
+            callbacks.onLog("exchange complete, connecting directly");
+            callbacks.onStatus("connecting directly...");
+            finish({ peerOfferCode });
+          } catch {
+            callbacks.onLog("accept failed");
+            callbacks.onStatus("flare is burning");
+          }
+        }).catch(() => {
+          awaitingPeerDecision = false;
+        });
       };
 
       ws.onerror = () => {
-        // onclose handles reconnect consistently.
+        // onclose handles reconnect consistently
       };
 
       ws.onclose = handleDrop;
     }
 
-    function connectAllTrackers(): void {
-      for (const url of TRACKER_URLS) connectToTracker(url);
-    }
-
-    // Start by connecting to all trackers, so peers on different relays can still meet.
-    connectAllTrackers();
+    // connect to all trackers so peers on different relays can still meet
+    for (const url of TRACKER_URLS) connectToTracker(url);
   });
 }

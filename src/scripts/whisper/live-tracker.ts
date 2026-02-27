@@ -35,6 +35,7 @@ const WS_CONNECT_TIMEOUT = 5_000;
 const PEER_DISCOVERY_TIMEOUT = 30_000;
 const TOTAL_TIMEOUT = 45_000;
 const TRACKER_SECOND_ATTEMPT_DELAY = 300;
+const REANNOUNCE_INTERVAL = 10_000;
 export const EPOCH_WINDOW = 2 * 60 * 1000;
 const EPOCH_BOUNDARY_MARGIN = 15_000;
 export const PADDED_CODE_LEN = 1024;
@@ -93,6 +94,21 @@ export function makeTrackerAnnouncePayloads(
     peer_id: peerId,
     numwant: 1,
     offers: [{ offer_id: offerId, offer: { type: "offer", sdp: paddedOffer } }],
+  }));
+}
+
+/** presence-only announce, no SDP offers attached. used by flares to sit in
+ *  the swarm and receive offers from relay peers without advertising their own. */
+export function makeTrackerPresencePayloads(
+  infoHashes: string[],
+  peerId: string,
+): string[] {
+  return infoHashes.map((h) => JSON.stringify({
+    action: "announce",
+    info_hash: h,
+    peer_id: peerId,
+    numwant: 1,
+    offers: [],
   }));
 }
 
@@ -202,6 +218,7 @@ function connectToTracker(
     let done = false;
     let offerAccepted = false;
     let discoveryTimer: ReturnType<typeof setTimeout>;
+    let reannounceTimer: ReturnType<typeof setInterval> | null = null;
 
     // Pre-serialize announce payloads — one per hash, reused as-is
     const announcePayloads = makeTrackerAnnouncePayloads(infoHashes, peerId, offerId, paddedOffer);
@@ -214,6 +231,7 @@ function connectToTracker(
       done = true;
       clearTimeout(connectTimer);
       clearTimeout(discoveryTimer);
+      if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
 
       // Politely deregister from all swarms before closing
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -258,10 +276,18 @@ function connectToTracker(
         finish(undefined, new Error("peer-not-found"));
       }, PEER_DISCOVERY_TIMEOUT);
 
-      // Single announce per hash — no re-announce. The WebSocket staying
-      // open is itself the keepalive; trackers evict on socket close,
-      // not on announce timeout.
       for (const payload of announcePayloads) ws!.send(payload);
+
+      // re-announce periodically so our offer reaches peers who join the
+      // swarm after the initial announce (e.g. flares sitting with
+      // presence-only). tracker offer routing is one-shot at announce time,
+      // so without this, late joiners never see us.
+      reannounceTimer = setInterval(() => {
+        if (done || !ws || ws.readyState !== WebSocket.OPEN) return;
+        for (const payload of announcePayloads) {
+          try { ws.send(payload); } catch { break; }
+        }
+      }, REANNOUNCE_INTERVAL);
     };
 
     ws.onmessage = (event) => {
@@ -312,7 +338,13 @@ function connectToTracker(
 
         void acceptOfferFn(peerOfferCode)
           .then((myAnswerCode) => {
-            if (done || !ws || ws.readyState !== WebSocket.OPEN) return;
+            if (done) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+              // socket dropped while processing the accept, answer can't be delivered.
+              // finish() sends stopped and closes so the swarm room is cleaned up.
+              finish(undefined, new Error("handshake-failed"));
+              return;
+            }
 
             ws.send(JSON.stringify({
               action: "announce",

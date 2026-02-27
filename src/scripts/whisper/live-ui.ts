@@ -1208,7 +1208,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     if (opts.relayConnectBtn) {
-      opts.relayConnectBtn.disabled = busy;
+      opts.relayConnectBtn.disabled = busy || flareActive;
     }
 
     if (flareFireBtn) {
@@ -2965,12 +2965,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         phrase, offerCode, acceptFn, callbacks, relayAbort.signal,
       );
 
-      if (aborted()) return;
+      if (aborted() || !session) return;
 
       relayActive = false;
 
       if (result.role === "offerer" && result.peerAnswerCode) {
-        await session!.applyAnswer(result.peerAnswerCode);
+        await session.applyAnswer(result.peerAnswerCode);
       }
       if (result.role === "answerer" && session && session.state === "connecting") {
         showPhase(opts.connectingSection);
@@ -3050,18 +3050,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     opts.externalAssistToggle.checked = true;
-    session = createSession();
 
     try {
-      const offerCode = await session.createOffer(phrase);
-      if (aborted()) return;
-
       setLogActive(true);
       appendLog("flare preparing...");
       updateStatus("flare is burning");
       setBusy(false);
 
-      // Show burning state
+      // show burning state
       setFlareUiState("burning");
       flareStartTime = Date.now();
       if (flareElapsed) flareElapsed.textContent = "0s";
@@ -3077,7 +3073,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const acceptFn = async (peerOfferCode: string): Promise<string> => {
         if (acceptCalled) throw new Error("duplicate-accept");
         acceptCalled = true;
-        if (session) { session.disconnect(); session = null; }
         session = createSession();
         return session.acceptOffer(peerOfferCode, phrase);
       };
@@ -3096,10 +3091,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
             flarePeerResolve = resolve;
             setFlareUiState("arrived");
 
-            // Tab title notification
+            // tab title notification
             document.title = "someone arrived \u2014 Whisper";
 
-            // Browser notification
+            // browser notification
             if (typeof Notification !== "undefined" && Notification.permission === "granted") {
               try {
                 new Notification("Signal Flare", {
@@ -3113,12 +3108,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       };
 
       const result = await maintainFlare(
-        phrase, offerCode, acceptFn, callbacks, flareAbort.signal,
+        phrase, acceptFn, callbacks, flareAbort.signal,
       );
 
-      if (aborted()) return;
+      if (aborted() || !session) return;
 
-      // Clear flare state before terminal flow
+      // clear flare state before terminal flow
       flareActive = false;
       if (flareElapsedTimer) { clearInterval(flareElapsedTimer); flareElapsedTimer = null; }
       document.title = originalTitle;
@@ -3127,15 +3122,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       showPhase(opts.connectingSection);
       opts.connectingStatus.textContent = "connecting directly...";
       updateStatus("connecting...");
-
-      if (result.role === "offerer" && result.peerAnswerCode) {
-        await session!.applyAnswer(result.peerAnswerCode);
-      }
-      if (result.role === "answerer" && session && session.state === "connecting") {
-        showPhase(opts.connectingSection);
-        opts.connectingStatus.textContent = "connecting directly...";
-        updateStatus("connecting...");
-      }
     } catch (err) {
       flareActive = false;
       extinguishFlare();
