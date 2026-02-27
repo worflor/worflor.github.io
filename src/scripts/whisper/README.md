@@ -43,13 +43,7 @@ these codecs compress physics. fit a mathematical model of the source, ship the 
 
 ## license
 
-see [LICENSE.md](./LICENSE.md) for this directory's license.
-
-- free for individuals, nonprofits, education, open source, bootstrapped startups
-- commercial license required for VC-backed companies, public companies, government
-- prohibited: surveillance, persecution, censorship, discrimination
-
-the root repository uses AGPL. this directory has its own separate license above.
+licensed under the [Whisper Protocol License](./LICENSE.md), separate from the root repository's AGPL.
 
 ## status
 
