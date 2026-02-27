@@ -1,68 +1,59 @@
 # Whisper Protocol
 
-**The Digital Twin of Communication**
+encrypted communication with physics-based compression. the codecs model the physical systems that produce media and transmit those parameters instead of raw signal.
 
-Whisper Protocol is an encrypted communication system built on parametric physics compression — transmitting the physics that *generates* media rather than the media itself.
-
-## Architecture
+## architecture
 
 ```
 Whisper Protocol
-├── Whisper Harmonics  — Audio codec (physics of sound)
-├── Whisper Spatial    — Video codec (physics of light)
-├── Live + Campfire    — Real-time messaging
-├── Async messaging    — Store-and-forward encrypted messages
-└── Ratcheting layer   — Per-frame cryptographic forward secrecy
+├── Whisper Harmonics  - audio codec (harmonic oscillator model)
+├── Whisper Spatial    - video codec (surface geometry model)
+├── Live + Campfire    - real-time messaging
+├── Async messaging    - store-and-forward encrypted messages
+└── Ratcheting layer   - per-frame cryptographic forward secrecy
 ```
 
-## Components
+## components
 
 ### Whisper Harmonics (`live-wasm-audio.ts`)
-Audio codec modeling sound as a damped harmonic oscillator:
+models sound as a damped harmonic oscillator:
 ```
 pred = Tension × p1 − Friction × p2
 ```
-- 228× realtime encoding
-- Per-chunk cryptographic ratcheting
+- 228x realtime encoding
+- per-chunk cryptographic ratcheting
 - Mid/Side stereo decomposition
 - WASM SIMD acceleration
 
 ### Whisper Spatial (`live-wasm-video.ts`)
-Video codec modeling images as physical surfaces:
+models images as physical surfaces via second-order Taylor expansion:
 ```
 pred = D + α·(L−D) + β·(A−D) + γ·(fyy + fxx + fxy)
 ```
-- 8-25× compression (scales with resolution)
-- Per-frame cryptographic ratcheting
+- 8-25x compression (scales with resolution)
+- per-frame cryptographic ratcheting
 - SUB-delta temporal encoding
-- Full Hessian curvature modeling
+- full Hessian curvature fitting
 
-## License
+## how it works
 
-**This directory uses a custom license** — see [LICENSE.md](./LICENSE.md).
+standard codecs compress data, transform to frequency domain, quantize, entropy code.
 
-Key points:
-- ✅ Free for individuals, nonprofits, education, open source, bootstrapped startups
-- 💰 Commercial license required for VC-backed companies, public companies, government
-- 🚫 Prohibited: surveillance, persecution, censorship, discrimination
+these codecs compress physics. fit a mathematical model of the source, ship the coefficients, regenerate at the decoder. real media has structure. sound follows vibration physics, images follow surface geometry. the residual is whatever the model can't explain.
 
-The root repository does not have an MIT license. This directory has its own license above.
+## license
 
-## How It Works
+see [LICENSE.md](./LICENSE.md) for this directory's license.
 
-Traditional codecs compress *data* — transform to frequency domain, quantize, entropy code.
+- free for individuals, nonprofits, education, open source, bootstrapped startups
+- commercial license required for VC-backed companies, public companies, government
+- prohibited: surveillance, persecution, censorship, discrimination
 
-Whisper compresses *physics* — fit mathematical models, transmit parameters, regenerate at decoder.
+the root repository uses AGPL. this directory has its own separate license above.
 
-Why it works: Real media has structure. Sound follows vibration physics. Images follow surface geometry. Whisper exploits this.
+## status
 
-## Status
-
-- ✅ 370 tests passing (122 audio + 248 video)
-- ✅ Production-grade quality metrics
-- ✅ Integrated encryption with forward secrecy
-- 📄 Patent pending
-
----
-
-*"We don't transmit the waveform. We transmit the physics that produced it."*
+- 360+ tests passing (audio + video)
+- production-grade quality metrics
+- integrated encryption with forward secrecy
+- patent pending
