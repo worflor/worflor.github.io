@@ -210,7 +210,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   const engine = new WhisperEngine();
   const savedMode = sessionStorage.getItem("whisper-mode");
   const savedCarrier = sessionStorage.getItem("whisper-carrier");
-  let activeMode: WhisperMode = isMode(savedMode) ? savedMode : MODE_EMBED;
+  let activeMode: WhisperMode = isMode(savedMode) ? savedMode : (opts.page.dataset.mode as WhisperMode || MODE_EMBED);
   let busy = false;
   let actionBarVisible = false;
   let liveLoggedReady = false;
@@ -740,7 +740,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
     setMode(mode);
   }, { signal }));
-      syncUploadZoneForMode();
+  syncUploadZoneForMode();
 
   /* ── Carrier type toggle (embed: file vs url/seal) ──── */
 
@@ -939,9 +939,12 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
   /* ── Initial state ───────────────────────────────────── */
 
-  if (savedCarrier === "file") {
-    const fileRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="file"]');
-    if (fileRadio) fileRadio.checked = true;
+  if (activeMode === MODE_EMBED) {
+    const carrierSrc = savedCarrier || opts.page.dataset.carrier;
+    if (carrierSrc === "file") {
+      const fileRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-carrier-type"][value="file"]');
+      if (fileRadio) fileRadio.checked = true;
+    }
   }
   syncEmbedMessageCount();
   appendLog("whisper ready");

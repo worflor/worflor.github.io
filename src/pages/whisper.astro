@@ -13,24 +13,10 @@ const seo = {
   <div
     class="whisper-page"
     id="whisper-page"
-    data-mode="live"
+    data-mode="embed"
     data-busy="0"
     data-breadcrumb-controller
   >
-    <script is:inline>
-      (function () {
-        var p = document.getElementById("whisper-page");
-        if (!p) return;
-        var m = sessionStorage.getItem("whisper-mode");
-        if (m === "embed" || m === "extract" || m === "hunt" || m === "live")
-          p.dataset.mode = m;
-        if (m === "embed")
-          p.dataset.carrier =
-            sessionStorage.getItem("whisper-carrier") === "file"
-              ? "file"
-              : "url";
-      })();
-    </script>
     <!-- ── Hero ─────────────────────────────────────────────── -->
     <section class="mt-8 content-section whisper-intro">
       <div class="whisper-title-row">
@@ -222,6 +208,7 @@ const seo = {
                   type="radio"
                   name="ws-carrier-type"
                   value="file"
+                  checked
                   class="ws-carrier-radio"
                 />
                 <span class="ws-carrier-label">File</span>
@@ -231,7 +218,6 @@ const seo = {
                   type="radio"
                   name="ws-carrier-type"
                   value="url"
-                  checked
                   class="ws-carrier-radio"
                 />
                 <span class="ws-carrier-label">URL</span>
@@ -251,6 +237,46 @@ const seo = {
                 tabindex="0"
                 title="copy full seal"></span>
             </div>
+            <script is:inline>
+              (function () {
+                var p = document.getElementById("whisper-page");
+                if (!p) return;
+
+                var m = sessionStorage.getItem("whisper-mode") || "embed";
+                var c = sessionStorage.getItem("whisper-carrier") || "file";
+
+                if (
+                  m === "embed" ||
+                  m === "extract" ||
+                  m === "hunt" ||
+                  m === "live"
+                ) {
+                  p.dataset.mode = m;
+                  var btns = p.querySelectorAll(".whisper-mode-btn");
+                  for (var i = 0; i < btns.length; i++) {
+                    var active =
+                      btns[i].getAttribute("data-whisper-mode") === m;
+                    active
+                      ? btns[i].classList.add("whisper-mode-btn--active")
+                      : btns[i].classList.remove("whisper-mode-btn--active");
+                    btns[i].setAttribute(
+                      "aria-pressed",
+                      active ? "true" : "false",
+                    );
+                  }
+                }
+
+                if (m === "embed") {
+                  p.dataset.carrier = c === "file" || c === "url" ? c : "file";
+                  var radios = p.querySelectorAll(
+                    'input[name="ws-carrier-type"]',
+                  );
+                  for (var j = 0; j < radios.length; j++) {
+                    radios[j].checked = radios[j].value === p.dataset.carrier;
+                  }
+                }
+              })();
+            </script>
             <div
               id="ws-my-seal-inline-panel"
               class="ws-my-seal-inline-panel"
@@ -6673,3 +6699,33 @@ const seo = {
     }
   }
 </style>
+
+<script is:inline>
+  (function () {
+    var p = document.getElementById("whisper-page");
+    if (!p) return;
+
+    var m = sessionStorage.getItem("whisper-mode") || "embed";
+    var c = sessionStorage.getItem("whisper-carrier") || "file";
+
+    if (m === "embed" || m === "extract" || m === "hunt" || m === "live") {
+      p.dataset.mode = m;
+      var btns = p.querySelectorAll(".whisper-mode-btn");
+      for (var i = 0; i < btns.length; i++) {
+        var active = btns[i].getAttribute("data-whisper-mode") === m;
+        active
+          ? btns[i].classList.add("whisper-mode-btn--active")
+          : btns[i].classList.remove("whisper-mode-btn--active");
+        btns[i].setAttribute("aria-pressed", active ? "true" : "false");
+      }
+    }
+
+    if (m === "embed") {
+      p.dataset.carrier = c === "file" || c === "url" ? c : "file";
+      var radios = p.querySelectorAll('input[name="ws-carrier-type"]');
+      for (var j = 0; j < radios.length; j++) {
+        radios[j].checked = radios[j].value === p.dataset.carrier;
+      }
+    }
+  })();
+</script>

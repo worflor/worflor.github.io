@@ -511,6 +511,10 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
       div.addEventListener("click", (e) => {
         if ((e.target as HTMLElement).closest(".wl-react-shelf")) return;
         if ((e.target as HTMLElement).closest(".wl-reaction")) return;
+        // Ignore clicks on audio player (play button, download button, waveform)
+        if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
+        // Ignore clicks on file attachments
+        if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
         const isOpen = div.hasAttribute("data-shelf-open");
         const prev = opts.chatMessages.querySelector("[data-shelf-open]");
         if (prev) prev.removeAttribute("data-shelf-open");

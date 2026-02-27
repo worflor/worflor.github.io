@@ -2543,6 +2543,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if ((e.target as HTMLElement).closest(".wl-react-shelf")) return;
         // Ignore clicks on reaction pills
         if ((e.target as HTMLElement).closest(".wl-reaction")) return;
+        // Ignore clicks on audio player (play button, download button, waveform)
+        if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
+        // Ignore clicks on file attachments
+        if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
         const isOpen = div.hasAttribute("data-shelf-open");
         // Close any globally open shelf
         const prev = opts.chatMessages.querySelector("[data-shelf-open]");
