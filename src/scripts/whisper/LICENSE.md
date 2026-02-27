@@ -23,11 +23,24 @@ this license applies to the Whisper Protocol and its components:
 
 **"open source project"** means a project with source code publicly available under a license permitting use, modification, and redistribution, which is not controlled by or operated primarily for the benefit of any single commercial entity.
 
-**"equity financing"** means any financing arrangement providing ownership, control, or future claims on the entity, including equity, convertible instruments (SAFEs, convertible notes), token or coin offerings, and revenue-based financing with equity features. excludes ordinary revenue, standard bank loans, and grants without equity or control provisions.
+**"equity financing"** means any financing arrangement providing ownership, control, or future claims on the entity, including equity, convertible instruments (SAFEs, convertible notes), token or coin offerings, and revenue-based financing with equity features. excludes ordinary revenue and grants without equity or control provisions.
 
 **"change of control"** means any acquisition, merger, or transfer of majority ownership, voting control, or the right to appoint a majority of board members.
 
 **"use"** means using, copying, modifying, distributing, incorporating, deploying, or offering as a service, whether performed directly or through agents, contractors, subsidiaries, or other intermediaries. any use, regardless of extent, is subject to these terms.
+
+**"independent bootstrapped entity"** means a for-profit legal entity that meets all of the following:
+
+- it is a singular, leaf-node legal entity: it has no parent company, no holding company, and no subsidiaries
+- it is not part of a consolidated tax group or a network of affiliated corporate entities under common control
+- 100% of its equity, voting control, and beneficial ownership is held directly, not through trusts, holding vehicles, or nominee arrangements, by natural persons actively engaged in its daily operations
+- it has no common beneficial ownership with any entity that would itself require a commercial license
+
+if the entity forms a subsidiary, undergoes partial acquisition by or into a holding structure, or transfers intellectual property to an offshore or affiliated holding vehicle, it loses this status immediately and must obtain a commercial license within 90 days.
+
+**"institutional source"** means any legal entity, including venture capital funds, private equity firms, corporate treasuries, government agencies, investment vehicles, and family offices, other than a founder acting exclusively in their personal capacity.
+
+**"commercial deployment"** means any use of this software in any configuration where it processes, transmits, compresses, or models data that originates from or is destined for any person or system outside the using entity's strict legal boundaries. use is internal only where the entity generated the raw data, processed it entirely within its own systems, and consumed the result entirely within its own systems, with no involvement of third-party users, clients, or external parties.
 
 ---
 
@@ -45,7 +58,7 @@ you may use this software at no cost if you are:
 - a nonprofit organization
 - an educational institution
 - an open source project
-- a for-profit entity that has not received equity financing from parties other than founders, has not undergone a change of control to an entity requiring a commercial license, and whose parent or beneficial owner would not itself require a commercial license
+- an independent bootstrapped entity
 
 this grant is irrevocable for as long as you remain in compliance. it survives the death or incapacity of the copyright holder and cannot be retroactively withdrawn from compliant users.
 
@@ -58,11 +71,12 @@ use by your employees, contractors, or agents on your behalf is your use. use th
 you must obtain a commercial license if you are a for-profit legal entity and any of the following apply:
 
 - you have received equity financing from parties other than founders
+- you have received debt financing, capital injections, or credit facilities originating from an institutional source. standard commercial lines of credit from retail depository banks, unsecured by this entity's intellectual property, are the sole exception.
 - you are publicly traded on any stock exchange
 - you are a government agency, or a contractor using this software in the performance of government contracts
 - you have undergone a change of control to or with an entity meeting these criteria (license required within 90 days)
 - you are a subsidiary or affiliate of, or your beneficial owner is, an entity meeting these criteria
-- you offer this software's functionality as a service to third parties
+- you are engaged in commercial deployment
 
 arrangements structured to circumvent these requirements are violations of this license. the copyright holder may look through any corporate structure to determine the ultimate beneficial owner or beneficiary.
 
@@ -83,8 +97,6 @@ this software may not be used, directly or indirectly, for:
 5. **weapons systems.** integration into autonomous weapons, military targeting systems, or systems designed to cause bodily harm.
 
 6. **deception.** creating synthetic media intended to deceive without clear disclosure of its synthetic nature.
-
-any prohibited use immediately and automatically terminates all rights under this license.
 
 ---
 
@@ -107,7 +119,11 @@ by using this software, you agree that:
 
 ## termination
 
-prohibited uses and circumvention attempts terminate your rights immediately, without cure. other violations terminate your rights upon material breach, with 30 days to cure after written notice. upon termination, you must cease all use and destroy all copies. your indemnification obligations survive.
+circumvention attempts terminate your rights immediately, without cure. violations of the commercial license requirements terminate your rights upon material breach, with 30 days to cure after written notice.
+
+violations of the prohibited uses clauses do not terminate automatically. a license is only considered terminated under those clauses upon explicit, written, signed declaration by the copyright holder. no third party, competitor, or user has standing to declare a license terminated under the prohibited uses clauses. this power is strictly non-delegable and resides exclusively with the copyright holder.
+
+upon termination, you must cease all use and destroy all copies. your indemnification obligations survive.
 
 ---
 
@@ -119,7 +135,11 @@ this software is provided "as is" without warranty of any kind. the copyright ho
 
 ## patent notice
 
-the techniques in this software may be subject to pending patent applications. this license includes an implied patent license for permitted uses, which terminates upon termination of your rights. this patent license is not contingent on any other relationship or dispute between you and the copyright holder.
+the techniques in this software may be subject to pending patent applications. this license includes an implied patent license for permitted uses, which terminates upon termination of your rights.
+
+if any entity, or any of its affiliates, institutes legal or administrative proceedings in any jurisdiction, including inter partes review, post-grant review, opposition proceedings, or equivalent proceedings, seeking to invalidate, narrow, or limit the scope of any patent held by the copyright holder covering this protocol or its techniques, the patent license granted under this document terminates immediately for that entity and all of its affiliates. the copyright license is not affected by this clause.
+
+this patent license is not contingent on any other relationship or dispute between you and the copyright holder.
 
 ---
 
@@ -137,7 +157,7 @@ the techniques in this software may be subject to pending patent applications. t
 
 **assignment.** you may not assign your rights without written consent. the copyright holder may assign freely.
 
-**interpretation.** ambiguities shall be resolved in favor of the copyright holder's intent to protect the software while permitting free use by individuals, nonprofits, education, and bootstrapped startups.
+**interpretation.** ambiguities shall be resolved in favor of the copyright holder's intent to protect the software while permitting free use by individuals, nonprofits, education, and independent bootstrapped entities.
 
 ---
 
