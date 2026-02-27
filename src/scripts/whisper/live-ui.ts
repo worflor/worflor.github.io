@@ -2843,7 +2843,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     relayAssist: boolean;
   }> = {
     relay: {
-      lede: "know a phrase, and connect at the same time. thats it.",
+      lede: "know a phrase, connect at the same time. thats it.",
       flareLink: "light a signal flare",
       manualLink: "or connect manually",
       relayAssist: true,
