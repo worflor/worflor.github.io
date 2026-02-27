@@ -132,6 +132,265 @@ export function parseTrackerMessage(raw: unknown): Record<string, unknown> | nul
   }
 }
 
+/* ── Shared helpers ──────────────────────────────────────── */
+
+/** add key to a capped set. returns true if the key was new. */
+export function rememberSeen(set: Set<string>, key: string, cap = 1024): boolean {
+  if (set.has(key)) return false;
+  set.add(key);
+  if (set.size > cap) {
+    const oldest = set.values().next().value;
+    if (oldest) set.delete(oldest);
+  }
+  return true;
+}
+
+/* ── TrackerPool ─────────────────────────────────────────── */
+
+const POOL_CONNECT_TIMEOUT = 8_000;
+const POOL_RECONNECT_BASE = 2_000;
+const POOL_RECONNECT_CAP = 30_000;
+const POOL_EPOCH_CHECK_INTERVAL = 30_000;
+
+export interface TrackerPoolCallbacks {
+  onLog: (msg: string) => void;
+  /** called on each announce cycle (initial + re-announce + epoch refresh).
+   *  return the payloads to send on every open socket. */
+  makeAnnounce: (hashes: string[]) => string[];
+  /** called for every parsed tracker message on any socket.
+   *  hash filtering already applied, only messages matching current hashes arrive. */
+  onMessage: (msg: Record<string, unknown>, ws: WebSocket) => void;
+  /** fires when any socket opens */
+  onReady?: () => void;
+  /** fires when all sockets are down simultaneously */
+  onAllDown?: () => void;
+}
+
+export interface TrackerPoolHandle {
+  /** current epoch hashes */
+  readonly hashes: string[];
+  /** send payloads on all open sockets */
+  sendAll: (payloads: string[]) => void;
+  /** send payloads on a specific socket */
+  sendOn: (ws: WebSocket, payloads: string[]) => void;
+  /** tear down everything (idempotent) */
+  destroy: () => void;
+}
+
+export function createTrackerPool(
+  phrase: string,
+  peerId: string,
+  initialHashes: string[],
+  callbacks: TrackerPoolCallbacks,
+  signal: AbortSignal,
+): TrackerPoolHandle {
+  let destroyed = false;
+  let currentHashes = initialHashes;
+  let lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
+  let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
+
+  const sockets = new Map<string, WebSocket>();
+  const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const reconnectDelayByUrl = new Map<string, number>();
+
+  // ── send helpers ──
+
+  const sendOn = (ws: WebSocket, payloads: string[]): void => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    for (const p of payloads) {
+      try { ws.send(p); } catch { break; }
+    }
+  };
+
+  const sendAll = (payloads: string[]): void => {
+    for (const ws of sockets.values()) sendOn(ws, payloads);
+  };
+
+  // ── epoch refresh ──
+
+  // refreshes epoch hashes if needed, but does NOT re-announce.
+  // the maintenance interval always re-announces after this returns,
+  // so the announce path is unified in one place.
+  const refreshEpochPresence = async (): Promise<void> => {
+    if (destroyed) return;
+    const epoch = Math.floor(Date.now() / EPOCH_WINDOW);
+    if (epoch === lastEpoch) return;
+
+    callbacks.onLog("renewing presence");
+
+    const oldHashes = currentHashes;
+    let nextHashes: string[];
+    try {
+      nextHashes = await deriveInfoHashes(phrase);
+    } catch {
+      callbacks.onLog("renewal skipped (hash refresh failed)");
+      return;
+    }
+    if (destroyed) return;
+
+    sendAll(makeTrackerStoppedPayloads(oldHashes, peerId));
+    lastEpoch = epoch;
+    currentHashes = nextHashes;
+  };
+
+  // ── reconnect ──
+
+  const scheduleReconnect = (url: string): void => {
+    if (destroyed) return;
+    if (reconnectTimers.has(url)) return;
+
+    const host = new URL(url).host;
+    const delay = reconnectDelayByUrl.get(url) ?? POOL_RECONNECT_BASE;
+    reconnectDelayByUrl.set(url, Math.min(delay * 2, POOL_RECONNECT_CAP));
+
+    callbacks.onLog(`reconnecting via ${host} in ${(delay / 1000).toFixed(0)}s...`);
+
+    const timer = setTimeout(async () => {
+      reconnectTimers.delete(url);
+      if (destroyed) return;
+
+      try {
+        lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
+        currentHashes = await deriveInfoHashes(phrase);
+      } catch {
+        if (!destroyed) scheduleReconnect(url);
+        return;
+      }
+      if (destroyed) return;
+      connectToUrl(url);
+    }, delay);
+
+    reconnectTimers.set(url, timer);
+  };
+
+  // ── per-url socket lifecycle ──
+
+  const connectToUrl = (url: string): void => {
+    if (destroyed) return;
+    if (sockets.has(url)) return;
+
+    const host = new URL(url).host;
+
+    let opened = false;
+    let closeHandled = false;
+    let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      connectTimer = null;
+      if (closeHandled) return;
+      closeHandled = true;
+      const sock = sockets.get(url);
+      if (sock) sockets.delete(url);
+      if (sock) {
+        try { sock.close(); } catch { /* noop */ }
+      }
+      if (!destroyed) scheduleReconnect(url);
+    }, POOL_CONNECT_TIMEOUT);
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+      scheduleReconnect(url);
+      return;
+    }
+    sockets.set(url, ws);
+
+    const handleDrop = () => {
+      if (closeHandled) return;
+      closeHandled = true;
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+      const cur = sockets.get(url);
+      if (cur === ws) sockets.delete(url);
+      if (!destroyed) {
+        if (opened) callbacks.onLog(`connection dropped via ${host}, reconnecting...`);
+        const anyOpen = [...sockets.values()].some(s => s.readyState === WebSocket.OPEN);
+        if (!anyOpen) callbacks.onAllDown?.();
+        scheduleReconnect(url);
+      }
+    };
+
+    ws.onopen = () => {
+      opened = true;
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+      if (destroyed) return;
+
+      reconnectDelayByUrl.set(url, POOL_RECONNECT_BASE);
+      callbacks.onLog(`connected via ${host}`);
+      callbacks.onReady?.();
+
+      sendOn(ws, callbacks.makeAnnounce(currentHashes));
+
+      if (!maintenanceTimer) {
+        maintenanceTimer = setInterval(() => {
+          if (destroyed) return;
+          void refreshEpochPresence().then(() => {
+            if (!destroyed) sendAll(callbacks.makeAnnounce(currentHashes));
+          });
+        }, POOL_EPOCH_CHECK_INTERVAL);
+      }
+    };
+
+    ws.onmessage = (event) => {
+      if (destroyed) return;
+
+      const msg = parseTrackerMessage(event.data);
+      if (!msg) return;
+
+      // filter by hash
+      const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : "";
+      if (infoHash && !currentHashes.includes(infoHash)) return;
+
+      callbacks.onMessage(msg, ws);
+    };
+
+    ws.onerror = () => { /* onclose handles reconnect */ };
+    ws.onclose = handleDrop;
+  };
+
+  // ── destroy ──
+
+  const destroy = (): void => {
+    if (destroyed) return;
+    destroyed = true;
+
+    if (maintenanceTimer) { clearInterval(maintenanceTimer); maintenanceTimer = null; }
+    for (const t of reconnectTimers.values()) clearTimeout(t);
+    reconnectTimers.clear();
+
+    const stoppedPayloads = makeTrackerStoppedPayloads(currentHashes, peerId);
+    for (const ws of sockets.values()) {
+      if (ws.readyState === WebSocket.OPEN) {
+        for (const payload of stoppedPayloads) {
+          try { ws.send(payload); } catch { break; }
+        }
+      }
+      try { ws.close(1000); } catch { /* noop */ }
+    }
+    sockets.clear();
+  };
+
+  // ── auto-destroy on abort ──
+
+  if (signal.aborted) {
+    destroyed = true;
+  } else {
+    signal.addEventListener("abort", destroy, { once: true });
+  }
+
+  // ── connect to all trackers ──
+
+  if (!destroyed) {
+    for (const url of TRACKER_URLS) connectToUrl(url);
+  }
+
+  return {
+    get hashes() { return currentHashes; },
+    sendAll,
+    sendOn,
+    destroy,
+  };
+}
+
 /* ── Main exchange function ───────────────────────────────── */
 
 export async function exchangeViaTracker(

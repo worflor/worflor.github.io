@@ -13,12 +13,13 @@ import {
   padCode,
   unpadCode,
   TRACKER_URLS,
-  EPOCH_WINDOW,
   MIN_CODE_LEN,
   BASE64URL_RE,
   makeTrackerAnnouncePayloads,
   makeTrackerStoppedPayloads,
   parseTrackerMessage,
+  createTrackerPool,
+  rememberSeen,
 } from "../live-tracker";
 
 interface FlareBaseCallbacks {
@@ -39,31 +40,14 @@ export interface CampfireJoinFlareOptions extends FlareBaseCallbacks {
   signal: AbortSignal;
 }
 
-const EPOCH_CHECK_INTERVAL = 30_000;
-const WS_CONNECT_TIMEOUT = 8_000;
-const RECONNECT_BASE = 2_000;
-const RECONNECT_CAP = 30_000;
 const MAX_SEEN = 1024;
 const JOIN_TOTAL_TIMEOUT = 60_000;
+const WS_CONNECT_TIMEOUT = 8_000;
 
 interface OfferContext {
   offerCode: string;
   offerId: string;
   paddedOffer: string;
-}
-
-function hostName(url: string): string {
-  try { return new URL(url).host; } catch { return url; }
-}
-
-function rememberSeen(set: Set<string>, key: string): boolean {
-  if (set.has(key)) return false;
-  set.add(key);
-  if (set.size > MAX_SEEN) {
-    const oldest = set.values().next().value;
-    if (oldest) set.delete(oldest);
-  }
-  return true;
 }
 
 async function waitForNextOffer(
@@ -84,8 +68,7 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
   if (opts.signal.aborted) throw new DOMException("Aborted", "AbortError");
 
   const peerId = randomBinId();
-  let currentHashes = await deriveInfoHashes(opts.phrase);
-  let lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
+  const initialHashes = await deriveInfoHashes(opts.phrase);
 
   let seedOffer = opts.getCurrentOfferCode();
   if (!seedOffer) throw new Error("no-offer-code");
@@ -95,121 +78,34 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
     paddedOffer: padCode(seedOffer),
   };
 
+  const seenAnswers = new Set<string>();
+  let rotatingOffer = false;
+
   opts.onLog("campfire flare room is burning");
 
-  const sockets = new Map<string, WebSocket>();
-  const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  const reconnectDelayByUrl = new Map<string, number>();
-  const seenAnswers = new Set<string>();
-
-  let epochTimer: ReturnType<typeof setInterval> | null = null;
-  let rotatingOffer = false;
-  let finished = false;
-
-  const cleanup = () => {
-    if (finished) return;
-    finished = true;
-
-    if (epochTimer) {
-      clearInterval(epochTimer);
-      epochTimer = null;
-    }
-
-    for (const timer of reconnectTimers.values()) clearTimeout(timer);
-    reconnectTimers.clear();
-
-    const stopped = makeTrackerStoppedPayloads(currentHashes, peerId);
-    for (const ws of sockets.values()) {
-      if (ws.readyState === WebSocket.OPEN) {
-        for (const payload of stopped) {
-          try { ws.send(payload); } catch { break; }
-        }
-      }
-      try { ws.close(1000); } catch { /* noop */ }
-    }
-    sockets.clear();
-  };
-
-  opts.signal.addEventListener("abort", cleanup, { once: true });
-
-  const makeAnnounce = (): string[] =>
-    makeTrackerAnnouncePayloads(currentHashes, peerId, offerCtx.offerId, offerCtx.paddedOffer);
-
-  const sendOnSocket = (ws: WebSocket, payloads: string[]): void => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    for (const p of payloads) {
-      try { ws.send(p); } catch { break; }
-    }
-  };
-
-  const sendAll = (payloads: string[]): void => {
-    for (const ws of sockets.values()) sendOnSocket(ws, payloads);
-  };
-
   const rotateOffer = async (): Promise<void> => {
-    if (rotatingOffer || opts.signal.aborted || finished) return;
+    if (rotatingOffer || opts.signal.aborted) return;
     rotatingOffer = true;
     try {
       const nextOffer = await waitForNextOffer(opts.getCurrentOfferCode, offerCtx.offerCode, opts.signal);
-      if (!nextOffer || nextOffer === offerCtx.offerCode || opts.signal.aborted || finished) return;
+      if (!nextOffer || nextOffer === offerCtx.offerCode || opts.signal.aborted) return;
       offerCtx = {
         offerCode: nextOffer,
         offerId: randomBinId(),
         paddedOffer: padCode(nextOffer),
       };
-      sendAll(makeAnnounce());
+      pool.sendAll(makeAnnounce(pool.hashes));
       opts.onLog("campfire flare refreshed join slot");
     } finally {
       rotatingOffer = false;
     }
   };
 
-  const refreshEpochPresence = async (): Promise<void> => {
-    if (opts.signal.aborted || finished) return;
-    const epoch = Math.floor(Date.now() / EPOCH_WINDOW);
-    if (epoch === lastEpoch) return;
-
-    const oldHashes = currentHashes;
-    try {
-      const nextHashes = await deriveInfoHashes(opts.phrase);
-      currentHashes = nextHashes;
-      lastEpoch = epoch;
-    } catch {
-      opts.onLog("campfire flare renewal skipped");
-      return;
-    }
-
-    sendAll(makeTrackerStoppedPayloads(oldHashes, peerId));
-    sendAll(makeAnnounce());
-  };
-
-  const scheduleReconnect = (url: string): void => {
-    if (opts.signal.aborted || finished) return;
-    if (reconnectTimers.has(url)) return;
-
-    const delay = reconnectDelayByUrl.get(url) ?? RECONNECT_BASE;
-    reconnectDelayByUrl.set(url, Math.min(delay * 2, RECONNECT_CAP));
-
-    const timer = setTimeout(async () => {
-      reconnectTimers.delete(url);
-      if (opts.signal.aborted || finished) return;
-
-      try {
-        lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
-        currentHashes = await deriveInfoHashes(opts.phrase);
-      } catch {
-        scheduleReconnect(url);
-        return;
-      }
-
-      connect(url);
-    }, delay);
-
-    reconnectTimers.set(url, timer);
-  };
+  const makeAnnounce = (hashes: string[]): string[] =>
+    makeTrackerAnnouncePayloads(hashes, peerId, offerCtx.offerId, offerCtx.paddedOffer);
 
   const handleAnswer = async (msg: Record<string, unknown>): Promise<void> => {
-    if (rotatingOffer || opts.signal.aborted || finished) return;
+    if (rotatingOffer || opts.signal.aborted) return;
     if (!msg.answer || typeof msg.answer !== "object") return;
 
     const answer = msg.answer as Record<string, unknown>;
@@ -217,17 +113,15 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
     const fromPeerId = String(msg.peer_id ?? "");
     const toPeerId = String(msg.to_peer_id ?? "");
     const incomingOfferId = String(msg.offer_id ?? "");
-    const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : "";
 
     if (!answerCode || answerCode.length < MIN_CODE_LEN) return;
     if (!fromPeerId || fromPeerId === peerId) return;
     if (toPeerId && toPeerId !== peerId) return;
     if (!incomingOfferId || incomingOfferId !== offerCtx.offerId) return;
-    if (infoHash && !currentHashes.includes(infoHash)) return;
     if (!BASE64URL_RE.test(answerCode)) return;
 
     const key = `${fromPeerId}|${incomingOfferId}|${answerCode.slice(0, 24)}`;
-    if (!rememberSeen(seenAnswers, key)) return;
+    if (!rememberSeen(seenAnswers, key, MAX_SEEN)) return;
 
     opts.onStatus("peer joining campfire...");
     try {
@@ -242,92 +136,24 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
     }
   };
 
-  const connect = (url: string): void => {
-    if (opts.signal.aborted || finished) return;
-    if (sockets.has(url)) return;
-
-    let opened = false;
-    let closeHandled = false;
-    let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      connectTimer = null;
-      if (closeHandled) return;
-      closeHandled = true;
-      const s = sockets.get(url);
-      if (s) sockets.delete(url);
-      if (s) {
-        try { s.close(); } catch { /* noop */ }
-      }
-      if (!opts.signal.aborted && !finished) scheduleReconnect(url);
-    }, WS_CONNECT_TIMEOUT);
-
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch {
-      if (connectTimer) clearTimeout(connectTimer);
-      scheduleReconnect(url);
-      return;
-    }
-
-    sockets.set(url, ws);
-
-    const onDrop = () => {
-      if (closeHandled) return;
-      closeHandled = true;
-      if (connectTimer) {
-        clearTimeout(connectTimer);
-        connectTimer = null;
-      }
-      const cur = sockets.get(url);
-      if (cur === ws) sockets.delete(url);
-      if (!opts.signal.aborted && !finished) {
-        if (opened) opts.onLog(`campfire flare dropped via ${hostName(url)}, reconnecting...`);
-        scheduleReconnect(url);
-      }
-    };
-
-    ws.onopen = () => {
-      opened = true;
-      if (connectTimer) {
-        clearTimeout(connectTimer);
-        connectTimer = null;
-      }
-      if (opts.signal.aborted || finished) return;
-
-      reconnectDelayByUrl.set(url, RECONNECT_BASE);
-      opts.onLog(`campfire flare connected via ${hostName(url)}`);
-      opts.onStatus("campfire flare is burning");
-      sendOnSocket(ws, makeAnnounce());
-
-      if (!epochTimer) {
-        epochTimer = setInterval(() => {
-          if (opts.signal.aborted || finished) return;
-          void refreshEpochPresence().then(() => {
-            if (!opts.signal.aborted && !finished) sendAll(makeAnnounce());
-          });
-        }, EPOCH_CHECK_INTERVAL);
-      }
-    };
-
-    ws.onmessage = (event) => {
-      if (opts.signal.aborted || finished) return;
-      const msg = parseTrackerMessage(event.data);
-      if (!msg) return;
+  const pool = createTrackerPool(opts.phrase, peerId, initialHashes, {
+    onLog: (msg) => opts.onLog(`campfire flare ${msg}`),
+    makeAnnounce,
+    onMessage: (msg) => {
+      if (opts.signal.aborted) return;
       void handleAnswer(msg);
-    };
+    },
+    onReady: () => {
+      opts.onStatus("campfire flare is burning");
+    },
+  }, opts.signal);
 
-    ws.onerror = () => { /* handled by close */ };
-    ws.onclose = onDrop;
-  };
-
-  for (const url of TRACKER_URLS) connect(url);
-
-  // Block until abort.
+  // block until abort
   await new Promise<void>((resolve) => {
     opts.signal.addEventListener("abort", () => resolve(), { once: true });
   });
 
-  cleanup();
+  pool.destroy();
 }
 
 export async function joinCampfireViaFlare(opts: CampfireJoinFlareOptions): Promise<void> {
@@ -359,6 +185,10 @@ export async function joinCampfireViaFlare(opts: CampfireJoinFlareOptions): Prom
     clearTimeout(timeout);
     totalAc.abort();
   }
+}
+
+function hostName(url: string): string {
+  try { return new URL(url).host; } catch { return url; }
 }
 
 function connectJoinTracker(
@@ -447,7 +277,7 @@ function connectJoinTracker(
       if (!BASE64URL_RE.test(offerCode)) return;
 
       const offerKey = `${fromPeerId}|${offerId}|${offerCode.slice(0, 24)}`;
-      if (!rememberSeen(seenOffers, offerKey)) return;
+      if (!rememberSeen(seenOffers, offerKey, MAX_SEEN)) return;
 
       opts.onStatus("found campfire host, joining...");
       void opts.acceptOfferCode(offerCode)
