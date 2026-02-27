@@ -6,7 +6,7 @@ encrypted communication with physics-based compression. the codecs model the phy
 
 ```
 Whisper Protocol
-├── Whisper Harmonics  - audio codec (harmonic oscillator model)
+├── Whisper Harmonic  - audio codec (harmonic oscillator model)
 ├── Whisper Spatial    - video codec (surface geometry model)
 ├── Live + Campfire    - real-time messaging
 ├── Async messaging    - store-and-forward encrypted messages
@@ -15,7 +15,7 @@ Whisper Protocol
 
 ## components
 
-### Whisper Harmonics (`live-wasm-audio.ts`)
+### Whisper Harmonic (`live-wasm-audio.ts`)
 models sound as a damped harmonic oscillator:
 ```
 pred = Tension × p1 − Friction × p2

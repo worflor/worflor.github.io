@@ -5,7 +5,7 @@
 this license applies to the Whisper Protocol and its components:
 
 - **Whisper Protocol**, the encrypted communication system and its specification
-- **Whisper Harmonics**, audio codec (`live-wasm-audio.ts`)
+- **Whisper Harmonic**, audio codec (`live-wasm-audio.ts`)
 - **Whisper Spatial**, video codec (`live-wasm-video.ts`, `video-simd.ts`, `video-simd-bin.ts`)
 - all supporting files, documentation, and protocol specifications in this directory
 
@@ -34,7 +34,6 @@ this license applies to the Whisper Protocol and its components:
 - it is a singular, leaf-node legal entity: it has no parent company, no holding company, and no subsidiaries
 - it is not part of a consolidated tax group or a network of affiliated corporate entities under common control
 - 100% of its equity, voting control, and beneficial ownership is held directly, not through trusts, holding vehicles, or nominee arrangements, by natural persons actively engaged in its daily operations
-- it has no common beneficial ownership with any entity that would itself require a commercial license
 
 if the entity forms a subsidiary, undergoes partial acquisition by or into a holding structure, or transfers intellectual property to an offshore or affiliated holding vehicle, it loses this status immediately and must obtain a commercial license within 90 days.
 
@@ -71,12 +70,12 @@ use by your employees, contractors, or agents on your behalf is your use. use th
 you must obtain a commercial license if you are a for-profit legal entity and any of the following apply:
 
 - you have received equity financing from parties other than founders
-- you have received debt financing, capital injections, or credit facilities originating from an institutional source. standard commercial lines of credit from retail depository banks, unsecured by this entity's intellectual property, are the sole exception.
+- you have received debt financing or credit facilities that include equity conversion rights, board representation, operational control provisions, or are secured by this entity's intellectual property
 - you are publicly traded on any stock exchange
 - you are a government agency, or a contractor using this software in the performance of government contracts
 - you have undergone a change of control to or with an entity meeting these criteria (license required within 90 days)
 - you are a subsidiary or affiliate of, or your beneficial owner is, an entity meeting these criteria
-- you are engaged in commercial deployment
+- you are engaged in commercial deployment (this requirement does not apply to independent bootstrapped entities)
 
 arrangements structured to circumvent these requirements are violations of this license. the copyright holder may look through any corporate structure to determine the ultimate beneficial owner or beneficiary.
 
@@ -88,11 +87,11 @@ this software may not be used, directly or indirectly, for:
 
 1. **mass surveillance.** monitoring communications of populations without individual warrants or consent.
 
-2. **persecution.** targeting individuals or groups based on race, ethnicity, national origin, religion, gender, sexual orientation, disability, or political opinion, as protected under the Universal Declaration of Human Rights.
+2. **persecution.** targeting individuals or groups based on race, ethnicity, national origin, religion, gender, sexual orientation, disability, or political opinion, as recognized under international human rights law.
 
 3. **censorship.** suppressing speech, journalism, or political expression protected under Article 19 of the Universal Declaration of Human Rights.
 
-4. **discrimination.** denying services, employment, or rights based on characteristics protected under the Universal Declaration of Human Rights.
+4. **discrimination.** denying services, employment, or rights based on characteristics recognized under international human rights law.
 
 5. **weapons systems.** integration into autonomous weapons, military targeting systems, or systems designed to cause bodily harm.
 
@@ -102,7 +101,7 @@ this software may not be used, directly or indirectly, for:
 
 ## contributions
 
-by submitting any contribution to this project, you grant the copyright holder a perpetual, worldwide, irrevocable, royalty-free license to use, modify, distribute, and sublicense your contribution, along with a patent license for any patents covering it. you represent that you have the right to grant these licenses.
+by submitting any contribution to this project, you grant the copyright holder a perpetual, worldwide, irrevocable, royalty-free license to use, modify, distribute, and sublicense your contribution under any terms, along with a perpetual, worldwide, irrevocable, royalty-free patent license for any patents covering your contribution. you waive all moral rights in your contribution to the fullest extent permitted by applicable law. you represent that you have the right to grant these licenses and will defend and hold harmless the copyright holder against any claims arising from your contribution.
 
 ---
 
