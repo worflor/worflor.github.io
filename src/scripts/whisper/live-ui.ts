@@ -2907,6 +2907,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (raw.includes("handshake-failed")) {
       return "handshake failed. try again, or use a different phrase";
     }
+    if (raw.includes("flare-relay-dropped")) {
+      return "relay dropped during connection. try lighting the flare again";
+    }
     return raw;
   }
 
@@ -2923,6 +2926,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     setBusy(true);
     relayActive = true;
     relayAbort = new AbortController();
+    const relaySignal = relayAbort.signal;
 
     showPhase(opts.connectingSection);
     opts.connectingStatus.textContent = "preparing...";
@@ -2946,7 +2950,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         acceptCalled = true;
         if (session) { session.disconnect(); session = null; }
         session = createSession();
-        return session.acceptOffer(peerOfferCode, phrase);
+        try {
+          return await session.acceptOffer(peerOfferCode, phrase);
+        } catch (err) {
+          if (session) { session.disconnect(); session = null; }
+          acceptCalled = false;
+          throw err;
+        }
       };
 
       const callbacks = {
@@ -2962,7 +2972,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       };
 
       const result = await exchangeViaTracker(
-        phrase, offerCode, acceptFn, callbacks, relayAbort.signal,
+        phrase, offerCode, acceptFn, callbacks, relaySignal,
       );
 
       if (aborted() || !session) return;
@@ -3042,6 +3052,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     flareActive = true;
     flareAbort = new AbortController();
+    const flareSignal = flareAbort.signal;
     setBusy(true);
 
     // Request notification permission if default
@@ -3050,6 +3061,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     opts.externalAssistToggle.checked = true;
+
+    // if extinguished during the notification permission dialog, bail out
+    if (flareSignal.aborted) {
+      flareActive = false;
+      setBusy(false);
+      return;
+    }
 
     try {
       setLogActive(true);
@@ -3074,7 +3092,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (acceptCalled) throw new Error("duplicate-accept");
         acceptCalled = true;
         session = createSession();
-        return session.acceptOffer(peerOfferCode, phrase);
+        try {
+          return await session.acceptOffer(peerOfferCode, phrase);
+        } catch (err) {
+          // WebRTC failed, clean up the orphaned session and allow retry
+          // with the next peer instead of leaving a zombie flare
+          if (session) { session.disconnect(); session = null; }
+          acceptCalled = false;
+          throw err;
+        }
       };
 
       const callbacks = {
@@ -3108,7 +3134,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       };
 
       const result = await maintainFlare(
-        phrase, acceptFn, callbacks, flareAbort.signal,
+        phrase, acceptFn, callbacks, flareSignal,
       );
 
       if (aborted() || !session) return;
@@ -3116,7 +3142,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       // clear flare state before terminal flow
       flareActive = false;
       if (flareElapsedTimer) { clearInterval(flareElapsedTimer); flareElapsedTimer = null; }
+      flareStartTime = 0;
       document.title = originalTitle;
+      setFlareUiState("input");
 
       setBusy(true);
       showPhase(opts.connectingSection);

@@ -328,6 +328,8 @@ function connectToTracker(
           return;
         }
         offerAccepted = true;
+        clearTimeout(discoveryTimer);
+        if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
 
         callbacks.onStatus("found your peer!");
         callbacks.onLog("peer found, accepting their offer");

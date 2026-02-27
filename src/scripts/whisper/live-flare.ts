@@ -155,6 +155,8 @@ export async function maintainFlare(
         return;
       }
 
+      if (done) return;
+
       // stop old hashes, switch, announce new
       sendAll(makeStoppedPayloads(oldHashes));
       lastEpoch = epoch;
@@ -184,6 +186,7 @@ export async function maintainFlare(
           return;
         }
 
+        if (done) return;
         connectToTracker(url);
       }, delay);
 
@@ -336,7 +339,8 @@ export async function maintainFlare(
             callbacks.onStatus("connecting directly...");
             finish({ peerOfferCode });
           } catch {
-            callbacks.onLog("accept failed");
+            if (done) return;
+            callbacks.onLog("accept failed, still listening");
             callbacks.onStatus("flare is burning");
           }
         }).catch(() => {
