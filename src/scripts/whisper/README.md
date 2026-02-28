@@ -6,15 +6,17 @@ encrypted communication with physics-based compression. the codecs model the phy
 
 ```
 Whisper Protocol
-├── Whisper Logos     - 0D entropy codec (???, but it exists)
-├── Whisper Harmonic  - 1D audio codec (symmetric damped harmonic oscillator)
-├── Whisper Lumen     - 2D video codec (surface geometry model using 3-neighbor Möbius predictor)
-├── Whisper Spatial   - 3D volumetric codec (7-neighbor Möbius predictor)
-├── Whisper Akasha    - 4D spatiotemporal codec (15-neighbor hybercube Möbius predictor)
-├── Whisper Kū        - 5D plenoptic codec (31-neighbor hypercube Möbius predictor)
-├── Ratcheting layer  - per-frame cryptographic forward secrecy
-├── Async messaging   - store-and-forward encrypted messages
-└── Live + Campfire   - real-time messaging
+├── Whisper Logos      - 0D entropy codec (8-bit boolean lattice entropy predictor)
+├── Whisper Harmonic   - 1D audio codec (symmetric damped harmonic oscillator)
+├── Whisper Lumen      - 2D video codec (surface geometry model using 3-neighbour Möbius predictor)
+├── Whisper Spatial    - 3D volumetric codec (7-neighbour complex Möbius predictor)
+├── Whisper Akasha     - 4D spatiotemporal codec (15-neighbour quaternionic Möbius predictor)
+├── Whisper Kū         - 5D plenoptic codec (31-neighbour hypercube Möbius predictor)
+├── Whisper Octonion   - 8D octonion codec (255-neighbour octonionic Möbius predictor)
+├── Whisper Kizuna     - 16d membrane codec (65535-neighbour sedenion lattice predictor)
+├── Ratcheting layer   - per-frame cryptographic forward secrecy
+├── Async messaging    - store-and-forward encrypted messages
+└── Live + Campfire    - real-time messaging
 ```
 
 ## components
@@ -72,6 +74,22 @@ P = (L+A+B+T) − (DXY+DXZ+DXT+DYZ+DYT+DZT) + (DXYZ+DXYT+DXZT+DYZT) − D4
 - SLERP fields: **1533×** at 48⁴ | quat orbit: 442× | binary hypersphere: 678×
 - 7-mode adaptive coder (12-bit positions for 4096-voxel blocks)
 
+### Whisper Kū (`live-wasm-ku.ts`)
+
+models 5D hyperspectral spatiotemporal scalar fields via the **31-neighbor Möbius predictor**:
+
+P = (L+A+B+T+U) − (10 pairs) + (10 triples) − (5 quadruples) + D5
+
+- 20-1127× compression (scales with resolution)
+- topology layer: 4D surface crossing map (recursive: 5D→4D→3D→2D→1D hierarchy)
+- **anti-causal boundary collapse**: 48.7% guaranteed zero residuals via binomial theorem
+- binary hypersphere: **1127×** at 24⁵ (vs Akasha 678× at 48⁴, smaller volume)
+- SLERP fields: **925.8×** at 16⁵ | spectral orbit: 189.1× at 24⁵
+- binary hypersphere scales super-linearly: 267× (8⁵) → 669× (16⁵) → 1127× (24⁵)
+- quadratic width model φ=(w/2)²=R²−Σdᵢ² applied at all 4 recursion levels (NQ=2,4,7,11)
+- 7-mode adaptive coder (15-bit positions for 32768-voxel blocks)
+- encode → decode round-trip verified exact for all volume types
+
 ---
 
 ## how it works
@@ -89,6 +107,7 @@ licensed under the [Whisper Protocol License](./LICENSE.md), separate from the r
 - 360+ tests passing (audio + video)
 - Whisper Spatial codec complete — binary sphere 984× at 128³
 - Whisper Akasha codec complete — SLERP 1533× at 48⁴, quat orbit 442×, binary 678×
+- Whisper Kū codec complete — binary hypersphere 1127× at 24⁵, SLERP 925.8× at 16⁵, round-trip verified
 - production-grade quality metrics
 - integrated encryption with forward secrecy
 - patent pending
