@@ -6,31 +6,36 @@ encrypted communication with physics-based compression. the codecs model the phy
 
 ```
 Whisper Protocol
-├── Whisper Harmonic  - audio codec (harmonic oscillator model)
-├── Whisper Lumen     - video codec (surface geometry model)
-├── Live + Campfire   - real-time messaging
+├── Whisper Logos     - 0D entropy codec (???, but it exists)
+├── Whisper Harmonic  - 1D audio codec (symmetric damped harmonic oscillator)
+├── Whisper Lumen     - 2D video codec (surface geometry model using 3-neighbor Möbius predictor)
+├── Whisper Spatial   - 3D volumetric codec (7-neighbor Möbius predictor)
+├── Whisper Akasha    - 4D spatiotemporal codec (15-neighbor hybercube Möbius predictor)
+├── Whisper Kū        - 5D plenoptic codec (31-neighbor hypercube Möbius predictor)
+├── Ratcheting layer  - per-frame cryptographic forward secrecy
 ├── Async messaging   - store-and-forward encrypted messages
-└── Ratcheting layer  - per-frame cryptographic forward secrecy
+└── Live + Campfire   - real-time messaging
 ```
 
 ## components
 
 ### Whisper Harmonic (`live-wasm-audio.ts`)
 
-models sound as a damped harmonic oscillator:
+models sound as a **symmetric damped harmonic oscillator**:
 
 ```
-pred = Tension × p1 − Friction × p2
+pred = (Anchor_Future + Friction × Anchor_Past) / Tension
 ```
 
-- 228x realtime encoding
+- **bidirectional mesh interpolation**: 15–20% gain via future-anchored residues
+- **boundary-anchored stability**: solves the 1D entropy floor using Key C
+- 228x realtime encoding (WASM SIMD)
 - per-chunk cryptographic ratcheting
 - Mid/Side stereo decomposition
-- WASM SIMD acceleration
 
-### Whisper Spatial (`live-wasm-video.ts`)
+### Whisper Lumen (`live-wasm-video.ts`)
 
-models images as physical surfaces via second-order Taylor expansion:
+models images as **physical surfaces via second-order Taylor expansion**:
 
 ```
 pred = D + α·(L−D) + β·(A−D) + γ·(fyy + fxx + fxy)
@@ -40,6 +45,34 @@ pred = D + α·(L−D) + β·(A−D) + γ·(fyy + fxx + fxy)
 - per-frame cryptographic ratcheting
 - SUB-delta temporal encoding
 - full Hessian curvature fitting
+
+### Whisper Spatial (`live-wasm-spatial.ts`)
+
+models 3D scalar fields via the **7-neighbor Möbius predictor**:
+
+P = L + A + B − DXY − DXZ − DYZ + D3
+
+- 20-984× compression (scales with resolution)
+- **anti-causal boundary collapse**: 33% guaranteed zero residuals
+- topology layer: 2D surface crossing map with crossing center encoding
+- binary sphere: 564× (causal) → **984×** (anti-causal) at 128³
+- binarysurf mode: flip-position coding, no value field
+- 7-mode adaptive coder
+
+### Whisper Akasha (`live-wasm-akasha.ts`)
+
+models 4D spatiotemporal scalar fields via the **15-neighbor Möbius predictor**:
+
+P = (L+A+B+T) − (DXY+DXZ+DXT+DYZ+DYT+DZT) + (DXYZ+DXYT+DXZT+DYZT) − D4
+
+- 25-1533× compression (scales with resolution)
+- topology layer: 3D surface crossing map (recursive: uses Spatial predictor)
+- **anti-causal boundary collapse**: 41.4% guaranteed zero residuals via binomial theorem
+- crossing center xmid = (x1+x2)/2 decouples sphere center from surface geometry
+- SLERP fields: **1533×** at 48⁴ | quat orbit: 442× | binary hypersphere: 678×
+- 7-mode adaptive coder (12-bit positions for 4096-voxel blocks)
+
+---
 
 ## how it works
 
@@ -54,6 +87,8 @@ licensed under the [Whisper Protocol License](./LICENSE.md), separate from the r
 ## status
 
 - 360+ tests passing (audio + video)
+- Whisper Spatial codec complete — binary sphere 984× at 128³
+- Whisper Akasha codec complete — SLERP 1533× at 48⁴, quat orbit 442×, binary 678×
 - production-grade quality metrics
 - integrated encryption with forward secrecy
 - patent pending
