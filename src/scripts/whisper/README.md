@@ -6,6 +6,7 @@ encrypted communication with physics-based compression. the codecs model the phy
 
 ```
 Whisper Protocol
+├── Ratcheting layer   - per-frame cryptographic forward secrecy
 ├── Whisper Logos      - 0D entropy codec (8-bit boolean lattice entropy predictor)
 ├── Whisper Harmonic   - 1D audio codec (symmetric damped harmonic oscillator)
 ├── Whisper Lumen      - 2D video codec (surface geometry model using 3-neighbour Möbius predictor)
@@ -14,7 +15,6 @@ Whisper Protocol
 ├── Whisper Kū         - 5D plenoptic codec (31-neighbour hypercube Möbius predictor)
 ├── Whisper Octonion   - 8D octonion codec (255-neighbour octonionic Möbius predictor)
 ├── Whisper Kizuna     - 16d membrane codec (65535-neighbour sedenion lattice predictor)
-├── Ratcheting layer   - per-frame cryptographic forward secrecy
 ├── Async messaging    - store-and-forward encrypted messages
 └── Live + Campfire    - real-time messaging
 ```
