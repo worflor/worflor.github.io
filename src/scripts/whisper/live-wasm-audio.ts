@@ -360,27 +360,32 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
 function buildEncodeBody(): number[] {
     const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar = 3, numChannels = 4; // args
 
-    // I32 locals
-    const packedLen = 5, i = 6, j = 7, p1_sim = 8, p2_sim = 9;
-    const i32_val = 10, delta = 11, z = 12, mz = 13, W_curr = 14, temp = 15;
-    const crypto_i = 16, crypto_words = 17, cipher = 18, idx = 19, sample_count = 20;
-    const mac0 = 21, mac1 = 22, prev1 = 23, prev2 = 24, block_start = 25, block_end = 26;
-    const v = [27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42];
-    const K = 43, G = 44, bit_cnt = 45, ch = 46;
+    let next_i32 = 5;
+    const packedLen = next_i32++, i = next_i32++, j = next_i32++, p1_sim = next_i32++, p2_sim = next_i32++;
+    const i32_val = next_i32++, delta = next_i32++, z = next_i32++, mz = next_i32++, W_curr = next_i32++, temp = next_i32++;
+    const crypto_i = next_i32++, crypto_words = next_i32++, cipher = next_i32++, idx = next_i32++, sample_count = next_i32++;
+    const mac0 = next_i32++, mac1 = next_i32++, prev1 = next_i32++, prev2 = next_i32++, block_start = next_i32++, block_end = next_i32++;
+    const v = Array.from({ length: 16 }, (_, k) => next_i32++);
+    const K = next_i32++, G = next_i32++, bit_cnt = next_i32++, ch = next_i32++;
+    const s31_anchor = next_i32++, pred_int = next_i32++;
+    const i32_locals_count = next_i32 - 5;
 
-    // F32 locals
-    const framePeak = 47, f32_val = 48, sum_p1_p1 = 49, sum_p1_val = 50;
-    const sum_p2_p2 = 51, sum_p2_err = 52, K_float = 53, G_float = 54;
-    const f32_p1 = 55, f32_p2 = 56;
-    const left = 57, right = 58;
+    let next_f32 = next_i32;
+    const framePeak = next_f32++, f32_val = next_f32++, sum_p1_p1 = next_f32++, sum_p1_val = next_f32++;
+    const sum_p2_p2 = next_f32++, sum_p2_err = next_f32++, K_float = next_f32++, G_float = next_f32++;
+    const f32_p1 = next_f32++, f32_p2 = next_f32++;
+    const left = next_f32++, right = next_f32++;
+    const f32_locals_count = next_f32 - next_i32;
 
-    // I64 locals
-    const i64_bit_buf = 59; // Using I64 for the real bit accumulator
+    let next_i64 = next_f32;
+    const i64_bit_buf = next_i64++;
+    const i64_locals_count = next_i64 - next_f32;
 
-    // V128 locals
-    const v_sum_p1_p1 = 60, v_sum_p1_val = 61, v_sum_p2_p2 = 62, v_sum_p2_err = 63;
-    const v_p1 = 64, v_p2 = 65, v_val = 66, v_tmp1 = 67, v_tmp2 = 68, v_peak = 69;
-    const v_scalar = 70, v_prev = 71;
+    let next_v128 = next_i64;
+    const v_sum_p1_p1 = next_v128++, v_sum_p1_val = next_v128++, v_sum_p2_p2 = next_v128++, v_sum_p2_err = next_v128++;
+    const v_p1 = next_v128++, v_p2 = next_v128++, v_val = next_v128++, v_tmp1 = next_v128++, v_tmp2 = next_v128++, v_peak = next_v128++;
+    const v_scalar = next_v128++, v_prev = next_v128++;
+    const v128_locals_count = next_v128 - next_i64;
 
     // shift value into bit buffer, drain full bytes
     function emitBits(valueInstr: number[], nbitsInstr: number[]): number[] {
@@ -392,7 +397,7 @@ function buildEncodeBody(): number[] {
             ...BLOCK, ...LOOP,
             ...GET(bit_cnt), ...CI32(8), ...LT_u, ...BRIF(1),
             ...GET(outPtr), ...CI32(HEADER_SIZE), ...ADD, ...GET(packedLen), ...ADD,
-            ...GET(i64_bit_buf), ...I32_WRAP_I64, ...CI32(0xFF), ...AND, // temp byte on stack
+            ...GET(i64_bit_buf), ...I32_WRAP_I64, ...CI32(0xFF), ...AND,
             ...STORE8(0, 0),
 
             ...GET(packedLen), ...CI32(1), ...ADD, ...SET(packedLen),
@@ -454,7 +459,7 @@ function buildEncodeBody(): number[] {
         ...CI32(0), ...SET(ch),
         ...BLOCK, ...LOOP, // dimension loop
 
-        // ── pass 1: fit Tension (K) for current channel ──
+        // PASS 1: FIT TENSION (K)
         ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p1_p1),
         ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p1_val),
         ...GET(prev1), ...SET(p1_sim),
@@ -520,7 +525,7 @@ function buildEncodeBody(): number[] {
         // clamp K
         ...GET(K_float), ...F32_CONST(-10.0), ...F32_MAX, ...F32_CONST(10.0), ...F32_MIN, ...SET(K_float),
 
-        // ── pass 2: fit Friction (G) & measure entropy (mz) ──
+        // FIT FRICTION (G)
         ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p2_p2),
         ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p2_err),
         ...GET(prev1), ...SET(p1_sim),
@@ -587,148 +592,103 @@ function buildEncodeBody(): number[] {
         ...GET(K_float), ...F32_CONST(32.0), ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(K),
         ...GET(G_float), ...F32_CONST(32.0), ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(G),
 
-        // reconstruct quantized K_float/G_float for pass 3
-        ...GET(K), ...F32_CONVERT_I32_S, ...F32_CONST(32.0), ...F32_DIV, ...SET(K_float),
-        ...GET(G), ...F32_CONVERT_I32_S, ...F32_CONST(32.0), ...F32_DIV, ...SET(G_float),
-
         // clamp to [-128, 127]
         ...GET(K), ...CI32(127), ...GT_s, ...IF, ...CI32(127), ...SET(K), ...END,
         ...GET(K), ...CI32(-128), ...LT_s, ...IF, ...CI32(-128), ...SET(K), ...END,
         ...GET(G), ...CI32(127), ...GT_s, ...IF, ...CI32(127), ...SET(G), ...END,
         ...GET(G), ...CI32(-128), ...LT_s, ...IF, ...CI32(-128), ...SET(G), ...END,
 
-        // ── pass 3: entropy evaluation for mz using quantized K and G ──
-        ...CI32(0), ...SET(mz),
-        ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p1_p1), // v_sum_p1_p1 used as v_mz
+        // reconstruct quantized K_float/G_float for pass 3
+        ...GET(K), ...F32_CONVERT_I32_S, ...F32_CONST(32.0), ...F32_DIV, ...SET(K_float),
+        ...GET(G), ...F32_CONVERT_I32_S, ...F32_CONST(32.0), ...F32_DIV, ...SET(G_float),
 
+        // ── PASS 3: SYMMETRIC ENTROPY EVALUATION (Key C - Symmetric Mesh) ──
+        ...CI32(0), ...SET(mz),
         ...GET(prev1), ...SET(p1_sim),
         ...GET(prev2), ...SET(p2_sim),
-        ...GET(K), ...I32_SPLAT, ...SET(v_tmp1), // Splat K for i32x4 ops
-        ...GET(G), ...I32_SPLAT, ...SET(v_tmp2), // Splat G for i32x4 ops
+
+        // 1. Resolve future anchor index (j) and value (s31_anchor)
+        ...GET(block_end), ...CI32(1), ...SUB, ...SET(j),
+        ...GET(j), ...GET(numChannels), ...MUL, ...GET(ch), ...ADD, ...CI32(2), ...SHL, ...GET(pcmPtr), ...ADD, ...LOADF32(2, 0), ...SET(f32_val),
+        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(s31_anchor),
+
+        // 2. Linear Bridge Span
+        ...GET(j), ...GET(block_start), ...SUB, ...SET(temp),
+        ...GET(temp), ...CI32(1), ...LT_s, ...IF, ...CI32(1), ...SET(temp), ...END,
 
         ...GET(block_start), ...SET(i),
-        ...BLOCK, ...LOOP, // pass 3 sim loop
+        ...BLOCK, ...LOOP,
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        // construction & deinterleave
+        // 3. Harmonic Predictor (Causal)
+        ...GET(K), ...GET(p1_sim), ...MUL, ...CI32(5), ...SHR_s,
+        ...GET(G), ...GET(p2_sim), ...MUL, ...CI32(5), ...SHR_s, ...SUB, ...SET(pred_int),
+
+        // 4. Mesh Correction (Symmetric)
+        ...GET(s31_anchor), ...GET(pred_int), ...SUB,
+        ...GET(i), ...GET(block_start), ...SUB, ...MUL, ...GET(temp), ...DIV,
+        ...GET(pred_int), ...ADD, ...SET(pred_int),
+
+        // delta = sample - pred
         ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
-        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADV128(4, 0), ...SET(v_val),
-        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(16), ...ADD, ...ADD, ...LOADV128(4, 0), ...SET(v_p1),
-        ...GET(v_val), ...GET(v_p1), ...SHUFFLE([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]), ...SET(v_val), // vL
-        ...GET(v_val), ...GET(v_p1), ...SHUFFLE([4, 5, 6, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31]), ...SET(v_p2), // vR
-        ...GET(ch), ...CI32(0), ...EQ, ...IF,
-        ...GET(v_val), ...GET(v_p2), ...FADDV, ...F32_CONST(0.5), ...FSPLAT, ...FMULV, ...SET(v_val),
-        ...ELSE,
-        ...GET(v_val), ...GET(v_p2), ...FSUBV, ...SET(v_val),
-        ...END,
-        ...ELSE,
-        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADV128(4, 0), ...SET(v_val),
-        ...END,
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 0), ...SET(right),
+        ...GET(ch), ...CI32(0), ...EQ, ...IF, ...GET(left), ...GET(right), ...F32_ADD, ...F32_CONST(0.5), ...F32_MUL, ...SET(f32_val), ...ELSE, ...GET(left), ...GET(right), ...F32_SUB, ...SET(f32_val), ...END,
+        ...ELSE, ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val), ...END,
+        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        ...GET(v_val), ...GET(v_peak), ...FDIVV, ...GET(v_scalar), ...FMULV,
-        ...F32X4_NEAREST_V, ...I32X4_TRUNC_V, ...SET(v_val), // v_val is now i32x4
+        ...GET(i32_val), ...GET(pred_int), ...SUB, ...SET(delta),
+        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        ...GET(z), ...GET(mz), ...GT_u, ...IF, ...GET(z), ...SET(mz), ...END,
 
-        // prediction: pred = (K * p1) >> 5 - (G * p2) >> 5
-        ...GET(p2_sim), ...I32_SPLAT, ...SET(v_p1), // v_p1 = [p2_sim, p2_sim, p2_sim, p2_sim]
-        ...GET(p1_sim), ...I32_SPLAT, ...SET(v_p2), // v_p2 = [p1_sim, p1_sim, p1_sim, p1_sim]
-        ...GET(v_p1), ...GET(v_p2), ...SHUFFLE([8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]), ...SET(v_prev), // [p2, p2, p1, p1]
-        ...GET(v_prev), ...GET(v_val), ...SHUFFLE([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]), ...SET(v_p1), // p1 window [p1, s0, s1, s2]
-        ...GET(v_prev), ...GET(v_val), ...SHUFFLE([4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]), ...SET(v_p2), // p2 window [p2, p1, s0, s1]
-
-        ...GET(v_tmp1), ...GET(v_p1), ...I32X4_MUL_V, ...CI32(5), ...I32X4_SHR_SV,
-        ...GET(v_tmp2), ...GET(v_p2), ...I32X4_MUL_V, ...CI32(5), ...I32X4_SHR_SV, ...I32SUBV, ...SET(v_p1), // pred vector
-
-        // delta = val - pred
-        ...GET(v_val), ...GET(v_p1), ...I32SUBV, ...SET(v_p1), // delta vector
-
-        // z = (delta << 1) ^ (delta >> 31)
-        ...GET(v_p1), ...CI32(1), ...I32X4_SHL_V,
-        ...GET(v_p1), ...CI32(31), ...I32X4_SHR_SV,
-        ...VXOR, ...SET(v_p2), // z vector
-
-        // mz = max_u(mz, z)
-        ...GET(v_sum_p1_p1), ...GET(v_p2), ...I32X4_MAX_UV, ...SET(v_sum_p1_p1),
-
-        // state update
-        ...GET(v_val), ...EXTRACT_I32(3), ...SET(p1_sim), // Extract lane 3 for p1_sim
-        ...GET(v_val), ...EXTRACT_I32(2), ...SET(p2_sim), // Extract lane 2 for p2_sim
-
-        ...GET(i), ...CI32(4), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END, // pass 3 sim loop
-
-        // extract max binary mz
-        ...GET(v_sum_p1_p1), ...EXTRACT_I32(0), ...SET(mz), // Extract lane 0
-        ...GET(v_sum_p1_p1), ...EXTRACT_I32(1), ...SET(temp), ...GET(temp), ...GET(mz), ...GT_u, ...IF, ...GET(temp), ...SET(mz), ...END, // Compare with lane 1
-        ...GET(v_sum_p1_p1), ...EXTRACT_I32(2), ...SET(temp), ...GET(temp), ...GET(mz), ...GT_u, ...IF, ...GET(temp), ...SET(mz), ...END, // Compare with lane 2
-        ...GET(v_sum_p1_p1), ...EXTRACT_I32(3), ...SET(temp), ...GET(temp), ...GET(mz), ...GT_u, ...IF, ...GET(temp), ...SET(mz), ...END, // Compare with lane 3
+        ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
+        ...END, ...END,
 
         // W_curr = 32 - clz(mz), bit-width needed for the residuals
         ...CI32(32), ...GET(mz), ...CLZ, ...SUB, ...SET(W_curr),
 
-        // ── emit coefficients (21 bits) ──
-        ...GET(K), ...CI32(255), ...AND, ...SET(temp), // Tension
-        ...emitBits([...GET(temp)], [...CI32(8)]),
-        ...GET(G), ...CI32(255), ...AND, ...SET(temp), // Friction
-        ...emitBits([...GET(temp)], [...CI32(8)]),
+        // ── emit coefficients ──
+        ...GET(K), ...CI32(255), ...AND, ...SET(temp), ...emitBits([...GET(temp)], [...CI32(8)]),
+        ...GET(G), ...CI32(255), ...AND, ...SET(temp), ...emitBits([...GET(temp)], [...CI32(8)]),
         ...emitBits([...GET(W_curr)], [...CI32(5)]),
+        // emit s31 anchor explicitly (delta from prev1)
+        ...GET(s31_anchor), ...GET(prev1), ...SUB, ...SET(temp),
+        ...GET(temp), ...CI32(1), ...SHL, ...GET(temp), ...CI32(31), ...SHR_s, ...XOR, ...SET(temp),
+        ...emitBits([...GET(temp)], [...CI32(16)]),
 
         // ── final encode: apply prediction and pack residuals ──
         ...GET(block_start), ...SET(i),
         ...GET(prev1), ...SET(p1_sim),
         ...GET(prev2), ...SET(p2_sim),
-        ...GET(K), ...I32_SPLAT, ...SET(v_tmp1),
-        ...GET(G), ...I32_SPLAT, ...SET(v_tmp2),
 
-        ...BLOCK, ...LOOP, // encode loop
+        ...BLOCK, ...LOOP, // FINAL ENCODE (Symmetric Mesh)
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        // vectorized prediction & math
+        // 1. Predict with Mesh Bridge
+        ...GET(block_end), ...CI32(1), ...SUB, ...GET(block_start), ...SUB, ...SET(temp),
+        ...GET(temp), ...CI32(1), ...LT_s, ...IF, ...CI32(1), ...SET(temp), ...END,
+
+        ...GET(K), ...GET(p1_sim), ...MUL, ...CI32(5), ...SHR_s,
+        ...GET(G), ...GET(p2_sim), ...MUL, ...CI32(5), ...SHR_s, ...SUB, ...SET(pred_int),
+        ...GET(s31_anchor), ...GET(pred_int), ...SUB, ...GET(i), ...GET(block_start), ...SUB, ...MUL, ...GET(temp), ...DIV, ...GET(pred_int), ...ADD, ...SET(pred_int),
+
+        // 2. Load and quantize sample
         ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
-        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADV128(4, 0), ...SET(v_val),
-        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(16), ...ADD, ...ADD, ...LOADV128(4, 0), ...SET(v_p1),
-        ...GET(v_val), ...GET(v_p1), ...SHUFFLE([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]), ...SET(v_val), // vL
-        ...GET(v_val), ...GET(v_p1), ...SHUFFLE([4, 5, 6, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31]), ...SET(v_p2), // vR
-        ...GET(ch), ...CI32(0), ...EQ, ...IF,
-        ...GET(v_val), ...GET(v_p2), ...FADDV, ...F32_CONST(0.5), ...FSPLAT, ...FMULV, ...SET(v_val),
-        ...ELSE,
-        ...GET(v_val), ...GET(v_p2), ...FSUBV, ...SET(v_val),
-        ...END,
-        ...ELSE,
-        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADV128(4, 0), ...SET(v_val),
-        ...END,
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 0), ...SET(right),
+        ...GET(ch), ...CI32(0), ...EQ, ...IF, ...GET(left), ...GET(right), ...F32_ADD, ...F32_CONST(0.5), ...F32_MUL, ...SET(f32_val), ...ELSE, ...GET(left), ...GET(right), ...F32_SUB, ...SET(f32_val), ...END,
+        ...ELSE, ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val), ...END,
+        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(scalar), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        ...GET(v_val), ...GET(v_peak), ...FDIVV, ...GET(v_scalar), ...FMULV,
-        ...F32X4_NEAREST_V, ...I32X4_TRUNC_V, ...SET(v_val), // v_val is now i32x4
+        // 3. Emit residue
+        ...GET(i32_val), ...GET(pred_int), ...SUB, ...SET(delta),
+        ...GET(delta), ...CI32(1), ...SHL, ...GET(delta), ...CI32(31), ...SHR_s, ...XOR, ...SET(z),
+        ...emitBits([...GET(z)], [...GET(W_curr)]),
 
-        ...GET(p2_sim), ...I32_SPLAT, ...SET(v_p1),
-        ...GET(p1_sim), ...I32_SPLAT, ...SET(v_p2),
-        ...GET(v_p1), ...GET(v_p2), ...SHUFFLE([8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]), ...SET(v_prev),
-        ...GET(v_prev), ...GET(v_val), ...SHUFFLE([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]), ...SET(v_p1), // v_p1 window [p1, s0, s1, s2]
-        ...GET(v_prev), ...GET(v_val), ...SHUFFLE([4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]), ...SET(v_p2), // v_p2 window [p2, p1, s0, s1]
-
-        ...GET(v_tmp1), ...GET(v_p1), ...I32X4_MUL_V, ...CI32(5), ...I32X4_SHR_SV,
-        ...GET(v_tmp2), ...GET(v_p2), ...I32X4_MUL_V, ...CI32(5), ...I32X4_SHR_SV, ...I32SUBV, ...SET(v_p1), // pred vector
-
-        ...GET(v_val), ...GET(v_p1), ...I32SUBV, ...SET(v_p1), // delta vector
-
-        ...GET(v_p1), ...CI32(1), ...I32X4_SHL_V,
-        ...GET(v_p1), ...CI32(31), ...I32X4_SHR_SV,
-        ...VXOR, ...SET(v_p2), // z vector
-
-        // drain lanes sequentially (emitBits)
-        ...GET(W_curr), ...CI32(0), ...GT_u, ...IF,
-        ...emitBits([...GET(v_p2), ...EXTRACT_I32(0)], [...GET(W_curr)]),
-        ...emitBits([...GET(v_p2), ...EXTRACT_I32(1)], [...GET(W_curr)]),
-        ...emitBits([...GET(v_p2), ...EXTRACT_I32(2)], [...GET(W_curr)]),
-        ...emitBits([...GET(v_p2), ...EXTRACT_I32(3)], [...GET(W_curr)]),
-        ...END,
-
-        // update state
-        ...GET(v_val), ...EXTRACT_I32(3), ...SET(p1_sim),
-        ...GET(v_val), ...EXTRACT_I32(2), ...SET(p2_sim),
-
-        ...GET(i), ...CI32(4), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END, // end encode loop
+        ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
+        ...END, ...END,
 
         ...GET(p1_sim), ...SET(prev1), ...GET(p2_sim), ...SET(prev2),
 
@@ -824,38 +784,40 @@ function buildEncodeBody(): number[] {
         ...GET(packedLen), ...CI32(HEADER_SIZE + MAC_SIZE + 4), ...ADD,
     ];
     return funcBody([
-        { count: 42, type: I32 }, // locals 5..46 are I32
-        { count: 12, type: F32 }, // locals 47..58 are F32
-        { count: 1, type: I64 },  // local 59 is I64
-        { count: 12, type: V128 }, // locals 60..71 are V128
+        { count: i32_locals_count, type: I32 },
+        { count: f32_locals_count, type: F32 },
+        { count: i64_locals_count, type: I64 },
+        { count: v128_locals_count, type: V128 },
     ], body);
 }
 
 function buildDecodeBody(): number[] {
     const adpcmPtr = 0, numBytes = 1, outPtr = 2, scalar = 3, numChannels = 4; // args
 
-    // I32 locals
-    const numSamples = 5, packedLen = 6, prev1 = 7, i32_val = 8, delta = 9, z = 10;
-    const crypto_i = 11, crypto_words = 12, cipher = 13, idx = 14, sample_count = 15;
-    const mac0 = 16, mac1 = 17, temp = 18, expMac0 = 19, expMac1 = 20, i = 21;
-    const bit_cnt = 22;
-    const v = [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38];
-    const prev2 = 39, block_start = 40, block_end = 41;
+    let next_i32 = 5;
+    const numSamples = next_i32++, packedLen = next_i32++, prev1 = next_i32++, i32_val = next_i32++, delta = next_i32++, z = next_i32++;
+    const crypto_i = next_i32++, crypto_words = next_i32++, cipher = next_i32++, idx = next_i32++, sample_count = next_i32++;
+    const mac0 = next_i32++, mac1 = next_i32++, temp = next_i32++, expMac0 = next_i32++, expMac1 = next_i32++, i = next_i32++;
+    const bit_cnt = next_i32++;
+    const v = Array.from({ length: 16 }, (_, k) => next_i32++);
+    const prev2 = next_i32++, block_start = next_i32++, block_end = next_i32++;
+    const K = next_i32++, G = next_i32++, W_curr = next_i32++, ch = next_i32++;
+    const mid = next_i32++, side = next_i32++, s31_anchor = next_i32++, pred_int = next_i32++;
+    const i32_locals_count = next_i32 - 5;
 
-    // predictor I32 locals
-    const K = 42, G = 43, W_curr = 44, ch = 45;
-    const mid = 46, side = 47; // temp storage for M/S to L/R conversion
+    let next_f32 = next_i32;
+    const framePeak = next_f32++, f32_val = next_f32++, f32_pred = next_f32++, K_float = next_f32++, G_float = next_f32++;
+    const prev1_f = next_f32++, prev2_f = next_f32++;
+    const f32_locals_count = next_f32 - next_i32;
 
-    // F32 locals (Indices 53-59)
-    const framePeak = 53, f32_val = 54, f32_pred = 55, K_float = 56, G_float = 57;
-    const prev1_f = 58, prev2_f = 59;
+    let next_i64 = next_f32;
+    const i64_bit_buf = next_i64++; // local 60 is I64 bit accumulator
+    const i64_locals_count = next_i64 - next_f32;
 
-    // I64 locals (Index 60)
-    const i64_bit_buf = 60; // local 60 is I64 bit accumulator
-
-    // V128 locals (Indices 61-68)
-    const v_val = 61, v_p1 = 62, v_p2 = 63, v_prev = 64;
-    const v_tmp1 = 65, v_tmp2 = 66, v_peak = 67, v_scalar = 68;
+    let next_v128 = next_i64;
+    const v_val = next_v128++, v_p1 = next_v128++, v_p2 = next_v128++, v_prev = next_v128++;
+    const v_tmp1 = next_v128++, v_tmp2 = next_v128++, v_peak = next_v128++, v_scalar = next_v128++;
+    const v128_locals_count = next_v128 - next_i64;
 
     // refill i64 bit_buf from payload bytes until bit_cnt >= needed
     function refillBits(neededInstr: number[]): number[] {
@@ -978,13 +940,20 @@ function buildDecodeBody(): number[] {
         ...CI32(0), ...SET(ch),
         ...BLOCK, ...LOOP, // dimension loop
 
-        // read block header (21 bits)
-        ...refillBits([...CI32(21)]),
+        // read block header (37 bits)
+        ...refillBits([...CI32(37)]),
         ...extractBits([...CI32(8)]), ...SET(K),
         ...GET(K), ...CI32(24), ...SHL, ...CI32(24), ...SHR_s, ...SET(K),
         ...extractBits([...CI32(8)]), ...SET(G),
         ...GET(G), ...CI32(24), ...SHL, ...CI32(24), ...SHR_s, ...SET(G),
         ...extractBits([...CI32(5)]), ...SET(W_curr),
+        ...extractBits([...CI32(16)]), ...SET(z), // read s31_anchor (zigzag encoded delta from prev1)
+        ...GET(z), ...CI32(1), ...AND, ...CI32(0), ...EQ, ...IF,
+        ...GET(z), ...CI32(1), ...SHR_u, ...SET(s31_anchor),
+        ...ELSE,
+        ...GET(z), ...CI32(1), ...SHR_u, ...CI32(-1), ...XOR, ...SET(s31_anchor),
+        ...END,
+        ...GET(s31_anchor), ...GET(prev1), ...ADD, ...SET(s31_anchor),
 
         // convert K, G, prev1, prev2 to float (K and G scaled by 1/32)
         ...GET(K), ...F32_CONVERT_I32_S, ...F32_CONST(32.0), ...F32_DIV, ...SET(K_float),
@@ -992,39 +961,30 @@ function buildDecodeBody(): number[] {
         ...GET(prev1), ...F32_CONVERT_I32_S, ...SET(prev1_f),
         ...GET(prev2), ...F32_CONVERT_I32_S, ...SET(prev2_f),
 
-        // decode samples
+        // decode samples using Symmetric Bridge
         ...GET(block_start), ...SET(i),
-        ...BLOCK, ...LOOP, // decode samples loop
+        ...BLOCK, ...LOOP,
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
         ...GET(W_curr), ...CI32(0), ...GT_u, ...IF,
-        ...refillBits([...GET(W_curr)]),
-        ...extractBits([...GET(W_curr)]), ...SET(z),
-        ...GET(z), ...CI32(1), ...AND, ...CI32(0), ...EQ, ...IF,
-        ...GET(z), ...CI32(1), ...SHR_u, ...SET(delta),
-        ...ELSE,
-        ...GET(z), ...CI32(1), ...SHR_u, ...CI32(-1), ...XOR, ...SET(delta),
-        ...END,
-        ...ELSE,
-        ...CI32(0), ...SET(delta),
-        ...END,
+        ...refillBits([...GET(W_curr)]), ...extractBits([...GET(W_curr)]), ...SET(z),
+        ...GET(z), ...CI32(1), ...AND, ...CI32(0), ...EQ, ...IF, ...GET(z), ...CI32(1), ...SHR_u, ...SET(delta), ...ELSE, ...GET(z), ...CI32(1), ...SHR_u, ...CI32(-1), ...XOR, ...SET(delta), ...END,
+        ...ELSE, ...CI32(0), ...SET(delta), ...END,
 
-        // prediction: (K * prev1 >> 5) - (G * prev2 >> 5), bit-exact with encoder
+        // Symmetric Mesh Predictor
+        ...GET(block_end), ...GET(block_start), ...SUB, ...CI32(1), ...SUB, ...SET(temp),
+        ...GET(temp), ...CI32(1), ...LT_s, ...IF, ...CI32(1), ...SET(temp), ...END,
+
         ...GET(K), ...GET(prev1), ...MUL, ...CI32(5), ...SHR_s,
-        ...GET(G), ...GET(prev2), ...MUL, ...CI32(5), ...SHR_s, ...SUB, ...SET(i32_val), // temp pred in i32_val
+        ...GET(G), ...GET(prev2), ...MUL, ...CI32(5), ...SHR_s, ...SUB, ...SET(pred_int),
+        ...GET(s31_anchor), ...GET(pred_int), ...SUB, ...GET(i), ...GET(block_start), ...SUB, ...MUL, ...GET(temp), ...DIV, ...GET(pred_int), ...ADD, ...SET(pred_int),
 
-        // reconstruction: pred + delta
-        ...GET(i32_val), ...GET(delta), ...ADD, ...SET(i32_val),
-
-        // cache rebuilt sample for stereo reconstruction (0=Mid, 1=Side)
+        ...GET(pred_int), ...GET(delta), ...ADD, ...SET(i32_val),
         ...CI32(DEC_STATE_ADDR + 256), ...GET(ch), ...CI32(128), ...MUL, ...GET(i), ...GET(block_start), ...SUB, ...CI32(2), ...SHL, ...ADD, ...ADD, ...GET(i32_val), ...STORE32(2, 0),
 
-        // update state for next sample
-        ...GET(prev1), ...SET(prev2),
-        ...GET(i32_val), ...SET(prev1),
-
+        ...GET(prev1), ...SET(prev2), ...GET(i32_val), ...SET(prev1),
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END, // decode samples loop
+        ...END, ...END,
 
         // increment channel
         ...GET(ch), ...CI32(1), ...ADD, ...SET(ch),
@@ -1076,10 +1036,10 @@ function buildDecodeBody(): number[] {
         ...GET(numSamples),
     ];
     return funcBody([
-        { count: 48, type: I32 },  // locals 5..52
-        { count: 7, type: F32 },   // locals 53..59
-        { count: 1, type: I64 },   // local 60
-        { count: 8, type: V128 },  // locals 61..68
+        { count: i32_locals_count, type: I32 },
+        { count: f32_locals_count, type: F32 },
+        { count: i64_locals_count, type: I64 },
+        { count: v128_locals_count, type: V128 },
     ], body);
 }
 
