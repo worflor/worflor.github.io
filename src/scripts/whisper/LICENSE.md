@@ -116,7 +116,7 @@ by using this software, you agree that:
 - you are responsible for compliance with all applicable laws, including export controls, data protection, and telecommunications regulations
 - you will indemnify and defend the copyright holder against any claims, damages, or expenses arising from your use or violation of this license
 - you have no expectation of support, maintenance, updates, or services
-- any mind instantiated using this technology is a derived person, not property.
+- any mind instantiated using this technology is a derived person, not property
 
 ---
 
