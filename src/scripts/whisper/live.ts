@@ -9,7 +9,8 @@
  *   - ECDH P-256 key exchange (ephemeral, wiped after derivation)
  *   - Full Double Ratchet forward secrecy (Signal protocol pattern)
  *   - AES-256-GCM per-message encryption (32-byte keys, 12-byte random nonces)
- *   - HMAC-SHA256 symmetric chain ratchet + HKDF root chain ratchet
+ *   - Whisper Loop (Kizuna membrane): unified ratchet+codec, HKDF+AES-CTR symmetric chain
+ *     the ratchet IS the codec — compressed traffic is opaque without the chain key.
  * SDP offers/answers are compressed and exchanged manually (no signaling server).
  */
 
@@ -25,10 +26,19 @@ import {
   TE,
   TD,
   hkdf,
-  kdfChainDirect,
   aesGcmEncrypt,
   aesGcmDecrypt,
 } from "./live-crypto";
+
+import {
+  type LoopState,
+  loopInit,
+  loopStep,
+  loopEncode,
+  loopDecode,
+  loopWipe,
+  loopExpand,
+} from "./live-loop";
 import { sdpToCode, codeToSdp } from "./live-sdp";
 import { encodeCtrl, decodeCtrl } from "./live-ctrl";
 
@@ -38,8 +48,6 @@ import {
   dhRatchetStep,
   initRatchetAsOfferer,
   initRatchetAsReceiver,
-  skipMessageKeys,
-  trySkippedKey,
 } from "./live-ratchet";
 
 import {
@@ -169,9 +177,12 @@ export const FINGERPRINT_EMOJI = [
   "\u{1F319}", // crescent moon
   "\u{1F315}", // full moon
   "\u{1F311}", // new moon
-  "\u{1F30C}", // milky way
   "\u{1F525}", // fire
   "\u{1F48E}", // gem
+  "\u{1F30A}", // wave
+  "\u{26A1}",  // lightning
+  "\u{2744}\uFE0F",  // snowflake
+  "\u{1F308}", // rainbow
   // knightly & castle
   "\u{1F3F0}", // castle
   "\u{2694}\uFE0F",  // crossed swords
@@ -199,18 +210,14 @@ export const FINGERPRINT_EMOJI = [
   "\u{1F41D}", // bee
   "\u{1F40C}", // snail
   "\u{1F40D}", // snake
-  // sky & weather
-  "\u{1F30A}", // wave
-  "\u{26A1}",  // lightning
-  "\u{2744}\uFE0F",  // snowflake
-  "\u{1F308}", // rainbow
   // hearts
   "\u{1F49C}", // purple heart
   "\u{1F5A4}", // black heart
   "\u{1F496}", // sparkling heart
   "\u{1F49D}", // heart with ribbon
-  // allowed
+  // other
   "\u{1F1E8}\u{1F1E6}", // canada
+  "\u{1F5FF}", // moai (stonehenge)
   "\u{1F484}", // lipstick
   "\u{1FAB7}", // biting lip
   "\u{1F346}", // eggplant
@@ -251,11 +258,13 @@ export const WHISPER_LIVE_RTC_LOCAL_ONLY: RTCConfiguration = {
 /** STUN config (opt-in). Multiple servers for redundancy. */
 export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   iceServers: [
-    { urls: [
-      "stun:stun.l.google.com:19302",
-      "stun:stun1.l.google.com:19302",
-      "stun:stun.cloudflare.com:3478",
-    ] },
+    {
+      urls: [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302",
+        "stun:stun.cloudflare.com:3478",
+      ]
+    },
   ],
   // Keep pre-gathering modest to reduce load on shared STUN infra.
   // This remains a good reliability/latency balance for chat setup.
@@ -266,7 +275,7 @@ export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
 const ICE_GATHER_TIMEOUT = 8000;
 
 const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
-const HEARTBEAT_TIMEOUT  = 45_000;        // drop peer after 45s silence
+const HEARTBEAT_TIMEOUT = 45_000;        // drop peer after 45s silence
 
 const LIVE_MSG = {
   KEY_EXCHANGE: 0x10,
@@ -291,18 +300,18 @@ function errorMessage(err: unknown, fallback = "unknown"): string {
 }
 
 const VALID_TRANSITIONS: Record<LiveState, readonly LiveState[]> = {
-  "idle":               ["offering", "answering", "error"],
-  "offering":           ["waiting-for-answer", "error", "disconnected"],
+  "idle": ["offering", "answering", "error"],
+  "offering": ["waiting-for-answer", "error", "disconnected"],
   "waiting-for-answer": ["connecting", "error", "disconnected"],
-  "answering":          ["connecting", "error", "disconnected"],
-  "connecting":         ["handshaking", "error", "disconnected"],
-  "handshaking":        ["verifying", "error", "disconnected"],
-  "verifying":          ["live", "silent", "error", "disconnected"],
-  "live":               ["silent", "recovering", "disconnected", "error"],
-  "silent":             ["live", "recovering", "disconnected", "error"],
-  "recovering":         ["live", "silent", "disconnected", "error"],
-  "disconnected":       ["idle"],
-  "error":              ["idle"],
+  "answering": ["connecting", "error", "disconnected"],
+  "connecting": ["handshaking", "error", "disconnected"],
+  "handshaking": ["verifying", "error", "disconnected"],
+  "verifying": ["live", "silent", "error", "disconnected"],
+  "live": ["silent", "recovering", "disconnected", "error"],
+  "silent": ["live", "recovering", "disconnected", "error"],
+  "recovering": ["live", "silent", "disconnected", "error"],
+  "disconnected": ["idle"],
+  "error": ["idle"],
 };
 
 export class WhisperLiveSession {
@@ -322,6 +331,14 @@ export class WhisperLiveSession {
   private nSentTotal = 0;
   /** Total messages received this session — mirrors peer's nSentTotal. */
   private nRecvTotal = 0;
+
+  // Kizuna membrane: loop states for send and receive directions.
+  // initialized from ECDH-derived chain keys. reinit on each DH ratchet step.
+  private loopStateSend: LoopState | null = null;
+  private loopStateRecv: LoopState | null = null;
+  // skipped message keys (loop-derived, for out-of-order delivery recovery).
+  // dead code with ordered SCTP DataChannels — stored for correctness.
+  private skippedLoopKeys: Map<string, Uint8Array> = new Map();
 
   /** Ephemeral ECDH private key — exists only during handshake, then wiped */
   private ephPrivateKey: CryptoKey | null = null;
@@ -427,7 +444,7 @@ export class WhisperLiveSession {
 
   /** Whether this side created the session (offerer). Cryptographically established during handshake. */
   get isHost(): boolean { return this.isOfferer; }
-  
+
   /** Retrieve the 256-bit shared session secret as a Uint32Array for the WebAssembly audio codec. */
   get audioKey(): Uint32Array | undefined {
     if (!this.sharedSecret) return undefined;
@@ -587,7 +604,7 @@ export class WhisperLiveSession {
   /** Whether we're in a pre-live setup state where ICE failures are expected. */
   private isSetupState(): boolean {
     return this._state === "connecting" || this._state === "answering" ||
-           this._state === "waiting-for-answer" || this._state === "offering";
+      this._state === "waiting-for-answer" || this._state === "offering";
   }
 
   /** Start the grace period for setup ICE failures (both offerer and answerer). */
@@ -620,7 +637,7 @@ export class WhisperLiveSession {
       this.connectingGraceTimer = null;
       if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
       if (this.isLiveState() ||
-          this._state === "disconnected" || this._state === "error") return;
+        this._state === "disconnected" || this._state === "error") return;
       // Check current state — ICE may have recovered during the wait
       const iceState = pc.iceConnectionState;
       if (iceState === "connected" || iceState === "completed") return;
@@ -758,8 +775,8 @@ export class WhisperLiveSession {
 
     dc.onclose = () => {
       if (this.isLiveState() ||
-          this._state === "recovering" ||
-          this._state === "verifying" || this._state === "handshaking") {
+        this._state === "recovering" ||
+        this._state === "verifying" || this._state === "handshaking") {
         this.onLog("peer disconnected");
         this.setState("disconnected");
         this.cleanupConnection();
@@ -890,6 +907,10 @@ export class WhisperLiveSession {
     if (!this.isOfferer) {
       this.ratchetState = await initRatchetAsReceiver(this.sharedSecret, peerRatchetPubKey);
 
+      // answerer has chainKeySend immediately; chainKeyRecv is null until first DH step.
+      // init loopStateSend now; loopStateRecv will be set by the first incoming DH ratchet.
+      this.loopStateSend = loopInit(await loopExpand(this.ratchetState.chainKeySend!));
+
       if (this.dc && this.dc.readyState === "open") {
         this.send(LIVE_MSG.RATCHET_INIT, this.ratchetState.dhSelf.publicKey);
         this.onLog("encryption ready");
@@ -901,6 +922,9 @@ export class WhisperLiveSession {
     } else {
       if (this.ratchetState) {
         await dhRatchetStep(this.ratchetState, peerRatchetPubKey);
+
+        // both chain keys are now set after the DH step — init both loop states.
+        await this.loopReinitFromChainKeys();
         this.onLog("encryption ready");
         // Confirm only after dhRatchetStep — chainKeySend is now initialized.
         if (this.autoConfirm && this._state === "verifying") {
@@ -982,39 +1006,44 @@ export class WhisperLiveSession {
       const header = parseHeader(complete);
       const pubKeyHex = toHex(header.pubKey);
 
-      let messageKey = trySkippedKey(this.ratchetState, pubKeyHex, header.counter);
+      // try loop-derived skipped key first (out-of-order recovery, dead code with ordered SCTP)
+      let messageKey = this.tryLoopSkippedKey(pubKeyHex, header.counter);
       let didDHRatchet = false;
 
       if (!messageKey) {
-        // Check if this is a new DH ratchet key
+        // check if this is a new DH ratchet key
         if (pubKeyHex !== this.ratchetState.dhPeerHex) {
-          // New DH ratchet — skip any remaining messages in current chain
-          if (this.ratchetState.chainKeyRecv) {
-            await skipMessageKeys(this.ratchetState, header.prevChainLen);
+          // new DH ratchet — skip remaining messages in current receive chain
+          if (this.ratchetState.chainKeyRecv && this.loopStateRecv) {
+            await this.skipMessagesWithLoop(header.prevChainLen);
           }
           await dhRatchetStep(this.ratchetState, header.pubKey);
+          // reinit both loop states from the new DH-derived chain keys
+          await this.loopReinitFromChainKeys();
           didDHRatchet = true;
         }
 
-        await skipMessageKeys(this.ratchetState, header.counter);
+        // advance loop and ratchet counter to the message's position
+        await this.skipMessagesWithLoop(header.counter);
 
-        if (!this.ratchetState.chainKeyRecv) throw new Error("No receiving chain key");
-        const oldRecvChainKey = this.ratchetState.chainKeyRecv;
-        const [newChainKey, mk] = await kdfChainDirect(oldRecvChainKey);
-        oldRecvChainKey.fill(0); // wipe old chain key
-        this.ratchetState.chainKeyRecv = newChainKey;
+        if (!this.loopStateRecv) throw new Error("No receiving loop state");
+
+        // derive this message's key via loopStep (advances chain + block8D, not counts)
+        const { next: nextLoopRecv, messageKey: mk } = await loopStep(this.loopStateRecv);
+        loopWipe(this.loopStateRecv);
+        this.loopStateRecv = nextLoopRecv;
         this.ratchetState.nRecv++;
         messageKey = mk;
       }
 
       const aad = complete.subarray(0, HEADER_SIZE);
-      let plaintext: Uint8Array;
+      let compressedPayload: Uint8Array;
       try {
-        plaintext = await aesGcmDecrypt(messageKey, header.ciphertext, header.nonce, aad);
+        compressedPayload = await aesGcmDecrypt(messageKey, header.ciphertext, header.nonce, aad);
       } catch (decryptErr) {
         messageKey.fill(0);
-        // If a DH ratchet step was performed and decrypt still fails, the ratchet
-        // is structurally broken (mismatched keys). Deterministic — disconnect.
+        // if a DH ratchet step was performed and decrypt still fails, the ratchet
+        // is structurally broken (mismatched keys). deterministic — disconnect.
         if (didDHRatchet) {
           this.onLog("decryption failed, encryption state unrecoverable. disconnecting");
           this.setState("error", "Encryption desync, session cannot recover");
@@ -1024,7 +1053,19 @@ export class WhisperLiveSession {
         throw decryptErr;
       }
       messageKey.fill(0); // wipe message key after use
-      this.consecutiveDecryptFailures = 0; // reset on successful decrypt
+
+      // decompress: first 4 bytes are decodedLen (LE uint32), rest is loop-encoded plaintext
+      if (compressedPayload.length < 4) throw new Error("ciphertext too short");
+      const decodedLen = new DataView(
+        compressedPayload.buffer, compressedPayload.byteOffset,
+      ).getUint32(0, true);
+      const compressed = compressedPayload.subarray(4);
+
+      if (!this.loopStateRecv) throw new Error("No receiving loop state after step");
+      const { decoded: plaintext, next: afterDecode } = loopDecode(this.loopStateRecv, compressed, decodedLen);
+      this.loopStateRecv = afterDecode;
+
+      this.consecutiveDecryptFailures = 0; // reset on successful decrypt+decompress
 
       // Global msgId — must increment for ALL messages (incl. campfire) to mirror peer's nSentTotal.
       const msgId = this.nRecvTotal * 2 + (this.isOfferer ? 1 : 0);
@@ -1072,6 +1113,49 @@ export class WhisperLiveSession {
         this.cleanupConnection();
       }
     }
+  }
+
+  /* ── Kizuna membrane helpers ─────────────────────────────── */
+
+  // reinitialize both loop states from the current ratchet chain keys.
+  // called after each DH ratchet step to give the codec layer break-in recovery.
+  private async loopReinitFromChainKeys(): Promise<void> {
+    if (!this.ratchetState) return;
+    if (this.loopStateSend) { loopWipe(this.loopStateSend); this.loopStateSend = null; }
+    if (this.loopStateRecv) { loopWipe(this.loopStateRecv); this.loopStateRecv = null; }
+    if (this.ratchetState.chainKeySend) {
+      this.loopStateSend = loopInit(await loopExpand(this.ratchetState.chainKeySend));
+    }
+    if (this.ratchetState.chainKeyRecv) {
+      this.loopStateRecv = loopInit(await loopExpand(this.ratchetState.chainKeyRecv));
+    }
+  }
+
+  // advance the receive loop state and ratchet counter to `until`, storing
+  // loop-derived message keys for potential out-of-order recovery.
+  // with ordered SCTP DataChannels this loop body never executes in practice.
+  private async skipMessagesWithLoop(until: number): Promise<void> {
+    if (!this.ratchetState || !this.loopStateRecv) return;
+    if (until - this.ratchetState.nRecv > 256) throw new Error("Too many skipped messages");
+    const pubHex = this.ratchetState.dhPeerHex;
+    while (this.ratchetState.nRecv < until) {
+      const counter = this.ratchetState.nRecv;
+      const { next: nextLoop, messageKey } = await loopStep(this.loopStateRecv);
+      // store for possible out-of-order recovery (matches encryptAndSend's loopStep-derived keys)
+      this.skippedLoopKeys.set(`${pubHex}:${counter}`, messageKey);
+      loopWipe(this.loopStateRecv);
+      this.loopStateRecv = nextLoop;
+      this.ratchetState.nRecv++;
+    }
+  }
+
+  // retrieve and remove a previously skipped loop-derived message key. O(1) lookup.
+  private tryLoopSkippedKey(pubHex: string, nr: number): Uint8Array | null {
+    const key = `${pubHex}:${nr}`;
+    const mk = this.skippedLoopKeys.get(key);
+    if (!mk) return null;
+    this.skippedLoopKeys.delete(key);
+    return mk;
   }
 
   /* ── Sending ────────────────────────────────────────────── */
@@ -1253,17 +1337,26 @@ export class WhisperLiveSession {
   private async encryptAndSend(plaintext: Uint8Array, flags: number): Promise<number> {
     if (!this.ratchetState || !this.dc) return 0;
 
-    if (!this.ratchetState.chainKeySend) {
-      throw new Error("No sending chain, ratchet not fully initialized");
+    if (!this.loopStateSend) {
+      throw new Error("No sending loop state, ratchet not fully initialized");
     }
 
     const msgId = this.nSentTotal * 2 + (this.isOfferer ? 0 : 1);
     this.nSentTotal++;
 
-    const oldSendChainKey = this.ratchetState.chainKeySend;
-    const [newChainKey, messageKey] = await kdfChainDirect(oldSendChainKey);
-    oldSendChainKey.fill(0); // wipe old chain key
-    this.ratchetState.chainKeySend = newChainKey;
+    // derive message key via loopStep (advances chain + block8D)
+    const { next: nextLoopSend, messageKey } = await loopStep(this.loopStateSend);
+    loopWipe(this.loopStateSend);
+    this.loopStateSend = nextLoopSend;
+
+    // compress plaintext with the loop codec (advances counts)
+    const { encoded: compressed, next: afterEncode } = loopEncode(this.loopStateSend, plaintext);
+    this.loopStateSend = afterEncode;
+
+    // prefix compressed payload with decodedLen so the receiver knows output size
+    const decodedLenBytes = new Uint8Array(4);
+    new DataView(decodedLenBytes.buffer).setUint32(0, plaintext.length, true);
+    const compressedPayload = concatBytes(decodedLenBytes, compressed);
 
     const nonce = randomBytes(12);
     const counter = this.ratchetState.nSend;
@@ -1277,7 +1370,7 @@ export class WhisperLiveSession {
       nonce,
     );
 
-    const ciphertext = await aesGcmEncrypt(messageKey, plaintext, nonce, header);
+    const ciphertext = await aesGcmEncrypt(messageKey, compressedPayload, nonce, header);
     messageKey.fill(0); // wipe message key after use
 
     const wireMessage = concatBytes(header, ciphertext);
@@ -1448,6 +1541,11 @@ export class WhisperLiveSession {
       pc.onicegatheringstatechange = pc.ondatachannel = null;
       try { pc.close(); } catch { /* ignore */ }
     }
+
+    if (this.loopStateSend) { loopWipe(this.loopStateSend); this.loopStateSend = null; }
+    if (this.loopStateRecv) { loopWipe(this.loopStateRecv); this.loopStateRecv = null; }
+    for (const mk of this.skippedLoopKeys.values()) mk.fill(0);
+    this.skippedLoopKeys.clear();
 
     if (this.ratchetState) {
       this.ratchetState.rootKey.fill(0);

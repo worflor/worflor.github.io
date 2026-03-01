@@ -1229,7 +1229,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       flarePhraseInput.disabled = busy || flareActive;
     }
 
-    opts.funnelCampfireBtn.disabled = busy || !chatVisible;
+    opts.funnelCampfireBtn.disabled = true; // hard-disabled for now
 
     const modeSwitchWrap = modeSwitchBtn?.closest(".wl-mode-switch") as HTMLElement | null;
     if (modeSwitchWrap) {
@@ -2621,6 +2621,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
         // Ignore clicks on file attachments
         if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
+        // Ignore clicks on timestamps (which toggle time format)
+        if ((e.target as HTMLElement).closest(".wl-msg-time")) return;
         const isOpen = div.hasAttribute("data-shelf-open");
         // Close any globally open shelf
         const prev = opts.chatMessages.querySelector("[data-shelf-open]");

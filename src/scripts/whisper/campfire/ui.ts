@@ -515,6 +515,8 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
         if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
         // Ignore clicks on file attachments
         if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
+        // Ignore clicks on timestamps
+        if ((e.target as HTMLElement).closest(".wl-msg-time")) return;
         const isOpen = div.hasAttribute("data-shelf-open");
         const prev = opts.chatMessages.querySelector("[data-shelf-open]");
         if (prev) prev.removeAttribute("data-shelf-open");

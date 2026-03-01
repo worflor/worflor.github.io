@@ -659,8 +659,14 @@ const seo = {
             <h2 class="wl-head-title">
               Whisper Live <span
                 class="wl-e2e-badge"
+                role="note"
+                tabindex="0"
                 aria-label="end-to-end encrypted, peer-to-peer"
-                ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e</span
+                ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e<span
+                  class="wl-e2e-tip"
+                  role="tooltip"
+                  >encrypted peer-to-peer by a temporal Kizuna bond</span
+                ></span
               >
             </h2>
             <div class="wl-fp-wrap">
@@ -702,7 +708,8 @@ const seo = {
               <button
                 id="wl-funnel-campfire"
                 type="button"
-                class="whisper-mini-btn cf-head-btn">start a campfire</button
+                class="whisper-mini-btn cf-head-btn"
+                disabled>start a campfire</button
               >
               <button
                 id="wl-disconnect"
@@ -2007,11 +2014,14 @@ const seo = {
           not from a company. not from a government. not even because a lack of
           bandwidth. <strong>nothing</strong>. a passphrase becomes your
           gateway. the browser becomes your identity. messages, calls, video --
-          ALL encrypted, double-ratcheted, efficient, and direct.
+          ALL encrypted, bonded, efficient, and direct.
         </p>
         <p class="insights-text">
           audio and video powered by Whisper Harmonic and Whisper Lumen media
-          codecs.
+          codecs, all encrypted with a Whisper Kizuna bond. what is that? it's
+          encryption at a level that makes it impossible to decrypt without
+          witnissing the handshake itself. it's the best way to keep secrets
+          safe in a world that wants to know everything.
         </p>
         <p class="insights-text">
           hide a secret inside an ordinary file if the situations arise;
@@ -3484,6 +3494,9 @@ const seo = {
       border-color var(--duration-normal) var(--ease-out),
       border-radius var(--duration-normal) var(--ease-out),
       box-shadow var(--duration-normal) var(--ease-out);
+
+    /* Surgical fix: allow tooltip to overflow the panel */
+    overflow: visible !important;
   }
 
   .wl-head-title-row {
@@ -3493,6 +3506,9 @@ const seo = {
     min-width: 0;
     grid-column: 1;
     grid-row: 1;
+
+    /* Ensure tooltip isn't clipped by the title row flexbox */
+    overflow: visible;
   }
 
   .wl-head-title {
@@ -3517,6 +3533,85 @@ const seo = {
     padding: calc(var(--space-xs) * 0.15) calc(var(--space-xs) * 0.6);
     vertical-align: middle;
     user-select: none;
+    position: relative;
+    cursor: default;
+    /* Strictly inert when not connected */
+    pointer-events: none;
+  }
+
+  .whisper-op-live.wl-connected .wl-e2e-badge,
+  .whisper-op-live.wl-recovering .wl-e2e-badge,
+  .whisper-op-live.wl-preview .wl-e2e-badge {
+    cursor: help;
+    pointer-events: auto;
+  }
+
+  .wl-e2e-tip {
+    --_tip-gap: calc(var(--space-xs) * 0.8);
+    --_tip-arrow: 5px;
+    --_tip-slide: 4px;
+
+    position: absolute;
+    bottom: calc(100% + var(--_tip-gap) + var(--_tip-arrow));
+    left: 50%;
+    transform: translateX(-50%) translateY(var(--_tip-slide));
+    width: max-content;
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.9);
+    background: var(--color-bg);
+    background-image: var(--surface-sheen);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+    backdrop-filter: blur(16px) saturate(1.2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    box-shadow:
+      var(--edge-highlight),
+      0 8px 32px rgba(0, 0, 0, 0.5);
+    color: var(--color-text-muted);
+    font-size: calc(var(--text-sm) * 0.85);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    line-height: 1.4;
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      opacity var(--duration-normal) var(--ease-out),
+      transform var(--duration-normal) var(--ease-out);
+    z-index: 1000;
+    white-space: nowrap;
+    display: none;
+  }
+
+  .wl-e2e-tip::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: var(--_tip-arrow) solid transparent;
+    border-top-color: var(--color-border);
+  }
+
+  /* Hover/Focus states (only when active/preview) */
+  .whisper-op-live.wl-connected .wl-e2e-badge:hover .wl-e2e-tip,
+  .whisper-op-live.wl-recovering .wl-e2e-badge:hover .wl-e2e-tip,
+  .whisper-op-live.wl-preview .wl-e2e-badge:hover .wl-e2e-tip,
+  .whisper-op-live.wl-connected .wl-e2e-badge:focus-within .wl-e2e-tip,
+  .whisper-op-live.wl-recovering .wl-e2e-badge:focus-within .wl-e2e-tip,
+  .whisper-op-live.wl-preview .wl-e2e-badge:focus-within .wl-e2e-tip,
+  .whisper-op-live.wl-connected .wl-e2e-badge.wl-e2e-tip--open .wl-e2e-tip,
+  .whisper-op-live.wl-recovering .wl-e2e-badge.wl-e2e-tip--open .wl-e2e-tip,
+  .whisper-op-live.wl-preview .wl-e2e-badge.wl-e2e-tip--open .wl-e2e-tip {
+    display: block;
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wl-e2e-tip {
+      transition: none;
+    }
   }
 
   .wl-e2e-dot {
@@ -4616,7 +4711,9 @@ const seo = {
     display: flex;
     align-items: center;
     gap: 0.22rem;
-    padding: 0 0.2rem;
+    padding: 0.4rem 0.2rem;
+    margin-top: -0.4rem;
+    margin-bottom: -0.4rem;
     max-height: 0;
     opacity: 0;
     overflow: hidden;
@@ -4630,7 +4727,7 @@ const seo = {
 
   /* Shelf open: slides down from under the bubble */
   .wl-chat-messages :global([data-shelf-open] .wl-react-shelf) {
-    max-height: 2.6rem;
+    max-height: 3.4rem;
     opacity: 1;
     transform: translateY(0);
     pointer-events: auto;
@@ -6728,11 +6825,36 @@ const seo = {
     }
 
     if (m === "embed") {
-      p.dataset.carrier = c === "file" || c === "url" ? c : "file";
       var radios = p.querySelectorAll('input[name="ws-carrier-type"]');
       for (var j = 0; j < radios.length; j++) {
         radios[j].checked = radios[j].value === p.dataset.carrier;
       }
     }
+
+    // P2P/E2E Tooltip mobile interaction
+    var badge = p.querySelector(".wl-e2e-badge");
+    if (badge) {
+      badge.addEventListener("pointerdown", function (e) {
+        e.stopPropagation();
+        var el = e.currentTarget;
+        var live = el.closest(".whisper-op-live");
+        if (!live) return;
+
+        var isConnected =
+          live.classList.contains("wl-connected") ||
+          live.classList.contains("wl-recovering") ||
+          live.classList.contains("wl-preview");
+
+        if (isConnected) {
+          el.classList.toggle("wl-e2e-tip--open");
+        }
+      });
+    }
+
+    document.addEventListener("pointerdown", function (e) {
+      if (badge && !badge.contains(e.target)) {
+        badge.classList.remove("wl-e2e-tip--open");
+      }
+    });
   })();
 </script>

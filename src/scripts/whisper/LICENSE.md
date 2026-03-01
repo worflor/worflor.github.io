@@ -1,17 +1,19 @@
 # Whisper Protocol License
 
-**version 1.0, February 27, 2026**
+**version 1.0, February 28, 2026**
 
 this license applies to the Whisper Protocol and its components:
 
-- **Whisper Protocol**, the encrypted communication system and its specification
-- **Whisper Logos**, 0D entropy codec (`live-wasm-logos.ts`)
-- **Whisper Harmonic**, 1D audio codec (`live-wasm-audio.ts`)
-- **Whisper Lumen**, 2D video codec (`live-wasm-video.ts`, `video-simd.ts`, `video-simd-bin.ts`)
-- **Whisper Spatial**, 3D volumetric codec (`live-wasm-spatial.ts`)
-- **Whisper Akasha**, 4D spatiotemporal codec (`live-wasm-akasha.ts`)
-- **Whisper Kū**, 5D plenoptic codec (`live-wasm-ku.ts`)
-- **Whisper Octonion**, 8D octonion codec (`live-wasm-octonion.ts`)
+- **Whisper Protocol** - the encrypted communication system and its specification
+- **Whisper Logos** - 0D entropy codec (`live-wasm-logos.ts`)
+- **Whisper Harmonic** - 1D audio codec (`live-wasm-audio.ts`)
+- **Whisper Lumen** - 2D video codec (`live-wasm-video.ts`, `video-simd.ts`, `video-simd-bin.ts`)
+- **Whisper Spatial** - 3D volumetric codec (`live-wasm-spatial.ts`)
+- **Whisper Akasha** - 4D spatiotemporal codec (`live-wasm-akasha.ts`)
+- **Whisper Kū** - 5D plenoptic codec (`live-wasm-ku.ts`)
+- **Whisper Loup** - 8D self codec (`live-wasm-octonion.ts`)
+- **Whisper Kizuna** - 16D membrane codec (`live-wasm-16d.ts`)
+
 - all supporting files, documentation, and protocol specifications in this directory
 
 ---
