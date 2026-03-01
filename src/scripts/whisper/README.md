@@ -13,7 +13,7 @@ Whisper Protocol
 ├── Whisper Akasha     - 4D spatiotemporal codec (15-neighbour quaternion Möbius predictor)
 ├── Whisper Kū         - 5D plenoptic codec (31-neighbour hypercube Möbius predictor)
 ├── Whisper Loup       - 8D self codec (255-neighbour octonion Möbius predictor)
-├── Whisper Kizuna     - 16D membrane codec (65535-neighbour sedenion lattice predictor + spatial witniss handshake primitive)
+├── Whisper Kizuna     - 16D membrane codec (65535-neighbour sedenion lattice predictor + spectral witniss handshake primitive)
 ├── Ratcheting layer   - per-frame cryptographic forward secrecy
 ├── Async messaging    - store-and-forward encrypted messages
 └── Live + Campfire    - real-time encrypted messaging
@@ -104,7 +104,8 @@ P = Σ_{∅≠S⊆{0..15}} (−1)^(|S|+1) · block[bit-mask(S)]
 - sedenions (R¹⁶) have zero divisors — the normed division algebra sequence closes at octonions (8D)
 - the Möbius error = n-form holds for any n regardless of algebraic structure
 
-**handshake primitive** (`handshake16D`):
+**spectral handshake primitive** (`handshake16D`):
+
 ```
 ECDH shared secret → HKDF(65536 bytes) → 16D block
                             ↓
@@ -121,9 +122,10 @@ ECDH shared secret → HKDF(65536 bytes) → 16D block
 - **0D↔16D duality**: 65535 bit-tree contexts for 16-bit symbols = 65535 Möbius neighbors
   both index the Boolean lattice Λ*(R¹⁶). chain rule over bit probabilities = spatial inclusion-exclusion.
 - `BitContextModel16`: 65535-context adaptive coder for 16-bit symbols (512KB counts)
-- 72/72 tests — WHT identity, direct boundary theorem (all 65535 boundary masks), binomial structure, predictor exactness, round-trip, handshake, avalanche, clamping, error handling, large stress
+- 72/72 tests — WHT identity, direct boundary theorem (all 65535 boundary masks), binomial structure, predictor exactness, round-trip, spectral handshake, avalanche, clamping, error handling, large stress
 
 **Whisper Loop** (`live-loop.ts`, test spec: `test-loop.ts`) — ratchet unified with codec:
+
 ```
 LoopState: { chain (32B), counts (0D), block8D (8D), step }
 
@@ -137,6 +139,7 @@ loopStep():  expandChain → HKDF(chain, step, 'kizuna-expand-v1') → AES-CTR(6
 loopEncode/loopDecode: BitContextModelM compression, counts evolve identically on both sides
 loopExpand: HKDF(key, 0x00..., 'kizuna-init-v1') → AES-CTR(65536B) — seeds loopInit per DH period
 ```
+
 - the ratchet IS the codec. the codec IS the ratchet.
 - fully integrated into live.ts — replaces the symmetric chain KDF for all per-message derivation
 - KDF: HKDF-SHA256 + AES-CTR (WebCrypto). loop states reinit from ECDH chain keys on each DH step.
