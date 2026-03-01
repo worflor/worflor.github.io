@@ -359,6 +359,9 @@ export class WhisperLiveSession {
   // Handshake timeout — reuses HEARTBEAT_TIMEOUT; cancelled on confirmFingerprint or cleanup
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Nudge timer — logs "awaiting fingerprint confirmation" if the user hasn't acted after 8s
+  private fingerprintNudgeTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Connection recovery
   private stateBeforeRecovery: "live" | "silent" | null = null;
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -884,6 +887,10 @@ export class WhisperLiveSession {
       const fingerprint = await deriveFingerprint(sharedSecret);
       this.onLog(`fingerprint: ${fingerprint}`);
       this.onFingerprint(fingerprint);
+      this.fingerprintNudgeTimer = setTimeout(() => {
+        this.fingerprintNudgeTimer = null;
+        if (this._state === "verifying") this.onLog("awaiting fingerprint confirmation");
+      }, 8000);
 
       if (this.isOfferer) {
         const dhSelf = await generateDHKeyPair();
@@ -963,6 +970,7 @@ export class WhisperLiveSession {
       case LIVE_MSG.FINGERPRINT_CONFIRMED:
         this.onLog("peer confirmed fingerprint");
         if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
+        if (this.fingerprintNudgeTimer) { clearTimeout(this.fingerprintNudgeTimer); this.fingerprintNudgeTimer = null; }
         if (this._state === "verifying") {
           this.startHeartbeat();
           this.setState(this.transportMode === "silent" ? "silent" : "live");
@@ -1026,6 +1034,7 @@ export class WhisperLiveSession {
           await dhRatchetStep(this.ratchetState, header.pubKey);
           // reinit both loop states from the new DH-derived chain keys
           await this.loopReinitFromChainKeys();
+          this.onLog("bond renewed");
           didDHRatchet = true;
         }
 
@@ -1214,10 +1223,11 @@ export class WhisperLiveSession {
   }
 
   async sendText(text: string): Promise<number> {
-    let sentMsgId = 0;
+    let sentMsgId = -1;
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
       const msgId = await this.encryptAndSend(TE.encode(text), 0x00);
+      if (msgId < 0) return;
       sentMsgId = msgId;
       this.onMessage({ type: "text", direction: "self", msgId, text, timestamp: Date.now() });
     });
@@ -1226,7 +1236,7 @@ export class WhisperLiveSession {
 
   async sendFile(file: File): Promise<number> {
     const fileBytes = new Uint8Array(await file.arrayBuffer());
-    let sentMsgId = 0;
+    let sentMsgId = -1;
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
       if (this.transportMode === "dressed") {
@@ -1235,6 +1245,7 @@ export class WhisperLiveSession {
       }
       const plaintext = encodeFilePlaintext(file.name, file.type, fileBytes);
       const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
+      if (msgId < 0) return;
       sentMsgId = msgId;
       this.onMessage({
         type: "file", direction: "self",
@@ -1249,11 +1260,12 @@ export class WhisperLiveSession {
    *  Always uses raw file wire — skips dressed mode (stego wraps audio in a PNG
    *  carrier which destroys playback and adds pointless overhead). */
   async sendAudio(fileName: string, fileType: string, audioBytes: Uint8Array): Promise<number> {
-    let sentMsgId = 0;
+    let sentMsgId = -1;
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
       const plaintext = encodeFilePlaintext(fileName, fileType, audioBytes);
       const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
+      if (msgId < 0) return;
       sentMsgId = msgId;
       this.onMessage({
         type: "file", direction: "self",
@@ -1341,7 +1353,7 @@ export class WhisperLiveSession {
   }
 
   private async encryptAndSend(plaintext: Uint8Array, flags: number): Promise<number> {
-    if (!this.ratchetState || !this.dc) return 0;
+    if (!this.ratchetState || !this.dc) return -1;
 
     if (!this.loopStateSend) {
       throw new Error("No sending loop state, ratchet not fully initialized");
@@ -1408,6 +1420,7 @@ export class WhisperLiveSession {
   confirmFingerprint(): void {
     if (this._state !== "verifying") return;
     if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
+    if (this.fingerprintNudgeTimer) { clearTimeout(this.fingerprintNudgeTimer); this.fingerprintNudgeTimer = null; }
     this.send(LIVE_MSG.FINGERPRINT_CONFIRMED);
     this.startHeartbeat();
     this.setState(this.transportMode === "silent" ? "silent" : "live");
@@ -1415,6 +1428,7 @@ export class WhisperLiveSession {
 
   rejectFingerprint(): void {
     if (this._state !== "verifying") return;
+    if (this.fingerprintNudgeTimer) { clearTimeout(this.fingerprintNudgeTimer); this.fingerprintNudgeTimer = null; }
 
     this.send(LIVE_MSG.FINGERPRINT_REJECTED);
     this.setState("error", "fingerprint mismatch, possible interception");
@@ -1527,6 +1541,7 @@ export class WhisperLiveSession {
     this.stopHeartbeat();
     const clr = (t: ReturnType<typeof setTimeout> | null) => { if (t) clearTimeout(t); };
     clr(this.handshakeTimer); this.handshakeTimer = null;
+    clr(this.fingerprintNudgeTimer); this.fingerprintNudgeTimer = null;
     clr(this.recoveryTimer); this.recoveryTimer = null;
     clr(this.connectingGraceTimer); this.connectingGraceTimer = null;
     if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }

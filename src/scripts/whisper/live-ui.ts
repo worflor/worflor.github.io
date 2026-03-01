@@ -1770,7 +1770,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       sendBeginFill();
       session.sendAudio(name, ADPCM_MIME, adpcmBytes).then((msgId) => {
-        if (msgId <= 0) {
+        if (msgId < 0) {
           send.phase = "delivered"; send.velocity = -4;
           haptic("send-failed");
           appendLog(`audio send skipped: session not ready (${session?.state ?? "unknown"})`);
@@ -2928,7 +2928,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     relayAssist: boolean;
   }> = {
     relay: {
-      lede: "know a phrase, connect at the same time. thats it.",
+      lede: "know a phrase, connect at the same time. that's it",
       flareLink: "light a signal flare",
       manualLink: "or connect manually",
       relayAssist: true,
@@ -2940,7 +2940,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       relayAssist: true,
     },
     manual: {
-      lede: "encrypted peer-to-peer messaging. create a channel or join one.",
+      lede: "create a channel or join one",
       flareLink: "light a signal flare",
       manualLink: "use relay assist",
       relayAssist: false,

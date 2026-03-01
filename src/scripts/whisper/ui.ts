@@ -457,10 +457,6 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
       btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
     if (mode === MODE_LIVE) {
-      if (!liveLoggedReady) {
-        liveLoggedReady = true;
-        appendLog("live ready");
-      }
       hideActionsBar();
     } else if (mode === MODE_EMBED && isCarrierUrl()) {
       hideActionsBar();
