@@ -2773,11 +2773,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         addChatMessage({ type: "system", direction: "system", text: "connection interrupted, reconnecting...", timestamp: Date.now() });
         break;
 
-      case "disconnected":
+      case "disconnected": {
         haptic("disconnected");
+        const endText = opts.disconnectedSection.querySelector(".wl-end-text");
+        if (endText) endText.textContent = detail === "vanished"
+          ? "they vanished. no trace remains."
+          : "no trace remains.";
         enterPhase(opts.disconnectedSection, "session ended", false, false);
         resetFpChip();
         break;
+      }
 
       case "error":
         enterPhase(opts.errorSection, "couldn't connect", false, false);
@@ -3384,9 +3389,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       setOfferQrExpanded(false);
       updateControls();
     } catch (err) {
-      const msg = errMsg(err);
-      appendLog(`offer failed: ${msg}`);
-      handleStateChange("error", msg);
+      appendLog(`offer failed: ${errMsg(err)}`);
+      handleStateChange("error", "couldn't create invite, try again");
     }
   }, { signal });
 
@@ -3432,9 +3436,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       await session.applyAnswer(code);
     } catch (err) {
-      const msg = errMsg(err);
-      appendLog(`answer apply failed: ${msg}`);
-      handleStateChange("error", msg);
+      appendLog(`answer apply failed: ${errMsg(err)}`);
+      handleStateChange("error", "couldn't read reply code, check it and try again");
     }
   }, { signal });
 
@@ -3454,9 +3457,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       setBusy(false);
       updateControls();
     } catch (err) {
-      const msg = errMsg(err);
-      appendLog(`join failed: ${msg}`);
-      handleStateChange("error", msg);
+      appendLog(`join failed: ${errMsg(err)}`);
+      handleStateChange("error", "couldn't read invite code, check it and try again");
     }
   }, { signal });
 
