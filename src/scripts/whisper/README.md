@@ -123,7 +123,7 @@ ECDH shared secret → HKDF(65536 bytes) → 16D block
 - `BitContextModel16`: 65535-context adaptive coder for 16-bit symbols (512KB counts)
 - 72/72 tests — WHT identity, direct boundary theorem (all 65535 boundary masks), binomial structure, predictor exactness, round-trip, handshake, avalanche, clamping, error handling, large stress
 
-**Whisper Loop** (`live-loop.ts`, test spec: `live-wasm-loop.ts`) — ratchet unified with codec:
+**Whisper Loop** (`live-loop.ts`, test spec: `test-loop.ts`) — ratchet unified with codec:
 ```
 LoopState: { chain (32B), counts (0D), block8D (8D), step }
 

@@ -1333,7 +1333,7 @@ export class VideoCodec {
             const blockInfo = buildBlockBitmap(delta.subarray(0, ySize), w, h, blockSize, blockThreshold);
             blocksX = blockInfo.blocksX;
             blocksY = blockInfo.blocksY;
-            bitmap = blockInfo.bitmap;
+            bitmap = blockInfo.bitmap as Uint8Array<ArrayBuffer>;
 
             const yBlocks = extractChangedBlocksPlane(
                 delta.subarray(0, ySize), w, h,
@@ -1725,6 +1725,6 @@ export class VideoCodec {
     decodeToImageData(packet: Uint8Array): ImageData | null {
         const { pixels, width, height, tampered } = this.decode(packet);
         if (tampered) return null;
-        return new ImageData(new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength), width, height);
+        return new ImageData(new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.byteLength), width, height);
     }
 }

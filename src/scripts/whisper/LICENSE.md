@@ -11,7 +11,7 @@ this license applies to the Whisper Protocol and its components:
 - **Whisper Spatial** - 3D volumetric codec (`live-wasm-spatial.ts`)
 - **Whisper Akasha** - 4D spatiotemporal codec (`live-wasm-akasha.ts`)
 - **Whisper Kū** - 5D plenoptic codec (`live-wasm-ku.ts`)
-- **Whisper Loup** - 8D self codec (`live-wasm-octonion.ts`)
+- **Whisper Loup** - 8D self codec (`live-wasm-loup.ts`)
 - **Whisper Kizuna** - 16D membrane codec (`live-wasm-16d.ts`)
 
 - all supporting files, documentation, and protocol specifications in this directory

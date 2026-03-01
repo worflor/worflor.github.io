@@ -4,7 +4,7 @@
  * the Whisper Logos Entropy Codec by Woflo / MB
  *
  * at 0D there are no spatial neighbors. the Möbius cross-term collapses to
- * nothing. what remains is pure probability — the running attention map over
+ * nothing. what remains is pure probability: the running attention map over
  * symbols, updated with every observation.
  *
  * four coders, all adaptive:
@@ -16,7 +16,7 @@
  *                retained for benchmarking; superseded by the bit-level coders.
  *
  *   Bit0 (order-0): 255 binary contexts, one per node of the bit tree (1..255).
- *                MSB-first decomposition. Laplace prior of 2 — not 256 — giving
+ *                MSB-first decomposition. Laplace prior of 2 (not 256), giving
  *                dramatically faster convergence for peaked distributions.
  *
  *   Bit1 (order-1): top 4 bits of the previous byte as context prefix.
@@ -28,7 +28,7 @@
  *
  * ── the duality ──────────────────────────────────────────────────────────
  *
- * 8 binary decisions per byte produces 255 context tree nodes (1..255) — the
+ * 8 binary decisions per byte produces 255 context tree nodes (1..255), the
  * same 255 non-trivial elements of the Boolean lattice Λ*(R⁸) indexed by the
  * 8D Möbius predictor's spatial neighbors. the chain rule over conditional bit
  * probabilities is the probabilistic mirror of spatial inclusion-exclusion:

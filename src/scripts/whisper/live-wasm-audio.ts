@@ -16,7 +16,7 @@
  * stereo uses Mid/Side decomposition: Mid = (L+R)/2, Side = L−R, each channel
  * carrying its own K/G pair so the soundstage is preserved, not averaged out.
  *
- * the codec emits raw WebAssembly bytecode from TypeScript arrays — no
+ * the codec emits raw WebAssembly bytecode from TypeScript arrays; no
  * toolchain, no .wasm files, no build step.
  *
  * wire format per block (61-bit header + variable payload):

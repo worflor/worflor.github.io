@@ -3,8 +3,8 @@
  *
  * Whisper Loop — production runtime.
  *
- * replaces the placeholder XOR KDFs in live-wasm-loop.ts with real
- * HKDF-SHA256 and AES-CTR operations via WebCrypto. see live-wasm-loop.ts
+ * replaces the placeholder XOR KDFs in test-loop.ts with real
+ * HKDF-SHA256 and AES-CTR operations via WebCrypto. see test-loop.ts
  * for the full algorithm documentation and test spec.
  *
  * key derivation:

@@ -1,5 +1,5 @@
 /**
- * live-wasm-octonion.ts
+ * live-wasm-loup.ts
  *
  * the Whisper Loup 8D Codec by Woflo / MB
  *
@@ -44,13 +44,14 @@
  * ── the Logos duality ────────────────────────────────────────────────────
  *
  * 255 spatial neighbors of the 8D Möbius predictor. 255 context tree nodes
- * of the Logos bit coder. both index the Boolean lattice Λ*(R⁸) — spatial
+ * of the Logos bit coder. both index the Boolean lattice Λ*(R⁸); spatial
  * inclusion-exclusion and probabilistic chain rule are the same structure
  * from opposite ends of the tower.
  *
  * Adams/Bott periodicity: S⁷ is the last sphere with trivial normal bundle.
  * the Hurwitz sequence closes here. the last algebra.
  */
+export {};
 
 const BS = 4;
 const B8 = BS ** 8;  // 65536
