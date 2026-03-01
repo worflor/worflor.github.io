@@ -1333,7 +1333,7 @@ export class VideoCodec {
             const blockInfo = buildBlockBitmap(delta.subarray(0, ySize), w, h, blockSize, blockThreshold);
             blocksX = blockInfo.blocksX;
             blocksY = blockInfo.blocksY;
-            bitmap = blockInfo.bitmap as Uint8Array<ArrayBuffer>;
+            bitmap = blockInfo.bitmap as Uint8Array;
 
             const yBlocks = extractChangedBlocksPlane(
                 delta.subarray(0, ySize), w, h,
