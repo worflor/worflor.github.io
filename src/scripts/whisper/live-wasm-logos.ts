@@ -1,63 +1,40 @@
 /**
  * live-wasm-logos.ts
  *
- * Whisper Logos — adaptive entropy encoder (0D base of the dimensional tower).
+ * the Whisper Logos Entropy Codec by Woflo / MB
  *
- * ── the math ────────────────────────────────────────────────────────────────
+ * at 0D there are no spatial neighbors. the Möbius cross-term collapses to
+ * nothing. what remains is pure probability — the running attention map over
+ * symbols, updated with every observation.
  *
- * at 0D, no spatial neighbors exist. the nD Möbius cross-term collapses to
- * nothing. the only exploitable structure is statistical: the running symbol
- * probability distribution — the "attention map."
+ * four coders, all adaptive:
  *
- *   attention[s] = freq[s] / total        (normalized probability)
- *   rank[s]      = position in descending-attention order (0 = most focused)
- *   optimal bits = -log2(attention[s])    (Shannon information content)
+ *   Rice       : rank[s] encoded with Rice(k), k adapts every 16 symbols.
+ *                fast, simple, ~0.3–1.5 bits/sym above Shannon.
  *
- * four coders, all driven by the AttentionModel or BitContextModel:
+ *   ByteArith  : 256-symbol range coder. near-Shannon for IID sources.
+ *                retained for benchmarking; superseded by the bit-level coders.
  *
- *   Rice coder  : encodes rank[s] with Rice(k), k adapts every 16 symbols.
- *                 simple, fast, ~0.3–1.5 bits/sym above Shannon.
+ *   Bit0 (order-0): 255 binary contexts, one per node of the bit tree (1..255).
+ *                MSB-first decomposition. Laplace prior of 2 — not 256 — giving
+ *                dramatically faster convergence for peaked distributions.
  *
- *   Byte Arith  : 256-symbol range coder. near-Shannon for IID sources.
- *                 (retained for benchmarking, superseded by bit-level.)
+ *   Bit1 (order-1): top 4 bits of the previous byte as context prefix.
+ *                16×255 = 4080 binary contexts. captures inter-byte correlations.
+ *                beats H0 on UTF-8, audio deltas, and structured binary data.
  *
- *   Bit0 (order-0): 255 binary contexts, one per tree node.
- *                 the duality — 255 contexts = 255 neighbors of 8D Möbius.
- *                 Laplace prior of 2 (not 256), dramatically faster convergence.
+ * encode0D() tries all three, picks the smallest, prepends a mode byte.
+ * raw fallback when nothing wins. output guaranteed ≤ input + 1 byte.
  *
- *   Bit1 (order-1): previous byte's top 4 bits as context prefix.
- *                 16×255 = 4,080 binary contexts. captures inter-byte correlations.
- *                 beats H0 on structured data (UTF-8, gradients, repetitive text).
+ * ── the duality ──────────────────────────────────────────────────────────
  *
- * encode0D() tries Rice, Bit0, Bit1, picks the smallest, prepends a mode byte.
- * raw fallback when nothing compresses. guarantees output ≤ input + 1 byte.
+ * 8 binary decisions per byte produces 255 context tree nodes (1..255) — the
+ * same 255 non-trivial elements of the Boolean lattice Λ*(R⁸) indexed by the
+ * 8D Möbius predictor's spatial neighbors. the chain rule over conditional bit
+ * probabilities is the probabilistic mirror of spatial inclusion-exclusion:
+ * both decompose structure on 2^{0,...,7} into 255 constituent terms.
  *
- * ── protocol integration ─────────────────────────────────────────────────────
- *
- * call encode0D on plaintext before Double Ratchet encryption.
- * call decode0D after decryption. decoded length is in the Whisper frame header.
- *
- * ── the dimensional tower ───────────────────────────────────────────────────
- *
- *   0D (Logos)   : this file. entropy, attention, pure probability. no geometry.
- *   3D (Spatial) : trilinear Möbius, 7-neighbor, error = Δx·Δy·Δz·f
- *   4D (Akasha)  : 15-neighbor, error = Δx·Δy·Δz·Δt·f
- *   5D (Kū)      : 31-neighbor, error = Δx·Δy·Δz·Δt·Δu·f
- *   8D (Octonion): 255-neighbor, 89.99% free zeros
- *
- * ── the duality ────────────────────────────────────────────────────────────
- *
- * decomposing a byte into 8 binary decisions creates 255 contexts (nodes
- * 1..255 of the context tree). these 255 nodes index the Boolean lattice
- * 2^{0,...,7} — the same structure as the 255 non-trivial neighbors of the
- * 8D Möbius predictor. spatial structure and probabilistic structure are
- * dual: Möbius inclusion-exclusion over geometry = chain rule over
- * conditional bit probabilities.
- *
- * bit-level reduces prior dilution from 256 (byte) to 2 (binary) outcomes
- * per context, giving dramatically faster convergence for concentrated
- * distributions. the completion of 0D.
- *
+ * the floor of the tower. no geometry, just attention.
  */
 
 // --- bit I/O ---
@@ -990,6 +967,6 @@ function runStressTests(): void {
     console.log('  this is the inter-byte structure that H0 cannot see.');
 }
 
-if (typeof process !== 'undefined' || typeof Bun !== 'undefined') {
+if (typeof process !== 'undefined' || 'Bun' in globalThis) {
     runStressTests();
 }

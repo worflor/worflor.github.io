@@ -1,79 +1,55 @@
 /**
  * live-wasm-octonion.ts
  *
- * Whisper Octonion — the 8D terminus of the Möbius codec hierarchy.
+ * the Whisper Loup 8D Codec by Woflo / MB
  *
- * ── the Hurwitz sequence ──────────────────────────────────────────────────────
+ * the Möbius predictor hierarchy runs parallel to the Hurwitz sequence:
  *
- * the Möbius codec hierarchy runs parallel to the normed division algebras:
+ *   Logos    (0D) :              no neighbors. pure probability.
+ *   Harmonic (1D) : R            1 neighbor.
+ *   Lumen    (2D) : C            3 neighbors.
+ *   Spatial  (3D) : (R→H gap)    7 neighbors.
+ *   Akasha   (4D) : H            15 neighbors.
+ *   Kū       (5D) : (no algebra) 31 neighbors.
+ *   6D, 7D        : (no algebra) 63, 127 neighbors.
+ *   Loup     (8D) : O            255 neighbors.
  *
- *   Logos    (0D) :              entropy.       0 neighbors (255 bit contexts).
- *   Harmonic (1D) : R   — real.               1 neighbor.
- *   Lumen    (2D) : C   — complex.            3 neighbors.
- *   Spatial  (3D) : (R→H gap)                 7 neighbors.
- *   Akasha   (4D) : H   — quaternions.       15 neighbors.
- *   Kū       (5D) : (no algebra)             31 neighbors.
- *   6D, 7D        : (no algebra)             63, 127 neighbors.
- *   Octonion (8D) : O   — octonions.        255 neighbors.
+ * Hurwitz's theorem (1898): the only normed division algebras over R are R,
+ * C, H, and O. the sequence closes at 8D. sedenions break the norm.
  *
- * Hurwitz's theorem (1898): the only normed division algebras over R are
- * R, C, H, and O. the sequence terminates at 8D. sedenions (16D)
- * have zero divisors and break the norm. the door closes here.
+ * ── the 255-neighbor predictor ───────────────────────────────────────────
  *
- * ── the 255-neighbor predictor ────────────────────────────────────────────────
+ *   P = Σ_{∅≠S⊆{0..7}} (−1)^(|S|+1) · f(corner_S)
  *
- * P = Σ_{∅≠S⊆{0..7}} (−1)^(|S|+1) · f(corner_S)
+ * 255 terms, grouped by binomial coefficient:
+ *   +C(8,1)= +8   −C(8,2)=−28   +C(8,3)=+56   −C(8,4)=−70
+ *   +C(8,5)=+56   −C(8,6)=−28   +C(8,7)= +8   −C(8,8)= −1
  *
- * corner_S has displacement −1 in each dimension in S, 0 elsewhere.
- * the 255 terms group by subset size (binomial coefficients of 8):
+ * total: 8−28+56−70+56−28+8−1 = 1. unbiased.
  *
- *   +C(8,1) =  +8   singletons
- *   −C(8,2) = −28   pairs
- *   +C(8,3) = +56   triples
- *   −C(8,4) = −70   quadruples
- *   +C(8,5) = +56   quintuples
- *   −C(8,6) = −28   sextuples
- *   +C(8,7) =  +8   septuples
- *   −C(8,8) =  −1   octuple
+ *   error = Δx₀·Δx₁·...·Δx₇·f  (the discrete 8-form)
  *
- * total: 8−28+56−70+56−28+8−1 = 1 (unbiased predictor).
+ * zero for all monomials of degree ≤ 7 and all degree-8 monomials except the
+ * full product x₀x₁x₂x₃x₄x₅x₆x₇.
  *
- * error = Δx₀·Δx₁·...·Δx₇·f  (the 8-form)
+ * ── boundary theorem ─────────────────────────────────────────────────────
  *
- * zero for all polynomials without the full x₀x₁x₂x₃x₄x₅x₆x₇ cross-term.
- * the predictor is exact for all monomials of degree ≤ 7 and all degree-8
- * monomials except the full product.
+ * anti-causal predictor: +1 offsets, clamped at BS-1. when any coordinate
+ * equals BS-1, the clamped neighbor equals the current voxel → P = current →
+ * residual = 0. always exact, by construction.
  *
- * ── boundary theorem ──────────────────────────────────────────────────────────
+ * free-zero fraction at BS=4: 1 − (3/4)⁸ = 89.99%.
+ * only 3⁸ = 6561 interior voxels out of 65536 need predictor computation.
  *
- * anti-causal predictor: uses +1 offsets, clamped at block edge (BS-1).
- * when ANY coordinate = BS-1, the clamped neighbor equals the current voxel,
- * so P_anti = current voxel → r_anti = 0. always exact.
+ * ── the Logos duality ────────────────────────────────────────────────────
  *
- * free-zero fraction = 1 − ((BS−1)/BS)^8 = 1 − (3/4)^8 = 89.99%
- * only 3^8 = 6561 interior voxels (10.01%) need predictor computation.
+ * 255 spatial neighbors of the 8D Möbius predictor. 255 context tree nodes
+ * of the Logos bit coder. both index the Boolean lattice Λ*(R⁸) — spatial
+ * inclusion-exclusion and probabilistic chain rule are the same structure
+ * from opposite ends of the tower.
  *
- * ── octonion connection ───────────────────────────────────────────────────────
- *
- * the 255 predictor neighbors correspond to the 255 non-identity elements
- * of the 8D Boolean lattice 2^{0,...,7}. the prediction error is the discrete
- * 8-form, the highest-order exterior derivative in 8 dimensions.
- *
- * Adams/Bott periodicity: S⁷ is the last sphere with trivial normal bundle
- * (parallelizable). the 8D Möbius predictor closes the Hurwitz sequence.
- *
- * ── the Logos duality ─────────────────────────────────────────────────────────
- *
- * the 255 non-trivial elements of Λ*(R⁸) appear twice in the codec tower:
- *   - here, as the 255 spatial neighbors of the 8D Möbius predictor
- *   - in Logos (0D), as the 255 binary contexts of the bit-level byte coder
- * both index the same exterior algebra. the top and bottom of the tower
- * are the same mathematical structure, viewed from opposite ends.
- *
- * ── free-zero fractions by dimension (BS=4) ──────────────────────────────────
- *
- * n=1: 25.0%   n=2: 43.8%   n=3: 57.8%   n=4: 68.4%
- * n=5: 76.3%   n=6: 82.2%   n=7: 86.7%   n=8: 89.99%
+ * Adams/Bott periodicity: S⁷ is the last sphere with trivial normal bundle.
+ * the Hurwitz sequence closes here. the last algebra.
  */
 
 const BS = 4;

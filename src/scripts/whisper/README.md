@@ -90,7 +90,7 @@ P = (L+A+B+T+U) − (10 pairs) + (10 triples) − (5 quadruples) + D5
 - 7-mode adaptive coder (15-bit positions for 32768-voxel blocks)
 - encode → decode round-trip verified exact for all volume types
 
-### Whisper Kizuna (`live-wasm-16d.ts`)
+### Whisper Kizuna (`live-wasm-kizuna.ts`)
 
 the sedenion step of the dimensional tower — **65535-neighbor Möbius predictor** and cryptographic handshake primitive:
 

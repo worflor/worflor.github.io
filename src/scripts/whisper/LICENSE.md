@@ -1,6 +1,6 @@
 # Whisper Protocol License
 
-**version 1.0, February 28, 2026**
+## **version 1.0, February 28, 2026**
 
 this license applies to the Whisper Protocol and its components:
 

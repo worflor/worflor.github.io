@@ -1,30 +1,31 @@
 /**
- * live-wasm-audio.ts — Whisper Harmonic Audio Codec
+ * live-wasm-audio.ts
  *
- * a damped-harmonic-oscillator predictor for real-time audio:
+ * the Whisper Harmonic Audio Codec by Woflo / MB
+ *
+ * models audio as a symmetric damped harmonic oscillator rather than a
+ * frequency transform. the predictor is:
  *
  *   pred = K·prev₁ − G·prev₂
  *
- * K (tension) and G (friction) are fitted per 32-sample block via
- * two-pass SIMD linear regression, then quantized to i16 (×16384).
- * a cubic mesh blend anchors the predictor to the last sample of each
- * block, and zigzag-coded residuals are packed at variable bit-width.
+ * K (tension) and G (friction) are fitted per 32-sample block via two-pass
+ * SIMD linear regression, then quantized to i16 (×16384). a cubic mesh blend
+ * anchors the prediction to the last sample of the previous block, eliminating
+ * the boundary discontinuity. zigzag-coded residuals pack at variable bit-width.
  *
- * stereo uses Mid/Side decomposition: Mid=(L+R)/2, Side=L−R.
- * each channel gets its own K/G pair so the soundstage survives.
+ * stereo uses Mid/Side decomposition: Mid = (L+R)/2, Side = L−R, each channel
+ * carrying its own K/G pair so the soundstage is preserved, not averaged out.
  *
- * the codec is built as raw WASM bytecode emitted from TypeScript arrays —
- * no toolchain, no .wasm files, no build step.
+ * the codec emits raw WebAssembly bytecode from TypeScript arrays — no
+ * toolchain, no .wasm files, no build step.
  *
  * wire format per block (61-bit header + variable payload):
  *   [K:16][G:16][W:5][anchor_delta:24] [delta₀:W]...[delta₃₁:W]
  *
  * encryption: ChaCha20 stream cipher + SipHash-lite 64-bit MAC.
+ * quality: Q=80 → scalar=4096 (~79 dB SNR). Q=100 → lossless float32 passthrough.
  *
- * quality parameter:
- *   scalar = floor(2^(quality/100 × 15))
- *   Q=80 → scalar=4096 (~79 dB SNR)
- *   Q=100 → lossless (raw float32 passthrough)
+ * the wire carries oscillator parameters. the decoder reconstructs the waveform.
  */
 
 function encodeULEB(v: number): number[] {

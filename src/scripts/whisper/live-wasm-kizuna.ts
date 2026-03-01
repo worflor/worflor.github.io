@@ -1,97 +1,69 @@
 /**
- * live-wasm-16d.ts
+ * live-wasm-kizuna.ts
  *
- * Whisper 16D — sedenion-step Möbius predictor and cryptographic handshake primitive.
+ * the Whisper Kizuna 16D Codec by Woflo / MB
  *
- * ── the math ─────────────────────────────────────────────────────────────────
+ * the sedenion step of the Möbius hierarchy — 65535 neighbors — and a
+ * cryptographic handshake primitive built from the predictor itself.
  *
- * the anti-causal Möbius predictor for the origin of a 16D block uses the
- * full inclusion-exclusion over all 65535 non-trivial subsets of 16 dimensions:
+ * ── the predictor ────────────────────────────────────────────────────────
+ *
+ * the anti-causal Möbius predictor at BS=2 uses the full inclusion-exclusion
+ * over all 65535 non-trivial subsets of 16 dimensions:
  *
  *   P = Σ_{∅≠S⊆{0..15}} (−1)^(|S|+1) · block[bit-mask(S)]
  *
- * 65535 terms grouped by subset size:
- *   + C(16, 1) =    16   singletons
- *   − C(16, 2) =   120   pairs
- *   + C(16, 3) =   560   triples
- *   − C(16, 4) =  1820   quadruples
- *   + C(16, 5) =  4368   quintuples
- *   − C(16, 6) =  8008   sextuples
- *   + C(16, 7) = 11440   septuples
- *   − C(16, 8) = 12870   octuples       ← largest term
- *   + C(16, 9) = 11440   nonuples
- *   − C(16,10) =  8008   decuples
- *   + C(16,11) =  4368   undecuples
- *   − C(16,12) =  1820   duodecuples
- *   + C(16,13) =   560   tredecuples
- *   − C(16,14) =   120   quattuordecuples
- *   + C(16,15) =    16   quindecuples
- *   − C(16,16) =     1   hexdecuple     ← the full 16D cross-corner
- *
- * prediction error = Δx₀·Δx₁·...·Δx₁₅·f (the mixed 16th finite difference).
- * zero for all polynomials without the x₀·x₁·...·x₁₅ cross-term.
- * exact for constants, linear, all quadratic, and all degree-15 monomials
- * except the product of all 16 coordinates.
- *
- * ── BS=2 block structure ──────────────────────────────────────────────────────
- *
- * at block size BS=2, each voxel coordinate is 0 or 1. block index = bit-mask:
+ * at BS=2, each coordinate is 0 or 1, so block index = bit-mask of coords:
  *   block[Σ c[d]·2^d] = voxel at coordinate vector (c[0], c[1], ..., c[15])
  *
- * anti-causal boundary theorem (n=16, BS=2):
- *   for any voxel with at least one coord = BS−1 = 1, the anti-causal Möbius
- *   sum telescopes exactly to the current value, so residual = 0.
- *   free-zero fraction = 1 − (1/2)^16 = 65535/65536 = 99.998%.
+ * the 65535 terms group by binomial coefficient C(16,k), from +16 singletons
+ * down to −1 hexdecuple. prediction error = the mixed 16th finite difference,
+ * zero for all polynomials without the x₀·x₁·...·x₁₅ cross-term.
  *
- * proof for voxel at mask m (any coord d where bit d is set):
- *   splitting subsets S by whether d∈S or d∉S, then substituting T = S\{d}:
- *     P = Σ_{T⊆{0..15}\{d},T≠∅} (-1)^(|T|+1)·block[m|bits(T)]
- *       + Σ_{T⊆{0..15}\{d}}     (-1)^(|T|+2)·block[m|bits(T)]  ← d clamped away
- *   = Σ_{T≠∅} [(-1)^(|T|+1) + (-1)^(|T|+2)]·block[m|bits(T)] + (-1)^2·block[m]
- *   = 0 + block[m] = block[m].
+ * ── boundary theorem ─────────────────────────────────────────────────────
  *
+ * for any voxel with at least one coordinate = 1 (= BS−1), the anti-causal
+ * Möbius sum telescopes to the current value. residual = 0. always.
+ *
+ * proof: split subsets S by whether d∈S or d∉S for any set bit d. the two
+ * halves cancel term-by-term, leaving only block[m] itself.
+ *
+ * free-zero fraction = 1 − (1/2)¹⁶ = 65535/65536 = 99.998%.
  * only the origin (0,...,0) is interior. its residual carries the full Möbius
- * mixture of all 65535 boundary voxels — a sensitive function of every byte.
+ * mixture of all 65535 boundary voxels — sensitive to every byte in the block.
  *
- * ── the sedenion step ─────────────────────────────────────────────────────────
+ * ── the sedenion step ────────────────────────────────────────────────────
  *
- * the Hurwitz sequence R¹→C²→H⁴→O⁸ closes at octonions. sedenions (R¹⁶) have
- * zero divisors: ab=0 for non-zero a,b. not a normed division algebra.
- * the algebraic door closes here. but the Möbius formula needs no algebra —
- * error = n-form = exterior derivative of order n, valid for any n.
+ * the Hurwitz sequence R→C→H→O closes at octonions. sedenions (R¹⁶) have zero
+ * divisors — not a normed division algebra. the algebraic door is shut. the
+ * Möbius formula doesn't care: error = n-form = exterior derivative of order n,
+ * valid for any dimension regardless of algebraic structure.
  *
- * ── 0D↔16D duality ───────────────────────────────────────────────────────────
+ * ── 0D↔16D duality ───────────────────────────────────────────────────────
  *
  * a 16-bit symbol decomposed into 16 binary decisions uses 65535 conditional
- * contexts (nodes 1..65535 of the bit tree). these 65535 nodes index
- * 2^{0,...,15} — the same Boolean lattice Λ*(R¹⁶) as the 65535 Möbius neighbors.
+ * contexts (nodes 1..65535 of the bit tree) — the same Boolean lattice Λ*(R¹⁶)
+ * as the 65535 Möbius neighbors. the chain rule P(sym) = P(b15)·P(b14|b15)·...
+ * mirrors the inclusion-exclusion: both decompose 2¹⁶ outcomes into 2¹⁶−1
+ * conditional terms. extends the 0D↔8D duality one step up the tower.
  *
- * chain rule P(sym) = P(b15)·P(b14|b15)·...·P(b0|b15...b1)
- * mirrors Möbius inclusion-exclusion: both decompose 2^16 outcomes into
- * 2^16−1 conditional terms. 16-bit probabilistic structure = 16D spatial structure.
+ * ── handshake primitive ──────────────────────────────────────────────────
  *
- * extends the 0D↔8D duality (255 contexts ↔ 255 neighbors) to the 16D step.
+ * both parties expand their ECDH shared secret to 65536 bytes, then call
+ * handshake16D(sharedBlock). three values are derived independently:
  *
- * ── handshake primitive ───────────────────────────────────────────────────────
+ *   residual   — the 16D Möbius mixing of all 65535 voxels. sensitive to
+ *                every byte in the block.
+ *   block8D    — the block itself, reinterpreted as an 8D Octonion block
+ *                (BS=4, 4⁸=65536). seeds the 8D spatial predictor.
+ *   countsBitM — BitContextModelM counts primed with 512 bytes of key material.
+ *                seeds the 0D entropy model. early compressed traffic is
+ *                opaque without the shared secret.
  *
- * both parties expand their ECDH shared secret to 65536 bytes via HKDF,
- * then call handshake16D(sharedBlock). returns three shared values:
+ * no extra communication. both parties derive all three from the same block.
  *
- *   residual   — the Möbius residual at origin. sensitive to all 65535 voxels
- *                via the full 16D inclusion-exclusion mixing function.
- *
- *   block8D    — the 65536-byte block itself. BS=4 → 4^8=65536 = same layout
- *                as an 8D Octonion block. initializes the 8D spatial predictor
- *                for the first compressed frames.
- *
- *   countsBitM — a BitContextModelM primed with 512 bytes of key material.
- *                initializes the 0D Logos adaptive entropy coder.
- *                makes early compressed traffic opaque without the shared secret.
- *
- * both parties derive all three values independently from the same secret.
- * no extra communication. an attacker without the ECDH key cannot decompress
- * early traffic: the predictor state and entropy model are both key-derived.
- *
+ * 99.998% free zeros. one interior point. the full weight of 65535 neighbors
+ * compressed into a single residual.
  */
 
 // --- arithmetic coder (same implementation as live-wasm-logos.ts) ---
@@ -927,6 +899,6 @@ function runTests(): void {
     console.log(`result: ${pass} passed, ${fail} failed`);
 }
 
-if (typeof process !== 'undefined' || typeof Bun !== 'undefined') {
+if (typeof process !== 'undefined' || 'Bun' in globalThis) {
     runTests();
 }
