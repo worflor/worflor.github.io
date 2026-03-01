@@ -1,0 +1,4 @@
+test-*
+test.*
+wasm-dump.txt
+*.bin
