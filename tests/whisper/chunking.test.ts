@@ -1,0 +1,248 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { assertBytesEqual } from "./_helpers/assertions.js";
+import { randomBytes } from "./_helpers/generators.js";
+import {
+  chunkMessagePrefixed,
+  ChunkAssembler,
+  BUFFERED_AMOUNT_LOW,
+} from "../../src/scripts/whisper/live-chunking.js";
+
+const CHUNK_SIZE = 15_360;
+const CHUNK_SINGLE = 0x04;
+const CHUNK_START = 0x01;
+const CHUNK_CONTINUE = 0x02;
+const CHUNK_END = 0x03;
+
+/** Simulate receiving chunks through a ChunkAssembler (strips 1-byte prefix). */
+function reassemble(chunks: Uint8Array[]): Uint8Array | null {
+  const assembler = new ChunkAssembler();
+  for (const chunk of chunks) {
+    const result = assembler.feed(chunk.subarray(1));
+    if (result) return result;
+  }
+  return null;
+}
+
+/** Expected chunk count for multi-chunk messages. */
+function expectedChunkCount(dataLen: number): number {
+  if (dataLen <= CHUNK_SIZE) return 1;
+  const startPayload = Math.min(CHUNK_SIZE - 4, dataLen); // 4 bytes for total length
+  const remaining = dataLen - startPayload;
+  return 1 + Math.ceil(remaining / CHUNK_SIZE);
+}
+
+describe("live-chunking", () => {
+  it("BUFFERED_AMOUNT_LOW is 64KB", () => {
+    assert.equal(BUFFERED_AMOUNT_LOW, 64 * 1024);
+  });
+
+  describe("single-chunk messages (≤ 15360 bytes)", () => {
+    it("small message returns single chunk with CHUNK_SINGLE type", () => {
+      const data = randomBytes(100);
+      const prefix = 0x20;
+      const chunks = chunkMessagePrefixed(data, prefix);
+      assert.equal(chunks.length, 1, "single chunk");
+      assert.equal(chunks[0][0], prefix, "prefix byte");
+      assert.equal(chunks[0][1], CHUNK_SINGLE, "chunk type = SINGLE (0x04)");
+      assert.equal(chunks[0].length, 2 + data.length, "chunk size = prefix + type + data");
+
+      const reassembled = reassemble(chunks);
+      assert.ok(reassembled);
+      assertBytesEqual(reassembled, data, "round-trip content");
+    });
+
+    it("exactly 15360 bytes returns single chunk", () => {
+      const data = randomBytes(CHUNK_SIZE);
+      const chunks = chunkMessagePrefixed(data, 0x20);
+      assert.equal(chunks.length, 1);
+      assert.equal(chunks[0][1], CHUNK_SINGLE);
+      const reassembled = reassemble(chunks);
+      assert.ok(reassembled);
+      assertBytesEqual(reassembled, data);
+    });
+
+    it("1 byte returns single chunk", () => {
+      const data = randomBytes(1);
+      const chunks = chunkMessagePrefixed(data, 0xFF);
+      assert.equal(chunks.length, 1);
+      assert.equal(chunks[0][0], 0xFF, "prefix");
+      assert.equal(chunks[0][1], CHUNK_SINGLE);
+      const reassembled = reassemble(chunks);
+      assert.ok(reassembled);
+      assertBytesEqual(reassembled, data);
+    });
+
+    it("empty data returns single chunk with 0 data bytes", () => {
+      const data = new Uint8Array(0);
+      const chunks = chunkMessagePrefixed(data, 0x20);
+      assert.equal(chunks.length, 1);
+      assert.equal(chunks[0].length, 2, "just prefix + type");
+      assert.equal(chunks[0][1], CHUNK_SINGLE);
+      const reassembled = reassemble(chunks);
+      assert.ok(reassembled);
+      assert.equal(reassembled.length, 0);
+    });
+  });
+
+  describe("multi-chunk messages (> 15360 bytes)", () => {
+    it("15361 bytes → 2 chunks (START + END)", () => {
+      const data = randomBytes(15361);
+      const chunks = chunkMessagePrefixed(data, 0x20);
+      assert.equal(chunks.length, expectedChunkCount(15361), "chunk count");
+
+      // Verify chunk types
+      assert.equal(chunks[0][1], CHUNK_START, "first chunk is START");
+      assert.equal(chunks[chunks.length - 1][1], CHUNK_END, "last chunk is END");
+
+      // Verify total length in start chunk header (bytes 2-5, LE)
+      const totalLen = new DataView(chunks[0].buffer, chunks[0].byteOffset).getUint32(2, true);
+      assert.equal(totalLen, data.length, "total length in START header");
+
+      const reassembled = reassemble(chunks);
+      assert.ok(reassembled);
+      assertBytesEqual(reassembled, data, "round-trip 15361B");
+    });
+
+    it("30720 bytes → START + CONTINUE + END", () => {
+      const data = randomBytes(30720);
+      const chunks = chunkMessagePrefixed(data, 0x20);
+      assert.equal(chunks.length, expectedChunkCount(30720));
+      assert.ok(chunks.length >= 3, `should be ≥3 chunks, got ${chunks.length}`);
+
+      // Verify chunk type sequence
+      assert.equal(chunks[0][1], CHUNK_START);
+      for (let i = 1; i < chunks.length - 1; i++) {
+        assert.equal(chunks[i][1], CHUNK_CONTINUE, `chunk ${i} should be CONTINUE`);
+      }
+      assert.equal(chunks[chunks.length - 1][1], CHUNK_END);
+
+      const reassembled = reassemble(chunks);
+      assert.ok(reassembled);
+      assertBytesEqual(reassembled, data, "round-trip 30720B");
+    });
+
+    it("100KB → correct chunk count and round-trip", () => {
+      const data = randomBytes(100 * 1024);
+      const chunks = chunkMessagePrefixed(data, 0x20);
+      const expected = expectedChunkCount(data.length);
+      assert.equal(chunks.length, expected, `expected ${expected} chunks for 100KB`);
+      assert.ok(chunks.length >= 7, `100KB should need ≥7 chunks`);
+
+      const reassembled = reassemble(chunks);
+      assert.ok(reassembled);
+      assertBytesEqual(reassembled, data, "round-trip 100KB");
+    });
+
+    it("30 random sizes (15361-200000) all round-trip correctly", () => {
+      for (let i = 0; i < 30; i++) {
+        const size = 15361 + Math.floor(Math.random() * (200000 - 15361));
+        const data = randomBytes(size);
+        const chunks = chunkMessagePrefixed(data, 0x20);
+
+        assert.equal(chunks.length, expectedChunkCount(size),
+          `chunk count for ${size}B iter ${i}`);
+
+        const reassembled = reassemble(chunks);
+        assert.ok(reassembled, `reassembly returned null for ${size}B iter ${i}`);
+        assertBytesEqual(reassembled, data, `round-trip ${size}B iter ${i}`);
+      }
+    });
+  });
+
+  describe("prefix byte", () => {
+    it("all chunks carry the specified prefix byte", () => {
+      for (const prefix of [0x00, 0x20, 0x42, 0xFF]) {
+        const data = randomBytes(40000); // multi-chunk
+        const chunks = chunkMessagePrefixed(data, prefix);
+        for (let i = 0; i < chunks.length; i++) {
+          assert.equal(chunks[i][0], prefix,
+            `chunk ${i} prefix should be 0x${prefix.toString(16)}`);
+        }
+      }
+    });
+
+    it("single-chunk message has correct prefix", () => {
+      const data = randomBytes(100);
+      for (const prefix of [0x00, 0x50, 0xFF]) {
+        const chunks = chunkMessagePrefixed(data, prefix);
+        assert.equal(chunks[0][0], prefix);
+      }
+    });
+  });
+
+  describe("ChunkAssembler", () => {
+    it("reset mid-stream then re-feed works", () => {
+      const data = randomBytes(20000);
+      const chunks = chunkMessagePrefixed(data, 0x20);
+      const assembler = new ChunkAssembler();
+
+      // Feed first chunk (start), then reset
+      assembler.feed(chunks[0].subarray(1));
+      assembler.reset();
+
+      // Feed all chunks fresh
+      for (const chunk of chunks) {
+        const result = assembler.feed(chunk.subarray(1));
+        if (result) {
+          assertBytesEqual(result, data, "round-trip after reset");
+          return;
+        }
+      }
+      assert.fail("should have reassembled after reset");
+    });
+
+    it("orphan continue/end without start returns null", () => {
+      const assembler = new ChunkAssembler();
+      assert.equal(assembler.feed(new Uint8Array([CHUNK_CONTINUE, 0x41, 0x42])), null);
+      assert.equal(assembler.feed(new Uint8Array([CHUNK_END, 0x41, 0x42])), null);
+    });
+
+    it("interleaved messages: second start resets state", () => {
+      const data1 = randomBytes(20000);
+      const data2 = randomBytes(25000);
+      const chunks1 = chunkMessagePrefixed(data1, 0x20);
+      const chunks2 = chunkMessagePrefixed(data2, 0x20);
+      const assembler = new ChunkAssembler();
+
+      // Feed partial of first message
+      assembler.feed(chunks1[0].subarray(1));
+
+      // Feed complete second message (start chunk resets assembler state)
+      let result: Uint8Array | null = null;
+      for (const chunk of chunks2) {
+        const r = assembler.feed(chunk.subarray(1));
+        if (r) { result = r; break; }
+      }
+      assert.ok(result, "should reassemble second message");
+      assertBytesEqual(result!, data2, "second message content");
+    });
+
+    it("multiple complete messages in sequence", () => {
+      const assembler = new ChunkAssembler();
+      for (let i = 0; i < 5; i++) {
+        const data = randomBytes(20000 + i * 5000);
+        const chunks = chunkMessagePrefixed(data, 0x20);
+        let result: Uint8Array | null = null;
+        for (const chunk of chunks) {
+          const r = assembler.feed(chunk.subarray(1));
+          if (r) { result = r; break; }
+        }
+        assert.ok(result, `message ${i} should reassemble`);
+        assertBytesEqual(result!, data, `message ${i} content`);
+      }
+    });
+
+    it("single-chunk messages pass through directly", () => {
+      const assembler = new ChunkAssembler();
+      for (let i = 0; i < 10; i++) {
+        const data = randomBytes(100 + i * 50);
+        const chunks = chunkMessagePrefixed(data, 0x20);
+        assert.equal(chunks.length, 1);
+        const result = assembler.feed(chunks[0].subarray(1));
+        assert.ok(result, `single chunk ${i} should return immediately`);
+        assertBytesEqual(result!, data, `single chunk ${i} content`);
+      }
+    });
+  });
+});
