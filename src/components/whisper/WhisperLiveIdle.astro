@@ -1,0 +1,550 @@
+<!-- Phase: idle — create or join -->
+<div class="wl-phase" id="wl-idle-phase">
+  <p class="wl-phase-lede" id="wl-idle-lede">
+    know a phrase, connect at the same time. that's it
+  </p>
+
+  <!-- Relay mode: phrase + connect (the default, clean view) -->
+  <div class="whisper-panel wl-relay-panel" id="wl-relay-panel">
+    <label class="whisper-field wl-relay-phrase-field" for="wl-phrase">
+      <span class="whisper-field-label">shared phrase</span>
+      <div class="wl-relay-connect-row">
+        <input
+          id="wl-phrase"
+          type="text"
+          class="whisper-input"
+          placeholder="a short phrase between friends"
+          autocomplete="new-password"
+          autocapitalize="off"
+          spellcheck="false"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+        />
+        <button
+          id="wl-relay-connect"
+          type="button"
+          class="whisper-mini-btn wl-primary">Connect</button
+        >
+      </div>
+    </label>
+    <p class="wl-relay-hint">
+      the relay that matches you is blind. it never sees your messages.
+    </p>
+  </div>
+
+  <!-- Signal Flare panel — long-lived presence mode -->
+  <div
+    class="whisper-panel wl-flare-panel"
+    id="wl-flare-panel"
+    style="display:none"
+  >
+    <div class="wl-flare-head">
+      <span class="wl-flare-title">Signal Flare</span>
+    </div>
+    <p class="wl-flare-lede">
+      leave the door open. they'll find you when they're ready.
+    </p>
+    <label
+      class="whisper-field wl-flare-phrase-field"
+      for="wl-flare-phrase"
+    >
+      <span class="whisper-field-label">shared phrase</span>
+      <div class="wl-relay-connect-row">
+        <input
+          id="wl-flare-phrase"
+          type="text"
+          class="whisper-input"
+          placeholder="a rendezvous phrase between friends"
+          autocomplete="new-password"
+          autocapitalize="off"
+          spellcheck="false"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+        />
+        <button
+          id="wl-flare-fire"
+          type="button"
+          class="whisper-mini-btn wl-flare-fire-btn">Fire</button
+        >
+      </div>
+    </label>
+
+    <!-- Burning state (shown while flare is active) -->
+    <div
+      id="wl-flare-burning"
+      class="wl-flare-burning"
+      style="display:none"
+    >
+      <div class="wl-flare-burning-indicator">
+        <span class="wl-flare-ember" aria-hidden="true"></span>
+        <span class="wl-flare-burning-text">flare is burning</span>
+        <span id="wl-flare-elapsed" class="wl-flare-elapsed"></span>
+        <button
+          id="wl-flare-extinguish"
+          type="button"
+          class="whisper-mini-btn wl-flare-extinguish-btn"
+          >Extinguish</button
+        >
+      </div>
+    </div>
+
+    <!-- Peer arrived state -->
+    <div
+      id="wl-flare-arrived"
+      class="wl-flare-arrived"
+      style="display:none"
+    >
+      <p class="wl-flare-arrived-text">someone found your flare.</p>
+      <div class="wl-flare-arrived-actions">
+        <button
+          id="wl-flare-accept"
+          type="button"
+          class="whisper-mini-btn wl-primary">Connect</button
+        >
+        <button
+          id="wl-flare-ignore"
+          type="button"
+          class="whisper-mini-btn">Ignore</button
+        >
+      </div>
+    </div>
+  </div>
+
+  <!-- Manual mode: create/join + options (hidden by default) -->
+  <div
+    class="whisper-panel wl-actions-panel"
+    id="wl-manual-panel"
+    style="display:none"
+  >
+    <div class="wl-actions-row">
+      <div class="wl-action-create">
+        <span class="wl-action-label">Create</span>
+        <button
+          id="wl-create"
+          type="button"
+          class="whisper-mini-btn wl-primary">Create channel</button
+        >
+      </div>
+      <span class="wl-actions-divider" aria-hidden="true"></span>
+      <div class="wl-action-join">
+        <span class="wl-action-label">Join</span>
+        <div class="wl-join-row">
+          <input
+            id="wl-join-input"
+            type="text"
+            class="whisper-input wl-code-input"
+            placeholder="connection code"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="wl-join" type="button" class="whisper-mini-btn"
+            >Join</button
+          >
+        </div>
+        <div
+          class="wl-join-tools"
+          role="group"
+          aria-label="Join code helpers"
+        >
+          <button id="wl-join-paste" type="button" class="wl-tool-link"
+            >paste</button
+          >
+          <span class="wl-tool-sep" aria-hidden="true">/</span>
+          <button
+            id="wl-join-qr-scan"
+            type="button"
+            class="wl-tool-link">scan</button
+          >
+          <span class="wl-tool-sep" aria-hidden="true">/</span>
+          <button
+            id="wl-join-qr-image"
+            type="button"
+            class="wl-tool-link">image</button
+          >
+          <button
+            id="wl-join-qr-stop"
+            type="button"
+            class="wl-tool-link wl-tool-link--stop"
+            style="display:none">stop</button
+          >
+          <input
+            id="wl-join-qr-file"
+            type="file"
+            class="sr-only"
+            accept="image/*"
+            aria-hidden="true"
+          />
+        </div>
+        <div
+          id="wl-join-qr-panel"
+          class="wl-join-qr-panel"
+          style="display:none"
+        >
+          <video
+            id="wl-join-qr-video"
+            class="wl-join-qr-video"
+            playsinline
+            muted></video>
+        </div>
+        <span
+          id="wl-join-qr-status"
+          class="whisper-field-hint wl-join-qr-status"></span>
+      </div>
+    </div>
+    <div class="wl-manual-options">
+      <label class="whisper-field" for="wl-manual-phrase">
+        <span class="whisper-field-label"
+          >shared phrase <span class="whisper-field-hint"
+            >(optional)</span
+          ></span
+        >
+        <input
+          id="wl-manual-phrase"
+          type="password"
+          class="whisper-input"
+          placeholder="a short phrase between friends"
+          autocomplete="new-password"
+          autocapitalize="off"
+          spellcheck="false"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+        />
+      </label>
+      <div class="whisper-field">
+        <span class="whisper-field-label">network</span>
+        <label class="whisper-toggle" for="wl-external-assist">
+          <input
+            id="wl-external-assist"
+            type="checkbox"
+            class="whisper-toggle-input"
+          />
+          <span class="whisper-toggle-text">
+            external assist (stun)
+            <span class="whisper-field-hint"
+              >(helps connect across networks)</span
+            >
+          </span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden relay state (not visible, drives logic) -->
+  <input
+    id="wl-relay-assist"
+    type="checkbox"
+    class="sr-only"
+    checked
+    aria-hidden="true"
+  />
+
+  <!-- Mode switch links -->
+  <p class="wl-mode-switch" id="wl-mode-switch">
+    <button
+      type="button"
+      class="wl-mode-switch-btn"
+      id="wl-flare-switch-btn">light a signal flare</button
+    >
+    <span class="wl-mode-switch-sep" aria-hidden="true">&middot;</span>
+    <button
+      type="button"
+      class="wl-mode-switch-btn"
+      id="wl-mode-switch-btn">or connect manually</button
+    >
+  </p>
+</div>
+
+<style>
+  /* ── Relay panel ─────────────────────────────────────── */
+
+  .wl-relay-panel {
+    display: grid;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
+    background: var(--whisper-surface);
+  }
+
+  .wl-relay-connect-row {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+    align-items: stretch;
+  }
+
+  .wl-relay-connect-row :global(.whisper-input) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wl-relay-connect-row :global(.whisper-mini-btn) {
+    flex: 0 0 auto;
+  }
+
+  .wl-relay-hint {
+    margin: 0;
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.42);
+    line-height: 1.4;
+  }
+
+  .wl-relay-panel :global(.whisper-field-label) {
+    font-size: var(--text-sm);
+  }
+
+  .wl-relay-panel :global(.whisper-input) {
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    font-size: var(--text-sm);
+  }
+
+  /* ── Mode switch link ──────────────────────────────────── */
+
+  .wl-mode-switch {
+    margin: calc(var(--space-xs) * 0.6) 0 0;
+    text-align: center;
+  }
+
+  .wl-mode-switch-btn {
+    all: unset;
+    --switch-hover: var(--chromatic-cyan);
+    font-size: calc(var(--text-sm) * 0.8);
+    color: rgb(var(--color-text-rgb) / 0.3);
+    cursor: pointer;
+    letter-spacing: 0.01em;
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .wl-mode-switch-btn:hover {
+    color: rgb(var(--switch-hover) / 0.7);
+  }
+
+  .wl-mode-switch-btn:focus-visible {
+    outline: none;
+    color: rgb(var(--switch-hover));
+  }
+
+  .wl-mode-switch-sep {
+    color: rgb(var(--color-text-rgb) / 0.15);
+    font-size: calc(var(--text-sm) * 0.8);
+    margin: 0 0.15em;
+    user-select: none;
+  }
+
+  /* ── Signal Flare panel ────────────────────────────────── */
+
+  .wl-flare-panel {
+    --chromatic-flare: 255 160 40;
+    display: grid;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
+    background: var(--whisper-surface);
+  }
+
+  .wl-flare-head {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.5);
+  }
+
+  .wl-flare-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: rgb(var(--chromatic-flare));
+    letter-spacing: 0.02em;
+  }
+
+  .wl-flare-lede {
+    margin: 0;
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.42);
+    line-height: 1.4;
+  }
+
+  .wl-flare-panel :global(.whisper-field-label) {
+    font-size: var(--text-sm);
+  }
+
+  .wl-flare-panel :global(.whisper-input) {
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    font-size: var(--text-sm);
+  }
+
+  .wl-flare-panel :global(.whisper-input):focus-visible {
+    outline-color: rgb(var(--chromatic-flare) / 0.42);
+    border-color: rgb(var(--chromatic-flare) / 0.34);
+  }
+
+  .wl-flare-fire-btn {
+    border-color: rgb(var(--chromatic-flare) / 0.4);
+    color: rgb(var(--chromatic-flare));
+    background: rgb(var(--chromatic-flare) / 0.08);
+  }
+
+  .wl-flare-fire-btn:hover:not(:disabled) {
+    border-color: rgb(var(--chromatic-flare) / 0.55);
+    background: rgb(var(--chromatic-flare) / 0.12);
+  }
+
+  /* Burning state */
+
+  .wl-flare-burning-indicator {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.5);
+    min-height: var(--touch-target);
+    padding: 0 calc(var(--space-xs) * 0.8);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    border: 1px solid rgb(var(--chromatic-flare) / 0.25);
+    background: rgb(var(--chromatic-flare) / 0.04);
+  }
+
+  .wl-flare-ember {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgb(var(--chromatic-flare));
+    box-shadow: 0 0 6px rgb(var(--chromatic-flare) / 0.5);
+    animation: wl-flare-pulse 2s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes wl-flare-pulse {
+    0%,
+    100% {
+      opacity: 0.6;
+      box-shadow: 0 0 4px rgb(var(--chromatic-flare) / 0.3);
+    }
+    50% {
+      opacity: 1;
+      box-shadow: 0 0 10px rgb(var(--chromatic-flare) / 0.6);
+    }
+  }
+
+  .wl-flare-burning-text {
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--chromatic-flare));
+    font-weight: 500;
+  }
+
+  .wl-flare-elapsed {
+    font-size: calc(var(--text-sm) * 0.78);
+    color: rgb(var(--color-text-rgb) / 0.35);
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .wl-flare-extinguish-btn {
+    flex-shrink: 0;
+    margin-left: calc(var(--space-xs) * 0.3);
+    font-size: calc(var(--text-sm) * 0.78);
+    padding: 0.35rem 0.6rem;
+    min-height: calc(var(--touch-target) * 0.72);
+  }
+
+  /* Peer arrived state */
+
+  .wl-flare-arrived {
+    display: grid;
+    gap: var(--space-sm);
+    padding: calc(var(--space-xs) * 0.8);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    border: 1px solid rgb(var(--chromatic-flare) / 0.35);
+    background: rgb(var(--chromatic-flare) / 0.06);
+    animation: wl-flare-arrived-flash 0.6s ease-out;
+  }
+
+  @keyframes wl-flare-arrived-flash {
+    0% {
+      background: rgb(var(--chromatic-flare) / 0.18);
+    }
+    100% {
+      background: rgb(var(--chromatic-flare) / 0.06);
+    }
+  }
+
+  .wl-flare-arrived-text {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--chromatic-flare));
+    font-weight: 500;
+  }
+
+  .wl-flare-arrived-actions {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+  }
+
+  /* ── Manual mode options ───────────────────────────────── */
+
+  .wl-manual-options {
+    display: grid;
+    gap: var(--space-sm);
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--whisper-edge);
+    margin-top: 0;
+  }
+
+  .wl-manual-options :global(.whisper-field-label) {
+    font-size: var(--text-sm);
+  }
+
+  .wl-manual-options :global(.whisper-input) {
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    font-size: var(--text-sm);
+  }
+
+  .wl-manual-options :global(.whisper-toggle) {
+    min-height: var(--touch-target);
+    padding: 0.55rem 0.75rem;
+  }
+
+  .wl-manual-options :global(.whisper-toggle-text) {
+    font-size: var(--text-sm);
+  }
+
+  @media (min-width: 860px) {
+    .wl-manual-options {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-items: start;
+    }
+  }
+
+  /* ── Responsive ───────────────────────────────────────── */
+
+  @media (max-width: 520px) {
+    .wl-flare-burning-indicator {
+      gap: calc(var(--space-xs) * 0.35);
+      padding: 0 calc(var(--space-xs) * 0.5);
+    }
+
+    .wl-flare-burning-text {
+      font-size: calc(var(--text-sm) * 0.8);
+    }
+
+    .wl-flare-extinguish-btn {
+      font-size: calc(var(--text-sm) * 0.72);
+      padding: 0.3rem 0.5rem;
+      margin-left: auto;
+    }
+
+    .wl-flare-arrived-actions {
+      flex-direction: column;
+    }
+
+    .wl-flare-arrived-actions :global(.whisper-mini-btn) {
+      width: 100%;
+      justify-content: center;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wl-flare-ember {
+      animation: none;
+    }
+  }
+</style>

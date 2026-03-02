@@ -1,5 +1,9 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import WhisperLiveIdle from "../components/whisper/WhisperLiveIdle.astro";
+import WhisperLiveChat from "../components/whisper/WhisperLiveChat.astro";
+import WhisperCampfire from "../components/whisper/WhisperCampfire.astro";
+import WhisperSealOverlay from "../components/whisper/WhisperSealOverlay.astro";
 
 const seo = {
   title: "Whisper | woflo",
@@ -665,7 +669,7 @@ const seo = {
                 ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e<span
                   class="wl-e2e-tip"
                   role="tooltip"
-                  >encrypted peer-to-peer by a temporal Kizuna bond</span
+                  >sealed end-to-end with a Kizuna bond</span
                 ></span
               >
             </h2>
@@ -739,1217 +743,14 @@ const seo = {
           </div>
         </div>
 
-        <!-- Phase: idle — create or join -->
-        <div class="wl-phase" id="wl-idle-phase">
-          <p class="wl-phase-lede" id="wl-idle-lede">
-            know a phrase, connect at the same time. thats it
-          </p>
+        <WhisperLiveIdle />
 
-          <!-- Relay mode: phrase + connect (the default, clean view) -->
-          <div class="whisper-panel wl-relay-panel" id="wl-relay-panel">
-            <label class="whisper-field wl-relay-phrase-field" for="wl-phrase">
-              <span class="whisper-field-label">shared phrase</span>
-              <div class="wl-relay-connect-row">
-                <input
-                  id="wl-phrase"
-                  type="text"
-                  class="whisper-input"
-                  placeholder="a short phrase between friends"
-                  autocomplete="new-password"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                  data-form-type="other"
-                />
-                <button
-                  id="wl-relay-connect"
-                  type="button"
-                  class="whisper-mini-btn wl-primary">Connect</button
-                >
-              </div>
-            </label>
-            <p class="wl-relay-hint">
-              the relay that matches you is blind. it never sees your messages.
-            </p>
-          </div>
+        <WhisperLiveChat />
 
-          <!-- Signal Flare panel — long-lived presence mode -->
-          <div
-            class="whisper-panel wl-flare-panel"
-            id="wl-flare-panel"
-            style="display:none"
-          >
-            <div class="wl-flare-head">
-              <span class="wl-flare-title">Signal Flare</span>
-            </div>
-            <p class="wl-flare-lede">
-              leave the door open. they'll find you when they're ready.
-            </p>
-            <label
-              class="whisper-field wl-flare-phrase-field"
-              for="wl-flare-phrase"
-            >
-              <span class="whisper-field-label">shared phrase</span>
-              <div class="wl-relay-connect-row">
-                <input
-                  id="wl-flare-phrase"
-                  type="text"
-                  class="whisper-input"
-                  placeholder="a rendezvous phrase between friends"
-                  autocomplete="new-password"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                  data-form-type="other"
-                />
-                <button
-                  id="wl-flare-fire"
-                  type="button"
-                  class="whisper-mini-btn wl-flare-fire-btn">Fire</button
-                >
-              </div>
-            </label>
-
-            <!-- Burning state (shown while flare is active) -->
-            <div
-              id="wl-flare-burning"
-              class="wl-flare-burning"
-              style="display:none"
-            >
-              <div class="wl-flare-burning-indicator">
-                <span class="wl-flare-ember" aria-hidden="true"></span>
-                <span class="wl-flare-burning-text">flare is burning</span>
-                <span id="wl-flare-elapsed" class="wl-flare-elapsed"></span>
-                <button
-                  id="wl-flare-extinguish"
-                  type="button"
-                  class="whisper-mini-btn wl-flare-extinguish-btn"
-                  >Extinguish</button
-                >
-              </div>
-            </div>
-
-            <!-- Peer arrived state -->
-            <div
-              id="wl-flare-arrived"
-              class="wl-flare-arrived"
-              style="display:none"
-            >
-              <p class="wl-flare-arrived-text">someone found your flare.</p>
-              <div class="wl-flare-arrived-actions">
-                <button
-                  id="wl-flare-accept"
-                  type="button"
-                  class="whisper-mini-btn wl-primary">Connect</button
-                >
-                <button
-                  id="wl-flare-ignore"
-                  type="button"
-                  class="whisper-mini-btn">Ignore</button
-                >
-              </div>
-            </div>
-          </div>
-
-          <!-- Manual mode: create/join + options (hidden by default) -->
-          <div
-            class="whisper-panel wl-actions-panel"
-            id="wl-manual-panel"
-            style="display:none"
-          >
-            <div class="wl-actions-row">
-              <div class="wl-action-create">
-                <span class="wl-action-label">Create</span>
-                <button
-                  id="wl-create"
-                  type="button"
-                  class="whisper-mini-btn wl-primary">Create channel</button
-                >
-              </div>
-              <span class="wl-actions-divider" aria-hidden="true"></span>
-              <div class="wl-action-join">
-                <span class="wl-action-label">Join</span>
-                <div class="wl-join-row">
-                  <input
-                    id="wl-join-input"
-                    type="text"
-                    class="whisper-input wl-code-input"
-                    placeholder="connection code"
-                    autocomplete="off"
-                    spellcheck="false"
-                  />
-                  <button id="wl-join" type="button" class="whisper-mini-btn"
-                    >Join</button
-                  >
-                </div>
-                <div
-                  class="wl-join-tools"
-                  role="group"
-                  aria-label="Join code helpers"
-                >
-                  <button id="wl-join-paste" type="button" class="wl-tool-link"
-                    >paste</button
-                  >
-                  <span class="wl-tool-sep" aria-hidden="true">/</span>
-                  <button
-                    id="wl-join-qr-scan"
-                    type="button"
-                    class="wl-tool-link">scan</button
-                  >
-                  <span class="wl-tool-sep" aria-hidden="true">/</span>
-                  <button
-                    id="wl-join-qr-image"
-                    type="button"
-                    class="wl-tool-link">image</button
-                  >
-                  <button
-                    id="wl-join-qr-stop"
-                    type="button"
-                    class="wl-tool-link wl-tool-link--stop"
-                    style="display:none">stop</button
-                  >
-                  <input
-                    id="wl-join-qr-file"
-                    type="file"
-                    class="sr-only"
-                    accept="image/*"
-                    aria-hidden="true"
-                  />
-                </div>
-                <div
-                  id="wl-join-qr-panel"
-                  class="wl-join-qr-panel"
-                  style="display:none"
-                >
-                  <video
-                    id="wl-join-qr-video"
-                    class="wl-join-qr-video"
-                    playsinline
-                    muted></video>
-                </div>
-                <span
-                  id="wl-join-qr-status"
-                  class="whisper-field-hint wl-join-qr-status"></span>
-              </div>
-            </div>
-            <div class="wl-manual-options">
-              <label class="whisper-field" for="wl-manual-phrase">
-                <span class="whisper-field-label"
-                  >shared phrase <span class="whisper-field-hint"
-                    >(optional)</span
-                  ></span
-                >
-                <input
-                  id="wl-manual-phrase"
-                  type="password"
-                  class="whisper-input"
-                  placeholder="a short phrase between friends"
-                  autocomplete="new-password"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                  data-form-type="other"
-                />
-              </label>
-              <div class="whisper-field">
-                <span class="whisper-field-label">network</span>
-                <label class="whisper-toggle" for="wl-external-assist">
-                  <input
-                    id="wl-external-assist"
-                    type="checkbox"
-                    class="whisper-toggle-input"
-                  />
-                  <span class="whisper-toggle-text">
-                    external assist (stun)
-                    <span class="whisper-field-hint"
-                      >(helps connect across networks)</span
-                    >
-                  </span>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <!-- Hidden relay state (not visible, drives logic) -->
-          <input
-            id="wl-relay-assist"
-            type="checkbox"
-            class="sr-only"
-            checked
-            aria-hidden="true"
-          />
-
-          <!-- Mode switch links -->
-          <p class="wl-mode-switch" id="wl-mode-switch">
-            <button
-              type="button"
-              class="wl-mode-switch-btn"
-              id="wl-flare-switch-btn">try a signal flare</button
-            >
-            <span class="wl-mode-switch-sep" aria-hidden="true">&middot;</span>
-            <button
-              type="button"
-              class="wl-mode-switch-btn"
-              id="wl-mode-switch-btn">or connect manually</button
-            >
-          </p>
-        </div>
-
-        <!-- Phase: offering — show offer code, wait for answer -->
-        <div class="wl-phase" id="wl-offer-section" style="display:none">
-          <p class="wl-phase-lede">
-            send your offer to the other peer, then paste their reply to
-            complete the handshake.
-          </p>
-          <div class="wl-grid wl-grid--offer">
-            <div class="whisper-panel wl-card">
-              <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Send</h3>
-                <span class="whisper-panel-mode">offer code</span>
-              </div>
-              <p class="wl-inline-hint">
-                share this with your peer through any channel.
-              </p>
-              <div class="wl-code-display-wrap">
-                <pre id="wl-offer-code" class="wl-code-display"></pre>
-                <button
-                  id="wl-offer-copy"
-                  type="button"
-                  class="whisper-mini-btn">Copy</button
-                >
-                <button
-                  id="wl-offer-share"
-                  type="button"
-                  class="whisper-mini-btn">Share</button
-                >
-              </div>
-              <div class="wl-live-qr-toggle-row">
-                <button
-                  id="wl-offer-qr-toggle"
-                  type="button"
-                  class="whisper-mini-btn"
-                  aria-expanded="false">Show QR</button
-                >
-              </div>
-              <div
-                id="wl-offer-qr-panel"
-                class="wl-live-qr-wrap"
-                style="display:none"
-              >
-                <canvas
-                  id="wl-offer-qr-canvas"
-                  class="ws-seal-qr-canvas"
-                  data-qr-size="132"
-                  aria-label="QR code for this Whisper Live offer"></canvas>
-                <p
-                  id="wl-offer-qr-status"
-                  class="ws-seal-hint wl-live-qr-status"
-                >
-                </p>
-              </div>
-            </div>
-
-            <div class="whisper-panel wl-card">
-              <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Receive</h3>
-                <span class="whisper-panel-mode">paste reply</span>
-              </div>
-              <p class="wl-inline-hint">
-                paste their answer code here, then connect.
-              </p>
-              <div class="wl-join-row">
-                <input
-                  id="wl-answer-input"
-                  type="text"
-                  class="whisper-input wl-code-input"
-                  placeholder="answer code"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <button
-                  id="wl-answer-apply"
-                  type="button"
-                  class="whisper-mini-btn wl-primary">Connect</button
-                >
-              </div>
-            </div>
-          </div>
-          <div class="wl-offer-actions">
-            <button id="wl-offer-back" type="button" class="whisper-mini-btn"
-              >Back</button
-            >
-          </div>
-        </div>
-
-        <!-- Phase: answering — show answer code to copy back -->
-        <div class="wl-phase" id="wl-answer-section" style="display:none">
-          <p class="wl-phase-lede">
-            send this answer code back to the creator to finish connecting.
-          </p>
-          <div class="whisper-panel wl-answer-only">
-            <div class="whisper-panel-header">
-              <h3 class="whisper-panel-title">Send back</h3>
-              <span class="whisper-panel-mode">answer code</span>
-            </div>
-            <p class="wl-inline-hint">
-              keep this tab open until the creator confirms connection.
-            </p>
-            <div class="wl-code-display-wrap">
-              <pre id="wl-answer-code" class="wl-code-display"></pre>
-              <button id="wl-answer-copy" type="button" class="whisper-mini-btn"
-                >Copy</button
-              >
-              <button
-                id="wl-answer-share"
-                type="button"
-                class="whisper-mini-btn">Share</button
-              >
-            </div>
-            <div class="wl-live-qr-toggle-row">
-              <button
-                id="wl-answer-qr-toggle"
-                type="button"
-                class="whisper-mini-btn"
-                aria-expanded="false">Show QR</button
-              >
-            </div>
-            <div
-              id="wl-answer-qr-panel"
-              class="wl-live-qr-wrap"
-              style="display:none"
-            >
-              <canvas
-                id="wl-answer-qr-canvas"
-                class="ws-seal-qr-canvas"
-                data-qr-size="132"
-                aria-label="QR code for this Whisper Live answer"></canvas>
-              <p
-                id="wl-answer-qr-status"
-                class="ws-seal-hint wl-live-qr-status"
-              >
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Phase: connecting/handshaking -->
-        <div class="wl-phase" id="wl-connecting-section" style="display:none">
-          <div class="whisper-panel wl-connecting-panel">
-            <div class="wl-spinner" aria-hidden="true"></div>
-            <p id="wl-connecting-status" class="wl-connecting-text">
-              establishing connection...
-            </p>
-          </div>
-        </div>
-
-        <!-- Phase: verify fingerprint -->
-        <div class="wl-phase" id="wl-verify-section" style="display:none">
-          <div class="whisper-panel wl-verify-panel">
-            <h2 class="whisper-panel-title">Security check</h2>
-            <p class="whisper-field-hint">
-              ask your peer: do they see the same emoji? if not, stop.
-            </p>
-            <p id="wl-fingerprint" class="wl-fingerprint" aria-live="polite">
-            </p>
-            <div class="wl-verify-actions">
-              <button
-                id="wl-confirm"
-                type="button"
-                class="whisper-mini-btn wl-confirm-btn">Match · continue</button
-              >
-              <button
-                id="wl-reject"
-                type="button"
-                class="whisper-mini-btn wl-reject-btn">No match · stop</button
-              >
-            </div>
-          </div>
-        </div>
-
-        <!-- Phase: live chat -->
-        <div
-          class="wl-phase wl-phase--chat"
-          id="wl-chat-section"
-          style="display:none"
-        >
-          <div class="whisper-panel wl-chat-panel">
-            <div
-              id="wl-chat-messages"
-              class="wl-chat-messages"
-              aria-live="polite"
-              aria-relevant="additions"
-            >
-              <p class="wl-chat-empty" id="wl-chat-empty"></p>
-            </div>
-
-            <div class="wl-chat-compose">
-              <div class="wl-chat-input-wrap">
-                <input
-                  id="wl-chat-input"
-                  type="text"
-                  class="whisper-input wl-chat-text-input"
-                  placeholder="whisper something..."
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <div class="wl-mic-wrap" id="wl-chat-mic-wrap">
-                  <button
-                    id="wl-chat-mic-cancel"
-                    type="button"
-                    class="wl-mic-split wl-mic-cancel"
-                    aria-label="Cancel recording"
-                    tabindex="-1"
-                  >
-                    <svg
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      aria-hidden="true"
-                    >
-                      <path d="M4 4l8 8M12 4l-8 8"></path>
-                    </svg>
-                  </button>
-                  <button
-                    id="wl-chat-mic-btn"
-                    type="button"
-                    class="wl-chat-mic-btn"
-                    aria-label="Record audio message"
-                    title="record audio"
-                    disabled
-                  >
-                    <svg
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.3"
-                      class="wl-mic-icon"
-                      aria-hidden="true"
-                    >
-                      <rect x="5.5" y="1.5" width="5" height="9" rx="2.5"
-                      ></rect>
-                      <path d="M3 7.5a5 5 0 0010 0"></path>
-                      <path d="M8 13v2"></path>
-                    </svg>
-                  </button>
-                  <button
-                    id="wl-chat-mic-send"
-                    type="button"
-                    class="wl-mic-split wl-mic-send"
-                    aria-label="Send recording"
-                    tabindex="-1"
-                  >
-                    <svg
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      aria-hidden="true"
-                    >
-                      <path d="M3 8l4 4 6-7"></path>
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              <button
-                id="wl-chat-clear-btn"
-                type="button"
-                class="whisper-mini-btn wl-chat-clear-btn"
-                aria-label="Clear chat history"
-                title="request to clear history"
-                data-clear-state="idle"
-                disabled
-                ><span class="wl-clear-icon" aria-hidden="true">↺</span></button
-              >
-              <button
-                id="wl-chat-file-btn"
-                type="button"
-                class="whisper-mini-btn wl-chat-file-btn"
-                aria-label="Send a file"
-                title="send file"
-              >
-                <svg
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  class="wl-file-icon"
-                  aria-hidden="true"
-                >
-                  <path d="M8 2v8M4 6l4-4 4 4"></path>
-                  <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3"></path>
-                </svg>
-              </button>
-              <input
-                id="wl-chat-file-input"
-                type="file"
-                class="sr-only"
-                aria-hidden="true"
-              />
-              <button
-                id="wl-chat-send"
-                type="button"
-                class="whisper-mini-btn wl-chat-send-btn">Send</button
-              >
-            </div>
-          </div>
-        </div>
-
-        <!-- Phase: silent mode — show shared secret -->
-        <div class="wl-phase" id="wl-silent-section" style="display:none">
-          <div class="whisper-panel wl-silent-panel">
-            <h2 class="whisper-panel-title">Shared secret</h2>
-            <p class="whisper-field-hint">
-              use this as your Whisper password for solo-mode dead drops through
-              any channel
-            </p>
-            <div class="wl-code-display-wrap">
-              <pre
-                id="wl-silent-secret"
-                class="wl-code-display wl-secret-display">
-              </pre>
-              <button id="wl-silent-copy" type="button" class="whisper-mini-btn"
-                >Copy</button
-              >
-            </div>
-            <button
-              id="wl-silent-disconnect"
-              type="button"
-              class="whisper-mini-btn wl-disconnect-btn">End session</button
-            >
-          </div>
-        </div>
-
-        <!-- Phase: disconnected -->
-        <div class="wl-phase" id="wl-disconnected-section" style="display:none">
-          <div class="whisper-panel wl-end-panel">
-            <p class="wl-end-text">no trace remains.</p>
-            <button id="wl-new-session" type="button" class="whisper-mini-btn"
-              >Start over</button
-            >
-          </div>
-        </div>
-
-        <!-- Phase: error -->
-        <div class="wl-phase" id="wl-error-section" style="display:none">
-          <div class="whisper-panel wl-error-panel">
-            <p id="wl-error-message" class="wl-error-text"></p>
-            <button id="wl-error-retry" type="button" class="whisper-mini-btn"
-              >Try again</button
-            >
-          </div>
-        </div>
-
-        <!-- ═══ Campfire phases (group chat within Live) ═══ -->
-
-        <!-- Campfire: idle -->
-        <div class="wl-phase" id="cf-idle-phase" style="display:none">
-          <p class="wl-phase-lede">
-            one person creates the room, shares the code, then everyone joins
-            directly.
-          </p>
-          <div class="whisper-panel wl-actions-panel">
-            <div class="wl-actions-row">
-              <div class="wl-action-create">
-                <span class="wl-action-label">Create</span>
-                <button
-                  id="cf-create"
-                  type="button"
-                  class="whisper-mini-btn wl-primary">Create room</button
-                >
-              </div>
-              <span class="wl-actions-divider" aria-hidden="true"></span>
-              <div class="wl-action-join">
-                <span class="wl-action-label">Join</span>
-                <div class="wl-join-row">
-                  <input
-                    id="cf-join-input"
-                    type="text"
-                    class="whisper-input wl-code-input"
-                    placeholder="room code"
-                    autocomplete="off"
-                    spellcheck="false"
-                  />
-                  <button id="cf-join" type="button" class="whisper-mini-btn"
-                    >Join</button
-                  >
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="whisper-panel wl-phrase-panel">
-            <label class="whisper-field" for="cf-name">
-              <span class="whisper-field-label"
-                >display name <span class="whisper-field-hint"
-                  >(visible to the group)</span
-                ></span
-              >
-              <input
-                id="cf-name"
-                type="text"
-                class="whisper-input"
-                placeholder="your name (optional)"
-                autocomplete="off"
-                maxlength="32"
-              />
-            </label>
-
-            <div class="whisper-field">
-              <span class="whisper-field-label">network</span>
-              <label class="whisper-toggle" for="cf-external-assist">
-                <input
-                  id="cf-external-assist"
-                  type="checkbox"
-                  class="whisper-toggle-input"
-                />
-                <span class="whisper-toggle-text">
-                  external assist (stun)
-                  <span class="whisper-field-hint"
-                    >(helps connect across networks. may expose network metadata
-                    during setup. turns off after connect)</span
-                  >
-                </span>
-              </label>
-            </div>
-
-            <div class="whisper-field">
-              <span class="whisper-field-label"
-                >campfire flare join <span class="whisper-field-hint"
-                  >(find an open host gate by phrase)</span
-                ></span
-              >
-              <div class="wl-join-row">
-                <input
-                  id="cf-flare-phrase"
-                  type="text"
-                  class="whisper-input wl-code-input"
-                  placeholder="host gate phrase"
-                  autocomplete="new-password"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                  data-form-type="other"
-                />
-                <button
-                  id="cf-flare-join"
-                  type="button"
-                  class="whisper-mini-btn">Join flare</button
-                >
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Campfire: waiting -->
-        <div class="wl-phase" id="cf-waiting-section" style="display:none">
-          <p class="wl-phase-lede">
-            share the room code. when someone sends back their reply, paste it
-            here to let them in.
-          </p>
-          <div class="wl-grid wl-grid--offer">
-            <div class="whisper-panel wl-card">
-              <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Room code</h3>
-                <span class="whisper-panel-mode">send this to peers</span>
-              </div>
-              <p class="wl-inline-hint">
-                anyone with this code can request to join.
-              </p>
-              <div class="wl-code-display-wrap">
-                <pre id="cf-room-code" class="wl-code-display"></pre>
-                <button id="cf-room-copy" type="button" class="whisper-mini-btn"
-                  >Copy</button
-                >
-                <button
-                  id="cf-room-share"
-                  type="button"
-                  class="whisper-mini-btn">Share</button
-                >
-              </div>
-            </div>
-
-            <div class="whisper-panel wl-card">
-              <div class="whisper-panel-header">
-                <h3 class="whisper-panel-title">Accept</h3>
-                <span class="whisper-panel-mode">paste peer reply</span>
-              </div>
-              <p class="wl-inline-hint">
-                paste a peer's reply code to finish connecting them.
-              </p>
-              <div class="wl-join-row">
-                <input
-                  id="cf-answer-input"
-                  type="text"
-                  class="whisper-input wl-code-input"
-                  placeholder="answer code"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <button
-                  id="cf-answer-apply"
-                  type="button"
-                  class="whisper-mini-btn wl-primary">Connect</button
-                >
-              </div>
-
-              <div class="whisper-field" style="margin-top:.8rem">
-                <span class="whisper-field-label"
-                  >flare gate <span class="whisper-field-hint"
-                    >(host-controlled door)</span
-                  ></span
-                >
-                <div class="wl-join-row">
-                  <input
-                    id="cf-host-flare-phrase"
-                    type="text"
-                    class="whisper-input wl-code-input"
-                    placeholder="phrase for this gate"
-                    autocomplete="new-password"
-                    autocapitalize="off"
-                    spellcheck="false"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    data-form-type="other"
-                  />
-                  <button
-                    id="cf-host-flare-toggle"
-                    type="button"
-                    class="whisper-mini-btn">Open gate</button
-                  >
-                </div>
-                <p id="cf-host-flare-state" class="whisper-field-hint">
-                  gate closed
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Campfire: connecting -->
-        <div class="wl-phase" id="cf-connecting-section" style="display:none">
-          <div class="whisper-panel wl-connecting-panel">
-            <div class="wl-spinner" aria-hidden="true"></div>
-            <p id="cf-connecting-status" class="wl-connecting-text">
-              joining the room...
-            </p>
-          </div>
-          <div
-            class="whisper-panel wl-card"
-            id="cf-joiner-answer"
-            style="display:none"
-          >
-            <div class="whisper-panel-header">
-              <h3 class="whisper-panel-title">Reply code</h3>
-              <span class="whisper-panel-mode">send back to the host</span>
-            </div>
-            <p class="wl-inline-hint">
-              copy this and send it to whoever created the room. keep this tab
-              open.
-            </p>
-            <div class="wl-code-display-wrap">
-              <pre id="cf-joiner-code" class="wl-code-display"></pre>
-              <button id="cf-joiner-copy" type="button" class="whisper-mini-btn"
-                >Copy</button
-              >
-              <button
-                id="cf-joiner-share"
-                type="button"
-                class="whisper-mini-btn">Share</button
-              >
-            </div>
-          </div>
-        </div>
-
-        <!-- Campfire: active -->
-        <div class="wl-phase" id="cf-active-section" style="display:none">
-          <div class="whisper-panel wl-chat-panel cf-chat-panel">
-            <div class="wl-chat-header cf-chat-header">
-              <div class="cf-peer-list-wrap">
-                <span class="cf-peer-label">in room:</span>
-                <div id="cf-peer-list" class="cf-peer-list" role="list"></div>
-              </div>
-              <div class="cf-header-actions">
-                <button
-                  id="cf-host-flare-toggle-active"
-                  type="button"
-                  class="whisper-mini-btn"
-                  style="display:none">Open gate</button
-                >
-                <button
-                  id="cf-disconnect"
-                  type="button"
-                  class="whisper-mini-btn wl-disconnect-btn">Leave</button
-                >
-              </div>
-            </div>
-
-            <div
-              id="cf-chat-messages"
-              class="wl-chat-messages"
-              aria-live="polite"
-              aria-relevant="additions"
-            >
-            </div>
-
-            <div class="wl-chat-compose">
-              <input
-                id="cf-chat-input"
-                type="text"
-                class="whisper-input wl-chat-text-input"
-                placeholder="type a message"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <button
-                id="cf-chat-send"
-                type="button"
-                class="whisper-mini-btn wl-chat-send-btn">Send</button
-              >
-            </div>
-          </div>
-        </div>
-
-        <!-- Campfire: DM overlay -->
-        <div id="cf-dm-overlay" class="cf-dm-overlay" style="display:none">
-          <div class="whisper-panel cf-dm-panel">
-            <div class="cf-dm-header">
-              <span class="cf-dm-label"
-                ><strong id="cf-dm-target-name"></strong></span
-              >
-              <button id="cf-dm-close" type="button" class="whisper-mini-btn"
-                >Close</button
-              >
-            </div>
-            <div id="cf-dm-messages" class="wl-chat-messages cf-dm-messages">
-            </div>
-            <div class="wl-chat-compose">
-              <input
-                id="cf-dm-input"
-                type="text"
-                class="whisper-input wl-chat-text-input"
-                placeholder="just between you two"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <button
-                id="cf-dm-send"
-                type="button"
-                class="whisper-mini-btn wl-chat-send-btn">Send</button
-              >
-            </div>
-          </div>
-        </div>
-
-        <!-- Campfire: ended -->
-        <div class="wl-phase" id="cf-ended-section" style="display:none">
-          <div class="whisper-panel wl-end-panel">
-            <p id="cf-ended-message" class="wl-end-text">
-              the campfire is out. nothing remains.
-            </p>
-            <button id="cf-new-campfire" type="button" class="whisper-mini-btn"
-              >New session</button
-            >
-          </div>
-        </div>
+        <WhisperCampfire />
       </div>
 
-      <!-- Seal overlay panels (computing, my-seal, result, unseal) -->
-      <div class="ws-overlay" id="ws-overlay" style="display:none">
-        <!-- Computing fingerprint -->
-        <div
-          class="ws-overlay-panel"
-          id="ws-computing-phase"
-          style="display:none"
-        >
-          <div class="whisper-panel ws-computing-panel">
-            <div class="wl-spinner" aria-hidden="true"></div>
-            <p class="ws-computing-text">computing your browser seal...</p>
-          </div>
-        </div>
-
-        <!-- My seal — display seal code -->
-        <div
-          class="ws-overlay-panel"
-          id="ws-my-seal-phase"
-          style="display:none"
-        >
-          <div class="whisper-panel ws-seal-display-panel">
-            <h3 class="whisper-panel-title">Your WS2 Public Seal</h3>
-            <div class="ws-seal-code-wrap">
-              <span id="ws-seal-code" class="ws-seal-code"></span>
-            </div>
-            <div class="ws-seal-qr-wrap">
-              <canvas
-                id="ws-seal-qr-canvas-overlay"
-                class="ws-seal-qr-canvas"
-                data-qr-size="220"
-                aria-label="QR code for your full WS2 public key"></canvas>
-              <p id="ws-seal-qr-status-overlay" class="ws-seal-hint">
-                share this to let someone message you.
-              </p>
-            </div>
-            <p class="ws-seal-hint">
-              Share this full WS2 code to receive messages.
-            </p>
-            <p class="ws-seal-hint">
-              Only the browser profile with the matching private key can open
-              messages sealed to this key.
-            </p>
-            <div class="ws-seal-actions">
-              <button
-                id="ws-seal-copy"
-                type="button"
-                class="whisper-mini-btn wl-primary">Copy seal</button
-              >
-              <button id="ws-seal-back" type="button" class="whisper-mini-btn"
-                >Done</button
-              >
-            </div>
-          </div>
-        </div>
-
-        <!-- Sealed URL ready -->
-        <div class="ws-overlay-panel" id="ws-result-phase" style="display:none">
-          <div class="whisper-panel ws-result-panel">
-            <h3 class="whisper-panel-title">Message Sealed</h3>
-
-            <div class="ws-url-display-wrap">
-              <pre id="ws-sealed-url" class="wl-code-display ws-url-display">
-              </pre>
-              <button id="ws-url-copy" type="button" class="whisper-mini-btn"
-                >Copy URL</button
-              >
-            </div>
-
-            <div class="ws-result-checks">
-              <p class="ws-check">
-                <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> Only
-                <strong id="ws-result-seal-target"></strong> can open this
-              </p>
-              <p class="ws-check">
-                <span class="ws-check-icon" aria-hidden="true">&#x2713;</span>
-                <span id="ws-result-expiry-text">Expires in 24 hours</span>
-              </p>
-              <p class="ws-check">
-                <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> No
-                data stored anywhere
-              </p>
-            </div>
-
-            <p
-              id="ws-result-url-warning"
-              class="ws-result-url-length-warning"
-              style="display:none"
-            >
-            </p>
-            <p class="ws-result-warning">
-              Once you leave this page, this URL cannot be recovered.
-            </p>
-
-            <button id="ws-result-done" type="button" class="whisper-mini-btn"
-              >Done</button
-            >
-          </div>
-        </div>
-
-        <!-- Unsealing (auto-triggered by URL fragment) -->
-        <div class="ws-overlay-panel" id="ws-unseal-phase" style="display:none">
-          <div class="whisper-panel ws-unseal-panel">
-            <div id="ws-unseal-progress" class="ws-unseal-progress">
-              <div class="wl-spinner" aria-hidden="true"></div>
-              <p class="ws-computing-text">checking your seal...</p>
-            </div>
-
-            <div
-              id="ws-unseal-success"
-              class="ws-status-screen"
-              style="display:none"
-            >
-              <div
-                class="ws-status-icon ws-status-icon--success"
-                aria-hidden="true"
-              >
-                <svg
-                  width="28"
-                  height="28"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </svg>
-              </div>
-              <h3 class="whisper-panel-title ws-status-title">
-                Sealed Message
-              </h3>
-              <div class="ws-message-display">
-                <pre id="ws-decrypted-message" class="ws-decrypted-text"></pre>
-              </div>
-              <p class="ws-unseal-meta">
-                <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> decrypted
-                locally with your seal. this message won't be here when you leave.
-              </p>
-              <div class="ws-status-meta" data-meta="success"></div>
-              <div class="ws-unseal-actions">
-                <button
-                  id="ws-msg-copy"
-                  type="button"
-                  class="whisper-mini-btn wl-primary">Copy content</button
-                >
-                <button
-                  id="ws-unseal-done"
-                  type="button"
-                  class="whisper-mini-btn">Close</button
-                >
-              </div>
-            </div>
-
-            <div
-              id="ws-unseal-fail"
-              class="ws-status-screen"
-              style="display:none"
-            >
-              <div
-                class="ws-status-icon ws-status-icon--locked"
-                aria-hidden="true"
-              >
-                <svg
-                  width="28"
-                  height="28"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"
-                  ></rect>
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                </svg>
-              </div>
-              <h3 class="whisper-panel-title ws-status-title">Cannot Open</h3>
-              <p class="ws-fail-text">
-                this one's not for you. or at least, not this browser.
-              </p>
-              <p class="ws-fail-detail">
-                try opening it in the browser where your seal was created.
-              </p>
-              <div class="ws-status-meta" data-meta="fail"></div>
-              <button id="ws-fail-back" type="button" class="whisper-mini-btn"
-                >Back</button
-              >
-            </div>
-
-            <div
-              id="ws-unseal-expired"
-              class="ws-status-screen"
-              style="display:none"
-            >
-              <div
-                class="ws-status-icon ws-status-icon--expired"
-                aria-hidden="true"
-              >
-                <svg
-                  width="28"
-                  height="28"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <polyline points="12 6 12 12 16 14"></polyline>
-                </svg>
-              </div>
-              <h3 class="whisper-panel-title ws-status-title">Expired</h3>
-              <p class="ws-fail-text">
-                this sealed message has expired and can no longer be opened.
-              </p>
-              <p class="ws-fail-detail">
-                this one had a time limit... and it passed.
-              </p>
-              <div class="ws-status-meta" data-meta="expired"></div>
-              <button
-                id="ws-expired-back"
-                type="button"
-                class="whisper-mini-btn">Back</button
-              >
-            </div>
-
-            <div
-              id="ws-unseal-password"
-              class="ws-status-screen"
-              style="display:none"
-            >
-              <div
-                class="ws-status-icon ws-status-icon--phrase"
-                aria-hidden="true"
-              >
-                <svg
-                  width="28"
-                  height="28"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path
-                    d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"
-                  ></path>
-                </svg>
-              </div>
-              <h3 class="whisper-panel-title ws-status-title">
-                Shared Phrase Required
-              </h3>
-              <p class="ws-fail-detail">
-                this sealed message was locked with a shared phrase. enter it
-                below to decrypt.
-              </p>
-              <div class="ws-status-meta" data-meta="password"></div>
-              <label class="whisper-field" for="ws-unseal-pw-input">
-                <input
-                  id="ws-unseal-pw-input"
-                  type="password"
-                  class="whisper-input"
-                  placeholder="enter shared phrase"
-                  autocomplete="new-password"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                  data-form-type="other"
-                />
-              </label>
-              <div class="wl-join-tools" role="group" aria-label="Paste helper">
-                <button
-                  id="ws-unseal-pw-paste"
-                  type="button"
-                  class="wl-tool-link">paste</button
-                >
-              </div>
-              <button
-                id="ws-unseal-pw-submit"
-                type="button"
-                class="whisper-mini-btn wl-primary">Decrypt</button
-              >
-            </div>
-          </div>
-        </div>
-      </div>
+      <WhisperSealOverlay />
     </section>
 
     <!-- ── Progress Bar ─────────────────────────────────────── -->
@@ -2020,8 +821,8 @@ const seo = {
           audio and video powered by Whisper Harmonic and Whisper Lumen media
           codecs, all encrypted with a Whisper Kizuna bond. what is that? it's
           encryption at a level that makes it impossible to decrypt without
-          <strong>preventing the handshake itself</strong>. a kizuna bond is
-          structurally exclusive. two seats, two people. it's the best way to
+          <strong>preventing the handshake itself</strong>. a kizuna bond, once sealed, is
+          structurally exclusive. two seats, between two people. it's the best way to
           keep secrets safe in a world that wants to know everything.
         </p>
         <p class="insights-text">
@@ -2635,7 +1436,7 @@ const seo = {
   }
 
   /* ── Operation Panel ───────────────────────────────────── */
-  .whisper-panel {
+  :global(.whisper-panel) {
     display: grid;
     gap: var(--space-sm);
     border: 1px solid var(--whisper-edge);
@@ -2647,14 +1448,14 @@ const seo = {
     overflow: hidden;
   }
 
-  .whisper-panel-header {
+  :global(.whisper-panel-header) {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: var(--space-sm);
   }
 
-  .whisper-panel-title {
+  :global(.whisper-panel-title) {
     margin: 0;
     font-size: var(--text-base);
     color: rgb(var(--color-text-rgb) / 0.86);
@@ -2676,33 +1477,33 @@ const seo = {
     display: inline;
   }
 
-  .whisper-panel-mode {
+  :global(.whisper-panel-mode) {
     font-size: calc(var(--text-sm) * 0.88);
     color: rgb(var(--color-text-rgb) / 0.42);
     letter-spacing: 0.04em;
     transition: color var(--duration-normal) var(--ease-out);
   }
 
-  .whisper-panel-mode:global(.whisper-status--ready) {
+  :global(.whisper-panel-mode.whisper-status--ready) {
     color: rgb(var(--chromatic-cyan));
   }
 
-  .whisper-field {
+  :global(.whisper-field) {
     display: grid;
     gap: calc(var(--space-xs) * 0.35);
   }
 
-  .whisper-field-label {
+  :global(.whisper-field-label) {
     font-size: var(--text-sm);
     color: rgb(var(--color-text-rgb) / 0.62);
   }
 
-  .whisper-field-hint {
+  :global(.whisper-field-hint) {
     color: rgb(var(--color-text-rgb) / 0.32);
     font-size: calc(var(--text-sm) * 0.88);
   }
 
-  .whisper-input {
+  :global(.whisper-input) {
     border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     border-radius: calc(var(--whisper-radius) * 0.75);
     background: rgb(10 10 10 / 0.9);
@@ -2716,11 +1517,11 @@ const seo = {
       box-shadow var(--duration-normal) var(--ease-out);
   }
 
-  .whisper-input::placeholder {
+  :global(.whisper-input)::placeholder {
     color: rgb(var(--color-text-rgb) / 0.22);
   }
 
-  .whisper-input:focus-visible {
+  :global(.whisper-input):focus-visible {
     outline: 1px solid rgb(var(--chromatic-cyan) / 0.42);
     outline-offset: 0;
     border-color: rgb(var(--chromatic-cyan) / 0.34);
@@ -2739,7 +1540,7 @@ const seo = {
     min-width: 0;
   }
 
-  .whisper-mini-btn {
+  :global(.whisper-mini-btn) {
     flex: 0 0 auto;
     min-height: var(--touch-target);
     padding: 0.6rem 0.75rem;
@@ -2778,7 +1579,7 @@ const seo = {
     border-left: 1px solid rgb(var(--color-text-rgb) / 0.14);
   }
 
-  .whisper-mini-btn:hover {
+  :global(.whisper-mini-btn):hover {
     border-color: rgb(var(--color-text-rgb) / 0.22);
     background: rgb(var(--color-text-rgb) / 0.05);
     color: rgb(var(--color-text-rgb) / 0.75);
@@ -2788,7 +1589,7 @@ const seo = {
     border-color: transparent;
   }
 
-  .whisper-mini-btn:disabled {
+  :global(.whisper-mini-btn):disabled {
     opacity: 0.45;
     cursor: not-allowed;
   }
@@ -2801,13 +1602,13 @@ const seo = {
     display: none;
   }
 
-  .whisper-mini-btn:focus-visible {
+  :global(.whisper-mini-btn):focus-visible {
     outline: none;
     border-color: rgb(var(--chromatic-cyan) / 0.5);
     box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
   }
 
-  .whisper-file-btn {
+  :global(.whisper-file-btn) {
     display: flex;
     align-items: center;
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
@@ -2821,17 +1622,17 @@ const seo = {
       background var(--duration-normal) var(--ease-out);
   }
 
-  .whisper-file-btn:hover {
+  :global(.whisper-file-btn):hover {
     border-color: rgb(var(--color-text-rgb) / 0.24);
     background: rgb(var(--color-text-rgb) / 0.04);
   }
 
-  .whisper-file-btn-text {
+  :global(.whisper-file-btn-text) {
     font-size: var(--text-sm);
     color: rgb(var(--color-text-rgb) / 0.4);
   }
 
-  .whisper-toggle {
+  :global(.whisper-toggle) {
     display: flex;
     align-items: center;
     gap: 0.6rem;
@@ -2848,24 +1649,24 @@ const seo = {
       box-shadow var(--duration-normal) var(--ease-out);
   }
 
-  .whisper-toggle:hover {
+  :global(.whisper-toggle):hover {
     border-color: rgb(var(--color-text-rgb) / 0.24);
     background: rgb(var(--color-text-rgb) / 0.04);
   }
 
-  .whisper-toggle:focus-within {
+  :global(.whisper-toggle):focus-within {
     border-color: rgb(var(--chromatic-cyan) / 0.5);
     box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
   }
 
-  .whisper-toggle-input {
+  :global(.whisper-toggle-input) {
     width: 1.05rem;
     height: 1.05rem;
     accent-color: rgb(var(--chromatic-cyan));
     flex-shrink: 0;
   }
 
-  .whisper-toggle-text {
+  :global(.whisper-toggle-text) {
     display: inline-flex;
     align-items: baseline;
     flex-wrap: wrap;
@@ -2947,14 +1748,14 @@ const seo = {
   }
 
   /* Overlay hides solo panel when active (JS-managed via style) */
-  .ws-overlay {
+  :global(.ws-overlay) {
     display: grid;
     gap: var(--space-sm);
     min-width: 0;
   }
 
   /* Hide overlay in live mode */
-  .whisper-page[data-mode="live"] .ws-overlay {
+  :global(.whisper-page[data-mode="live"] .ws-overlay) {
     display: none;
   }
 
@@ -2995,7 +1796,7 @@ const seo = {
     gap: calc(var(--space-xs) * 0.4);
   }
 
-  .whisper-result {
+  :global(.whisper-result) {
     margin: 0;
     border: 1px solid var(--whisper-edge);
     border-radius: calc(var(--whisper-radius) * 0.75);
@@ -3004,19 +1805,19 @@ const seo = {
     line-height: 1.5;
   }
 
-  .whisper-result--ok {
+  :global(.whisper-result--ok) {
     border-color: rgb(var(--chromatic-cyan) / 0.3);
     color: rgb(var(--color-text-rgb) / 0.86);
     background: rgb(var(--chromatic-cyan) / 0.03);
   }
 
-  .whisper-result--warn {
+  :global(.whisper-result--warn) {
     border-color: rgb(var(--tool-status-warning) / 0.35);
     color: rgb(var(--tool-status-warning));
     background: rgb(var(--tool-status-warning) / 0.04);
   }
 
-  .whisper-result--error {
+  :global(.whisper-result--error) {
     border-color: rgb(var(--chromatic-red) / 0.35);
     color: rgb(var(--chromatic-red));
     background: rgb(var(--chromatic-red) / 0.04);
@@ -3029,7 +1830,7 @@ const seo = {
     gap: calc(var(--space-xs) * 0.45);
   }
 
-  .whisper-download-card {
+  :global(.whisper-download-card) {
     border: 1px solid var(--whisper-edge);
     border-radius: calc(var(--whisper-radius) * 0.75);
     padding: 0.7rem 0.8rem;
@@ -3039,22 +1840,22 @@ const seo = {
     box-shadow: var(--edge-highlight);
   }
 
-  .whisper-download-title,
-  .whisper-download-meta {
+  :global(.whisper-download-title),
+  :global(.whisper-download-meta) {
     margin: 0;
   }
 
-  .whisper-download-title {
+  :global(.whisper-download-title) {
     font-size: var(--text-sm);
     color: rgb(var(--color-text-rgb) / 0.86);
   }
 
-  .whisper-download-meta {
+  :global(.whisper-download-meta) {
     font-size: calc(var(--text-sm) * 0.9);
     color: rgb(var(--color-text-rgb) / 0.42);
   }
 
-  .whisper-download-link {
+  :global(.whisper-download-link) {
     width: fit-content;
     font-size: var(--text-sm);
     color: rgb(var(--chromatic-cyan));
@@ -3065,8 +1866,8 @@ const seo = {
       border-color var(--duration-normal) var(--ease-out);
   }
 
-  .whisper-download-link:hover,
-  .whisper-download-link:focus-visible {
+  :global(.whisper-download-link):hover,
+  :global(.whisper-download-link):focus-visible {
     color: var(--color-text);
     border-bottom-color: rgb(var(--color-text-rgb) / 0.5);
     outline: none;
@@ -3140,7 +1941,7 @@ const seo = {
     letter-spacing: 0.04em;
   }
 
-  .whisper-log-hint {
+  :global(.whisper-log-hint) {
     margin: 0;
     padding: 0.45rem 0.8rem 0;
     font-size: calc(var(--text-sm) * 0.76);
@@ -3445,11 +2246,11 @@ const seo = {
       animation: none;
     }
 
-    .whisper-log-dot:global(.whisper-log-active) {
+    :global(.wl-spinner) {
       animation: none;
     }
 
-    .wl-spinner {
+    .whisper-log-dot:global(.whisper-log-active) {
       animation: none;
     }
 
@@ -3472,16 +2273,16 @@ const seo = {
     align-content: start;
   }
 
-  .wl-phase {
+  :global(.wl-phase) {
     display: grid;
     gap: calc(var(--space-xs) * 0.7);
   }
 
-  .wl-phase--chat {
+  :global(.wl-phase--chat) {
     margin-top: 0;
   }
 
-  .whisper-op-live.wl-connected .wl-phase--chat {
+  :global(.whisper-op-live.wl-connected .wl-phase--chat) {
     margin-top: calc(var(--space-sm) * -1);
   }
 
@@ -3497,7 +2298,7 @@ const seo = {
       box-shadow var(--duration-normal) var(--ease-out);
 
     /* Surgical fix: allow tooltip to overflow the panel */
-    overflow: visible !important;
+    overflow: visible;
   }
 
   .wl-head-title-row {
@@ -3739,12 +2540,6 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.62);
   }
 
-  .wl-status-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .wl-status-dot {
     width: 6px;
     height: 6px;
@@ -3771,13 +2566,13 @@ const seo = {
     box-shadow: 0 0 8px rgb(var(--chromatic-cyan) / 0.25);
   }
 
-  .wl-grid {
+  :global(.wl-grid) {
     display: grid;
     gap: var(--space-sm);
     grid-template-columns: 1fr;
   }
 
-  .wl-phase-lede {
+  :global(.wl-phase-lede) {
     margin: 0;
     font-size: calc(var(--text-sm) * 0.88);
     color: rgb(var(--color-text-rgb) / 0.44);
@@ -3785,7 +2580,7 @@ const seo = {
     letter-spacing: 0.01em;
   }
 
-  .wl-inline-hint {
+  :global(.wl-inline-hint) {
     margin: calc(var(--space-xs) * -0.15) 0 0;
     font-size: calc(var(--text-sm) * 0.84);
     color: rgb(var(--color-text-rgb) / 0.4);
@@ -3793,33 +2588,33 @@ const seo = {
   }
 
   @media (min-width: 680px) {
-    .wl-grid {
+    :global(.wl-grid) {
       grid-template-columns: 1fr 1fr;
       align-items: start;
     }
 
-    .wl-grid.wl-grid--offer {
+    :global(.wl-grid.wl-grid--offer) {
       grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
     }
   }
 
-  .wl-card {
+  :global(.wl-card) {
     /* Keep card content compact even when sibling cards are taller. */
     align-content: start;
   }
 
-  .wl-actions-panel {
+  :global(.wl-actions-panel) {
     gap: var(--space-sm);
     padding: var(--space-sm);
   }
 
-  .wl-actions-row {
+  :global(.wl-actions-row) {
     display: flex;
     align-items: start;
     gap: var(--space-sm);
   }
 
-  .wl-action-label {
+  :global(.wl-action-label) {
     display: block;
     font-size: calc(var(--text-sm) * 0.82);
     color: rgb(var(--color-text-rgb) / 0.38);
@@ -3828,507 +2623,28 @@ const seo = {
     margin-bottom: calc(var(--space-xs) * 0.25);
   }
 
-  .wl-action-create {
+  :global(.wl-action-create) {
     flex: 0 0 auto;
   }
 
-  .wl-action-create .wl-primary {
+  :global(.wl-action-create .wl-primary) {
     white-space: nowrap;
   }
 
-  .wl-action-join {
+  :global(.wl-action-join) {
     flex: 1 1 auto;
     min-width: 0;
   }
 
-  /* ── Relay panel (default clean view) ─────────────────── */
-
-  .wl-relay-panel {
-    display: grid;
-    gap: var(--space-sm);
-    padding: var(--space-sm);
-    background: var(--whisper-surface);
-  }
-
-  .wl-relay-connect-row {
-    display: flex;
-    gap: calc(var(--space-xs) * 0.5);
-    align-items: stretch;
-  }
-
-  .wl-relay-connect-row .whisper-input {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .wl-relay-connect-row .whisper-mini-btn {
-    flex: 0 0 auto;
-  }
-
-  .wl-relay-hint {
-    margin: 0;
-    font-size: calc(var(--text-sm) * 0.88);
-    color: rgb(var(--color-text-rgb) / 0.42);
-    line-height: 1.4;
-  }
-
-  .wl-relay-panel .whisper-field-label {
-    font-size: var(--text-sm);
-  }
-
-  .wl-relay-panel .whisper-input {
-    min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
-    font-size: var(--text-sm);
-  }
-
-  /* ── Mode switch link ──────────────────────────────────── */
-
-  .wl-mode-switch {
-    margin: calc(var(--space-xs) * 0.6) 0 0;
-    text-align: center;
-  }
-
-  .wl-mode-switch-btn {
-    all: unset;
-    --switch-hover: var(--chromatic-cyan);
-    font-size: calc(var(--text-sm) * 0.8);
-    color: rgb(var(--color-text-rgb) / 0.3);
-    cursor: pointer;
-    letter-spacing: 0.01em;
-    transition: color var(--duration-normal) var(--ease-out);
-  }
-
-  .wl-mode-switch-btn:hover {
-    color: rgb(var(--switch-hover) / 0.7);
-  }
-
-  .wl-mode-switch-btn:focus-visible {
-    outline: none;
-    color: rgb(var(--switch-hover));
-  }
-
-  .wl-mode-switch-sep {
-    color: rgb(var(--color-text-rgb) / 0.15);
-    font-size: calc(var(--text-sm) * 0.8);
-    margin: 0 0.15em;
-    user-select: none;
-  }
-
-  /* ── Signal Flare panel ────────────────────────────────── */
-
-  .wl-flare-panel {
-    --chromatic-flare: 255 160 40;
-    display: grid;
-    gap: var(--space-sm);
-    padding: var(--space-sm);
-    background: var(--whisper-surface);
-  }
-
-  .wl-flare-head {
-    display: flex;
-    align-items: center;
-    gap: calc(var(--space-xs) * 0.5);
-  }
-
-  .wl-flare-title {
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: rgb(var(--chromatic-flare));
-    letter-spacing: 0.02em;
-  }
-
-  .wl-flare-lede {
-    margin: 0;
-    font-size: calc(var(--text-sm) * 0.88);
-    color: rgb(var(--color-text-rgb) / 0.42);
-    line-height: 1.4;
-  }
-
-  .wl-flare-panel .whisper-field-label {
-    font-size: var(--text-sm);
-  }
-
-  .wl-flare-panel .whisper-input {
-    min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
-    font-size: var(--text-sm);
-  }
-
-  .wl-flare-panel .whisper-input:focus-visible {
-    outline-color: rgb(var(--chromatic-flare) / 0.42);
-    border-color: rgb(var(--chromatic-flare) / 0.34);
-  }
-
-  .wl-flare-fire-btn {
-    border-color: rgb(var(--chromatic-flare) / 0.4) !important;
-    color: rgb(var(--chromatic-flare)) !important;
-    background: rgb(var(--chromatic-flare) / 0.08) !important;
-  }
-
-  .wl-flare-fire-btn:hover:not(:disabled) {
-    border-color: rgb(var(--chromatic-flare) / 0.55) !important;
-    background: rgb(var(--chromatic-flare) / 0.12) !important;
-  }
-
-  /* Burning state */
-
-  .wl-flare-burning-indicator {
-    display: flex;
-    align-items: center;
-    gap: calc(var(--space-xs) * 0.5);
-    min-height: var(--touch-target);
-    padding: 0 calc(var(--space-xs) * 0.8);
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    border: 1px solid rgb(var(--chromatic-flare) / 0.25);
-    background: rgb(var(--chromatic-flare) / 0.04);
-  }
-
-  .wl-flare-ember {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: rgb(var(--chromatic-flare));
-    box-shadow: 0 0 6px rgb(var(--chromatic-flare) / 0.5);
-    animation: wl-flare-pulse 2s ease-in-out infinite;
-    flex-shrink: 0;
-  }
-
-  @keyframes wl-flare-pulse {
-    0%,
-    100% {
-      opacity: 0.6;
-      box-shadow: 0 0 4px rgb(var(--chromatic-flare) / 0.3);
-    }
-    50% {
-      opacity: 1;
-      box-shadow: 0 0 10px rgb(var(--chromatic-flare) / 0.6);
-    }
-  }
-
-  .wl-flare-burning-text {
-    font-size: calc(var(--text-sm) * 0.88);
-    color: rgb(var(--chromatic-flare));
-    font-weight: 500;
-  }
-
-  .wl-flare-elapsed {
-    font-size: calc(var(--text-sm) * 0.78);
-    color: rgb(var(--color-text-rgb) / 0.35);
-    margin-left: auto;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .wl-flare-extinguish-btn {
-    flex-shrink: 0;
-    margin-left: calc(var(--space-xs) * 0.3);
-    font-size: calc(var(--text-sm) * 0.78);
-    padding: 0.35rem 0.6rem;
-    min-height: calc(var(--touch-target) * 0.72);
-  }
-
-  /* Peer arrived state */
-
-  .wl-flare-arrived {
-    display: grid;
-    gap: var(--space-sm);
-    padding: calc(var(--space-xs) * 0.8);
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    border: 1px solid rgb(var(--chromatic-flare) / 0.35);
-    background: rgb(var(--chromatic-flare) / 0.06);
-    animation: wl-flare-arrived-flash 0.6s ease-out;
-  }
-
-  @keyframes wl-flare-arrived-flash {
-    0% {
-      background: rgb(var(--chromatic-flare) / 0.18);
-    }
-    100% {
-      background: rgb(var(--chromatic-flare) / 0.06);
-    }
-  }
-
-  .wl-flare-arrived-text {
-    margin: 0;
-    font-size: var(--text-sm);
-    color: rgb(var(--chromatic-flare));
-    font-weight: 500;
-  }
-
-  .wl-flare-arrived-actions {
-    display: flex;
-    gap: calc(var(--space-xs) * 0.5);
-  }
-
-  /* ── Manual mode options ───────────────────────────────── */
-
-  .wl-manual-options {
-    display: grid;
-    gap: var(--space-sm);
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--whisper-edge);
-    margin-top: 0;
-  }
-
-  .wl-manual-options .whisper-field-label {
-    font-size: var(--text-sm);
-  }
-
-  .wl-manual-options .whisper-input {
-    min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
-    font-size: var(--text-sm);
-  }
-
-  .wl-manual-options .whisper-toggle {
-    min-height: var(--touch-target);
-    padding: 0.55rem 0.75rem;
-  }
-
-  .wl-manual-options .whisper-toggle-text {
-    font-size: var(--text-sm);
-  }
-
-  @media (min-width: 860px) {
-    .wl-manual-options {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      align-items: start;
-    }
-  }
-
-  .wl-actions-divider {
+  :global(.wl-actions-divider) {
     width: 1px;
     align-self: stretch;
     background: var(--whisper-edge);
     flex: 0 0 1px;
   }
 
-  /* Inline text-link tools under join input */
-  .wl-tool-link {
-    all: unset;
-    font-size: calc(var(--text-sm) * 0.78);
-    color: rgb(var(--color-text-rgb) / 0.34);
-    cursor: pointer;
-    letter-spacing: 0.01em;
-    transition: color var(--duration-normal) var(--ease-out);
-  }
-
-  .wl-tool-link:hover {
-    color: rgb(var(--chromatic-cyan) / 0.85);
-  }
-
-  .wl-tool-link:focus-visible {
-    outline: none;
-    color: rgb(var(--chromatic-cyan));
-    text-decoration: underline;
-    text-underline-offset: 2px;
-  }
-
-  .wl-tool-link--stop {
-    color: rgb(var(--chromatic-red) / 0.55);
-  }
-
-  .wl-tool-link--stop:hover {
-    color: rgb(var(--chromatic-red) / 0.85);
-  }
-
-  .wl-tool-sep {
-    font-size: calc(var(--text-sm) * 0.72);
-    color: rgb(var(--color-text-rgb) / 0.18);
-    user-select: none;
-  }
-
-  /* wl-phrase-panel still used by campfire */
-  .wl-phrase-panel {
-    display: grid;
-    gap: var(--space-sm);
-    padding: var(--space-sm);
-  }
-
-  .wl-phrase-panel .whisper-field-label {
-    font-size: var(--text-sm);
-  }
-
-  .wl-phrase-panel .whisper-input {
-    min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
-    font-size: var(--text-sm);
-  }
-
-  .wl-phrase-panel .whisper-toggle {
-    min-height: var(--touch-target);
-    padding: 0.55rem 0.75rem;
-  }
-
-  .wl-phrase-panel .whisper-toggle-text {
-    font-size: var(--text-sm);
-  }
-
-  @media (min-width: 860px) {
-    .wl-phrase-panel {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      align-items: start;
-    }
-  }
-
-  .wl-join-row {
-    display: flex;
-    gap: calc(var(--space-xs) * 0.5);
-    align-items: stretch;
-    flex-wrap: nowrap;
-    min-width: 0;
-  }
-
-  .wl-join-row .whisper-input {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .wl-join-row .whisper-mini-btn {
-    flex: 0 0 auto;
-    min-width: 5.25rem;
-  }
-
-  .wl-code-input {
-    flex: 1;
-    min-width: 0;
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
-    font-size: calc(var(--text-sm) * 0.9);
-  }
-
-  .whisper-mini-btn.wl-primary {
-    background: rgb(var(--chromatic-cyan) / 0.06);
-    border-color: rgb(var(--chromatic-cyan) / 0.28);
-    color: rgb(var(--chromatic-cyan));
-  }
-
-  .whisper-mini-btn.wl-primary:hover {
-    background: rgb(var(--chromatic-cyan) / 0.12);
-    border-color: rgb(var(--chromatic-cyan) / 0.45);
-    color: rgb(var(--chromatic-cyan));
-  }
-
-  .whisper-mini-btn.wl-primary:focus-visible {
-    outline: none;
-    border-color: rgb(var(--chromatic-cyan) / 0.5);
-    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
-  }
-
-  /* Card-local spacing without inflating the panel itself */
-  .wl-card .wl-join-row,
-  .wl-card .wl-code-display-wrap {
-    margin-top: calc(var(--space-xs) * 0.6);
-  }
-
-  .wl-card .whisper-mini-btn {
-    justify-content: center;
-  }
-
-  .wl-card .wl-primary {
-    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.06);
-  }
-
-  .wl-join-tools {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: calc(var(--space-xs) * 0.35);
-    margin-top: calc(var(--space-xs) * 0.3);
-  }
-
-  .wl-join-qr-panel {
-    border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    background: rgb(var(--chromatic-cyan) / 0.04);
-    padding: calc(var(--space-xs) * 0.45);
-    margin-top: calc(var(--space-xs) * 0.5);
-  }
-
-  .wl-join-qr-video {
-    width: 100%;
-    max-height: 16rem;
-    border-radius: calc(var(--whisper-radius) * 0.45);
-    background: rgb(var(--color-bg-rgb));
-    object-fit: cover;
-  }
-
-  .wl-join-qr-status {
-    display: block;
-    margin-top: calc(var(--space-xs) * 0.5);
-  }
-
-  .wl-join-qr-status:empty {
-    display: none;
-  }
-
-  .wl-live-qr-wrap {
-    display: grid;
-    justify-items: center;
-    gap: calc(var(--space-xs) * 0.45);
-    margin-top: calc(var(--space-xs) * 0.55);
-    padding-top: calc(var(--space-xs) * 0.25);
-    border-top: 1px dashed rgb(var(--color-text-rgb) / 0.08);
-  }
-
-  .wl-live-qr-toggle-row {
-    margin-top: calc(var(--space-xs) * 0.6);
-    display: flex;
-    justify-content: center;
-  }
-
-  .wl-offer-actions {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: calc(var(--space-xs) * 0.75);
-  }
-
-  .wl-live-qr-status {
-    text-align: center;
-    min-height: 1.2em;
-  }
-
-  /* ── Code display (offer/answer) ────────────────────────── */
-  .wl-code-display-wrap {
-    display: flex;
-    gap: calc(var(--space-xs) * 0.5);
-    align-items: flex-start;
-  }
-
-  .wl-code-display-wrap .whisper-mini-btn {
-    min-height: auto;
-    padding: 0.45rem 0.7rem;
-  }
-
-  .wl-code-display {
-    flex: 1;
-    min-width: 0;
-    margin: 0;
-    padding: 0.6rem 0.75rem;
-    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
-    border-radius: calc(var(--whisper-radius) * 0.75);
-    background: rgb(var(--color-text-rgb) / 0.02);
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
-    font-size: calc(var(--text-sm) * 0.8);
-    line-height: 1.5;
-    color: rgb(var(--color-text-rgb) / 0.72);
-    word-break: break-all;
-    white-space: pre-wrap;
-    max-height: 6rem;
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  /* ── Connecting spinner ─────────────────────────────────── */
-  .wl-connecting-panel {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-lg);
-  }
-
-  .wl-spinner {
+  /* Shared spinner (used by connecting, seal overlay, campfire) */
+  :global(.wl-spinner) {
     width: 2rem;
     height: 2rem;
     border: 2px solid rgb(var(--color-text-rgb) / 0.1);
@@ -4343,1362 +2659,155 @@ const seo = {
     }
   }
 
-  .wl-connecting-text {
-    margin: 0;
-    color: var(--whisper-muted);
-    font-size: var(--text-sm);
-    letter-spacing: 0.02em;
+  /* Inline text-link tools under join input */
+  :global(.wl-tool-link) {
+    all: unset;
+    font-size: calc(var(--text-sm) * 0.78);
+    color: rgb(var(--color-text-rgb) / 0.34);
+    cursor: pointer;
+    letter-spacing: 0.01em;
+    transition: color var(--duration-normal) var(--ease-out);
   }
 
-  /* ── Fingerprint verify ─────────────────────────────────── */
-  .wl-verify-panel {
-    display: grid;
-    gap: var(--space-sm);
-    text-align: center;
-    padding: var(--space-lg);
+  :global(.wl-tool-link):hover {
+    color: rgb(var(--chromatic-cyan) / 0.85);
   }
 
-  .wl-fingerprint {
-    margin: 0;
-    font-size: 3rem;
-    letter-spacing: 0.3em;
-    line-height: 1.4;
+  :global(.wl-tool-link):focus-visible {
+    outline: none;
+    color: rgb(var(--chromatic-cyan));
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  :global(.wl-tool-link--stop) {
+    color: rgb(var(--chromatic-red) / 0.55);
+  }
+
+  :global(.wl-tool-link--stop):hover {
+    color: rgb(var(--chromatic-red) / 0.85);
+  }
+
+  :global(.wl-tool-sep) {
+    font-size: calc(var(--text-sm) * 0.72);
+    color: rgb(var(--color-text-rgb) / 0.18);
     user-select: none;
   }
 
-  .wl-verify-actions {
+  :global(.wl-join-row) {
     display: flex;
     gap: calc(var(--space-xs) * 0.5);
-    justify-content: center;
-  }
-
-  .wl-confirm-btn {
-    background: rgb(var(--tool-status-success) / 0.1);
-    border-color: rgb(var(--tool-status-success) / 0.35);
-    color: rgb(var(--tool-status-success));
-  }
-
-  .wl-confirm-btn:hover {
-    background: rgb(var(--tool-status-success) / 0.18);
-    border-color: rgb(var(--tool-status-success) / 0.5);
-    color: rgb(var(--tool-status-success));
-  }
-
-  .wl-reject-btn {
-    background: rgb(var(--chromatic-red) / 0.08);
-    border-color: rgb(var(--chromatic-red) / 0.3);
-    color: rgb(var(--chromatic-red));
-  }
-
-  .wl-reject-btn:hover {
-    background: rgb(var(--chromatic-red) / 0.14);
-    border-color: rgb(var(--chromatic-red) / 0.45);
-    color: rgb(var(--chromatic-red));
-  }
-
-  /* ── Fingerprint chip (status bar) ── */
-  /* Hidden by default; only shown in verified/live state */
-  .wl-fp-chip {
-    display: none;
-    align-items: center;
-    gap: 0.4em;
-    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.8);
-    border-radius: calc(var(--whisper-radius) * 0.75);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
-    background: rgb(10 10 10 / 0.6);
-    cursor: pointer;
-    transition:
-      border-color var(--duration-normal) var(--ease-out),
-      background var(--duration-normal) var(--ease-out);
-  }
-  .wl-fp-chip--verified {
-    display: inline-flex;
-  }
-  .wl-fp-chip--recovering {
-    display: inline-flex;
-  }
-  .wl-fp-chip:hover {
-    border-color: rgb(var(--color-text-rgb) / 0.2);
-    background: rgb(10 10 10 / 0.85);
-  }
-
-  /* Emoji inside chip — compact */
-  .wl-fp-chip-emoji {
-    font-size: 0.85rem;
-    letter-spacing: 0.15em;
-    line-height: 1;
-    white-space: nowrap;
-    filter: saturate(0.4) opacity(0.6);
-    transition: filter var(--duration-normal) var(--ease-out);
-  }
-  .wl-fp-chip--verified .wl-fp-chip-emoji {
-    filter: saturate(1) opacity(0.85);
-  }
-  .wl-fp-chip--recovering .wl-fp-chip-emoji {
-    filter: saturate(0.2) opacity(0.4);
-  }
-
-  /* Nickname label inside chip */
-  .wl-fp-chip-name {
-    display: none;
-    font-size: 0.78rem;
-    font-weight: 500;
-    max-width: 8rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: rgb(var(--color-text-rgb) / 0.85);
-  }
-  .wl-fp-chip--named .wl-fp-chip-emoji {
-    display: none;
-  }
-  .wl-fp-chip--named .wl-fp-chip-name {
-    display: inline-block;
-  }
-
-  /* Nickname input — replaces the chip in place when editing */
-  .wl-fp-nickname-input {
-    display: none;
-    width: 8rem;
-    padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.8);
-    border-radius: calc(var(--whisper-radius) * 0.75);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.2);
-    background: rgb(10 10 10 / 0.6);
-    font-size: 0.85rem;
-    color: rgb(var(--color-text-rgb) / 0.9);
-    outline: none;
-    box-shadow: none;
-  }
-  .wl-fp-nickname-input:focus {
-    outline: none;
-    box-shadow: none;
-  }
-  .wl-fp-wrap--editing .wl-fp-chip {
-    display: none !important;
-  }
-  .wl-fp-wrap--editing .wl-fp-nickname-input {
-    display: inline-block;
-  }
-  .wl-fp-nickname-input::placeholder {
-    color: rgb(var(--color-text-rgb) / 0.3);
-  }
-
-  /* ── Chat ───────────────────────────────────────────────── */
-  .wl-chat-panel {
-    display: grid;
-    gap: 0;
-    padding: 0;
-    overflow: hidden;
-    background: var(--whisper-surface-deep);
-    border-top-left-radius: var(--whisper-radius);
-    border-top-right-radius: var(--whisper-radius);
-    border-top: 1px solid var(--whisper-edge);
-  }
-
-  .whisper-op-live.wl-connected .wl-chat-panel {
-    border-top-left-radius: 0;
-    border-top-right-radius: 0;
-    border-top-color: rgb(var(--color-text-rgb) / 0.08);
-    box-shadow: var(--edge-highlight);
-  }
-
-  .wl-chat-tools {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(var(--space-xs) * 0.45);
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .wl-disconnect-btn {
-    font-size: calc(var(--text-sm) * 0.8);
-    padding: 0.32rem 0.62rem;
-    min-height: auto;
-    color: rgb(var(--chromatic-red) / 0.7);
-    border-color: rgb(var(--chromatic-red) / 0.2);
-    background: rgb(var(--chromatic-red) / 0.04);
-  }
-
-  .wl-disconnect-btn:hover {
-    color: rgb(var(--chromatic-red));
-    border-color: rgb(var(--chromatic-red) / 0.4);
-    background: rgb(var(--chromatic-red) / 0.06);
-  }
-
-  .wl-chat-messages {
-    min-height: 16rem;
-    max-height: clamp(32rem, 28rem + 12vw, 56rem);
-    overflow-y: auto;
-    scroll-behavior: auto;
-    padding: calc(var(--space-sm) * 0.95);
-    display: flex;
-    flex-direction: column;
-    gap: calc(var(--space-xs) * 0.42);
-    scrollbar-width: thin;
-    -webkit-overflow-scrolling: touch;
-    mask-image: linear-gradient(
-      to bottom,
-      transparent 0px,
-      black 14px,
-      black calc(100% - 14px),
-      transparent 100%
-    );
-    -webkit-mask-image: linear-gradient(
-      to bottom,
-      transparent 0px,
-      black 14px,
-      black calc(100% - 14px),
-      transparent 100%
-    );
-    transition: background var(--duration-normal) var(--ease-out);
-    background:
-      linear-gradient(
-        180deg,
-        rgb(var(--color-text-rgb) / 0.018) 0%,
-        transparent 50%
-      ),
-      rgb(10 10 10 / 0.92);
-  }
-
-  /* Custom scrollbar only for pointer devices — touch keeps native overlay */
-  @media (hover: hover) {
-    .wl-chat-messages::-webkit-scrollbar {
-      width: 4px;
-    }
-    .wl-chat-messages::-webkit-scrollbar-track {
-      background: transparent;
-    }
-    .wl-chat-messages::-webkit-scrollbar-thumb {
-      background: rgb(var(--color-text-rgb) / 0.12);
-      border-radius: 4px;
-    }
-    .wl-chat-messages::-webkit-scrollbar-thumb:hover {
-      background: rgb(var(--color-text-rgb) / 0.22);
-    }
-  }
-
-  .wl-chat-empty {
-    margin: auto 0;
-    text-align: center;
-    font-size: calc(var(--text-sm) * 0.78);
-    color: rgb(var(--color-text-rgb) / 0.16);
-    font-style: italic;
-    user-select: none;
-    pointer-events: none;
-    letter-spacing: 0.01em;
-  }
-
-  .wl-chat-messages:global(.wl-chat-drop-active) {
-    background: rgb(var(--chromatic-cyan) / 0.05);
-  }
-
-  .wl-chat-messages :global(.wl-msg) {
-    --msg-accent: var(--color-text-rgb);
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-    max-width: 80%;
-    animation: wl-msg-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .wl-chat-messages :global(.wl-msg + .wl-msg) {
-    margin-top: calc(var(--space-xs) * 0.35);
-  }
-
-  .wl-chat-messages :global(.wl-msg--self) {
-    align-self: flex-end;
-    align-items: flex-end;
-    animation-name: wl-msg-in-right;
-  }
-
-  .wl-chat-messages :global(.wl-msg--peer) {
-    --msg-accent: var(--pride-purple);
-    align-self: flex-start;
-    align-items: flex-start;
-  }
-
-  .wl-chat-messages :global(.wl-msg--system) {
-    align-self: center;
-    align-items: center;
-    max-width: 90%;
-    animation-name: wl-msg-in-center;
-  }
-
-  .wl-chat-messages :global(.wl-msg-text) {
-    padding: 0.42rem 0.65rem;
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    font-size: var(--text-sm);
-    line-height: 1.42;
-    word-break: break-word;
-    white-space: pre-wrap;
-    border: 1px solid rgb(var(--msg-accent) / 0.16);
-    background: rgb(var(--msg-accent) / 0.06);
-    color: rgb(var(--color-text-rgb) / 0.72);
-  }
-
-  .wl-chat-messages :global(.wl-msg--self .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--self .wl-msg-file),
-  .wl-chat-messages :global(.wl-msg--self .wl-msg-audio) {
-    border-bottom-right-radius: calc(var(--whisper-radius) * 0.15);
-  }
-
-  .wl-chat-messages :global(.wl-msg--self .wl-msg-text) {
-    transition:
-      color 400ms ease-out,
-      border-color 400ms ease-out;
-  }
-
-  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-file),
-  .wl-chat-messages :global(.wl-msg--delivered .wl-msg-audio) {
-    color: rgb(var(--color-text-rgb) / 0.88);
-    border-color: rgb(var(--color-text-rgb) / 0.22);
-  }
-
-  .wl-chat-messages :global(.wl-msg--peer .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--peer .wl-msg-file),
-  .wl-chat-messages :global(.wl-msg--peer .wl-msg-audio) {
-    color: rgb(var(--msg-accent) / 0.9);
-    border-bottom-left-radius: calc(var(--whisper-radius) * 0.15);
-  }
-
-  .wl-chat-messages :global(.wl-msg-system) {
-    padding: 0.2rem 0;
-    font-size: calc(var(--text-sm) * 0.76);
-    color: rgb(var(--color-text-rgb) / 0.32);
-    text-align: center;
-    border: none;
-    background: none;
-  }
-
-  /* Hide timestamp on grouped messages — show only on the last in a run */
-  .wl-chat-messages :global(.wl-msg--self:has(+ .wl-msg--self) .wl-msg-time),
-  .wl-chat-messages :global(.wl-msg--peer:has(+ .wl-msg--peer) .wl-msg-time) {
-    display: none;
-  }
-
-  /* Tighter spacing within a group */
-  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self),
-  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer) {
-    margin-top: calc(var(--space-xs) * 0.1);
-  }
-
-  /* Soften corner between grouped bubbles */
-  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-file),
-  .wl-chat-messages :global(.wl-msg--self + .wl-msg--self .wl-msg-audio) {
-    border-top-right-radius: calc(var(--whisper-radius) * 0.2);
-  }
-  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-text),
-  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-file),
-  .wl-chat-messages :global(.wl-msg--peer + .wl-msg--peer .wl-msg-audio) {
-    border-top-left-radius: calc(var(--whisper-radius) * 0.2);
-  }
-
-  .wl-chat-messages :global(.wl-msg-time) {
-    display: block;
-    font-size: calc(var(--text-sm) * 0.62);
-    color: rgb(var(--color-text-rgb) / 0.22);
-    padding: 0 0.25rem;
-    letter-spacing: 0.02em;
-    line-height: 1;
-    cursor: pointer;
-    user-select: none;
-  }
-
-  /* ── Reaction shelf — hidden until message is tapped ──────── */
-  /* Zero chrome at rest: invisible, collapsed, pointer events off */
-  .wl-chat-messages :global(.wl-react-shelf) {
-    display: flex;
-    align-items: center;
-    gap: 0.22rem;
-    padding: 0.4rem 0.2rem;
-    margin-top: -0.4rem;
-    margin-bottom: -0.4rem;
-    max-height: 0;
-    opacity: 0;
-    overflow: hidden;
-    transform: translateY(-3px);
-    transition:
-      max-height 200ms cubic-bezier(0.16, 1, 0.3, 1),
-      opacity 160ms ease,
-      transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
-    pointer-events: none;
-  }
-
-  /* Shelf open: slides down from under the bubble */
-  .wl-chat-messages :global([data-shelf-open] .wl-react-shelf) {
-    max-height: 3.4rem;
-    opacity: 1;
-    transform: translateY(0);
-    pointer-events: auto;
-  }
-
-  /* Individual emoji quick-pick + more button */
-  .wl-chat-messages :global(.wl-react-btn) {
-    width: 1.85rem;
-    height: 1.85rem;
-    border-radius: 50%;
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
-    background: rgb(var(--color-text-rgb) / 0.04);
-    font-size: 1rem;
-    line-height: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-    transition:
-      background 130ms ease,
-      border-color 130ms ease,
-      transform 100ms ease;
-    flex-shrink: 0;
-  }
-
-  .wl-chat-messages :global(.wl-react-btn:hover) {
-    background: rgb(var(--color-text-rgb) / 0.1);
-    border-color: rgb(var(--color-text-rgb) / 0.22);
-    transform: scale(1.16);
-  }
-
-  .wl-chat-messages :global(.wl-react-btn:active) {
-    transform: scale(0.88);
-  }
-
-  /* "＋" more-emoji button: slightly muted */
-  .wl-chat-messages :global(.wl-react-btn--more) {
-    font-size: 0.75rem;
-    color: rgb(var(--color-text-rgb) / 0.42);
-    font-weight: 600;
-    letter-spacing: 0;
-  }
-
-  .wl-chat-messages :global(.wl-react-btn--more:hover) {
-    color: rgb(var(--color-text-rgb) / 0.72);
-  }
-
-  /* ── Reaction pills (placed below message after reacting) ── */
-  .wl-chat-messages :global(.wl-msg-reactions) {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.18rem;
-    padding: 0.12rem 0.2rem 0;
-  }
-
-  .wl-chat-messages :global(.wl-reaction) {
-    font-size: 0.8rem;
-    padding: 0.07rem 0.32rem;
-    border-radius: 9999px;
-    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
-    background: rgb(var(--color-text-rgb) / 0.04);
-    cursor: pointer;
-    transition:
-      background 120ms ease,
-      border-color 120ms ease,
-      transform 80ms ease;
-    line-height: 1.4;
-  }
-
-  .wl-chat-messages :global(.wl-reaction:hover) {
-    background: rgb(var(--color-text-rgb) / 0.1);
-    border-color: rgb(var(--color-text-rgb) / 0.22);
-  }
-
-  .wl-chat-messages :global(.wl-reaction:active) {
-    transform: scale(0.9);
-  }
-
-  /* Self reaction: cyan tint */
-  .wl-chat-messages :global(.wl-reaction--self) {
-    border-color: rgb(var(--chromatic-cyan) / 0.35);
-    background: rgb(var(--chromatic-cyan) / 0.09);
-  }
-
-  .wl-chat-messages :global(.wl-reaction--self:hover) {
-    background: rgb(var(--chromatic-cyan) / 0.16);
-    border-color: rgb(var(--chromatic-cyan) / 0.5);
-  }
-
-  /* Peer reaction: purple tint */
-  .wl-chat-messages :global(.wl-reaction--peer) {
-    border-color: rgb(var(--pride-purple) / 0.3);
-    background: rgb(var(--pride-purple) / 0.07);
-  }
-
-  /* Both self + peer: blended */
-  .wl-chat-messages :global(.wl-reaction--self.wl-reaction--peer) {
-    border-color: rgb(var(--chromatic-cyan) / 0.4);
-    background: linear-gradient(
-      90deg,
-      rgb(var(--chromatic-cyan) / 0.1),
-      rgb(var(--pride-purple) / 0.08)
-    );
-  }
-
-  @keyframes reaction-pop {
-    0% {
-      transform: scale(0.4);
-      opacity: 0;
-    }
-    60% {
-      transform: scale(1.22);
-      opacity: 1;
-    }
-    80% {
-      transform: scale(0.9);
-    }
-    100% {
-      transform: scale(1);
-    }
-  }
-
-  /* Applied to a pill the moment it's added to the DOM */
-  .wl-chat-messages :global(.wl-reaction--entering) {
-    animation: reaction-pop 280ms cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
-  }
-
-  .wl-chat-messages :global(.wl-msg-file) {
-    display: grid;
-    gap: calc(var(--space-xs) * 0.15);
-    padding: 0.42rem 0.65rem;
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    border: 1px solid rgb(var(--msg-accent) / 0.16);
-    background: rgb(var(--msg-accent) / 0.06);
-  }
-
-  .wl-chat-messages :global(.wl-msg-file-name) {
-    font-size: calc(var(--text-sm) * 0.92);
-    font-weight: 600;
-    color: rgb(var(--msg-accent) / 0.8);
-    word-break: break-word;
-  }
-
-  .wl-chat-messages :global(.wl-msg-file-size) {
-    font-size: calc(var(--text-sm) * 0.72);
-    color: rgb(var(--color-text-rgb) / 0.32);
-  }
-
-  .wl-chat-messages :global(.wl-msg-file-download) {
-    font-size: calc(var(--text-sm) * 0.78);
-    color: rgb(var(--msg-accent) / 0.6);
-    text-decoration: none;
-    width: fit-content;
-  }
-
-  .wl-chat-messages :global(.wl-msg-file-download:hover) {
-    color: rgb(var(--msg-accent) / 0.85);
-  }
-
-  /* ── Audio player ─────────────────────────────────────────── */
-  .wl-chat-messages :global(.wl-msg-audio) {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.45rem 0.7rem;
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    border: 1px solid rgb(var(--msg-accent) / 0.14);
-    background: linear-gradient(
-      135deg,
-      rgb(var(--msg-accent) / 0.07) 0%,
-      rgb(var(--msg-accent) / 0.03) 100%
-    );
-    min-width: 11rem;
-    transition:
-      border-color 300ms ease,
-      box-shadow 300ms ease;
-  }
-
-  /* Subtle glow when playing */
-  .wl-chat-messages :global(.wl-msg-audio[data-playing]) {
-    border-color: rgb(var(--msg-accent) / 0.28);
-    box-shadow: 0 0 8px rgb(var(--msg-accent) / 0.08);
-  }
-
-  .wl-chat-messages :global(.wl-audio-play-btn) {
-    width: 1.7rem;
-    height: 1.7rem;
-    min-width: 1.7rem;
-    border-radius: 50%;
-    border: 1px solid rgb(var(--msg-accent) / 0.22);
-    background: rgb(var(--msg-accent) / 0.08);
-    color: rgb(var(--msg-accent) / 0.6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-    transition:
-      background 200ms ease,
-      border-color 200ms ease,
-      color 200ms ease,
-      transform 120ms ease;
-  }
-
-  .wl-chat-messages :global(.wl-audio-play-btn:hover) {
-    background: rgb(var(--msg-accent) / 0.15);
-    border-color: rgb(var(--msg-accent) / 0.38);
-    color: rgb(var(--msg-accent) / 0.85);
-  }
-
-  .wl-chat-messages :global(.wl-audio-play-btn:active) {
-    transform: scale(0.92);
-  }
-
-  .wl-chat-messages :global(.wl-audio-play-btn svg) {
-    width: 0.8rem;
-    height: 0.8rem;
-  }
-
-  .wl-chat-messages :global(.wl-audio-wave) {
-    display: block;
-    flex: 1 1 0;
-    min-width: 0;
-    height: 1.8rem;
-    cursor: pointer;
-  }
-
-  .wl-chat-messages :global(.wl-audio-duration) {
-    font-size: calc(var(--text-sm) * 0.7);
-    color: rgb(var(--msg-accent) / 0.4);
-    white-space: nowrap;
-    min-width: 2.2rem;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0.02em;
-    transition: color 300ms ease;
-  }
-
-  .wl-chat-messages :global(.wl-msg-audio[data-playing] .wl-audio-duration) {
-    color: rgb(var(--msg-accent) / 0.65);
-  }
-
-  .wl-chat-compose {
-    --wl-activity: 0;
-    --wl-velocity: 0;
-    --wl-flow: 50%;
-    --wl-send-energy: 0;
-    --wl-peer-typing: 0;
-    --wl-typing-pos: 0;
-    position: relative;
-    display: flex;
-    gap: calc(var(--space-xs) * 0.4);
     align-items: stretch;
-    flex-wrap: wrap;
-    padding: calc(var(--space-xs) * 0.7);
-    border-top: 1px solid var(--whisper-edge);
-    background:
-      linear-gradient(
-        180deg,
-        rgb(var(--color-text-rgb) / 0.02) 0%,
-        rgb(var(--color-text-rgb) / 0.008) 100%
-      ),
-      rgb(10 10 10 / 0.94);
-    transition:
-      border-top-color var(--duration-normal) var(--ease-out),
-      box-shadow var(--duration-normal) var(--ease-out),
-      background var(--duration-normal) var(--ease-out),
-      filter var(--duration-fast) linear;
-    transform: translateZ(0);
-    filter: saturate(calc(1 + (var(--wl-activity) * 0.24)));
-  }
-
-  .wl-chat-compose::before {
-    content: "";
-    position: absolute;
-    top: -1px;
-    left: 0;
-    right: 0;
-    /* Bar thickens slightly on overflow — energy has nowhere to go */
-    height: calc(1px + var(--wl-send-overflow, 0) * 1px);
-    pointer-events: none;
-    /* On overflow the center fades — energy pools at the edges like hitting a wall.
-       Edges stay full-bright while the middle hollows out. */
-    --_alpha: calc(
-      var(--wl-send-energy) * 0.9 + var(--wl-send-overflow, 0) * 0.1
-    );
-    --_hollow: calc(var(--wl-send-overflow, 0) * 0.7);
-    background: linear-gradient(
-      90deg,
-      rgb(var(--tool-status-success) / var(--_alpha)) 0%,
-      rgb(
-          var(--tool-status-success) /
-            calc(var(--_alpha) * (1 - var(--_hollow)))
-        )
-        35%,
-      rgb(
-          var(--tool-status-success) /
-            calc(var(--_alpha) * (1 - var(--_hollow)))
-        )
-        65%,
-      rgb(var(--tool-status-success) / var(--_alpha)) 100%
-    );
-    /* Clip-path: energy 0→1 fills center→edges. No overflow inset needed —
-       the gradient handles the pooling visual. */
-    --_base: calc(50% * (1 - var(--wl-send-energy)));
-    --_shift: calc((var(--wl-energy-center, 0.5) - 0.5) * 100%);
-    clip-path: inset(
-      0 calc(var(--_base) - var(--_shift)) 0 calc(var(--_base) + var(--_shift))
-    );
-    /* Glow: velocity bloom + overflow bloom (heavy spam = bright edges) */
-    box-shadow:
-      0 0
-        calc(
-          (var(--wl-send-energy) * 4px) + (var(--wl-send-velocity, 0) * 8px) +
-            (var(--wl-send-overflow, 0) * 6px)
-        )
-        rgb(
-          var(--tool-status-success) /
-            calc(var(--wl-send-energy) * 0.5 + var(--wl-send-overflow, 0) * 0.3)
-        ),
-      0 0
-        calc(
-          (var(--wl-send-energy) * 8px) + (var(--wl-send-velocity, 0) * 18px) +
-            (var(--wl-send-overflow, 0) * 14px)
-        )
-        rgb(
-          var(--tool-status-success) /
-            calc(
-              var(--wl-send-energy) * 0.15 + var(--wl-send-overflow, 0) * 0.12
-            )
-        );
-  }
-
-  .wl-chat-compose::after {
-    content: "";
-    position: absolute;
-    top: -1px;
-    left: 0;
-    right: 0;
-    height: 1px;
-    pointer-events: none;
-    opacity: var(--wl-peer-typing);
-    /* Width: base * squeeze (send interaction) * width (breath/stretch/sustain).
-       Blob swells at edges (pooling), stretches at center (motion blur),
-       and widens subtly during sustained typing (warmth). */
-    background: radial-gradient(
-      ellipse
-        calc(
-          (12% + var(--wl-peer-typing) * 4%) * var(--wl-typing-squeeze, 1) *
-            var(--wl-typing-width, 1)
-        )
-        100% at calc(var(--wl-typing-pos) * 100%) 50%,
-      rgb(var(--pride-purple) / 0.95) 0%,
-      rgb(var(--pride-purple) / calc(0.4 + var(--wl-interaction, 0) * 0.25)) 40%,
-      transparent 100%
-    );
-    /* Glow: base + interaction boost + speed/sustain bloom.
-       Fast motion = wider trail, sustained typing = warmer ambient. */
-    box-shadow:
-      0 0
-        calc(
-          var(--wl-peer-typing) *
-            (
-              8px + var(--wl-interaction, 0) * 4px + var(--wl-typing-glow, 0) *
-                6px
-            )
-        )
-        rgb(
-          var(--pride-purple) /
-            calc(
-              var(--wl-peer-typing) *
-                (
-                  0.35 + var(--wl-interaction, 0) * 0.2 +
-                    var(--wl-typing-glow, 0) * 0.15
-                )
-            )
-        ),
-      0 0
-        calc(
-          var(--wl-peer-typing) *
-            (
-              16px + var(--wl-interaction, 0) * 6px + var(--wl-typing-glow, 0) *
-                10px
-            )
-        )
-        rgb(
-          var(--pride-purple) /
-            calc(
-              var(--wl-peer-typing) * (0.12 + var(--wl-typing-glow, 0) * 0.06)
-            )
-        );
-  }
-
-  .wl-chat-compose:focus-within {
-    border-top-color: rgb(var(--chromatic-cyan) / 0.28);
-  }
-
-  .wl-chat-compose[data-intent="idle"] {
-    border-top-color: rgb(var(--color-text-rgb) / 0.12);
-    box-shadow: none;
-  }
-
-  .wl-chat-compose[data-intent="connecting"] {
-    border-top-color: rgb(var(--tool-action-load) / 0.44);
-    box-shadow: inset 0 1px 0 rgb(var(--tool-action-load) / 0.18);
-  }
-
-  .wl-chat-compose[data-intent="ready"] {
-    border-top-color: rgb(var(--chromatic-cyan) / 0.34);
-    box-shadow: inset 0 1px 0 rgb(var(--chromatic-cyan) / 0.14);
-  }
-
-  .wl-chat-compose[data-intent="typing"] {
-    border-top-color: rgb(var(--chromatic-cyan) / 0.5);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--chromatic-cyan) / 0.18),
-      0 -1px 0 rgb(var(--chromatic-cyan) / 0.22);
-    background:
-      linear-gradient(
-        110deg,
-        rgb(var(--chromatic-cyan) / calc(0.025 + (var(--wl-activity) * 0.06)))
-          0%,
-        rgb(var(--tool-action-load) / calc(0.02 + (var(--wl-activity) * 0.05)))
-          var(--wl-flow),
-        rgb(var(--chromatic-cyan) / calc(0.025 + (var(--wl-activity) * 0.06)))
-          100%
-      ),
-      linear-gradient(
-        180deg,
-        rgb(var(--color-text-rgb) / 0.02) 0%,
-        rgb(var(--color-text-rgb) / 0.008) 100%
-      ),
-      rgb(10 10 10 / 0.94);
-    background-size:
-      calc(100% + (var(--wl-velocity) * 110%)) 100%,
-      100% 100%,
-      100% 100%;
-    background-position:
-      calc((var(--wl-flow) - 50%) * 0.2) 0,
-      0 0,
-      0 0;
-    transition:
-      border-top-color var(--duration-normal) var(--ease-out),
-      box-shadow var(--duration-normal) var(--ease-out),
-      background-size 80ms linear,
-      background-position 90ms linear,
-      background var(--duration-normal) var(--ease-out);
-  }
-
-  .wl-chat-compose[data-intent="drop"] {
-    border-top-color: rgb(var(--tool-status-success) / 0.52);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--tool-status-success) / 0.2),
-      0 -1px 0 rgb(var(--tool-status-success) / 0.24);
-  }
-
-  .wl-chat-compose[data-intent="error"] {
-    border-top-color: rgb(var(--chromatic-red) / 0.58);
-    animation: wl-intent-error 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) 2;
-  }
-
-  .wl-chat-input-wrap {
-    flex: 1 1 14rem;
-    position: relative;
-    display: flex;
-    align-items: stretch;
+    flex-wrap: nowrap;
     min-width: 0;
   }
 
-  .wl-chat-text-input {
+  :global(.wl-join-row .whisper-input) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  :global(.wl-join-row .whisper-mini-btn) {
+    flex: 0 0 auto;
+    min-width: 5.25rem;
+  }
+
+  :global(.wl-code-input) {
     flex: 1;
     min-width: 0;
-    width: 100%;
-    min-height: auto;
-    padding: 0.52rem 2.4rem 0.52rem 0.72rem;
-    border-radius: calc(var(--whisper-radius) * 0.5);
-    border-color: rgb(var(--color-text-rgb) / 0.14);
-    transition:
-      border-color var(--duration-normal) var(--ease-out),
-      background var(--duration-normal) var(--ease-out),
-      transform 120ms linear;
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: calc(var(--text-sm) * 0.9);
   }
 
-  .wl-mic-wrap {
-    position: absolute;
-    right: 0.35rem;
-    top: 50%;
-    transform: translateY(-50%);
+  :global(.whisper-mini-btn.wl-primary) {
+    background: rgb(var(--chromatic-cyan) / 0.06);
+    border-color: rgb(var(--chromatic-cyan) / 0.28);
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  :global(.whisper-mini-btn.wl-primary):hover {
+    background: rgb(var(--chromatic-cyan) / 0.12);
+    border-color: rgb(var(--chromatic-cyan) / 0.45);
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  :global(.whisper-mini-btn.wl-primary):focus-visible {
+    outline: none;
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
+  }
+
+  /* Card-local spacing without inflating the panel itself */
+  :global(.wl-card .wl-join-row),
+  :global(.wl-card .wl-code-display-wrap) {
+    margin-top: calc(var(--space-xs) * 0.6);
+  }
+
+  :global(.wl-card .whisper-mini-btn) {
+    justify-content: center;
+  }
+
+  :global(.wl-card .wl-primary) {
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.06);
+  }
+
+  :global(.wl-join-tools) {
     display: flex;
-    gap: 2px;
+    flex-wrap: wrap;
     align-items: center;
-    border-radius: 9999px;
-    touch-action: none;
+    gap: calc(var(--space-xs) * 0.35);
+    margin-top: calc(var(--space-xs) * 0.3);
   }
 
-  .wl-mic-wrap[data-hidden] {
+  :global(.wl-join-qr-panel) {
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    background: rgb(var(--chromatic-cyan) / 0.04);
+    padding: calc(var(--space-xs) * 0.45);
+    margin-top: calc(var(--space-xs) * 0.5);
+  }
+
+  :global(.wl-join-qr-video) {
+    width: 100%;
+    max-height: 16rem;
+    border-radius: calc(var(--whisper-radius) * 0.45);
+    background: rgb(var(--color-bg-rgb));
+    object-fit: cover;
+  }
+
+  :global(.wl-join-qr-status) {
+    display: block;
+    margin-top: calc(var(--space-xs) * 0.5);
+  }
+
+  :global(.wl-join-qr-status):empty {
     display: none;
   }
 
-  .wl-chat-mic-btn {
-    width: 1.6rem;
-    height: 1.6rem;
-    border-radius: 50%;
-    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
-    background: rgb(var(--color-text-rgb) / 0.04);
-    color: rgb(var(--color-text-rgb) / 0.45);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-    transition:
-      background 200ms ease,
-      border-color 200ms ease,
-      color 200ms ease,
-      box-shadow 200ms ease,
-      width 200ms ease,
-      opacity 200ms ease;
-    touch-action: none;
-  }
-
-  .wl-chat-mic-btn:hover:not(:disabled) {
-    border-color: rgb(var(--chromatic-cyan) / 0.4);
-    color: rgb(var(--chromatic-cyan) / 0.7);
-    background: rgb(var(--chromatic-cyan) / 0.08);
-  }
-
-  .wl-chat-mic-btn:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-
-  /* Split buttons (cancel + send) — collapsed by default */
-  .wl-mic-split {
-    width: 0;
-    overflow: hidden;
-    opacity: 0;
-    height: 1.4rem;
-    border-radius: 50%;
-    border: 1px solid transparent;
-    background: transparent;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-    transition:
-      width 200ms ease,
-      opacity 200ms ease,
-      background 200ms ease,
-      border-color 200ms ease;
-  }
-
-  .wl-mic-split svg {
-    width: 0.7rem;
-    height: 0.7rem;
-    flex-shrink: 0;
-  }
-
-  /* Recording state — expand split buttons, hide mic */
-  .wl-mic-wrap[data-recording="true"] .wl-chat-mic-btn {
-    width: 0;
-    overflow: hidden;
-    opacity: 0;
-    border: none;
-    padding: 0;
-  }
-
-  .wl-mic-wrap[data-recording="true"] .wl-mic-split {
-    width: 1.4rem;
-    opacity: 1;
-  }
-
-  .wl-mic-wrap[data-recording="true"] .wl-mic-cancel {
-    color: rgb(var(--chromatic-red) / 0.7);
-    border-color: rgb(var(--chromatic-red) / 0.3);
-    background: rgb(var(--chromatic-red) / 0.08);
-  }
-
-  .wl-mic-wrap[data-recording="true"] .wl-mic-cancel:hover {
-    background: rgb(var(--chromatic-red) / 0.18);
-    border-color: rgb(var(--chromatic-red) / 0.5);
-    color: rgb(var(--chromatic-red));
-  }
-
-  .wl-mic-wrap[data-recording="true"] .wl-mic-send {
-    color: rgb(var(--chromatic-cyan) / 0.7);
-    border-color: rgb(var(--chromatic-cyan) / 0.3);
-    background: rgb(var(--chromatic-cyan) / 0.08);
-  }
-
-  .wl-mic-wrap[data-recording="true"] .wl-mic-send:hover {
-    background: rgb(var(--chromatic-cyan) / 0.18);
-    border-color: rgb(var(--chromatic-cyan) / 0.5);
-    color: rgb(var(--chromatic-cyan));
-  }
-
-  .wl-mic-split:disabled {
-    opacity: 0.35;
-    cursor: default;
-    pointer-events: none;
-  }
-
-  /* Pulse on the wrapper during recording */
-  .wl-mic-wrap[data-recording="true"] {
-    animation: wl-mic-pulse 1.2s ease-in-out infinite;
-  }
-
-  @keyframes wl-mic-pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0 rgb(var(--chromatic-red) / 0.25);
-    }
-    50% {
-      box-shadow: 0 0 0 4px rgb(var(--chromatic-red) / 0);
-    }
-  }
-
-  .wl-mic-icon {
-    width: 0.85rem;
-    height: 0.85rem;
-  }
-
-  .wl-chat-compose[data-intent="connecting"] .wl-chat-text-input {
-    border-color: rgb(var(--tool-action-load) / 0.28);
-  }
-
-  .wl-chat-compose[data-intent="ready"] .wl-chat-text-input,
-  .wl-chat-compose[data-intent="typing"] .wl-chat-text-input {
-    border-color: rgb(var(--chromatic-cyan) / 0.35);
-  }
-
-  .wl-chat-compose[data-intent="typing"] .wl-chat-text-input {
-    transform: translateY(calc(var(--wl-activity) * -0.35px))
-      scaleY(calc(1 + (var(--wl-velocity) * 0.01)));
-  }
-
-  .wl-chat-compose[data-intent="drop"] .wl-chat-text-input {
-    border-color: rgb(var(--tool-status-success) / 0.38);
-  }
-
-  .wl-chat-compose[data-intent="error"] .wl-chat-text-input {
-    border-color: rgb(var(--chromatic-red) / 0.42);
-  }
-
-  .wl-chat-input-has-value .wl-chat-send-btn {
-    opacity: 1;
-  }
-
-  .wl-chat-send-btn {
-    min-height: auto;
-    padding: 0.48rem 0.8rem;
-    background: linear-gradient(
-      180deg,
-      rgb(var(--chromatic-cyan) / 0.2) 0%,
-      rgb(var(--chromatic-cyan) / 0.12) 100%
-    );
-    border-color: rgb(var(--chromatic-cyan) / 0.42);
-    color: rgb(var(--chromatic-cyan));
-    box-shadow: 0 0 12px rgb(var(--chromatic-cyan) / 0.1);
-    opacity: 0.86;
-    transition:
-      border-color var(--duration-normal) var(--ease-out),
-      background var(--duration-normal) var(--ease-out),
-      color var(--duration-normal) var(--ease-out),
-      opacity var(--duration-normal) var(--ease-out),
-      transform 120ms linear;
-  }
-
-  .wl-chat-compose[data-intent="typing"] .wl-chat-send-btn {
-    transform: translateY(calc(var(--wl-activity) * -0.6px))
-      scale(calc(1 + (var(--wl-velocity) * 0.018)));
-  }
-
-  .wl-chat-compose[data-intent="connecting"] .wl-chat-send-btn {
-    border-color: rgb(var(--tool-action-load) / 0.44);
-    background: rgb(var(--tool-action-load) / 0.15);
-    color: rgb(var(--tool-action-load));
-  }
-
-  .wl-chat-compose[data-intent="drop"] .wl-chat-send-btn {
-    border-color: rgb(var(--tool-status-success) / 0.5);
-    background: rgb(var(--tool-status-success) / 0.14);
-    color: rgb(var(--tool-status-success));
-  }
-
-  .wl-chat-compose[data-intent="error"] .wl-chat-send-btn {
-    border-color: rgb(var(--chromatic-red) / 0.5);
-    background: rgb(var(--chromatic-red) / 0.12);
-    color: rgb(var(--chromatic-red));
-  }
-
-  .wl-chat-send-btn:hover {
-    background: linear-gradient(
-      180deg,
-      rgb(var(--chromatic-cyan) / 0.24) 0%,
-      rgb(var(--chromatic-cyan) / 0.15) 100%
-    );
-    border-color: rgb(var(--chromatic-cyan) / 0.5);
-  }
-
-  .wl-chat-send-btn:active:not(:disabled) {
-    transform: scale(0.96);
-    background: rgb(var(--chromatic-cyan) / 0.28);
-    transition-duration: 40ms;
-  }
-
-  .wl-chat-file-btn {
-    min-height: auto;
-    padding: 0.48rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    border-color: rgb(var(--color-text-rgb) / 0.18);
-    transition:
-      transform 120ms linear,
-      border-color var(--duration-normal) var(--ease-out);
-  }
-
-  .wl-chat-file-btn:hover:not(:disabled) {
-    border-color: rgb(var(--color-text-rgb) / 0.3);
-  }
-
-  .wl-chat-file-btn:active:not(:disabled) {
-    transform: scale(0.94);
-    transition-duration: 40ms;
-  }
-
-  .wl-chat-clear-btn {
-    flex: 0 0 auto;
-    font-size: 0.95rem;
-    transition:
-      border-color var(--duration-normal) var(--ease-out),
-      box-shadow var(--duration-normal) var(--ease-out),
-      transform var(--duration-normal) var(--ease-out);
-  }
-
-  /* The ↺ glyph — animated independently so the button border stays still */
-  .wl-clear-icon {
-    display: inline-block;
-    line-height: 1;
-    transform-origin: center;
-    will-change: transform;
-  }
-
-  /* pending-out: slow spin — "waiting for peer to agree" */
-  @keyframes wl-clear-spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  .wl-chat-clear-btn[data-clear-state="pending-out"] {
-    border-color: rgb(var(--color-text-rgb) / 0.25);
-  }
-  .wl-chat-clear-btn[data-clear-state="pending-out"] .wl-clear-icon {
-    animation: wl-clear-spin 2.4s linear infinite;
-  }
-
-  /* pending-in: scale pulse + cyan glow — "your turn, act now" */
-  @keyframes wl-clear-call {
-    0%,
-    100% {
-      box-shadow: 0 0 0 1px rgb(var(--chromatic-cyan) / 0.2);
-      transform: scale(1);
-    }
-    50% {
-      box-shadow:
-        0 0 0 3px rgb(var(--chromatic-cyan) / 0.35),
-        0 0 10px 2px rgb(var(--chromatic-cyan) / 0.18);
-      transform: scale(1.07);
-    }
-  }
-  .wl-chat-clear-btn[data-clear-state="pending-in"] {
-    border-color: rgb(var(--chromatic-cyan) / 0.6);
-    animation: wl-clear-call 0.85s ease-in-out infinite;
-  }
-  /* Icon counter-rotates slightly — gives it a "ringing" feel */
-  @keyframes wl-clear-icon-shake {
-    0%,
-    100% {
-      transform: rotate(0deg);
-    }
-    25% {
-      transform: rotate(-14deg);
-    }
-    75% {
-      transform: rotate(14deg);
-    }
-  }
-  .wl-chat-clear-btn[data-clear-state="pending-in"] .wl-clear-icon {
-    animation: wl-clear-icon-shake 0.85s ease-in-out infinite;
-  }
-
-  /* Chat clear animation — messages fade + drift down, container flashes */
-  @keyframes wl-msg-clear {
-    0% {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-      filter: blur(0px);
-    }
-    30% {
-      opacity: 0.7;
-      transform: translateY(2px) scale(0.99);
-      filter: blur(0px);
-    }
-    100% {
-      opacity: 0;
-      transform: translateY(8px) scale(0.97);
-      filter: blur(3px);
-    }
-  }
-  @keyframes wl-chat-clear-flash {
-    0% {
-      background-color: transparent;
-    }
-    18% {
-      background-color: rgb(var(--chromatic-cyan) / 0.05);
-    }
-    100% {
-      background-color: transparent;
-    }
-  }
-  .wl-chat-messages[data-clearing] {
-    animation: wl-chat-clear-flash 320ms ease-out forwards;
-    pointer-events: none;
-  }
-  .wl-chat-messages[data-clearing] :global(.wl-msg) {
-    animation: wl-msg-clear 220ms ease-in forwards;
-    /* stagger: first message leads, later ones follow (capped at index 10) */
-    animation-delay: calc(var(--msg-idx, 0) * 16ms);
-  }
-
-  .wl-file-icon {
-    width: 1rem;
-    height: 1rem;
-  }
-
-  @keyframes wl-intent-error {
-    0% {
-      transform: translateX(0);
-    }
-    25% {
-      transform: translateX(-1px);
-    }
-    50% {
-      transform: translateX(1px);
-    }
-    100% {
-      transform: translateX(0);
-    }
-  }
-
-  /* Message entrance: peer slides from left, self from right, system fades */
-  @keyframes wl-msg-in {
-    from {
-      opacity: 0;
-      transform: translateX(-6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
-  }
-  @keyframes wl-msg-in-right {
-    from {
-      opacity: 0;
-      transform: translateX(6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
-  }
-  @keyframes wl-msg-in-center {
-    from {
-      opacity: 0;
-      transform: scale(0.97);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .wl-chat-compose,
-    .wl-chat-text-input,
-    .wl-chat-send-btn,
-    .wl-chat-messages :global(.wl-msg) {
-      animation: none !important;
-      transition-duration: 0ms !important;
-      transform: none !important;
-      background-size:
-        100% 100%,
-        100% 100%,
-        100% 100% !important;
-      background-position:
-        0 0,
-        0 0,
-        0 0 !important;
-    }
-    .wl-chat-compose::before,
-    .wl-chat-compose::after {
-      display: none !important;
-    }
-    .wl-chat-mic-btn {
-      animation: none !important;
-      transition: none !important;
-    }
-    .wl-mic-wrap {
-      animation: none !important;
-    }
-    .wl-mic-split {
-      transition: none !important;
-    }
-    .wl-chat-clear-btn,
-    .wl-clear-icon {
-      animation: none !important;
-      transform: none !important;
-    }
-    .wl-chat-clear-btn[data-clear-state="pending-out"] {
-      opacity: 0.55;
-    }
-    .wl-chat-clear-btn[data-clear-state="pending-in"] {
-      outline: 2px solid rgb(var(--chromatic-cyan) / 0.65);
-    }
-    .wl-chat-messages[data-clearing] :global(.wl-msg) {
-      animation: none !important;
-      opacity: 0 !important;
-    }
-  }
-
-  /* ── Silent mode ─────────────────────────────────────────── */
-  .wl-silent-panel {
+  :global(.wl-live-qr-wrap) {
     display: grid;
-    gap: var(--space-sm);
-    padding: var(--space-lg);
+    justify-items: center;
+    gap: calc(var(--space-xs) * 0.45);
+    margin-top: calc(var(--space-xs) * 0.55);
+    padding-top: calc(var(--space-xs) * 0.25);
+    border-top: 1px dashed rgb(var(--color-text-rgb) / 0.08);
+  }
+
+  :global(.wl-live-qr-toggle-row) {
+    margin-top: calc(var(--space-xs) * 0.6);
+    display: flex;
+    justify-content: center;
+  }
+
+  :global(.wl-offer-actions) {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: calc(var(--space-xs) * 0.75);
+  }
+
+  :global(.wl-live-qr-status) {
     text-align: center;
-  }
-
-  .wl-secret-display {
-    font-size: calc(var(--text-sm) * 0.75);
-    color: rgb(var(--chromatic-cyan));
-  }
-
-  /* ── End/Error panels ────────────────────────────────────── */
-  .wl-end-panel,
-  .wl-error-panel {
-    display: grid;
-    gap: var(--space-sm);
-    padding: var(--space-lg);
-    text-align: center;
-  }
-
-  .wl-end-text {
-    margin: 0;
-    color: var(--whisper-muted);
-    font-size: var(--text-sm);
-    font-style: italic;
-  }
-
-  .wl-error-text {
-    margin: 0;
-    color: rgb(var(--chromatic-red));
-    font-size: var(--text-sm);
+    min-height: 1.2em;
   }
 
   /* ── Live mode responsive ────────────────────────────────── */
@@ -5738,143 +2847,50 @@ const seo = {
       grid-column: 1;
     }
 
-    .cf-live-mode-toggle {
+    :global(.cf-live-mode-toggle) {
       margin-top: 0;
       width: auto;
     }
 
-    .wl-phase-lede {
+    :global(.wl-phase-lede) {
       font-size: calc(var(--text-sm) * 0.84);
     }
 
-    .wl-inline-hint {
+    :global(.wl-inline-hint) {
       font-size: calc(var(--text-sm) * 0.8);
     }
 
-    .wl-flare-burning-indicator {
-      gap: calc(var(--space-xs) * 0.35);
-      padding: 0 calc(var(--space-xs) * 0.5);
-    }
-
-    .wl-flare-burning-text {
-      font-size: calc(var(--text-sm) * 0.8);
-    }
-
-    .wl-flare-extinguish-btn {
-      font-size: calc(var(--text-sm) * 0.72);
-      padding: 0.3rem 0.5rem;
-      margin-left: auto;
-    }
-
-    .wl-flare-arrived-actions {
-      flex-direction: column;
-    }
-
-    .wl-flare-arrived-actions .whisper-mini-btn {
-      width: 100%;
-      justify-content: center;
-    }
-
-    .wl-join-row .whisper-mini-btn {
+    :global(.wl-join-row .whisper-mini-btn) {
       min-width: 4.8rem;
       padding-inline: 0.65rem;
     }
 
-    .wl-code-display-wrap {
-      flex-direction: column;
-    }
-
-    .wl-code-display-wrap .whisper-mini-btn {
-      width: 100%;
-    }
-
-    .wl-offer-actions {
+    :global(.wl-offer-actions) {
       justify-content: stretch;
     }
 
-    .wl-offer-actions .whisper-mini-btn {
+    :global(.wl-offer-actions .whisper-mini-btn) {
       width: 100%;
-    }
-
-    .wl-chat-header {
-      align-items: stretch;
-    }
-
-    .wl-chat-tools {
-      width: 100%;
-      justify-content: stretch;
-    }
-
-    .wl-disconnect-btn {
-      width: 100%;
-      justify-content: center;
-    }
-
-    .wl-chat-compose {
-      gap: calc(var(--space-xs) * 0.45);
-    }
-
-    .wl-chat-file-btn,
-    .wl-chat-send-btn {
-      flex: 1 1 calc(50% - var(--space-xs));
-      justify-content: center;
-    }
-
-    .wl-fingerprint {
-      font-size: 2.2rem;
-      letter-spacing: 0.2em;
-    }
-
-    .wl-chat-messages {
-      min-height: 12rem;
-    }
-
-    .wl-chat-messages :global(.wl-msg) {
-      max-width: 90%;
     }
   }
 
   @media (max-height: 760px) {
-    .wl-chat-messages {
-      min-height: 10rem;
-      max-height: 36rem;
-    }
-
-    .wl-code-display {
-      max-height: 4.5rem;
-    }
-
     .wl-head-subtitle,
-    .wl-phase-lede {
+    :global(.wl-phase-lede) {
       line-height: 1.35;
     }
   }
 
   /* ── Live mode touch ─────────────────────────────────────── */
   @media (hover: none) {
-    .wl-create-btn:hover {
+    :global(.wl-create-btn):hover {
       background: rgb(var(--chromatic-cyan) / 0.08);
       border-color: rgb(var(--chromatic-cyan) / 0.3);
     }
 
-    .wl-create-btn:active {
+    :global(.wl-create-btn):active {
       background: rgb(var(--chromatic-cyan) / 0.16);
       border-color: rgb(var(--chromatic-cyan) / 0.5);
-    }
-
-    .wl-confirm-btn:hover {
-      background: rgb(var(--tool-status-success) / 0.1);
-      border-color: rgb(var(--tool-status-success) / 0.35);
-    }
-
-    .wl-reject-btn:hover {
-      background: rgb(var(--chromatic-red) / 0.08);
-      border-color: rgb(var(--chromatic-red) / 0.3);
-    }
-
-    .wl-chat-send-btn:hover {
-      background: rgb(var(--chromatic-cyan) / 0.08);
-      border-color: rgb(var(--chromatic-cyan) / 0.3);
     }
   }
 
@@ -6001,7 +3017,7 @@ const seo = {
     }
   }
 
-  .ws-copy-pulse {
+  :global(.ws-copy-pulse) {
     animation: ws-copy-pulse 0.7s ease-out;
   }
 
@@ -6017,7 +3033,7 @@ const seo = {
     }
   }
 
-  .ws-reject-pulse {
+  :global(.ws-reject-pulse) {
     animation: ws-reject-pulse 0.7s ease-out !important;
   }
 
@@ -6037,7 +3053,7 @@ const seo = {
     }
   }
 
-  .ws-computing {
+  :global(.ws-computing) {
     animation: ws-computing-shimmer 1.2s ease-in-out infinite;
   }
 
@@ -6103,50 +3119,6 @@ const seo = {
     gap: var(--space-sm);
   }
 
-  /* Overlay panel wrapper — visibility managed by JS via inline styles.
-     Initial state is style="display:none" in HTML. */
-
-  /* Seal code display — big, monospace, prominent */
-  .ws-seal-code {
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
-    font-size: clamp(0.7rem, 3.8vw, 2rem);
-    font-weight: 700;
-    letter-spacing: 0.15em;
-    color: rgb(var(--chromatic-cyan));
-    display: block;
-    text-align: center;
-    padding: var(--space-md) 0;
-    word-break: break-all;
-    overflow-wrap: anywhere;
-    max-width: 100%;
-  }
-
-  .ws-seal-code-wrap {
-    background: rgb(var(--chromatic-cyan) / 0.06);
-    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
-    border-radius: calc(var(--whisper-radius) * 0.75);
-    margin: var(--space-sm) 0;
-    padding: 0 var(--space-sm);
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .ws-seal-hint {
-    margin: 0;
-    font-size: var(--text-sm);
-    color: rgb(var(--color-text-rgb) / 0.44);
-    line-height: 1.5;
-  }
-
-  .ws-seal-qr-wrap {
-    display: grid;
-    justify-items: center;
-    gap: calc(var(--space-xs) * 0.6);
-    margin: 0 0 var(--space-sm);
-    min-width: 0;
-    max-width: 100%;
-  }
-
   .ws-my-seal-inline-panel {
     margin-top: calc(var(--space-xs) * 0.55);
     padding: calc(var(--space-xs) * 0.6);
@@ -6174,41 +3146,8 @@ const seo = {
     border-color: rgb(var(--chromatic-red) / 0.38);
   }
 
-  .ws-my-seal-inline-panel .ws-seal-qr-wrap {
+  :global(.ws-my-seal-inline-panel .ws-seal-qr-wrap) {
     margin: 0;
-  }
-
-  .ws-seal-qr-canvas {
-    border-radius: calc(var(--whisper-radius) * 0.65);
-    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
-    background: rgb(var(--color-bg-rgb));
-    max-width: 100%;
-    width: min(220px, 100%);
-    height: auto;
-    box-sizing: border-box;
-  }
-
-  .ws-seal-actions,
-  .ws-compose-actions,
-  .ws-unseal-actions {
-    display: flex;
-    gap: calc(var(--space-xs) * 0.5);
-  }
-
-  /* Computing panel (centered spinner + text) */
-  .ws-computing-panel {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-lg);
-  }
-
-  .ws-computing-text {
-    margin: 0;
-    color: var(--whisper-muted);
-    font-size: var(--text-sm);
-    letter-spacing: 0.02em;
   }
 
   /* Textarea for message composition */
@@ -6235,7 +3174,7 @@ const seo = {
     min-height: 1.25em;
   }
 
-  .ws-seal-input-hint {
+  :global(.ws-seal-input-hint) {
     display: block;
     margin-top: calc(var(--space-xs) * -0.45);
   }
@@ -6381,456 +3320,12 @@ const seo = {
     -moz-appearance: textfield;
   }
 
-  /* URL display (truncated with scroll) */
-  .ws-url-display {
-    word-break: break-all;
-    max-height: 6rem;
-    overflow-y: auto;
-  }
-
-  .ws-url-display-wrap {
-    display: flex;
-    gap: calc(var(--space-xs) * 0.5);
-    align-items: stretch;
-    min-width: 0;
-  }
-
-  /* Result checks list */
-  .ws-result-checks {
-    margin: var(--space-sm) 0;
-  }
-  .ws-check {
-    font-size: var(--text-sm);
-    margin: var(--space-xs) 0;
-    color: rgb(var(--color-text-rgb) / 0.55);
-  }
-  .ws-check-icon {
-    color: rgb(var(--tool-status-success));
-    margin-right: 0.3em;
-  }
-
-  /* Warning text */
-  .ws-result-warning {
-    font-size: calc(var(--text-sm) * 0.88);
-    color: rgb(var(--chromatic-amber, 234 179 8));
-    font-style: italic;
-    margin-top: var(--space-sm);
-  }
-
-  .ws-result-url-length-warning {
-    font-size: calc(var(--text-sm) * 0.88);
-    color: rgb(var(--chromatic-amber, 234 179 8));
-    background: rgb(var(--chromatic-amber, 234 179 8) / 0.06);
-    border: 1px solid rgb(var(--chromatic-amber, 234 179 8) / 0.2);
-    border-radius: calc(var(--whisper-radius) * 0.75);
-    padding: calc(var(--space-xs) * 0.7) var(--space-sm);
-    margin: var(--space-xs) 0 0;
-    line-height: 1.5;
-  }
-
-  /* Decrypted message display */
-  .ws-decrypted-text {
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow-wrap: anywhere;
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
-    font-size: var(--text-sm);
-    padding: var(--space-md);
-    background: rgb(var(--color-text-rgb) / 0.02);
-    border: 1px solid var(--whisper-edge);
-    border-radius: calc(var(--whisper-radius) * 0.75);
-    max-width: 100%;
-    max-height: 20rem;
-    overflow-y: auto;
-    margin: 0;
-  }
-
-  .ws-unseal-meta {
-    margin: var(--space-sm) 0;
-    font-size: var(--text-sm);
-    color: rgb(var(--color-text-rgb) / 0.44);
-  }
-
-  /* Unseal progress (centered spinner) */
-  .ws-unseal-progress {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-lg);
-  }
-
-  /* Failure text */
-  .ws-fail-text {
-    font-size: var(--text-base);
-    margin: 0 0 var(--space-xs);
-    color: rgb(var(--color-text-rgb) / 0.72);
-  }
-
-  .ws-fail-detail {
-    font-size: var(--text-sm);
-    color: rgb(var(--color-text-rgb) / 0.44);
-    margin: 0 0 var(--space-md);
-    line-height: 1.5;
-  }
-
-  /* ── Status screens (expired, fail, password, success) ───── */
-
-  /* Status icon — circular badge above the title */
-  .ws-status-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 3rem;
-    height: 3rem;
-    border-radius: var(--radius-full);
-    margin-bottom: calc(var(--space-xs) * 0.6);
-  }
-
-  .ws-status-icon svg {
-    opacity: 0.85;
-  }
-
-  /* Expired — warning tone, faint pulsing border */
-  .ws-status-icon--expired {
-    color: rgb(var(--tool-status-warning));
-    border: 1px solid rgb(var(--tool-status-warning) / 0.25);
-    background: rgb(var(--tool-status-warning) / 0.06);
-    animation: ws-expired-glow 3s ease-in-out infinite;
-  }
-
-  @keyframes ws-expired-glow {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0 rgb(var(--tool-status-warning) / 0);
-    }
-    50% {
-      box-shadow: 0 0 12px 0 rgb(var(--tool-status-warning) / 0.08);
-    }
-  }
-
-  /* Locked / Cannot Open — red tone */
-  .ws-status-icon--locked {
-    color: rgb(var(--chromatic-red) / 0.7);
-    border: 1px solid rgb(var(--chromatic-red) / 0.2);
-    background: rgb(var(--chromatic-red) / 0.05);
-  }
-
-  /* Phrase required — cyan tone, matches primary accent */
-  .ws-status-icon--phrase {
-    color: rgb(var(--chromatic-cyan) / 0.7);
-    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
-    background: rgb(var(--chromatic-cyan) / 0.05);
-    animation: ws-phrase-shimmer 2.5s ease-in-out infinite;
-  }
-
-  @keyframes ws-phrase-shimmer {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0);
-    }
-    50% {
-      box-shadow: 0 0 10px 0 rgb(var(--chromatic-cyan) / 0.06);
-    }
-  }
-
-  /* Success — green tone */
-  .ws-status-icon--success {
-    color: rgb(var(--tool-status-success));
-    border: 1px solid rgb(var(--tool-status-success) / 0.25);
-    background: rgb(var(--tool-status-success) / 0.06);
-  }
-
-  /* Status title — slightly larger weight for these screens */
-  .ws-status-title {
-    font-size: var(--text-lg);
-    letter-spacing: -0.01em;
-  }
-
-  /* Status metadata line — shows seal details on status screens */
-  .ws-status-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.6);
-    font-size: calc(var(--text-sm) * 0.88);
-    color: rgb(var(--color-text-rgb) / 0.32);
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
-    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.75);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    background: rgb(var(--color-text-rgb) / 0.015);
-    margin-bottom: var(--space-sm);
-  }
-
-  .ws-status-meta:empty {
-    display: none;
-  }
-
-  .ws-status-meta span {
-    white-space: nowrap;
-  }
-
-  .ws-status-meta-sep {
-    color: rgb(var(--color-text-rgb) / 0.12);
-  }
-
-  /* ═══ Campfire styles ═══════════════════════════════════════ */
-
-  /* Sub-mode toggle (1:1 vs Campfire) */
-  .cf-live-mode-toggle {
-    display: flex;
-    flex-shrink: 0;
-    gap: 0;
-    border: 1px solid var(--whisper-edge);
-    border-radius: calc(var(--whisper-radius) * 0.5);
-    overflow: hidden;
-    background: rgb(10 10 10 / 0.88);
-    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
-    white-space: nowrap;
-  }
-
-  .cf-mode-opt {
-    display: flex;
-    cursor: pointer;
-  }
-
-  .cf-mode-radio {
-    position: absolute;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .cf-mode-label {
-    display: flex;
-    align-items: center;
-    padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
-    font-size: calc(var(--text-sm) * 0.82);
-    color: var(--whisper-muted);
-    transition:
-      background 0.15s,
-      color 0.15s;
-    user-select: none;
-    white-space: nowrap;
-  }
-
-  .cf-mode-radio:checked + .cf-mode-label {
-    background: rgb(var(--color-text-rgb) / 0.08);
-    color: var(--color-text);
-  }
-
-  .cf-mode-opt:not(:last-child) .cf-mode-label {
-    border-right: 1px solid var(--whisper-edge);
-  }
-
-  .cf-head-btn {
-    border-radius: 0;
-    border: 0;
-    border-right: 1px solid var(--whisper-edge);
-    min-height: 2rem;
-    padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
-    font-size: calc(var(--text-sm) * 0.82);
-    color: var(--whisper-muted);
-    background: transparent;
-    letter-spacing: 0.01em;
-    text-transform: lowercase;
-  }
-
-  .cf-live-mode-toggle .cf-head-btn:last-child {
-    border-right: 0;
-  }
-
-  .wl-disconnect-btn svg {
-    display: block;
-    width: 14px;
-    height: 14px;
-  }
-
-  .cf-head-btn:hover {
-    background: rgb(var(--color-text-rgb) / 0.08);
-    color: var(--color-text);
-  }
-
-  /* Live header button accents */
-  #wl-funnel-campfire:hover {
-    background: rgb(var(--tool-action-load) / 0.16);
-    color: rgb(var(--tool-action-load));
-  }
-
-  #wl-disconnect:hover {
-    background: rgb(var(--chromatic-red) / 0.12);
-    color: rgb(var(--chromatic-red));
-  }
-
-  /* Chat header with peer list */
-  .cf-chat-header {
-    flex-direction: column;
-    gap: calc(var(--space-xs) * 0.5);
-  }
-
-  @media (min-width: 960px) {
-    .cf-chat-header {
-      flex-direction: row;
-      align-items: center;
-      justify-content: space-between;
-    }
-  }
-
-  .cf-peer-list-wrap {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    flex-wrap: wrap;
-    width: 100%;
-  }
-
-  .cf-peer-label {
-    font-size: calc(var(--text-sm) * 0.85);
-    color: var(--whisper-muted);
-    flex: 0 0 auto;
-  }
-
-  .cf-peer-list {
-    display: flex;
-    gap: calc(var(--space-xs) * 0.5);
-    flex-wrap: wrap;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .cf-peer-item {
-    display: inline-flex;
-    align-items: center;
-    padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
-    border-radius: calc(var(--whisper-radius) * 0.4);
-    background: rgb(var(--color-text-rgb) / 0.05);
-    font-size: calc(var(--text-sm) * 0.8);
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-
-  .cf-peer-item:hover {
-    background: rgb(var(--chromatic-cyan) / 0.12);
-  }
-
-  .cf-peer-name {
-    color: var(--color-text);
-  }
-
-  .cf-header-actions {
-    display: flex;
-    gap: var(--space-xs);
-    width: 100%;
-    justify-content: flex-end;
-  }
-
-  @media (min-width: 960px) {
-    .cf-header-actions {
-      width: auto;
-      flex: 0 0 auto;
-    }
-  }
-
-  .cf-msg-name {
-    display: block;
-    font-size: calc(var(--text-sm) * 0.8);
-    color: rgb(var(--chromatic-cyan) / 0.7);
-    margin-bottom: calc(var(--space-xs) * 0.2);
-  }
-
-  /* DM overlay */
-  .cf-dm-overlay {
-    position: fixed;
-    bottom: 0;
-    right: var(--space-md);
-    width: min(380px, calc(100vw - var(--space-md) * 2));
-    z-index: 100;
-  }
-
-  .cf-dm-panel {
-    display: flex;
-    flex-direction: column;
-    max-height: 50vh;
-    border-bottom: none;
-    border-radius: var(--whisper-radius) var(--whisper-radius) 0 0;
-    box-shadow: 0 -2px 16px rgb(0 0 0 / 0.15);
-  }
-
-  .cf-dm-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--space-xs) var(--space-sm);
-    border-bottom: 1px solid var(--whisper-edge);
-  }
-
-  .cf-dm-label {
-    font-size: var(--text-sm);
-    color: var(--whisper-muted);
-  }
-
-  .cf-dm-messages {
-    min-height: 8rem;
-    max-height: 20rem;
-  }
-
-  @media (max-width: 520px) {
-    .cf-header-actions {
-      justify-content: stretch;
-    }
-
-    .cf-header-actions .whisper-mini-btn {
-      flex: 1 1 50%;
-      justify-content: center;
-    }
-
-    .cf-peer-list {
-      max-height: 6rem;
-      overflow-y: auto;
-      padding-right: calc(var(--space-xs) * 0.25);
-    }
-
-    .cf-dm-overlay {
-      right: 0;
-      left: 0;
-      width: 100%;
-      padding: 0 var(--space-xs);
-      box-sizing: border-box;
-    }
-
-    .cf-dm-panel {
-      max-height: 62vh;
-      border-radius: calc(var(--whisper-radius) * 0.85)
-        calc(var(--whisper-radius) * 0.85) 0 0;
-    }
-  }
 </style>
 
 <script is:inline>
   (function () {
     var p = document.getElementById("whisper-page");
     if (!p) return;
-
-    var m = sessionStorage.getItem("whisper-mode") || "embed";
-    var c = sessionStorage.getItem("whisper-carrier") || "file";
-
-    if (m === "embed" || m === "extract" || m === "hunt" || m === "live") {
-      p.dataset.mode = m;
-      var btns = p.querySelectorAll(".whisper-mode-btn");
-      for (var i = 0; i < btns.length; i++) {
-        var active = btns[i].getAttribute("data-whisper-mode") === m;
-        active
-          ? btns[i].classList.add("whisper-mode-btn--active")
-          : btns[i].classList.remove("whisper-mode-btn--active");
-        btns[i].setAttribute("aria-pressed", active ? "true" : "false");
-      }
-    }
-
-    if (m === "embed") {
-      var radios = p.querySelectorAll('input[name="ws-carrier-type"]');
-      for (var j = 0; j < radios.length; j++) {
-        radios[j].checked = radios[j].value === p.dataset.carrier;
-      }
-    }
 
     // P2P/E2E Tooltip mobile interaction
     var badge = p.querySelector(".wl-e2e-badge");

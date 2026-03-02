@@ -1,0 +1,582 @@
+        <!-- ═══ Campfire phases (group chat within Live) ═══ -->
+
+        <!-- Campfire: idle -->
+        <div class="wl-phase" id="cf-idle-phase" style="display:none">
+          <p class="wl-phase-lede">
+            one person creates the room, shares the code, then everyone joins
+            directly.
+          </p>
+          <div class="whisper-panel wl-actions-panel">
+            <div class="wl-actions-row">
+              <div class="wl-action-create">
+                <span class="wl-action-label">Create</span>
+                <button
+                  id="cf-create"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Create room</button
+                >
+              </div>
+              <span class="wl-actions-divider" aria-hidden="true"></span>
+              <div class="wl-action-join">
+                <span class="wl-action-label">Join</span>
+                <div class="wl-join-row">
+                  <input
+                    id="cf-join-input"
+                    type="text"
+                    class="whisper-input wl-code-input"
+                    placeholder="room code"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button id="cf-join" type="button" class="whisper-mini-btn"
+                    >Join</button
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="whisper-panel wl-phrase-panel">
+            <label class="whisper-field" for="cf-name">
+              <span class="whisper-field-label"
+                >display name <span class="whisper-field-hint"
+                  >(visible to the group)</span
+                ></span
+              >
+              <input
+                id="cf-name"
+                type="text"
+                class="whisper-input"
+                placeholder="your name (optional)"
+                autocomplete="off"
+                maxlength="32"
+              />
+            </label>
+
+            <div class="whisper-field">
+              <span class="whisper-field-label">network</span>
+              <label class="whisper-toggle" for="cf-external-assist">
+                <input
+                  id="cf-external-assist"
+                  type="checkbox"
+                  class="whisper-toggle-input"
+                />
+                <span class="whisper-toggle-text">
+                  external assist (stun)
+                  <span class="whisper-field-hint"
+                    >(helps connect across networks. may expose network metadata
+                    during setup. turns off after connect)</span
+                  >
+                </span>
+              </label>
+            </div>
+
+            <div class="whisper-field">
+              <span class="whisper-field-label"
+                >campfire flare join <span class="whisper-field-hint"
+                  >(find an open host gate by phrase)</span
+                ></span
+              >
+              <div class="wl-join-row">
+                <input
+                  id="cf-flare-phrase"
+                  type="text"
+                  class="whisper-input wl-code-input"
+                  placeholder="host gate phrase"
+                  autocomplete="new-password"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
+                />
+                <button
+                  id="cf-flare-join"
+                  type="button"
+                  class="whisper-mini-btn">Join flare</button
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: waiting -->
+        <div class="wl-phase" id="cf-waiting-section" style="display:none">
+          <p class="wl-phase-lede">
+            share the room code. when someone sends back their reply, paste it
+            here to let them in.
+          </p>
+          <div class="wl-grid wl-grid--offer">
+            <div class="whisper-panel wl-card">
+              <div class="whisper-panel-header">
+                <h3 class="whisper-panel-title">Room code</h3>
+                <span class="whisper-panel-mode">send this to peers</span>
+              </div>
+              <p class="wl-inline-hint">
+                anyone with this code can request to join.
+              </p>
+              <div class="wl-code-display-wrap">
+                <pre id="cf-room-code" class="wl-code-display"></pre>
+                <button id="cf-room-copy" type="button" class="whisper-mini-btn"
+                  >Copy</button
+                >
+                <button
+                  id="cf-room-share"
+                  type="button"
+                  class="whisper-mini-btn">Share</button
+                >
+              </div>
+            </div>
+
+            <div class="whisper-panel wl-card">
+              <div class="whisper-panel-header">
+                <h3 class="whisper-panel-title">Accept</h3>
+                <span class="whisper-panel-mode">paste peer reply</span>
+              </div>
+              <p class="wl-inline-hint">
+                paste a peer's reply code to finish connecting them.
+              </p>
+              <div class="wl-join-row">
+                <input
+                  id="cf-answer-input"
+                  type="text"
+                  class="whisper-input wl-code-input"
+                  placeholder="answer code"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button
+                  id="cf-answer-apply"
+                  type="button"
+                  class="whisper-mini-btn wl-primary">Connect</button
+                >
+              </div>
+
+              <div class="whisper-field" style="margin-top:.8rem">
+                <span class="whisper-field-label"
+                  >flare gate <span class="whisper-field-hint"
+                    >(host-controlled door)</span
+                  ></span
+                >
+                <div class="wl-join-row">
+                  <input
+                    id="cf-host-flare-phrase"
+                    type="text"
+                    class="whisper-input wl-code-input"
+                    placeholder="phrase for this gate"
+                    autocomplete="new-password"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-form-type="other"
+                  />
+                  <button
+                    id="cf-host-flare-toggle"
+                    type="button"
+                    class="whisper-mini-btn">Open gate</button
+                  >
+                </div>
+                <p id="cf-host-flare-state" class="whisper-field-hint">
+                  gate closed
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: connecting -->
+        <div class="wl-phase" id="cf-connecting-section" style="display:none">
+          <div class="whisper-panel wl-connecting-panel">
+            <div class="wl-spinner" aria-hidden="true"></div>
+            <p id="cf-connecting-status" class="wl-connecting-text">
+              joining the room...
+            </p>
+          </div>
+          <div
+            class="whisper-panel wl-card"
+            id="cf-joiner-answer"
+            style="display:none"
+          >
+            <div class="whisper-panel-header">
+              <h3 class="whisper-panel-title">Reply code</h3>
+              <span class="whisper-panel-mode">send back to the host</span>
+            </div>
+            <p class="wl-inline-hint">
+              copy this and send it to whoever created the room. keep this tab
+              open.
+            </p>
+            <div class="wl-code-display-wrap">
+              <pre id="cf-joiner-code" class="wl-code-display"></pre>
+              <button id="cf-joiner-copy" type="button" class="whisper-mini-btn"
+                >Copy</button
+              >
+              <button
+                id="cf-joiner-share"
+                type="button"
+                class="whisper-mini-btn">Share</button
+              >
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: active -->
+        <div class="wl-phase" id="cf-active-section" style="display:none">
+          <div class="whisper-panel wl-chat-panel cf-chat-panel">
+            <div class="wl-chat-header cf-chat-header">
+              <div class="cf-peer-list-wrap">
+                <span class="cf-peer-label">in room:</span>
+                <div id="cf-peer-list" class="cf-peer-list" role="list"></div>
+              </div>
+              <div class="cf-header-actions">
+                <button
+                  id="cf-host-flare-toggle-active"
+                  type="button"
+                  class="whisper-mini-btn"
+                  style="display:none">Open gate</button
+                >
+                <button
+                  id="cf-disconnect"
+                  type="button"
+                  class="whisper-mini-btn wl-disconnect-btn">Leave</button
+                >
+              </div>
+            </div>
+
+            <div
+              id="cf-chat-messages"
+              class="wl-chat-messages"
+              aria-live="polite"
+              aria-relevant="additions"
+            >
+            </div>
+
+            <div class="wl-chat-compose">
+              <input
+                id="cf-chat-input"
+                type="text"
+                class="whisper-input wl-chat-text-input"
+                placeholder="type a message"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button
+                id="cf-chat-send"
+                type="button"
+                class="whisper-mini-btn wl-chat-send-btn">Send</button
+              >
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: DM overlay -->
+        <div id="cf-dm-overlay" class="cf-dm-overlay" style="display:none">
+          <div class="whisper-panel cf-dm-panel">
+            <div class="cf-dm-header">
+              <span class="cf-dm-label"
+                ><strong id="cf-dm-target-name"></strong></span
+              >
+              <button id="cf-dm-close" type="button" class="whisper-mini-btn"
+                >Close</button
+              >
+            </div>
+            <div id="cf-dm-messages" class="wl-chat-messages cf-dm-messages">
+            </div>
+            <div class="wl-chat-compose">
+              <input
+                id="cf-dm-input"
+                type="text"
+                class="whisper-input wl-chat-text-input"
+                placeholder="just between you two"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button
+                id="cf-dm-send"
+                type="button"
+                class="whisper-mini-btn wl-chat-send-btn">Send</button
+              >
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire: ended -->
+        <div class="wl-phase" id="cf-ended-section" style="display:none">
+          <div class="whisper-panel wl-end-panel">
+            <p id="cf-ended-message" class="wl-end-text">
+              the campfire is out. nothing remains.
+            </p>
+            <button id="cf-new-campfire" type="button" class="whisper-mini-btn"
+              >New session</button
+            >
+          </div>
+        </div>
+
+<style>
+  /* ═══ wl-phrase-panel (used by campfire) ═══ */
+  .wl-phrase-panel {
+    display: grid;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
+  }
+
+  .wl-phrase-panel :global(.whisper-field-label) {
+    font-size: var(--text-sm);
+  }
+
+  .wl-phrase-panel :global(.whisper-input) {
+    min-height: var(--touch-target);
+    padding: 0.6rem 0.75rem;
+    font-size: var(--text-sm);
+  }
+
+  .wl-phrase-panel :global(.whisper-toggle) {
+    min-height: var(--touch-target);
+    padding: 0.55rem 0.75rem;
+  }
+
+  .wl-phrase-panel :global(.whisper-toggle-text) {
+    font-size: var(--text-sm);
+  }
+
+  @media (min-width: 860px) {
+    .wl-phrase-panel {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-items: start;
+    }
+  }
+
+  /* ═══ Campfire styles ═══════════════════════════════════════ */
+
+  /* Sub-mode toggle (1:1 vs Campfire) — elements live in parent template */
+  :global(.cf-live-mode-toggle) {
+    display: flex;
+    flex-shrink: 0;
+    gap: 0;
+    border: 1px solid var(--whisper-edge);
+    border-radius: calc(var(--whisper-radius) * 0.5);
+    overflow: hidden;
+    background: rgb(10 10 10 / 0.88);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
+    white-space: nowrap;
+  }
+
+  :global(.cf-mode-opt) {
+    display: flex;
+    cursor: pointer;
+  }
+
+  :global(.cf-mode-radio) {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  :global(.cf-mode-label) {
+    display: flex;
+    align-items: center;
+    padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
+    font-size: calc(var(--text-sm) * 0.82);
+    color: var(--whisper-muted);
+    transition:
+      background 0.15s,
+      color 0.15s;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  :global(.cf-mode-radio:checked + .cf-mode-label) {
+    background: rgb(var(--color-text-rgb) / 0.08);
+    color: var(--color-text);
+  }
+
+  :global(.cf-mode-opt:not(:last-child) .cf-mode-label) {
+    border-right: 1px solid var(--whisper-edge);
+  }
+
+  :global(.cf-head-btn) {
+    border-radius: 0;
+    border: 0;
+    border-right: 1px solid var(--whisper-edge);
+    min-height: 2rem;
+    padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
+    font-size: calc(var(--text-sm) * 0.82);
+    color: var(--whisper-muted);
+    background: transparent;
+    letter-spacing: 0.01em;
+    text-transform: lowercase;
+  }
+
+  :global(.cf-live-mode-toggle .cf-head-btn:last-child) {
+    border-right: 0;
+  }
+
+  :global(.wl-disconnect-btn) :global(svg) {
+    display: block;
+    width: 14px;
+    height: 14px;
+  }
+
+  :global(.cf-head-btn):hover {
+    background: rgb(var(--color-text-rgb) / 0.08);
+    color: var(--color-text);
+  }
+
+  /* Live header button accents */
+  :global(#wl-funnel-campfire):hover {
+    background: rgb(var(--tool-action-load) / 0.16);
+    color: rgb(var(--tool-action-load));
+  }
+
+  :global(#wl-disconnect):hover {
+    background: rgb(var(--chromatic-red) / 0.12);
+    color: rgb(var(--chromatic-red));
+  }
+
+  /* Chat header with peer list */
+  .cf-chat-header {
+    flex-direction: column;
+    gap: calc(var(--space-xs) * 0.5);
+  }
+
+  @media (min-width: 960px) {
+    .cf-chat-header {
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+    }
+  }
+
+  .cf-peer-list-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .cf-peer-label {
+    font-size: calc(var(--text-sm) * 0.85);
+    color: var(--whisper-muted);
+    flex: 0 0 auto;
+  }
+
+  .cf-peer-list {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+    flex-wrap: wrap;
+    flex: 1;
+    min-width: 0;
+  }
+
+  :global(.cf-peer-item) {
+    display: inline-flex;
+    align-items: center;
+    padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
+    border-radius: calc(var(--whisper-radius) * 0.4);
+    background: rgb(var(--color-text-rgb) / 0.05);
+    font-size: calc(var(--text-sm) * 0.8);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  :global(.cf-peer-item):hover {
+    background: rgb(var(--chromatic-cyan) / 0.12);
+  }
+
+  :global(.cf-peer-name) {
+    color: var(--color-text);
+  }
+
+  .cf-header-actions {
+    display: flex;
+    gap: var(--space-xs);
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  @media (min-width: 960px) {
+    .cf-header-actions {
+      width: auto;
+      flex: 0 0 auto;
+    }
+  }
+
+  :global(.cf-msg-name) {
+    display: block;
+    font-size: calc(var(--text-sm) * 0.8);
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    margin-bottom: calc(var(--space-xs) * 0.2);
+  }
+
+  /* DM overlay */
+  .cf-dm-overlay {
+    position: fixed;
+    bottom: 0;
+    right: var(--space-md);
+    width: min(380px, calc(100vw - var(--space-md) * 2));
+    z-index: 100;
+  }
+
+  .cf-dm-panel {
+    display: flex;
+    flex-direction: column;
+    max-height: 50vh;
+    border-bottom: none;
+    border-radius: var(--whisper-radius) var(--whisper-radius) 0 0;
+    box-shadow: 0 -2px 16px rgb(0 0 0 / 0.15);
+  }
+
+  .cf-dm-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--whisper-edge);
+  }
+
+  .cf-dm-label {
+    font-size: var(--text-sm);
+    color: var(--whisper-muted);
+  }
+
+  .cf-dm-messages {
+    min-height: 8rem;
+    max-height: 20rem;
+  }
+
+  @media (max-width: 520px) {
+    .cf-chat-header {
+      align-items: stretch;
+    }
+
+    .cf-header-actions {
+      justify-content: stretch;
+    }
+
+    .cf-header-actions :global(.whisper-mini-btn) {
+      flex: 1 1 50%;
+      justify-content: center;
+    }
+
+    .cf-peer-list {
+      max-height: 6rem;
+      overflow-y: auto;
+      padding-right: calc(var(--space-xs) * 0.25);
+    }
+
+    .cf-dm-overlay {
+      right: 0;
+      left: 0;
+      width: 100%;
+      padding: 0 var(--space-xs);
+      box-sizing: border-box;
+    }
+
+    .cf-dm-panel {
+      max-height: 62vh;
+      border-radius: calc(var(--whisper-radius) * 0.85)
+        calc(var(--whisper-radius) * 0.85) 0 0;
+    }
+  }
+</style>

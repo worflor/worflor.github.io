@@ -1,0 +1,570 @@
+<!-- Seal overlay panels (computing, my-seal, result, unseal) -->
+<div class="ws-overlay" id="ws-overlay" style="display:none">
+  <!-- Computing fingerprint -->
+  <div
+    class="ws-overlay-panel"
+    id="ws-computing-phase"
+    style="display:none"
+  >
+    <div class="whisper-panel ws-computing-panel">
+      <div class="wl-spinner" aria-hidden="true"></div>
+      <p class="ws-computing-text">computing your browser seal...</p>
+    </div>
+  </div>
+
+  <!-- My seal — display seal code -->
+  <div
+    class="ws-overlay-panel"
+    id="ws-my-seal-phase"
+    style="display:none"
+  >
+    <div class="whisper-panel ws-seal-display-panel">
+      <h3 class="whisper-panel-title">Your WS2 Public Seal</h3>
+      <div class="ws-seal-code-wrap">
+        <span id="ws-seal-code" class="ws-seal-code"></span>
+      </div>
+      <div class="ws-seal-qr-wrap">
+        <canvas
+          id="ws-seal-qr-canvas-overlay"
+          class="ws-seal-qr-canvas"
+          data-qr-size="220"
+          aria-label="QR code for your full WS2 public key"></canvas>
+        <p id="ws-seal-qr-status-overlay" class="ws-seal-hint">
+          share this to let someone message you.
+        </p>
+      </div>
+      <p class="ws-seal-hint">
+        Share this full WS2 code to receive messages.
+      </p>
+      <p class="ws-seal-hint">
+        Only the browser profile with the matching private key can open
+        messages sealed to this key.
+      </p>
+      <div class="ws-seal-actions">
+        <button
+          id="ws-seal-copy"
+          type="button"
+          class="whisper-mini-btn wl-primary">Copy seal</button
+        >
+        <button id="ws-seal-back" type="button" class="whisper-mini-btn"
+          >Done</button
+        >
+      </div>
+    </div>
+  </div>
+
+  <!-- Sealed URL ready -->
+  <div class="ws-overlay-panel" id="ws-result-phase" style="display:none">
+    <div class="whisper-panel ws-result-panel">
+      <h3 class="whisper-panel-title">Message Sealed</h3>
+
+      <div class="ws-url-display-wrap">
+        <pre id="ws-sealed-url" class="wl-code-display ws-url-display">
+        </pre>
+        <button id="ws-url-copy" type="button" class="whisper-mini-btn"
+          >Copy URL</button
+        >
+      </div>
+
+      <div class="ws-result-checks">
+        <p class="ws-check">
+          <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> Only
+          <strong id="ws-result-seal-target"></strong> can open this
+        </p>
+        <p class="ws-check">
+          <span class="ws-check-icon" aria-hidden="true">&#x2713;</span>
+          <span id="ws-result-expiry-text">Expires in 24 hours</span>
+        </p>
+        <p class="ws-check">
+          <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> No
+          data stored anywhere
+        </p>
+      </div>
+
+      <p
+        id="ws-result-url-warning"
+        class="ws-result-url-length-warning"
+        style="display:none"
+      >
+      </p>
+      <p class="ws-result-warning">
+        Once you leave this page, this URL cannot be recovered.
+      </p>
+
+      <button id="ws-result-done" type="button" class="whisper-mini-btn"
+        >Done</button
+      >
+    </div>
+  </div>
+
+  <!-- Unsealing (auto-triggered by URL fragment) -->
+  <div class="ws-overlay-panel" id="ws-unseal-phase" style="display:none">
+    <div class="whisper-panel ws-unseal-panel">
+      <div id="ws-unseal-progress" class="ws-unseal-progress">
+        <div class="wl-spinner" aria-hidden="true"></div>
+        <p class="ws-computing-text">checking your seal...</p>
+      </div>
+
+      <div
+        id="ws-unseal-success"
+        class="ws-status-screen"
+        style="display:none"
+      >
+        <div
+          class="ws-status-icon ws-status-icon--success"
+          aria-hidden="true"
+        >
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+        </div>
+        <h3 class="whisper-panel-title ws-status-title">
+          Sealed Message
+        </h3>
+        <div class="ws-message-display">
+          <pre id="ws-decrypted-message" class="ws-decrypted-text"></pre>
+        </div>
+        <p class="ws-unseal-meta">
+          <span class="ws-check-icon" aria-hidden="true">&#x2713;</span> decrypted
+          locally with your seal. this message won't be here when you leave.
+        </p>
+        <div class="ws-status-meta" data-meta="success"></div>
+        <div class="ws-unseal-actions">
+          <button
+            id="ws-msg-copy"
+            type="button"
+            class="whisper-mini-btn wl-primary">Copy content</button
+          >
+          <button
+            id="ws-unseal-done"
+            type="button"
+            class="whisper-mini-btn">Close</button
+          >
+        </div>
+      </div>
+
+      <div
+        id="ws-unseal-fail"
+        class="ws-status-screen"
+        style="display:none"
+      >
+        <div
+          class="ws-status-icon ws-status-icon--locked"
+          aria-hidden="true"
+        >
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"
+            ></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+        </div>
+        <h3 class="whisper-panel-title ws-status-title">Cannot Open</h3>
+        <p class="ws-fail-text">
+          this one's not for you. or at least, not this browser.
+        </p>
+        <p class="ws-fail-detail">
+          try opening it in the browser where your seal was created.
+        </p>
+        <div class="ws-status-meta" data-meta="fail"></div>
+        <button id="ws-fail-back" type="button" class="whisper-mini-btn"
+          >Back</button
+        >
+      </div>
+
+      <div
+        id="ws-unseal-expired"
+        class="ws-status-screen"
+        style="display:none"
+      >
+        <div
+          class="ws-status-icon ws-status-icon--expired"
+          aria-hidden="true"
+        >
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+        </div>
+        <h3 class="whisper-panel-title ws-status-title">Expired</h3>
+        <p class="ws-fail-text">
+          this sealed message has expired and can no longer be opened.
+        </p>
+        <p class="ws-fail-detail">
+          this one had a time limit... and it passed.
+        </p>
+        <div class="ws-status-meta" data-meta="expired"></div>
+        <button
+          id="ws-expired-back"
+          type="button"
+          class="whisper-mini-btn">Back</button
+        >
+      </div>
+
+      <div
+        id="ws-unseal-password"
+        class="ws-status-screen"
+        style="display:none"
+      >
+        <div
+          class="ws-status-icon ws-status-icon--phrase"
+          aria-hidden="true"
+        >
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"
+            ></path>
+          </svg>
+        </div>
+        <h3 class="whisper-panel-title ws-status-title">
+          Shared Phrase Required
+        </h3>
+        <p class="ws-fail-detail">
+          this sealed message was locked with a shared phrase. enter it
+          below to decrypt.
+        </p>
+        <div class="ws-status-meta" data-meta="password"></div>
+        <label class="whisper-field" for="ws-unseal-pw-input">
+          <input
+            id="ws-unseal-pw-input"
+            type="password"
+            class="whisper-input"
+            placeholder="enter shared phrase"
+            autocomplete="new-password"
+            autocapitalize="off"
+            spellcheck="false"
+            data-lpignore="true"
+            data-1p-ignore="true"
+            data-form-type="other"
+          />
+        </label>
+        <div class="wl-join-tools" role="group" aria-label="Paste helper">
+          <button
+            id="ws-unseal-pw-paste"
+            type="button"
+            class="wl-tool-link">paste</button
+          >
+        </div>
+        <button
+          id="ws-unseal-pw-submit"
+          type="button"
+          class="whisper-mini-btn wl-primary">Decrypt</button
+        >
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── Computing phase ─────────────────────────────────── */
+
+  .ws-computing-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-lg);
+  }
+
+  .ws-computing-text {
+    margin: 0;
+    color: var(--whisper-muted);
+    font-size: var(--text-sm);
+    letter-spacing: 0.02em;
+  }
+
+  /* ── My-seal phase (seal code display) ───────────────── */
+
+  .ws-seal-code {
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: clamp(0.7rem, 3.8vw, 2rem);
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    color: rgb(var(--chromatic-cyan));
+    display: block;
+    text-align: center;
+    padding: var(--space-md) 0;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+
+  .ws-seal-code-wrap {
+    background: rgb(var(--chromatic-cyan) / 0.06);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    margin: var(--space-sm) 0;
+    padding: 0 var(--space-sm);
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  :global(.ws-seal-hint) {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.44);
+    line-height: 1.5;
+  }
+
+  .ws-seal-qr-wrap {
+    display: grid;
+    justify-items: center;
+    gap: calc(var(--space-xs) * 0.6);
+    margin: 0 0 var(--space-sm);
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  :global(.ws-seal-qr-canvas) {
+    border-radius: calc(var(--whisper-radius) * 0.65);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
+    background: rgb(var(--color-bg-rgb));
+    max-width: 100%;
+    width: min(220px, 100%);
+    height: auto;
+    box-sizing: border-box;
+  }
+
+  .ws-seal-actions,
+  .ws-unseal-actions {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+  }
+
+  /* ── Result phase (sealed URL) ───────────────────────── */
+
+  .ws-url-display {
+    word-break: break-all;
+    max-height: 6rem;
+    overflow-y: auto;
+  }
+
+  .ws-url-display-wrap {
+    display: flex;
+    gap: calc(var(--space-xs) * 0.5);
+    align-items: stretch;
+    min-width: 0;
+  }
+
+  .ws-result-checks {
+    margin: var(--space-sm) 0;
+  }
+
+  .ws-check {
+    font-size: var(--text-sm);
+    margin: var(--space-xs) 0;
+    color: rgb(var(--color-text-rgb) / 0.55);
+  }
+
+  .ws-check-icon {
+    color: rgb(var(--tool-status-success));
+    margin-right: 0.3em;
+  }
+
+  .ws-result-warning {
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--chromatic-amber, 234 179 8));
+    font-style: italic;
+    margin-top: var(--space-sm);
+  }
+
+  .ws-result-url-length-warning {
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--chromatic-amber, 234 179 8));
+    background: rgb(var(--chromatic-amber, 234 179 8) / 0.06);
+    border: 1px solid rgb(var(--chromatic-amber, 234 179 8) / 0.2);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    padding: calc(var(--space-xs) * 0.7) var(--space-sm);
+    margin: var(--space-xs) 0 0;
+    line-height: 1.5;
+  }
+
+  /* ── Unseal phase ────────────────────────────────────── */
+
+  .ws-unseal-progress {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-lg);
+  }
+
+  .ws-decrypted-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--text-sm);
+    padding: var(--space-md);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    border: 1px solid var(--whisper-edge);
+    border-radius: calc(var(--whisper-radius) * 0.75);
+    max-width: 100%;
+    max-height: 20rem;
+    overflow-y: auto;
+    margin: 0;
+  }
+
+  .ws-unseal-meta {
+    margin: var(--space-sm) 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.44);
+  }
+
+  /* ── Failure text ────────────────────────────────────── */
+
+  .ws-fail-text {
+    font-size: var(--text-base);
+    margin: 0 0 var(--space-xs);
+    color: rgb(var(--color-text-rgb) / 0.72);
+  }
+
+  .ws-fail-detail {
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.44);
+    margin: 0 0 var(--space-md);
+    line-height: 1.5;
+  }
+
+  /* ── Status screens (expired, fail, password, success) ─ */
+
+  .ws-status-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: var(--radius-full);
+    margin-bottom: calc(var(--space-xs) * 0.6);
+  }
+
+  .ws-status-icon svg {
+    opacity: 0.85;
+  }
+
+  .ws-status-icon--success {
+    color: rgb(var(--tool-status-success));
+    border: 1px solid rgb(var(--tool-status-success) / 0.25);
+    background: rgb(var(--tool-status-success) / 0.06);
+  }
+
+  .ws-status-icon--locked {
+    color: rgb(var(--chromatic-red) / 0.7);
+    border: 1px solid rgb(var(--chromatic-red) / 0.2);
+    background: rgb(var(--chromatic-red) / 0.05);
+  }
+
+  .ws-status-icon--expired {
+    color: rgb(var(--tool-status-warning));
+    border: 1px solid rgb(var(--tool-status-warning) / 0.25);
+    background: rgb(var(--tool-status-warning) / 0.06);
+    animation: ws-expired-glow 3s ease-in-out infinite;
+  }
+
+  @keyframes ws-expired-glow {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgb(var(--tool-status-warning) / 0);
+    }
+    50% {
+      box-shadow: 0 0 12px 0 rgb(var(--tool-status-warning) / 0.08);
+    }
+  }
+
+  .ws-status-icon--phrase {
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
+    background: rgb(var(--chromatic-cyan) / 0.05);
+    animation: ws-phrase-shimmer 2.5s ease-in-out infinite;
+  }
+
+  @keyframes ws-phrase-shimmer {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgb(var(--chromatic-cyan) / 0);
+    }
+    50% {
+      box-shadow: 0 0 10px 0 rgb(var(--chromatic-cyan) / 0.06);
+    }
+  }
+
+  .ws-status-title {
+    font-size: var(--text-lg);
+    letter-spacing: -0.01em;
+  }
+
+  .ws-status-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.6);
+    font-size: calc(var(--text-sm) * 0.88);
+    color: rgb(var(--color-text-rgb) / 0.32);
+    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.75);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    background: rgb(var(--color-text-rgb) / 0.015);
+    margin-bottom: var(--space-sm);
+  }
+
+  .ws-status-meta:empty {
+    display: none;
+  }
+
+  .ws-status-meta :global(span) {
+    white-space: nowrap;
+  }
+
+  :global(.ws-status-meta-sep) {
+    color: rgb(var(--color-text-rgb) / 0.12);
+  }
+
+  /* ── Shared parent class overrides (defined elsewhere) ── */
+
+  :global(.whisper-panel) {}
+  :global(.whisper-panel-title) {}
+  :global(.whisper-mini-btn) {}
+  :global(.wl-primary) {}
+  :global(.wl-spinner) {}
+  :global(.wl-code-display) {}
+  :global(.whisper-input) {}
+  :global(.whisper-field) {}
+  :global(.wl-join-tools) {}
+  :global(.wl-tool-link) {}
+</style>
