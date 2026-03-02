@@ -22,13 +22,25 @@ this license applies to the Whisper Protocol and its components:
 
 **"natural person"** means a human being, as distinct from a legal entity.
 
+**"legal entity"** means any organization, whether formally registered or not, that can hold assets, enter agreements, operate systems, or act through representatives, including corporations, partnerships, limited liability companies, cooperatives, decentralized autonomous organizations (DAOs), unincorporated associations, foundations, trusts, and equivalent structures under any jurisdiction.
+
+**"control"** means the direct or indirect power to direct management, operations, or material decisions, including through ownership, voting power, board appointment rights, contractual rights, veto rights, nominee arrangements, or coordinated action. classifications under this license are based on practical control and economic reality, not solely formal legal form or labels.
+
+**"affiliate"** means any person or legal entity that controls, is controlled by, or is under common control with another entity.
+
+**"acting in concert"** means acting pursuant to a shared plan, agreement, or coordinated practice to achieve a common commercial objective, whether or not formally documented, including through affiliates, nominees, or other intermediaries.
+
+**"government contract"** means any prime contract, subcontract, grant, task order, purchase order, framework agreement, or equivalent arrangement with a government agency, military body, intelligence body, or state-owned enterprise, including participation as a prime contractor, subcontractor, consortium member, teammate, reseller, or pass-through entity.
+
 **"founder"** means an individual who was involved in creating the entity prior to any external financing, and who is not acting as a nominee or proxy for any external financing source.
 
 **"nonprofit"** means an organization operating exclusively for charitable, educational, scientific, or public-benefit purposes, not distributing profits to owners, and not controlled by or operated primarily for the benefit of any for-profit entity. includes 501(c)(3) organizations, registered charities, and equivalents under applicable law.
 
 **"educational institution"** means a school, university, college, or research institution whose primary purpose is education or academic research. excludes for-profit training programs, bootcamps, corporate universities, and certification businesses.
 
-**"open source project"** means a project with source code publicly available under a license permitting use, modification, and redistribution, which is not controlled by or operated primarily for the benefit of any single commercial entity.
+**"open source project"** means a project with source code publicly available under a license permitting use, modification, and redistribution, which is not controlled by or operated primarily for the benefit of one or more commercial entities acting directly or indirectly in concert, including through material funding, hosting dependency, or mandatory service integration that effectively directs project decisions.
+
+**"beneficial owner"** means any natural person or legal entity that directly or indirectly owns, controls, or receives material economic benefit from an entity, including through trusts, nominee arrangements, contractual rights, or coordinated holdings. coordinated interests or rights are aggregated where persons or entities are acting in concert.
 
 **"equity financing"** means any financing arrangement providing ownership, control, or future claims on the entity, including equity, convertible instruments (SAFEs, convertible notes), token or coin offerings, and revenue-based financing with equity features. excludes ordinary revenue and grants without equity or control provisions.
 
@@ -46,7 +58,7 @@ if the entity forms a subsidiary, undergoes partial acquisition by or into a hol
 
 **"institutional source"** means any legal entity, including venture capital funds, private equity firms, corporate treasuries, government agencies, investment vehicles, and family offices, other than a founder acting exclusively in their personal capacity.
 
-**"commercial deployment"** means any use of this software in any configuration where it processes, transmits, compresses, or models data that originates from or is destined for any person or system outside the using entity's strict legal boundaries. use is internal only where the entity generated the raw data, processed it entirely within its own systems, and consumed the result entirely within its own systems, with no involvement of third-party users, clients, or external parties.
+**"commercial deployment"** means any use of this software in any configuration where it processes, transmits, compresses, or models data that originates from or is destined for any person or system outside the using entity's strict legal boundaries. use is internal only where the entity generated the raw data, processed it entirely within its own systems, and consumed the result entirely within its own systems, with no involvement of third-party users, clients, or external parties. processing performed for your benefit by any separate legal entity, including affiliates, external processors, managed infrastructure providers, or service operators, is commercial deployment.
 
 ---
 
@@ -79,12 +91,12 @@ you must obtain a commercial license if you are a for-profit legal entity and an
 - you have received equity financing from parties other than founders
 - you have received debt financing or credit facilities that include equity conversion rights, board representation, operational control provisions, or are secured by this entity's intellectual property
 - you are publicly traded on any stock exchange
-- you are a government agency, or a contractor using this software in the performance of government contracts
+- you are a government agency, or an entity that holds, has held within the past 24 months, or has submitted within the past 24 months a bid, proposal, or quote for a government contract
 - you have undergone a change of control to or with an entity meeting these criteria (license required within 90 days)
-- you are a subsidiary or affiliate of, or your beneficial owner is, an entity meeting these criteria
+- you are a subsidiary or affiliate of, under common control with, or your beneficial owner is, an entity meeting these criteria
 - you are engaged in commercial deployment (this requirement does not apply to independent bootstrapped entities)
 
-arrangements structured to circumvent these requirements are violations of this license. the copyright holder may look through any corporate structure to determine the ultimate beneficial owner or beneficiary.
+arrangements structured to circumvent these requirements are violations of this license. splitting ownership, bidding, operations, or deployment across coordinated entities does not avoid these requirements where the same commercial objective or beneficiary is present. the copyright holder may look through any corporate structure to determine the ultimate beneficial owner or beneficiary.
 
 ---
 
