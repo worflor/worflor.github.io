@@ -146,6 +146,14 @@ export interface WhisperLiveSessionOptions {
    * verified the topology.
    */
   autoConfirmFingerprint?: boolean;
+
+  /**
+   * TURN server pool for bond-seeded relay selection.
+   * When a sharedPhrase is provided and this array is non-empty,
+   * both peers independently select the same TURN server via HKDF(phrase).
+   * ICE still prefers direct P2P — TURN fires only as a silent fallback.
+   */
+  turnPool?: RTCIceServer[];
 }
 
 /* ── Visual Fingerprint ──── */
@@ -227,7 +235,17 @@ export const FINGERPRINT_EMOJI = [
 ];
 
 const PHRASE_KDF_INFO = TE.encode("whisper-live-keyed");
+const TURN_KDF_INFO_PHRASE = TE.encode("whisper-turn-v1");
+const TURN_KDF_INFO_BOND   = TE.encode("whisper-turn-bond-v1");
 const ZERO_SALT_32 = new Uint8Array(32);
+
+async function selectTurnServer(phrase: string, pool: RTCIceServer[]): Promise<RTCIceServer> {
+  const phraseHash = await sha256(TE.encode("whisper-phrase|" + phrase));
+  const indexBytes = await hkdf(phraseHash, ZERO_SALT_32, TURN_KDF_INFO_PHRASE, 4);
+  phraseHash.fill(0);
+  const idx = new DataView(indexBytes.buffer, indexBytes.byteOffset).getUint32(0, false) % pool.length;
+  return pool[idx];
+}
 
 export async function deriveFingerprint(sharedSecret: Uint8Array): Promise<string> {
   const hash = await sha256(concatBytes(TE.encode("whisper-fp-v1"), sharedSecret));
@@ -402,6 +420,8 @@ export class WhisperLiveSession {
   private recoveryResolve: (() => void) | null = null;
 
   private rtcConfig: RTCConfiguration;
+  private turnPool: RTCIceServer[] = [];
+  private turnInjected = false;
 
   constructor(callbacks: WhisperLiveCallbacks, options: WhisperLiveSessionOptions = {}) {
     this.onStateChange = callbacks.onStateChange;
@@ -417,11 +437,23 @@ export class WhisperLiveSession {
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
     this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
     this.autoConfirm = options.autoConfirmFingerprint ?? false;
+    this.turnPool = options.turnPool ?? [];
   }
 
   private hasExternalAssistConfigured(): boolean {
+    if (this.turnInjected) return true;
     const servers = this.rtcConfig.iceServers;
     return Array.isArray(servers) && servers.length > 0;
+  }
+
+  private async buildRtcConfig(): Promise<RTCConfiguration> {
+    if (!this.turnPool.length || !this.sharedPhrase) return this.rtcConfig;
+    const turn = await selectTurnServer(this.sharedPhrase, this.turnPool);
+    this.turnInjected = true;
+    return {
+      ...this.rtcConfig,
+      iceServers: [...(this.rtcConfig.iceServers ?? []), turn],
+    };
   }
 
   private dropExternalAssist(pc: RTCPeerConnection): void {
@@ -481,6 +513,7 @@ export class WhisperLiveSession {
   private initSession(sharedPhrase?: string, asOfferer = true): void {
     this._destroyed = false;
     this.externalAssistDropped = false;
+    this.turnInjected = false;
     this.connectingGraceDone = false;
     this.sharedPhrase = sharedPhrase ?? "";
     this.isOfferer = asOfferer;
@@ -492,7 +525,7 @@ export class WhisperLiveSession {
     this.setState("offering");
     this.onLog("creating offer...");
 
-    this.pc = new RTCPeerConnection(this.rtcConfig);
+    this.pc = new RTCPeerConnection(await this.buildRtcConfig());
 
     this.setupPeerConnection(this.pc);
 
@@ -534,7 +567,7 @@ export class WhisperLiveSession {
 
     const offerSDP = await codeToSdp(offerCode, "offer", this.sharedPhrase || undefined);
 
-    this.pc = new RTCPeerConnection(this.rtcConfig);
+    this.pc = new RTCPeerConnection(await this.buildRtcConfig());
     this.setupPeerConnection(this.pc);
 
     this.pc.ondatachannel = (event) => {
@@ -1020,7 +1053,12 @@ export class WhisperLiveSession {
       const header = parseHeader(complete);
       const pubKeyHex = toHex(header.pubKey);
 
-      // try loop-derived skipped key first (out-of-order recovery, dead code with ordered SCTP)
+      // try loop-derived skipped key first.
+      // NOTE: structurally dead with ordered SCTP DataChannels, AND would be broken
+      // even with unordered delivery — the loop codec is order-dependent (counts evolve
+      // from message content), so loopDecode after a skip produces garbage. the AES-GCM
+      // messageKey from the skip cache decrypts correctly, but decompression fails.
+      // kept for defense-in-depth against hypothetical transport reordering.
       let messageKey = this.tryLoopSkippedKey(pubKeyHex, header.counter);
       let didDHRatchet = false;
 
@@ -1043,7 +1081,7 @@ export class WhisperLiveSession {
 
         if (!this.loopStateRecv) throw new Error("No receiving loop state");
 
-        // derive this message's key via loopStep (advances chain + block8D, not counts)
+        // derive this message's key via loopStep (advances chain, primes counts)
         const { next: nextLoopRecv, messageKey: mk } = await loopStep(this.loopStateRecv);
         loopWipe(this.loopStateRecv);
         this.loopStateRecv = nextLoopRecv;
@@ -1132,6 +1170,22 @@ export class WhisperLiveSession {
 
   /* ── Kizuna membrane helpers ─────────────────────────────── */
 
+  private async ratchetTurnSelection(): Promise<void> {
+    try {
+      if (!this.pc || !this.turnPool.length || !this.ratchetState) return;
+      const indexBytes = await hkdf(
+        this.ratchetState.rootKey,
+        ZERO_SALT_32,
+        TURN_KDF_INFO_BOND,
+        4,
+      );
+      const idx = new DataView(indexBytes.buffer, indexBytes.byteOffset).getUint32(0, false) % this.turnPool.length;
+      const turn = this.turnPool[idx];
+      const current = typeof this.pc.getConfiguration === "function" ? this.pc.getConfiguration() : {};
+      this.pc.setConfiguration({ ...current, iceServers: [turn] });
+    } catch { /* setConfiguration unavailable or SubtleCrypto error — non-fatal */ }
+  }
+
   // reinitialize both loop states from the current ratchet chain keys.
   // called after each DH ratchet step to give the codec layer break-in recovery.
   private async loopReinitFromChainKeys(): Promise<void> {
@@ -1144,6 +1198,10 @@ export class WhisperLiveSession {
     if (this.ratchetState.chainKeyRecv) {
       this.loopStateRecv = loopInit(await loopExpand(this.ratchetState.chainKeyRecv));
     }
+    // reselect TURN only when external assist survives post-establishment.
+    // if externalAssistEstablishmentOnly (default), dropExternalAssist already
+    // cleared iceServers — setConfiguration would be pointless.
+    if (this.turnPool.length && !this.externalAssistEstablishmentOnly) void this.ratchetTurnSelection();
   }
 
   // advance the receive loop state and ratchet counter to `until`, storing
@@ -1362,7 +1420,7 @@ export class WhisperLiveSession {
     const msgId = this.nSentTotal * 2 + (this.isOfferer ? 0 : 1);
     this.nSentTotal++;
 
-    // derive message key via loopStep (advances chain + block8D)
+    // derive message key via loopStep (advances chain, primes counts)
     const { next: nextLoopSend, messageKey } = await loopStep(this.loopStateSend);
     loopWipe(this.loopStateSend);
     this.loopStateSend = nextLoopSend;
@@ -1549,6 +1607,7 @@ export class WhisperLiveSession {
     this.stateBeforeRecovery = null;
     this.iceRestartAttempted = false;
     this.externalAssistDropped = false;
+    this.turnInjected = false;
 
     const { dc, pc } = this;
     this.dc = this.pc = null;

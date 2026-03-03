@@ -24,8 +24,8 @@ describe("live-loop", () => {
         const block = makeSharedBlock();
         const state = loopInit(block);
         assert.equal(state.chain.length, 32, "chain is 32 bytes");
-        assert.equal(state.counts.length, 1024, "counts is 1024 uint32");
-        assert.equal(state.block8D.length, B16, "block8D is 65536 bytes");
+        assert.equal(state.countsBitM.length, 1024, "countsBitM is 1024 uint32");
+        assert.equal(state.countsBit1.length, 8192, "countsBit1 is 8192 uint32");
         assert.equal(state.step, 0, "step starts at 0");
         // Chain should not be all zeros (derived from key material)
         assert.ok(!state.chain.every(b => b === 0), "chain is non-trivial");
@@ -38,8 +38,8 @@ describe("live-loop", () => {
         const a = loopInit(new Uint8Array(block));
         const b = loopInit(new Uint8Array(block));
         assertBytesEqual(a.chain, b.chain, `chain iter ${i}`);
-        assertBytesEqual(a.block8D, b.block8D, `block8D iter ${i}`);
-        assert.deepStrictEqual(Array.from(a.counts), Array.from(b.counts), `counts iter ${i}`);
+        assert.deepStrictEqual(Array.from(a.countsBitM), Array.from(b.countsBitM), `countsBitM iter ${i}`);
+        assert.deepStrictEqual(Array.from(a.countsBit1), Array.from(b.countsBit1), `countsBit1 iter ${i}`);
         assert.equal(a.step, b.step, `step iter ${i}`);
       }
     });
@@ -121,20 +121,36 @@ describe("live-loop", () => {
       });
     }
 
-    it("encoded data differs from original (not plaintext)", () => {
+    it("constant-byte data compresses significantly", () => {
       const state = loopInit(makeSharedBlock());
       const data = new Uint8Array(256).fill(0xAA);
       const { encoded } = loopEncode(state, data);
-      // Encoded should not be identical to input (compression/transformation applied)
-      // For all-same-byte data, the encoded form should be different
-      if (encoded.length === data.length) {
-        let same = true;
-        for (let i = 0; i < Math.min(encoded.length, data.length); i++) {
-          if (encoded[i] !== data[i]) { same = false; break; }
-        }
-        // It's OK if they happen to match (codec is lossless), but typically they won't
-        // for structured data. We just verify the round-trip.
+      // 256 identical bytes = near-zero entropy after Laplace prior converges.
+      // encoded includes 1 mode byte + compressed payload.
+      assert.ok(encoded.length < data.length,
+        `constant data should compress (${encoded.length} >= ${data.length})`);
+      // mode byte should be BitM or Bit1, not RAW
+      assert.notEqual(encoded[0], 0xFF, "constant data should not fall back to RAW");
+    });
+
+    it("tiny messages (< 5B) use RAW mode", () => {
+      const state = loopInit(makeSharedBlock());
+      for (const size of [0, 1, 2, 3, 4]) {
+        const data = randomBytes(size);
+        const { encoded } = loopEncode(state, data);
+        assert.equal(encoded[0], 0xFF, `${size}B should be RAW mode`);
+        assert.equal(encoded.length, 1 + size, `RAW output = 1 mode + ${size} data`);
       }
+    });
+
+    it("rejects unknown mode byte", () => {
+      const state = loopInit(makeSharedBlock());
+      // craft a fake encoded blob with mode 0x01 (removed Bit0)
+      const fakeEncoded = new Uint8Array([0x01, 0, 0, 0, 0]);
+      assert.throws(
+        () => loopDecode(state, fakeEncoded, 4),
+        /unknown mode 0x1/,
+      );
     });
 
     it("encoder and decoder counts stay in sync across 10 messages", () => {
@@ -148,8 +164,12 @@ describe("live-loop", () => {
         const { decoded, next: dec } = loopDecode(decState, encoded, data.length);
         assertBytesEqual(decoded, data, `message ${i} content`);
         assert.deepStrictEqual(
-          Array.from(enc.counts), Array.from(dec.counts),
-          `counts in sync after message ${i}`,
+          Array.from(enc.countsBitM), Array.from(dec.countsBitM),
+          `countsBitM in sync after message ${i}`,
+        );
+        assert.deepStrictEqual(
+          Array.from(enc.countsBit1), Array.from(dec.countsBit1),
+          `countsBit1 in sync after message ${i}`,
         );
         encState = enc;
         decState = dec;
@@ -169,15 +189,17 @@ describe("live-loop", () => {
   });
 
   describe("loopWipe", () => {
-    it("zeroes chain and block8D completely", () => {
+    it("zeroes chain and all count arrays completely", () => {
       const state = loopInit(makeSharedBlock());
       // Verify state has non-zero content before wipe
       assert.ok(!state.chain.every(b => b === 0), "chain non-zero before wipe");
-      assert.ok(!state.block8D.every(b => b === 0), "block8D non-zero before wipe");
+      assert.ok(!state.countsBitM.every(v => v === 0), "countsBitM non-zero before wipe");
+      assert.ok(!state.countsBit1.every(v => v === 0), "countsBit1 non-zero before wipe");
 
       loopWipe(state);
       assert.ok(state.chain.every(b => b === 0), "chain zeroed");
-      assert.ok(state.block8D.every(b => b === 0), "block8D zeroed");
+      assert.ok(state.countsBitM.every(v => v === 0), "countsBitM zeroed");
+      assert.ok(state.countsBit1.every(v => v === 0), "countsBit1 zeroed");
     });
   });
 

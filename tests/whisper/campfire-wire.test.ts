@@ -100,7 +100,6 @@ describe("campfire/wire", () => {
 
       await assert.rejects(
         () => decryptGroupMsg(parsed.ciphertext, parsed.nonce, wrongKey),
-        undefined,
         "wrong key should fail to decrypt",
       );
     });

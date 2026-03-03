@@ -136,6 +136,9 @@ export interface WhisperLiveUIOptions {
   /* Relay assist (optional — resolver won't block if missing) */
   relayAssistToggle?: HTMLInputElement;
   relayConnectBtn?: HTMLButtonElement;
+
+  /** TURN pool for bond-seeded relay selection. Passed through to WhisperLiveSession. */
+  turnPool?: RTCIceServer[];
 }
 
 const WHISPER_LIVE_IDS = {
@@ -2680,6 +2683,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }, {
       rtcConfig,
       autoConfirmFingerprint: true,
+      turnPool: opts.turnPool,
     });
   }
 

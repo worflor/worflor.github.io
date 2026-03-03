@@ -14,6 +14,14 @@
  *   advanceChain(chain, r, step)     → HKDF(chain, le32(r), 'kizuna-chain-v1' || le32(step), 32)
  *   loopExpand(key)                  → HKDF(key, 0x00..., 'kizuna-init-v1', 32)
  *                                      → AES-CTR(key, 65536 zero bytes)
+ *
+ * adaptive compression:
+ *   two parallel bit-level coders compete per message.
+ *   BitM (Möbius per-bit, 512 ctx) — general purpose temporal.
+ *   Bit1 (order-1 4-bit prefix, 4080 ctx) — inter-byte structure (UTF-8, structured data).
+ *   Bit0 (order-0, 255 ctx) is NOT maintained separately — it's the mathematical
+ *   marginal of BitM over prevBit, dominated in the membrane's priming regime.
+ *   mode byte: 0x00=BitM, 0x02=Bit1, 0xFF=RAW.
  */
 
 import { hkdf, TE } from "./live-crypto";
@@ -61,8 +69,10 @@ function predAnti16D(block: Uint8Array): number {
     return P;
 }
 
-// prime a BitContextModelM counts array with bytes from data.
-function primeCounts(counts: Uint32Array, data: Uint8Array): void {
+// --- count priming ---
+
+// prime a BitContextModelM counts array with bytes from data (Möbius per-bit, 512 contexts).
+function primeCountsM(counts: Uint32Array, data: Uint8Array): void {
     let prev = 0;
     for (const byte of data) {
         let ctx = 1;
@@ -70,6 +80,21 @@ function primeCounts(counts: Uint32Array, data: Uint8Array): void {
             const bit     = (byte >> k) & 1;
             const prevBit = (prev >> k) & 1;
             counts[(prevBit * 256 + ctx) * 2 + bit]++;
+            ctx = (ctx << 1) | bit;
+        }
+        prev = byte;
+    }
+}
+
+// prime a Bit1 counts array (order-1, 4-bit prefix of previous byte, 4080 contexts).
+function primeCounts1(counts: Uint32Array, data: Uint8Array): void {
+    let prev = 0;
+    for (const byte of data) {
+        const slot = prev >>> 4;
+        let ctx = 1;
+        for (let k = 7; k >= 0; k--) {
+            const bit = (byte >> k) & 1;
+            counts[(slot * 256 + ctx) * 2 + bit]++;
             ctx = (ctx << 1) | bit;
         }
         prev = byte;
@@ -144,6 +169,96 @@ class ArithDecoder {
     }
 }
 
+// --- encode/decode helpers for each bit-level model ---
+// each pair mutates the counts array in-place (caller passes a clone).
+
+// BitM: Möbius per-bit (prevBit context), 512 contexts
+function encodeM(counts: Uint32Array, data: Uint8Array): Uint8Array {
+    const enc = new ArithEncoder();
+    let prev = 0;
+    for (const byte of data) {
+        let ctx = 1;
+        for (let k = 7; k >= 0; k--) {
+            const bit     = (byte >> k) & 1;
+            const prevBit = (prev >> k) & 1;
+            const idx     = (prevBit * 256 + ctx) * 2;
+            const c0 = counts[idx], c1 = counts[idx + 1], total = c0 + c1;
+            if (bit === 0) enc.encode(0, c0, total);
+            else           enc.encode(c0, total, total);
+            counts[idx + bit]++;
+            ctx = (ctx << 1) | bit;
+        }
+        prev = byte;
+    }
+    return enc.flush();
+}
+function decodeM(counts: Uint32Array, data: Uint8Array, len: number): Uint8Array {
+    const dec = new ArithDecoder(data);
+    const out = new Uint8Array(len);
+    let prev = 0;
+    for (let i = 0; i < len; i++) {
+        let ctx = 1, byte = 0;
+        for (let k = 7; k >= 0; k--) {
+            const prevBit = (prev >> k) & 1;
+            const idx     = (prevBit * 256 + ctx) * 2;
+            const c0 = counts[idx], c1 = counts[idx + 1], total = c0 + c1;
+            const offset = dec.getCDF(total);
+            const bit    = offset >= c0 ? 1 : 0;
+            if (bit === 0) dec.advance(0, c0, total);
+            else           dec.advance(c0, total, total);
+            counts[idx + bit]++;
+            out[i] = byte = (byte << 1) | bit;
+            ctx = (ctx << 1) | bit;
+        }
+        prev = byte;
+    }
+    return out;
+}
+
+// Bit1: order-1 (4-bit prefix of previous byte), 4080 contexts
+function encode1(counts: Uint32Array, data: Uint8Array): Uint8Array {
+    const enc = new ArithEncoder();
+    let prev = 0;
+    for (const byte of data) {
+        const slot = prev >>> 4;
+        let ctx = 1;
+        for (let k = 7; k >= 0; k--) {
+            const bit = (byte >> k) & 1;
+            const idx = (slot * 256 + ctx) * 2;
+            const c0 = counts[idx], c1 = counts[idx + 1], total = c0 + c1;
+            if (bit === 0) enc.encode(0, c0, total);
+            else           enc.encode(c0, total, total);
+            counts[idx + bit]++;
+            ctx = (ctx << 1) | bit;
+        }
+        prev = byte;
+    }
+    return enc.flush();
+}
+function decode1(counts: Uint32Array, data: Uint8Array, len: number): Uint8Array {
+    const dec = new ArithDecoder(data);
+    const out = new Uint8Array(len);
+    let prev = 0;
+    for (let i = 0; i < len; i++) {
+        const slot = prev >>> 4;
+        let ctx = 1, byte = 0;
+        for (let k = 7; k >= 0; k--) {
+            const idx = (slot * 256 + ctx) * 2;
+            const c0 = counts[idx], c1 = counts[idx + 1], total = c0 + c1;
+            const offset = dec.getCDF(total);
+            const bit    = offset >= c0 ? 1 : 0;
+            if (bit === 0) dec.advance(0, c0, total);
+            else           dec.advance(c0, total, total);
+            counts[idx + bit]++;
+            byte = (byte << 1) | bit;
+            ctx  = (ctx << 1) | bit;
+        }
+        out[i] = byte;
+        prev = byte;
+    }
+    return out;
+}
+
 // --- production key derivation ---
 
 // expands a 32-byte chain key to 65536 bytes.
@@ -178,15 +293,17 @@ async function advanceChain(chain: Uint8Array, residual: number, step: number): 
 
 export interface LoopState {
     // cryptographic root. all other fields derive from this + message history.
-    chain:   Uint8Array;   // 32 bytes
+    chain:   Uint8Array;      // 32 bytes
 
-    // 0D attention model: BitContextModelM counts (512 context pairs).
-    // initialized from 16D key material, grows with each message.
-    counts:  Uint32Array;  // 1024 uint32
-
-    // 8D spatial context: the current octonion block (65536 bytes).
-    // evolves by XOR with each new 16D expansion.
-    block8D: Uint8Array;   // 65536 bytes
+    // adaptive 0D attention models: two parallel bit-level coders.
+    // both stay trained on the full conversation history.
+    // loopEncode trial-encodes with both and picks the smallest.
+    //
+    // Bit0 (order-0, 255 ctx) is NOT stored — it's the mathematical marginal
+    // of BitM over prevBit. in the membrane's priming regime (512B per loopStep),
+    // BitM dominates Bit0: same convergence, strictly more information.
+    countsBitM:  Uint32Array;  // 1024 uint32 — Möbius per-bit (512 ctx × 2)
+    countsBit1:  Uint32Array;  // 8192 uint32 — order-1, 4-bit prefix (16 × 256 ctx × 2)
 
     // ratchet step counter. monotonically increasing.
     step:    number;
@@ -198,22 +315,28 @@ export interface LoopState {
 export function loopInit(sharedBlock: Uint8Array): LoopState {
     if (sharedBlock.length !== B16) throw new Error(`loopInit: expected ${B16} bytes, got ${sharedBlock.length}`);
 
-    // 16D: compute Möbius residual of the shared block
+    // 16D: compute Möbius residual of the shared block (mixes all 65536 bytes into chain)
     const pred     = predAnti16D(sharedBlock);
     const residual = (sharedBlock[0] - Math.round(pred)) | 0;
 
-    // 0D: prime counts from first 512 bytes of shared block
-    const counts = new Uint32Array(1024);
-    for (let i = 0; i < 512; i++) { counts[i * 2] = 1; counts[i * 2 + 1] = 1; }
-    primeCounts(counts, sharedBlock.subarray(0, 512));
+    const primeData = sharedBlock.subarray(0, 512);
+
+    // BitM: 512 contexts × 2, Laplace prior = 1
+    const countsBitM = new Uint32Array(1024);
+    for (let i = 0; i < 512; i++) { countsBitM[i * 2] = 1; countsBitM[i * 2 + 1] = 1; }
+    primeCountsM(countsBitM, primeData);
+
+    // Bit1: 16 × 256 contexts × 2, Laplace prior = 1
+    const countsBit1 = new Uint32Array(8192);
+    for (let i = 0; i < 4096; i++) { countsBit1[i * 2] = 1; countsBit1[i * 2 + 1] = 1; }
+    primeCounts1(countsBit1, primeData);
 
     // chain: first 32 bytes of shared block mixed with 16D residual
     const chain = new Uint8Array(32);
     for (let i = 0; i < 32; i++)
         chain[i] = sharedBlock[i] ^ ((residual >>> ((i & 3) * 8)) & 0xFF);
 
-    // 8D: the shared block itself
-    return { chain, counts, block8D: sharedBlock.slice(), step: 0 };
+    return { chain, countsBitM, countsBit1, step: 0 };
 }
 
 // advance the loop one step: the ratchet.
@@ -231,77 +354,111 @@ export async function loopStep(state: LoopState): Promise<{ next: LoopState; mes
         advanceChain(state.chain, residual, state.step),
     ]);
 
-    // 0D: overlay counts from expanded block
-    const newCounts = state.counts.slice();
-    primeCounts(newCounts, expanded.subarray(0, 512));
-
-    // 8D: evolve block by XOR with new expanded block
-    const newBlock8D = new Uint8Array(B16);
-    for (let i = 0; i < B16; i++) newBlock8D[i] = state.block8D[i] ^ expanded[i];
+    // 0D: overlay counts from expanded block for both models
+    const primeData = expanded.subarray(0, 512);
+    const newCountsBitM = state.countsBitM.slice();
+    primeCountsM(newCountsBitM, primeData);
+    const newCountsBit1 = state.countsBit1.slice();
+    primeCounts1(newCountsBit1, primeData);
 
     expanded.fill(0);  // wipe keystream after use
 
     return {
-        next: { chain: newChain, counts: newCounts, block8D: newBlock8D, step: state.step + 1 },
+        next: {
+            chain: newChain, countsBitM: newCountsBitM,
+            countsBit1: newCountsBit1, step: state.step + 1,
+        },
         messageKey,
     };
 }
 
-// compress data using the current 0D model (BitContextModelM).
-// counts evolve as encoding proceeds — the model learns from the message.
-// the returned `next` state has counts updated by this message.
+// adaptive compression: trial-encode with both models, pick the smallest.
+// both count arrays evolve as a side effect of trial encoding, so both models
+// stay trained on the full conversation history regardless of which one wins.
+// mode byte: 0x00=BitM, 0x02=Bit1, 0xFF=RAW.
 export function loopEncode(state: LoopState, data: Uint8Array): { encoded: Uint8Array; next: LoopState } {
-    const counts = state.counts.slice();
-    const enc    = new ArithEncoder();
-    let prev = 0;
-    for (const byte of data) {
-        let ctx = 1;
-        for (let k = 7; k >= 0; k--) {
-            const bit     = (byte >> k) & 1;
-            const prevBit = (prev >> k) & 1;
-            const idx     = (prevBit * 256 + ctx) * 2;
-            const c0 = counts[idx], c1 = counts[idx + 1], total = c0 + c1;
-            if (bit === 0) enc.encode(0, c0, total);
-            else           enc.encode(c0, total, total);
-            counts[idx + bit]++;
-            ctx = (ctx << 1) | bit;
-        }
-        prev = byte;
+    // clone both count arrays — encoding (or priming) mutates them
+    const cM = state.countsBitM.slice();
+    const c1 = state.countsBit1.slice();
+
+    // ArithEncoder.flush() always produces ≥ 4 bytes (the lo register).
+    // for data shorter than that, RAW is guaranteed to win — skip the 36KB
+    // trial-encode and use the lightweight primeCounts pass instead.
+    if (data.length < 5) {
+        primeCountsM(cM, data);
+        primeCounts1(c1, data);
+        const out = new Uint8Array(1 + data.length);
+        out[0] = 0xFF; out.set(data, 1);
+        return { encoded: out, next: { ...state, countsBitM: cM, countsBit1: c1 } };
     }
-    return { encoded: enc.flush(), next: { ...state, counts } };
+
+    // trial-encode with each model (each updates its cloned counts)
+    const encM = encodeM(cM, data);
+    const enc1 = encode1(c1, data);
+
+    // pick smallest
+    let bestMode: number, bestEncoded: Uint8Array;
+    if (enc1.length < encM.length) {
+        bestMode = 0x02; bestEncoded = enc1;
+    } else {
+        bestMode = 0x00; bestEncoded = encM;
+    }
+
+    const next: LoopState = { ...state, countsBitM: cM, countsBit1: c1 };
+
+    // raw fallback if no coder beats input length
+    if (bestEncoded.length >= data.length) {
+        const out = new Uint8Array(1 + data.length);
+        out[0] = 0xFF; out.set(data, 1);
+        return { encoded: out, next };
+    }
+
+    const out = new Uint8Array(1 + bestEncoded.length);
+    out[0] = bestMode; out.set(bestEncoded, 1);
+    return { encoded: out, next };
 }
 
-// decompress data using the current 0D model — identical traversal to loopEncode.
-// counts evolve identically: encode and decode process the same bits in the same order.
+// mode-directed decompression: read mode byte, decode with the winning model,
+// then update the other model via a count-only pass on the decoded plaintext.
+// both count arrays evolve identically to the encoder's.
 export function loopDecode(state: LoopState, data: Uint8Array, len: number): { decoded: Uint8Array; next: LoopState } {
-    const counts = state.counts.slice();
-    const dec    = new ArithDecoder(data);
-    const out    = new Uint8Array(len);
-    let prev = 0;
-    for (let i = 0; i < len; i++) {
-        let ctx = 1, byte = 0;
-        for (let k = 7; k >= 0; k--) {
-            const prevBit = (prev >> k) & 1;
-            const idx     = (prevBit * 256 + ctx) * 2;
-            const c0 = counts[idx], c1 = counts[idx + 1], total = c0 + c1;
-            const offset = dec.getCDF(total);
-            const bit    = offset >= c0 ? 1 : 0;
-            if (bit === 0) dec.advance(0, c0, total);
-            else           dec.advance(c0, total, total);
-            counts[idx + bit]++;
-            out[i] = byte = (byte << 1) | bit;
-            ctx = (ctx << 1) | bit;
-        }
-        prev = byte;
+    const mode    = data[0];
+    const payload = data.subarray(1);
+
+    // clone both count arrays
+    const cM = state.countsBitM.slice();
+    const c1 = state.countsBit1.slice();
+
+    let decoded: Uint8Array;
+    switch (mode) {
+        case 0x00: // BitM won — decode with BitM, train Bit1 from plaintext
+            decoded = decodeM(cM, payload, len);
+            primeCounts1(c1, decoded);
+            break;
+        case 0x02: // Bit1 won — decode with Bit1, train BitM from plaintext
+            decoded = decode1(c1, payload, len);
+            primeCountsM(cM, decoded);
+            break;
+        case 0xFF: // RAW fallback — train both from plaintext
+            decoded = payload.slice(0, len);
+            primeCountsM(cM, decoded);
+            primeCounts1(c1, decoded);
+            break;
+        default:
+            throw new Error(`loopDecode: unknown mode 0x${mode.toString(16)}`);
     }
-    return { decoded: out, next: { ...state, counts } };
+
+    return { decoded, next: { ...state, countsBitM: cM, countsBit1: c1 } };
 }
 
 // wipe sensitive fields from a loop state.
 // call on the old state after loopStep to maintain forward secrecy.
+// chain is the cryptographic secret; count arrays hold the statistical
+// fingerprint of key material + message history and must also be zeroed.
 export function loopWipe(state: LoopState): void {
     state.chain.fill(0);
-    state.block8D.fill(0);
+    state.countsBitM.fill(0);
+    state.countsBit1.fill(0);
 }
 
 // expand a 32-byte key to 65536 bytes for use as a loopInit seed.

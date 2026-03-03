@@ -52,12 +52,19 @@ export function toBin(bytes: Uint8Array): string {
   return s;
 }
 
-const TRACKER_HASH_INFO = TE.encode("whisper-tracker-room");
+const TRACKER_HASH_INFO   = TE.encode("whisper-tracker-room");
+const TRACKER_SELECT_INFO = TE.encode("whisper-tracker-select");
+const ZERO_SALT_32 = new Uint8Array(32);
+
+/** Hash the phrase once for use across all tracker derivations. Caller must wipe. */
+async function trackerPhraseHash(phrase: string): Promise<Uint8Array> {
+  return sha256(TE.encode("whisper-tracker|" + phrase));
+}
 
 export async function deriveInfoHashes(phrase: string): Promise<string[]> {
   const now = Date.now();
   const epoch = Math.floor(now / EPOCH_WINDOW);
-  const phraseHash = await sha256(TE.encode("whisper-tracker|" + phrase));
+  const phraseHash = await trackerPhraseHash(phrase);
   const cur = await hkdf(phraseHash, TE.encode(String(epoch)), TRACKER_HASH_INFO, 20);
   const hashes: string[] = [toBin(cur)];
   if (now - epoch * EPOCH_WINDOW < EPOCH_BOUNDARY_MARGIN) {
@@ -66,6 +73,22 @@ export async function deriveInfoHashes(phrase: string): Promise<string[]> {
   }
   phraseHash.fill(0);
   return hashes;
+}
+
+/**
+ * Derive a deterministic tracker ordering from the phrase.
+ * Both peers independently produce the same rotation, so they naturally
+ * converge on the same primary tracker. Sessions distribute across the
+ * pool by phrase — an adversary watching any single tracker sees only
+ * a 1/N fraction rather than everything.
+ */
+export async function deriveTrackerOrder(phrase: string, urls: readonly string[]): Promise<string[]> {
+  if (urls.length <= 1) return [...urls];
+  const phraseHash = await trackerPhraseHash(phrase);
+  const indexBytes = await hkdf(phraseHash, ZERO_SALT_32, TRACKER_SELECT_INFO, 4);
+  phraseHash.fill(0);
+  const idx = new DataView(indexBytes.buffer, indexBytes.byteOffset).getUint32(0, false) % urls.length;
+  return [...urls.slice(idx), ...urls.slice(0, idx)];
 }
 
 export function randomBinId(): string {
@@ -400,7 +423,10 @@ export async function exchangeViaTracker(
   callbacks: TrackerSignalCallbacks,
   signal?: AbortSignal,
 ): Promise<TrackerSignalResult> {
-  const hashes = await deriveInfoHashes(phrase);
+  const [hashes, orderedTrackers] = await Promise.all([
+    deriveInfoHashes(phrase),
+    deriveTrackerOrder(phrase, TRACKER_URLS),
+  ]);
   const peerId = randomBinId();
   const offerId = randomBinId();
   const paddedOffer = padCode(myOfferCode);
@@ -420,8 +446,10 @@ export async function exchangeViaTracker(
 
   // Stagger tracker attempts to reduce simultaneous socket load on public relays,
   // while retaining fast fallback when the first tracker is slow/unavailable.
+  // orderedTrackers is phrase-derived — both peers converge on the same primary,
+  // distributing the surveillance surface across the pool by session.
   try {
-    const attempts = TRACKER_URLS.map((url, index) =>
+    const attempts = orderedTrackers.map((url, index) =>
       (index === 0)
         ? connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal)
         : new Promise<TrackerSignalResult>((resolve, reject) => {
