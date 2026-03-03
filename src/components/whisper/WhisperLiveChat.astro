@@ -1072,11 +1072,19 @@
     aspect-ratio: 4 / 3;
   }
 
+  :global(.wl-chat-messages) :global(.wl-peer-draw-bg) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
   :global(.wl-chat-messages) :global(.wl-peer-draw-inline) {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     display: block;
-    background: rgb(0 0 0 / 0.12);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-peer-draw[data-draw-state="active"]),
@@ -2297,15 +2305,27 @@
     opacity: 1;
   }
 
-  :global(.wl-draw-canvas) {
+  :global(.wl-draw-canvas-wrapper) {
+    position: relative;
     border-radius: calc(var(--whisper-radius, 12px) * 0.55);
     box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
+    overflow: hidden;
+    /* Explicit baseline so toolbar/controls at z-index:1 always paint above */
+    z-index: 0;
+  }
+
+  :global(.wl-draw-bg-canvas) {
+    display: block;
+  }
+
+  :global(.wl-draw-canvas) {
+    position: absolute;
+    top: 0;
+    left: 0;
     touch-action: none;
     cursor: crosshair;
     outline: none;
     -webkit-user-drag: none;
-    /* Explicit baseline so toolbar/controls at z-index:1 always paint above */
-    z-index: 0;
   }
 
   :global(.wl-draw-close) {

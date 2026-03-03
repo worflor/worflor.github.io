@@ -2683,6 +2683,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       peerActivePoints = [];
       peerStrokes = [];
       peerRedoStack = [];
+      peerBgCanvas?.remove();
+      peerBgCanvas = null;
       if (peerCanvas) {
         peerCanvas.remove();
         peerCanvas = null;
@@ -3193,16 +3195,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     color: string;
     width: number;
     tool: "pen" | "eraser";
-    lastX: number;
-    lastY: number;
+    lastNX: number;   // normalized x (0..1) — canvas-size-independent
+    lastNY: number;   // normalized y (0..1)
     lastP: number;
-    lastMidX: number;
-    lastMidY: number;
+    lastMidNX: number; // normalized mid x
+    lastMidNY: number; // normalized mid y
     hasLastMid: boolean;
   }
 
   let peerCanvas: HTMLCanvasElement | null = null;
   let peerCtx: CanvasRenderingContext2D | null = null;
+  let peerBgCanvas: HTMLCanvasElement | null = null;
   let peerLiveMsgEl: HTMLDivElement | null = null;
   let peerLiveTimeEl: HTMLTimeElement | null = null;
   let peerActiveStroke: PeerActiveStroke | null = null;
@@ -3257,18 +3260,32 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         peerLiveTimeEl = timeEl;
       }
 
-      peerCanvas = document.createElement("canvas");
-      peerCanvas.className = "wl-peer-draw-inline";
-      peerCanvas.setAttribute("aria-hidden", "true");
       const host = peerLiveMsgEl.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
       if (!host) throw new Error("peer draw host missing");
-      host.appendChild(peerCanvas);
       const dpr = devicePixelRatio || 1;
       const rect = host.getBoundingClientRect();
       const cw = Math.max(1, Math.round(rect.width));
       const ch = Math.max(1, Math.round(rect.height));
-      peerCanvas.width = Math.max(1, Math.round(cw * dpr));
-      peerCanvas.height = Math.max(1, Math.round(ch * dpr));
+
+      peerBgCanvas = document.createElement("canvas");
+      peerBgCanvas.className = "wl-peer-draw-bg";
+      peerBgCanvas.setAttribute("aria-hidden", "true");
+
+      peerCanvas = document.createElement("canvas");
+      peerCanvas.className = "wl-peer-draw-inline";
+      peerCanvas.setAttribute("aria-hidden", "true");
+
+      host.appendChild(peerBgCanvas);  // bottom layer first
+      host.appendChild(peerCanvas);    // drawing layer on top
+
+      peerBgCanvas.width = peerCanvas.width = Math.max(1, Math.round(cw * dpr));
+      peerBgCanvas.height = peerCanvas.height = Math.max(1, Math.round(ch * dpr));
+
+      const peerBgCtx = peerBgCanvas.getContext("2d")!;
+      peerBgCtx.scale(dpr, dpr);
+      peerBgCtx.fillStyle = "#1a1a1a";
+      peerBgCtx.fillRect(0, 0, cw, ch);
+
       peerCtx = peerCanvas.getContext("2d")!;
       peerCtx.scale(dpr, dpr);
     }
@@ -3309,8 +3326,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     ctx.globalCompositeOperation = stroke.tool === "eraser" ? "destination-out" : "source-over";
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = stroke.tool === "eraser" ? "rgba(0,0,0,1)" : stroke.color;
-    ctx.fillStyle = stroke.color;
+    const strokeColor = stroke.tool === "eraser" ? "rgba(0,0,0,1)" : stroke.color;
+    ctx.strokeStyle = strokeColor;
+    ctx.fillStyle = strokeColor;
     if (stroke.points.length === 1) {
       const pt = stroke.points[0];
       const w = pressureSens ? stroke.width * (0.3 + pt.p * 0.7) : stroke.width;
@@ -3352,6 +3370,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       peerCtx = peerCanvas.getContext("2d")!;
       peerCtx.scale(dpr, dpr);
     }
+    if (peerBgCanvas && (peerBgCanvas.width !== targetW || peerBgCanvas.height !== targetH)) {
+      peerBgCanvas.width = targetW;
+      peerBgCanvas.height = targetH;
+      const bgCtx = peerBgCanvas.getContext("2d")!;
+      bgCtx.scale(dpr, dpr);
+      bgCtx.fillStyle = "#1a1a1a";
+      bgCtx.fillRect(0, 0, cw, ch);
+    }
     const W = peerCanvasW();
     const H = peerCanvasH();
     peerCtx.clearRect(0, 0, W, H);
@@ -3372,6 +3398,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     peerActivePoints = [];
     peerStrokes = [];
     peerRedoStack = [];
+    peerBgCanvas?.remove();
+    peerBgCanvas = null;
     if (peerCanvas) {
       peerCanvas.remove();
       peerCanvas = null;
@@ -3407,11 +3435,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           color: ev.color,
           width: ev.width,
           tool: ev.tool,
-          lastX: ev.start.x * peerCanvasW(),
-          lastY: ev.start.y * peerCanvasH(),
+          lastNX: ev.start.x,
+          lastNY: ev.start.y,
           lastP: ev.start.p,
-          lastMidX: 0,
-          lastMidY: 0,
+          lastMidNX: 0,
+          lastMidNY: 0,
           hasLastMid: false,
         };
         peerActivePoints = [{ x: ev.start.x, y: ev.start.y, p: ev.start.p }];
@@ -3438,16 +3466,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           peerActivePoints.push({ x: nx, y: ny, p: np });
           const curX = nx * W;
           const curY = ny * H;
-          const midX = (peerActiveStroke.lastX + curX) * 0.5;
-          const midY = (peerActiveStroke.lastY + curY) * 0.5;
-          const fromX = peerActiveStroke.hasLastMid ? peerActiveStroke.lastMidX : peerActiveStroke.lastX;
-          const fromY = peerActiveStroke.hasLastMid ? peerActiveStroke.lastMidY : peerActiveStroke.lastY;
-          peerDrawSeg(ctx, fromX, fromY, peerActiveStroke.lastX, peerActiveStroke.lastY, midX, midY, peerActiveStroke.width, np, pressureSens);
-          peerActiveStroke.lastMidX = midX;
-          peerActiveStroke.lastMidY = midY;
+          const lastX = peerActiveStroke.lastNX * W;
+          const lastY = peerActiveStroke.lastNY * H;
+          const midX = (lastX + curX) * 0.5;
+          const midY = (lastY + curY) * 0.5;
+          const fromX = peerActiveStroke.hasLastMid ? peerActiveStroke.lastMidNX * W : lastX;
+          const fromY = peerActiveStroke.hasLastMid ? peerActiveStroke.lastMidNY * H : lastY;
+          peerDrawSeg(ctx, fromX, fromY, lastX, lastY, midX, midY, peerActiveStroke.width, np, pressureSens);
+          peerActiveStroke.lastMidNX = (peerActiveStroke.lastNX + nx) * 0.5;
+          peerActiveStroke.lastMidNY = (peerActiveStroke.lastNY + ny) * 0.5;
           peerActiveStroke.hasLastMid = true;
-          peerActiveStroke.lastX = curX;
-          peerActiveStroke.lastY = curY;
+          peerActiveStroke.lastNX = nx;
+          peerActiveStroke.lastNY = ny;
           peerActiveStroke.lastP = np;
         }
         ctx.restore();
@@ -3459,16 +3489,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         const { ctx } = ensurePeerCanvas();
         // Finalize the bezier tail segment, or render a true tap dot if no
         // streamed segments were emitted for this stroke.
+        const endW = peerCanvasW();
+        const endH = peerCanvasH();
         if (peerActiveStroke.hasLastMid) {
           ctx.save();
           ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
           ctx.lineCap = "round";
           ctx.lineJoin = "round";
           ctx.strokeStyle = peerActiveStroke.tool === "eraser" ? "rgba(0,0,0,1)" : peerActiveStroke.color;
+          const tailX = peerActiveStroke.lastNX * endW;
+          const tailY = peerActiveStroke.lastNY * endH;
           peerDrawSeg(ctx,
-            peerActiveStroke.lastMidX, peerActiveStroke.lastMidY,
-            peerActiveStroke.lastX, peerActiveStroke.lastY,
-            peerActiveStroke.lastX, peerActiveStroke.lastY,
+            peerActiveStroke.lastMidNX * endW, peerActiveStroke.lastMidNY * endH,
+            tailX, tailY,
+            tailX, tailY,
             peerActiveStroke.width, peerActiveStroke.lastP,
             peerActiveStroke.tool !== "eraser");
           ctx.restore();
@@ -3481,7 +3515,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
           ctx.fillStyle = peerActiveStroke.tool === "eraser" ? "rgba(0,0,0,1)" : peerActiveStroke.color;
           ctx.beginPath();
-          ctx.arc(peerActiveStroke.lastX, peerActiveStroke.lastY, w / 2, 0, Math.PI * 2);
+          ctx.arc(peerActiveStroke.lastNX * endW, peerActiveStroke.lastNY * endH, w / 2, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
         }

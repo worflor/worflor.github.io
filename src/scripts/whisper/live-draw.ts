@@ -95,8 +95,8 @@ const PEN_TYPES: Map<string, PenType> = new Map([
   }],
   ["eraser", {
     id: "eraser",
-    render(ctx, prev, cur, opts) { renderRoundSeg(ctx, prev, cur, opts, false, opts.pattern); },
-    composite(_isBlank) { return "source-over"; },
+    render(ctx, prev, cur, opts) { renderRoundSeg(ctx, prev, cur, opts, false); },
+    composite(_isBlank) { return "destination-out"; },
     pressureSensitive: false,
     widthScale: 2,
   }],
@@ -319,10 +319,17 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
   ds.addEventListener("abort", teardownDraw, { once: true });
 
-  const canvas = document.createElement("canvas");
-  canvas.className = "wl-draw-canvas";
-  canvas.style.touchAction = "none";
-  canvas.draggable = false;
+  const drawingCanvas = document.createElement("canvas");
+  drawingCanvas.className = "wl-draw-canvas";
+  drawingCanvas.style.touchAction = "none";
+  drawingCanvas.draggable = false;
+
+  const bgCanvas = document.createElement("canvas");
+  bgCanvas.className = "wl-draw-bg-canvas";
+
+  const canvasWrapper = document.createElement("div");
+  canvasWrapper.className = "wl-draw-canvas-wrapper";
+  canvasWrapper.append(bgCanvas, drawingCanvas);
 
   const toolbar = document.createElement("div");
   toolbar.className = "wl-draw-toolbar";
@@ -410,7 +417,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   // Flat toolbar — no separators, no groups. Gap handles spacing.
   // Fill tool hidden from toolbar (keyboard B only) — icon is not self-explanatory.
   toolbar.append(...colorBtns, customColorBtn, eraserBtn, undoRedoGroup, sendBtn);
-  overlay.append(canvas, toolbar, hint, closeBtn, touchToggleBtn, colorInput);
+  overlay.append(canvasWrapper, toolbar, hint, closeBtn, touchToggleBtn, colorInput);
 
   /* ── Canvas setup ──────────────────────────────────────── */
 
@@ -444,33 +451,26 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     }
   }
 
-  canvas.width = logicalW * dpr;
-  canvas.height = logicalH * dpr;
-  canvas.style.width = `${logicalW}px`;
-  canvas.style.height = `${logicalH}px`;
+  drawingCanvas.width = logicalW * dpr;
+  drawingCanvas.height = logicalH * dpr;
+  drawingCanvas.style.width = `${logicalW}px`;
+  drawingCanvas.style.height = `${logicalH}px`;
 
-  const ctx = canvas.getContext("2d")!;
+  bgCanvas.width = logicalW * dpr;
+  bgCanvas.height = logicalH * dpr;
+  bgCanvas.style.width = `${logicalW}px`;
+  bgCanvas.style.height = `${logicalH}px`;
+
+  const ctx = drawingCanvas.getContext("2d")!;   // keep alias "ctx" to minimise diff
   ctx.scale(dpr, dpr);
 
+  const bgCtx = bgCanvas.getContext("2d")!;
+  bgCtx.scale(dpr, dpr);
   if (isBlank) {
-    ctx.fillStyle = BLANK_BG;
-    ctx.fillRect(0, 0, logicalW, logicalH);
+    bgCtx.fillStyle = BLANK_BG;
+    bgCtx.fillRect(0, 0, logicalW, logicalH);
   } else {
-    ctx.drawImage(config.mediaEl!, 0, 0, logicalW, logicalH);
-  }
-
-  const backgroundSnapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-  // Background pattern for annotation eraser — paints original image pixels
-  let bgPattern: CanvasPattern | null = null;
-  if (!isBlank) {
-    const patCvs = document.createElement("canvas");
-    patCvs.width = canvas.width;
-    patCvs.height = canvas.height;
-    patCvs.getContext("2d")!.putImageData(backgroundSnapshot, 0, 0);
-    bgPattern = ctx.createPattern(patCvs, "no-repeat");
-    // Pattern source is at dpr-scaled px, but ctx has scale(dpr). Compensate.
-    if (bgPattern) bgPattern.setTransform(new DOMMatrix().scaleSelf(1 / dpr, 1 / dpr));
+    bgCtx.drawImage(config.mediaEl!, 0, 0, logicalW, logicalH);
   }
 
   /* ── State ─────────────────────────────────────────────── */
@@ -557,13 +557,13 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   }
 
   function screenToCanvas(clientX: number, clientY: number): [number, number] {
-    const rect = canvas.getBoundingClientRect();
+    const rect = drawingCanvas.getBoundingClientRect();
     return screenToCanvasWithOrigin(clientX, clientY, rect.left, rect.top);
   }
 
   function applyTransform(): void {
-    canvas.style.transform = `translate(${viewPanX}px, ${viewPanY}px) scale(${viewZoom})`;
-    canvas.style.transformOrigin = "0 0";
+    canvasWrapper.style.transform = `translate(${viewPanX}px, ${viewPanY}px) scale(${viewZoom})`;
+    canvasWrapper.style.transformOrigin = "0 0";
   }
 
   function eventTs(e: { timeStamp: number }): number {
@@ -626,13 +626,13 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     customColorBtn.setAttribute("aria-pressed", activeCustomColor && currentTool !== "eraser" ? "true" : "false");
 
     if (currentTool === "fill" || currentTool === "eyedropper") {
-      canvas.style.cursor = "crosshair";
+      drawingCanvas.style.cursor = "crosshair";
     } else {
       const isEraserTool = currentTool === "eraser";
       const penType = isEraserTool ? "eraser" : "pen";
       const pen = PEN_TYPES.get(penType)!;
       const col = isEraserTool && isBlank ? BLANK_BG : currentColor;
-      buildCursor(canvas, col, baseWidth * pen.widthScale, isEraserTool);
+      buildCursor(drawingCanvas, col, baseWidth * pen.widthScale, isEraserTool);
     }
   }
 
@@ -900,19 +900,18 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const pen = PEN_TYPES.get(stroke.penId);
     if (!pen) return;
     const isEraserStroke = stroke.penId === "eraser";
-    const color = isEraserStroke ? BLANK_BG : stroke.color;
-    const pat = isEraserStroke && bgPattern ? bgPattern : undefined;
+    const color = isEraserStroke ? "rgba(0,0,0,1)" : stroke.color;
     ctx.save();
     ctx.globalCompositeOperation = pen.composite(isBlank);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = pat ?? color;
+    ctx.strokeStyle = color;
     if (stroke.points.length === 1) {
       const pt = stroke.points[0];
       const cx = pt.x * logicalW;
       const cy = pt.y * logicalH;
       const w = pen.pressureSensitive ? stroke.width * (0.3 + pt.p * 0.7) : stroke.width;
-      ctx.fillStyle = pat ?? color;
+      ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc(cx, cy, w / 2, 0, Math.PI * 2);
       ctx.fill();
@@ -973,14 +972,13 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const pen = PEN_TYPES.get(currentStroke.penId);
     if (!pen) return;
     const isEraserStroke = currentStroke.penId === "eraser";
-    const color = isEraserStroke ? BLANK_BG : currentStroke.color;
-    const pat = isEraserStroke && bgPattern ? bgPattern : undefined;
+    const color = isEraserStroke ? "rgba(0,0,0,1)" : currentStroke.color;
 
     ctx.save();
     ctx.globalCompositeOperation = pen.composite(isBlank);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = pat ?? color;
+    ctx.strokeStyle = color;
     renderRoundQuadSeg(
       ctx,
       lastRenderMidX * logicalW,
@@ -998,11 +996,24 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   }
 
   function executeFill(stroke: FillStroke): void {
-    const w = canvas.width;
-    const h = canvas.height;
+    const w = drawingCanvas.width;
+    const h = drawingCanvas.height;
+    const pixelCount = w * h;
+
+    // Composite bg + drawing at physical resolution for correct color matching.
+    // drawImage without explicit dstW/dstH uses the source's CSS display size,
+    // which is logicalW × logicalH — only 1/dpr² of the physical canvas at DPR>1.
+    // Specifying (0, 0, w, h) stretches the source to fill the physical temp canvas.
+    const tempCvs = document.createElement("canvas");
+    tempCvs.width = w; tempCvs.height = h;
+    const tempCtx = tempCvs.getContext("2d")!;
+    tempCtx.drawImage(bgCanvas, 0, 0, w, h);
+    tempCtx.drawImage(drawingCanvas, 0, 0, w, h);
+    const composite = tempCtx.getImageData(0, 0, w, h).data;
+
+    // Get drawing layer data for writing
     const imgData = ctx.getImageData(0, 0, w, h);
     const data = imgData.data;
-    const pixelCount = w * h;
 
     const fillR = parseInt(stroke.color.slice(1, 3), 16);
     const fillG = parseInt(stroke.color.slice(3, 5), 16);
@@ -1013,9 +1024,9 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     if (sx < 0 || sx >= w || sy < 0 || sy >= h) return;
 
     const seedIdx = (sy * w + sx) * 4;
-    const seedR = data[seedIdx];
-    const seedG = data[seedIdx + 1];
-    const seedB = data[seedIdx + 2];
+    const seedR = composite[seedIdx];
+    const seedG = composite[seedIdx + 1];
+    const seedB = composite[seedIdx + 2];
 
     if (seedR === fillR && seedG === fillG && seedB === fillB) return;
 
@@ -1029,9 +1040,9 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const { visited, stack } = ensureFillBuffers();
 
     function matches(idx: number): boolean {
-      const dr = data[idx] - seedR;
-      const dg = data[idx + 1] - seedG;
-      const db = data[idx + 2] - seedB;
+      const dr = composite[idx] - seedR;
+      const dg = composite[idx + 1] - seedG;
+      const db = composite[idx + 2] - seedB;
       return (dr * dr + dg * dg + db * db) <= tolSq;
     }
 
@@ -1102,14 +1113,14 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       ctx.putImageData(best.data, 0, 0);
       for (let i = best.idx; i < strokes.length; i++) renderStrokeOnCanvas(strokes[i]);
     } else {
-      ctx.putImageData(backgroundSnapshot, 0, 0);
+      ctx.clearRect(0, 0, logicalW, logicalH);
       for (const s of strokes) renderStrokeOnCanvas(s);
     }
   }
 
   /* ── Undo/Redo ─────────────────────────────────────────── */
 
-  const checkpointBytes = canvas.width * canvas.height * 4;
+  const checkpointBytes = drawingCanvas.width * drawingCanvas.height * 4;
   const checkpointCapacity = Math.max(
     1,
     Math.min(CHECKPOINT_MAX_COUNT, Math.floor(CHECKPOINT_MAX_BYTES / Math.max(1, checkpointBytes))),
@@ -1123,7 +1134,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
   function maybeCaptureCheckpoint(): void {
     if (strokes.length === 0 || (strokes.length % checkpointStride) !== 0) return;
-    checkpoints.push({ data: ctx.getImageData(0, 0, canvas.width, canvas.height), idx: strokes.length });
+    checkpoints.push({ data: ctx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height), idx: strokes.length });
     trimCheckpoints();
   }
 
@@ -1175,8 +1186,19 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   function handleEyedrop(canvasX: number, canvasY: number): void {
     const pxX = Math.round(canvasX * dpr);
     const pxY = Math.round(canvasY * dpr);
-    if (pxX < 0 || pxX >= canvas.width || pxY < 0 || pxY >= canvas.height) return;
-    const pixel = ctx.getImageData(pxX, pxY, 1, 1).data;
+    if (pxX < 0 || pxX >= drawingCanvas.width || pxY < 0 || pxY >= drawingCanvas.height) return;
+    // Build a full physical-resolution composite so we can sample at the exact
+    // physical pixel (pxX, pxY) — consistent with how the drawing layer's own
+    // getImageData works. The explicit dstW/dstH args ensure the source canvases
+    // are mapped at physical pixel density, not their CSS display size.
+    const cw = drawingCanvas.width;
+    const ch = drawingCanvas.height;
+    const tempCvs = document.createElement("canvas");
+    tempCvs.width = cw; tempCvs.height = ch;
+    const tempCtx = tempCvs.getContext("2d")!;
+    tempCtx.drawImage(bgCanvas, 0, 0, cw, ch);
+    tempCtx.drawImage(drawingCanvas, 0, 0, cw, ch);
+    const pixel = tempCtx.getImageData(pxX, pxY, 1, 1).data;
     const hex = "#" + ((1 << 24) | (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]).toString(16).slice(1);
     applyCustomColor(hex);
   }
@@ -1200,7 +1222,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       pointerPressureCache.clear();
     }
     if (strokes.length === 0) return;
-    ctx.putImageData(backgroundSnapshot, 0, 0);
+    ctx.clearRect(0, 0, logicalW, logicalH);
     strokes = [];
     redoStack = [];
     checkpoints = [];
@@ -1222,9 +1244,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     const isEraserStroke = currentStroke.penId === "eraser";
-    const color = isEraserStroke ? BLANK_BG : currentStroke.color;
-    const pat = isEraserStroke && bgPattern ? bgPattern : undefined;
-    ctx.strokeStyle = pat ?? color;
+    const color = isEraserStroke ? "rgba(0,0,0,1)" : currentStroke.color;
+    ctx.strokeStyle = color;
 
     for (const pt of pendingPoints) {
       if (strokeEncoder && callbacks.onEvent) {
@@ -1391,7 +1412,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     // Pen / eraser stroke
     const penId = (currentTool === "eraser" || isPenEraserContact(e)) ? "eraser" : "pen";
     const pen = PEN_TYPES.get(penId)!;
-    canvas.setPointerCapture(e.pointerId);
+    drawingCanvas.setPointerCapture(e.pointerId);
     const pressure = normalizePressure(e, e.pointerId);
     const nx = cx / logicalW;
     const ny = cy / logicalH;
@@ -1470,7 +1491,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     if (e.pointerId !== activePointerId || !currentStroke) return;
     e.preventDefault();
 
-    const rect = canvas.getBoundingClientRect();
+    const rect = drawingCanvas.getBoundingClientRect();
     const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
     const samples = coalesced.length > 0 ? coalesced : [e];
     for (const sample of samples) {
@@ -1525,8 +1546,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     pointerPressureCache.delete(e.pointerId);
     if (e.pointerId === activePenPointerId) activePenPointerId = -1;
     pointers.delete(e.pointerId);
-    if (canvas.hasPointerCapture(e.pointerId)) {
-      try { canvas.releasePointerCapture(e.pointerId); } catch { /* noop */ }
+    if (drawingCanvas.hasPointerCapture(e.pointerId)) {
+      try { drawingCanvas.releasePointerCapture(e.pointerId); } catch { /* noop */ }
     }
 
     if (pointers.size === 0 && fingerTaps.length >= 2) {
@@ -1582,13 +1603,13 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     strokeEncoder = null;
   }
 
-  canvas.addEventListener("pointerdown", onPointerDown, { signal: ds });
-  canvas.addEventListener("pointermove", onPointerMove, { signal: ds });
-  canvas.addEventListener("pointerup", onPointerEnd, { signal: ds });
-  canvas.addEventListener("pointercancel", onPointerEnd, { signal: ds });
+  drawingCanvas.addEventListener("pointerdown", onPointerDown, { signal: ds });
+  drawingCanvas.addEventListener("pointermove", onPointerMove, { signal: ds });
+  drawingCanvas.addEventListener("pointerup", onPointerEnd, { signal: ds });
+  drawingCanvas.addEventListener("pointercancel", onPointerEnd, { signal: ds });
   overlay.addEventListener("selectstart", (e) => e.preventDefault(), { signal: ds });
   overlay.addEventListener("dragstart", (e) => e.preventDefault(), { signal: ds });
-  canvas.addEventListener("contextmenu", (e) => e.preventDefault(), { signal: ds });
+  drawingCanvas.addEventListener("contextmenu", (e) => e.preventDefault(), { signal: ds });
   overlay.addEventListener("contextmenu", (e) => e.preventDefault(), { signal: ds });
 
   // Block browser history navigation on mouse back/forward buttons while draw is open.
@@ -1609,12 +1630,12 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
   /* ── Scroll wheel: brush size + zoom ───────────────────── */
 
-  canvas.addEventListener("wheel", (e) => {
+  drawingCanvas.addEventListener("wheel", (e) => {
     e.preventDefault();
     if (e.ctrlKey) {
       const factor = e.deltaY < 0 ? 1.1 : 0.9;
       const newZoom = Math.max(0.5, Math.min(5, viewZoom * factor));
-      const rect = canvas.getBoundingClientRect();
+      const rect = drawingCanvas.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
       viewPanX = cx - (cx - viewPanX) * (newZoom / viewZoom);

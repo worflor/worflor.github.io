@@ -293,6 +293,9 @@ const isContactPage = Astro.url.pathname === "/contact";
     <main id="main" class="pb-16">
       <slot />
     </main>
+    <footer class="content-section py-6">
+      <p class="text-[length:var(--text-sm)] opacity-40">Patent Pending</p>
+    </footer>
     <script is:inline data-astro-rerun>
       (function() {
         var header = document.querySelector('.site-header');

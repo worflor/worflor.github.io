@@ -2532,7 +2532,7 @@ const seo = {
   }
 
   .whisper-op-live.wl-connected .wl-head {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
@@ -2909,6 +2909,17 @@ const seo = {
     :global(.cf-live-mode-toggle) {
       margin-top: 0;
       width: auto;
+    }
+
+    :global(.cf-live-mode-toggle .cf-btn-verbose) {
+      display: none;
+    }
+
+    :global(.cf-live-mode-toggle #wl-funnel-campfire) {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     :global(.wl-phase-lede) {
