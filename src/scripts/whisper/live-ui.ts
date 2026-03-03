@@ -1334,6 +1334,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function isRenderableAudioMessage(msg: LiveMessage): boolean {
     if (msg.type !== "file" || !msg.fileData) return false;
+    if (isWhisperGlyph(msg.fileType, msg.fileName)) return false;
     const type = msg.fileType?.toLowerCase() ?? "";
     return type.startsWith("audio/") || isWhisperAudioCodec(msg.fileType, msg.fileName);
   }
@@ -3678,7 +3679,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     switch (ev.kind) {
       case "begin": {
         removeLegacyPeerOverlays();
-        resetPeerLivePreview();
         const { canvas, ctx } = ensurePeerCanvas();
         bringPeerPreviewToBottom();
         setPeerLiveDrawState("active");

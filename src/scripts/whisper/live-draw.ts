@@ -139,7 +139,7 @@ const DRAW_HINT_SHORT_MS = 1400;
 const SWATCH_DRAG_CANCEL_LONGPRESS_SQ = 64;
 const SWATCH_DRAG_FULL_RANGE_PX = 180;
 const SWATCH_DRAG_MAX_DELTA = 0.95;
-const SIZE_DRAG_PX_PER_UNIT = 8;
+const SIZE_DRAG_PX_PER_UNIT = 6;
 const SIZE_DRAG_CANCEL_SQ = 64;
 
 let drawHintShown = false;
@@ -808,7 +808,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   function updateSizePip(): void {
     const pip = eraserBtn.querySelector<HTMLElement>(".wl-draw-size-pip");
     if (!pip) return;
-    const d = Math.max(2, Math.min(10, 1.5 + baseWidth * 0.5));
+    // Range 4px (size 1) → 10px (size 20), linear
+    const d = 4 + ((baseWidth - 1) / 19) * 6;
     pip.style.width = `${d.toFixed(1)}px`;
     pip.style.height = `${d.toFixed(1)}px`;
   }
