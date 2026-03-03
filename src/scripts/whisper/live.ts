@@ -359,6 +359,7 @@ export class WhisperLiveSession {
   /** Total messages received this session — mirrors peer's nSentTotal. */
   private nRecvTotal = 0;
   private nextDrawStreamSeq = 0;
+  private drawStreamSendQueue: Promise<void> = Promise.resolve();
 
   // Kizuna membrane: loop states for send and receive directions.
   // initialized from ECDH-derived chain keys. reinit on each DH ratchet step.
@@ -1267,8 +1268,21 @@ export class WhisperLiveSession {
   sendDrawStream(event: Omit<DrawStreamEvent, "seq">): void {
     if (!this.isLiveState()) return;
     const fullEvent = { ...event, seq: this.nextDrawStreamSeq++ } as DrawStreamEvent;
-    const payload = encodeDrawStreamEvent(fullEvent);
-    this.send(LIVE_MSG.CTRL, encodeCtrl(CTRL_OP.DRAW_STREAM, payload));
+    const payload = encodeCtrl(CTRL_OP.DRAW_STREAM, encodeDrawStreamEvent(fullEvent));
+
+    this.drawStreamSendQueue = this.drawStreamSendQueue
+      .then(async () => {
+        const dc = this.dc;
+        if (!dc || dc.readyState !== "open" || !this.isLiveState()) return;
+        if (dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
+          try { await this.waitForDrain(); } catch { return; }
+        }
+        if (!this.dc || this.dc.readyState !== "open" || !this.isLiveState()) return;
+        this.send(LIVE_MSG.CTRL, payload);
+      })
+      .catch((err) => {
+        this.onLog(`draw stream send failed: ${errorMessage(err)}`);
+      });
   }
 
   /** Wait for recovery to complete before sending. Returns false if destroyed. */

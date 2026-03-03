@@ -3545,7 +3545,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
         div.append(media, timeEl);
         opts.chatMessages.appendChild(div);
-        opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
         peerLiveMsgEl = div;
         peerLiveTimeEl = timeEl;
       }
@@ -3653,8 +3652,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function bringPeerPreviewToBottom(): void {
     if (!peerLiveMsgEl) return;
-    opts.chatMessages.appendChild(peerLiveMsgEl);
-    opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
+    const list = opts.chatMessages;
+    const alreadyLast = list.lastElementChild === peerLiveMsgEl;
+    if (!alreadyLast) {
+      list.appendChild(peerLiveMsgEl);
+    }
   }
 
   function resetPeerLivePreview(): void {
