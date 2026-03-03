@@ -52,10 +52,6 @@ import {
   renderGwyphScene,
   isWhisperGlyph,
   GLYPH_MIME,
-  type GlyphPoint,
-  type GlyphStrokePen,
-  type GlyphStrokeFill,
-  type GlyphStroke,
   type GlyphPayload,
 } from "./live-gwyph";
 
@@ -1308,9 +1304,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * Haptics (haptic("msg-received")) handle the notification feel for now.
    * To re-enable: implement a proper sound here and remove the early return.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  let audioCtx: AudioContext | null = null;
-
   function nudgeAudio(): void {
     // Sound effects are intentionally off — haptics are the primary feedback.
     return;
@@ -2670,13 +2663,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
 
     // If a streamed peer preview exists, replace it in-place with the finalized
-    // glyph message so it keeps the same visual location in the chat flow.
+    // message so it keeps the same visual location in the chat flow.
+    // Use session state (drawState === "sent") as the merge signal — it is set
+    // by the "end" draw event which always arrives before the file over the
+    // same ordered DataChannel. This covers both glyph (blank canvas) and
+    // annotation (PNG/JPEG composite) without inspecting the file type.
     const replacePeerPreview =
       msg.direction === "peer"
       && msg.type === "file"
-      && isWhisperGlyph(msg.fileType, msg.fileName)
       && !!peerLiveMsgEl
       && peerLiveMsgEl.parentElement === opts.chatMessages
+      && (
+        peerLiveMsgEl.dataset.drawState === "sent"
+        // Backstop for older peers/edge ordering where drawState may miss "sent".
+        || isWhisperGlyph(msg.fileType, msg.fileName)
+      )
         ? peerLiveMsgEl
         : null;
     const replacePreviewWasNearBottom = replacePeerPreview ? isNearBottom() : false;
@@ -2737,13 +2738,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       new Uint8Array(abCopy).set(fileData);
 
       let pcmData: Float32Array | null = null;
-      let pcmSampleRate = 48000;
       let durationSeconds = 0;
 
       let audioElement: HTMLAudioElement | null = null;
       let opusBlobUrl: string | null = null; // for playback (HTMLAudioElement)
       let wavBlobUrl: string | null = null;  // for download (lossless)
-      let playbackStartTime = 0;
       let pauseOffset = 0;
       let isPlaying = false;
 
@@ -2870,7 +2869,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
             }
             inverseDcBlock(decoded.pcm); // reconstruct signal prior to encode-side DC block
             pcmData = decoded.pcm;
-            pcmSampleRate = decoded.sampleRate;
             durationSeconds = decoded.pcm.length / decoded.sampleRate;
 
             // WAV — lossless, always available, used for download
@@ -2958,8 +2956,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (pauseOffset >= durationSeconds - 0.05) pauseOffset = 0;
 
         audioElement.currentTime = pauseOffset;
-        playbackStartTime = performance.now() / 1000 - pauseOffset;
-
         try {
           await audioElement.play();
           isPlaying = true;
@@ -3265,7 +3261,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!peerLiveMsgEl) return;
     peerLiveMsgEl.classList.remove("wl-msg--peer-draw-live");
     peerLiveMsgEl.classList.add("wl-msg--peer");
-    peerLiveMsgEl.dataset.streamFinalized = "true";
   }
 
   function ensurePeerCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
@@ -3589,6 +3584,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         ensurePeerCanvas();
         bringPeerPreviewToBottom();
         setPeerLiveDrawState("active");
+        // Stamp the thumb with the base image's aspect ratio so the live preview
+        // matches the annotation content from the start, rather than defaulting
+        // to the 4:3 CSS fallback and then jumping when the sent file arrives.
+        if (ev.width > 0 && ev.height > 0) {
+          const thumb = peerLiveMsgEl?.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
+          if (thumb) {
+            thumb.style.aspectRatio = `${ev.width} / ${ev.height}`;
+            schedulePeerRerender();
+          }
+        }
         peerBaseAssembly = {
           snapshotId: ev.snapshotId,
           width: ev.width,
@@ -4235,7 +4240,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         },
       };
 
-      const result = await maintainFlare(
+      await maintainFlare(
         phrase, acceptFn, callbacks, flareSignal,
       );
 

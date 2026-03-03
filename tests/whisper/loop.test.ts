@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertBytesEqual } from "./_helpers/assertions.js";
-import { randomBytes } from "./_helpers/generators.js";
+import { makeDeterministicRng, randomBytes } from "./_helpers/generators.js";
 import {
   loopInit,
   loopStep,
@@ -64,7 +64,7 @@ describe("live-loop", () => {
       const original = loopInit(block);
       const originalStep = original.step;
 
-      const { next, messageKey } = await loopStep(original);
+      const { next } = await loopStep(original);
       assert.equal(next.step, 1, "next step = 1");
       // Original state should be untouched
       assert.equal(original.step, originalStep, "original state unchanged");
@@ -115,8 +115,8 @@ describe("live-loop", () => {
         const block = makeSharedBlock();
         const state = loopInit(block);
         const data = randomBytes(size);
-        const { encoded, next: encState } = loopEncode(state, data);
-        const { decoded, next: decState } = loopDecode(state, encoded, data.length);
+        const { encoded } = loopEncode(state, data);
+        const { decoded } = loopDecode(state, encoded, data.length);
         assertBytesEqual(decoded, data, `round-trip ${size}B content`);
       });
     }
@@ -178,8 +178,9 @@ describe("live-loop", () => {
 
     it("30 random sizes round-trip correctly", () => {
       const state = loopInit(makeSharedBlock());
+      const rng = makeDeterministicRng(0x51E5A11);
       for (let i = 0; i < 30; i++) {
-        const size = Math.floor(Math.random() * 5000);
+        const size = (rng() * 5000) | 0;
         const data = randomBytes(size);
         const { encoded } = loopEncode(state, data);
         const { decoded } = loopDecode(state, encoded, data.length);
@@ -248,6 +249,7 @@ describe("live-loop", () => {
       const sharedBlock = makeSharedBlock();
       let alice = loopInit(new Uint8Array(sharedBlock));
       let bob = loopInit(new Uint8Array(sharedBlock));
+      const rng = makeDeterministicRng(0xD00D1234);
 
       for (let i = 0; i < 15; i++) {
         // Both step
@@ -256,7 +258,7 @@ describe("live-loop", () => {
         assertBytesEqual(mkA, mkB, `step ${i} message keys match`);
 
         // Alternate who sends
-        const msgSize = 10 + Math.floor(Math.random() * 500);
+        const msgSize = 10 + ((rng() * 500) | 0);
         const msg = randomBytes(msgSize);
         if (i % 2 === 0) {
           // Alice sends to Bob

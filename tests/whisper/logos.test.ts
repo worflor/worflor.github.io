@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertBytesEqual } from "./_helpers/assertions.js";
-import { randomBytes } from "./_helpers/generators.js";
+import { makeDeterministicRng, randomBytes } from "./_helpers/generators.js";
 import {
   encode0DArith,
   decode0DArith,
@@ -32,8 +32,9 @@ function makeData(kind: string, size: number): Uint8Array {
     case "empty": return new Uint8Array(0);
     case "biased": {
       // Low-entropy data biased toward 0x00
+      const rng = makeDeterministicRng((0xB1A5ED ^ size) >>> 0);
       const buf = new Uint8Array(size);
-      for (let i = 0; i < size; i++) buf[i] = Math.random() < 0.9 ? 0 : Math.floor(Math.random() * 256);
+      for (let i = 0; i < size; i++) buf[i] = rng() < 0.9 ? 0 : ((rng() * 256) | 0);
       return buf;
     }
     case "utf8-jp": return TE.encode("あいうえおかきくけこ".repeat(Math.ceil(size / 30)).slice(0, size));
@@ -82,8 +83,9 @@ describe("live-wasm-logos", () => {
       });
 
       it("20 random sizes (1-2000B) with random data", () => {
+        const rng = makeDeterministicRng(0xC01DC0DE);
         for (let i = 0; i < 20; i++) {
-          const size = 1 + Math.floor(Math.random() * 2000);
+          const size = 1 + ((rng() * 2000) | 0);
           const data = randomBytes(size);
           const encoded = encode(data);
           const decoded = decode(encoded, data.length);
@@ -117,8 +119,9 @@ describe("live-wasm-logos", () => {
     });
 
     it("never expands beyond raw + 1 byte (50 random trials)", () => {
+      const rng = makeDeterministicRng(0xABCD0123);
       for (let trial = 0; trial < 50; trial++) {
-        const size = 1 + Math.floor(Math.random() * 2000);
+        const size = 1 + ((rng() * 2000) | 0);
         const data = randomBytes(size);
         const encoded = encode0D(data);
         assert.ok(
@@ -130,8 +133,9 @@ describe("live-wasm-logos", () => {
 
     it("mode byte is valid (0x00=Rice, 0x01=Bit0, 0x02=BitO1, 0x03=BitM, 0xFF=raw)", () => {
       const validModes = new Set([0x00, 0x01, 0x02, 0x03, 0xFF]);
+      const rng = makeDeterministicRng(0xFACEB00C);
       for (let i = 0; i < 30; i++) {
-        const size = 10 + Math.floor(Math.random() * 1000);
+        const size = 10 + ((rng() * 1000) | 0);
         const data = randomBytes(size);
         const encoded = encode0D(data);
         assert.ok(encoded.length >= 1, "encoded must have at least mode byte");
@@ -219,8 +223,9 @@ describe("live-wasm-logos", () => {
     });
 
     it("30 random trials at various sizes (1B-8KB)", () => {
+      const rng = makeDeterministicRng(0x13579BDF);
       for (let i = 0; i < 30; i++) {
-        const size = 1 + Math.floor(Math.random() * 8192);
+        const size = 1 + ((rng() * 8192) | 0);
         const data = randomBytes(size);
         const encoded = encode0D(data);
         const decoded = decode0D(encoded, data.length);

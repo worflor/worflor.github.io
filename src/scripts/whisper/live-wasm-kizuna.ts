@@ -493,7 +493,6 @@ function runTests(): void {
         // has at least one coord = 1 = BS-1, so its anti-pred telescopes to its value.
         // we verify this by checking that pred(block, removing contributions of mask m)
         // equals block[m] for all m != 0.
-        let maxBoundaryR = 0;
         // simpler check: the encode/decode round-trip succeeds iff the residual at
         // origin is correct. the boundary voxels are passed through raw.
         // so we verify: decode(encode(block))[0] == block[0] for random data.
@@ -899,6 +898,25 @@ function runTests(): void {
     console.log(`result: ${pass} passed, ${fail} failed`);
 }
 
-if (typeof process !== 'undefined' || 'Bun' in globalThis) {
+function isDirectScriptExecution(fileBaseName: string): boolean {
+    const normalize = (value: string): string => value.replace(/\\/g, "/").toLowerCase();
+
+    if (typeof process !== "undefined" && typeof process.argv?.[1] === "string") {
+        const entry = normalize(process.argv[1]);
+        if (entry.endsWith(`/${fileBaseName}.ts`) || entry.endsWith(`/${fileBaseName}.js`)) {
+            return true;
+        }
+    }
+
+    const maybeBun = (globalThis as { Bun?: { main?: string } }).Bun;
+    if (typeof maybeBun?.main === "string") {
+        const entry = normalize(maybeBun.main);
+        return entry.endsWith(`/${fileBaseName}.ts`) || entry.endsWith(`/${fileBaseName}.js`);
+    }
+
+    return false;
+}
+
+if (isDirectScriptExecution("live-wasm-kizuna")) {
     runTests();
 }

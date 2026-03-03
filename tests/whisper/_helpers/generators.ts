@@ -1,12 +1,35 @@
 /**
  * Test data generators for Whisper test suite.
- * All generators are deterministic when seeded, random otherwise.
+ * Random generators use crypto entropy. Deterministic helpers are provided
+ * for reproducible stress/property tests.
  */
 
 import { randomBytes as cryptoRandomBytes } from "node:crypto";
 
 export function randomBytes(n: number): Uint8Array {
   return new Uint8Array(cryptoRandomBytes(n));
+}
+
+export function makeDeterministicRng(seed: number): () => number {
+  let s = seed | 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) | 0;
+    return (s >>> 0) / 0x100000000;
+  };
+}
+
+export function deterministicBytes(n: number, seed: number): Uint8Array {
+  const rng = makeDeterministicRng(seed);
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = (rng() * 256) | 0;
+  return out;
+}
+
+export function deterministicUint16Array(n: number, seed: number): Uint16Array {
+  const rng = makeDeterministicRng(seed);
+  const out = new Uint16Array(n);
+  for (let i = 0; i < n; i++) out[i] = (rng() * 65536) | 0;
+  return out;
 }
 
 export function randomUint32(): number {

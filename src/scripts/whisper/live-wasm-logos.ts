@@ -786,7 +786,6 @@ function printConvergence(label: string, data: Uint8Array): void {
         const { pos, bitsPerSym, k, modelH } = stats[i];
         const filled = Math.min(9, Math.round(bitsPerSym));
         const bar    = '█'.repeat(filled) + '░'.repeat(9 - filled);
-        const ideal  = Math.min(9, Math.round(H));
         const mark   = pos === 0 ? '' : '';
         console.log(
             `  ${pos.toString().padStart(5)} | ${bitsPerSym.toFixed(2).padStart(8)}` +
@@ -967,6 +966,25 @@ function runStressTests(): void {
     console.log('  this is the inter-byte structure that H0 cannot see.');
 }
 
-if (typeof process !== 'undefined' || 'Bun' in globalThis) {
+function isDirectScriptExecution(fileBaseName: string): boolean {
+    const normalize = (value: string): string => value.replace(/\\/g, "/").toLowerCase();
+
+    if (typeof process !== "undefined" && typeof process.argv?.[1] === "string") {
+        const entry = normalize(process.argv[1]);
+        if (entry.endsWith(`/${fileBaseName}.ts`) || entry.endsWith(`/${fileBaseName}.js`)) {
+            return true;
+        }
+    }
+
+    const maybeBun = (globalThis as { Bun?: { main?: string } }).Bun;
+    if (typeof maybeBun?.main === "string") {
+        const entry = normalize(maybeBun.main);
+        return entry.endsWith(`/${fileBaseName}.ts`) || entry.endsWith(`/${fileBaseName}.js`);
+    }
+
+    return false;
+}
+
+if (isDirectScriptExecution("live-wasm-logos")) {
     runStressTests();
 }

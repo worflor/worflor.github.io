@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertBytesEqual } from "./_helpers/assertions.js";
-import { randomBytes } from "./_helpers/generators.js";
+import { deterministicUint16Array, makeDeterministicRng, randomBytes } from "./_helpers/generators.js";
 import {
   encodeBlock16D,
   decodeBlock16D,
@@ -12,16 +12,40 @@ import {
 
 const B16 = 65536;
 
+const PARITY16 = new Uint8Array(B16);
+for (let mask = 1; mask < B16; mask++) PARITY16[mask] = PARITY16[mask >> 1] ^ (mask & 1);
+
 function lcg(seed: number): () => number {
   let s = seed;
-  return () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 0x100000000; };
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) | 0;
+    return (s >>> 0) / 0x100000000;
+  };
 }
 
 function makeBlock(seed: number): Uint8Array {
   const rng = lcg(seed);
-  const b = new Uint8Array(B16);
-  for (let i = 0; i < B16; i++) b[i] = (rng() * 256) | 0;
-  return b;
+  const out = new Uint8Array(B16);
+  for (let i = 0; i < B16; i++) out[i] = (rng() * 256) | 0;
+  return out;
+}
+
+function predAntiAtMask(block: Uint8Array, mask: number): number {
+  let pred = 0;
+  for (let subset = 1; subset < B16; subset++) {
+    pred += PARITY16[subset] ? block[mask | subset] : -block[mask | subset];
+  }
+  return pred;
+}
+
+function residualAtOrigin(block: Uint8Array): number {
+  return (block[0] - Math.round(predAntiAtMask(block, 0))) | 0;
+}
+
+function whtAllOnes(block: Uint8Array): number {
+  let w = 0;
+  for (let mask = 0; mask < B16; mask++) w += PARITY16[mask] ? -block[mask] : block[mask];
+  return w;
 }
 
 describe("live-wasm-kizuna", () => {
@@ -91,18 +115,66 @@ describe("live-wasm-kizuna", () => {
       }
     });
 
-    it("all-zeros block compresses (encoded not all same value)", () => {
+    it("all-zeros encodes to zero residual + zero boundary payload", () => {
       const block = new Uint8Array(B16);
       const encoded = encodeBlock16D(block);
-      // First 4 bytes are the residual, rest is the block minus origin
-      // For all-zeros, the encoded representation should work correctly
+
+      const residual = encoded[0] | (encoded[1] << 8) | (encoded[2] << 16) | (encoded[3] << 24);
+      assert.equal(residual, 0, "origin residual should be zero");
+      for (let i = 4; i < encoded.length; i++) {
+        assert.equal(encoded[i], 0, `boundary payload byte ${i - 4} should be zero`);
+      }
+
       const decoded = decodeBlock16D(encoded);
-      assertBytesEqual(decoded, block, "all-zeros round-trip after compress check");
+      assertBytesEqual(decoded, block, "all-zeros round-trip");
+    });
+
+    it("decoder clamps corrupted residual to [0,255]", () => {
+      const block = makeBlock(0xC0FFEE42);
+      const encoded = encodeBlock16D(block);
+      const corrupt = new Uint8Array(encoded);
+
+      const high = 200_000;
+      corrupt[0] = high & 0xff;
+      corrupt[1] = (high >>> 8) & 0xff;
+      corrupt[2] = (high >>> 16) & 0xff;
+      corrupt[3] = (high >>> 24) & 0xff;
+      const hi = decodeBlock16D(corrupt);
+      assert.ok(hi[0] >= 0 && hi[0] <= 255, "high residual must clamp to byte range");
+
+      const low = (-200_000) >>> 0;
+      corrupt[0] = low & 0xff;
+      corrupt[1] = (low >>> 8) & 0xff;
+      corrupt[2] = (low >>> 16) & 0xff;
+      corrupt[3] = (low >>> 24) & 0xff;
+      const lo = decodeBlock16D(corrupt);
+      assert.ok(lo[0] >= 0 && lo[0] <= 255, "low residual must clamp to byte range");
+    });
+  });
+
+  describe("16D math invariants", () => {
+    it("origin residual equals WHT all-ones coefficient", () => {
+      for (const seed of [1, 42, 0xDEAD, 0xF00D, 0xBEEF, 0x7777]) {
+        const block = makeBlock(seed);
+        assert.equal(residualAtOrigin(block), whtAllOnes(block), `WHT identity failed for seed ${seed}`);
+      }
+    });
+
+    it("boundary theorem: non-origin masks have zero residual", () => {
+      const rng = makeDeterministicRng(0xB0ABCDEF);
+      for (let trial = 0; trial < 3; trial++) {
+        const block = makeBlock(0xDEAD0000 + trial);
+        for (let i = 0; i < 20; i++) {
+          const mask = Math.max(1, (rng() * B16) | 0);
+          const residual = block[mask] - Math.round(predAntiAtMask(block, mask));
+          assert.equal(residual, 0, `boundary residual mismatch at mask=0x${mask.toString(16)}`);
+        }
+      }
     });
   });
 
   describe("handshake16D", () => {
-    it("determinism: same input → same output (10 iterations)", () => {
+    it("determinism: same input -> same output (10 iterations)", () => {
       for (let i = 0; i < 10; i++) {
         const shared = randomBytes(B16);
         const a = handshake16D(new Uint8Array(shared));
@@ -118,7 +190,7 @@ describe("live-wasm-kizuna", () => {
 
     it("result shape: correct sizes and types", () => {
       for (let i = 0; i < 5; i++) {
-        const result = handshake16D(randomBytes(B16));
+        const result = handshake16D(makeBlock(0x1000 + i));
         assert.equal(typeof result.residual, "number", `residual is number iter ${i}`);
         assert.equal(result.block8D.length, B16, `block8D is 65536B iter ${i}`);
         assert.equal(result.countsBitM.length, 1024, `countsBitM is 1024 uint32 iter ${i}`);
@@ -126,18 +198,17 @@ describe("live-wasm-kizuna", () => {
       }
     });
 
-    it("different inputs → different residuals and block8D", () => {
+    it("different inputs -> different residuals and block8D", () => {
       const results = [];
-      for (let i = 0; i < 10; i++) {
-        results.push(handshake16D(randomBytes(B16)));
-      }
-      // At least most pairs should differ
+      for (let i = 0; i < 10; i++) results.push(handshake16D(makeBlock(0x6000 + i)));
+
       let residualDiffs = 0;
       for (let i = 0; i < results.length; i++) {
         for (let j = i + 1; j < results.length; j++) {
           if (results[i].residual !== results[j].residual) residualDiffs++;
         }
       }
+
       const totalPairs = (results.length * (results.length - 1)) / 2;
       assert.ok(residualDiffs > totalPairs * 0.8,
         `${residualDiffs}/${totalPairs} residual pairs differ (expected >80%)`);
@@ -145,21 +216,18 @@ describe("live-wasm-kizuna", () => {
 
     it("countsBitM is primed above Laplace prior", () => {
       for (let i = 0; i < 5; i++) {
-        const result = handshake16D(randomBytes(B16));
+        const result = handshake16D(makeBlock(0x4000 + i));
         let total = 0;
         for (let j = 0; j < 1024; j++) total += result.countsBitM[j];
-        // Laplace prior = 2 per context × 512 = 1024; primed should be higher
-        assert.ok(total > 1024,
-          `primed total ${total} should exceed Laplace prior (1024) iter ${i}`);
+        assert.ok(total > 1024, `primed total ${total} should exceed Laplace prior (1024) iter ${i}`);
       }
     });
 
     it("block8D has entropy (not all zeros)", () => {
       for (let i = 0; i < 5; i++) {
-        const result = handshake16D(randomBytes(B16));
+        const result = handshake16D(makeBlock(0x5000 + i));
         const unique = new Set(result.block8D);
-        assert.ok(unique.size > 100,
-          `block8D should have entropy (${unique.size} unique bytes) iter ${i}`);
+        assert.ok(unique.size > 100, `block8D should have entropy (${unique.size} unique bytes) iter ${i}`);
       }
     });
 
@@ -171,15 +239,22 @@ describe("live-wasm-kizuna", () => {
   });
 
   describe("encode16/decode16", () => {
-    it("round-trip 30 random Uint16Arrays (varying sizes)", () => {
+    it("round-trip empty Uint16Array", () => {
+      const data = new Uint16Array(0);
+      const encoded = encode16(data);
+      const decoded = decode16(encoded, data.length);
+      assert.equal(decoded.length, 0);
+    });
+
+    it("round-trip 30 deterministic pseudo-random Uint16Arrays (varying sizes)", () => {
+      const rng = makeDeterministicRng(0xC0DEC0DE);
       for (let i = 0; i < 30; i++) {
-        const len = 10 + Math.floor(Math.random() * 2000);
-        const data = new Uint16Array(len);
-        for (let j = 0; j < len; j++) data[j] = Math.floor(Math.random() * 65536);
+        const len = 10 + ((rng() * 2000) | 0);
+        const data = deterministicUint16Array(len, 0x1000 + i);
         const encoded = encode16(data);
         const decoded = decode16(encoded, data.length);
         assert.deepStrictEqual(Array.from(decoded), Array.from(data),
-          `random Uint16 iter ${i} (len=${len})`);
+          `deterministic Uint16 iter ${i} (len=${len})`);
       }
     });
 
@@ -229,15 +304,13 @@ describe("live-wasm-kizuna", () => {
       }
     });
 
-    it("structured data compresses better than random", () => {
+    it("structured data compresses better than pseudo-random", () => {
       const zeros = new Uint16Array(1024);
-      const random = new Uint16Array(1024);
-      for (let i = 0; i < 1024; i++) random[i] = Math.floor(Math.random() * 65536);
+      const randomish = deterministicUint16Array(1024, 0x12345678);
 
       const encZeros = encode16(zeros);
-      const encRandom = encode16(random);
+      const encRandom = encode16(randomish);
 
-      // Zeros should compress much more than random
       assert.ok(encZeros.length < encRandom.length,
         `zeros encoded (${encZeros.length}) should be smaller than random (${encRandom.length})`);
     });
