@@ -354,11 +354,11 @@
     flex-shrink: 1;
     min-width: 0;
     gap: 0;
-    border: 1px solid var(--whisper-edge);
-    border-radius: calc(var(--whisper-radius) * 0.5);
-    overflow: hidden;
-    background: rgb(10 10 10 / 0.88);
-    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    background: transparent;
+    box-shadow: none;
     white-space: nowrap;
   }
 
@@ -410,9 +410,6 @@
   }
 
   :global(.cf-head-btn) {
-    border-radius: 0;
-    border: 0;
-    border-right: 1px solid var(--whisper-edge);
     min-height: 2rem;
     padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
     font-size: calc(var(--text-sm) * 0.82);
@@ -431,10 +428,6 @@
     padding: 0;
     justify-content: center;
     line-height: 0;
-  }
-
-  :global(.cf-live-mode-toggle .cf-head-btn:last-child) {
-    border-right: 0;
   }
 
   :global(.wl-disconnect-btn) :global(svg) {

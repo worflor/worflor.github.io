@@ -8,6 +8,9 @@ export const DRAW_STREAM_KIND = {
   UNDO: 0x05,
   REDO: 0x06,
   PRESENCE: 0x07,
+  BASE_START: 0x08,
+  BASE_CHUNK: 0x09,
+  BASE_END: 0x0a,
 } as const;
 
 type DrawStreamKindCode = typeof DRAW_STREAM_KIND[keyof typeof DRAW_STREAM_KIND];
@@ -65,6 +68,32 @@ export interface DrawStreamPresenceEvent {
   strokeId?: number;
 }
 
+export type DrawBaseMime = "image/jpeg" | "image/webp" | "image/png";
+
+export interface DrawStreamBaseStartEvent {
+  kind: "base-start";
+  seq: number;
+  snapshotId: number;
+  width: number;
+  height: number;
+  mime: DrawBaseMime;
+  chunkCount: number;
+}
+
+export interface DrawStreamBaseChunkEvent {
+  kind: "base-chunk";
+  seq: number;
+  snapshotId: number;
+  chunkIndex: number;
+  data: Uint8Array;
+}
+
+export interface DrawStreamBaseEndEvent {
+  kind: "base-end";
+  seq: number;
+  snapshotId: number;
+}
+
 export type DrawStreamEvent =
   | DrawStreamBeginEvent
   | DrawStreamGlyphEvent
@@ -72,7 +101,10 @@ export type DrawStreamEvent =
   | DrawStreamClearEvent
   | DrawStreamUndoEvent
   | DrawStreamRedoEvent
-  | DrawStreamPresenceEvent;
+  | DrawStreamPresenceEvent
+  | DrawStreamBaseStartEvent
+  | DrawStreamBaseChunkEvent
+  | DrawStreamBaseEndEvent;
 
 /** Distributive Omit — each union member has its own `seq` stripped individually. */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -86,6 +118,7 @@ export interface DrawStreamApplyResult {
 export interface DrawStreamTrackerState {
   lastSeq: number;
   activeStrokeId: number | null;
+  activeBaseSnapshotId: number | null;
   peerActive: boolean;
 }
 
@@ -115,6 +148,23 @@ function encodeHexColorRgb(color: string): [number, number, number] {
 
 function decodeHexColorRgb(r: number, g: number, b: number): string {
   return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+
+function encodeBaseMime(mime: DrawBaseMime): number {
+  switch (mime) {
+    case "image/jpeg": return 0;
+    case "image/webp": return 1;
+    case "image/png": return 2;
+  }
+}
+
+function decodeBaseMime(code: number): DrawBaseMime | null {
+  switch (code) {
+    case 0: return "image/jpeg";
+    case 1: return "image/webp";
+    case 2: return "image/png";
+    default: return null;
+  }
 }
 
 function writeBaseHeader(view: DataView, kind: DrawStreamKindCode, seq: number): void {
@@ -189,6 +239,33 @@ export function encodeDrawStreamEvent(evt: DrawStreamEvent): Uint8Array {
       if (hasStroke) view.setUint16(8, (evt.strokeId as number) & 0xffff, true);
       return out;
     }
+    case "base-start": {
+      const out = new Uint8Array(15);
+      const view = new DataView(out.buffer);
+      writeBaseHeader(view, DRAW_STREAM_KIND.BASE_START, evt.seq);
+      view.setUint16(6, evt.snapshotId & 0xffff, true);
+      view.setUint16(8, Math.max(1, Math.min(65535, Math.round(evt.width))), true);
+      view.setUint16(10, Math.max(1, Math.min(65535, Math.round(evt.height))), true);
+      view.setUint8(12, encodeBaseMime(evt.mime));
+      view.setUint16(13, Math.max(1, Math.min(65535, evt.chunkCount | 0)), true);
+      return out;
+    }
+    case "base-chunk": {
+      const out = new Uint8Array(10 + evt.data.length);
+      const view = new DataView(out.buffer);
+      writeBaseHeader(view, DRAW_STREAM_KIND.BASE_CHUNK, evt.seq);
+      view.setUint16(6, evt.snapshotId & 0xffff, true);
+      view.setUint16(8, evt.chunkIndex & 0xffff, true);
+      out.set(evt.data, 10);
+      return out;
+    }
+    case "base-end": {
+      const out = new Uint8Array(8);
+      const view = new DataView(out.buffer);
+      writeBaseHeader(view, DRAW_STREAM_KIND.BASE_END, evt.seq);
+      view.setUint16(6, evt.snapshotId & 0xffff, true);
+      return out;
+    }
   }
 }
 
@@ -254,6 +331,37 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
         strokeId: hasStroke ? view.getUint16(8, true) : undefined,
       };
     }
+    case DRAW_STREAM_KIND.BASE_START: {
+      if (bytes.length !== 15) return null;
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const mime = decodeBaseMime(view.getUint8(12));
+      if (!mime) return null;
+      return {
+        kind: "base-start",
+        seq,
+        snapshotId: view.getUint16(6, true),
+        width: view.getUint16(8, true),
+        height: view.getUint16(10, true),
+        mime,
+        chunkCount: view.getUint16(13, true),
+      };
+    }
+    case DRAW_STREAM_KIND.BASE_CHUNK: {
+      if (bytes.length < 10) return null;
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      return {
+        kind: "base-chunk",
+        seq,
+        snapshotId: view.getUint16(6, true),
+        chunkIndex: view.getUint16(8, true),
+        data: bytes.slice(10),
+      };
+    }
+    case DRAW_STREAM_KIND.BASE_END: {
+      if (bytes.length !== 8) return null;
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      return { kind: "base-end", seq, snapshotId: view.getUint16(6, true) };
+    }
     default:
       return null;
   }
@@ -265,6 +373,7 @@ export class DrawStreamTracker {
   private state: DrawStreamTrackerState = {
     lastSeq: -1,
     activeStrokeId: null,
+    activeBaseSnapshotId: null,
     peerActive: false,
   };
 
@@ -296,7 +405,26 @@ export class DrawStreamTracker {
       case "presence":
         this.state.peerActive = evt.active;
         if (typeof evt.strokeId === "number") this.state.activeStrokeId = evt.strokeId;
-        if (!evt.active) this.state.activeStrokeId = null;
+        if (!evt.active) {
+          this.state.activeStrokeId = null;
+          this.state.activeBaseSnapshotId = null;
+        }
+        break;
+      case "base-start":
+        this.state.activeBaseSnapshotId = evt.snapshotId;
+        this.state.peerActive = true;
+        break;
+      case "base-chunk":
+        if (this.state.activeBaseSnapshotId !== evt.snapshotId) {
+          return { applied: false, reason: "invalid-order" };
+        }
+        this.state.peerActive = true;
+        break;
+      case "base-end":
+        if (this.state.activeBaseSnapshotId !== evt.snapshotId) {
+          return { applied: false, reason: "invalid-order" };
+        }
+        this.state.activeBaseSnapshotId = null;
         break;
       case "clear":
       case "undo":

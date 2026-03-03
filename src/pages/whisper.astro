@@ -2278,12 +2278,12 @@ const seo = {
       background: rgb(var(--tool-action-run) / 0.2);
     }
 
-    .whisper-mode-btn:hover {
+    .whisper-mode-btn:not(.whisper-mode-btn--active):hover {
       color: rgb(var(--color-text-rgb) / 0.55);
       border-color: transparent;
     }
 
-    .whisper-mode-btn:active {
+    .whisper-mode-btn:not(.whisper-mode-btn--active):active {
       color: rgb(var(--color-text-rgb));
       border-color: rgb(var(--color-text-rgb) / 0.18);
     }
@@ -2559,6 +2559,31 @@ const seo = {
 
   .whisper-op-live.wl-connected .wl-disconnect-btn {
     flex-shrink: 0;
+  }
+
+  .whisper-op-live.wl-connected .cf-live-mode-toggle {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .whisper-op-live.wl-connected .cf-live-mode-toggle .cf-head-btn {
+    border-radius: 0;
+    margin: 0;
+  }
+
+  .whisper-op-live.wl-connected .cf-live-mode-toggle .cf-head-btn + .cf-head-btn {
+    margin-left: -1px;
+  }
+
+  .whisper-op-live.wl-connected .cf-live-mode-toggle .cf-head-btn:first-child {
+    border-top-left-radius: calc(var(--whisper-radius) * 0.5);
+    border-bottom-left-radius: calc(var(--whisper-radius) * 0.5);
+  }
+
+  .whisper-op-live.wl-connected .cf-live-mode-toggle .cf-head-btn:last-child {
+    border-top-right-radius: calc(var(--whisper-radius) * 0.5);
+    border-bottom-right-radius: calc(var(--whisper-radius) * 0.5);
   }
 
   .whisper-op-live.wl-connected .wl-head-subtitle {

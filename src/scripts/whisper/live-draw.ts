@@ -7,7 +7,7 @@
  */
 
 import { createStrokeSampler, sampleStrokePoint, type StrokeSamplerState } from "./live-draw-stroke";
-import { type DrawStreamEventNoSeq, type DrawTool } from "./live-draw-stream";
+import { type DrawBaseMime, type DrawStreamEventNoSeq, type DrawTool } from "./live-draw-stream";
 import { GlyphStreamEncoder } from "./live-wasm-glyph";
 
 /* ── Types ────────────────────────────────────────────────── */
@@ -156,8 +156,11 @@ const SWATCH_DRAG_FULL_RANGE_PX = 180;
 const SWATCH_DRAG_MAX_DELTA = 0.95;
 const SIZE_DRAG_PX_PER_UNIT = 6;
 const SIZE_DRAG_CANCEL_SQ = 64;
+const DRAW_BASE_STREAM_MAX_EDGE = 960;
+const DRAW_BASE_STREAM_WEBP_QUALITY = 0.68;
+const DRAW_BASE_STREAM_CHUNK_BYTES = 240;
 
-let drawHintShown = false;
+  let drawHintShown = false;
 
 let drawBodyLockDepth = 0;
 let drawBodyLockSnapshot: {
@@ -267,6 +270,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   const drawAc = new AbortController();
   const ds = drawAc.signal;
   let closed = false;
+  let nextBaseSnapshotId = 1;
+  let annotateBaseSnapshotStarted = false;
 
   config.signal.addEventListener("abort", () => drawAc.abort(), { signal: ds });
 
@@ -1865,20 +1870,105 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       // Strip any number of trailing _drawing suffixes (case-insensitive)
       const cleanStem = stem.replace(/(_drawing)+$/i, "");
       // If nothing meaningful is left (e.g. original was "drawing.webp"), keep a simple default.
-      if (!cleanStem || cleanStem.toLowerCase() === "drawing") return `drawing.${OUT_EXT}`;
-      return `${cleanStem}_drawing.${OUT_EXT}`;
+      if (!cleanStem || cleanStem.toLowerCase() === "drawing") return "drawing";
+      return `${cleanStem}_drawing`;
     }
-    return `drawing.${OUT_EXT}`;
+    return "drawing";
+  }
+
+  function resolveAnnotateExportType(name?: string): { mime: "image/png" | "image/jpeg" | "image/webp"; ext: "png" | "jpg" | "webp"; quality?: number } {
+    const ext = ((name ?? "").toLowerCase().split(".").pop() ?? "");
+    if (ext === "jpg" || ext === "jpeg") return { mime: "image/jpeg", ext: "jpg", quality: 0.92 };
+    if (ext === "webp") return { mime: "image/webp", ext: "webp", quality: 0.92 };
+    return { mime: "image/png", ext: "png" };
+  }
+
+  function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob | null> {
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => resolve(blob ?? null), type, quality);
+    });
+  }
+
+  async function emitAnnotateBaseSnapshot(): Promise<void> {
+    if (isBlank || annotateBaseSnapshotStarted || !callbacks.onEvent) return;
+    annotateBaseSnapshotStarted = true;
+
+    const srcW = Math.max(1, bgCanvas.width);
+    const srcH = Math.max(1, bgCanvas.height);
+    const scale = Math.min(1, DRAW_BASE_STREAM_MAX_EDGE / Math.max(srcW, srcH));
+    const outW = Math.max(1, Math.round(srcW * scale));
+    const outH = Math.max(1, Math.round(srcH * scale));
+
+    const snap = document.createElement("canvas");
+    snap.width = outW;
+    snap.height = outH;
+    const snapCtx = snap.getContext("2d");
+    if (!snapCtx) return;
+    snapCtx.drawImage(bgCanvas, 0, 0, outW, outH);
+
+    let blob = await canvasToBlob(snap, "image/webp", DRAW_BASE_STREAM_WEBP_QUALITY);
+    let mime: DrawBaseMime = "image/webp";
+    if (!blob) {
+      blob = await canvasToBlob(snap, "image/jpeg", 0.72);
+      mime = "image/jpeg";
+    }
+    if (!blob) {
+      blob = await canvasToBlob(snap, "image/png");
+      mime = "image/png";
+    }
+    if (!blob) return;
+    if (ds.aborted || closed) return;
+
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (bytes.length === 0) return;
+    if (ds.aborted || closed) return;
+
+    const snapshotId = nextBaseSnapshotId & 0xffff;
+    nextBaseSnapshotId = (nextBaseSnapshotId + 1) & 0xffff;
+    const chunkCount = Math.max(1, Math.ceil(bytes.length / DRAW_BASE_STREAM_CHUNK_BYTES));
+    callbacks.onEvent({ kind: "base-start", snapshotId, width: outW, height: outH, mime, chunkCount });
+    for (let i = 0; i < chunkCount; i++) {
+      if (ds.aborted || closed) return;
+      const start = i * DRAW_BASE_STREAM_CHUNK_BYTES;
+      const end = Math.min(bytes.length, start + DRAW_BASE_STREAM_CHUNK_BYTES);
+      callbacks.onEvent({ kind: "base-chunk", snapshotId, chunkIndex: i, data: bytes.subarray(start, end) });
+    }
+    if (ds.aborted || closed) return;
+    callbacks.onEvent({ kind: "base-end", snapshotId });
   }
 
   sendBtn.addEventListener("click", async () => {
     if (strokes.length === 0) return;
 
-    const name = resolveOutputName();
+    const baseName = resolveOutputName();
+    if (!isBlank) {
+      const composite = document.createElement("canvas");
+      composite.width = drawingCanvas.width;
+      composite.height = drawingCanvas.height;
+      const compositeCtx = composite.getContext("2d");
+      if (!compositeCtx) return;
+      compositeCtx.drawImage(bgCanvas, 0, 0);
+      compositeCtx.drawImage(drawingCanvas, 0, 0);
+
+      const preferred = resolveAnnotateExportType(config.originalName);
+      let blob = await canvasToBlob(composite, preferred.mime, preferred.quality);
+      let mime = preferred.mime;
+      let ext = preferred.ext;
+      if (!blob) {
+        blob = await canvasToBlob(composite, "image/png");
+        mime = "image/png";
+        ext = "png";
+      }
+      if (!blob) return;
+      callbacks.onSend({ file: new File([blob], `${baseName}.${ext}`, { type: mime }) });
+      closeDraw();
+      return;
+    }
+
     const payload = encodeGwyphPayload();
     const payloadBuffer = new ArrayBuffer(payload.byteLength);
     new Uint8Array(payloadBuffer).set(payload);
-    callbacks.onSend({ file: new File([payloadBuffer], name, { type: OUT_MIME }) });
+    callbacks.onSend({ file: new File([payloadBuffer], `${baseName}.${OUT_EXT}`, { type: OUT_MIME }) });
     closeDraw();
   }, { signal: ds });
 
@@ -1966,5 +2056,6 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       showHint("Pinch to zoom. Two-finger tap undo, three-finger tap redo.", DRAW_HINT_ONBOARD_MS);
       drawHintShown = true;
     }
+    void emitAnnotateBaseSnapshot();
   });
 }

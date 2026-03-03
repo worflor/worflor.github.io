@@ -216,4 +216,53 @@ describe("live-draw-stream", () => {
     assert.equal(tracker.snapshot().peerActive, false);
     assert.equal(tracker.snapshot().activeStrokeId, null);
   });
+
+  it("round-trips base snapshot events and tracker accepts ordered chunks", () => {
+    const tracker = new DrawStreamTracker();
+    const start: DrawStreamEvent = {
+      kind: "base-start",
+      seq: 20,
+      snapshotId: 9,
+      width: 640,
+      height: 360,
+      mime: "image/webp",
+      chunkCount: 2,
+    };
+    const chunkA: DrawStreamEvent = {
+      kind: "base-chunk",
+      seq: 21,
+      snapshotId: 9,
+      chunkIndex: 0,
+      data: new Uint8Array([1, 2, 3, 4]),
+    };
+    const chunkB: DrawStreamEvent = {
+      kind: "base-chunk",
+      seq: 22,
+      snapshotId: 9,
+      chunkIndex: 1,
+      data: new Uint8Array([5, 6, 7]),
+    };
+    const end: DrawStreamEvent = {
+      kind: "base-end",
+      seq: 23,
+      snapshotId: 9,
+    };
+
+    const encodedStart = encodeDrawStreamEvent(start);
+    const decodedStart = decodeDrawStreamEvent(encodedStart);
+    assert.ok(decodedStart && decodedStart.kind === "base-start");
+    assert.equal(decodedStart.mime, "image/webp");
+    assert.equal(decodedStart.chunkCount, 2);
+
+    const decodedChunk = decodeDrawStreamEvent(encodeDrawStreamEvent(chunkA));
+    assert.ok(decodedChunk && decodedChunk.kind === "base-chunk");
+    assert.deepEqual(Array.from(decodedChunk.data), [1, 2, 3, 4]);
+
+    assert.equal(tracker.apply(start).applied, true);
+    assert.equal(tracker.apply(chunkA).applied, true);
+    assert.equal(tracker.apply(chunkB).applied, true);
+    assert.equal(tracker.snapshot().activeBaseSnapshotId, 9);
+    assert.equal(tracker.apply(end).applied, true);
+    assert.equal(tracker.snapshot().activeBaseSnapshotId, null);
+  });
 });

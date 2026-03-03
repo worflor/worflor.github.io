@@ -1543,6 +1543,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         img.onload = () => {
           openManagedDrawSurface({ mode: "annotate", mediaEl: img, originalName: fileName }, {
             onSend: (r) => sendFileToChat(r.file, "draw"),
+            onEvent: (ev) => session?.sendDrawStream(ev),
           }, lbSignal);
         };
         img.src = canvas.toDataURL("image/png");
@@ -1553,6 +1554,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (mediaEl instanceof HTMLVideoElement) mediaEl.pause();
       openManagedDrawSurface({ mode: "annotate", mediaEl, originalName: fileName }, {
         onSend: (r) => sendFileToChat(r.file, "draw"),
+        onEvent: (ev) => session?.sendDrawStream(ev),
       }, lbSignal);
     }, { signal: lbSignal });
 
@@ -3208,10 +3210,44 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let peerBgCanvas: HTMLCanvasElement | null = null;
   let peerLiveMsgEl: HTMLDivElement | null = null;
   let peerLiveTimeEl: HTMLTimeElement | null = null;
+  let peerBaseImage: HTMLImageElement | null = null;
+  let peerBaseImageUrl: string | null = null;
+  let peerBaseLoadToken = 0;
+  let peerBaseAssembly: {
+    snapshotId: number;
+    width: number;
+    height: number;
+    mime: "image/jpeg" | "image/webp" | "image/png";
+    chunkCount: number;
+    chunks: Array<Uint8Array | null>;
+    received: number;
+  } | null = null;
   let peerActiveStroke: PeerActiveStroke | null = null;
   let peerActivePoints: Array<{ x: number; y: number; p: number }> = [];
   let peerStrokes: PeerStrokeRecord[] = [];
   let peerRedoStack: PeerStrokeRecord[] = [];
+  let peerRafPending = false;
+
+  function drawPeerBackground(cw: number, ch: number): void {
+    if (!peerBgCanvas) return;
+    const bgCtx = peerBgCanvas.getContext("2d");
+    if (!bgCtx) return;
+    bgCtx.clearRect(0, 0, cw, ch);
+    bgCtx.fillStyle = "#1a1a1a";
+    bgCtx.fillRect(0, 0, cw, ch);
+    if (peerBaseImage) {
+      bgCtx.drawImage(peerBaseImage, 0, 0, cw, ch);
+    }
+  }
+
+  function clearPeerBaseImage(): void {
+    peerBaseImage = null;
+    peerBaseLoadToken++;
+    if (peerBaseImageUrl) {
+      URL.revokeObjectURL(peerBaseImageUrl);
+      peerBaseImageUrl = null;
+    }
+  }
 
   function removeLegacyPeerOverlays(): void {
     const legacy = document.querySelectorAll(".wl-peer-draw");
@@ -3266,6 +3302,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const rect = host.getBoundingClientRect();
       const cw = Math.max(1, Math.round(rect.width));
       const ch = Math.max(1, Math.round(rect.height));
+      // If layout hasn't resolved yet (rect = 0), schedule a corrective rerender
+      // for the next frame so the canvas gets the right dimensions.
+      if (rect.width === 0 || rect.height === 0) {
+        schedulePeerRerender();
+      }
 
       peerBgCanvas = document.createElement("canvas");
       peerBgCanvas.className = "wl-peer-draw-bg";
@@ -3283,8 +3324,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       const peerBgCtx = peerBgCanvas.getContext("2d")!;
       peerBgCtx.scale(dpr, dpr);
-      peerBgCtx.fillStyle = "#1a1a1a";
-      peerBgCtx.fillRect(0, 0, cw, ch);
+      drawPeerBackground(cw, ch);
 
       peerCtx = peerCanvas.getContext("2d")!;
       peerCtx.scale(dpr, dpr);
@@ -3375,13 +3415,28 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       peerBgCanvas.height = targetH;
       const bgCtx = peerBgCanvas.getContext("2d")!;
       bgCtx.scale(dpr, dpr);
-      bgCtx.fillStyle = "#1a1a1a";
-      bgCtx.fillRect(0, 0, cw, ch);
+      drawPeerBackground(cw, ch);
+    } else if (peerBgCanvas) {
+      drawPeerBackground(cw, ch);
     }
     const W = peerCanvasW();
     const H = peerCanvasH();
     peerCtx.clearRect(0, 0, W, H);
     for (const stroke of peerStrokes) peerRenderStroke(peerCtx, stroke, W, H);
+    if (peerActiveStroke && peerActivePoints.length > 0) {
+      peerRenderStroke(peerCtx, {
+        points: peerActivePoints,
+        color: peerActiveStroke.color,
+        width: peerActiveStroke.width,
+        tool: peerActiveStroke.tool,
+      }, W, H);
+    }
+  }
+
+  function schedulePeerRerender(): void {
+    if (peerRafPending) return;
+    peerRafPending = true;
+    requestAnimationFrame(() => { peerRafPending = false; peerRerender(); });
   }
 
   function bringPeerPreviewToBottom(): void {
@@ -3398,6 +3453,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     peerActivePoints = [];
     peerStrokes = [];
     peerRedoStack = [];
+    peerBaseAssembly = null;
+    clearPeerBaseImage();
     peerBgCanvas?.remove();
     peerBgCanvas = null;
     if (peerCanvas) {
@@ -3449,30 +3506,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       case "glyph": {
         if (!peerActiveStroke) break;
         bringPeerPreviewToBottom();
-        const { ctx } = ensurePeerCanvas();
-        const W = peerCanvasW();
-        const H = peerCanvasH();
+        ensurePeerCanvas();
         const raw = peerActiveStroke.decoder.decode(ev.data);
-        const pressureSens = peerActiveStroke.tool !== "eraser";
-        ctx.save();
-        ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.strokeStyle = peerActiveStroke.tool === "eraser" ? "rgba(0,0,0,1)" : peerActiveStroke.color;
         for (let i = 0; i < raw.length; i += 3) {
           const nx = raw[i] / SCALE;
           const ny = raw[i + 1] / SCALE;
           const np = Math.max(0, Math.min(1, raw[i + 2] / SCALE));
           peerActivePoints.push({ x: nx, y: ny, p: np });
-          const curX = nx * W;
-          const curY = ny * H;
-          const lastX = peerActiveStroke.lastNX * W;
-          const lastY = peerActiveStroke.lastNY * H;
-          const midX = (lastX + curX) * 0.5;
-          const midY = (lastY + curY) * 0.5;
-          const fromX = peerActiveStroke.hasLastMid ? peerActiveStroke.lastMidNX * W : lastX;
-          const fromY = peerActiveStroke.hasLastMid ? peerActiveStroke.lastMidNY * H : lastY;
-          peerDrawSeg(ctx, fromX, fromY, lastX, lastY, midX, midY, peerActiveStroke.width, np, pressureSens);
           peerActiveStroke.lastMidNX = (peerActiveStroke.lastNX + nx) * 0.5;
           peerActiveStroke.lastMidNY = (peerActiveStroke.lastNY + ny) * 0.5;
           peerActiveStroke.hasLastMid = true;
@@ -3480,45 +3520,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           peerActiveStroke.lastNY = ny;
           peerActiveStroke.lastP = np;
         }
-        ctx.restore();
+        schedulePeerRerender();
         break;
       }
       case "end": {
         if (!peerActiveStroke) break;
         bringPeerPreviewToBottom();
-        const { ctx } = ensurePeerCanvas();
-        // Finalize the bezier tail segment, or render a true tap dot if no
-        // streamed segments were emitted for this stroke.
-        const endW = peerCanvasW();
-        const endH = peerCanvasH();
-        if (peerActiveStroke.hasLastMid) {
-          ctx.save();
-          ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.strokeStyle = peerActiveStroke.tool === "eraser" ? "rgba(0,0,0,1)" : peerActiveStroke.color;
-          const tailX = peerActiveStroke.lastNX * endW;
-          const tailY = peerActiveStroke.lastNY * endH;
-          peerDrawSeg(ctx,
-            peerActiveStroke.lastMidNX * endW, peerActiveStroke.lastMidNY * endH,
-            tailX, tailY,
-            tailX, tailY,
-            peerActiveStroke.width, peerActiveStroke.lastP,
-            peerActiveStroke.tool !== "eraser");
-          ctx.restore();
-        } else {
-          const pressureSens = peerActiveStroke.tool !== "eraser";
-          const w = pressureSens
-            ? peerActiveStroke.width * (0.3 + peerActiveStroke.lastP * 0.7)
-            : peerActiveStroke.width;
-          ctx.save();
-          ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
-          ctx.fillStyle = peerActiveStroke.tool === "eraser" ? "rgba(0,0,0,1)" : peerActiveStroke.color;
-          ctx.beginPath();
-          ctx.arc(peerActiveStroke.lastNX * endW, peerActiveStroke.lastNY * endH, w / 2, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-        }
         peerStrokes.push({
           points: peerActivePoints,
           color: peerActiveStroke.color,
@@ -3527,6 +3534,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         });
         peerActivePoints = [];
         peerActiveStroke = null;
+        peerRerender();
         setPeerLiveDrawState("sent");
         promotePeerPreviewToMessageShell();
         break;
@@ -3565,7 +3573,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
             });
             peerActivePoints = [];
             peerActiveStroke = null;
+            peerRerender();
           }
+          peerBaseAssembly = null;
           setPeerLiveDrawState("idle");
         } else {
           removeLegacyPeerOverlays();
@@ -3574,12 +3584,77 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           setPeerLiveDrawState("active");
         }
         break;
+      case "base-start": {
+        removeLegacyPeerOverlays();
+        ensurePeerCanvas();
+        bringPeerPreviewToBottom();
+        setPeerLiveDrawState("active");
+        peerBaseAssembly = {
+          snapshotId: ev.snapshotId,
+          width: ev.width,
+          height: ev.height,
+          mime: ev.mime,
+          chunkCount: ev.chunkCount,
+          chunks: new Array<Uint8Array | null>(ev.chunkCount).fill(null),
+          received: 0,
+        };
+        break;
+      }
+      case "base-chunk": {
+        if (!peerBaseAssembly || peerBaseAssembly.snapshotId !== ev.snapshotId) break;
+        const idx = ev.chunkIndex | 0;
+        if (idx < 0 || idx >= peerBaseAssembly.chunkCount) break;
+        if (!peerBaseAssembly.chunks[idx]) {
+          peerBaseAssembly.chunks[idx] = ev.data.slice();
+          peerBaseAssembly.received++;
+        }
+        break;
+      }
+      case "base-end": {
+        if (!peerBaseAssembly || peerBaseAssembly.snapshotId !== ev.snapshotId) break;
+        const assembly = peerBaseAssembly;
+        peerBaseAssembly = null;
+        if (assembly.received !== assembly.chunkCount) break;
+        let total = 0;
+        for (const part of assembly.chunks) {
+          if (!part) return;
+          total += part.length;
+        }
+        const merged = new Uint8Array(total);
+        let off = 0;
+        for (const part of assembly.chunks) {
+          if (!part) return;
+          merged.set(part, off);
+          off += part.length;
+        }
+        const url = URL.createObjectURL(new Blob([merged], { type: assembly.mime }));
+        const token = ++peerBaseLoadToken;
+        const img = new Image();
+        img.onload = () => {
+          if (token !== peerBaseLoadToken) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          clearPeerBaseImage();
+          peerBaseImage = img;
+          peerBaseImageUrl = url;
+          peerRerender();
+        };
+        img.onerror = () => {
+          if (token === peerBaseLoadToken) {
+            if (peerBaseImageUrl === url) peerBaseImageUrl = null;
+            URL.revokeObjectURL(url);
+          }
+        };
+        img.src = url;
+        break;
+      }
     }
   }
 
   function syncPeerPreviewLayout(): void {
     if (!peerLiveMsgEl || !peerCanvas) return;
-    requestAnimationFrame(() => peerRerender());
+    schedulePeerRerender();
   }
 
   /* ── Session creation ─────────────────────────────────── */
@@ -4636,6 +4711,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Pointer move — highlight option under finger during drag
     opts.chatMediaBtn.addEventListener("pointermove", (e) => {
       if (e.pointerId !== mediaPointerId || !mediaDragMode) return;
+      if (e.cancelable) e.preventDefault();
       const hit = hitTestOption(e.clientX, e.clientY);
       if (hit !== hoveredOption) {
         if (hoveredOption) hoveredOption.classList.remove("--hover");
@@ -4647,6 +4723,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Pointer up — either toggle (short tap) or pick hovered option (drag)
     opts.chatMediaBtn.addEventListener("pointerup", (e) => {
       if (e.pointerId !== mediaPointerId) return;
+      if (e.cancelable) e.preventDefault();
       if (mediaHoldTimer) { clearTimeout(mediaHoldTimer); mediaHoldTimer = null; }
       mediaPointerId = -1;
 
