@@ -45,7 +45,19 @@ import { openDrawSurface } from "./live-draw";
 import { type DrawStreamEvent } from "./live-draw-stream";
 import { GlyphStreamDecoder } from "./live-wasm-glyph";
 import { exchangeViaTracker } from "./live-tracker";
-import { exportGwyphToPngBlob, gwyphPngName } from "./live-gwyph";
+import {
+  exportGwyphToPngBlob,
+  gwyphPngName,
+  parseGwyphPayload,
+  renderGwyphScene,
+  isWhisperGlyph,
+  GLYPH_MIME,
+  type GlyphPoint,
+  type GlyphStrokePen,
+  type GlyphStrokeFill,
+  type GlyphStroke,
+  type GlyphPayload,
+} from "./live-gwyph";
 
 /* ── Interface & IDs ──────────────────────────────────────── */
 
@@ -1319,7 +1331,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   };
 
   const ADPCM_MIME = "audio/x-whisper-adpcm";
-  const GLYPH_MIME = "application/x-whisper-gwyph";
 
   function isWhisperAudioCodec(fileType?: string, fileName?: string): boolean {
     const t = (fileType ?? "").toLowerCase();
@@ -1339,303 +1350,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return type.startsWith("audio/") || isWhisperAudioCodec(msg.fileType, msg.fileName);
   }
 
-  interface GlyphPoint {
-    x: number;
-    y: number;
-    p: number;
-  }
-
-  interface GlyphStrokePen {
-    type: "pen";
-    tool: "pen" | "eraser";
-    color: string;
-    width: number;
-    points: GlyphPoint[];
-  }
-
-  interface GlyphStrokeFill {
-    type: "fill";
-    color: string;
-    tolerance: number;
-    seedX: number;
-    seedY: number;
-  }
-
-  type GlyphStroke = GlyphStrokePen | GlyphStrokeFill;
-
-  interface GlyphPayload {
-    mode: "blank" | "annotate";
-    logicalW: number;
-    logicalH: number;
-    strokes: GlyphStroke[];
-  }
-
-  class GlyphReader {
-    private off = 0;
-    constructor(private readonly data: Uint8Array) { }
-
-    private ensure(n: number): void {
-      if (this.off + n > this.data.length) throw new Error("glyph: truncated");
-    }
-
-    u8(): number {
-      this.ensure(1);
-      return this.data[this.off++];
-    }
-
-    u16(): number {
-      this.ensure(2);
-      const v = this.data[this.off] | (this.data[this.off + 1] << 8);
-      this.off += 2;
-      return v;
-    }
-
-    varUint(): number {
-      let shift = 0;
-      let out = 0;
-      for (let i = 0; i < 5; i++) {
-        const b = this.u8();
-        out |= (b & 0x7f) << shift;
-        if ((b & 0x80) === 0) return out >>> 0;
-        shift += 7;
-      }
-      throw new Error("glyph: varuint overflow");
-    }
-  }
-
-  function glyphZigZagDecode(v: number): number {
-    return (v & 1) === 0 ? (v >>> 1) : -((v >>> 1) + 1);
-  }
-
-  function glyphQ15ToNorm(v: number): number {
-    return Math.max(0, Math.min(1, v / 32767));
-  }
-
-  function glyphRgbToHex(r: number, g: number, b: number): string {
-    const rr = (r & 0xff).toString(16).padStart(2, "0");
-    const gg = (g & 0xff).toString(16).padStart(2, "0");
-    const bb = (b & 0xff).toString(16).padStart(2, "0");
-    return `#${rr}${gg}${bb}`;
-  }
-
-  function parseGlyphPayload(bytes: Uint8Array): GlyphPayload | null {
-    try {
-      const r = new GlyphReader(bytes);
-      const g = r.u8(), w = r.u8(), y = r.u8(), p = r.u8();
-      if (g !== 0x47 || w !== 0x57 || y !== 0x59 || p !== 0x50) return null;
-      const version = r.u8();
-      if (version !== 1) return null;
-      const modeByte = r.u8();
-      const logicalW = Math.max(1, r.u16());
-      const logicalH = Math.max(1, r.u16());
-      const strokeCount = r.varUint();
-      const strokes: GlyphStroke[] = [];
-
-      for (let i = 0; i < strokeCount; i++) {
-        const tag = r.u8();
-        if (tag === 1) {
-          const cr = r.u8();
-          const cg = r.u8();
-          const cb = r.u8();
-          const tolSq = r.u16();
-          const sx = glyphQ15ToNorm(r.u16());
-          const sy = glyphQ15ToNorm(r.u16());
-          strokes.push({
-            type: "fill",
-            color: glyphRgbToHex(cr, cg, cb),
-            tolerance: Math.max(0, Math.min(65535, tolSq)),
-            seedX: sx,
-            seedY: sy,
-          });
-          continue;
-        }
-        if (tag !== 0) return null;
-        const tool = r.u8() === 1 ? "eraser" : "pen";
-        const cr = r.u8();
-        const cg = r.u8();
-        const cb = r.u8();
-        const width = Math.max(0.25, r.u16() / 256);
-        const pointCount = r.varUint();
-        const points: GlyphPoint[] = [];
-        if (pointCount > 0) {
-          let x = r.u16();
-          let yv = r.u16();
-          let pv = r.u16();
-          points.push({ x: glyphQ15ToNorm(x), y: glyphQ15ToNorm(yv), p: glyphQ15ToNorm(pv) });
-          for (let pi = 1; pi < pointCount; pi++) {
-            x += glyphZigZagDecode(r.varUint());
-            yv += glyphZigZagDecode(r.varUint());
-            pv += glyphZigZagDecode(r.varUint());
-            points.push({
-              x: glyphQ15ToNorm(x),
-              y: glyphQ15ToNorm(yv),
-              p: glyphQ15ToNorm(pv),
-            });
-          }
-        }
-        strokes.push({
-          type: "pen",
-          tool,
-          color: glyphRgbToHex(cr, cg, cb),
-          width,
-          points,
-        });
-      }
-
-      return {
-        mode: modeByte === 0 ? "blank" : "annotate",
-        logicalW,
-        logicalH,
-        strokes,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  function renderGlyphStroke(ctx: CanvasRenderingContext2D, stroke: GlyphStrokePen, W: number, H: number): void {
-    if (stroke.points.length === 0) return;
-    const pressureSens = stroke.tool !== "eraser";
-    ctx.save();
-    ctx.globalCompositeOperation = stroke.tool === "eraser" ? "destination-out" : "source-over";
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = stroke.tool === "eraser" ? "rgba(0,0,0,1)" : stroke.color;
-    ctx.fillStyle = stroke.color;
-
-    if (stroke.points.length === 1) {
-      const pt = stroke.points[0];
-      const r = (pressureSens ? stroke.width * (0.3 + pt.p * 0.7) : stroke.width) / 2;
-      ctx.beginPath();
-      ctx.arc(pt.x * W, pt.y * H, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-      return;
-    }
-
-    let lastX = stroke.points[0].x * W;
-    let lastY = stroke.points[0].y * H;
-    let hasLastMid = false;
-    let lastMidX = 0;
-    let lastMidY = 0;
-    for (let i = 1; i < stroke.points.length; i++) {
-      const cur = stroke.points[i];
-      const cx = cur.x * W;
-      const cy = cur.y * H;
-      const midX = (lastX + cx) * 0.5;
-      const midY = (lastY + cy) * 0.5;
-      const fromX = hasLastMid ? lastMidX : lastX;
-      const fromY = hasLastMid ? lastMidY : lastY;
-      const lw = pressureSens ? stroke.width * (0.3 + cur.p * 0.7) : stroke.width;
-      ctx.lineWidth = lw;
-      ctx.beginPath();
-      ctx.moveTo(fromX, fromY);
-      ctx.quadraticCurveTo(lastX, lastY, midX, midY);
-      ctx.stroke();
-      lastMidX = midX;
-      lastMidY = midY;
-      hasLastMid = true;
-      lastX = cx;
-      lastY = cy;
-    }
-    ctx.restore();
-  }
-
-  function renderGlyphFill(ctx: CanvasRenderingContext2D, stroke: GlyphStrokeFill, W: number, H: number): void {
-    const imgData = ctx.getImageData(0, 0, W, H);
-    const data = imgData.data;
-    const pixelCount = W * H;
-    const sx = Math.round(stroke.seedX * (W - 1));
-    const sy = Math.round(stroke.seedY * (H - 1));
-    if (sx < 0 || sx >= W || sy < 0 || sy >= H) return;
-
-    const fillR = parseInt(stroke.color.slice(1, 3), 16);
-    const fillG = parseInt(stroke.color.slice(3, 5), 16);
-    const fillB = parseInt(stroke.color.slice(5, 7), 16);
-
-    const seedIdx = (sy * W + sx) * 4;
-    const seedR = data[seedIdx];
-    const seedG = data[seedIdx + 1];
-    const seedB = data[seedIdx + 2];
-    if (seedR === fillR && seedG === fillG && seedB === fillB) return;
-
-    const tolSq = Math.max(0, stroke.tolerance);
-    const visited = new Uint8Array(pixelCount);
-    const stack = new Int32Array(pixelCount);
-
-    const matches = (idx: number): boolean => {
-      const dr = data[idx] - seedR;
-      const dg = data[idx + 1] - seedG;
-      const db = data[idx + 2] - seedB;
-      return (dr * dr + dg * dg + db * db) <= tolSq;
-    };
-
-    let top = 0;
-    stack[top++] = sy * W + sx;
-    while (top > 0) {
-      const pos = stack[--top];
-      const py = (pos / W) | 0;
-      const px = pos - py * W;
-      if (py < 0 || py >= H) continue;
-
-      let left = px;
-      let right = px;
-      while (left > 0) {
-        const vi = py * W + (left - 1);
-        if (visited[vi] || !matches(vi * 4)) break;
-        left--;
-      }
-      while (right < W - 1) {
-        const vi = py * W + (right + 1);
-        if (visited[vi] || !matches(vi * 4)) break;
-        right++;
-      }
-
-      let aboveOpen = false;
-      let belowOpen = false;
-      for (let x = left; x <= right; x++) {
-        const vi = py * W + x;
-        if (visited[vi]) continue;
-        visited[vi] = 1;
-        const idx = vi * 4;
-        data[idx] = fillR;
-        data[idx + 1] = fillG;
-        data[idx + 2] = fillB;
-        data[idx + 3] = 255;
-
-        if (py > 0) {
-          const aboveVi = (py - 1) * W + x;
-          const aboveMatch = !visited[aboveVi] && matches(aboveVi * 4);
-          if (aboveMatch && !aboveOpen) { stack[top++] = (py - 1) * W + x; aboveOpen = true; }
-          else if (!aboveMatch) aboveOpen = false;
-        }
-        if (py < H - 1) {
-          const belowVi = (py + 1) * W + x;
-          const belowMatch = !visited[belowVi] && matches(belowVi * 4);
-          if (belowMatch && !belowOpen) { stack[top++] = (py + 1) * W + x; belowOpen = true; }
-          else if (!belowMatch) belowOpen = false;
-        }
-      }
-    }
-
-    ctx.putImageData(imgData, 0, 0);
-  }
-
-  function renderGlyphScene(ctx: CanvasRenderingContext2D, glyph: GlyphPayload, W: number, H: number): void {
-    if (glyph.mode === "blank") {
-      ctx.fillStyle = "#1a1a1a";
-      ctx.fillRect(0, 0, W, H);
-    }
-    for (const stroke of glyph.strokes) {
-      if (stroke.type === "pen") renderGlyphStroke(ctx, stroke, W, H);
-      else renderGlyphFill(ctx, stroke, W, H);
-    }
-  }
-
-  function glyphExportName(fileName: string): string {
-    return gwyphPngName(fileName);
-  }
-
   async function downloadGlyphAsPng(glyphBytes: Uint8Array, sourceName: string): Promise<void> {
     const blob = await exportGwyphToPngBlob(glyphBytes);
     if (!blob) {
@@ -1646,17 +1360,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const a = document.createElement("a");
     a.style.display = "none";
     a.href = url;
-    a.download = glyphExportName(sourceName);
+    a.download = gwyphPngName(sourceName);
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1500);
-  }
-
-  function isWhisperGlyph(fileType?: string, fileName?: string): boolean {
-    const t = (fileType ?? "").toLowerCase();
-    const n = (fileName ?? "").toLowerCase();
-    return t === GLYPH_MIME || t.includes("whisper-gwyph") || n.endsWith(".gwyph");
   }
 
   type MediaKind = "image" | "video" | "glyph";
@@ -1793,7 +1501,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           const ctx = canvas.getContext("2d");
           if (!ctx) return;
           ctx.scale(dpr, dpr);
-          renderGlyphScene(ctx, glyph, cw, ch);
+          renderGwyphScene(ctx, glyph, cw, ch);
         });
       }
     }
@@ -1809,7 +1517,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     dlLink.className = "wl-lightbox-dl";
     if (kind === "glyph" && glyphBytes) {
       dlLink.href = "#";
-      dlLink.download = glyphExportName(fileName);
+      dlLink.download = gwyphPngName(fileName);
       dlLink.title = "Download PNG";
       dlLink.addEventListener("click", (e) => {
         e.preventDefault();
@@ -1920,7 +1628,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (kind === "glyph") {
       const glyphBytes = new Uint8Array(fileData.byteLength);
       glyphBytes.set(fileData);
-      const glyph = parseGlyphPayload(glyphBytes);
+      const glyph = parseGwyphPayload(glyphBytes);
       if (!glyph) {
         const dlBlob = new Blob([blobBytes], { type: "application/octet-stream" });
         const dlUrl = URL.createObjectURL(dlBlob);
@@ -1963,7 +1671,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
         ctx.scale(dpr, dpr);
-        renderGlyphScene(ctx, glyph, cw, ch);
+        renderGwyphScene(ctx, glyph, cw, ch);
       });
 
       thumb.addEventListener("click", () => {
@@ -1973,7 +1681,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const infoBar = createMediaInfoBar(fileName, fileSize, "#");
       const dlBtn = infoBar.querySelector<HTMLAnchorElement>(".wl-media-dl");
       if (dlBtn) {
-        dlBtn.download = glyphExportName(fileName);
+        dlBtn.download = gwyphPngName(fileName);
         dlBtn.title = "Download PNG";
         dlBtn.addEventListener("click", (e) => {
           e.preventDefault();
@@ -3813,9 +3521,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
       }
       case "presence":
-        if (!ev.active && !peerActiveStroke) {
+        if (!ev.active) {
+          if (peerActiveStroke) {
+            peerStrokes.push({
+              points: peerActivePoints,
+              color: peerActiveStroke.color,
+              width: peerActiveStroke.width,
+              tool: peerActiveStroke.tool,
+            });
+            peerActivePoints = [];
+            peerActiveStroke = null;
+          }
           setPeerLiveDrawState("idle");
-        } else if (ev.active) {
+        } else {
           removeLegacyPeerOverlays();
           ensurePeerCanvas();
           bringPeerPreviewToBottom();

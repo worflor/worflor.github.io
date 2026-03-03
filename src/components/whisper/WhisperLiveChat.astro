@@ -2304,6 +2304,8 @@
     cursor: crosshair;
     outline: none;
     -webkit-user-drag: none;
+    /* Explicit baseline so toolbar/controls at z-index:1 always paint above */
+    z-index: 0;
   }
 
   :global(.wl-draw-close) {
@@ -2312,6 +2314,7 @@
     top: calc(0.75rem + env(safe-area-inset-top));
     right: 0.75rem;
     right: calc(0.75rem + env(safe-area-inset-right));
+    z-index: 1;
     width: 2.75rem;
     height: 2.75rem;
     border-radius: 50%;
@@ -2345,6 +2348,7 @@
     position: absolute;
     top: calc(3.9rem + env(safe-area-inset-top));
     right: calc(0.75rem + env(safe-area-inset-right));
+    z-index: 1;
     min-height: 1.7rem;
     padding: 0 0.55rem;
     border-radius: 9999px;
@@ -2399,6 +2403,9 @@
     border-radius: 9999px;
     background: rgb(255 255 255 / 0.06);
     border: 1px solid rgb(255 255 255 / 0.08);
+    /* Always above the canvas regardless of canvas CSS transform state */
+    position: relative;
+    z-index: 1;
   }
 
   :global(.wl-draw-hint) {
@@ -2418,6 +2425,8 @@
     text-overflow: ellipsis;
     pointer-events: none;
     opacity: 0;
+    position: relative;
+    z-index: 1;
     transform: translateY(4px);
     transition:
       opacity 140ms ease,

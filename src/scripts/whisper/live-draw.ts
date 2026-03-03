@@ -652,17 +652,41 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     flushPoints();
     finalizeCurrentStrokeTail();
-    if (currentStroke.points.length > 0) commitStroke(currentStroke);
+    if (currentStroke.points.length > 0) {
+      if (callbacks.onEvent) callbacks.onEvent({ kind: "end", strokeId: nextStrokeId });
+      commitStroke(currentStroke);
+      nextStrokeId++;
+    }
 
+    const nx = lastPoint.x;
+    const ny = lastPoint.y;
+    const np = lastPoint.p;
     currentStroke = {
       type: "pen",
-      points: [{ x: lastPoint.x, y: lastPoint.y, p: lastPoint.p }],
+      points: [{ x: nx, y: ny, p: np }],
       color: style.color,
       width: style.width,
       penId: style.penId,
     };
     hasLastRenderMid = false;
     pendingPoints.length = 0;
+
+    const seed: [number, number, number] = [
+      Math.round(nx * 32767),
+      Math.round(ny * 32767),
+      Math.round(np * 32767),
+    ];
+    strokeEncoder = new GlyphStreamEncoder(seed, seed);
+    if (callbacks.onEvent) {
+      callbacks.onEvent({
+        kind: "begin",
+        strokeId: nextStrokeId,
+        tool: style.penId as DrawTool,
+        color: style.color,
+        width: style.width,
+        start: { x: nx, y: ny, p: np },
+      });
+    }
   }
 
   function setTool(tool: ToolId): void {
@@ -686,19 +710,22 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   }
 
   function showHint(text: string, durationMs = DRAW_HINT_SHORT_MS): void {
-    void text;
-    void durationMs;
     if (hintTimer) {
       clearTimeout(hintTimer);
       hintTimer = null;
     }
-    hint.classList.remove("--show");
-    hint.textContent = "";
+    hint.textContent = text;
+    hint.classList.add("--show");
+    hintTimer = setTimeout(() => {
+      hint.classList.remove("--show");
+      hint.textContent = "";
+      hintTimer = null;
+    }, durationMs);
   }
 
   function syncTouchToggleUi(): void {
     touchToggleBtn.textContent = touchDrawEnabled ? "Touch draw: on" : "Touch draw: off";
-    touchToggleBtn.setAttribute("aria-pressed", touchDrawEnabled ? "false" : "true");
+    touchToggleBtn.setAttribute("aria-pressed", touchDrawEnabled ? "true" : "false");
     touchToggleBtn.setAttribute("aria-label", touchDrawEnabled ? "Touch draw on" : "Touch draw off");
     touchToggleBtn.title = touchDrawEnabled ? "Touch draw on" : "Touch draw off";
     touchToggleBtn.classList.toggle("--off", !touchDrawEnabled);
@@ -1730,8 +1757,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
         w.u8(g);
         w.u8(b);
         w.u16(Math.max(0, Math.min(65535, Math.round(stroke.tolerance))));
-        w.u16(quantQ15(stroke.seedX));
-        w.u16(quantQ15(stroke.seedY));
+        w.u16(quantQ15(stroke.seedX / logicalW));
+        w.u16(quantQ15(stroke.seedY / logicalH));
         continue;
       }
 
