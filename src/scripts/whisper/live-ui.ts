@@ -42,6 +42,8 @@ import {
   renderQrToCanvas,
 } from "./seal-qr";
 import { openDrawSurface } from "./live-draw";
+import { type DrawStreamEvent } from "./live-draw-stream";
+import { GlyphStreamDecoder } from "./live-wasm-glyph";
 import { exchangeViaTracker } from "./live-tracker";
 
 /* ── Interface & IDs ──────────────────────────────────────── */
@@ -1427,7 +1429,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (mediaEl instanceof HTMLVideoElement) mediaEl.pause();
       openDrawSurface({ mode: "annotate", mediaEl, originalName: fileName, signal: lbSignal }, {
         onSend: (r) => sendFileToChat(r.file, "draw"),
-        onClose: () => {},
+        onClose: () => { },
       });
     }, { signal: lbSignal });
 
@@ -2953,6 +2955,272 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  /* ── Remote peer drawing overlay ─────────────────────────────── */
+
+  interface PeerStrokeRecord {
+    points: Array<{ x: number; y: number; p: number }>;
+    color: string;
+    width: number;
+    tool: "pen" | "eraser";
+  }
+
+  interface PeerActiveStroke {
+    decoder: GlyphStreamDecoder;
+    color: string;
+    width: number;
+    tool: "pen" | "eraser";
+    lastX: number;
+    lastY: number;
+    lastP: number;
+    lastMidX: number;
+    lastMidY: number;
+    hasLastMid: boolean;
+  }
+
+  let peerCanvas: HTMLCanvasElement | null = null;
+  let peerCtx: CanvasRenderingContext2D | null = null;
+  let peerFadeTimer: ReturnType<typeof setTimeout> | null = null;
+  let peerActiveStroke: PeerActiveStroke | null = null;
+  let peerActivePoints: Array<{ x: number; y: number; p: number }> = [];
+  let peerStrokes: PeerStrokeRecord[] = [];
+  let peerRedoStack: PeerStrokeRecord[] = [];
+
+  function ensurePeerCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+    if (!peerCanvas || !peerCtx) {
+      const dpr = devicePixelRatio || 1;
+      peerCanvas = document.createElement("canvas");
+      peerCanvas.className = "wl-peer-draw";
+      peerCanvas.setAttribute("aria-hidden", "true");
+      peerCanvas.style.cssText = [
+        "position:fixed",
+        "inset:0",
+        "width:100%",
+        "height:100%",
+        "pointer-events:none",
+        "z-index:50",
+        "opacity:1",
+        "transition:opacity 0.6s ease",
+      ].join(";");
+      peerCanvas.width = Math.round(window.innerWidth * dpr);
+      peerCanvas.height = Math.round(window.innerHeight * dpr);
+      peerCtx = peerCanvas.getContext("2d")!;
+      peerCtx.scale(dpr, dpr);
+      document.body.appendChild(peerCanvas);
+    }
+    return { canvas: peerCanvas, ctx: peerCtx };
+  }
+
+  function peerCanvasW(): number {
+    return peerCanvas ? peerCanvas.width / (devicePixelRatio || 1) : window.innerWidth;
+  }
+
+  function peerCanvasH(): number {
+    return peerCanvas ? peerCanvas.height / (devicePixelRatio || 1) : window.innerHeight;
+  }
+
+  function peerDrawSeg(
+    ctx: CanvasRenderingContext2D,
+    fromX: number, fromY: number,
+    ctrlX: number, ctrlY: number,
+    toX: number, toY: number,
+    width: number, pressure: number, pressureSens: boolean,
+  ): void {
+    const w = pressureSens ? width * (0.3 + pressure * 0.7) : width;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.quadraticCurveTo(ctrlX, ctrlY, toX, toY);
+    ctx.stroke();
+  }
+
+  function peerRenderStroke(
+    ctx: CanvasRenderingContext2D,
+    stroke: PeerStrokeRecord,
+    W: number, H: number,
+  ): void {
+    if (stroke.points.length === 0) return;
+    const pressureSens = stroke.tool !== "eraser";
+    ctx.save();
+    ctx.globalCompositeOperation = stroke.tool === "eraser" ? "destination-out" : "source-over";
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = stroke.tool === "eraser" ? "rgba(0,0,0,1)" : stroke.color;
+    ctx.fillStyle = stroke.color;
+    if (stroke.points.length === 1) {
+      const pt = stroke.points[0];
+      const w = pressureSens ? stroke.width * (0.3 + pt.p * 0.7) : stroke.width;
+      ctx.beginPath();
+      ctx.arc(pt.x * W, pt.y * H, w / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    let midX = 0, midY = 0, hasMid = false;
+    for (let i = 1; i < stroke.points.length; i++) {
+      const prev = stroke.points[i - 1];
+      const cur = stroke.points[i];
+      const px = prev.x * W, py = prev.y * H;
+      const cx2 = cur.x * W, cy2 = cur.y * H;
+      const nmx = (px + cx2) * 0.5, nmy = (py + cy2) * 0.5;
+      peerDrawSeg(ctx, hasMid ? midX : px, hasMid ? midY : py, px, py, nmx, nmy, stroke.width, cur.p, pressureSens);
+      midX = nmx; midY = nmy; hasMid = true;
+    }
+    const last = stroke.points[stroke.points.length - 1];
+    if (hasMid) {
+      peerDrawSeg(ctx, midX, midY, last.x * W, last.y * H, last.x * W, last.y * H, stroke.width, last.p, pressureSens);
+    }
+    ctx.restore();
+  }
+
+  function peerRerender(): void {
+    if (!peerCanvas || !peerCtx) return;
+    const W = peerCanvasW();
+    const H = peerCanvasH();
+    peerCtx.clearRect(0, 0, W, H);
+    for (const stroke of peerStrokes) peerRenderStroke(peerCtx, stroke, W, H);
+  }
+
+  function schedulePeerFade(): void {
+    if (peerFadeTimer) { clearTimeout(peerFadeTimer); peerFadeTimer = null; }
+    if (!peerCanvas) return;
+    peerFadeTimer = setTimeout(() => {
+      if (peerCanvas) peerCanvas.style.opacity = "0";
+      peerFadeTimer = setTimeout(() => {
+        if (peerCanvas) { peerCanvas.remove(); peerCanvas = null; peerCtx = null; }
+        peerFadeTimer = null;
+      }, 600);
+    }, 8000);
+  }
+
+  function handleRemoteDraw(ev: DrawStreamEvent): void {
+    const SCALE = 32767;
+    switch (ev.kind) {
+      case "begin": {
+        const { canvas, ctx } = ensurePeerCanvas();
+        if (peerFadeTimer) { clearTimeout(peerFadeTimer); peerFadeTimer = null; }
+        canvas.style.opacity = "1";
+        const sp: [number, number, number] = [
+          Math.round(ev.start.x * SCALE),
+          Math.round(ev.start.y * SCALE),
+          Math.round(ev.start.p * SCALE),
+        ];
+        peerActiveStroke = {
+          decoder: new GlyphStreamDecoder(sp, sp),
+          color: ev.color,
+          width: ev.width,
+          tool: ev.tool,
+          lastX: ev.start.x * peerCanvasW(),
+          lastY: ev.start.y * peerCanvasH(),
+          lastP: ev.start.p,
+          lastMidX: 0,
+          lastMidY: 0,
+          hasLastMid: false,
+        };
+        peerActivePoints = [{ x: ev.start.x, y: ev.start.y, p: ev.start.p }];
+        peerRedoStack = [];
+        // Draw the starting dot
+        const pressureSens = ev.tool !== "eraser";
+        const w = pressureSens ? ev.width * (0.3 + ev.start.p * 0.7) : ev.width;
+        ctx.save();
+        ctx.globalCompositeOperation = ev.tool === "eraser" ? "destination-out" : "source-over";
+        ctx.fillStyle = ev.tool === "eraser" ? "rgba(0,0,0,1)" : ev.color;
+        ctx.beginPath();
+        ctx.arc(peerActiveStroke.lastX, peerActiveStroke.lastY, w / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        break;
+      }
+      case "glyph": {
+        if (!peerActiveStroke) break;
+        const { ctx } = ensurePeerCanvas();
+        const W = peerCanvasW();
+        const H = peerCanvasH();
+        const raw = peerActiveStroke.decoder.decode(ev.data);
+        const pressureSens = peerActiveStroke.tool !== "eraser";
+        ctx.save();
+        ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.strokeStyle = peerActiveStroke.tool === "eraser" ? "rgba(0,0,0,1)" : peerActiveStroke.color;
+        for (let i = 0; i < raw.length; i += 3) {
+          const nx = raw[i] / SCALE;
+          const ny = raw[i + 1] / SCALE;
+          const np = Math.max(0, Math.min(1, raw[i + 2] / SCALE));
+          peerActivePoints.push({ x: nx, y: ny, p: np });
+          const curX = nx * W;
+          const curY = ny * H;
+          const midX = (peerActiveStroke.lastX + curX) * 0.5;
+          const midY = (peerActiveStroke.lastY + curY) * 0.5;
+          const fromX = peerActiveStroke.hasLastMid ? peerActiveStroke.lastMidX : peerActiveStroke.lastX;
+          const fromY = peerActiveStroke.hasLastMid ? peerActiveStroke.lastMidY : peerActiveStroke.lastY;
+          peerDrawSeg(ctx, fromX, fromY, peerActiveStroke.lastX, peerActiveStroke.lastY, midX, midY, peerActiveStroke.width, np, pressureSens);
+          peerActiveStroke.lastMidX = midX;
+          peerActiveStroke.lastMidY = midY;
+          peerActiveStroke.hasLastMid = true;
+          peerActiveStroke.lastX = curX;
+          peerActiveStroke.lastY = curY;
+          peerActiveStroke.lastP = np;
+        }
+        ctx.restore();
+        break;
+      }
+      case "end": {
+        if (!peerActiveStroke) break;
+        const { ctx } = ensurePeerCanvas();
+        // Finalize the bezier tail segment
+        if (peerActiveStroke.hasLastMid) {
+          ctx.save();
+          ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.strokeStyle = peerActiveStroke.tool === "eraser" ? "rgba(0,0,0,1)" : peerActiveStroke.color;
+          peerDrawSeg(ctx,
+            peerActiveStroke.lastMidX, peerActiveStroke.lastMidY,
+            peerActiveStroke.lastX, peerActiveStroke.lastY,
+            peerActiveStroke.lastX, peerActiveStroke.lastY,
+            peerActiveStroke.width, peerActiveStroke.lastP,
+            peerActiveStroke.tool !== "eraser");
+          ctx.restore();
+        }
+        peerStrokes.push({
+          points: peerActivePoints,
+          color: peerActiveStroke.color,
+          width: peerActiveStroke.width,
+          tool: peerActiveStroke.tool,
+        });
+        peerActivePoints = [];
+        peerActiveStroke = null;
+        schedulePeerFade();
+        break;
+      }
+      case "clear": {
+        peerStrokes = [];
+        peerRedoStack = [];
+        peerActiveStroke = null;
+        peerActivePoints = [];
+        if (peerCanvas && peerCtx) peerCtx.clearRect(0, 0, peerCanvasW(), peerCanvasH());
+        schedulePeerFade();
+        break;
+      }
+      case "undo": {
+        if (peerStrokes.length === 0) break;
+        peerRedoStack.push(peerStrokes.pop()!);
+        peerRerender();
+        schedulePeerFade();
+        break;
+      }
+      case "redo": {
+        if (peerRedoStack.length === 0) break;
+        peerStrokes.push(peerRedoStack.pop()!);
+        peerRerender();
+        schedulePeerFade();
+        break;
+      }
+      case "presence":
+        break;
+    }
+  }
+
   /* ── Session creation ─────────────────────────────────── */
 
   function urlParam(key: string): string {
@@ -2986,6 +3254,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onSendProgress: (sent, total) => sendProgress(sent / total),
       onConnectionStats: handleConnectionStats,
       onCtrl: handleCtrl,
+      onDrawStream: (ev) => handleRemoteDraw(ev),
     }, {
       rtcConfig,
       autoConfirmFingerprint: true,
@@ -3967,7 +4236,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       closePopover();
       openDrawSurface({ mode: "blank", signal }, {
         onSend: (r) => sendFileToChat(r.file, "draw"),
-        onClose: () => {},
+        onEvent: (ev) => session?.sendDrawStream(ev),
+        onClose: () => { },
       });
     }
 

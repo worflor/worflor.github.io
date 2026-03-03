@@ -244,7 +244,7 @@ export const FINGERPRINT_EMOJI = [
 
 const PHRASE_KDF_INFO = TE.encode("whisper-live-keyed");
 const TURN_KDF_INFO_PHRASE = TE.encode("whisper-turn-v1");
-const TURN_KDF_INFO_BOND   = TE.encode("whisper-turn-bond-v1");
+const TURN_KDF_INFO_BOND = TE.encode("whisper-turn-bond-v1");
 const ZERO_SALT_32 = new Uint8Array(32);
 
 async function selectTurnServer(phrase: string, pool: RTCIceServer[]): Promise<RTCIceServer> {
@@ -358,6 +358,7 @@ export class WhisperLiveSession {
   private nSentTotal = 0;
   /** Total messages received this session — mirrors peer's nSentTotal. */
   private nRecvTotal = 0;
+  private nextDrawStreamSeq = 0;
 
   // Kizuna membrane: loop states for send and receive directions.
   // initialized from ECDH-derived chain keys. reinit on each DH ratchet step.
@@ -1263,9 +1264,10 @@ export class WhisperLiveSession {
   }
 
   /** Send a live draw stream event to the peer over CTRL transport. */
-  sendDrawStream(event: DrawStreamEvent): void {
+  sendDrawStream(event: Omit<DrawStreamEvent, "seq">): void {
     if (!this.isLiveState()) return;
-    const payload = encodeDrawStreamEvent(event);
+    const fullEvent = { ...event, seq: this.nextDrawStreamSeq++ } as DrawStreamEvent;
+    const payload = encodeDrawStreamEvent(fullEvent);
     this.send(LIVE_MSG.CTRL, encodeCtrl(CTRL_OP.DRAW_STREAM, payload));
   }
 
@@ -1332,6 +1334,7 @@ export class WhisperLiveSession {
       this.onMessage({
         type: "file", direction: "self",
         msgId, fileName: file.name, fileSize: fileBytes.length, fileType: file.type,
+        fileData: fileBytes,
         timestamp: Date.now(),
       });
     });
@@ -1402,9 +1405,10 @@ export class WhisperLiveSession {
         type: "file",
         direction: "self",
         msgId,
-        fileName: result.outputName,
-        fileSize: dressedBytes.length,
-        fileType: result.outputType,
+        fileName: fileName,
+        fileSize: fileBytes.length,
+        fileType: fileType,
+        fileData: fileBytes,
         timestamp: Date.now(),
       });
 
@@ -1413,7 +1417,7 @@ export class WhisperLiveSession {
     } catch (err) {
       this.onLog(`steganography failed, sending directly: ${errorMessage(err)}`);
       const msgId = await this.encryptAndSend(encodeFilePlaintext(fileName, fileType, fileBytes), LIVE_FLAG.FILE);
-      this.onMessage({ type: "file", direction: "self", msgId, fileName, fileSize: fileBytes.length, fileType, timestamp: Date.now() });
+      this.onMessage({ type: "file", direction: "self", msgId, fileName, fileSize: fileBytes.length, fileType, fileData: fileBytes, timestamp: Date.now() });
       return msgId;
     }
   }

@@ -8,6 +8,8 @@
 
 import { buildDrawExportPlan } from "./live-draw-export";
 import { createStrokeSampler, sampleStrokePoint, type StrokeSamplerState } from "./live-draw-stroke";
+import { type DrawStreamEventNoSeq, type DrawTool } from "./live-draw-stream";
+import { GlyphStreamEncoder } from "./live-wasm-glyph";
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -21,6 +23,7 @@ export interface DrawConfig {
 
 export interface DrawCallbacks {
   onSend: (result: { file: File }) => void;
+  onEvent?: (event: DrawStreamEventNoSeq) => void;
   onClose: () => void;
 }
 
@@ -454,6 +457,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
   /* ── State ─────────────────────────────────────────────── */
 
+  let nextStrokeId = 0;
   let strokes: StrokeEntry[] = [];
   let redoStack: StrokeEntry[] = [];
   let checkpoints: { data: ImageData; idx: number }[] = [];
@@ -473,6 +477,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   let lastRenderMidY = 0;
   let hasLastRenderMid = false;
   let strokeSampler: StrokeSamplerState | null = null;
+  let strokeEncoder: GlyphStreamEncoder | null = null;
 
   // rAF batching
   let pendingPoints: Point[] = [];
@@ -1122,6 +1127,17 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     ctx.strokeStyle = pat ?? color;
 
     for (const pt of pendingPoints) {
+      if (strokeEncoder && callbacks.onEvent) {
+        const block = strokeEncoder.push(
+          Math.round(pt.x * 32767),
+          Math.round(pt.y * 32767),
+          Math.round(pt.p * 32767),
+        );
+        if (block) {
+          callbacks.onEvent({ kind: "glyph", strokeId: nextStrokeId, data: block });
+        }
+      }
+
       if (lastPoint) {
         const lastX = lastPoint.x * logicalW;
         const lastY = lastPoint.y * logicalH;
@@ -1209,6 +1225,29 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     fingerTaps.push({ id: e.pointerId, startX: e.clientX, startY: e.clientY, startTime: ts, moved: false });
 
+    // When touch drawing is disabled, still track the pointer so gestures
+    // (pinch-zoom, multi-finger undo/redo) keep working, but skip stroke creation.
+    if (!touchDrawEnabled && e.pointerType === "touch") {
+      if (pointers.size >= 2) {
+        cancelActiveStroke();
+        activePointerId = -1;
+        if (pointers.size === 2) {
+          const pts = getFirstTwoPointers();
+          if (!pts) return;
+          const dx = pts[1].x - pts[0].x;
+          const dy = pts[1].y - pts[0].y;
+          pinchStartDist = Math.sqrt(dx * dx + dy * dy);
+          pinchStartZoom = viewZoom;
+          pinchStartMidX = (pts[0].x + pts[1].x) / 2;
+          pinchStartMidY = (pts[0].y + pts[1].y) / 2;
+          pinchStartPanX = viewPanX;
+          pinchStartPanY = viewPanY;
+          pinchActive = false;
+        }
+      }
+      return;
+    }
+
     // Multi-touch: cancel stroke and enter gesture mode
     if (pointers.size >= 2) {
       cancelActiveStroke();
@@ -1265,20 +1304,21 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     };
     lastPoint = { x: nx, y: ny, p: pressure };
     hasLastRenderMid = false;
-    strokeSampler = createStrokeSampler({ x: nx, y: ny, p: pressure, t: ts });
-    pendingPoints.length = 0;
+    strokeEncoder = new GlyphStreamEncoder(
+      [Math.round(nx * 32767), Math.round(ny * 32767), Math.round(pressure * 32767)],
+      [Math.round(nx * 32767), Math.round(ny * 32767), Math.round(pressure * 32767)]
+    );
 
-    // Draw dot for single click
-    ctx.save();
-    ctx.globalCompositeOperation = pen.composite(isBlank);
-    const isEraserDot = penId === "eraser";
-    const color = isEraserDot ? BLANK_BG : currentColor;
-    const w = pen.pressureSensitive ? currentStroke.width * (0.3 + pressure * 0.7) : currentStroke.width;
-    ctx.fillStyle = (isEraserDot && bgPattern) ? bgPattern : color;
-    ctx.beginPath();
-    ctx.arc(cx, cy, w / 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+    if (callbacks.onEvent) {
+      callbacks.onEvent({
+        kind: "begin",
+        strokeId: nextStrokeId,
+        tool: penId as DrawTool,
+        color: currentColor,
+        width: baseWidth * pen.widthScale,
+        start: { x: nx, y: ny, p: pressure },
+      });
+    }
   }
 
   function handlePinchMove(): void {
@@ -1424,12 +1464,17 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     finalizeCurrentStrokeTail();
 
     if (currentStroke && currentStroke.points.length > 0) {
+      if (callbacks.onEvent) {
+        callbacks.onEvent({ kind: "end", strokeId: nextStrokeId });
+      }
       commitStroke(currentStroke);
+      nextStrokeId++;
     }
     currentStroke = null;
     lastPoint = null;
     hasLastRenderMid = false;
     strokeSampler = null;
+    strokeEncoder = null;
   }
 
   canvas.addEventListener("pointerdown", onPointerDown, { signal: ds });
@@ -1697,7 +1742,11 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     if (!isBlank && config.originalName) {
       const dot = config.originalName.lastIndexOf(".");
       const stem = dot > 0 ? config.originalName.slice(0, dot) : config.originalName;
-      return `${stem}_drawing.webp`;
+      // Strip any number of trailing _drawing suffixes (case-insensitive)
+      const cleanStem = stem.replace(/(_drawing)+$/i, "");
+      // If nothing meaningful is left (e.g. original was "drawing.webp"), don't produce "drawing_drawing.webp"
+      if (!cleanStem || cleanStem.toLowerCase() === "drawing") return "drawing.webp";
+      return `${cleanStem}_drawing.webp`;
     }
     return "drawing.webp";
   }

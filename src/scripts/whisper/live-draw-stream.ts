@@ -2,7 +2,7 @@ export const DRAW_STREAM_VERSION = 1;
 
 export const DRAW_STREAM_KIND = {
   BEGIN: 0x01,
-  POINTS: 0x02,
+  GLYPH: 0x02,
   END: 0x03,
   CLEAR: 0x04,
   UNDO: 0x05,
@@ -30,11 +30,11 @@ export interface DrawStreamBeginEvent {
   start: DrawNormPoint;
 }
 
-export interface DrawStreamPointsEvent {
-  kind: "points";
+export interface DrawStreamGlyphEvent {
+  kind: "glyph";
   seq: number;
   strokeId: number;
-  points: DrawNormPoint[];
+  data: Uint8Array; // Packed GlyphBlock
 }
 
 export interface DrawStreamEndEvent {
@@ -67,12 +67,16 @@ export interface DrawStreamPresenceEvent {
 
 export type DrawStreamEvent =
   | DrawStreamBeginEvent
-  | DrawStreamPointsEvent
+  | DrawStreamGlyphEvent
   | DrawStreamEndEvent
   | DrawStreamClearEvent
   | DrawStreamUndoEvent
   | DrawStreamRedoEvent
   | DrawStreamPresenceEvent;
+
+/** Distributive Omit — each union member has its own `seq` stripped individually. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+export type DrawStreamEventNoSeq = DistributiveOmit<DrawStreamEvent, "seq">;
 
 export interface DrawStreamApplyResult {
   applied: boolean;
@@ -145,22 +149,12 @@ export function encodeDrawStreamEvent(evt: DrawStreamEvent): Uint8Array {
       view.setUint16(18, q16(evt.start.p), true);
       return out;
     }
-    case "points": {
-      const count = evt.points.length;
-      if (count <= 0 || count > 40) throw new Error("draw points frame must contain 1..40 points");
-      const out = new Uint8Array(9 + count * 6);
+    case "glyph": {
+      const out = new Uint8Array(8 + evt.data.length);
       const view = new DataView(out.buffer);
-      writeBaseHeader(view, DRAW_STREAM_KIND.POINTS, evt.seq);
+      writeBaseHeader(view, DRAW_STREAM_KIND.GLYPH, evt.seq);
       view.setUint16(6, evt.strokeId & 0xffff, true);
-      view.setUint8(8, count);
-      let offset = 9;
-      for (let i = 0; i < count; i++) {
-        const p = evt.points[i];
-        view.setUint16(offset, q16(p.x), true);
-        view.setUint16(offset + 2, q16(p.y), true);
-        view.setUint16(offset + 4, q16(p.p), true);
-        offset += 6;
-      }
+      out.set(evt.data, 8);
       return out;
     }
     case "end": {
@@ -225,27 +219,14 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
         },
       };
     }
-    case DRAW_STREAM_KIND.POINTS: {
-      if (bytes.length < 9) return null;
+    case DRAW_STREAM_KIND.GLYPH: {
+      if (bytes.length < 8) return null;
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      const count = view.getUint8(8);
-      if (count <= 0 || count > 40) return null;
-      if (bytes.length !== 9 + count * 6) return null;
-      const points: DrawNormPoint[] = [];
-      let offset = 9;
-      for (let i = 0; i < count; i++) {
-        points.push({
-          x: uq16(view.getUint16(offset, true)),
-          y: uq16(view.getUint16(offset + 2, true)),
-          p: uq16(view.getUint16(offset + 4, true)),
-        });
-        offset += 6;
-      }
       return {
-        kind: "points",
+        kind: "glyph",
         seq,
         strokeId: view.getUint16(6, true),
-        points,
+        data: bytes.slice(8),
       };
     }
     case DRAW_STREAM_KIND.END: {
@@ -278,26 +259,7 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
   }
 }
 
-export function chunkDrawPoints(
-  strokeId: number,
-  startSeq: number,
-  points: DrawNormPoint[],
-  maxPointsPerFrame = 24,
-): DrawStreamPointsEvent[] {
-  const maxPts = Math.max(1, Math.min(40, maxPointsPerFrame | 0));
-  const out: DrawStreamPointsEvent[] = [];
-  let seq = startSeq >>> 0;
-  for (let i = 0; i < points.length; i += maxPts) {
-    out.push({
-      kind: "points",
-      seq,
-      strokeId,
-      points: points.slice(i, i + maxPts),
-    });
-    seq = (seq + 1) >>> 0;
-  }
-  return out;
-}
+// chunkDrawPoints removed as it is legacy. Use GlyphStreamEncoder for real-time.
 
 export class DrawStreamTracker {
   private state: DrawStreamTrackerState = {
@@ -318,7 +280,7 @@ export class DrawStreamTracker {
         this.state.activeStrokeId = evt.strokeId;
         this.state.peerActive = true;
         break;
-      case "points":
+      case "glyph":
         if (this.state.activeStrokeId !== evt.strokeId) {
           return { applied: false, reason: "invalid-order" };
         }
