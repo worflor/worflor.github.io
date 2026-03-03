@@ -300,7 +300,9 @@ const seo = {
                     if (w === lastW) return;
                     lastW = w;
                     el.removeAttribute("data-compact");
-                    if (check_el.scrollWidth > check_el.clientWidth + 1) {
+                    var overOwnBox = check_el.scrollWidth > check_el.clientWidth + 1;
+                    var overTarget = check_el.getBoundingClientRect().width > target.clientWidth + 1;
+                    if (overOwnBox || overTarget) {
                       el.setAttribute("data-compact", "");
                     }
                   }
@@ -312,7 +314,7 @@ const seo = {
                   autoCompact(
                     document.querySelector(".cf-live-mode-toggle"),
                     document.querySelector(".wl-head-right"),
-                    document.querySelector("#wl-funnel-campfire")
+                    document.querySelector(".cf-live-mode-toggle")
                   );
                 });
               })();
@@ -2550,7 +2552,7 @@ const seo = {
   }
 
   .whisper-op-live.wl-connected #wl-funnel-campfire {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
   }
