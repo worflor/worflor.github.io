@@ -27,7 +27,18 @@ class BitBuffer {
     data: Uint8Array;
     bitOff: number = 0;
     constructor(size: number = 4096) { this.data = new Uint8Array(size); }
+    private ensureCapacity(extraBits: number) {
+        const requiredBits = this.bitOff + extraBits;
+        const requiredBytes = (requiredBits + 7) >> 3;
+        if (requiredBytes <= this.data.length) return;
+        let nextSize = this.data.length;
+        while (nextSize < requiredBytes) nextSize <<= 1;
+        const grown = new Uint8Array(nextSize);
+        grown.set(this.data);
+        this.data = grown;
+    }
     write(val: number, bits: number) {
+        this.ensureCapacity(bits);
         for (let i = bits - 1; i >= 0; i--) {
             if ((val >> i) & 1) this.data[this.bitOff >> 3] |= (1 << (7 - (this.bitOff & 7)));
             this.bitOff++;
@@ -46,6 +57,24 @@ class BitBuffer {
 }
 
 export class GlyphCodec {
+    private static clampI16(v: number): number {
+        if (v < -32768) return -32768;
+        if (v > 32767) return 32767;
+        return v;
+    }
+
+    private static q14Floor(v: number): number {
+        return Math.floor(v / Q14);
+    }
+
+    private static zigZagEncode(v: number): number {
+        return v >= 0 ? v * 2 : (-v * 2) - 1;
+    }
+
+    private static zigZagDecode(v: number): number {
+        return (v & 1) === 0 ? (v >>> 1) : -((v >>> 1) + 1);
+    }
+
     static encode(points: Int32Array): GlyphBlock[] {
         const blocks: GlyphBlock[] = [];
         const n = points.length / 3;
@@ -67,16 +96,16 @@ export class GlyphCodec {
         for (let j = 0; j < len; j++) {
             const idx = (start + j) * 3, p1 = (start + j - 1) * 3, p2 = (start + j - 2) * 3;
             let pr, pi;
-            const pp = (points[p1 + 2] << 1) - points[p2 + 2];
+            const pp = (points[p1 + 2] * 2) - points[p2 + 2];
             if (mode === GlyphMode.HARMONIC) {
-                pr = (kR * points[p1] - kI * points[p1 + 1] - (gR * points[p2] - gI * points[p2 + 1])) >> 14;
-                pi = (kR * points[p1 + 1] + kI * points[p1] - (gR * points[p2 + 1] + gI * points[p2])) >> 14;
+                pr = this.q14Floor(kR * points[p1] - kI * points[p1 + 1] - (gR * points[p2] - gI * points[p2 + 1]));
+                pi = this.q14Floor(kR * points[p1 + 1] + kI * points[p1] - (gR * points[p2 + 1] + gI * points[p2]));
             } else {
-                pr = (points[p1] << 1) - points[p2];
-                pi = (points[p1 + 1] << 1) - points[p2 + 1];
+                pr = (points[p1] * 2) - points[p2];
+                pi = (points[p1 + 1] * 2) - points[p2 + 1];
             }
             const dr = points[idx] - pr, di = points[idx + 1] - pi, dp = points[idx + 2] - pp;
-            const zr = (dr << 1) ^ (dr >> 31), zi = (di << 1) ^ (di >> 31), zp = (dp << 1) ^ (dp >> 31);
+            const zr = this.zigZagEncode(dr), zi = this.zigZagEncode(di), zp = this.zigZagEncode(dp);
             residuals[j * 3] = zr; residuals[j * 3 + 1] = zi; residuals[j * 3 + 2] = zp;
             maxPos = Math.max(maxPos, zr, zi);
             maxPre = Math.max(maxPre, zp);
@@ -102,17 +131,17 @@ export class GlyphCodec {
             for (let j = 0; j < residuals.length; j += 3) {
                 const p1 = (cursor - 1) * 3, p2 = (cursor - 2) * 3;
                 let pr, pi;
-                const pp = (points[p1 + 2] << 1) - points[p2 + 2];
+                const pp = (points[p1 + 2] * 2) - points[p2 + 2];
                 if (mode === GlyphMode.HARMONIC) {
-                    pr = (kR * points[p1] - kI * points[p1 + 1] - (gR * points[p2] - gI * points[p2 + 1])) >> 14;
-                    pi = (kR * points[p1 + 1] + kI * points[p1] - (gR * points[p2 + 1] + gI * points[p2])) >> 14;
+                    pr = this.q14Floor(kR * points[p1] - kI * points[p1 + 1] - (gR * points[p2] - gI * points[p2 + 1]));
+                    pi = this.q14Floor(kR * points[p1 + 1] + kI * points[p1] - (gR * points[p2 + 1] + gI * points[p2]));
                 } else {
-                    pr = (points[p1] << 1) - points[p2];
-                    pi = (points[p1 + 1] << 1) - points[p2 + 1];
+                    pr = (points[p1] * 2) - points[p2];
+                    pi = (points[p1 + 1] * 2) - points[p2 + 1];
                 }
-                const dr = (residuals[j] >>> 1) ^ -(residuals[j] & 1);
-                const di = (residuals[j + 1] >>> 1) ^ -(residuals[j + 1] & 1);
-                const dp = (residuals[j + 2] >>> 1) ^ -(residuals[j + 2] & 1);
+                const dr = this.zigZagDecode(residuals[j]);
+                const di = this.zigZagDecode(residuals[j + 1]);
+                const dp = this.zigZagDecode(residuals[j + 2]);
                 points[cursor * 3] = pr + dr; points[cursor * 3 + 1] = pi + di; points[cursor * 3 + 2] = pp + dp;
                 cursor++;
             }
@@ -179,7 +208,12 @@ export class GlyphCodec {
         const kI = (sTAi * sBB - (sABr * sTBi - sABi * sTBr)) / det;
         const gR = -(sAA * sTBr - (sTAr * sABr - sTAi * sABi)) / det;
         const gI = -(sAA * sTBi - (sTAr * sABi + sTAi * sABr)) / det;
-        return { kR: Math.round(kR * Q14), kI: Math.round(kI * Q14), gR: Math.round(gR * Q14), gI: Math.round(gI * Q14) };
+        return {
+            kR: this.clampI16(Math.round(kR * Q14)),
+            kI: this.clampI16(Math.round(kI * Q14)),
+            gR: this.clampI16(Math.round(gR * Q14)),
+            gI: this.clampI16(Math.round(gI * Q14)),
+        };
     }
 }
 
@@ -207,17 +241,20 @@ export class GlyphStreamEncoder {
 
 export class GlyphStreamDecoder {
     private points = new Int32Array(GLYPH_BLOCK_SIZE * 3 + 6);
-    private head = 2;
     constructor(s1: [number, number, number], s2: [number, number, number]) {
         this.points[0] = s2[0]; this.points[1] = s2[1]; this.points[2] = s2[2];
         this.points[3] = s1[0]; this.points[4] = s1[1]; this.points[5] = s1[2];
     }
     decode(bytes: Uint8Array): Int32Array {
         const blocks = GlyphCodec.unpack(bytes);
+        if (blocks.length === 0) return new Int32Array(0);
         GlyphCodec.decodeBlocks(blocks, this.points, 2);
-        const result = this.points.slice(6, (blocks[0].residuals.length / 3 + 2) * 3);
-        const s1 = this.points.slice((this.head + blocks[0].residuals.length / 3 - 1) * 3, (this.head + blocks[0].residuals.length / 3) * 3);
-        const s2 = this.points.slice((this.head + blocks[0].residuals.length / 3 - 2) * 3, (this.head + blocks[0].residuals.length / 3 - 1) * 3);
+        let pointCount = 0;
+        for (const block of blocks) pointCount += block.residuals.length / 3;
+        const endPoint = 2 + pointCount;
+        const result = this.points.slice(6, endPoint * 3);
+        const s1 = this.points.slice((endPoint - 1) * 3, endPoint * 3);
+        const s2 = this.points.slice((endPoint - 2) * 3, (endPoint - 1) * 3);
         this.points[0] = s2[0]; this.points[1] = s2[1]; this.points[2] = s2[2];
         this.points[3] = s1[0]; this.points[4] = s1[1]; this.points[5] = s1[2];
         return result;

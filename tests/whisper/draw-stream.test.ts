@@ -8,6 +8,7 @@ import {
   type DrawStreamEvent,
 } from "../../src/scripts/whisper/live-draw-stream.js";
 import {
+  GlyphCodec,
   GlyphStreamEncoder,
   GlyphStreamDecoder,
   GLYPH_BLOCK_SIZE,
@@ -111,6 +112,61 @@ describe("live-draw-stream", () => {
       assert.ok(dy <= 2, `y round-trip error too large at index ${i}: ${dy}`);
       assert.ok(dp <= 2, `p round-trip error too large at index ${i}: ${dp}`);
     }
+  });
+
+  it("GlyphCodec exact round-trip under long multi-block stress", () => {
+    const lcg = (seed: number) => {
+      let state = seed | 0;
+      return () => {
+        state = (Math.imul(1664525, state) + 1013904223) | 0;
+        return (state >>> 0) / 4294967296;
+      };
+    };
+
+    const randInt = (next: () => number, min: number, max: number) =>
+      (min + Math.floor(next() * (max - min + 1))) | 0;
+
+    for (let trial = 0; trial < 40; trial++) {
+      const rnd = lcg(9001 + trial * 17);
+      const pointCount = 2 + GLYPH_BLOCK_SIZE * 80;
+      const points = new Int32Array(pointCount * 3);
+
+      points[0] = randInt(rnd, -32767, 32767);
+      points[1] = randInt(rnd, -32767, 32767);
+      points[2] = randInt(rnd, 0, 32767);
+      points[3] = randInt(rnd, -32767, 32767);
+      points[4] = randInt(rnd, -32767, 32767);
+      points[5] = randInt(rnd, 0, 32767);
+
+      for (let i = 2; i < pointCount; i++) {
+        const idx = i * 3;
+        const prev = (i - 1) * 3;
+        const prev2 = (i - 2) * 3;
+        const px = (points[prev] << 1) - points[prev2] + randInt(rnd, -8, 8);
+        const py = (points[prev + 1] << 1) - points[prev2 + 1] + randInt(rnd, -8, 8);
+        const pp = (points[prev + 2] << 1) - points[prev2 + 2] + randInt(rnd, -4, 4);
+        points[idx] = Math.max(-32767, Math.min(32767, px));
+        points[idx + 1] = Math.max(-32767, Math.min(32767, py));
+        points[idx + 2] = Math.max(0, Math.min(32767, pp));
+      }
+
+      const blocks = GlyphCodec.encode(points);
+      const packed = GlyphCodec.pack(blocks);
+      const unpacked = GlyphCodec.unpack(packed);
+      const decoded = GlyphCodec.decode(unpacked, [points[3], points[4], points[5]], [points[0], points[1], points[2]]);
+
+      assert.equal(decoded.length, points.length, `decoded length mismatch on trial ${trial}`);
+      for (let i = 0; i < points.length; i++) {
+        assert.equal(decoded[i], points[i], `exact mismatch at trial ${trial}, idx ${i}`);
+      }
+    }
+  });
+
+  it("GlyphStreamDecoder handles empty/malformed payload safely", () => {
+    const start: [number, number, number] = [0, 0, 0];
+    const dec = new GlyphStreamDecoder(start, start);
+    const out = dec.decode(new Uint8Array(0));
+    assert.equal(out.length, 0);
   });
 
   it("tracks peer draw state with sequence guards", () => {
