@@ -4,6 +4,8 @@ import { assertBytesEqual } from "./_helpers/assertions.js";
 import { randomBytes } from "./_helpers/generators.js";
 import {
   chunkMessagePrefixed,
+  iterateChunksPrefixed,
+  estimateChunkedPrefixedSize,
   ChunkAssembler,
   BUFFERED_AMOUNT_LOW,
 } from "../../src/scripts/whisper/live-chunking.js";
@@ -167,6 +169,34 @@ describe("live-chunking", () => {
       for (const prefix of [0x00, 0x50, 0xFF]) {
         const chunks = chunkMessagePrefixed(data, prefix);
         assert.equal(chunks[0][0], prefix);
+      }
+    });
+  });
+
+  describe("streaming helpers", () => {
+    it("iterateChunksPrefixed matches chunkMessagePrefixed exactly", () => {
+      for (const size of [0, 1, 100, 15360, 15361, 30000, 100000]) {
+        const data = randomBytes(size);
+        const a = chunkMessagePrefixed(data, 0x20);
+        const b = Array.from(iterateChunksPrefixed(data, 0x20));
+        assert.equal(b.length, a.length, `chunk count mismatch for ${size}`);
+        for (let i = 0; i < a.length; i++) {
+          assertBytesEqual(b[i], a[i], `chunk ${i} mismatch for ${size}`);
+        }
+      }
+    });
+
+    it("estimateChunkedPrefixedSize equals actual emitted bytes", () => {
+      for (const size of [0, 1, 100, 15360, 15361, 30720, 100000, 200000]) {
+        const data = randomBytes(size);
+        const chunks = chunkMessagePrefixed(data, 0x20);
+        let actual = 0;
+        for (const chunk of chunks) actual += chunk.byteLength;
+        assert.equal(
+          estimateChunkedPrefixedSize(data.length),
+          actual,
+          `byte estimate mismatch for ${size}B`,
+        );
       }
     });
   });
