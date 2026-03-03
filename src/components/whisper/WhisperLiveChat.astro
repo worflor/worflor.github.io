@@ -702,7 +702,8 @@
   :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-file),
   :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-audio),
-  :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-media) {
+  :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-media),
+  :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-peer-draw) {
     border-bottom-right-radius: calc(var(--whisper-radius) * 0.15);
   }
 
@@ -715,7 +716,8 @@
   :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-file),
   :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-audio),
-  :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-media) {
+  :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-media),
+  :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-peer-draw) {
     color: rgb(var(--color-text-rgb) / 0.88);
     border-color: rgb(var(--color-text-rgb) / 0.22);
   }
@@ -723,7 +725,8 @@
   :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-file),
   :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-audio),
-  :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-media) {
+  :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-media),
+  :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-peer-draw) {
     color: rgb(var(--msg-accent) / 0.9);
     border-bottom-left-radius: calc(var(--whisper-radius) * 0.15);
   }
@@ -753,13 +756,15 @@
   :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-file),
   :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-audio),
-  :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-media) {
+  :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-media),
+  :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-peer-draw) {
     border-top-right-radius: calc(var(--whisper-radius) * 0.2);
   }
   :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-file),
   :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-audio),
-  :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-media) {
+  :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-media),
+  :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-peer-draw) {
     border-top-left-radius: calc(var(--whisper-radius) * 0.2);
   }
 
@@ -1056,6 +1061,45 @@
     transition:
       border-color 300ms ease,
       box-shadow 300ms ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg-peer-draw) {
+    display: grid;
+    gap: 0;
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    border: 1px solid rgb(var(--msg-accent) / 0.14);
+    background: linear-gradient(
+      135deg,
+      rgb(var(--msg-accent) / 0.07) 0%,
+      rgb(var(--msg-accent) / 0.03) 100%
+    );
+    overflow: hidden;
+    max-width: min(18rem, 100%);
+    width: min(18rem, 100%);
+    aspect-ratio: 4 / 3;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-peer-draw-inline) {
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: rgb(0 0 0 / 0.12);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-peer-draw-status) {
+    font-size: calc(var(--text-sm) * 0.68);
+    color: rgb(var(--msg-accent) / 0.62);
+    letter-spacing: 0.02em;
+    padding: 0 0.25rem;
+    user-select: none;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg-glyph-actions) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.28rem 0.4rem 0.34rem;
   }
 
   :global(.wl-chat-messages) :global(.wl-media-thumb) {

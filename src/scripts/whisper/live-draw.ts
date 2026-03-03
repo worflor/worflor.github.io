@@ -6,7 +6,6 @@
  * PictoChat feel: fill, eyedropper, custom colors, pinch-to-zoom, multi-touch gestures.
  */
 
-import { buildDrawExportPlan } from "./live-draw-export";
 import { createStrokeSampler, sampleStrokePoint, type StrokeSamplerState } from "./live-draw-stroke";
 import { type DrawStreamEventNoSeq, type DrawTool } from "./live-draw-stream";
 import { GlyphStreamEncoder } from "./live-wasm-glyph";
@@ -1607,139 +1606,115 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
   /* ── Send ───────────────────────────────────────────────── */
 
-  const OUT_MIME = "image/webp";
+  const OUT_MIME = "application/x-whisper-gwyph";
+  const OUT_EXT = "gwyph";
 
-  function toBlobAsync(mime: string, quality: number): Promise<Blob | null> {
-    return new Promise((resolve) => {
-      canvas.toBlob((blob) => resolve(blob), mime, quality);
-    });
+  function clamp01(v: number): number {
+    if (v < 0) return 0;
+    if (v > 1) return 1;
+    return v;
   }
 
-  function estimateCoverageRatio(): number {
-    const cols = 48;
-    const rows = 32;
-    const total = cols * rows;
-    const marks = new Uint8Array(total);
-    let hit = 0;
-    for (const s of strokes) {
-      if (s.type !== "pen") continue;
-      for (const p of s.points) {
-        let cx = (p.x * cols) | 0;
-        let cy = (p.y * rows) | 0;
-        if (cx < 0) cx = 0;
-        else if (cx >= cols) cx = cols - 1;
-        if (cy < 0) cy = 0;
-        else if (cy >= rows) cy = rows - 1;
-        const idx = cy * cols + cx;
-        if (marks[idx] === 0) { marks[idx] = 1; hit++; }
+  function quantQ15(v: number): number {
+    return Math.round(clamp01(v) * 32767);
+  }
+
+  function zigZagEncode(v: number): number {
+    return v >= 0 ? v * 2 : (-v * 2) - 1;
+  }
+
+  function parseHexRgb(color: string): [number, number, number] {
+    const m = /^#([0-9a-f]{6})$/i.exec(color.trim());
+    if (!m) return [255, 255, 255];
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+  }
+
+  class ByteWriter {
+    private data: number[] = [];
+
+    u8(v: number): void { this.data.push(v & 0xff); }
+
+    u16(v: number): void {
+      this.data.push(v & 0xff, (v >>> 8) & 0xff);
+    }
+
+    bytes(raw: readonly number[]): void {
+      for (let i = 0; i < raw.length; i++) this.u8(raw[i]);
+    }
+
+    varUint(v: number): void {
+      let n = v >>> 0;
+      while (n >= 0x80) {
+        this.u8((n & 0x7f) | 0x80);
+        n >>>= 7;
       }
+      this.u8(n);
     }
-    return total > 0 ? hit / total : 0;
+
+    finish(): Uint8Array {
+      return Uint8Array.from(this.data);
+    }
   }
 
-  function countPoints(): number {
-    let total = 0;
-    for (const s of strokes) {
-      if (s.type === "pen") total += s.points.length;
-      else total += 1;
-    }
-    return total;
-  }
-
-  function countUniquePenColors(): number {
-    const colors = new Set<string>();
-    for (const s of strokes) {
-      if (s.type !== "pen") continue;
-      if (s.penId === "eraser") continue;
-      colors.add(s.color);
-      if (colors.size >= 8) break;
-    }
-    return colors.size;
-  }
-
-  function estimateInkEntropyProxy(): number {
-    // Logos-inspired proxy:
-    // - quantize each pen segment into a compact token (direction × length × pressure)
-    // - build a Laplace-smoothed attention map (histogram)
-    // - combine normalized token entropy + transition unpredictability + color switching
-    const DIR_BINS = 8;
-    const LEN_BINS = 4;
-    const PRESS_BINS = 4;
-    const TOKEN_BINS = DIR_BINS * LEN_BINS * PRESS_BINS;
-
-    const tokenCounts = new Uint32Array(TOKEN_BINS);
-    let totalTokens = TOKEN_BINS; // Laplace prior 1 per token
-    for (let i = 0; i < TOKEN_BINS; i++) tokenCounts[i] = 1;
-
-    let penStrokeCount = 0;
-    let pointCount = 0;
-    let tokenSwitches = 0;
-    let colorSwitches = 0;
-    let prevColor = "";
-    let prevToken = -1;
+  function encodeGwyphPayload(): Uint8Array {
+    // GWYPH v1 compact stroke stream:
+    // magic[4], version[1], mode[1], logicalW[2], logicalH[2], strokeCount[var]
+    // stroke pen: tag[1]=0, tool[1], rgb[3], widthQ8[2], pointCount[var], first xyzQ15[2*3], then delta xyz zigzag-varints
+    // stroke fill: tag[1]=1, rgb[3], toleranceSq[2], seedXQ15[2], seedYQ15[2]
+    const w = new ByteWriter();
+    w.bytes([0x47, 0x57, 0x59, 0x50]); // GWYP
+    w.u8(1); // version
+    w.u8(config.mode === "blank" ? 0 : 1);
+    w.u16(Math.max(1, Math.min(65535, logicalW | 0)));
+    w.u16(Math.max(1, Math.min(65535, logicalH | 0)));
+    w.varUint(strokes.length);
 
     for (const stroke of strokes) {
-      if (stroke.type !== "pen" || stroke.penId === "eraser") continue;
-      penStrokeCount++;
-      if (prevColor && prevColor !== stroke.color) colorSwitches++;
-      prevColor = stroke.color;
+      if (stroke.type === "fill") {
+        const [r, g, b] = parseHexRgb(stroke.color);
+        w.u8(1);
+        w.u8(r);
+        w.u8(g);
+        w.u8(b);
+        w.u16(Math.max(0, Math.min(65535, Math.round(stroke.tolerance))));
+        w.u16(quantQ15(stroke.seedX));
+        w.u16(quantQ15(stroke.seedY));
+        continue;
+      }
 
       const pts = stroke.points;
-      pointCount += pts.length;
-      if (pts.length < 2) continue;
+      const [r, g, b] = parseHexRgb(stroke.color);
+      w.u8(0);
+      w.u8(stroke.penId === "eraser" ? 1 : 0);
+      w.u8(r);
+      w.u8(g);
+      w.u8(b);
+      w.u16(Math.max(1, Math.min(65535, Math.round(stroke.width * 256))));
+      w.varUint(pts.length);
+      if (pts.length === 0) continue;
+
+      let prevX = quantQ15(pts[0].x);
+      let prevY = quantQ15(pts[0].y);
+      let prevP = quantQ15(pts[0].p);
+      w.u16(prevX);
+      w.u16(prevY);
+      w.u16(prevP);
 
       for (let i = 1; i < pts.length; i++) {
-        const prev = pts[i - 1];
-        const cur = pts[i];
-        const dx = cur.x - prev.x;
-        const dy = cur.y - prev.y;
-        const mag = Math.hypot(dx, dy);
-        if (mag < 1e-6) continue;
-
-        // Direction bin in [0..7]
-        const angle = Math.atan2(dy, dx);
-        const dirNorm = (angle + Math.PI) / (2 * Math.PI);
-        const dirBin = Math.min(DIR_BINS - 1, Math.max(0, (dirNorm * DIR_BINS) | 0));
-
-        // Segment length bins tuned for normalized coordinates.
-        let lenBin = 0;
-        if (mag > 0.0016) lenBin = 1;
-        if (mag > 0.0040) lenBin = 2;
-        if (mag > 0.0090) lenBin = 3;
-
-        const p = cur.p < 0 ? 0 : (cur.p > 1 ? 1 : cur.p);
-        const pressBin = Math.min(PRESS_BINS - 1, (p * PRESS_BINS) | 0);
-
-        const token = dirBin + lenBin * DIR_BINS + pressBin * DIR_BINS * LEN_BINS;
-        tokenCounts[token]++;
-        totalTokens++;
-
-        if (prevToken >= 0 && prevToken !== token) tokenSwitches++;
-        prevToken = token;
+        const nx = quantQ15(pts[i].x);
+        const ny = quantQ15(pts[i].y);
+        const np = quantQ15(pts[i].p);
+        w.varUint(zigZagEncode(nx - prevX));
+        w.varUint(zigZagEncode(ny - prevY));
+        w.varUint(zigZagEncode(np - prevP));
+        prevX = nx;
+        prevY = ny;
+        prevP = np;
       }
     }
 
-    let entropy = 0;
-    for (let i = 0; i < TOKEN_BINS; i++) {
-      const p = tokenCounts[i] / totalTokens;
-      entropy -= p * Math.log2(p);
-    }
-    const maxEntropy = Math.log2(TOKEN_BINS);
-    const tokenEntropyNorm = maxEntropy > 0 ? Math.min(1, entropy / maxEntropy) : 0;
-
-    const tokenSwitchRate = totalTokens > TOKEN_BINS + 1
-      ? tokenSwitches / (totalTokens - TOKEN_BINS - 1)
-      : 0;
-    const colorSwitchRate = penStrokeCount > 1 ? colorSwitches / (penStrokeCount - 1) : 0;
-    const density = Math.min(1, pointCount / 5000);
-
-    const proxy =
-      tokenEntropyNorm * 0.5 +
-      tokenSwitchRate * 0.25 +
-      colorSwitchRate * 0.15 +
-      density * 0.1;
-
-    return Math.max(0, Math.min(1, proxy));
+    return w.finish();
   }
 
   function resolveOutputName(): string {
@@ -1748,40 +1723,21 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       const stem = dot > 0 ? config.originalName.slice(0, dot) : config.originalName;
       // Strip any number of trailing _drawing suffixes (case-insensitive)
       const cleanStem = stem.replace(/(_drawing)+$/i, "");
-      // If nothing meaningful is left (e.g. original was "drawing.webp"), don't produce "drawing_drawing.webp"
-      if (!cleanStem || cleanStem.toLowerCase() === "drawing") return "drawing.webp";
-      return `${cleanStem}_drawing.webp`;
+      // If nothing meaningful is left (e.g. original was "drawing.webp"), keep a simple default.
+      if (!cleanStem || cleanStem.toLowerCase() === "drawing") return `drawing.${OUT_EXT}`;
+      return `${cleanStem}_drawing.${OUT_EXT}`;
     }
-    return "drawing.webp";
+    return `drawing.${OUT_EXT}`;
   }
 
   sendBtn.addEventListener("click", async () => {
     if (strokes.length === 0) return;
 
     const name = resolveOutputName();
-
-    const exportPlan = buildDrawExportPlan({
-      mode: config.mode,
-      logicalPixels: logicalW * logicalH,
-      strokeCount: strokes.length,
-      pointCount: countPoints(),
-      coverageRatio: estimateCoverageRatio(),
-      uniquePenColors: countUniquePenColors(),
-      inkEntropyProxy: estimateInkEntropyProxy(),
-    });
-
-    const primary = await toBlobAsync(OUT_MIME, exportPlan.primaryQuality);
-    if (!primary) return;
-
-    let chosen = primary;
-    if (exportPlan.tryFallback) {
-      const fallback = await toBlobAsync(OUT_MIME, exportPlan.fallbackQuality);
-      if (fallback && fallback.size <= primary.size * (1 - exportPlan.fallbackSavingsRatio)) {
-        chosen = fallback;
-      }
-    }
-
-    callbacks.onSend({ file: new File([chosen], name, { type: OUT_MIME }) });
+    const payload = encodeGwyphPayload();
+    const stable = new Uint8Array(payload.byteLength);
+    stable.set(payload);
+    callbacks.onSend({ file: new File([stable.buffer], name, { type: OUT_MIME }) });
     closeDraw();
   }, { signal: ds });
 

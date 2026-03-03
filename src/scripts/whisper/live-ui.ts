@@ -1318,6 +1318,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   };
 
   const ADPCM_MIME = "audio/x-whisper-adpcm";
+  const GLYPH_MIME = "application/x-whisper-gwyph";
 
   function isWhisperAudioCodec(fileType?: string, fileName?: string): boolean {
     const t = (fileType ?? "").toLowerCase();
@@ -1334,6 +1335,358 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (msg.type !== "file" || !msg.fileData) return false;
     const type = msg.fileType?.toLowerCase() ?? "";
     return type.startsWith("audio/") || isWhisperAudioCodec(msg.fileType, msg.fileName);
+  }
+
+  interface GlyphPoint {
+    x: number;
+    y: number;
+    p: number;
+  }
+
+  interface GlyphStrokePen {
+    type: "pen";
+    tool: "pen" | "eraser";
+    color: string;
+    width: number;
+    points: GlyphPoint[];
+  }
+
+  interface GlyphStrokeFill {
+    type: "fill";
+    color: string;
+    tolerance: number;
+    seedX: number;
+    seedY: number;
+  }
+
+  type GlyphStroke = GlyphStrokePen | GlyphStrokeFill;
+
+  interface GlyphPayload {
+    mode: "blank" | "annotate";
+    logicalW: number;
+    logicalH: number;
+    strokes: GlyphStroke[];
+  }
+
+  class GlyphReader {
+    private off = 0;
+    constructor(private readonly data: Uint8Array) { }
+
+    private ensure(n: number): void {
+      if (this.off + n > this.data.length) throw new Error("glyph: truncated");
+    }
+
+    u8(): number {
+      this.ensure(1);
+      return this.data[this.off++];
+    }
+
+    u16(): number {
+      this.ensure(2);
+      const v = this.data[this.off] | (this.data[this.off + 1] << 8);
+      this.off += 2;
+      return v;
+    }
+
+    varUint(): number {
+      let shift = 0;
+      let out = 0;
+      for (let i = 0; i < 5; i++) {
+        const b = this.u8();
+        out |= (b & 0x7f) << shift;
+        if ((b & 0x80) === 0) return out >>> 0;
+        shift += 7;
+      }
+      throw new Error("glyph: varuint overflow");
+    }
+  }
+
+  function glyphZigZagDecode(v: number): number {
+    return (v & 1) === 0 ? (v >>> 1) : -((v >>> 1) + 1);
+  }
+
+  function glyphQ15ToNorm(v: number): number {
+    return Math.max(0, Math.min(1, v / 32767));
+  }
+
+  function glyphRgbToHex(r: number, g: number, b: number): string {
+    const rr = (r & 0xff).toString(16).padStart(2, "0");
+    const gg = (g & 0xff).toString(16).padStart(2, "0");
+    const bb = (b & 0xff).toString(16).padStart(2, "0");
+    return `#${rr}${gg}${bb}`;
+  }
+
+  function parseGlyphPayload(bytes: Uint8Array): GlyphPayload | null {
+    try {
+      const r = new GlyphReader(bytes);
+      const g = r.u8(), w = r.u8(), y = r.u8(), p = r.u8();
+      if (g !== 0x47 || w !== 0x57 || y !== 0x59 || p !== 0x50) return null;
+      const version = r.u8();
+      if (version !== 1) return null;
+      const modeByte = r.u8();
+      const logicalW = Math.max(1, r.u16());
+      const logicalH = Math.max(1, r.u16());
+      const strokeCount = r.varUint();
+      const strokes: GlyphStroke[] = [];
+
+      for (let i = 0; i < strokeCount; i++) {
+        const tag = r.u8();
+        if (tag === 1) {
+          const cr = r.u8();
+          const cg = r.u8();
+          const cb = r.u8();
+          const tolSq = r.u16();
+          const sx = glyphQ15ToNorm(r.u16());
+          const sy = glyphQ15ToNorm(r.u16());
+          strokes.push({
+            type: "fill",
+            color: glyphRgbToHex(cr, cg, cb),
+            tolerance: Math.max(0, Math.min(65535, tolSq)),
+            seedX: sx,
+            seedY: sy,
+          });
+          continue;
+        }
+        if (tag !== 0) return null;
+        const tool = r.u8() === 1 ? "eraser" : "pen";
+        const cr = r.u8();
+        const cg = r.u8();
+        const cb = r.u8();
+        const width = Math.max(0.25, r.u16() / 256);
+        const pointCount = r.varUint();
+        const points: GlyphPoint[] = [];
+        if (pointCount > 0) {
+          let x = r.u16();
+          let yv = r.u16();
+          let pv = r.u16();
+          points.push({ x: glyphQ15ToNorm(x), y: glyphQ15ToNorm(yv), p: glyphQ15ToNorm(pv) });
+          for (let pi = 1; pi < pointCount; pi++) {
+            x += glyphZigZagDecode(r.varUint());
+            yv += glyphZigZagDecode(r.varUint());
+            pv += glyphZigZagDecode(r.varUint());
+            points.push({
+              x: glyphQ15ToNorm(x),
+              y: glyphQ15ToNorm(yv),
+              p: glyphQ15ToNorm(pv),
+            });
+          }
+        }
+        strokes.push({
+          type: "pen",
+          tool,
+          color: glyphRgbToHex(cr, cg, cb),
+          width,
+          points,
+        });
+      }
+
+      return {
+        mode: modeByte === 0 ? "blank" : "annotate",
+        logicalW,
+        logicalH,
+        strokes,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function renderGlyphStroke(ctx: CanvasRenderingContext2D, stroke: GlyphStrokePen, W: number, H: number): void {
+    if (stroke.points.length === 0) return;
+    const pressureSens = stroke.tool !== "eraser";
+    ctx.save();
+    ctx.globalCompositeOperation = stroke.tool === "eraser" ? "destination-out" : "source-over";
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = stroke.tool === "eraser" ? "rgba(0,0,0,1)" : stroke.color;
+    ctx.fillStyle = stroke.color;
+
+    if (stroke.points.length === 1) {
+      const pt = stroke.points[0];
+      const r = (pressureSens ? stroke.width * (0.3 + pt.p * 0.7) : stroke.width) / 2;
+      ctx.beginPath();
+      ctx.arc(pt.x * W, pt.y * H, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+
+    let lastX = stroke.points[0].x * W;
+    let lastY = stroke.points[0].y * H;
+    let hasLastMid = false;
+    let lastMidX = 0;
+    let lastMidY = 0;
+    for (let i = 1; i < stroke.points.length; i++) {
+      const cur = stroke.points[i];
+      const cx = cur.x * W;
+      const cy = cur.y * H;
+      const midX = (lastX + cx) * 0.5;
+      const midY = (lastY + cy) * 0.5;
+      const fromX = hasLastMid ? lastMidX : lastX;
+      const fromY = hasLastMid ? lastMidY : lastY;
+      const lw = pressureSens ? stroke.width * (0.3 + cur.p * 0.7) : stroke.width;
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.moveTo(fromX, fromY);
+      ctx.quadraticCurveTo(lastX, lastY, midX, midY);
+      ctx.stroke();
+      lastMidX = midX;
+      lastMidY = midY;
+      hasLastMid = true;
+      lastX = cx;
+      lastY = cy;
+    }
+    ctx.restore();
+  }
+
+  function renderGlyphFill(ctx: CanvasRenderingContext2D, stroke: GlyphStrokeFill, W: number, H: number): void {
+    const imgData = ctx.getImageData(0, 0, W, H);
+    const data = imgData.data;
+    const pixelCount = W * H;
+    const sx = Math.round(stroke.seedX * (W - 1));
+    const sy = Math.round(stroke.seedY * (H - 1));
+    if (sx < 0 || sx >= W || sy < 0 || sy >= H) return;
+
+    const fillR = parseInt(stroke.color.slice(1, 3), 16);
+    const fillG = parseInt(stroke.color.slice(3, 5), 16);
+    const fillB = parseInt(stroke.color.slice(5, 7), 16);
+
+    const seedIdx = (sy * W + sx) * 4;
+    const seedR = data[seedIdx];
+    const seedG = data[seedIdx + 1];
+    const seedB = data[seedIdx + 2];
+    if (seedR === fillR && seedG === fillG && seedB === fillB) return;
+
+    const tolSq = Math.max(0, stroke.tolerance);
+    const visited = new Uint8Array(pixelCount);
+    const stack = new Int32Array(pixelCount);
+
+    const matches = (idx: number): boolean => {
+      const dr = data[idx] - seedR;
+      const dg = data[idx + 1] - seedG;
+      const db = data[idx + 2] - seedB;
+      return (dr * dr + dg * dg + db * db) <= tolSq;
+    };
+
+    let top = 0;
+    stack[top++] = sy * W + sx;
+    while (top > 0) {
+      const pos = stack[--top];
+      const py = (pos / W) | 0;
+      const px = pos - py * W;
+      if (py < 0 || py >= H) continue;
+
+      let left = px;
+      let right = px;
+      while (left > 0) {
+        const vi = py * W + (left - 1);
+        if (visited[vi] || !matches(vi * 4)) break;
+        left--;
+      }
+      while (right < W - 1) {
+        const vi = py * W + (right + 1);
+        if (visited[vi] || !matches(vi * 4)) break;
+        right++;
+      }
+
+      let aboveOpen = false;
+      let belowOpen = false;
+      for (let x = left; x <= right; x++) {
+        const vi = py * W + x;
+        if (visited[vi]) continue;
+        visited[vi] = 1;
+        const idx = vi * 4;
+        data[idx] = fillR;
+        data[idx + 1] = fillG;
+        data[idx + 2] = fillB;
+        data[idx + 3] = 255;
+
+        if (py > 0) {
+          const aboveVi = (py - 1) * W + x;
+          const aboveMatch = !visited[aboveVi] && matches(aboveVi * 4);
+          if (aboveMatch && !aboveOpen) { stack[top++] = (py - 1) * W + x; aboveOpen = true; }
+          else if (!aboveMatch) aboveOpen = false;
+        }
+        if (py < H - 1) {
+          const belowVi = (py + 1) * W + x;
+          const belowMatch = !visited[belowVi] && matches(belowVi * 4);
+          if (belowMatch && !belowOpen) { stack[top++] = (py + 1) * W + x; belowOpen = true; }
+          else if (!belowMatch) belowOpen = false;
+        }
+      }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  function renderGlyphMessage(msg: LiveMessage, abortSignal: AbortSignal): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "wl-msg-peer-draw";
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "wl-peer-draw-inline";
+    wrap.appendChild(canvas);
+
+    const info = document.createElement("div");
+    info.className = "wl-msg-glyph-actions";
+    const status = document.createElement("span");
+    status.className = "wl-peer-draw-status";
+    status.textContent = "glyph";
+    info.appendChild(status);
+
+    if (msg.fileData) {
+      const ab = new ArrayBuffer(msg.fileData.byteLength);
+      new Uint8Array(ab).set(msg.fileData);
+      const blob = new Blob([ab], { type: GLYPH_MIME });
+      const url = URL.createObjectURL(blob);
+      objectUrls.add(url);
+      const dl = document.createElement("a");
+      dl.className = "wl-msg-file-download";
+      dl.href = url;
+      dl.download = msg.fileName ?? "drawing.gwyph";
+      dl.textContent = "download";
+      info.appendChild(dl);
+
+      const glyph = parseGlyphPayload(msg.fileData);
+      if (glyph) {
+        status.textContent = `glyph ${glyph.logicalW}×${glyph.logicalH}`;
+        wrap.style.aspectRatio = `${glyph.logicalW} / ${glyph.logicalH}`;
+        requestAnimationFrame(() => {
+          const dpr = devicePixelRatio || 1;
+          const rect = wrap.getBoundingClientRect();
+          const cw = Math.max(1, Math.round(rect.width));
+          const ch = Math.max(1, Math.round(rect.height));
+          canvas.width = Math.max(1, Math.round(cw * dpr));
+          canvas.height = Math.max(1, Math.round(ch * dpr));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+          ctx.scale(dpr, dpr);
+          if (glyph.mode === "blank") {
+            ctx.fillStyle = "#1a1a1a";
+            ctx.fillRect(0, 0, cw, ch);
+          }
+          for (const stroke of glyph.strokes) {
+            if (stroke.type === "pen") renderGlyphStroke(ctx, stroke, cw, ch);
+            else renderGlyphFill(ctx, stroke, cw, ch);
+          }
+        });
+      } else {
+        status.textContent = "glyph (unreadable)";
+      }
+    }
+
+    wrap.appendChild(info);
+    return wrap;
+  }
+
+  function isWhisperGlyph(fileType?: string, fileName?: string): boolean {
+    const t = (fileType ?? "").toLowerCase();
+    const n = (fileName ?? "").toLowerCase();
+    return t === GLYPH_MIME || t.includes("whisper-gwyph") || n.endsWith(".gwyph");
+  }
+
+  function isRenderableGlyphMessage(msg: LiveMessage): boolean {
+    return msg.type === "file" && !!msg.fileData && isWhisperGlyph(msg.fileType, msg.fileName);
   }
 
   type MediaKind = "image" | "video";
@@ -1372,6 +1725,39 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Media lightbox ─────────────────────────────────────────────── */
   let lightboxEl: HTMLElement | null = null;
   let lightboxAc: AbortController | null = null;
+  let drawSurfaceAc: AbortController | null = null;
+
+  function closeDrawSurface(): void {
+    drawSurfaceAc?.abort();
+    drawSurfaceAc = null;
+  }
+
+  function openManagedDrawSurface(
+    cfg: Omit<Parameters<typeof openDrawSurface>[0], "signal">,
+    drawCallbacks: Omit<Parameters<typeof openDrawSurface>[1], "onClose">,
+    parentSignal: AbortSignal,
+  ): void {
+    closeDrawSurface();
+    const drawAc = new AbortController();
+    const drawSignal = drawAc.signal;
+    drawSurfaceAc = drawAc;
+
+    const abortDraw = () => drawAc.abort();
+    if (parentSignal.aborted || signal.aborted) {
+      drawAc.abort();
+      drawSurfaceAc = null;
+      return;
+    }
+    parentSignal.addEventListener("abort", abortDraw, { signal: drawSignal });
+    signal.addEventListener("abort", abortDraw, { signal: drawSignal });
+
+    openDrawSurface({ ...cfg, signal: drawSignal }, {
+      ...drawCallbacks,
+      onClose: () => {
+        if (drawSurfaceAc === drawAc) drawSurfaceAc = null;
+      },
+    });
+  }
 
   function openMediaLightbox(src: string, dlUrl: string, fileName: string, kind: MediaKind): void {
     // Close any existing lightbox first
@@ -1427,10 +1813,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const mediaEl = inner.querySelector("img, video") as HTMLImageElement | HTMLVideoElement | null;
       if (!mediaEl) return;
       if (mediaEl instanceof HTMLVideoElement) mediaEl.pause();
-      openDrawSurface({ mode: "annotate", mediaEl, originalName: fileName, signal: lbSignal }, {
+      openManagedDrawSurface({ mode: "annotate", mediaEl, originalName: fileName }, {
         onSend: (r) => sendFileToChat(r.file, "draw"),
-        onClose: () => { },
-      });
+      }, lbSignal);
     }, { signal: lbSignal });
 
     bar.append(label, annotateBtn, dlLink);
@@ -2788,6 +3173,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, { signal });
 
       div.appendChild(audioEl);
+    } else if (isRenderableGlyphMessage(msg)) {
+      div.appendChild(renderGlyphMessage(msg, signal));
     } else if (detectMedia(msg) !== null) {
       div.appendChild(renderMediaMessage(msg, signal));
     } else if (msg.type === "file") {
@@ -2929,6 +3316,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
         // Ignore clicks on file attachments
         if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
+        if ((e.target as HTMLElement).closest(".wl-msg-peer-draw")) return;
+        if ((e.target as HTMLElement).closest(".wl-msg-glyph-actions")) return;
         // Ignore clicks on media thumbnail (opens lightbox) and download button
         if ((e.target as HTMLElement).closest(".wl-media-thumb")) return;
         if ((e.target as HTMLElement).closest(".wl-media-dl")) return;
@@ -2979,7 +3368,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   let peerCanvas: HTMLCanvasElement | null = null;
   let peerCtx: CanvasRenderingContext2D | null = null;
-  let peerFadeTimer: ReturnType<typeof setTimeout> | null = null;
+  let peerLiveMsgEl: HTMLDivElement | null = null;
+  let peerLiveStatusEl: HTMLSpanElement | null = null;
+  let peerLiveTimeEl: HTMLTimeElement | null = null;
   let peerActiveStroke: PeerActiveStroke | null = null;
   let peerActivePoints: Array<{ x: number; y: number; p: number }> = [];
   let peerStrokes: PeerStrokeRecord[] = [];
@@ -2987,25 +3378,45 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function ensurePeerCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
     if (!peerCanvas || !peerCtx) {
-      const dpr = devicePixelRatio || 1;
+      if (!peerLiveMsgEl) {
+        const div = document.createElement("div");
+        div.className = "wl-msg wl-msg--peer wl-msg--peer-draw-live";
+
+        const media = document.createElement("div");
+        media.className = "wl-msg-peer-draw";
+
+        const status = document.createElement("span");
+        status.className = "wl-peer-draw-status";
+        status.textContent = "drawing…";
+
+        const ts = Date.now();
+        const timeEl = document.createElement("time");
+        timeEl.className = "wl-msg-time";
+        timeEl.dateTime = String(ts);
+        timeEl.textContent = formatTime(ts);
+
+        div.append(media, status, timeEl);
+        opts.chatMessages.appendChild(div);
+        opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
+        peerLiveMsgEl = div;
+        peerLiveStatusEl = status;
+        peerLiveTimeEl = timeEl;
+      }
+
       peerCanvas = document.createElement("canvas");
-      peerCanvas.className = "wl-peer-draw";
+      peerCanvas.className = "wl-peer-draw-inline";
       peerCanvas.setAttribute("aria-hidden", "true");
-      peerCanvas.style.cssText = [
-        "position:fixed",
-        "inset:0",
-        "width:100%",
-        "height:100%",
-        "pointer-events:none",
-        "z-index:50",
-        "opacity:1",
-        "transition:opacity 0.6s ease",
-      ].join(";");
-      peerCanvas.width = Math.round(window.innerWidth * dpr);
-      peerCanvas.height = Math.round(window.innerHeight * dpr);
+      const host = peerLiveMsgEl.querySelector<HTMLElement>(".wl-msg-peer-draw");
+      if (!host) throw new Error("peer draw host missing");
+      host.appendChild(peerCanvas);
+      const dpr = devicePixelRatio || 1;
+      const rect = host.getBoundingClientRect();
+      const cw = Math.max(1, Math.round(rect.width));
+      const ch = Math.max(1, Math.round(rect.height));
+      peerCanvas.width = Math.max(1, Math.round(cw * dpr));
+      peerCanvas.height = Math.max(1, Math.round(ch * dpr));
       peerCtx = peerCanvas.getContext("2d")!;
       peerCtx.scale(dpr, dpr);
-      document.body.appendChild(peerCanvas);
     }
     return { canvas: peerCanvas, ctx: peerCtx };
   }
@@ -3073,32 +3484,63 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function peerRerender(): void {
-    if (!peerCanvas || !peerCtx) return;
+    const host = peerLiveMsgEl?.querySelector<HTMLElement>(".wl-msg-peer-draw");
+    if (!peerCanvas || !peerCtx || !host) return;
+    const dpr = devicePixelRatio || 1;
+    const rect = host.getBoundingClientRect();
+    const cw = Math.max(1, Math.round(rect.width));
+    const ch = Math.max(1, Math.round(rect.height));
+    const targetW = Math.max(1, Math.round(cw * dpr));
+    const targetH = Math.max(1, Math.round(ch * dpr));
+    if (peerCanvas.width !== targetW || peerCanvas.height !== targetH) {
+      peerCanvas.width = targetW;
+      peerCanvas.height = targetH;
+      peerCtx = peerCanvas.getContext("2d")!;
+      peerCtx.scale(dpr, dpr);
+    }
     const W = peerCanvasW();
     const H = peerCanvasH();
     peerCtx.clearRect(0, 0, W, H);
     for (const stroke of peerStrokes) peerRenderStroke(peerCtx, stroke, W, H);
   }
 
-  function schedulePeerFade(): void {
-    if (peerFadeTimer) { clearTimeout(peerFadeTimer); peerFadeTimer = null; }
-    if (!peerCanvas) return;
-    peerFadeTimer = setTimeout(() => {
-      if (peerCanvas) peerCanvas.style.opacity = "0";
-      peerFadeTimer = setTimeout(() => {
-        if (peerCanvas) { peerCanvas.remove(); peerCanvas = null; peerCtx = null; }
-        peerFadeTimer = null;
-      }, 600);
-    }, 8000);
+  function bringPeerPreviewToBottom(): void {
+    if (!peerLiveMsgEl) return;
+    opts.chatMessages.appendChild(peerLiveMsgEl);
+    opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
+  }
+
+  function resetPeerLivePreview(): void {
+    peerActiveStroke = null;
+    peerActivePoints = [];
+    peerStrokes = [];
+    peerRedoStack = [];
+    if (peerCanvas) {
+      peerCanvas.remove();
+      peerCanvas = null;
+      peerCtx = null;
+    }
+    if (peerLiveMsgEl) {
+      peerLiveMsgEl.remove();
+      peerLiveMsgEl = null;
+      peerLiveStatusEl = null;
+      peerLiveTimeEl = null;
+    }
   }
 
   function handleRemoteDraw(ev: DrawStreamEvent): void {
     const SCALE = 32767;
     switch (ev.kind) {
       case "begin": {
+        resetPeerLivePreview();
         const { canvas, ctx } = ensurePeerCanvas();
-        if (peerFadeTimer) { clearTimeout(peerFadeTimer); peerFadeTimer = null; }
-        canvas.style.opacity = "1";
+        bringPeerPreviewToBottom();
+        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing…";
+        if (peerLiveTimeEl) {
+          const ts = Date.now();
+          peerLiveTimeEl.dateTime = String(ts);
+          peerLiveTimeEl.textContent = formatTime(ts);
+        }
         const sp: [number, number, number] = [
           Math.round(ev.start.x * SCALE),
           Math.round(ev.start.y * SCALE),
@@ -3132,6 +3574,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       case "glyph": {
         if (!peerActiveStroke) break;
+        bringPeerPreviewToBottom();
         const { ctx } = ensurePeerCanvas();
         const W = peerCanvasW();
         const H = peerCanvasH();
@@ -3166,6 +3609,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       case "end": {
         if (!peerActiveStroke) break;
+        bringPeerPreviewToBottom();
         const { ctx } = ensurePeerCanvas();
         // Finalize the bezier tail segment
         if (peerActiveStroke.hasLastMid) {
@@ -3190,7 +3634,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         });
         peerActivePoints = [];
         peerActiveStroke = null;
-        schedulePeerFade();
+        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing sent";
         break;
       }
       case "clear": {
@@ -3199,24 +3643,31 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         peerActiveStroke = null;
         peerActivePoints = [];
         if (peerCanvas && peerCtx) peerCtx.clearRect(0, 0, peerCanvasW(), peerCanvasH());
-        schedulePeerFade();
+        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing cleared";
         break;
       }
       case "undo": {
         if (peerStrokes.length === 0) break;
         peerRedoStack.push(peerStrokes.pop()!);
         peerRerender();
-        schedulePeerFade();
+        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing…";
         break;
       }
       case "redo": {
         if (peerRedoStack.length === 0) break;
         peerStrokes.push(peerRedoStack.pop()!);
         peerRerender();
-        schedulePeerFade();
+        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing…";
         break;
       }
       case "presence":
+        if (!ev.active && !peerActiveStroke && peerLiveStatusEl) {
+          peerLiveStatusEl.textContent = "idle";
+        } else if (ev.active) {
+          ensurePeerCanvas();
+          bringPeerPreviewToBottom();
+          if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing…";
+        }
         break;
     }
   }
@@ -3353,6 +3804,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "disconnected": {
+        closeDrawSurface();
+        resetPeerLivePreview();
         haptic("disconnected");
         const endText = opts.disconnectedSection.querySelector(".wl-end-text");
         if (endText) endText.textContent = detail === "vanished"
@@ -3404,6 +3857,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /* ── Reset to idle ─────────────────────────────────────── */
 
   function resetToIdle(): void {
+    closeDrawSurface();
+    resetPeerLivePreview();
     relayActive = false;
     lastErrorWasRelay = false;
     lastErrorWasFlare = false;
@@ -4234,11 +4689,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     function pickDraw(): void {
       closePopover();
-      openDrawSurface({ mode: "blank", signal }, {
+      openManagedDrawSurface({ mode: "blank" }, {
         onSend: (r) => sendFileToChat(r.file, "draw"),
         onEvent: (ev) => session?.sendDrawStream(ev),
-        onClose: () => { },
-      });
+      }, signal);
     }
 
     function pickClear(): void {
@@ -4577,6 +5031,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   return () => {
     ac.abort();
+    closeDrawSurface();
+    resetPeerLivePreview();
     relayActive = false;
     if (relayAbort) {
       relayAbort.abort();
