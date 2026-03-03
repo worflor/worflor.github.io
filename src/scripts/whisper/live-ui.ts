@@ -3681,7 +3681,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     switch (ev.kind) {
       case "begin": {
         removeLegacyPeerOverlays();
-        const { canvas, ctx } = ensurePeerCanvas();
+        ensurePeerCanvas();
         bringPeerPreviewToBottom();
         setPeerLiveDrawState("active");
         if (peerLiveTimeEl) {
@@ -3708,16 +3708,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         };
         peerActivePoints = [{ x: ev.start.x, y: ev.start.y, p: ev.start.p }];
         peerRedoStack = [];
-        // Draw the starting dot
-        const pressureSens = ev.tool !== "eraser";
-        const w = pressureSens ? ev.width * (0.3 + ev.start.p * 0.7) : ev.width;
-        ctx.save();
-        ctx.globalCompositeOperation = ev.tool === "eraser" ? "destination-out" : "source-over";
-        ctx.fillStyle = ev.tool === "eraser" ? "rgba(0,0,0,1)" : ev.color;
-        ctx.beginPath();
-        ctx.arc(peerActiveStroke.lastX, peerActiveStroke.lastY, w / 2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
         break;
       }
       case "glyph": {
@@ -3759,7 +3749,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (!peerActiveStroke) break;
         bringPeerPreviewToBottom();
         const { ctx } = ensurePeerCanvas();
-        // Finalize the bezier tail segment
+        // Finalize the bezier tail segment, or render a true tap dot if no
+        // streamed segments were emitted for this stroke.
         if (peerActiveStroke.hasLastMid) {
           ctx.save();
           ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
@@ -3772,6 +3763,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
             peerActiveStroke.lastX, peerActiveStroke.lastY,
             peerActiveStroke.width, peerActiveStroke.lastP,
             peerActiveStroke.tool !== "eraser");
+          ctx.restore();
+        } else {
+          const pressureSens = peerActiveStroke.tool !== "eraser";
+          const w = pressureSens
+            ? peerActiveStroke.width * (0.3 + peerActiveStroke.lastP * 0.7)
+            : peerActiveStroke.width;
+          ctx.save();
+          ctx.globalCompositeOperation = peerActiveStroke.tool === "eraser" ? "destination-out" : "source-over";
+          ctx.fillStyle = peerActiveStroke.tool === "eraser" ? "rgba(0,0,0,1)" : peerActiveStroke.color;
+          ctx.beginPath();
+          ctx.arc(peerActiveStroke.lastX, peerActiveStroke.lastY, w / 2, 0, Math.PI * 2);
+          ctx.fill();
           ctx.restore();
         }
         peerStrokes.push({
