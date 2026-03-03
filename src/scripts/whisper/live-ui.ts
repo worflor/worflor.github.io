@@ -1317,6 +1317,272 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return type.startsWith("audio/") || isWhisperAudioCodec(msg.fileType, msg.fileName);
   }
 
+  type MediaKind = "image" | "video";
+
+  /** Extension → MIME fallback for when the peer sends a generic/missing type. */
+  const EXT_MIME: Record<string, string> = {
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+    webp: "image/webp", avif: "image/avif", svg: "image/svg+xml", bmp: "image/bmp",
+    ico: "image/x-icon", tif: "image/tiff", tiff: "image/tiff",
+    mp4: "video/mp4", webm: "video/webm", ogv: "video/ogg", mov: "video/quicktime",
+    mkv: "video/x-matroska", avi: "video/x-msvideo", m4v: "video/mp4",
+  };
+
+  /**
+   * Detect whether a file message is renderable media. We don't hardcode a list
+   * of "supported" types — anything with an image/* or video/* MIME is attempted,
+   * and the browser's own codec support decides whether it can be decoded.
+   * An onerror fallback at render time catches anything the browser can't handle.
+   */
+  function detectMedia(msg: LiveMessage): { kind: MediaKind; mime: string } | null {
+    if (msg.type !== "file" || !msg.fileData) return null;
+    const t = (msg.fileType ?? "").toLowerCase();
+    // Primary: trust the MIME type prefix
+    if (t.startsWith("image/")) return { kind: "image", mime: t };
+    if (t.startsWith("video/")) return { kind: "video", mime: t };
+    // Fallback: infer from extension when MIME is missing or generic
+    const ext = (msg.fileName ?? "").toLowerCase().split(".").pop() ?? "";
+    const inferred = EXT_MIME[ext];
+    if (inferred) {
+      const k: MediaKind = inferred.startsWith("image/") ? "image" : "video";
+      return { kind: k, mime: inferred };
+    }
+    return null;
+  }
+
+  /* ── Media lightbox ─────────────────────────────────────────────── */
+  let lightboxEl: HTMLElement | null = null;
+  let lightboxAc: AbortController | null = null;
+
+  function openMediaLightbox(src: string, dlUrl: string, fileName: string, kind: MediaKind): void {
+    // Close any existing lightbox first
+    closeMediaLightbox();
+
+    const lbAc = new AbortController();
+    const lbSignal = lbAc.signal;
+
+    const overlay = document.createElement("div");
+    overlay.className = "wl-lightbox";
+    overlay.addEventListener("wheel", (e) => e.preventDefault(), { passive: false, signal: lbSignal });
+
+    const inner = document.createElement("div");
+    inner.className = "wl-lightbox-inner";
+
+    if (kind === "image") {
+      const img = document.createElement("img");
+      img.className = "wl-lightbox-img";
+      img.src = src;
+      img.alt = fileName;
+      img.draggable = false;
+      inner.appendChild(img);
+    } else {
+      const video = document.createElement("video");
+      video.className = "wl-lightbox-video";
+      video.src = src;
+      video.controls = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      inner.appendChild(video);
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "wl-lightbox-bar";
+
+    const label = document.createElement("span");
+    label.className = "wl-lightbox-name";
+    label.textContent = fileName;
+
+    const dlLink = document.createElement("a");
+    dlLink.className = "wl-lightbox-dl";
+    dlLink.href = dlUrl;
+    dlLink.download = fileName;
+    dlLink.title = "Download";
+    dlLink.innerHTML = `<svg width="16" height="16" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+
+    bar.append(label, dlLink);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "wl-lightbox-close";
+    closeBtn.title = "Close";
+    closeBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 4L14 14M14 4L4 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+    closeBtn.addEventListener("click", closeMediaLightbox, { signal: lbSignal });
+
+    overlay.append(inner, bar, closeBtn);
+
+    // Backdrop click to close (not clicks on media itself)
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeMediaLightbox();
+    }, { signal: lbSignal });
+
+    // Escape to close — document-level, cleaned up by lbAc.abort()
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeMediaLightbox(); }
+    }, { signal: lbSignal });
+
+    requestAnimationFrame(() => overlay.classList.add("wl-lightbox--open"));
+
+    document.body.appendChild(overlay);
+    lightboxEl = overlay;
+    lightboxAc = lbAc;
+  }
+
+  function closeMediaLightbox(): void {
+    if (!lightboxEl) return;
+    const el = lightboxEl;
+    lightboxEl = null;
+    // Abort all lightbox event listeners in one shot
+    lightboxAc?.abort();
+    lightboxAc = null;
+    el.classList.remove("wl-lightbox--open");
+    // Release video resources
+    const vid = el.querySelector("video");
+    if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); }
+    el.addEventListener("transitionend", () => el.remove(), { once: true });
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 350);
+  }
+
+  /* ── Media message renderer ───────────────────────────────────────
+   * Extracted as a self-contained function so future features (PictoChat
+   * annotation, drawing overlays, etc.) can extend it by adding children
+   * to the returned container or the info bar without touching the main
+   * addChatMessage flow.
+   *
+   * Structure:
+   *   .wl-msg-media
+   *     .wl-media-thumb          ← click → lightbox
+   *       <img> | <video> + .wl-media-play-overlay
+   *     .wl-media-info           ← action bar, extensible
+   *       .wl-media-name
+   *       .wl-media-size
+   *       .wl-media-dl           ← download button
+   * ─────────────────────────────────────────────────────────────────── */
+
+  function renderMediaMessage(msg: LiveMessage, abortSignal: AbortSignal): HTMLElement {
+    const { kind, mime } = detectMedia(msg)!;
+    const fileData = msg.fileData!;
+    const fileName = msg.fileName ?? "file";
+    // Extract fileSize before closures so msg (and msg.fileData) can be GC'd
+    // after blob creation — prevents retaining raw file bytes for the DOM lifetime.
+    const fileSize = msg.fileSize;
+
+    // Display blob uses the resolved MIME so the browser can decode it.
+    // (SVG via <img> is sandboxed — no script execution.)
+    const displayBlob = new Blob([fileData], { type: mime });
+    const displayUrl = URL.createObjectURL(displayBlob);
+    objectUrls.add(displayUrl);
+
+    // Download blob uses octet-stream (same convention as all other file downloads)
+    const dlBlob = new Blob([fileData], { type: "application/octet-stream" });
+    const dlUrl = URL.createObjectURL(dlBlob);
+    objectUrls.add(dlUrl);
+
+    const root = document.createElement("div");
+    root.className = "wl-msg-media";
+
+    // If the browser can't decode the media, degrade to generic file card.
+    // Guard against firing on detached elements (e.g. session ended before load).
+    const fallbackToFile = () => {
+      if (!root.isConnected) return;
+      root.className = "wl-msg-file";
+      root.textContent = "";
+      const n = document.createElement("span");
+      n.className = "wl-msg-file-name";
+      n.textContent = fileName;
+      const s = document.createElement("span");
+      s.className = "wl-msg-file-size";
+      s.textContent = fileSize ? formatSize(fileSize) : "";
+      const a = document.createElement("a");
+      a.className = "wl-msg-file-download";
+      a.href = dlUrl;
+      a.download = fileName;
+      a.textContent = "download";
+      root.append(n, s, a);
+    };
+
+    // ── Thumbnail ──
+    const thumb = createMediaThumbnail(kind, displayUrl, fileName, fallbackToFile, abortSignal);
+    thumb.addEventListener("click", () => {
+      openMediaLightbox(displayUrl, dlUrl, fileName, kind);
+    }, { signal: abortSignal });
+
+    // ── Info bar ──
+    const infoBar = createMediaInfoBar(fileName, fileSize, dlUrl);
+
+    root.append(thumb, infoBar);
+    return root;
+  }
+
+  /** Build the thumbnail container for an image or video. */
+  function createMediaThumbnail(
+    kind: MediaKind, src: string, alt: string, onError: () => void,
+    sig: AbortSignal,
+  ): HTMLElement {
+    const thumb = document.createElement("div");
+    thumb.className = "wl-media-thumb";
+
+    if (kind === "image") {
+      const img = document.createElement("img");
+      img.className = "wl-media-img";
+      img.src = src;
+      img.alt = alt;
+      img.draggable = false;
+      img.style.opacity = "0";
+      img.addEventListener("load", () => {
+        img.style.transition = "opacity 180ms ease";
+        img.style.opacity = "1";
+      }, { once: true, signal: sig });
+      img.addEventListener("error", onError, { once: true, signal: sig });
+      thumb.appendChild(img);
+    } else {
+      const video = document.createElement("video");
+      video.className = "wl-media-video";
+      video.src = src;
+      video.preload = "metadata";
+      video.muted = true;
+      video.playsInline = true;
+      video.draggable = false;
+      video.style.opacity = "0";
+      video.addEventListener("loadeddata", () => {
+        video.style.transition = "opacity 180ms ease";
+        video.style.opacity = "1";
+      }, { once: true, signal: sig });
+      video.addEventListener("error", onError, { once: true, signal: sig });
+
+      const playOverlay = document.createElement("div");
+      playOverlay.className = "wl-media-play-overlay";
+      playOverlay.innerHTML = `<svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13" fill="rgb(0 0 0 / 0.45)" stroke="rgb(255 255 255 / 0.5)" stroke-width="1"/><path d="M11 8.5L20.5 14L11 19.5V8.5Z" fill="rgb(255 255 255 / 0.9)"/></svg>`;
+
+      thumb.append(video, playOverlay);
+    }
+
+    return thumb;
+  }
+
+  /** Build the info bar beneath the thumbnail (filename, size, download). */
+  function createMediaInfoBar(fileName: string, fileSize: number | undefined, dlUrl: string): HTMLElement {
+    const bar = document.createElement("div");
+    bar.className = "wl-media-info";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "wl-media-name";
+    nameEl.textContent = fileName;
+
+    const sizeEl = document.createElement("span");
+    sizeEl.className = "wl-media-size";
+    sizeEl.textContent = fileSize ? formatSize(fileSize) : "";
+
+    const dlBtn = document.createElement("a");
+    dlBtn.className = "wl-media-dl";
+    dlBtn.href = dlUrl;
+    dlBtn.download = fileName;
+    dlBtn.title = "Download";
+    dlBtn.innerHTML = `<svg viewBox="0 0 14 14" fill="none"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+
+    bar.append(nameEl, sizeEl, dlBtn);
+    return bar;
+  }
+
   // AudioWorklet-based PTT state
   let recordingStream: MediaStream | null = null;
   let recordingStart = 0;
@@ -1763,10 +2029,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     dcBlock(flat); // remove mic DC bias before encryption
     encodeAdpcm(flat, pcmSampleRate, encKey).then((adpcmBytes) => {
       if (!session) {
+        const previewMsgId = -(++previewSendId);
         addChatMessage({
           type: "file", direction: "self",
           fileName: name, fileSize: adpcmBytes.length, fileType: ADPCM_MIME,
-          fileData: adpcmBytes, timestamp: Date.now(),
+          fileData: adpcmBytes, timestamp: Date.now(), msgId: previewMsgId,
         });
         simulateSendEnergy();
         return;
@@ -2485,6 +2752,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, { signal });
 
       div.appendChild(audioEl);
+    } else if (detectMedia(msg) !== null) {
+      div.appendChild(renderMediaMessage(msg, signal));
     } else if (msg.type === "file") {
       const fileEl = document.createElement("div");
       fileEl.className = "wl-msg-file";
@@ -2624,6 +2893,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
         // Ignore clicks on file attachments
         if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
+        // Ignore clicks on media thumbnail (opens lightbox) and download button
+        if ((e.target as HTMLElement).closest(".wl-media-thumb")) return;
+        if ((e.target as HTMLElement).closest(".wl-media-dl")) return;
         // Ignore clicks on timestamps (which toggle time format)
         if ((e.target as HTMLElement).closest(".wl-msg-time")) return;
         const isOpen = div.hasAttribute("data-shelf-open");
@@ -3715,8 +3987,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   opts.chatFileInput.addEventListener("change", async () => {
     const file = opts.chatFileInput.files?.[0];
-    if (!file || !session) return;
+    if (!file) return;
     opts.chatFileInput.value = "";
+    if (!session) {
+      // Preview mode — read file locally, display as self message
+      const fileData = new Uint8Array(await file.arrayBuffer());
+      const previewMsgId = -(++previewSendId);
+      addChatMessage({
+        type: "file", direction: "self",
+        fileName: file.name, fileSize: file.size, fileType: file.type,
+        fileData, timestamp: Date.now(), msgId: previewMsgId,
+      });
+      simulateSendEnergy();
+      return;
+    }
     sendBeginFill();
     try {
       const msgId = await session.sendFile(file);
@@ -3744,7 +4028,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.chatMessages.classList.remove("wl-chat-drop-active");
     syncComposeIntent();
     const file = (e as DragEvent).dataTransfer?.files?.[0];
-    if (!file || !session) return;
+    if (!file) return;
+    if (!session) {
+      const fileData = new Uint8Array(await file.arrayBuffer());
+      const previewMsgId = -(++previewSendId);
+      addChatMessage({
+        type: "file", direction: "self",
+        fileName: file.name, fileSize: file.size, fileType: file.type,
+        fileData, timestamp: Date.now(), msgId: previewMsgId,
+      });
+      simulateSendEnergy();
+      return;
+    }
     sendBeginFill();
     try {
       const msgId = await session.sendFile(file);
@@ -3891,6 +4186,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (composeActivityRaf) { cancelAnimationFrame(composeActivityRaf); composeActivityRaf = 0; }
     cancelRecording();
     stopAllAudio();
+    closeMediaLightbox();
     document.title = originalTitle;
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.clear();

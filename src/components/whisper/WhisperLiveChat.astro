@@ -680,7 +680,8 @@
 
   :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-file),
-  :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-audio) {
+  :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-audio),
+  :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-media) {
     border-bottom-right-radius: calc(var(--whisper-radius) * 0.15);
   }
 
@@ -692,14 +693,16 @@
 
   :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-file),
-  :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-audio) {
+  :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-audio),
+  :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-media) {
     color: rgb(var(--color-text-rgb) / 0.88);
     border-color: rgb(var(--color-text-rgb) / 0.22);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-file),
-  :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-audio) {
+  :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-audio),
+  :global(.wl-chat-messages) :global(.wl-msg--peer .wl-msg-media) {
     color: rgb(var(--msg-accent) / 0.9);
     border-bottom-left-radius: calc(var(--whisper-radius) * 0.15);
   }
@@ -728,12 +731,14 @@
   /* Soften corner between grouped bubbles */
   :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-file),
-  :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-audio) {
+  :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-audio),
+  :global(.wl-chat-messages) :global(.wl-msg--self + .wl-msg--self .wl-msg-media) {
     border-top-right-radius: calc(var(--whisper-radius) * 0.2);
   }
   :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-text),
   :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-file),
-  :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-audio) {
+  :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-audio),
+  :global(.wl-chat-messages) :global(.wl-msg--peer + .wl-msg--peer .wl-msg-media) {
     border-top-left-radius: calc(var(--whisper-radius) * 0.2);
   }
 
@@ -1012,6 +1017,265 @@
 
   :global(.wl-chat-messages) :global(.wl-msg-audio[data-playing] .wl-audio-duration) {
     color: rgb(var(--msg-accent) / 0.65);
+  }
+
+  /* ── Media viewer (image / video) ──────────────────────────── */
+  :global(.wl-chat-messages) :global(.wl-msg-media) {
+    display: grid;
+    gap: 0;
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    border: 1px solid rgb(var(--msg-accent) / 0.14);
+    background: linear-gradient(
+      135deg,
+      rgb(var(--msg-accent) / 0.07) 0%,
+      rgb(var(--msg-accent) / 0.03) 100%
+    );
+    overflow: hidden;
+    max-width: min(18rem, 100%);
+    transition:
+      border-color 300ms ease,
+      box-shadow 300ms ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-thumb) {
+    position: relative;
+    cursor: pointer;
+    line-height: 0;
+    overflow: hidden;
+    background: rgb(var(--msg-accent) / 0.06);
+    min-height: 3rem;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition: filter 180ms ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-thumb:hover) {
+    filter: brightness(1.06);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-thumb:active) {
+    filter: brightness(0.95);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-img),
+  :global(.wl-chat-messages) :global(.wl-media-video) {
+    display: block;
+    width: 100%;
+    max-height: 22rem;
+    object-fit: contain;
+    background: rgb(0 0 0 / 0.15);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-play-overlay) {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-thumb:hover .wl-media-play-overlay) {
+    opacity: 0.85;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-info) {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.6rem;
+    min-height: 2rem;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-name) {
+    flex: 1 1 0;
+    min-width: 0;
+    font-size: calc(var(--text-sm) * 0.72);
+    color: rgb(var(--msg-accent) / 0.5);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-size) {
+    font-size: calc(var(--text-sm) * 0.7);
+    color: rgb(var(--color-text-rgb) / 0.28);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-dl) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.7rem;
+    height: 1.7rem;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--msg-accent) / 0.22);
+    background: rgb(var(--msg-accent) / 0.08);
+    color: rgb(var(--msg-accent) / 0.6);
+    transition:
+      color 200ms ease,
+      background 200ms ease,
+      border-color 200ms ease;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+    padding: 0.3rem;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-dl svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-dl:hover) {
+    color: rgb(var(--msg-accent) / 0.85);
+    background: rgb(var(--msg-accent) / 0.15);
+    border-color: rgb(var(--msg-accent) / 0.38);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-media-dl:active) {
+    transform: scale(0.92);
+  }
+
+  /* ── Lightbox overlay ──────────────────────────────────────── */
+  :global(.wl-lightbox) {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgb(0 0 0 / 0.82);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    opacity: 0;
+    transition: opacity 180ms ease;
+    touch-action: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  :global(.wl-lightbox--open) {
+    opacity: 1;
+  }
+
+  :global(.wl-lightbox-inner) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    max-width: calc(100vw - 2rem);
+    max-height: calc(100vh - 5rem);
+    max-height: calc(100dvh - 5rem);
+    overflow: hidden;
+  }
+
+  :global(.wl-lightbox-img) {
+    max-width: 100%;
+    max-height: calc(100vh - 5rem);
+    max-height: calc(100dvh - 5rem);
+    object-fit: contain;
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: pinch-zoom;
+  }
+
+  :global(.wl-lightbox-video) {
+    max-width: 100%;
+    max-height: calc(100vh - 5rem);
+    max-height: calc(100dvh - 5rem);
+    border-radius: calc(var(--whisper-radius) * 0.55);
+    box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
+    outline: none;
+    touch-action: manipulation;
+  }
+
+  :global(.wl-lightbox-bar) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.7rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: 9999px;
+    background: rgb(255 255 255 / 0.06);
+    border: 1px solid rgb(255 255 255 / 0.08);
+    max-width: calc(100vw - 2rem);
+  }
+
+  :global(.wl-lightbox-name) {
+    font-size: calc(var(--text-sm) * 0.72);
+    color: rgb(255 255 255 / 0.55);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1 1 0;
+  }
+
+  :global(.wl-lightbox-dl) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.7rem;
+    height: 1.7rem;
+    padding: 0.55rem;
+    margin: -0.55rem;
+    margin-right: -0.35rem;
+    border-radius: 50%;
+    color: rgb(255 255 255 / 0.5);
+    transition:
+      color 200ms ease,
+      background 200ms ease;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-lightbox-dl:hover) {
+    color: rgb(255 255 255 / 0.9);
+    background: rgb(255 255 255 / 0.1);
+  }
+
+  :global(.wl-lightbox-dl:active) {
+    transform: scale(0.92);
+  }
+
+  :global(.wl-lightbox-close) {
+    position: absolute;
+    top: 0.75rem;
+    top: calc(0.75rem + env(safe-area-inset-top));
+    right: 0.75rem;
+    right: calc(0.75rem + env(safe-area-inset-right));
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 50%;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.06);
+    color: rgb(255 255 255 / 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition:
+      background 200ms ease,
+      color 200ms ease,
+      border-color 200ms ease,
+      transform 120ms ease;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-lightbox-close:hover) {
+    background: rgb(255 255 255 / 0.12);
+    color: rgb(255 255 255 / 0.9);
+    border-color: rgb(255 255 255 / 0.22);
+  }
+
+  :global(.wl-lightbox-close:active) {
+    transform: scale(0.92);
   }
 
   :global(.wl-chat-compose) {
@@ -1789,6 +2053,20 @@
     :global(.wl-chat-messages) :global(.wl-msg) {
       max-width: 90%;
     }
+
+    /* On phones the chat IS the screen — let media fill the bubble */
+    :global(.wl-chat-messages) :global(.wl-msg-media) {
+      max-width: 100%;
+    }
+
+    :global(.wl-lightbox-inner) {
+      max-width: calc(100vw - 1rem);
+    }
+
+    :global(.wl-lightbox-img),
+    :global(.wl-lightbox-video) {
+      border-radius: 3px;
+    }
   }
 
   @media (max-height: 760px) {
@@ -1817,6 +2095,32 @@
     :global(.whisper-mini-btn.wl-chat-send-btn):hover {
       background: rgb(var(--chromatic-cyan) / 0.08);
       border-color: rgb(var(--chromatic-cyan) / 0.3);
+    }
+
+    /* Disable sticky hover brightness on touch — it lingers after tap */
+    :global(.wl-chat-messages) :global(.wl-media-thumb:hover) {
+      filter: none;
+    }
+
+    :global(.wl-chat-messages) :global(.wl-media-thumb:hover .wl-media-play-overlay) {
+      opacity: 1;
+    }
+
+    :global(.wl-chat-messages) :global(.wl-media-dl:hover) {
+      color: rgb(var(--msg-accent) / 0.6);
+      background: rgb(var(--msg-accent) / 0.08);
+      border-color: rgb(var(--msg-accent) / 0.22);
+    }
+
+    :global(.wl-lightbox-close:hover) {
+      background: rgb(255 255 255 / 0.06);
+      color: rgb(255 255 255 / 0.6);
+      border-color: rgb(255 255 255 / 0.1);
+    }
+
+    :global(.wl-lightbox-dl:hover) {
+      color: rgb(255 255 255 / 0.5);
+      background: none;
     }
   }
 </style>
