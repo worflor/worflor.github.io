@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
-    "test:whisper": "tsx --test tests/whisper/**/*.test.ts",
-    "test:cage": "tsx --test tests/cage/**/*.test.ts",
-    "test:cage:watch": "tsx --test --watch tests/cage/**/*.test.ts",
+    "test:whisper": "tsx --test tests/whisper/*.test.ts",
+    "test:cage": "tsx --test tests/cage/*.test.ts",
+    "test:cage:watch": "tsx --test --watch tests/cage/*.test.ts",
     "build": "npm run test:whisper && astro check && astro build",
     "preview": "astro preview",
     "astro": "astro"
