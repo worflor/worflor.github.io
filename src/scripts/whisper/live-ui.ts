@@ -3177,6 +3177,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         session.sendCtrl(CTRL_OP.SEEN, encodeSeenPayload(msg.msgId));
       }
     }
+    updateControls();
   }
 
   /* ── Remote peer drawing overlay ─────────────────────────────── */
