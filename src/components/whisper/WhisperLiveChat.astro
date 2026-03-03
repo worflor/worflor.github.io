@@ -2219,9 +2219,20 @@
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     opacity: 0;
     transition: opacity 200ms ease;
+  }
+
+  :global(.wl-draw *) {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   :global(.wl-draw.--open) {
@@ -2233,6 +2244,8 @@
     box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
     touch-action: none;
     cursor: crosshair;
+    outline: none;
+    -webkit-user-drag: none;
   }
 
   :global(.wl-draw-close) {

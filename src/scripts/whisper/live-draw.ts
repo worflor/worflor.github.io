@@ -306,6 +306,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   const canvas = document.createElement("canvas");
   canvas.className = "wl-draw-canvas";
   canvas.style.touchAction = "none";
+  canvas.draggable = false;
 
   const toolbar = document.createElement("div");
   toolbar.className = "wl-draw-toolbar";
@@ -1481,7 +1482,10 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   canvas.addEventListener("pointermove", onPointerMove, { signal: ds });
   canvas.addEventListener("pointerup", onPointerEnd, { signal: ds });
   canvas.addEventListener("pointercancel", onPointerEnd, { signal: ds });
+  overlay.addEventListener("selectstart", (e) => e.preventDefault(), { signal: ds });
+  overlay.addEventListener("dragstart", (e) => e.preventDefault(), { signal: ds });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault(), { signal: ds });
+  overlay.addEventListener("contextmenu", (e) => e.preventDefault(), { signal: ds });
 
   // Block browser history navigation on mouse back/forward buttons while draw is open.
   // We capture at window level for broader browser compatibility.
