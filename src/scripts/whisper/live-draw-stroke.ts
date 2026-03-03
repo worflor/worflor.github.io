@@ -70,8 +70,8 @@ function isSharpTurn(prevX: number, prevY: number, nextX: number, nextY: number)
 
 export function createStrokeSampler(start: TimedDrawPoint): StrokeSamplerState {
   return {
-    lastKept: start,
-    lastRaw: start,
+    lastKept: { x: start.x, y: start.y, p: start.p, t: start.t },
+    lastRaw: { x: start.x, y: start.y, p: start.p, t: start.t },
     prevPressure: start.p,
     hasPrevVec: false,
     prevVecX: 0,
@@ -143,14 +143,20 @@ export function sampleStrokePoint(
     }
   }
 
-  state.lastRaw = { ...raw, p };
+  state.lastRaw.x = raw.x;
+  state.lastRaw.y = raw.y;
+  state.lastRaw.t = raw.t;
+  state.lastRaw.p = p;
   state.prevPressure = p;
 
   if (keep) {
     state.hasPrevVec = true;
     state.prevVecX = keepDxPx;
     state.prevVecY = keepDyPx;
-    state.lastKept = { x: point.x, y: point.y, p: point.p, t: raw.t };
+    state.lastKept.x = point.x;
+    state.lastKept.y = point.y;
+    state.lastKept.p = point.p;
+    state.lastKept.t = raw.t;
   }
 
   return { keep, point };

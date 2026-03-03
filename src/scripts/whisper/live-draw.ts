@@ -106,22 +106,37 @@ const PEN_TYPES: Map<string, PenType> = new Map([
 
 const PALETTE = [
   "#f5f5f5",   // off-white
-  "#00c8ff",   // cyan
-  "#7329e0",   // purple
-  "#ff4466",   // red-pink
-  "#ffcc00",   // gold
+  "#00ffff",   // cyan (matches --chromatic-cyan)
+  "#732982",   // purple (matches --pride-purple)
+  "#ff0000",   // red (matches --chromatic-red)
+  "#028017",   // green
+  "#ffeb87",   // yellow
+  "#ff8ae4",   // pink
 ];
 
 /* ── Dynamic cursor ───────────────────────────────────────── */
 
+let _cursorCacheR = -1;
+let _cursorCacheColor = "";
+let _cursorCacheIsEraser = false;
+let _cursorCacheValue = "";
+
 function buildCursor(canvas: HTMLCanvasElement, color: string, size: number, isEraser = false): void {
-  const r = Math.max(3, size / 2);
+  const r = Math.max(3, Math.round(size / 2));
+  if (r === _cursorCacheR && color === _cursorCacheColor && isEraser === _cursorCacheIsEraser) {
+    canvas.style.cursor = _cursorCacheValue;
+    return;
+  }
   const d = (r + 2) * 2;
   const c = r + 2;
   const svg = isEraser
     ? `<svg xmlns="http://www.w3.org/2000/svg" width="${d}" height="${d}"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="1.5"/></svg>`
     : `<svg xmlns="http://www.w3.org/2000/svg" width="${d}" height="${d}"><circle cx="${c}" cy="${c}" r="${r}" fill="${color}" opacity="0.6"/></svg>`;
-  canvas.style.cursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${c} ${c}, crosshair`;
+  _cursorCacheValue = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${c} ${c}, crosshair`;
+  _cursorCacheR = r;
+  _cursorCacheColor = color;
+  _cursorCacheIsEraser = isEraser;
+  canvas.style.cursor = _cursorCacheValue;
 }
 
 /* ── Checkpoint engine ────────────────────────────────────── */
@@ -653,7 +668,13 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     flushPoints();
     finalizeCurrentStrokeTail();
     if (currentStroke.points.length > 0) {
-      if (callbacks.onEvent) callbacks.onEvent({ kind: "end", strokeId: nextStrokeId });
+      if (callbacks.onEvent) {
+        if (strokeEncoder) {
+          const tail = strokeEncoder.flush();
+          if (tail) callbacks.onEvent({ kind: "glyph", strokeId: nextStrokeId, data: tail });
+        }
+        callbacks.onEvent({ kind: "end", strokeId: nextStrokeId });
+      }
       commitStroke(currentStroke);
       nextStrokeId++;
     }
@@ -696,11 +717,22 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
       flushPoints();
       finalizeCurrentStrokeTail();
-      if (currentStroke.points.length > 0) commitStroke(currentStroke);
+      if (currentStroke.points.length > 0) {
+        if (callbacks.onEvent) {
+          if (strokeEncoder) {
+            const tail = strokeEncoder.flush();
+            if (tail) callbacks.onEvent({ kind: "glyph", strokeId: nextStrokeId, data: tail });
+          }
+          callbacks.onEvent({ kind: "end", strokeId: nextStrokeId });
+        }
+        commitStroke(currentStroke);
+        nextStrokeId++;
+      }
       currentStroke = null;
       lastPoint = null;
       hasLastRenderMid = false;
       strokeSampler = null;
+      strokeEncoder = null;
       pendingPoints.length = 0;
       activePointerId = -1;
     }
@@ -1103,6 +1135,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     }
     restoreToCheckpoint();
     updateToolbar();
+    if (callbacks.onEvent) callbacks.onEvent({ kind: "undo" });
   }
 
   function redo(): void {
@@ -1112,6 +1145,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     renderStrokeOnCanvas(stroke);
     maybeCaptureCheckpoint();
     updateToolbar();
+    if (callbacks.onEvent) callbacks.onEvent({ kind: "redo" });
   }
 
   function commitStroke(stroke: StrokeEntry): void {
@@ -1156,6 +1190,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       lastPoint = null;
       hasLastRenderMid = false;
       strokeSampler = null;
+      strokeEncoder = null;
       pendingPoints.length = 0;
       activePointerId = -1;
       activePenPointerId = -1;
@@ -1171,6 +1206,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     checkpoints = [];
     resetCloseConfirm();
     updateToolbar();
+    if (callbacks.onEvent) callbacks.onEvent({ kind: "clear" });
   }
 
   /* ── Pointer events ────────────────────────────────────── */
@@ -1240,6 +1276,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     lastPoint = null;
     hasLastRenderMid = false;
     strokeSampler = null;
+    strokeEncoder = null;
     pendingPoints.length = 0;
     restoreToCheckpoint();
   }
@@ -1529,6 +1566,10 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
     if (currentStroke && currentStroke.points.length > 0) {
       if (callbacks.onEvent) {
+        if (strokeEncoder) {
+          const tail = strokeEncoder.flush();
+          if (tail) callbacks.onEvent({ kind: "glyph", strokeId: nextStrokeId, data: tail });
+        }
         callbacks.onEvent({ kind: "end", strokeId: nextStrokeId });
       }
       commitStroke(currentStroke);
@@ -1814,9 +1855,9 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
     const name = resolveOutputName();
     const payload = encodeGwyphPayload();
-    const stable = new Uint8Array(payload.byteLength);
-    stable.set(payload);
-    callbacks.onSend({ file: new File([stable.buffer], name, { type: OUT_MIME }) });
+    const payloadBuffer = new ArrayBuffer(payload.byteLength);
+    new Uint8Array(payloadBuffer).set(payload);
+    callbacks.onSend({ file: new File([payloadBuffer], name, { type: OUT_MIME }) });
     closeDraw();
   }, { signal: ds });
 
@@ -1876,7 +1917,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       case "p": case "P": setTool("pen"); break;
       case "b": case "B": setTool("fill"); break;
       case "i": case "I": setTool("eyedropper"); break;
-      case "6":
+      case "0":
         if (customColor) applyCustomColor(customColor);
         break;
       case "[":
@@ -1887,7 +1928,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
         break;
       default: {
         const num = parseInt(e.key);
-        if (num >= 1 && num <= 5) {
+        if (num >= 1 && num <= PALETTE.length) {
           selectPaletteColor(num - 1);
         }
       }

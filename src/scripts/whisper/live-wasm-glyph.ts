@@ -190,7 +190,7 @@ export class GlyphCodec {
                 }
                 blocks.push({ mode, kR, kI, gR, gI, wPos, wPre, residuals });
             }
-        } catch (e) { }
+        } catch { }
         return blocks;
     }
 
@@ -236,6 +236,11 @@ export class GlyphStreamEncoder {
             this.head = 2; return bytes;
         }
         return null;
+    }
+    /** Encode any buffered points that haven't filled a full block yet. Call before stroke END. */
+    flush(): Uint8Array | null {
+        if (this.head <= 2) return null;
+        return GlyphCodec.pack(GlyphCodec.encode(this.buffer.slice(0, this.head * 3)));
     }
 }
 
