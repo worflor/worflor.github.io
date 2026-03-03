@@ -1064,18 +1064,11 @@
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-peer-draw) {
-    display: grid;
-    gap: 0;
-    border-radius: calc(var(--whisper-radius) * 0.55);
-    border: 1px solid rgb(var(--msg-accent) / 0.14);
-    background: linear-gradient(
-      135deg,
-      rgb(var(--msg-accent) / 0.07) 0%,
-      rgb(var(--msg-accent) / 0.03) 100%
-    );
-    overflow: hidden;
-    max-width: min(18rem, 100%);
-    width: min(18rem, 100%);
+    width: 100%;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg-peer-draw-thumb) {
+    position: relative;
     aspect-ratio: 4 / 3;
   }
 
@@ -1086,20 +1079,23 @@
     background: rgb(0 0 0 / 0.12);
   }
 
-  :global(.wl-chat-messages) :global(.wl-peer-draw-status) {
-    font-size: calc(var(--text-sm) * 0.68);
-    color: rgb(var(--msg-accent) / 0.62);
-    letter-spacing: 0.02em;
-    padding: 0 0.25rem;
-    user-select: none;
+  :global(.wl-chat-messages) :global(.wl-msg-peer-draw[data-draw-state="active"]),
+  :global(.wl-chat-messages) :global(.wl-msg--peer-draw-live[data-draw-state="active"] .wl-msg-peer-draw) {
+    border-color: rgb(var(--chromatic-cyan) / 0.42);
   }
 
-  :global(.wl-chat-messages) :global(.wl-msg-glyph-actions) {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0.28rem 0.4rem 0.34rem;
+  :global(.wl-chat-messages) :global(.wl-msg-peer-draw[data-draw-state="sent"]),
+  :global(.wl-chat-messages) :global(.wl-msg--peer-draw-live[data-draw-state="sent"] .wl-msg-peer-draw) {
+    border-color: rgb(var(--tool-status-success) / 0.4);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg-peer-draw[data-draw-state="clear"]),
+  :global(.wl-chat-messages) :global(.wl-msg--peer-draw-live[data-draw-state="clear"] .wl-msg-peer-draw) {
+    border-color: rgb(var(--chromatic-red) / 0.35);
+  }
+
+  :global(.wl-peer-draw) {
+    display: none !important;
   }
 
   :global(.wl-chat-messages) :global(.wl-media-thumb) {
@@ -1120,6 +1116,24 @@
 
   :global(.wl-chat-messages) :global(.wl-media-thumb:active) {
     filter: brightness(0.95);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg--peer-draw-live .wl-media-thumb) {
+    cursor: default;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg[data-stream-finalized="true"] .wl-media-thumb) {
+    cursor: default;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg--peer-draw-live .wl-media-thumb:hover),
+  :global(.wl-chat-messages) :global(.wl-msg--peer-draw-live .wl-media-thumb:active) {
+    filter: none;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg[data-stream-finalized="true"] .wl-media-thumb:hover),
+  :global(.wl-chat-messages) :global(.wl-msg[data-stream-finalized="true"] .wl-media-thumb:active) {
+    filter: none;
   }
 
   :global(.wl-chat-messages) :global(.wl-media-img),
@@ -2388,6 +2402,7 @@
   }
 
   :global(.wl-draw-hint) {
+    display: none;
     min-height: 1.1rem;
     max-width: min(92vw, 32rem);
     padding: 0.1rem 0.5rem;
@@ -2502,6 +2517,27 @@
   :global(.wl-draw-tool.--active) {
     color: rgb(255 255 255 / 0.95);
     background: rgb(255 255 255 / 0.15);
+  }
+
+  :global(.wl-draw-tool.--size-host) {
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  :global(.wl-draw-tool.--dragging) {
+    color: rgb(255 255 255 / 0.9);
+    background: rgb(255 255 255 / 0.1);
+    transform: none !important;
+  }
+
+  :global(.wl-draw-size-pip) {
+    display: block;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.5;
+    pointer-events: none;
+    flex-shrink: 0;
+    transition: width 0.12s ease, height 0.12s ease;
   }
 
   /* Undo/Redo joint pill */
@@ -2669,7 +2705,8 @@
     :global(.wl-draw-redo),
     :global(.wl-draw-send),
     :global(.wl-lightbox-annotate),
-    :global(.wl-draw-hint) {
+    :global(.wl-draw-hint),
+    :global(.wl-draw-size-pip) {
       transition: none !important;
     }
   }

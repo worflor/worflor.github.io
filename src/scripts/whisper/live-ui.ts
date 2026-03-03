@@ -45,6 +45,7 @@ import { openDrawSurface } from "./live-draw";
 import { type DrawStreamEvent } from "./live-draw-stream";
 import { GlyphStreamDecoder } from "./live-wasm-glyph";
 import { exchangeViaTracker } from "./live-tracker";
+import { exportGwyphToPngBlob, gwyphPngName } from "./live-gwyph";
 
 /* ── Interface & IDs ──────────────────────────────────────── */
 
@@ -1619,64 +1620,36 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     ctx.putImageData(imgData, 0, 0);
   }
 
-  function renderGlyphMessage(msg: LiveMessage, abortSignal: AbortSignal): HTMLElement {
-    const wrap = document.createElement("div");
-    wrap.className = "wl-msg-peer-draw";
-
-    const canvas = document.createElement("canvas");
-    canvas.className = "wl-peer-draw-inline";
-    wrap.appendChild(canvas);
-
-    const info = document.createElement("div");
-    info.className = "wl-msg-glyph-actions";
-    const status = document.createElement("span");
-    status.className = "wl-peer-draw-status";
-    status.textContent = "glyph";
-    info.appendChild(status);
-
-    if (msg.fileData) {
-      const ab = new ArrayBuffer(msg.fileData.byteLength);
-      new Uint8Array(ab).set(msg.fileData);
-      const blob = new Blob([ab], { type: GLYPH_MIME });
-      const url = URL.createObjectURL(blob);
-      objectUrls.add(url);
-      const dl = document.createElement("a");
-      dl.className = "wl-msg-file-download";
-      dl.href = url;
-      dl.download = msg.fileName ?? "drawing.gwyph";
-      dl.textContent = "download";
-      info.appendChild(dl);
-
-      const glyph = parseGlyphPayload(msg.fileData);
-      if (glyph) {
-        status.textContent = `glyph ${glyph.logicalW}×${glyph.logicalH}`;
-        wrap.style.aspectRatio = `${glyph.logicalW} / ${glyph.logicalH}`;
-        requestAnimationFrame(() => {
-          const dpr = devicePixelRatio || 1;
-          const rect = wrap.getBoundingClientRect();
-          const cw = Math.max(1, Math.round(rect.width));
-          const ch = Math.max(1, Math.round(rect.height));
-          canvas.width = Math.max(1, Math.round(cw * dpr));
-          canvas.height = Math.max(1, Math.round(ch * dpr));
-          const ctx = canvas.getContext("2d");
-          if (!ctx) return;
-          ctx.scale(dpr, dpr);
-          if (glyph.mode === "blank") {
-            ctx.fillStyle = "#1a1a1a";
-            ctx.fillRect(0, 0, cw, ch);
-          }
-          for (const stroke of glyph.strokes) {
-            if (stroke.type === "pen") renderGlyphStroke(ctx, stroke, cw, ch);
-            else renderGlyphFill(ctx, stroke, cw, ch);
-          }
-        });
-      } else {
-        status.textContent = "glyph (unreadable)";
-      }
+  function renderGlyphScene(ctx: CanvasRenderingContext2D, glyph: GlyphPayload, W: number, H: number): void {
+    if (glyph.mode === "blank") {
+      ctx.fillStyle = "#1a1a1a";
+      ctx.fillRect(0, 0, W, H);
     }
+    for (const stroke of glyph.strokes) {
+      if (stroke.type === "pen") renderGlyphStroke(ctx, stroke, W, H);
+      else renderGlyphFill(ctx, stroke, W, H);
+    }
+  }
 
-    wrap.appendChild(info);
-    return wrap;
+  function glyphExportName(fileName: string): string {
+    return gwyphPngName(fileName);
+  }
+
+  async function downloadGlyphAsPng(glyphBytes: Uint8Array, sourceName: string): Promise<void> {
+    const blob = await exportGwyphToPngBlob(glyphBytes);
+    if (!blob) {
+      appendLog("drawing export failed: unable to render glyph as png");
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = url;
+    a.download = glyphExportName(sourceName);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
   }
 
   function isWhisperGlyph(fileType?: string, fileName?: string): boolean {
@@ -1685,11 +1658,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return t === GLYPH_MIME || t.includes("whisper-gwyph") || n.endsWith(".gwyph");
   }
 
-  function isRenderableGlyphMessage(msg: LiveMessage): boolean {
-    return msg.type === "file" && !!msg.fileData && isWhisperGlyph(msg.fileType, msg.fileName);
-  }
-
-  type MediaKind = "image" | "video";
+  type MediaKind = "image" | "video" | "glyph";
 
   /** Extension → MIME fallback for when the peer sends a generic/missing type. */
   const EXT_MIME: Record<string, string> = {
@@ -1708,6 +1677,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    */
   function detectMedia(msg: LiveMessage): { kind: MediaKind; mime: string } | null {
     if (msg.type !== "file" || !msg.fileData) return null;
+    if (isWhisperGlyph(msg.fileType, msg.fileName)) {
+      return { kind: "glyph", mime: GLYPH_MIME };
+    }
     const t = (msg.fileType ?? "").toLowerCase();
     // Primary: trust the MIME type prefix
     if (t.startsWith("image/")) return { kind: "image", mime: t };
@@ -1759,7 +1731,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     });
   }
 
-  function openMediaLightbox(src: string, dlUrl: string, fileName: string, kind: MediaKind): void {
+  function openMediaLightbox(
+    src: string,
+    dlUrl: string,
+    fileName: string,
+    kind: MediaKind,
+    glyph?: GlyphPayload,
+    glyphBytes?: Uint8Array,
+  ): void {
     // Close any existing lightbox first
     closeMediaLightbox();
 
@@ -1780,7 +1759,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       img.alt = fileName;
       img.draggable = false;
       inner.appendChild(img);
-    } else {
+    } else if (kind === "video") {
       const video = document.createElement("video");
       video.className = "wl-lightbox-video";
       video.src = src;
@@ -1788,6 +1767,34 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       video.autoplay = true;
       video.playsInline = true;
       inner.appendChild(video);
+    } else {
+      const frame = document.createElement("div");
+      frame.className = "wl-lightbox-img";
+      frame.style.display = "grid";
+      frame.style.placeItems = "center";
+
+      const canvas = document.createElement("canvas");
+      canvas.className = "wl-peer-draw-inline";
+      canvas.style.width = "100%";
+      canvas.style.height = "100%";
+      canvas.style.aspectRatio = `${Math.max(1, glyph?.logicalW ?? 4)} / ${Math.max(1, glyph?.logicalH ?? 3)}`;
+      frame.appendChild(canvas);
+      inner.appendChild(frame);
+
+      if (glyph) {
+        requestAnimationFrame(() => {
+          const dpr = devicePixelRatio || 1;
+          const rect = frame.getBoundingClientRect();
+          const cw = Math.max(1, Math.round(rect.width));
+          const ch = Math.max(1, Math.round(rect.height));
+          canvas.width = Math.max(1, Math.round(cw * dpr));
+          canvas.height = Math.max(1, Math.round(ch * dpr));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+          ctx.scale(dpr, dpr);
+          renderGlyphScene(ctx, glyph, cw, ch);
+        });
+      }
     }
 
     const bar = document.createElement("div");
@@ -1799,9 +1806,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     const dlLink = document.createElement("a");
     dlLink.className = "wl-lightbox-dl";
-    dlLink.href = dlUrl;
-    dlLink.download = fileName;
-    dlLink.title = "Download";
+    if (kind === "glyph" && glyphBytes) {
+      dlLink.href = "#";
+      dlLink.download = glyphExportName(fileName);
+      dlLink.title = "Download PNG";
+      dlLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        void downloadGlyphAsPng(glyphBytes, fileName);
+      }, { signal: lbSignal });
+    } else {
+      dlLink.href = dlUrl;
+      dlLink.download = fileName;
+      dlLink.title = "Download";
+    }
     dlLink.innerHTML = `<svg width="16" height="16" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 
     const annotateBtn = document.createElement("button");
@@ -1810,6 +1827,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     annotateBtn.title = "Draw";
     annotateBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     annotateBtn.addEventListener("click", () => {
+      if (kind === "glyph") {
+        const canvas = inner.querySelector("canvas.wl-peer-draw-inline");
+        if (!(canvas instanceof HTMLCanvasElement)) return;
+        const img = new Image();
+        img.onload = () => {
+          openManagedDrawSurface({ mode: "annotate", mediaEl: img, originalName: fileName }, {
+            onSend: (r) => sendFileToChat(r.file, "draw"),
+          }, lbSignal);
+        };
+        img.src = canvas.toDataURL("image/png");
+        return;
+      }
       const mediaEl = inner.querySelector("img, video") as HTMLImageElement | HTMLVideoElement | null;
       if (!mediaEl) return;
       if (mediaEl instanceof HTMLVideoElement) mediaEl.pause();
@@ -1886,6 +1915,73 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const fileSize = msg.fileSize;
 
     const blobBytes = new Uint8Array(fileData);
+
+    if (kind === "glyph") {
+      const glyphBytes = new Uint8Array(fileData.byteLength);
+      glyphBytes.set(fileData);
+      const glyph = parseGlyphPayload(glyphBytes);
+      if (!glyph) {
+        const dlBlob = new Blob([blobBytes], { type: "application/octet-stream" });
+        const dlUrl = URL.createObjectURL(dlBlob);
+        objectUrls.add(dlUrl);
+        const fallback = document.createElement("div");
+        fallback.className = "wl-msg-file";
+        const n = document.createElement("span");
+        n.className = "wl-msg-file-name";
+        n.textContent = fileName;
+        const s = document.createElement("span");
+        s.className = "wl-msg-file-size";
+        s.textContent = fileSize ? formatSize(fileSize) : "";
+        const a = document.createElement("a");
+        a.className = "wl-msg-file-download";
+        a.href = dlUrl;
+        a.download = fileName;
+        a.textContent = "download";
+        fallback.append(n, s, a);
+        return fallback;
+      }
+
+      const root = document.createElement("div");
+      root.className = "wl-msg-media wl-msg-peer-draw";
+      root.dataset.drawState = "sent";
+
+      const thumb = document.createElement("div");
+      thumb.className = "wl-media-thumb wl-msg-peer-draw-thumb";
+      thumb.style.aspectRatio = `${glyph.logicalW} / ${glyph.logicalH}`;
+      const canvas = document.createElement("canvas");
+      canvas.className = "wl-peer-draw-inline";
+      thumb.appendChild(canvas);
+
+      requestAnimationFrame(() => {
+        const dpr = devicePixelRatio || 1;
+        const rect = thumb.getBoundingClientRect();
+        const cw = Math.max(1, Math.round(rect.width));
+        const ch = Math.max(1, Math.round(rect.height));
+        canvas.width = Math.max(1, Math.round(cw * dpr));
+        canvas.height = Math.max(1, Math.round(ch * dpr));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.scale(dpr, dpr);
+        renderGlyphScene(ctx, glyph, cw, ch);
+      });
+
+      thumb.addEventListener("click", () => {
+        openMediaLightbox("", "", fileName, "glyph", glyph, glyphBytes);
+      }, { signal: abortSignal });
+
+      const infoBar = createMediaInfoBar(fileName, fileSize, "#");
+      const dlBtn = infoBar.querySelector<HTMLAnchorElement>(".wl-media-dl");
+      if (dlBtn) {
+        dlBtn.download = glyphExportName(fileName);
+        dlBtn.title = "Download PNG";
+        dlBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          void downloadGlyphAsPng(glyphBytes, fileName);
+        }, { signal: abortSignal });
+      }
+      root.append(thumb, infoBar);
+      return root;
+    }
 
     // Display blob uses the resolved MIME so the browser can decode it.
     // (SVG via <img> is sandboxed — no script execution.)
@@ -2862,6 +2958,31 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Hide empty-state hint on first real message
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
 
+    // If a streamed peer preview exists, replace it in-place with the finalized
+    // glyph message so it keeps the same visual location in the chat flow.
+    const replacePeerPreview =
+      msg.direction === "peer"
+      && msg.type === "file"
+      && isWhisperGlyph(msg.fileType, msg.fileName)
+      && !!peerLiveMsgEl
+      && peerLiveMsgEl.parentElement === opts.chatMessages
+        ? peerLiveMsgEl
+        : null;
+    const replacePreviewWasNearBottom = replacePeerPreview ? isNearBottom() : false;
+    if (replacePeerPreview) {
+      peerActiveStroke = null;
+      peerActivePoints = [];
+      peerStrokes = [];
+      peerRedoStack = [];
+      if (peerCanvas) {
+        peerCanvas.remove();
+        peerCanvas = null;
+        peerCtx = null;
+      }
+      peerLiveMsgEl = null;
+      peerLiveTimeEl = null;
+    }
+
     const div = document.createElement("div");
     div.className = `wl-msg wl-msg--${msg.direction}`;
 
@@ -3173,8 +3294,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, { signal });
 
       div.appendChild(audioEl);
-    } else if (isRenderableGlyphMessage(msg)) {
-      div.appendChild(renderGlyphMessage(msg, signal));
     } else if (detectMedia(msg) !== null) {
       div.appendChild(renderMediaMessage(msg, signal));
     } else if (msg.type === "file") {
@@ -3225,7 +3344,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     if (msg.direction === "peer") hidePeerTyping();
 
-    opts.chatMessages.appendChild(div);
+    if (replacePeerPreview && replacePeerPreview.parentElement === opts.chatMessages) {
+      opts.chatMessages.replaceChild(div, replacePeerPreview);
+    } else {
+      opts.chatMessages.appendChild(div);
+    }
 
     // Self → always snap to bottom (deferred so layout includes the new node)
     // System → smooth-scroll if already near bottom
@@ -3236,6 +3359,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       });
     } else if (msg.direction === "system") {
       smartScroll();
+    } else if (replacePeerPreview && replacePreviewWasNearBottom) {
+      requestAnimationFrame(() => {
+        opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
+      });
     }
 
     if (msg.msgId !== undefined) {
@@ -3317,7 +3444,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         // Ignore clicks on file attachments
         if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
         if ((e.target as HTMLElement).closest(".wl-msg-peer-draw")) return;
-        if ((e.target as HTMLElement).closest(".wl-msg-glyph-actions")) return;
         // Ignore clicks on media thumbnail (opens lightbox) and download button
         if ((e.target as HTMLElement).closest(".wl-media-thumb")) return;
         if ((e.target as HTMLElement).closest(".wl-media-dl")) return;
@@ -3369,25 +3495,46 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let peerCanvas: HTMLCanvasElement | null = null;
   let peerCtx: CanvasRenderingContext2D | null = null;
   let peerLiveMsgEl: HTMLDivElement | null = null;
-  let peerLiveStatusEl: HTMLSpanElement | null = null;
   let peerLiveTimeEl: HTMLTimeElement | null = null;
   let peerActiveStroke: PeerActiveStroke | null = null;
   let peerActivePoints: Array<{ x: number; y: number; p: number }> = [];
   let peerStrokes: PeerStrokeRecord[] = [];
   let peerRedoStack: PeerStrokeRecord[] = [];
 
+  function removeLegacyPeerOverlays(): void {
+    const legacy = document.querySelectorAll(".wl-peer-draw");
+    for (const node of legacy) node.remove();
+  }
+
+  function setPeerLiveDrawState(state: "active" | "sent" | "clear" | "idle"): void {
+    if (!peerLiveMsgEl) return;
+    peerLiveMsgEl.dataset.drawState = state;
+    const box = peerLiveMsgEl.querySelector<HTMLElement>(".wl-msg-peer-draw");
+    if (box) box.dataset.drawState = state;
+  }
+
+  function promotePeerPreviewToMessageShell(): void {
+    if (!peerLiveMsgEl) return;
+    peerLiveMsgEl.classList.remove("wl-msg--peer-draw-live");
+    peerLiveMsgEl.classList.add("wl-msg--peer");
+    peerLiveMsgEl.dataset.streamFinalized = "true";
+  }
+
   function ensurePeerCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+    removeLegacyPeerOverlays();
     if (!peerCanvas || !peerCtx) {
       if (!peerLiveMsgEl) {
         const div = document.createElement("div");
         div.className = "wl-msg wl-msg--peer wl-msg--peer-draw-live";
+        div.dataset.drawState = "idle";
 
         const media = document.createElement("div");
-        media.className = "wl-msg-peer-draw";
+        media.className = "wl-msg-media wl-msg-peer-draw";
+        media.dataset.drawState = "idle";
 
-        const status = document.createElement("span");
-        status.className = "wl-peer-draw-status";
-        status.textContent = "drawing…";
+        const thumb = document.createElement("div");
+        thumb.className = "wl-media-thumb wl-msg-peer-draw-thumb";
+        media.appendChild(thumb);
 
         const ts = Date.now();
         const timeEl = document.createElement("time");
@@ -3395,18 +3542,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         timeEl.dateTime = String(ts);
         timeEl.textContent = formatTime(ts);
 
-        div.append(media, status, timeEl);
+        div.append(media, timeEl);
         opts.chatMessages.appendChild(div);
         opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
         peerLiveMsgEl = div;
-        peerLiveStatusEl = status;
         peerLiveTimeEl = timeEl;
       }
 
       peerCanvas = document.createElement("canvas");
       peerCanvas.className = "wl-peer-draw-inline";
       peerCanvas.setAttribute("aria-hidden", "true");
-      const host = peerLiveMsgEl.querySelector<HTMLElement>(".wl-msg-peer-draw");
+      const host = peerLiveMsgEl.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
       if (!host) throw new Error("peer draw host missing");
       host.appendChild(peerCanvas);
       const dpr = devicePixelRatio || 1;
@@ -3484,7 +3630,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function peerRerender(): void {
-    const host = peerLiveMsgEl?.querySelector<HTMLElement>(".wl-msg-peer-draw");
+    const host = peerLiveMsgEl?.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
     if (!peerCanvas || !peerCtx || !host) return;
     const dpr = devicePixelRatio || 1;
     const rect = host.getBoundingClientRect();
@@ -3523,7 +3669,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (peerLiveMsgEl) {
       peerLiveMsgEl.remove();
       peerLiveMsgEl = null;
-      peerLiveStatusEl = null;
       peerLiveTimeEl = null;
     }
   }
@@ -3532,10 +3677,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const SCALE = 32767;
     switch (ev.kind) {
       case "begin": {
+        removeLegacyPeerOverlays();
         resetPeerLivePreview();
         const { canvas, ctx } = ensurePeerCanvas();
         bringPeerPreviewToBottom();
-        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing…";
+        setPeerLiveDrawState("active");
         if (peerLiveTimeEl) {
           const ts = Date.now();
           peerLiveTimeEl.dateTime = String(ts);
@@ -3634,7 +3780,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         });
         peerActivePoints = [];
         peerActiveStroke = null;
-        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing sent";
+        setPeerLiveDrawState("sent");
+        promotePeerPreviewToMessageShell();
         break;
       }
       case "clear": {
@@ -3643,33 +3790,39 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         peerActiveStroke = null;
         peerActivePoints = [];
         if (peerCanvas && peerCtx) peerCtx.clearRect(0, 0, peerCanvasW(), peerCanvasH());
-        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing cleared";
+        setPeerLiveDrawState("clear");
         break;
       }
       case "undo": {
         if (peerStrokes.length === 0) break;
         peerRedoStack.push(peerStrokes.pop()!);
         peerRerender();
-        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing…";
+        setPeerLiveDrawState("active");
         break;
       }
       case "redo": {
         if (peerRedoStack.length === 0) break;
         peerStrokes.push(peerRedoStack.pop()!);
         peerRerender();
-        if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing…";
+        setPeerLiveDrawState("active");
         break;
       }
       case "presence":
-        if (!ev.active && !peerActiveStroke && peerLiveStatusEl) {
-          peerLiveStatusEl.textContent = "idle";
+        if (!ev.active && !peerActiveStroke) {
+          setPeerLiveDrawState("idle");
         } else if (ev.active) {
+          removeLegacyPeerOverlays();
           ensurePeerCanvas();
           bringPeerPreviewToBottom();
-          if (peerLiveStatusEl) peerLiveStatusEl.textContent = "drawing…";
+          setPeerLiveDrawState("active");
         }
         break;
     }
+  }
+
+  function syncPeerPreviewLayout(): void {
+    if (!peerLiveMsgEl || !peerCanvas) return;
+    requestAnimationFrame(() => peerRerender());
   }
 
   /* ── Session creation ─────────────────────────────────── */
@@ -4968,6 +5121,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   window.addEventListener("focus", () => { hasFocus = true; clearUnread(); }, { signal });
   window.addEventListener("blur", () => { hasFocus = false; }, { signal });
+  window.addEventListener("resize", syncPeerPreviewLayout, { signal });
+  window.visualViewport?.addEventListener("resize", syncPeerPreviewLayout, { signal });
   window.addEventListener("whisper-live-reset-request", handleExternalResetRequest as EventListener, { signal });
 
   /* -- Initial state ---------------------------------------- */

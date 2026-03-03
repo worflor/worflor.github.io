@@ -139,6 +139,8 @@ const DRAW_HINT_SHORT_MS = 1400;
 const SWATCH_DRAG_CANCEL_LONGPRESS_SQ = 64;
 const SWATCH_DRAG_FULL_RANGE_PX = 180;
 const SWATCH_DRAG_MAX_DELTA = 0.95;
+const SIZE_DRAG_PX_PER_UNIT = 8;
+const SIZE_DRAG_CANCEL_SQ = 64;
 
 let drawHintShown = false;
 
@@ -351,7 +353,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     return b;
   }
 
-  const eraserBtn = makeToolBtn("wl-draw-tool", "eraser (e)", ICO_ERASER);
+  const eraserBtn = makeToolBtn("wl-draw-tool --size-host", "eraser (e) · drag ↕ for size", ICO_ERASER);
+  eraserBtn.innerHTML = ICO_ERASER + '<span class="wl-draw-size-pip"></span>';
   eraserBtn.setAttribute("aria-label", "Eraser");
   eraserBtn.setAttribute("aria-pressed", "false");
 
@@ -524,6 +527,11 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   let colorDragStartV = 0;
   let colorDragHue = 0;
   let colorDragMoved = false;
+  let sizeDragPointerId = -1;
+  let sizeDragStartY = 0;
+  let sizeDragStartWidth = 3;
+  let sizeDragMoved = false;
+  let suppressEraserClickUntil = 0;
   let fillVisited: Uint8Array | null = null;
   let fillStack: Int32Array | null = null;
 
@@ -616,6 +624,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   colorBtns.forEach((b, i) => updateSwatchVisualState(b, paletteColors[i]));
   updateSwatchVisualState(customColorBtn, null);
   updateToolbar();
+  updateSizePip();
   colorBtns[0].classList.add("--active");
 
   function currentPenStyle(): { penId: "pen" | "eraser"; color: string; width: number } | null {
@@ -677,17 +686,14 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   }
 
   function showHint(text: string, durationMs = DRAW_HINT_SHORT_MS): void {
-    if (!text) return;
+    void text;
+    void durationMs;
     if (hintTimer) {
       clearTimeout(hintTimer);
       hintTimer = null;
     }
-    hint.textContent = text;
-    hint.classList.add("--show");
-    hintTimer = setTimeout(() => {
-      hint.classList.remove("--show");
-      hintTimer = null;
-    }, durationMs);
+    hint.classList.remove("--show");
+    hint.textContent = "";
   }
 
   function syncTouchToggleUi(): void {
@@ -701,6 +707,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   function setBrushSize(size: number): void {
     baseWidth = size;
     updateToolbar();
+    updateSizePip();
     maybeSplitActiveStrokeForStyleChange();
   }
 
@@ -796,6 +803,35 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     colorDragPaletteIdx = -1;
     colorDragIsCustom = false;
     colorDragMoved = false;
+  }
+
+  function updateSizePip(): void {
+    const pip = eraserBtn.querySelector<HTMLElement>(".wl-draw-size-pip");
+    if (!pip) return;
+    const d = Math.max(2, Math.min(10, 1.5 + baseWidth * 0.5));
+    pip.style.width = `${d.toFixed(1)}px`;
+    pip.style.height = `${d.toFixed(1)}px`;
+  }
+
+  function beginSizeDrag(e: PointerEvent): void {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    sizeDragPointerId = e.pointerId;
+    sizeDragStartY = e.clientY;
+    sizeDragStartWidth = baseWidth;
+    sizeDragMoved = false;
+    eraserBtn.classList.add("--dragging");
+    try { eraserBtn.setPointerCapture(e.pointerId); } catch { /* noop */ }
+  }
+
+  function endSizeDrag(e: PointerEvent): void {
+    if (e.pointerId !== sizeDragPointerId) return;
+    if (eraserBtn.hasPointerCapture(e.pointerId)) {
+      try { eraserBtn.releasePointerCapture(e.pointerId); } catch { /* noop */ }
+    }
+    if (sizeDragMoved) suppressEraserClickUntil = performance.now() + 220;
+    eraserBtn.classList.remove("--dragging");
+    sizeDragPointerId = -1;
+    sizeDragMoved = false;
   }
 
   /* ── Render helpers ────────────────────────────────────── */
@@ -1552,6 +1588,16 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   window.addEventListener("pointerup", (e) => endSwatchColorDrag(e), { signal: ds });
   window.addEventListener("pointercancel", (e) => endSwatchColorDrag(e), { signal: ds });
 
+  window.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== sizeDragPointerId) return;
+    const dy = e.clientY - sizeDragStartY;
+    if (dy * dy > SIZE_DRAG_CANCEL_SQ) sizeDragMoved = true;
+    const delta = -dy / SIZE_DRAG_PX_PER_UNIT;
+    setBrushSize(Math.max(1, Math.min(20, sizeDragStartWidth + delta)));
+  }, { signal: ds });
+  window.addEventListener("pointerup", (e) => endSizeDrag(e), { signal: ds });
+  window.addEventListener("pointercancel", (e) => endSizeDrag(e), { signal: ds });
+
   // Custom color: click = open picker / select; long-press = eyedropper
   let eyedropperViaLongPress = false;
 
@@ -1597,7 +1643,12 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     applyCustomColor(colorInput.value);
   }, { signal: ds });
 
+  eraserBtn.addEventListener("pointerdown", (e) => {
+    beginSizeDrag(e);
+  }, { signal: ds });
+  eraserBtn.addEventListener("contextmenu", (e) => e.preventDefault(), { signal: ds });
   eraserBtn.addEventListener("click", () => {
+    if (performance.now() < suppressEraserClickUntil) return;
     setTool(currentTool === "eraser" ? "pen" : "eraser");
   }, { signal: ds });
 
