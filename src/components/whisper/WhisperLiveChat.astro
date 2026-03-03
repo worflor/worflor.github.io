@@ -254,41 +254,62 @@
           </button>
         </div>
       </div>
-      <button
-        id="wl-chat-clear-btn"
-        type="button"
-        class="whisper-mini-btn wl-chat-clear-btn"
-        aria-label="Clear chat history"
-        title="request to clear history"
-        data-clear-state="idle"
-        disabled
-        ><span class="wl-clear-icon" aria-hidden="true">↺</span></button
-      >
-      <button
-        id="wl-chat-file-btn"
-        type="button"
-        class="whisper-mini-btn wl-chat-file-btn"
-        aria-label="Send a file"
-        title="send file"
-      >
-        <svg
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.3"
-          class="wl-file-icon"
-          aria-hidden="true"
+      <div class="wl-media-wrap">
+        <button
+          id="wl-chat-media-btn"
+          type="button"
+          class="whisper-mini-btn wl-chat-media-btn"
+          aria-label="More actions"
+          title="more"
         >
-          <path d="M8 2v8M4 6l4-4 4 4"></path>
-          <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3"></path>
-        </svg>
-      </button>
-      <input
-        id="wl-chat-file-input"
-        type="file"
-        class="sr-only"
-        aria-hidden="true"
-      />
+          <svg
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.3"
+            class="wl-media-btn-icon"
+            aria-hidden="true"
+          >
+            <circle cx="8" cy="8" r="1"/>
+            <circle cx="3" cy="8" r="1"/>
+            <circle cx="13" cy="8" r="1"/>
+          </svg>
+        </button>
+        <div class="wl-media-popover" id="wl-media-popover">
+          <button id="wl-media-clear" type="button" class="wl-media-option wl-media-clear"
+            data-clear-state="idle" disabled>
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.3" aria-hidden="true">
+              <path d="M2 4h12M5.3 4V2.7a.7.7 0 01.7-.7h4a.7.7 0 01.7.7V4M6 7v5M10 7v5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M3.5 4l.7 9.3a1.4 1.4 0 001.4 1.2h4.8a1.4 1.4 0 001.4-1.2L12.5 4"
+                stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            request clear
+          </button>
+          <button id="wl-media-draw" type="button" class="wl-media-option">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.3" aria-hidden="true">
+              <path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/>
+            </svg>
+            draw
+          </button>
+          <button id="wl-media-file" type="button" class="wl-media-option">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.3" aria-hidden="true">
+              <path d="M8 2v8M4 6l4-4 4 4"></path>
+              <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3"></path>
+            </svg>
+            file
+          </button>
+        </div>
+        <input
+          id="wl-chat-file-input"
+          type="file"
+          class="sr-only"
+          aria-hidden="true"
+        />
+      </div>
       <button
         id="wl-chat-send"
         type="button"
@@ -1289,7 +1310,7 @@
     display: flex;
     gap: calc(var(--space-xs) * 0.4);
     align-items: stretch;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     padding: calc(var(--space-xs) * 0.7);
     border-top: 1px solid var(--whisper-edge);
     background:
@@ -1498,7 +1519,7 @@
   }
 
   .wl-chat-input-wrap {
-    flex: 1 1 14rem;
+    flex: 1 1 0;
     position: relative;
     display: flex;
     align-items: stretch;
@@ -1686,8 +1707,10 @@
   }
 
   :global(.whisper-mini-btn.wl-chat-send-btn) {
+    flex: 0 0 auto;
+    align-self: stretch;
     min-height: auto;
-    padding: 0.48rem 0.8rem;
+    padding: 0 0.8rem;
     background: linear-gradient(
       180deg,
       rgb(var(--chromatic-cyan) / 0.2) 0%,
@@ -1743,94 +1766,155 @@
     transition-duration: 40ms;
   }
 
-  .wl-chat-file-btn {
+  /* ── Media button + popover ───────────────────────────────── */
+  .wl-media-wrap {
+    position: relative;
+    flex: 0 0 auto;
+    align-self: stretch;
+    display: flex;
+  }
+
+  .wl-chat-media-btn {
+    position: relative;
     min-height: auto;
-    padding: 0.48rem;
+    height: 100%;
+    padding: 0 0.42rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: 0 0 auto;
     border-color: rgb(var(--color-text-rgb) / 0.18);
     transition:
       transform 120ms linear,
       border-color var(--duration-normal) var(--ease-out);
   }
 
-  .wl-chat-file-btn:hover:not(:disabled) {
+  .wl-chat-media-btn:hover:not(:disabled) {
     border-color: rgb(var(--color-text-rgb) / 0.3);
   }
 
-  .wl-chat-file-btn:active:not(:disabled) {
+  .wl-chat-media-btn:active:not(:disabled) {
     transform: scale(0.94);
     transition-duration: 40ms;
   }
 
-  .wl-chat-clear-btn {
-    flex: 0 0 auto;
-    font-size: 0.95rem;
+  :global(.wl-media-btn-icon) {
+    width: 0.85rem;
+    height: 0.85rem;
+    display: block;
+    fill: currentColor;
+    stroke: none !important;
+    transform: rotate(90deg);
+  }
+
+  :global(.wl-media-popover) {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 0.4rem);
+    left: 50%;
+    transform: translateX(-50%);
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.3rem;
+    border-radius: calc(var(--whisper-radius, 12px) * 0.65);
+    background: rgb(30 30 34 / 0.96);
+    border: 1px solid rgb(255 255 255 / 0.1);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 4px 20px rgb(0 0 0 / 0.5);
+    z-index: 100;
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
     transition:
-      border-color var(--duration-normal) var(--ease-out),
-      box-shadow var(--duration-normal) var(--ease-out),
-      transform var(--duration-normal) var(--ease-out);
+      opacity 140ms ease,
+      transform 140ms ease;
   }
 
-  /* The glyph — animated independently so the button border stays still */
-  .wl-clear-icon {
-    display: inline-block;
-    line-height: 1;
-    transform-origin: center;
-    will-change: transform;
+  :global(.wl-media-popover.--open) {
+    display: flex;
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
   }
 
-  /* pending-out: slow spin — "waiting for peer to agree" */
-  @keyframes wl-clear-spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
+  :global(.wl-media-option) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.75rem;
+    border: none;
+    border-radius: calc(var(--whisper-radius, 12px) * 0.45);
+    background: transparent;
+    color: rgb(255 255 255 / 0.7);
+    font-size: calc(var(--text-sm, 0.875rem) * 0.82);
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease;
+    -webkit-tap-highlight-color: transparent;
   }
-  .wl-chat-clear-btn[data-clear-state="pending-out"] {
-    border-color: rgb(var(--color-text-rgb) / 0.25);
+
+  :global(.wl-media-option) svg {
+    width: 0.95rem;
+    height: 0.95rem;
+    flex-shrink: 0;
   }
-  .wl-chat-clear-btn[data-clear-state="pending-out"] .wl-clear-icon {
+
+  :global(.wl-media-option:hover),
+  :global(.wl-media-option.--hover) {
+    background: rgb(255 255 255 / 0.1);
+    color: rgb(255 255 255 / 0.95);
+  }
+
+  :global(.wl-media-option:active) {
+    background: rgb(255 255 255 / 0.15);
+  }
+
+  /* ── Clear option in popover — state feedback ─────────── */
+  :global(.wl-media-clear:disabled) {
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
+  :global(.wl-media-clear[data-clear-state="pending-out"]) {
+    color: rgb(255 255 255 / 0.5);
+  }
+
+  :global(.wl-media-clear[data-clear-state="pending-out"]) svg {
     animation: wl-clear-spin 2.4s linear infinite;
   }
 
-  /* pending-in: scale pulse + cyan glow — "your turn, act now" */
-  @keyframes wl-clear-call {
-    0%,
-    100% {
-      box-shadow: 0 0 0 1px rgb(var(--chromatic-cyan) / 0.2);
-      transform: scale(1);
-    }
-    50% {
-      box-shadow:
-        0 0 0 3px rgb(var(--chromatic-cyan) / 0.35),
-        0 0 10px 2px rgb(var(--chromatic-cyan) / 0.18);
-      transform: scale(1.07);
-    }
+  @keyframes wl-clear-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
-  .wl-chat-clear-btn[data-clear-state="pending-in"] {
-    border-color: rgb(var(--chromatic-cyan) / 0.6);
-    animation: wl-clear-call 0.85s ease-in-out infinite;
+
+  :global(.wl-media-clear[data-clear-state="pending-in"]) {
+    color: rgb(var(--chromatic-cyan, 0 200 255));
+    background: rgb(var(--chromatic-cyan, 0 200 255) / 0.12);
   }
-  /* Icon counter-rotates slightly — gives it a "ringing" feel */
-  @keyframes wl-clear-icon-shake {
-    0%,
-    100% {
-      transform: rotate(0deg);
-    }
-    25% {
-      transform: rotate(-14deg);
-    }
-    75% {
-      transform: rotate(14deg);
-    }
-  }
-  .wl-chat-clear-btn[data-clear-state="pending-in"] .wl-clear-icon {
+
+  :global(.wl-media-clear[data-clear-state="pending-in"]) svg {
     animation: wl-clear-icon-shake 0.85s ease-in-out infinite;
+  }
+
+  @keyframes wl-clear-icon-shake {
+    0%, 100% { transform: rotate(0deg); }
+    25% { transform: rotate(-14deg); }
+    75% { transform: rotate(14deg); }
+  }
+
+  /* Notification dot on media btn when clear request is pending-in */
+  :global(.wl-chat-media-btn[data-notify])::after {
+    content: "";
+    position: absolute;
+    top: -1px;
+    right: -1px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgb(var(--chromatic-cyan, 0 200 255));
+    box-shadow: 0 0 4px rgb(var(--chromatic-cyan, 0 200 255) / 0.6);
+    pointer-events: none;
   }
 
   /* Chat clear animation — messages fade + drift down, container flashes */
@@ -1959,17 +2043,6 @@
     .wl-mic-split {
       transition: none !important;
     }
-    .wl-chat-clear-btn,
-    .wl-clear-icon {
-      animation: none !important;
-      transform: none !important;
-    }
-    .wl-chat-clear-btn[data-clear-state="pending-out"] {
-      opacity: 0.55;
-    }
-    .wl-chat-clear-btn[data-clear-state="pending-in"] {
-      outline: 2px solid rgb(var(--chromatic-cyan) / 0.65);
-    }
     :global(.wl-chat-messages)[data-clearing] :global(.wl-msg) {
       animation: none !important;
       opacity: 0 !important;
@@ -2033,12 +2106,6 @@
 
     :global(.wl-chat-compose) {
       gap: calc(var(--space-xs) * 0.45);
-    }
-
-    .wl-chat-file-btn,
-    :global(.whisper-mini-btn.wl-chat-send-btn) {
-      flex: 1 1 calc(50% - var(--space-xs));
-      justify-content: center;
     }
 
     .wl-fingerprint {
@@ -2121,6 +2188,432 @@
     :global(.wl-lightbox-dl:hover) {
       color: rgb(255 255 255 / 0.5);
       background: none;
+    }
+
+    :global(.wl-draw-toolbar) button:hover:not(.wl-draw-color) {
+      background: rgb(255 255 255 / 0.06);
+    }
+
+    :global(.wl-lightbox-annotate:hover) {
+      color: rgb(255 255 255 / 0.5);
+      background: none;
+    }
+
+    :global(.wl-media-option:hover) {
+      background: transparent;
+      color: rgb(255 255 255 / 0.7);
+    }
+  }
+
+  /* ── PictoCanvas overlay ────────────────────────────────── */
+  :global(.wl-draw) {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    background: rgb(0 0 0 / 0.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    touch-action: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    opacity: 0;
+    transition: opacity 200ms ease;
+  }
+
+  :global(.wl-draw.--open) {
+    opacity: 1;
+  }
+
+  :global(.wl-draw-canvas) {
+    border-radius: calc(var(--whisper-radius, 12px) * 0.55);
+    box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
+    touch-action: none;
+    cursor: crosshair;
+  }
+
+  :global(.wl-draw-close) {
+    position: absolute;
+    top: 0.75rem;
+    top: calc(0.75rem + env(safe-area-inset-top));
+    right: 0.75rem;
+    right: calc(0.75rem + env(safe-area-inset-right));
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 50%;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(255 255 255 / 0.06);
+    color: rgb(255 255 255 / 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition:
+      background 200ms ease,
+      color 200ms ease,
+      border-color 200ms ease,
+      transform 120ms ease;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-draw-close:hover) {
+    background: rgb(255 255 255 / 0.12);
+    color: rgb(255 255 255 / 0.9);
+    border-color: rgb(255 255 255 / 0.22);
+  }
+
+  :global(.wl-draw-close:active) {
+    transform: scale(0.92);
+  }
+
+  :global(.wl-draw-touch-toggle) {
+    position: absolute;
+    top: calc(3.9rem + env(safe-area-inset-top));
+    right: calc(0.75rem + env(safe-area-inset-right));
+    min-height: 1.7rem;
+    padding: 0 0.55rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(255 255 255 / 0.16);
+    background: rgb(255 255 255 / 0.08);
+    color: rgb(255 255 255 / 0.74);
+    font-size: calc(var(--text-sm, 0.875rem) * 0.68);
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    transition:
+      background 180ms ease,
+      color 180ms ease,
+      border-color 180ms ease,
+      transform 120ms ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-draw-touch-toggle:hover) {
+    background: rgb(255 255 255 / 0.14);
+    color: rgb(255 255 255 / 0.9);
+    border-color: rgb(255 255 255 / 0.24);
+  }
+
+  :global(.wl-draw-touch-toggle:active) {
+    transform: scale(0.96);
+  }
+
+  :global(.wl-draw-touch-toggle.--off) {
+    color: rgb(255 206 122 / 0.95);
+    border-color: rgb(255 206 122 / 0.45);
+    background: rgb(255 206 122 / 0.14);
+  }
+
+  :global(.wl-draw-close.--confirm) {
+    background: rgb(255 60 60 / 0.25);
+    border-color: rgb(255 60 60 / 0.5);
+    color: rgb(255 100 100);
+    animation: wl-draw-close-pulse 300ms ease;
+  }
+
+  @keyframes wl-draw-close-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+  }
+
+  /* ── Draw toolbar (bottom pill bar) ─────────────────────── */
+  :global(.wl-draw-toolbar) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: 9999px;
+    background: rgb(255 255 255 / 0.06);
+    border: 1px solid rgb(255 255 255 / 0.08);
+  }
+
+  :global(.wl-draw-hint) {
+    min-height: 1.1rem;
+    max-width: min(92vw, 32rem);
+    padding: 0.1rem 0.5rem;
+    border-radius: 9999px;
+    color: rgb(255 255 255 / 0.66);
+    background: rgb(255 255 255 / 0.05);
+    border: 1px solid rgb(255 255 255 / 0.08);
+    font-size: calc(var(--text-sm, 0.875rem) * 0.74);
+    letter-spacing: 0.01em;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(4px);
+    transition:
+      opacity 140ms ease,
+      transform 140ms ease;
+  }
+
+  :global(.wl-draw-hint.--show) {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  :global(.wl-draw-color) {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    border: 2px solid rgb(255 255 255 / var(--swatch-ring-alpha, 0.1));
+    padding: 0;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease,
+      transform 150ms ease;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-draw-color:active),
+  :global(.wl-draw-color.--dragging) {
+    filter: none;
+  }
+
+  :global(.wl-draw-color.--has-color::before) {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: linear-gradient(145deg, rgb(255 255 255 / 0.95) 2%, rgb(255 255 255 / 0) 58%);
+    opacity: var(--swatch-sheen-alpha, 0);
+    pointer-events: none;
+  }
+
+  :global(.wl-draw-color.--has-color::after) {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: linear-gradient(180deg, rgb(0 0 0 / 0) 30%, rgb(0 0 0 / 0.95) 100%);
+    opacity: var(--swatch-shade-alpha, 0);
+    pointer-events: none;
+  }
+
+  :global(.wl-draw-color.--active) {
+    border-color: rgb(255 255 255 / 0.8);
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.15);
+    transform: scale(1.15);
+  }
+
+  :global(.wl-draw-color.--dragging) {
+    border-color: rgb(255 255 255 / 0.95);
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.24);
+  }
+
+  :global(.wl-draw-tool) {
+    width: 1.7rem;
+    height: 1.7rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: rgb(255 255 255 / 0.5);
+    cursor: pointer;
+    transition:
+      color 200ms ease,
+      background 200ms ease,
+      opacity 200ms ease,
+      transform 120ms ease;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-draw-tool:hover) {
+    color: rgb(255 255 255 / 0.9);
+    background: rgb(255 255 255 / 0.1);
+  }
+
+  :global(.wl-draw-tool:active) {
+    transform: scale(0.92);
+  }
+
+  :global(.wl-draw-tool.--active) {
+    color: rgb(255 255 255 / 0.95);
+    background: rgb(255 255 255 / 0.15);
+  }
+
+  /* Undo/Redo joint pill */
+  :global(.wl-draw-undoredo) {
+    display: flex;
+    align-items: center;
+    background: rgb(255 255 255 / 0.06);
+    border-radius: 9999px;
+    flex-shrink: 0;
+  }
+
+  :global(.wl-draw-undo),
+  :global(.wl-draw-redo) {
+    width: 1.7rem;
+    height: 1.7rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: rgb(255 255 255 / 0.5);
+    cursor: pointer;
+    transition:
+      color 200ms ease,
+      background 200ms ease,
+      opacity 200ms ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-draw-undo) { border-radius: 9999px 0 0 9999px; }
+  :global(.wl-draw-redo) { border-radius: 0 9999px 9999px 0; }
+
+  :global(.wl-draw-undo:hover),
+  :global(.wl-draw-redo:hover) {
+    color: rgb(255 255 255 / 0.9);
+    background: rgb(255 255 255 / 0.1);
+  }
+
+  :global(.wl-draw-undo:active),
+  :global(.wl-draw-redo:active) {
+    opacity: 0.7;
+  }
+
+  :global(.wl-draw-undo:disabled),
+  :global(.wl-draw-redo:disabled) {
+    opacity: 0.3;
+    pointer-events: none;
+  }
+
+  :global(.wl-draw-color-custom) {
+    background: transparent;
+    color: rgb(255 255 255 / 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  :global(.wl-draw-color-custom.--active) {
+    border-color: rgb(255 255 255 / 0.8);
+    transform: scale(1.15);
+  }
+
+  :global(.wl-draw-send) {
+    padding: 0.35rem 0.85rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(var(--chromatic-cyan, 0 200 255) / 0.42);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan, 0 200 255) / 0.2) 0%,
+      rgb(var(--chromatic-cyan, 0 200 255) / 0.12) 100%
+    );
+    color: rgb(var(--chromatic-cyan, 0 200 255));
+    font-size: calc(var(--text-sm, 0.875rem) * 0.85);
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      border-color 200ms ease,
+      background 200ms ease,
+      opacity 200ms ease,
+      transform 120ms ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-draw-send:hover) {
+    border-color: rgb(var(--chromatic-cyan, 0 200 255) / 0.5);
+    background: linear-gradient(
+      180deg,
+      rgb(var(--chromatic-cyan, 0 200 255) / 0.24) 0%,
+      rgb(var(--chromatic-cyan, 0 200 255) / 0.15) 100%
+    );
+  }
+
+  :global(.wl-draw-send:active) {
+    transform: scale(0.96);
+  }
+
+  :global(.wl-draw-send:disabled) {
+    opacity: 0.3;
+    pointer-events: none;
+  }
+
+  /* ── Lightbox annotate button ───────────────────────────── */
+  :global(.wl-lightbox-annotate) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.7rem;
+    height: 1.7rem;
+    padding: 0.55rem;
+    margin: -0.55rem 0;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: rgb(255 255 255 / 0.5);
+    cursor: pointer;
+    transition:
+      color 200ms ease,
+      background 200ms ease;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-lightbox-annotate:hover) {
+    color: rgb(255 255 255 / 0.9);
+    background: rgb(255 255 255 / 0.1);
+  }
+
+  :global(.wl-lightbox-annotate:active) {
+    transform: scale(0.92);
+  }
+
+  /* ── Responsive draw ────────────────────────────────────── */
+  @media (max-width: 520px) {
+    :global(.wl-draw-toolbar) {
+      flex-wrap: wrap;
+      border-radius: 1rem;
+      justify-content: center;
+      gap: 0.35rem;
+      padding: 0.35rem 0.5rem;
+    }
+
+    :global(.wl-draw-color) {
+      width: 1.3rem;
+      height: 1.3rem;
+    }
+
+    :global(.wl-draw-hint) {
+      max-width: calc(100vw - 1.2rem);
+      font-size: calc(var(--text-sm, 0.875rem) * 0.72);
+    }
+
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.wl-draw) {
+      transition: none !important;
+    }
+
+    :global(.wl-draw-close),
+    :global(.wl-draw-touch-toggle),
+    :global(.wl-draw-color),
+    :global(.wl-draw-tool),
+    :global(.wl-draw-undo),
+    :global(.wl-draw-redo),
+    :global(.wl-draw-send),
+    :global(.wl-lightbox-annotate),
+    :global(.wl-draw-hint) {
+      transition: none !important;
     }
   }
 </style>

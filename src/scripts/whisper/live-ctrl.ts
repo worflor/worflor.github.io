@@ -31,6 +31,7 @@ export const CTRL_OP = {
   SEEN: 0x81,  // payload: [msgId:4B LE]
   REACT: 0x82,  // payload: [msgId:4B LE][emoji:utf8]
   UNREACT: 0x83,  // payload: [msgId:4B LE][emoji:utf8]
+  DRAW_STREAM: 0x90, // payload: draw-stream binary frame (live-draw-stream.ts)
 } as const;
 
 /* ── Wire format ─────────────────────────────────────────── */

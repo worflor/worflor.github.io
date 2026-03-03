@@ -41,6 +41,8 @@ import {
   getQrScannerCapability,
   renderQrToCanvas,
 } from "./seal-qr";
+import { openDrawSurface } from "./live-draw";
+import { exchangeViaTracker } from "./live-tracker";
 
 /* ── Interface & IDs ──────────────────────────────────────── */
 
@@ -106,12 +108,15 @@ export interface WhisperLiveUIOptions {
   chatInput: HTMLInputElement;
   chatSendBtn: HTMLButtonElement;
   chatFileInput: HTMLInputElement;
-  chatFileBtn: HTMLButtonElement;
+  chatMediaBtn: HTMLButtonElement;
+  chatMediaPopover: HTMLElement;
+  chatMediaFile: HTMLButtonElement;
+  chatMediaDraw: HTMLButtonElement;
   chatMicWrap: HTMLElement;
   chatMicBtn: HTMLButtonElement;
   chatMicCancel: HTMLButtonElement;
   chatMicSend: HTMLButtonElement;
-  chatClearBtn: HTMLButtonElement;
+  chatMediaClear: HTMLButtonElement;
   disconnectBtn: HTMLButtonElement;
   fpChip: HTMLButtonElement;
   fpChipEmoji: HTMLElement;
@@ -187,12 +192,15 @@ const WHISPER_LIVE_IDS = {
   chatInput: "wl-chat-input",
   chatSendBtn: "wl-chat-send",
   chatFileInput: "wl-chat-file-input",
-  chatFileBtn: "wl-chat-file-btn",
+  chatMediaBtn: "wl-chat-media-btn",
+  chatMediaPopover: "wl-media-popover",
+  chatMediaFile: "wl-media-file",
+  chatMediaDraw: "wl-media-draw",
   chatMicWrap: "wl-chat-mic-wrap",
   chatMicBtn: "wl-chat-mic-btn",
   chatMicCancel: "wl-chat-mic-cancel",
   chatMicSend: "wl-chat-mic-send",
-  chatClearBtn: "wl-chat-clear-btn",
+  chatMediaClear: "wl-media-clear",
   disconnectBtn: "wl-disconnect",
   fpChip: "wl-fp-chip",
   fpChipEmoji: "wl-fp-chip-emoji",
@@ -319,10 +327,12 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     confirmBtn: btn(I.confirmBtn), rejectBtn: btn(I.rejectBtn),
     chatSection: el(I.chatSection), chatMessages: el(I.chatMessages),
     chatInput: inp(I.chatInput), chatSendBtn: btn(I.chatSendBtn),
-    chatFileInput: inp(I.chatFileInput), chatFileBtn: btn(I.chatFileBtn),
+    chatFileInput: inp(I.chatFileInput),
+    chatMediaBtn: btn(I.chatMediaBtn), chatMediaPopover: el(I.chatMediaPopover),
+    chatMediaFile: btn(I.chatMediaFile), chatMediaDraw: btn(I.chatMediaDraw),
     chatMicWrap: el(I.chatMicWrap),
     chatMicBtn: btn(I.chatMicBtn), chatMicCancel: btn(I.chatMicCancel), chatMicSend: btn(I.chatMicSend),
-    chatClearBtn: btn(I.chatClearBtn),
+    chatMediaClear: btn(I.chatMediaClear),
     disconnectBtn: btn(I.disconnectBtn),
     fpChip: btn(I.fpChip), fpChipEmoji: el(I.fpChipEmoji), fpChipName: el(I.fpChipName),
     fpNicknameInput: inp(I.fpNicknameInput),
@@ -392,8 +402,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const clearVote = new VoteTopic({
     timeoutMs: 60_000,
     onExecute: executeClearHistory,
-    onState: (state) => { opts.chatClearBtn.dataset.clearState = state; updateControls(); },
+    onState: (state) => {
+      opts.chatMediaClear.dataset.clearState = state;
+      // Show notification dot on media btn when peer requested clear
+      if (state === "pending-in") opts.chatMediaBtn.dataset.notify = "";
+      else delete opts.chatMediaBtn.dataset.notify;
+      updateControls();
+    },
   });
+
+  const CF_BTN_LABELS: Record<string, string> = {
+    idle: '<span class="cf-btn-verbose">start a </span>campfire',
+    "pending-out": '<span class="cf-btn-verbose">campfire </span>vote sent',
+    "pending-in": 'campfire invite<span class="cf-btn-verbose"> — press to accept</span>',
+  };
 
   const campfireVote = new VoteTopic({
     timeoutMs: 60_000,
@@ -405,12 +427,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     },
     onState: (state) => {
       opts.funnelCampfireBtn.dataset.voteState = state;
-      const labels: Record<string, string> = {
-        idle: "start a campfire",
-        "pending-out": "campfire vote sent",
-        "pending-in": "campfire invite — press to accept",
-      };
-      opts.funnelCampfireBtn.textContent = labels[state] ?? "start a campfire";
+      opts.funnelCampfireBtn.innerHTML = CF_BTN_LABELS[state] ?? CF_BTN_LABELS.idle;
       updateControls();
     },
   });
@@ -1241,13 +1258,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     const canChat = hasSession || chatVisible;       // preview mode has no session but chat is visible
     opts.chatSendBtn.disabled = busy || !canChat || !hasChatText;
-    opts.chatFileBtn.disabled = busy || !canChat;
+    opts.chatMediaBtn.disabled = busy || !canChat;
     opts.chatMicBtn.disabled = busy || !canChat;
     opts.chatMicCancel.disabled = busy || !canChat;
     opts.chatMicSend.disabled = busy || !canChat;
     const hasChatMessages = opts.chatMessages.children.length > 0
       && !(opts.chatMessages.children.length === 1 && opts.chatMessages.firstElementChild?.classList.contains("wl-chat-empty"));
-    opts.chatClearBtn.disabled = busy || !hasChatMessages;
+    opts.chatMediaClear.disabled = busy || !hasChatMessages;
 
     opts.confirmBtn.disabled = busy || !hasSession;
     opts.rejectBtn.disabled = busy || !hasSession;
@@ -1399,7 +1416,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     dlLink.title = "Download";
     dlLink.innerHTML = `<svg width="16" height="16" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 
-    bar.append(label, dlLink);
+    const annotateBtn = document.createElement("button");
+    annotateBtn.type = "button";
+    annotateBtn.className = "wl-lightbox-annotate";
+    annotateBtn.title = "Draw";
+    annotateBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    annotateBtn.addEventListener("click", () => {
+      const mediaEl = inner.querySelector("img, video") as HTMLImageElement | HTMLVideoElement | null;
+      if (!mediaEl) return;
+      if (mediaEl instanceof HTMLVideoElement) mediaEl.pause();
+      openDrawSurface({ mode: "annotate", mediaEl, originalName: fileName, signal: lbSignal }, {
+        onSend: (r) => sendFileToChat(r.file, "draw"),
+        onClose: () => {},
+      });
+    }, { signal: lbSignal });
+
+    bar.append(label, annotateBtn, dlLink);
 
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
@@ -1466,14 +1498,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // after blob creation — prevents retaining raw file bytes for the DOM lifetime.
     const fileSize = msg.fileSize;
 
+    const blobBytes = new Uint8Array(fileData);
+
     // Display blob uses the resolved MIME so the browser can decode it.
     // (SVG via <img> is sandboxed — no script execution.)
-    const displayBlob = new Blob([fileData], { type: mime });
+    const displayBlob = new Blob([blobBytes], { type: mime });
     const displayUrl = URL.createObjectURL(displayBlob);
     objectUrls.add(displayUrl);
 
     // Download blob uses octet-stream (same convention as all other file downloads)
-    const dlBlob = new Blob([fileData], { type: "application/octet-stream" });
+    const dlBlob = new Blob([blobBytes], { type: "application/octet-stream" });
     const dlUrl = URL.createObjectURL(dlBlob);
     objectUrls.add(dlUrl);
 
@@ -3041,7 +3075,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         updateStatus("");
         setLogActive(true);
         opts.chatSendBtn.disabled = true;
-        opts.chatFileBtn.disabled = true;
+        opts.chatMediaBtn.disabled = true;
         opts.chatInput.disabled = true;
         opts.chatInput.placeholder = "reconnecting...";
         opts.fpChip.classList.remove("wl-fp-chip--verified");
@@ -3134,7 +3168,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     currentLiveState = "idle";
     clearVote.reset();
     campfireVote.reset();
-    opts.funnelCampfireBtn.textContent = "start a campfire";
+    opts.funnelCampfireBtn.innerHTML = CF_BTN_LABELS.idle;
     delete opts.funnelCampfireBtn.dataset.voteState;
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
@@ -3302,8 +3336,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (aborted()) return;
 
       opts.connectingStatus.textContent = "connecting to relay...";
-
-      const { exchangeViaTracker } = await import("./live-tracker");
 
       let acceptCalled = false;
       const acceptFn = async (peerOfferCode: string): Promise<string> => {
@@ -3901,9 +3933,132 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     btn.addEventListener("click", () => { if (!btn.disabled) setFn(!state.value); }, { signal });
   }
 
-  opts.chatFileBtn.addEventListener("click", () => {
-    opts.chatFileInput.click();
-  }, { signal });
+  // ── Media button popover (file + draw + clear) ─────────────
+  // Supports: tap to toggle, tap-hold to open then drag-over option + release to pick.
+  {
+    const popover = opts.chatMediaPopover;
+    const options = [opts.chatMediaFile, opts.chatMediaDraw, opts.chatMediaClear] as const;
+    let mediaPopoverOpen = false;
+    let mediaPointerId = -1;
+    let mediaHoldTimer: ReturnType<typeof setTimeout> | null = null;
+    let mediaDragMode = false;
+    let hoveredOption: HTMLButtonElement | null = null;
+
+    function openPopover(): void {
+      if (mediaPopoverOpen) return;
+      mediaPopoverOpen = true;
+      popover.classList.add("--open");
+    }
+
+    function closePopover(): void {
+      if (!mediaPopoverOpen) return;
+      mediaPopoverOpen = false;
+      popover.classList.remove("--open");
+      for (const o of options) o.classList.remove("--hover");
+      hoveredOption = null;
+    }
+
+    function pickFile(): void {
+      closePopover();
+      opts.chatFileInput.click();
+    }
+
+    function pickDraw(): void {
+      closePopover();
+      openDrawSurface({ mode: "blank", signal }, {
+        onSend: (r) => sendFileToChat(r.file, "draw"),
+        onClose: () => {},
+      });
+    }
+
+    function pickClear(): void {
+      if (opts.chatMediaClear.disabled) return;
+      // .click() fires both the closePopover listener and the clear handler
+      opts.chatMediaClear.click();
+    }
+
+    function hitTestOption(x: number, y: number): HTMLButtonElement | null {
+      for (const o of options) {
+        const r = o.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return o;
+      }
+      return null;
+    }
+
+    // Pointer down — start hold timer
+    opts.chatMediaBtn.addEventListener("pointerdown", (e) => {
+      if (opts.chatMediaBtn.disabled || e.button !== 0) return;
+      if (mediaPointerId !== -1) return;
+      e.preventDefault();
+      mediaPointerId = e.pointerId;
+      opts.chatMediaBtn.setPointerCapture(e.pointerId);
+      mediaDragMode = false;
+      mediaHoldTimer = setTimeout(() => {
+        mediaDragMode = true;
+        openPopover();
+      }, 250);
+    }, { signal });
+
+    // Pointer move — highlight option under finger during drag
+    opts.chatMediaBtn.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== mediaPointerId || !mediaDragMode) return;
+      const hit = hitTestOption(e.clientX, e.clientY);
+      if (hit !== hoveredOption) {
+        if (hoveredOption) hoveredOption.classList.remove("--hover");
+        hoveredOption = hit;
+        if (hit) hit.classList.add("--hover");
+      }
+    }, { signal });
+
+    // Pointer up — either toggle (short tap) or pick hovered option (drag)
+    opts.chatMediaBtn.addEventListener("pointerup", (e) => {
+      if (e.pointerId !== mediaPointerId) return;
+      if (mediaHoldTimer) { clearTimeout(mediaHoldTimer); mediaHoldTimer = null; }
+      mediaPointerId = -1;
+
+      if (mediaDragMode) {
+        // Drag release — pick whatever is under the finger
+        const hit = hitTestOption(e.clientX, e.clientY);
+        if (hit === opts.chatMediaFile) pickFile();
+        else if (hit === opts.chatMediaDraw) pickDraw();
+        else if (hit === opts.chatMediaClear) pickClear();
+        else closePopover();
+      } else {
+        // Short tap — toggle popover
+        if (mediaPopoverOpen) closePopover();
+        else openPopover();
+      }
+    }, { signal });
+
+    // Cancel cleans up
+    function handleMediaPointerAbort(e: PointerEvent): void {
+      if (e.pointerId !== mediaPointerId) return;
+      if (mediaHoldTimer) { clearTimeout(mediaHoldTimer); mediaHoldTimer = null; }
+      mediaPointerId = -1;
+      if (mediaDragMode) closePopover();
+    }
+    opts.chatMediaBtn.addEventListener("pointercancel", handleMediaPointerAbort, { signal });
+    opts.chatMediaBtn.addEventListener("lostpointercapture", handleMediaPointerAbort, { signal });
+    opts.chatMediaBtn.addEventListener("contextmenu", (e) => e.preventDefault(), { signal });
+
+    // Option clicks (for normal tap-then-pick flow)
+    opts.chatMediaFile.addEventListener("click", () => pickFile(), { signal });
+    opts.chatMediaDraw.addEventListener("click", () => pickDraw(), { signal });
+    opts.chatMediaClear.addEventListener("click", () => closePopover(), { signal });
+
+    // Close popover on outside click
+    document.addEventListener("pointerdown", (e) => {
+      if (!mediaPopoverOpen) return;
+      const t = e.target as Node;
+      if (popover.contains(t) || opts.chatMediaBtn.contains(t)) return;
+      closePopover();
+    }, { signal });
+
+    // Close on Escape
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && mediaPopoverOpen) { closePopover(); e.stopPropagation(); }
+    }, { signal });
+  }
 
   // Mic button: pointer events for click vs hold detection.
   // - Primary button only (button 0) — ignore right-click, pen eraser, etc.
@@ -3970,7 +4125,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }, { signal });
 
-  opts.chatClearBtn.addEventListener("click", () => {
+  opts.chatMediaClear.addEventListener("click", () => {
     if (!session) {
       executeClearHistory();
       return;
@@ -3985,12 +4140,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     clearVote.castLocal();
   }, { signal });
 
-  opts.chatFileInput.addEventListener("change", async () => {
-    const file = opts.chatFileInput.files?.[0];
-    if (!file) return;
-    opts.chatFileInput.value = "";
+  // ── Shared file-send helper (used by file picker, draw, drag-drop) ──
+  async function sendFileToChat(file: File, label = "file"): Promise<void> {
     if (!session) {
-      // Preview mode — read file locally, display as self message
       const fileData = new Uint8Array(await file.arrayBuffer());
       const previewMsgId = -(++previewSendId);
       addChatMessage({
@@ -4007,9 +4159,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       sendInFlight(msgId);
     } catch (err) {
       send.phase = "delivered"; send.velocity = -4;
-      appendLog(`file send failed: ${errMsg(err)}`);
+      appendLog(`${label} send failed: ${errMsg(err)}`);
       pulseComposeIntent("error", 1100);
     }
+  }
+
+  opts.chatFileInput.addEventListener("change", async () => {
+    const file = opts.chatFileInput.files?.[0];
+    if (!file) return;
+    opts.chatFileInput.value = "";
+    await sendFileToChat(file);
   }, { signal });
 
   opts.chatMessages.addEventListener("dragover", (e) => {
@@ -4029,26 +4188,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     syncComposeIntent();
     const file = (e as DragEvent).dataTransfer?.files?.[0];
     if (!file) return;
-    if (!session) {
-      const fileData = new Uint8Array(await file.arrayBuffer());
-      const previewMsgId = -(++previewSendId);
-      addChatMessage({
-        type: "file", direction: "self",
-        fileName: file.name, fileSize: file.size, fileType: file.type,
-        fileData, timestamp: Date.now(), msgId: previewMsgId,
-      });
-      simulateSendEnergy();
-      return;
-    }
-    sendBeginFill();
-    try {
-      const msgId = await session.sendFile(file);
-      sendInFlight(msgId);
-    } catch (err) {
-      send.phase = "delivered"; send.velocity = -4;
-      appendLog(`file send failed: ${errMsg(err)}`);
-      pulseComposeIntent("error", 1100);
-    }
+    await sendFileToChat(file);
   }, { signal });
 
   opts.disconnectBtn.addEventListener("click", () => {

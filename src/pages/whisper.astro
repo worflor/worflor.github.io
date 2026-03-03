@@ -59,7 +59,7 @@ const seo = {
             <path d="M2 4h12"></path>
             <path d="M5.5 9.5h5M8 7v5"></path>
           </svg>
-          Embed
+          <span class="btn-label">Embed</span>
         </button>
         <button
           class="whisper-mode-btn"
@@ -81,7 +81,7 @@ const seo = {
             <path d="M2 11h12"></path>
             <path d="M5.5 6.5h5"></path>
           </svg>
-          Extract
+          <span class="btn-label">Extract</span>
         </button>
         <button
           class="whisper-mode-btn"
@@ -100,7 +100,7 @@ const seo = {
             <circle cx="7" cy="7" r="4"></circle>
             <path d="M10 10l3.5 3.5"></path>
           </svg>
-          Hunt
+          <span class="btn-label">Hunt</span>
         </button>
         <button
           class="whisper-mode-btn"
@@ -119,7 +119,7 @@ const seo = {
           >
             <path d="M9.5 2L6.5 8h3L6.5 14"></path>
           </svg>
-          Live
+          <span class="btn-label">Live</span>
         </button>
       </div>
     </section>
@@ -279,6 +279,42 @@ const seo = {
                     radios[j].checked = radios[j].value === p.dataset.carrier;
                   }
                 }
+              })();
+
+              /* autoCompact: observe a container and set data-compact when
+                 content overflows. Observes a stable ancestor so toggling
+                 compact doesn't cause an infinite ResizeObserver loop.
+                 - el: element to toggle data-compact on
+                 - observeEl: element whose resize triggers checks (default: el.parentElement)
+                 - overflowEl: element whose scrollWidth vs clientWidth is tested (default: el) */
+              (function () {
+                function autoCompact(el, observeEl, overflowEl) {
+                  if (!el || typeof ResizeObserver === "undefined") return;
+                  var target = observeEl || el.parentElement || el;
+                  var check_el = overflowEl || el;
+                  var lastW = -1;
+                  function check(entries) {
+                    var w = entries && entries[0] && entries[0].contentBoxSize
+                      ? entries[0].contentBoxSize[0].inlineSize
+                      : target.clientWidth;
+                    if (w === lastW) return;
+                    lastW = w;
+                    el.removeAttribute("data-compact");
+                    if (check_el.scrollWidth > check_el.clientWidth + 1) {
+                      el.setAttribute("data-compact", "");
+                    }
+                  }
+                  new ResizeObserver(check).observe(target);
+                  check();
+                }
+                autoCompact(document.querySelector(".whisper-mode-bar"));
+                document.addEventListener("DOMContentLoaded", function () {
+                  autoCompact(
+                    document.querySelector(".cf-live-mode-toggle"),
+                    document.querySelector(".wl-head-right"),
+                    document.querySelector("#wl-funnel-campfire")
+                  );
+                });
               })();
             </script>
             <div
@@ -712,7 +748,7 @@ const seo = {
                 id="wl-funnel-campfire"
                 type="button"
                 class="whisper-mini-btn cf-head-btn"
-                disabled>start a campfire</button
+                disabled><span class="cf-btn-verbose">start a </span>campfire</button
               >
               <button
                 id="wl-disconnect"
@@ -1222,13 +1258,14 @@ const seo = {
   /* ── Mode Bar ──────────────────────────────────────────── */
   .whisper-mode-bar {
     display: inline-flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: calc(var(--space-xs) * 0.3);
     border: 1px solid var(--whisper-edge);
     border-radius: var(--whisper-radius);
     padding: calc(var(--space-xs) * 0.35);
     background: var(--whisper-surface);
     box-shadow: var(--edge-highlight);
+    max-width: 100%;
   }
 
   .whisper-mode-btn {
@@ -1245,6 +1282,7 @@ const seo = {
     font-size: var(--text-sm);
     cursor: pointer;
     white-space: nowrap;
+    min-width: 0;
     transition:
       border-color var(--duration-normal) var(--ease-out),
       color var(--duration-normal) var(--ease-out),
@@ -1255,6 +1293,14 @@ const seo = {
     width: 0.95em;
     height: 0.95em;
     flex-shrink: 0;
+  }
+
+  /* Auto-compact: when [data-compact] is set, hide labels, show icons only */
+  [data-compact] > .whisper-mode-btn > .btn-label {
+    display: none;
+  }
+  [data-compact] > .whisper-mode-btn {
+    padding: 0.45rem;
   }
 
   .whisper-mode-btn:hover,
@@ -1491,6 +1537,7 @@ const seo = {
   :global(.whisper-field) {
     display: grid;
     gap: calc(var(--space-xs) * 0.35);
+    min-width: 0;
   }
 
   :global(.whisper-field-label) {
@@ -2476,7 +2523,6 @@ const seo = {
 
   .wl-head-right {
     display: none;
-    flex: 0 0 auto;
     justify-self: end;
     grid-column: 2;
     grid-row: 3;
@@ -2484,26 +2530,37 @@ const seo = {
   }
 
   .whisper-op-live.wl-connected .wl-head {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr 1fr;
     grid-template-rows: auto;
-  }
-
-  .whisper-op-live.wl-connected .wl-head-right {
-    display: flex;
-    grid-row: 1;
-  }
-
-  .whisper-op-live.wl-connected .wl-head-subtitle {
-    display: none;
-  }
-
-  .whisper-op-live.wl-connected .wl-head {
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
     border-bottom-color: rgb(var(--color-text-rgb) / 0.08);
     box-shadow: none;
     padding-top: calc(var(--space-sm) * 0.6);
     padding-bottom: calc(var(--space-sm) * 0.6);
+  }
+
+  .whisper-op-live.wl-connected .wl-head-right {
+    display: flex;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+    justify-self: stretch;
+    justify-content: flex-end;
+  }
+
+  .whisper-op-live.wl-connected #wl-funnel-campfire {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .whisper-op-live.wl-connected .wl-disconnect-btn {
+    flex-shrink: 0;
+  }
+
+  .whisper-op-live.wl-connected .wl-head-subtitle {
+    display: none;
   }
 
   .wl-head-subtitle {
@@ -2871,6 +2928,24 @@ const seo = {
 
     :global(.wl-offer-actions .whisper-mini-btn) {
       width: 100%;
+    }
+  }
+
+  @media (max-width: 420px) {
+    /* Emoji chip drops below title */
+    .wl-head-title-row {
+      flex-wrap: wrap;
+    }
+
+    .wl-head-title {
+      font-size: calc(var(--text-base) * 0.82);
+      white-space: nowrap;
+    }
+
+    .wl-e2e-badge {
+      font-size: calc(var(--text-sm) * 0.52);
+      padding: 0.1em 0.35em;
+      gap: 0.25em;
     }
   }
 

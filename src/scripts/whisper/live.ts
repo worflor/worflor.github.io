@@ -40,7 +40,12 @@ import {
   loopExpand,
 } from "./live-loop";
 import { sdpToCode, codeToSdp } from "./live-sdp";
-import { encodeCtrl, decodeCtrl } from "./live-ctrl";
+import { CTRL_OP, encodeCtrl, decodeCtrl } from "./live-ctrl";
+import {
+  type DrawStreamEvent,
+  decodeDrawStreamEvent,
+  encodeDrawStreamEvent,
+} from "./live-draw-stream";
 
 import {
   type RatchetState,
@@ -60,7 +65,8 @@ import {
 
 import {
   BUFFERED_AMOUNT_LOW,
-  chunkMessagePrefixed,
+  estimateChunkedPrefixedSize,
+  iterateChunksPrefixed,
   ChunkAssembler,
 } from "./live-chunking";
 
@@ -124,6 +130,8 @@ export interface WhisperLiveCallbacks {
   onConnectionStats?: (stats: ConnectionStats) => void;
   /** Incoming control frame from peer. */
   onCtrl?: (opcode: number, payload: Uint8Array) => void;
+  /** Parsed live-draw stream event from peer. */
+  onDrawStream?: (event: DrawStreamEvent) => void;
 }
 
 export interface WhisperLiveSessionOptions {
@@ -312,6 +320,7 @@ const LIVE_FLAG = {
   FILE: 0x01,
   CAMPFIRE: 0x02,
 } as const;
+const SEND_PROGRESS_INTERVAL_MS = 48;
 
 function errorMessage(err: unknown, fallback = "unknown"): string {
   return err instanceof Error ? err.message : fallback;
@@ -408,6 +417,7 @@ export class WhisperLiveSession {
   onSendProgress: WhisperLiveCallbacks["onSendProgress"];
   onConnectionStats: WhisperLiveCallbacks["onConnectionStats"];
   onCtrl: WhisperLiveCallbacks["onCtrl"];
+  onDrawStream: WhisperLiveCallbacks["onDrawStream"];
 
   // Tab-aware heartbeat
   private tabHidden = false;
@@ -434,6 +444,7 @@ export class WhisperLiveSession {
     this.onSendProgress = callbacks.onSendProgress;
     this.onConnectionStats = callbacks.onConnectionStats;
     this.onCtrl = callbacks.onCtrl;
+    this.onDrawStream = callbacks.onDrawStream;
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
     this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
     this.autoConfirm = options.autoConfirmFingerprint ?? false;
@@ -1033,7 +1044,13 @@ export class WhisperLiveSession {
       }
       case LIVE_MSG.CTRL: {
         const frame = decodeCtrl(bytes.subarray(1));
-        if (frame && this.onCtrl) this.onCtrl(frame.opcode, frame.payload);
+        if (frame) {
+          if (this.onCtrl) this.onCtrl(frame.opcode, frame.payload);
+          if (frame.opcode === CTRL_OP.DRAW_STREAM && this.onDrawStream) {
+            const drawEvent = decodeDrawStreamEvent(frame.payload);
+            if (drawEvent) this.onDrawStream(drawEvent);
+          }
+        }
         break;
       }
       default:
@@ -1243,6 +1260,13 @@ export class WhisperLiveSession {
   sendCtrl(opcode: number, payload?: Uint8Array): void {
     if (!this.isLiveState()) return;
     this.send(LIVE_MSG.CTRL, encodeCtrl(opcode, payload));
+  }
+
+  /** Send a live draw stream event to the peer over CTRL transport. */
+  sendDrawStream(event: DrawStreamEvent): void {
+    if (!this.isLiveState()) return;
+    const payload = encodeDrawStreamEvent(event);
+    this.send(LIVE_MSG.CTRL, encodeCtrl(CTRL_OP.DRAW_STREAM, payload));
   }
 
   /** Wait for recovery to complete before sending. Returns false if destroyed. */
@@ -1456,19 +1480,24 @@ export class WhisperLiveSession {
     }
     this.ratchetState.nSend++;
 
-    const chunks = chunkMessagePrefixed(wireMessage, LIVE_MSG.ENCRYPTED);
-    const totalBytes = wireMessage.length;
+    const totalBytes = estimateChunkedPrefixedSize(wireMessage.length);
     let bytesSent = 0;
-    for (const chunk of chunks) {
+    let lastProgressEmit = 0;
+    for (const chunk of iterateChunksPrefixed(wireMessage, LIVE_MSG.ENCRYPTED)) {
       if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
         try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
       }
       if (!this.dc || this.dc.readyState !== "open") return msgId;
-      const ab = new ArrayBuffer(chunk.byteLength);
-      new Uint8Array(ab).set(chunk);
-      this.dc.send(ab);
+      // Send chunk directly (Uint8Array is a valid BufferSource).
+      this.dc.send(chunk);
       bytesSent += chunk.byteLength;
-      if (this.onSendProgress) this.onSendProgress(bytesSent, totalBytes);
+      if (this.onSendProgress) {
+        const now = performance.now();
+        if (bytesSent >= totalBytes || now - lastProgressEmit >= SEND_PROGRESS_INTERVAL_MS) {
+          this.onSendProgress(bytesSent, totalBytes);
+          lastProgressEmit = now;
+        }
+      }
     }
     return msgId;
   }

@@ -24,33 +24,49 @@ const START_DATA_OFFSET = 5;
 const CONT_DATA_OFFSET = 1;
 
 /**
- * Chunk a message for DataChannel transport, baking in a wire prefix byte
- * at position [0] of each chunk. This avoids a second allocation + copy
- * in encryptAndSend — chunks are ready to send directly.
+ * Exact wire-byte estimate for chunkMessagePrefixed without materializing chunks.
  */
-export function chunkMessagePrefixed(data: Uint8Array, prefix: number): Uint8Array[] {
+export function estimateChunkedPrefixedSize(payloadBytes: number): number {
+  const len = Math.max(0, payloadBytes | 0);
+  if (len <= CHUNK_SIZE) return 2 + len; // prefix + single type + payload
+
+  const startPayload = Math.min(CHUNK_SIZE - START_TOTAL_LENGTH_BYTES, len);
+  const remaining = len - startPayload;
+  // Start chunk: prefix + type + totalLen(4) + payload
+  let total = 6 + startPayload;
+
+  if (remaining <= 0) return total;
+  const tailChunks = Math.ceil(remaining / CHUNK_SIZE);
+  // each tail chunk: prefix + type + payload slice
+  total += tailChunks * 2 + remaining;
+  return total;
+}
+
+/**
+ * Iterate chunked, prefixed wire frames lazily.
+ * Avoids allocating an intermediate array for large payloads.
+ */
+export function* iterateChunksPrefixed(data: Uint8Array, prefix: number): Generator<Uint8Array> {
   if (data.length <= CHUNK_SIZE) {
     const chunk = new Uint8Array(2 + data.length);
     chunk[0] = prefix;
     chunk[1] = CHUNK_SINGLE;
     chunk.set(data, 2);
-    return [chunk];
+    yield chunk;
+    return;
   }
 
-  const chunks: Uint8Array[] = [];
   let offset = 0;
 
-  // Start chunk: prefix + type + total length (4B) + payload
   const startPayload = Math.min(CHUNK_SIZE - START_TOTAL_LENGTH_BYTES, data.length);
   const startChunk = new Uint8Array(6 + startPayload);
   startChunk[0] = prefix;
   startChunk[1] = CHUNK_START;
   new DataView(startChunk.buffer).setUint32(2, data.length, true);
   startChunk.set(data.subarray(0, startPayload), 6);
-  chunks.push(startChunk);
+  yield startChunk;
   offset = startPayload;
 
-  // Continue / end chunks
   while (offset < data.length) {
     const remaining = data.length - offset;
     const payloadSize = Math.min(CHUNK_SIZE, remaining);
@@ -60,11 +76,18 @@ export function chunkMessagePrefixed(data: Uint8Array, prefix: number): Uint8Arr
     chunk[0] = prefix;
     chunk[1] = isLast ? CHUNK_END : CHUNK_CONTINUE;
     chunk.set(data.subarray(offset, offset + payloadSize), 2);
-    chunks.push(chunk);
+    yield chunk;
     offset += payloadSize;
   }
+}
 
-  return chunks;
+/**
+ * Chunk a message for DataChannel transport, baking in a wire prefix byte
+ * at position [0] of each chunk. This avoids a second allocation + copy
+ * in encryptAndSend — chunks are ready to send directly.
+ */
+export function chunkMessagePrefixed(data: Uint8Array, prefix: number): Uint8Array[] {
+  return Array.from(iterateChunksPrefixed(data, prefix));
 }
 
 export class ChunkAssembler {

@@ -351,7 +351,8 @@
   /* Sub-mode toggle (1:1 vs Campfire) — elements live in parent template */
   :global(.cf-live-mode-toggle) {
     display: flex;
-    flex-shrink: 0;
+    flex-shrink: 1;
+    min-width: 0;
     gap: 0;
     border: 1px solid var(--whisper-edge);
     border-radius: calc(var(--whisper-radius) * 0.5);
@@ -359,6 +360,20 @@
     background: rgb(10 10 10 / 0.88);
     box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
     white-space: nowrap;
+  }
+
+  /* autoCompact: hide verbose text and tighten buttons when toggle overflows */
+  :global(.cf-live-mode-toggle[data-compact]) :global(.cf-btn-verbose) {
+    display: none;
+  }
+  :global(.cf-live-mode-toggle[data-compact]) :global(.cf-head-btn) {
+    padding: calc(var(--space-xs) * 0.25) calc(var(--space-xs) * 0.5);
+    font-size: calc(var(--text-sm) * 0.72);
+    min-height: 1.6rem;
+  }
+  :global(.cf-live-mode-toggle[data-compact]) :global(.wl-disconnect-btn) :global(svg) {
+    width: 12px;
+    height: 12px;
   }
 
   :global(.cf-mode-opt) {
@@ -432,6 +447,7 @@
     background: rgb(var(--chromatic-red) / 0.12);
     color: rgb(var(--chromatic-red));
   }
+
 
   /* Chat header with peer list */
   .cf-chat-header {
