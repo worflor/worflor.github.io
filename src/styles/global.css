@@ -155,6 +155,7 @@
       rgb(var(--chromatic-red)),
       rgb(var(--chromatic-cyan)));
   /* fallback input for iOS touch WebKit parallax emulation (set in Layout.astro) */
+  --ios-parallax-strength: 0.9;
   --ios-scroll-y: 0px;
 }
 
@@ -797,20 +798,20 @@ body.pride {
     :root[data-ios-parallax="js"] .prose :where(ol > li)::before {
       background-attachment: scroll, scroll;
       background-size: auto, 100vw 200vh;
-      background-position: 0 0, center calc(var(--ios-scroll-y) * -1);
+      background-position: 0 0, center calc(var(--ios-scroll-y) * -1 * var(--ios-parallax-strength));
     }
 
     :root[data-ios-parallax="js"] .prose :where(ol > li):not(:last-child)::after,
     :root[data-ios-parallax="js"] .prose :where(blockquote)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center calc(var(--ios-scroll-y) * -1);
+      background-position: center calc(var(--ios-scroll-y) * -1 * var(--ios-parallax-strength));
     }
 
     :root[data-ios-parallax="js"] .prose :where(pre)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center calc(var(--ios-scroll-y) * -1);
+      background-position: center calc(var(--ios-scroll-y) * -1 * var(--ios-parallax-strength));
     }
 
     :root[data-ios-parallax="js"] .prose :where(hr),
@@ -818,7 +819,7 @@ body.pride {
       background: var(--parallax-gradient-vertical);
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center calc(var(--ios-scroll-y) * -1);
+      background-position: center calc(var(--ios-scroll-y) * -1 * var(--ios-parallax-strength));
     }
 
     /* JS disabled/failed: keep accents clean and stable (no rainbow phase drift). */

@@ -114,19 +114,34 @@ const isContactPage = Astro.url.pathname === "/contact";
       && !!(window.CSS && CSS.supports && CSS.supports('-webkit-touch-callout', 'none'));
 
     if (needsIosParallaxFallback) {
-      var iosParallaxTicking = false;
+      var prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var iosParallaxRaf = 0;
+      var iosParallaxTarget = window.scrollY;
+      var iosParallaxCurrent = window.scrollY;
+      var iosParallaxLerp = prefersReducedMotion ? 1 : 0.18;
       var rootElement = document.documentElement;
       rootElement.setAttribute('data-ios-parallax', 'js');
+      if (prefersReducedMotion) {
+        rootElement.style.setProperty('--ios-parallax-strength', '0.35');
+      }
 
       function applyIosParallaxScroll() {
-        iosParallaxTicking = false;
-        rootElement.style.setProperty('--ios-scroll-y', window.scrollY + 'px');
+        iosParallaxRaf = 0;
+        iosParallaxCurrent += (iosParallaxTarget - iosParallaxCurrent) * iosParallaxLerp;
+        if (Math.abs(iosParallaxTarget - iosParallaxCurrent) < 0.25) {
+          iosParallaxCurrent = iosParallaxTarget;
+        }
+        rootElement.style.setProperty('--ios-scroll-y', iosParallaxCurrent + 'px');
+
+        if (iosParallaxCurrent !== iosParallaxTarget) {
+          iosParallaxRaf = requestAnimationFrame(applyIosParallaxScroll);
+        }
       }
 
       function scheduleIosParallaxScroll() {
-        if (iosParallaxTicking) return;
-        iosParallaxTicking = true;
-        requestAnimationFrame(applyIosParallaxScroll);
+        iosParallaxTarget = window.scrollY;
+        if (iosParallaxRaf) return;
+        iosParallaxRaf = requestAnimationFrame(applyIosParallaxScroll);
       }
 
       applyIosParallaxScroll();
