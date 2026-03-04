@@ -1621,6 +1621,58 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    *       .wl-media-dl           ← download button
    * ─────────────────────────────────────────────────────────────────── */
 
+  function renderGlyphMediaMessage(
+    fileName: string,
+    fileSize: number | undefined,
+    glyph: GlyphPayload,
+    glyphBytes: Uint8Array,
+    abortSignal: AbortSignal,
+    aspectRatioHint?: string,
+  ): HTMLElement {
+    const root = document.createElement("div");
+    root.className = "wl-msg-media wl-msg-peer-draw";
+    root.dataset.drawState = "sent";
+
+    const thumb = document.createElement("div");
+    thumb.className = "wl-media-thumb wl-msg-peer-draw-thumb";
+    thumb.style.aspectRatio = (aspectRatioHint?.trim() || `${glyph.logicalW} / ${glyph.logicalH}`);
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "wl-peer-draw-inline";
+    thumb.appendChild(canvas);
+
+    requestAnimationFrame(() => {
+      const dpr = devicePixelRatio || 1;
+      const rect = thumb.getBoundingClientRect();
+      const cw = Math.max(1, Math.round(rect.width));
+      const ch = Math.max(1, Math.round(rect.height));
+      canvas.width = Math.max(1, Math.round(cw * dpr));
+      canvas.height = Math.max(1, Math.round(ch * dpr));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      renderGwyphScene(ctx, glyph, cw, ch);
+    });
+
+    thumb.addEventListener("click", () => {
+      openMediaLightbox("", "", fileName, "glyph", glyph, glyphBytes);
+    }, { signal: abortSignal });
+
+    const infoBar = createMediaInfoBar(fileName, fileSize, "#");
+    const dlBtn = infoBar.querySelector<HTMLAnchorElement>(".wl-media-dl");
+    if (dlBtn) {
+      dlBtn.download = gwyphPngName(fileName);
+      dlBtn.title = "Download PNG";
+      dlBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        void downloadGlyphAsPng(glyphBytes, fileName);
+      }, { signal: abortSignal });
+    }
+
+    root.append(thumb, infoBar);
+    return root;
+  }
+
   function renderMediaMessage(msg: LiveMessage, abortSignal: AbortSignal): HTMLElement {
     const { kind, mime } = detectMedia(msg)!;
     const fileData = msg.fileData!;
@@ -1656,46 +1708,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         return fallback;
       }
 
-      const root = document.createElement("div");
-      root.className = "wl-msg-media wl-msg-peer-draw";
-      root.dataset.drawState = "sent";
-
-      const thumb = document.createElement("div");
-      thumb.className = "wl-media-thumb wl-msg-peer-draw-thumb";
-      thumb.style.aspectRatio = `${glyph.logicalW} / ${glyph.logicalH}`;
-      const canvas = document.createElement("canvas");
-      canvas.className = "wl-peer-draw-inline";
-      thumb.appendChild(canvas);
-
-      requestAnimationFrame(() => {
-        const dpr = devicePixelRatio || 1;
-        const rect = thumb.getBoundingClientRect();
-        const cw = Math.max(1, Math.round(rect.width));
-        const ch = Math.max(1, Math.round(rect.height));
-        canvas.width = Math.max(1, Math.round(cw * dpr));
-        canvas.height = Math.max(1, Math.round(ch * dpr));
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-        ctx.scale(dpr, dpr);
-        renderGwyphScene(ctx, glyph, cw, ch);
-      });
-
-      thumb.addEventListener("click", () => {
-        openMediaLightbox("", "", fileName, "glyph", glyph, glyphBytes);
-      }, { signal: abortSignal });
-
-      const infoBar = createMediaInfoBar(fileName, fileSize, "#");
-      const dlBtn = infoBar.querySelector<HTMLAnchorElement>(".wl-media-dl");
-      if (dlBtn) {
-        dlBtn.download = gwyphPngName(fileName);
-        dlBtn.title = "Download PNG";
-        dlBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          void downloadGlyphAsPng(glyphBytes, fileName);
-        }, { signal: abortSignal });
-      }
-      root.append(thumb, infoBar);
-      return root;
+      return renderGlyphMediaMessage(fileName, fileSize, glyph, glyphBytes, abortSignal);
     }
 
     // Display blob uses the resolved MIME so the browser can decode it.
@@ -1768,49 +1781,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       glyphBytes.set(msg.fileData);
       const glyph = parseGwyphPayload(glyphBytes);
       if (!glyph) return null;
-
-      const root = document.createElement("div");
-      root.className = "wl-msg-media wl-msg-peer-draw";
-      root.dataset.drawState = "sent";
-
-      const thumb = document.createElement("div");
-      thumb.className = "wl-media-thumb wl-msg-peer-draw-thumb";
-      thumb.style.aspectRatio = hintedAspect || `${glyph.logicalW} / ${glyph.logicalH}`;
-
-      const canvas = document.createElement("canvas");
-      canvas.className = "wl-peer-draw-inline";
-      thumb.appendChild(canvas);
-
-      requestAnimationFrame(() => {
-        const dpr = devicePixelRatio || 1;
-        const rect = thumb.getBoundingClientRect();
-        const cw = Math.max(1, Math.round(rect.width));
-        const ch = Math.max(1, Math.round(rect.height));
-        canvas.width = Math.max(1, Math.round(cw * dpr));
-        canvas.height = Math.max(1, Math.round(ch * dpr));
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        renderGwyphScene(ctx, glyph, cw, ch);
-      });
-
-      thumb.addEventListener("click", () => {
-        openMediaLightbox("", "", fileName, "glyph", glyph, glyphBytes);
-      }, { signal: abortSignal });
-
-      const infoBar = createMediaInfoBar(fileName, msg.fileSize, "#");
-      const dlBtn = infoBar.querySelector<HTMLAnchorElement>(".wl-media-dl");
-      if (dlBtn) {
-        dlBtn.download = gwyphPngName(fileName);
-        dlBtn.title = "Download PNG";
-        dlBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          void downloadGlyphAsPng(glyphBytes, fileName);
-        }, { signal: abortSignal });
-      }
-
-      root.append(thumb, infoBar);
-      return root;
+      return renderGlyphMediaMessage(fileName, msg.fileSize, glyph, glyphBytes, abortSignal, hintedAspect);
     }
 
     if (detected.kind !== "image") return null;
@@ -3251,18 +3222,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     // Self → always snap to bottom (deferred so layout includes the new node)
-    // System → smooth-scroll if already near bottom
-    // Peer → never auto-scroll
+    // System/Peer → smooth-scroll if already near bottom
     if (msg.direction === "self") {
       requestAnimationFrame(() => {
         opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
       });
-    } else if (msg.direction === "system") {
-      smartScroll();
     } else if (replacePeerPreview && replacePreviewWasNearBottom) {
       requestAnimationFrame(() => {
         opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
       });
+    } else {
+      smartScroll();
     }
 
     if (msg.msgId !== undefined) {

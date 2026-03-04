@@ -132,6 +132,16 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${rr}${gg}${bb}`;
 }
 
+function glyphStrokeWidthScale(glyph: GlyphPayload, W: number, H: number): number {
+  const srcW = Math.max(1, glyph.logicalW);
+  const srcH = Math.max(1, glyph.logicalH);
+  const sx = W / srcW;
+  const sy = H / srcH;
+  const s = Math.min(sx, sy);
+  if (!Number.isFinite(s)) return 1;
+  return Math.max(0.08, Math.min(8, s));
+}
+
 export function parseGwyphPayload(bytes: Uint8Array): GlyphPayload | null {
   try {
     const r = new GlyphReader(bytes);
@@ -210,19 +220,26 @@ export function parseGwyphPayload(bytes: Uint8Array): GlyphPayload | null {
   }
 }
 
-function renderGlyphStroke(ctx: CanvasRenderingContext2D, stroke: GlyphStrokePen, W: number, H: number): void {
+function renderGlyphStroke(
+  ctx: CanvasRenderingContext2D,
+  stroke: GlyphStrokePen,
+  W: number,
+  H: number,
+  widthScale: number,
+): void {
   if (stroke.points.length === 0) return;
   const pressureSens = stroke.tool !== "eraser";
+  const baseWidth = Math.max(0.1, stroke.width * widthScale);
   ctx.save();
   ctx.globalCompositeOperation = stroke.tool === "eraser" ? "destination-out" : "source-over";
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.strokeStyle = stroke.tool === "eraser" ? "rgba(0,0,0,1)" : stroke.color;
-  ctx.fillStyle = stroke.color;
+  ctx.fillStyle = stroke.tool === "eraser" ? "rgba(0,0,0,1)" : stroke.color;
 
   if (stroke.points.length === 1) {
     const pt = stroke.points[0];
-    const r = (pressureSens ? stroke.width * (0.3 + pt.p * 0.7) : stroke.width) / 2;
+    const r = (pressureSens ? baseWidth * (0.3 + pt.p * 0.7) : baseWidth) / 2;
     ctx.beginPath();
     ctx.arc(pt.x * W, pt.y * H, r, 0, Math.PI * 2);
     ctx.fill();
@@ -243,7 +260,7 @@ function renderGlyphStroke(ctx: CanvasRenderingContext2D, stroke: GlyphStrokePen
     const midY = (lastY + cy) * 0.5;
     const fromX = hasLastMid ? lastMidX : lastX;
     const fromY = hasLastMid ? lastMidY : lastY;
-    const lw = pressureSens ? stroke.width * (0.3 + cur.p * 0.7) : stroke.width;
+    const lw = pressureSens ? baseWidth * (0.3 + cur.p * 0.7) : baseWidth;
     ctx.lineWidth = lw;
     ctx.beginPath();
     ctx.moveTo(fromX, fromY);
@@ -254,6 +271,17 @@ function renderGlyphStroke(ctx: CanvasRenderingContext2D, stroke: GlyphStrokePen
     hasLastMid = true;
     lastX = cx;
     lastY = cy;
+  }
+  const end = stroke.points[stroke.points.length - 1];
+  if (hasLastMid) {
+    const endX = end.x * W;
+    const endY = end.y * H;
+    const lw = pressureSens ? baseWidth * (0.3 + end.p * 0.7) : baseWidth;
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.moveTo(lastMidX, lastMidY);
+    ctx.quadraticCurveTo(endX, endY, endX, endY);
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -357,6 +385,7 @@ function renderGlyphFill(
 export function renderGwyphScene(ctx: CanvasRenderingContext2D, glyph: GlyphPayload, W: number, H: number): void {
   const scratch = ensureGlyphRenderScratch(W, H);
   const { bgCanvas, bgCtx, drawCanvas, drawCtx } = scratch;
+  const widthScale = glyphStrokeWidthScale(glyph, W, H);
 
   bgCtx.clearRect(0, 0, W, H);
   drawCtx.clearRect(0, 0, W, H);
@@ -367,7 +396,7 @@ export function renderGwyphScene(ctx: CanvasRenderingContext2D, glyph: GlyphPayl
   }
 
   for (const stroke of glyph.strokes) {
-    if (stroke.type === "pen") renderGlyphStroke(drawCtx, stroke, W, H);
+    if (stroke.type === "pen") renderGlyphStroke(drawCtx, stroke, W, H, widthScale);
     else renderGlyphFill(drawCtx, stroke, W, H, glyph.mode === "blank" ? bgCanvas : null, scratch);
   }
 
