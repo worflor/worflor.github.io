@@ -622,6 +622,21 @@ body.pride {
   content: none;
 }
 
+/* ─── KaTeX Math ──────────────────────────────────────────────────────────── */
+
+.prose :where(.katex-display) {
+  margin-block: var(--space-xl) !important;
+  padding-block: var(--space-xs);
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+.prose :where(.katex) {
+  padding-inline: 0.15em;
+  font-size: 1.05em;
+}
+
 /* ─── Horizontal rule ─────────────────────────────────────────────────────── */
 
 .prose :where(hr) {

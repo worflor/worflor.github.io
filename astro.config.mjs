@@ -3,6 +3,8 @@ import sitemap from "@astrojs/sitemap";
 import { remarkReadingTime } from "./src/plugins/remark-reading-time.ts";
 import { remarkResonance } from "./src/plugins/remark-resonance.ts";
 import tailwindcss from "@tailwindcss/vite";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 import mailObfuscation from "astro-mail-obfuscation";
 
@@ -23,7 +25,8 @@ export default defineConfig({
   compressHTML: true,
 
   markdown: {
-    remarkPlugins: [remarkReadingTime, remarkResonance],
+    remarkPlugins: [remarkReadingTime, remarkResonance, remarkMath],
+    rehypePlugins: [[rehypeKatex, { output: "html" }]],
   },
 
   vite: {

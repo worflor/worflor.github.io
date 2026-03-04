@@ -2,7 +2,7 @@
   "name": "minimal-portfolio",
   "type": "module",
   "version": "1.0.7",
-  "license": "AGPL-3.0-only",
+  "license": "AGPL-3.0-only WITH Custom-Whisper-License",
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
@@ -20,9 +20,12 @@
     "@tailwindcss/vite": "^4.1.17",
     "astro": "^5.16.4",
     "astro-mail-obfuscation": "^2.3.4",
+    "katex": "^0.16.33",
     "marked": "^15.0.4",
     "mdast-util-to-string": "^4.0.0",
     "reading-time": "^1.5.0",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0",
     "tailwindcss": "^4.1.17",
     "typescript": "^5.4.3"
   },

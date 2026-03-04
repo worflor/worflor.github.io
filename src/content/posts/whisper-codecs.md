@@ -26,7 +26,7 @@ turns out the answer is **8**. and then **16**. and the thing waiting at 16 is w
 
 ## the tower, briefly
 
-the [Möbius predictor formula](https://doi.org/10.2307/2319793) works in any dimension. for n dimensions, you sum over all 2ⁿ - 1 non-empty subsets of neighbors with alternating signs. it works like counting a crowd by tallying overlapping groups: add the individuals, subtract the pairs you double-counted, add back the triples you over-subtracted, and keep going until everything's been accounted for exactly once. the Möbius predictor does this with pixel values instead of people.
+the [Möbius predictor formula](https://doi.org/10.2307/2319793) works in any dimension. for $n$ dimensions, you sum over all $2^n - 1$ non-empty subsets of neighbors with alternating signs. it works like counting a crowd by tallying overlapping groups: add the individuals, subtract the pairs you double-counted, add back the triples you over-subtracted, and keep going until everything's been accounted for exactly once. the Möbius predictor does this with pixel values instead of people.
 
 the dimensions follow the Hurwitz sequence of normed division algebras:
 
@@ -39,7 +39,7 @@ the dimensions follow the Hurwitz sequence of normed division algebras:
 | 8 | O (octonions) | 255 | **Loup** |
 | 16 | S (sedenions) | 65,535 | **Kizuna** |
 
-[Hurwitz proved in 1898](https://doi.org/10.1007/978-3-0348-4160-3_39) that the algebraic sequence R → C → H → O closes at 8. octonions are the last normed division algebra. sedenions have zero divisors, so the algebraic structure breaks there; however, the Möbius formula doesn't care. *it* only needs the inclusion-exclusion identity, and *that* works in any dimension. the predictor survives past the algebraic boundary. the math *outlives* the structure it was born from.
+[Hurwitz proved in 1898](https://doi.org/10.1007/978-3-0348-4160-3_39) that the algebraic sequence $\mathbb{R} \to \mathbb{C} \to \mathbb{H} \to \mathbb{O}$ closes at 8. octonions are the last normed division algebra. sedenions have zero divisors, so the algebraic structure breaks there; however, the Möbius formula doesn't care. *it* only needs the inclusion-exclusion identity, and *that* works in any dimension. the predictor survives past the algebraic boundary. the math *outlives* the structure it was born from.
 
 this post covers three layers: Logos at 0D (entropy), Loup at 8D (spatial prediction), and Kizuna at 16D (the bond). the first two set the stage. Kizuna is the star.
 
@@ -54,29 +54,29 @@ Logos is an adaptive entropy coder with an ***attention*** **model** that ranks 
 - **Bit1**: order-1 extension. conditions on the top 4 bits of the previous byte. 4,080 contexts total. captures inter-byte correlations, which is why it crushes UTF-8.
 - **BitM**: conditions each bit on the same bit position of the previous byte. 512 contexts. this is the 0D end of the Möbius hierarchy.
 
-the encoder tries all four, picks the smallest, and prepends a mode byte. if nothing beats raw, it falls back to raw. output is guaranteed ≤ input + 1 byte.
+the encoder tries all four, picks the smallest, and prepends a mode byte. if nothing beats raw, it falls back to raw. output is guaranteed $\leq \text{input} + 1$ byte.
 
 the important detail for later: Bit0's context tree has **255 nodes**. hold onto that...
 
 ## Loup: the 8D predictor
 
-the 8D Möbius predictor sums over all *255* non-empty subsets of 8 dimensions, weighted by inclusion-exclusion:
+the 8D Möbius predictor sums over all $255$ non-empty subsets of 8 dimensions, weighted by inclusion-exclusion:
 
-```
-P = Σ (-1)^(|S|+1) · f(neighbor_S)
-```
+$$
+P = \sum (-1)^{|S|+1} \cdot f(\text{neighbor}_S)
+$$
 
-255 terms, grouped by binomial coefficient: +8, -28, +56, -70, +56, -28, +8, -1. same crowd-counting logic as before, just scaled up. add the 8 direct neighbors, subtract the 28 pairs, add the 56 triples, on and on through all 255 groups. they sum to exactly 1. the predictor is unbiased, and the error equals the discrete 8-form, which vanishes for any polynomial of degree ≤ 7. if your friend's train of thought takes up to seven sharp turns, Loup still knows exactly how the sentence ends. the element of surprise is mathematically zero; there is no guess needed.
+255 terms, grouped by binomial coefficient: +8, -28, +56, -70, +56, -28, +8, -1. same crowd-counting logic as before, just scaled up. add the 8 direct neighbors, subtract the 28 pairs, add the 56 triples, on and on through all 255 groups. they sum to exactly 1. the predictor is unbiased, and the error equals the discrete 8-form, which vanishes for any polynomial of degree $\leq 7$. if your friend's train of thought takes up to seven sharp turns, Loup still knows exactly how the sentence ends. the element of surprise is mathematically zero; there is no guess needed.
 
 Loup uses an anti-causal variant that looks forward instead of backward, and this unlocks the **boundary theorem**. when any coordinate of a voxel sits at the block edge, the sum telescopes to the value itself. prediction is exact. residual is zero. *always*. regardless of the data. like a jigsaw piece at the edge of the puzzle: the flat sides constrain it so completely that its identity is mathematical inevitability.
 
-at block size 4, the free-zero fraction is 1 - (3/4)⁸ = **89.99%**. almost 90% of every block is edge pieces. only 6,561 interior voxels out of 65,536 need actual computation.
+at block size 4, the free-zero fraction is $1 - (3/4)^8 = \mathbf{89.99\%}$. almost 90% of every block is edge pieces. only 6,561 interior voxels out of 65,536 need actual computation.
 
 ### the duality
 
-here's where it clicks. Logos has 255 context tree nodes. Loup has 255 spatial neighbors. both sit on the same mathematical object: the [Boolean lattice](https://en.wikipedia.org/wiki/Boolean_algebra) 2^{0,...,7}, also written as the exterior algebra Λ*(R⁸).
+here's where it clicks. Logos has 255 context tree nodes. Loup has 255 spatial neighbors. both sit on the same mathematical object: the [Boolean lattice](https://en.wikipedia.org/wiki/Boolean_algebra) $2^{\{0,\ldots,7\}}$, also written as the exterior algebra $\Lambda^*(\mathbb{R}^8)$.
 
-the chain rule that decomposes a byte probability into 8 conditional bit probabilities is the probabilistic mirror of spatial inclusion-exclusion. both decompose a structure over 2⁸ outcomes into 2⁸ - 1 conditional terms. one lives in probability space, the other in coordinate space. same skeleton, opposite ends of the tower.
+the chain rule that decomposes a byte probability into 8 conditional bit probabilities is the probabilistic mirror of spatial inclusion-exclusion. both decompose a structure over $2^8$ outcomes into $2^8 - 1$ conditional terms. one lives in probability space, the other in coordinate space. same skeleton, opposite ends of the tower.
 
 this duality extends upward. a 16-bit symbol decomposes into 65,535 binary contexts. the 16D predictor has 65,535 neighbors. same lattice, same structure, one dimension higher. told you to hold onto that.
 
@@ -86,15 +86,15 @@ which brings us to my beloved Kizuna.
 
 65,535 neighbors. 99.998% free zeros. **one** interior voxel.
 
-at block size 2 in 16 dimensions, each coordinate is 0 or 1. the block has 2¹⁶ = 65,536 voxels. the boundary theorem holds here too, and since every voxel except the origin has at least one coordinate equal to 1, only the origin needs a predictor. every other voxel's residual is exactly zero by construction.
+at block size 2 in 16 dimensions, each coordinate is 0 or 1. the block has $2^{16} = 65{,}536$ voxels. the boundary theorem holds here too, and since every voxel except the origin has at least one coordinate equal to 1, only the origin needs a predictor. every other voxel's residual is exactly zero by construction.
 
 the free-zero fraction:
 
-```
-1 - (1/2)¹⁶ = 65,535 / 65,536 = 99.998%
-```
+$$
+1 - (1/2)^{16} = 65{,}535 / 65{,}536 = 99.998\%
+$$
 
-that single origin residual carries the full Möbius mixture of all 65,535 boundary voxels. it's a weighted sum with alternating signs from the inclusion-exclusion coefficients. flip the least significant bit of any byte anywhere in the block and the residual changes by exactly ±1, with the sign determined by the popcount parity of that position. this follows directly from the [Walsh-Hadamard](https://doi.org/10.1016/bs.aiep.2017.05.002) identity: the Möbius residual at the origin equals the WHT coefficient at the all-ones index.
+that single origin residual carries the full Möbius mixture of all 65,535 boundary voxels. it's a weighted sum with alternating signs from the inclusion-exclusion coefficients. flip the least significant bit of any byte anywhere in the block and the residual changes by exactly $\pm 1$, with the sign determined by the popcount parity of that position. this follows directly from the [Walsh-Hadamard](https://doi.org/10.1016/bs.aiep.2017.05.002) identity: the Möbius residual at the origin equals the WHT coefficient at the all-ones index.
 
 holy yap. instead, try thinking of it like a wax seal on a letter. a single impression, but it captures the shape of every groove in the ring. change any groove, no matter how small, and the seal comes out different. this residual is that kind of seal for 65,536 bytes.
 
@@ -110,7 +110,7 @@ three things come out of that block. both parties compute them independently. no
 
 2. **the 8D context block**
 
-   the 65,536-byte block happens to be exactly the right size for a 4⁸ voxel Octonion block. Loup uses it directly as pre-seeded spatial context, so the first compressed frames start warm. better compression from sample one.
+   the 65,536-byte block happens to be exactly the right size for a $4^8$ voxel Octonion block. Loup uses it directly as pre-seeded spatial context, so the first compressed frames start warm. better compression from sample one.
 
 3. **the Logos seed**
 
@@ -145,7 +145,7 @@ ECDH shared secret
      │
      ├──→ 16D Möbius ──→ residual (spectral witness)
      │
-     ├──→ reinterpret as 4⁸ block ──→ 8D Loup context (warm start)
+     ├──→ reinterpret as $4^8$ block ──→ 8D Loup context (warm start)
      │
      └──→ first 512 bytes ──→ Logos seed (secret-dependent entropy state)
                                    │
@@ -186,4 +186,5 @@ anyway. that's what's behind the [scenes](/whisper)
 
 - woflo
 
+<!-- markdownlint-disable-next-line MD033 -->
 <p class="text-[length:var(--text-sm)] opacity-25 mt-8 text-center">Patent Pending</p>
