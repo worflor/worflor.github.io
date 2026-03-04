@@ -138,6 +138,8 @@ export interface WhisperLiveCallbacks {
   onDrawStream?: (event: DrawStreamEvent) => void;
 }
 
+export type LiveMediaKind = "audio" | "video";
+
 export interface WhisperLiveSessionOptions {
   /**
    * RTCPeerConnection configuration.
@@ -520,6 +522,20 @@ export class WhisperLiveSession {
     return new Uint32Array(this.sharedSecret.buffer, this.sharedSecret.byteOffset, 4);
   }
 
+  /** Expose active peer connection for first-party media orchestration layer. */
+  getPeerConnection(): RTCPeerConnection | null {
+    return this.pc;
+  }
+
+  /** Retrieve pre-negotiated media transceiver by kind (audio/video) if available. */
+  getMediaTransceiver(kind: LiveMediaKind): RTCRtpTransceiver | null {
+    if (!this.pc) return null;
+    for (const t of this.pc.getTransceivers()) {
+      if (t.receiver.track?.kind === kind || t.sender.track?.kind === kind) return t;
+    }
+    return null;
+  }
+
   private setState(state: LiveState, detail?: string): void {
     const allowed = VALID_TRANSITIONS[this._state];
     if (!allowed.includes(state)) return;
@@ -559,6 +575,8 @@ export class WhisperLiveSession {
     this.onLog("creating offer...");
 
     this.pc = new RTCPeerConnection(await this.buildRtcConfig());
+
+    this.ensureMediaTransceivers(this.pc);
 
     this.setupPeerConnection(this.pc);
 
@@ -601,6 +619,7 @@ export class WhisperLiveSession {
     const offerSDP = await codeToSdp(offerCode, "offer", this.sharedPhrase || undefined);
 
     this.pc = new RTCPeerConnection(await this.buildRtcConfig());
+    this.ensureMediaTransceivers(this.pc);
     this.setupPeerConnection(this.pc);
 
     this.pc.ondatachannel = (event) => {
@@ -623,6 +642,12 @@ export class WhisperLiveSession {
     this.onLog("connecting peer-to-peer...");
 
     return answerCode;
+  }
+
+  private ensureMediaTransceivers(pc: RTCPeerConnection): void {
+    const kinds = new Set(pc.getTransceivers().map((t) => t.receiver.track?.kind || t.sender.track?.kind).filter(Boolean));
+    if (!kinds.has("audio")) pc.addTransceiver("audio", { direction: "sendrecv" });
+    if (!kinds.has("video")) pc.addTransceiver("video", { direction: "sendrecv" });
   }
 
   /** Wait for ICE gathering to complete or timeout. */

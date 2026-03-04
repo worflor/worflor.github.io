@@ -31,6 +31,9 @@ export const CTRL_OP = {
   SEEN: 0x81,  // payload: [msgId:4B LE]
   REACT: 0x82,  // payload: [msgId:4B LE][emoji:utf8]
   UNREACT: 0x83,  // payload: [msgId:4B LE][emoji:utf8]
+  MEDIA_CAPS: 0x84, // payload: media capability bitset
+  MEDIA_INTENT: 0x85, // payload: local desired media state
+  MEDIA_APPLY: 0x86, // payload: negotiated media state snapshot
   DRAW_STREAM: 0x90, // payload: draw-stream binary frame (live-draw-stream.ts)
 } as const;
 
@@ -254,5 +257,60 @@ export function decodeReactPayload(payload: Uint8Array): { msgId: number; emoji:
   return {
     msgId: new DataView(payload.buffer, payload.byteOffset).getUint32(0, true),
     emoji: first.segment,
+  };
+}
+
+/* ── Live media payload encoding ─────────────────────────── */
+
+export interface CtrlMediaCaps {
+  supportsHarmonic: boolean;
+  supportsLumen: boolean;
+  canSendAudio: boolean;
+  canRecvAudio: boolean;
+  canSendVideo: boolean;
+  canRecvVideo: boolean;
+}
+
+export interface CtrlMediaIntent {
+  audio: boolean;
+  video: boolean;
+}
+
+export function encodeMediaCaps(caps: CtrlMediaCaps): Uint8Array {
+  let bits = 0;
+  if (caps.supportsHarmonic) bits |= 1 << 0;
+  if (caps.supportsLumen) bits |= 1 << 1;
+  if (caps.canSendAudio) bits |= 1 << 2;
+  if (caps.canRecvAudio) bits |= 1 << 3;
+  if (caps.canSendVideo) bits |= 1 << 4;
+  if (caps.canRecvVideo) bits |= 1 << 5;
+  return new Uint8Array([1, bits]); // [version, bitset]
+}
+
+export function decodeMediaCaps(payload: Uint8Array): CtrlMediaCaps | null {
+  if (payload.length < 2 || payload[0] !== 1) return null;
+  const bits = payload[1];
+  return {
+    supportsHarmonic: !!(bits & (1 << 0)),
+    supportsLumen: !!(bits & (1 << 1)),
+    canSendAudio: !!(bits & (1 << 2)),
+    canRecvAudio: !!(bits & (1 << 3)),
+    canSendVideo: !!(bits & (1 << 4)),
+    canRecvVideo: !!(bits & (1 << 5)),
+  };
+}
+
+export function encodeMediaIntent(intent: CtrlMediaIntent): Uint8Array {
+  let bits = 0;
+  if (intent.audio) bits |= 1 << 0;
+  if (intent.video) bits |= 1 << 1;
+  return new Uint8Array([1, bits]);
+}
+
+export function decodeMediaIntent(payload: Uint8Array): CtrlMediaIntent | null {
+  if (payload.length < 2 || payload[0] !== 1) return null;
+  return {
+    audio: !!(payload[1] & (1 << 0)),
+    video: !!(payload[1] & (1 << 1)),
   };
 }
