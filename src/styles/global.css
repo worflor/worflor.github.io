@@ -762,21 +762,31 @@ body.pride {
   background-size: 100vw 200vh;
 }
 
-/* iOS/WebKit fallback: fixed background attachment is unreliable on mobile Safari */
-@supports (-webkit-touch-callout: none) {
+/* iOS touch WebKit fallback: fixed attachment is still unreliable there */
+@media (hover: none) and (pointer: coarse) {
+  @supports (-webkit-touch-callout: none) {
 
-  .prose :where(ol > li)::before {
-    background-attachment: scroll, scroll;
-    background-size: auto, 100% 100%;
-  }
+    .prose :where(ol > li)::before {
+      background-attachment: scroll, scroll;
+      background-size: auto, 100% 220%;
+      background-position: 0 0, center 35%;
+    }
 
-  .prose :where(ol > li):not(:last-child)::after,
-  .prose :where(blockquote)::before,
-  .prose :where(hr),
-  .prose :where(pre)::before,
-  .prose :where(h2, h3, h4)::after {
-    background-attachment: scroll;
-    background-size: 100% 100%;
+    .prose :where(ol > li):not(:last-child)::after,
+    .prose :where(blockquote)::before,
+    .prose :where(pre)::before {
+      background-attachment: scroll;
+      background-size: 100% 220%;
+      background-position: center 35%;
+    }
+
+    .prose :where(hr),
+    .prose :where(h2, h3, h4)::after {
+      background: var(--parallax-gradient-horizontal);
+      background-attachment: scroll;
+      background-size: 100% 100%;
+      background-position: center;
+    }
   }
 }
 
