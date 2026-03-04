@@ -1500,12 +1500,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           const rect = frame.getBoundingClientRect();
           const cw = Math.max(1, Math.round(rect.width));
           const ch = Math.max(1, Math.round(rect.height));
-          canvas.width = Math.max(1, Math.round(cw * dpr));
-          canvas.height = Math.max(1, Math.round(ch * dpr));
+          const outW = Math.max(1, Math.round(cw * dpr));
+          const outH = Math.max(1, Math.round(ch * dpr));
+          canvas.width = outW;
+          canvas.height = outH;
           const ctx = canvas.getContext("2d");
           if (!ctx) return;
-          ctx.scale(dpr, dpr);
-          renderGwyphScene(ctx, glyph, cw, ch);
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          renderGwyphScene(ctx, glyph, outW, outH);
         });
       }
     }
@@ -1646,12 +1648,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const rect = thumb.getBoundingClientRect();
       const cw = Math.max(1, Math.round(rect.width));
       const ch = Math.max(1, Math.round(rect.height));
-      canvas.width = Math.max(1, Math.round(cw * dpr));
-      canvas.height = Math.max(1, Math.round(ch * dpr));
+      const outW = Math.max(1, Math.round(cw * dpr));
+      const outH = Math.max(1, Math.round(ch * dpr));
+      canvas.width = outW;
+      canvas.height = outH;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      renderGwyphScene(ctx, glyph, cw, ch);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      renderGwyphScene(ctx, glyph, outW, outH);
     });
 
     thumb.addEventListener("click", () => {
@@ -3227,12 +3231,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       requestAnimationFrame(() => {
         opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
       });
+    } else if (msg.direction === "system") {
+      smartScroll();
     } else if (replacePeerPreview && replacePreviewWasNearBottom) {
       requestAnimationFrame(() => {
         opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
       });
-    } else {
-      smartScroll();
     }
 
     if (msg.msgId !== undefined) {

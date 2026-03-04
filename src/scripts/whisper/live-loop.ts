@@ -110,7 +110,20 @@ class ArithEncoder {
     private range = 0xFFFFFFFF;
     private cache = -1;
     private nPend = 0;
-    private buf: number[] = [];
+    // Uint8Array instead of number[] — avoids 8× memory amplification.
+    // number[] stores each byte as an 8-byte JS heap number; for a 1MB payload
+    // the buf would consume ~8MB. With Uint8Array it stays at 1MB.
+    private buf = new Uint8Array(256);
+    private len = 0;
+
+    private _push(b: number): void {
+        if (this.len >= this.buf.length) {
+            const next = new Uint8Array(this.buf.length * 2);
+            next.set(this.buf.subarray(0, this.len));
+            this.buf = next;
+        }
+        this.buf[this.len++] = b;
+    }
 
     encode(cumLo: number, cumHi: number, total: number): void {
         const step  = Math.floor(this.range / total);
@@ -128,20 +141,20 @@ class ArithEncoder {
         }
     }
     private _carry(): void {
-        if (this.cache >= 0) { this.buf.push((this.cache + 1) & 0xFF); for (let i = 0; i < this.nPend; i++) this.buf.push(0x00); }
-        else { for (let i = 0; i < this.nPend; i++) this.buf.push(0x00); }
+        if (this.cache >= 0) { this._push((this.cache + 1) & 0xFF); for (let i = 0; i < this.nPend; i++) this._push(0x00); }
+        else { for (let i = 0; i < this.nPend; i++) this._push(0x00); }
         this.cache = -1; this.nPend = 0;
     }
     private _emit(b: number): void {
-        if (this.cache >= 0) { this.buf.push(this.cache); for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF); }
-        else { for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF); }
+        if (this.cache >= 0) { this._push(this.cache); for (let i = 0; i < this.nPend; i++) this._push(0xFF); }
+        else { for (let i = 0; i < this.nPend; i++) this._push(0xFF); }
         this.cache = b; this.nPend = 0;
     }
     flush(): Uint8Array {
-        if (this.cache >= 0) { this.buf.push(this.cache); for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF); }
-        else { for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF); }
-        for (let i = 0; i < 4; i++) { this.buf.push((this.lo >>> 24) & 0xFF); this.lo = ((this.lo & 0xFFFFFF) << 8) >>> 0; }
-        return new Uint8Array(this.buf);
+        if (this.cache >= 0) { this._push(this.cache); for (let i = 0; i < this.nPend; i++) this._push(0xFF); }
+        else { for (let i = 0; i < this.nPend; i++) this._push(0xFF); }
+        for (let i = 0; i < 4; i++) { this._push((this.lo >>> 24) & 0xFF); this.lo = ((this.lo & 0xFFFFFF) << 8) >>> 0; }
+        return this.buf.subarray(0, this.len);
     }
 }
 
@@ -372,6 +385,14 @@ export async function loopStep(state: LoopState): Promise<{ next: LoopState; mes
     };
 }
 
+// Large payload threshold: above this, skip arithmetic trial-encoding entirely
+// and emit RAW. Binary files (video, audio, already-compressed data) don't
+// compress with a byte-level coder anyway, and running two full ArithEncoder
+// passes over 100MB+ of data wastes seconds of CPU and hundreds of MB of RAM.
+// Train models only on a short prefix so future text messages still benefit.
+const LOOP_RAW_THRESHOLD  = 1 * 1024 * 1024; // 1 MB
+const LOOP_TRAIN_LIMIT    = 64 * 1024;        // train on at most 64 KB of large payloads
+
 // adaptive compression: trial-encode with both models, pick the smallest.
 // both count arrays evolve as a side effect of trial encoding, so both models
 // stay trained on the full conversation history regardless of which one wins.
@@ -380,6 +401,18 @@ export function loopEncode(state: LoopState, data: Uint8Array): { encoded: Uint8
     // clone both count arrays — encoding (or priming) mutates them
     const cM = state.countsBitM.slice();
     const c1 = state.countsBit1.slice();
+
+    // Large payload fast path: binary files won't compress, and trial-encoding
+    // them would allocate O(N) memory and burn seconds of CPU for no gain.
+    // Train only on a prefix so text-message compression quality is preserved.
+    if (data.length >= LOOP_RAW_THRESHOLD) {
+        const trainSlice = data.subarray(0, LOOP_TRAIN_LIMIT);
+        primeCountsM(cM, trainSlice);
+        primeCounts1(c1, trainSlice);
+        const out = new Uint8Array(1 + data.length);
+        out[0] = 0xFF; out.set(data, 1);
+        return { encoded: out, next: { ...state, countsBitM: cM, countsBit1: c1 } };
+    }
 
     // ArithEncoder.flush() always produces ≥ 4 bytes (the lo register).
     // for data shorter than that, RAW is guaranteed to win — skip the 36KB
@@ -441,8 +474,16 @@ export function loopDecode(state: LoopState, data: Uint8Array, len: number): { d
             break;
         case 0xFF: // RAW fallback — train both from plaintext
             decoded = payload.slice(0, len);
-            primeCountsM(cM, decoded);
-            primeCounts1(c1, decoded);
+            // Mirror encoder: for large payloads train only on a prefix so
+            // both sides' model state stays identical.
+            if (decoded.length >= LOOP_RAW_THRESHOLD) {
+                const trainSlice = decoded.subarray(0, LOOP_TRAIN_LIMIT);
+                primeCountsM(cM, trainSlice);
+                primeCounts1(c1, trainSlice);
+            } else {
+                primeCountsM(cM, decoded);
+                primeCounts1(c1, decoded);
+            }
             break;
         default:
             throw new Error(`loopDecode: unknown mode 0x${mode.toString(16)}`);
