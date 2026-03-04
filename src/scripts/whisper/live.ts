@@ -62,6 +62,9 @@ import {
   parseHeader,
   encodeFilePlaintext,
   decodeFilePlaintext,
+  encodeFilePartPlaintext,
+  decodeFilePartPlaintext,
+  type FilePartHeader,
 } from "./live-wire";
 
 import {
@@ -320,7 +323,10 @@ const LIVE_MSG = {
 const LIVE_FLAG = {
   FILE: 0x01,
   CAMPFIRE: 0x02,
+  FILE_PART: 0x04, // application-level multi-part file chunk
 } as const;
+/** Each application-layer file chunk is this many bytes of raw file data. */
+const FILE_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB
 const SEND_PROGRESS_INTERVAL_MS = 48;
 
 function errorMessage(err: unknown, fallback = "unknown"): string {
@@ -342,6 +348,17 @@ const VALID_TRANSITIONS: Record<LiveState, readonly LiveState[]> = {
   "error": ["idle"],
 };
 
+/** State for a multi-part file transfer being received. */
+interface IncomingFileTransfer {
+  fileName: string;
+  fileType: string;
+  totalSize: number;
+  totalChunks: number;
+  chunks: (Uint8Array | null)[];
+  received: number;
+  firstMsgId: number;
+}
+
 export class WhisperLiveSession {
   private _state: LiveState = "idle";
   private _destroyed = false;
@@ -353,6 +370,7 @@ export class WhisperLiveSession {
   private sharedPhrase: string | null = "";
   private transportMode: TransportMode = "naked";
   private assembler = new ChunkAssembler();
+  private incomingFiles = new Map<number, IncomingFileTransfer>();
   private engine: WhisperEngine | null = null;
   private isOfferer = false;
   /** Total messages sent this session — never resets unlike ratchet nSend. */
@@ -1155,14 +1173,17 @@ export class WhisperLiveSession {
       this.send(LIVE_MSG.ACK, ackPayload);
 
       const isCampfire = (header.flags & LIVE_FLAG.CAMPFIRE) !== 0;
-      const isFile = (header.flags & LIVE_FLAG.FILE) !== 0;
+      const isFile     = (header.flags & LIVE_FLAG.FILE) !== 0;
+      const isFilePart = (header.flags & LIVE_FLAG.FILE_PART) !== 0;
 
       if (isCampfire && this.onRawDecrypted) {
         this.onRawDecrypted(plaintext);
         return;
       }
 
-      if (isFile) {
+      if (isFilePart) {
+        this.handleFilePartMessage(plaintext, msgId);
+      } else if (isFile) {
         const { fileName, fileType, fileBytes } = decodeFilePlaintext(plaintext);
         this.onMessage({
           type: "file",
@@ -1192,6 +1213,68 @@ export class WhisperLiveSession {
         this.cleanupConnection();
       }
     }
+  }
+
+  /** Accumulate one FILE_PART chunk. Emits onMessage when the last chunk arrives. */
+  private handleFilePartMessage(plaintext: Uint8Array, msgId: number): void {
+    let part: FilePartHeader;
+    try {
+      part = decodeFilePartPlaintext(plaintext);
+    } catch (err) {
+      this.onLog(`file part decode error: ${errorMessage(err)}`);
+      return;
+    }
+    const { transferId, chunkIndex, totalChunks, totalFileSize, fileName, fileType, chunkData } = part;
+
+    let transfer = this.incomingFiles.get(transferId);
+    if (!transfer) {
+      if (chunkIndex !== 0) {
+        // Chunk 0 carries the metadata — if it arrives out of order we can't reconstruct.
+        // With ordered SCTP DataChannels this should never happen in practice.
+        this.onLog(`file part: received chunk ${chunkIndex} before chunk 0 (transfer ${transferId})`);
+        return;
+      }
+      transfer = {
+        fileName: fileName ?? "file",
+        fileType: fileType ?? "",
+        totalSize: totalFileSize,
+        totalChunks,
+        chunks: new Array(totalChunks).fill(null),
+        received: 0,
+        firstMsgId: msgId,
+      };
+      this.incomingFiles.set(transferId, transfer);
+    }
+
+    if (chunkIndex >= transfer.totalChunks || transfer.chunks[chunkIndex] !== null) return; // out-of-range or duplicate
+
+    // chunkData is a subarray of the decrypted plaintext. Slice so the backing
+    // buffer can be freed; we only keep the ~4 MB slice, not the full allocation.
+    transfer.chunks[chunkIndex] = chunkData.slice();
+    transfer.received++;
+
+    if (transfer.received < transfer.totalChunks) return; // still waiting
+
+    // All chunks received — assemble and emit.
+    this.incomingFiles.delete(transferId);
+    let total = 0;
+    for (const c of transfer.chunks) total += (c as Uint8Array).length;
+    const assembled = new Uint8Array(total);
+    let offset = 0;
+    for (const c of transfer.chunks) {
+      assembled.set(c as Uint8Array, offset);
+      offset += (c as Uint8Array).length;
+    }
+    this.onMessage({
+      type: "file",
+      direction: "peer",
+      msgId: transfer.firstMsgId,
+      fileName: transfer.fileName,
+      fileSize: transfer.totalSize,
+      fileData: assembled,
+      fileType: transfer.fileType,
+      timestamp: Date.now(),
+    });
   }
 
   /* ── Kizuna membrane helpers ─────────────────────────────── */
@@ -1340,6 +1423,13 @@ export class WhisperLiveSession {
   }
 
   async sendFile(file: File): Promise<number> {
+    // Large files: split into application-level chunks so the sender never
+    // needs more than one chunk (~4 MB) in memory at a time.
+    if (file.size > FILE_CHUNK_SIZE) {
+      return this.sendFileChunked(file);
+    }
+
+    // Small file: single encrypted message (original path).
     const fileBytes = new Uint8Array(await file.arrayBuffer());
     let sentMsgId = -1;
     await this.enqueueSend(async () => {
@@ -1360,6 +1450,50 @@ export class WhisperLiveSession {
       });
     });
     return sentMsgId;
+  }
+
+  /** Send a large file as sequential application-level 4 MB chunks.
+   *  Each chunk is independently encrypted. The sender only holds one chunk
+   *  in memory at a time — peak allocation is O(chunk) not O(file). */
+  private async sendFileChunked(file: File): Promise<number> {
+    const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE);
+    const transferIdBytes = randomBytes(4);
+    const transferId = new DataView(transferIdBytes.buffer).getUint32(0, true);
+    let firstMsgId = -1;
+    let bytesSent = 0;
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * FILE_CHUNK_SIZE;
+      const end = Math.min(start + FILE_CHUNK_SIZE, file.size);
+      // file.slice() reads only this byte range — does not load the whole file.
+      const chunkBytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
+      const chunkIdx = i;
+      const chunkLen = chunkBytes.length;
+
+      await this.enqueueSend(async () => {
+        if (!await this.canSend()) return;
+        const plaintext = encodeFilePartPlaintext(
+          transferId, chunkIdx, totalChunks, file.size, chunkBytes,
+          chunkIdx === 0 ? file.name : undefined,
+          chunkIdx === 0 ? file.type : undefined,
+        );
+        const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE_PART);
+        if (msgId < 0) return;
+        if (chunkIdx === 0) {
+          firstMsgId = msgId;
+          // Show self-entry immediately. fileData is omitted — we don't keep
+          // 500 MB of our own file in memory just for a self-view download link.
+          this.onMessage({
+            type: "file", direction: "self",
+            msgId, fileName: file.name, fileSize: file.size, fileType: file.type,
+            timestamp: Date.now(),
+          });
+        }
+        bytesSent += chunkLen;
+        if (this.onSendProgress) this.onSendProgress(bytesSent, file.size);
+      });
+    }
+    return firstMsgId;
   }
 
   /** Send an audio recording as a file message, keeping bytes for self-playback.
@@ -1700,6 +1834,7 @@ export class WhisperLiveSession {
     this.sharedPhrase = null;
     this.consecutiveDecryptFailures = 0;
     this.assembler.reset();
+    this.incomingFiles.clear();
 
     if (this.recoveryResolve) {
       const resolve = this.recoveryResolve;

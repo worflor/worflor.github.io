@@ -8,7 +8,8 @@
 
 import { createStrokeSampler, sampleStrokePoint, type StrokeSamplerState } from "./live-draw-stroke";
 import { type DrawBaseMime, type DrawStreamEventNoSeq, type DrawTool } from "./live-draw-stream";
-import { GlyphStreamEncoder } from "./live-wasm-glyph";
+import { GlyphCodec, GlyphStreamEncoder } from "./live-wasm-glyph";
+import { encode0D } from "./live-wasm-logos";
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -1765,10 +1766,6 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     return Math.round(clamp01(v) * 32767);
   }
 
-  function zigZagEncode(v: number): number {
-    return v >= 0 ? v * 2 : (-v * 2) - 1;
-  }
-
   function parseHexRgb(color: string): [number, number, number] {
     const m = /^#([0-9a-f]{6})$/i.exec(color.trim());
     if (!m) return [255, 255, 255];
@@ -1785,7 +1782,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       this.data.push(v & 0xff, (v >>> 8) & 0xff);
     }
 
-    bytes(raw: readonly number[]): void {
+    bytes(raw: ArrayLike<number>): void {
       for (let i = 0; i < raw.length; i++) this.u8(raw[i]);
     }
 
@@ -1803,26 +1800,50 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     }
   }
 
-  function encodeGwyphPayload(): Uint8Array {
-    // GWYPH v1 compact stroke stream:
-    // magic[4], version[1], mode[1], logicalW[2], logicalH[2], strokeCount[var]
-    // stroke pen: tag[1]=0, tool[1], rgb[3], widthQ8[2], pointCount[var], first xyzQ15[2*3], then delta xyz zigzag-varints
-    // stroke fill: tag[1]=1, rgb[3], toleranceSq[2], seedXQ15[2], seedYQ15[2]
+  function encodeGwyphPayloadV3Raw(): Uint8Array {
+    // v3 raw:
+    // mode[1], logicalW[2], logicalH[2], paletteCount[var], paletteRgb[3*n], strokeCount[var]
+    // pen stroke tag[1] bit0=0 bit1=eraser, [colorIdx[var] if pen], widthQ8[2], pointCount[var],
+    //   p0 xyzQ15[2*3], p1 xyzQ15[2*3], packedGlyphLen[var], packedGlyph[bytes]
+    // fill stroke tag[1] bit0=1, colorIdx[var], tolerance[2], seedXQ15[2], seedYQ15[2]
     const w = new ByteWriter();
-    w.bytes([0x47, 0x57, 0x59, 0x50]); // GWYP
-    w.u8(1); // version
     w.u8(config.mode === "blank" ? 0 : 1);
     w.u16(Math.max(1, Math.min(65535, logicalW | 0)));
     w.u16(Math.max(1, Math.min(65535, logicalH | 0)));
+
+    const palette: string[] = [];
+    const paletteMap = new Map<string, number>();
+    const internColor = (hex: string): number => {
+      const key = /^#[0-9a-f]{6}$/i.test(hex) ? hex.toLowerCase() : "#ffffff";
+      const existing = paletteMap.get(key);
+      if (existing !== undefined) return existing;
+      const idx = palette.length;
+      palette.push(key);
+      paletteMap.set(key, idx);
+      return idx;
+    };
+    for (const stroke of strokes) {
+      if (stroke.type === "fill") {
+        internColor(stroke.color);
+        continue;
+      }
+      if (stroke.penId !== "eraser") internColor(stroke.color);
+    }
+
+    w.varUint(palette.length);
+    for (let i = 0; i < palette.length; i++) {
+      const [r, g, b] = parseHexRgb(palette[i]);
+      w.u8(r);
+      w.u8(g);
+      w.u8(b);
+    }
+
     w.varUint(strokes.length);
 
     for (const stroke of strokes) {
       if (stroke.type === "fill") {
-        const [r, g, b] = parseHexRgb(stroke.color);
-        w.u8(1);
-        w.u8(r);
-        w.u8(g);
-        w.u8(b);
+        w.u8(0x01);
+        w.varUint(internColor(stroke.color));
         w.u16(Math.max(0, Math.min(65535, Math.round(stroke.tolerance))));
         w.u16(quantQ15(stroke.seedX / logicalW));
         w.u16(quantQ15(stroke.seedY / logicalH));
@@ -1830,37 +1851,54 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       }
 
       const pts = stroke.points;
-      const [r, g, b] = parseHexRgb(stroke.color);
-      w.u8(0);
-      w.u8(stroke.penId === "eraser" ? 1 : 0);
-      w.u8(r);
-      w.u8(g);
-      w.u8(b);
+      const isEraser = stroke.penId === "eraser";
+      w.u8(isEraser ? 0x02 : 0x00);
+      if (!isEraser) w.varUint(internColor(stroke.color));
       w.u16(Math.max(1, Math.min(65535, Math.round(stroke.width * 256))));
       w.varUint(pts.length);
       if (pts.length === 0) continue;
 
-      let prevX = quantQ15(pts[0].x);
-      let prevY = quantQ15(pts[0].y);
-      let prevP = quantQ15(pts[0].p);
-      w.u16(prevX);
-      w.u16(prevY);
-      w.u16(prevP);
-
-      for (let i = 1; i < pts.length; i++) {
-        const nx = quantQ15(pts[i].x);
-        const ny = quantQ15(pts[i].y);
-        const np = quantQ15(pts[i].p);
-        w.varUint(zigZagEncode(nx - prevX));
-        w.varUint(zigZagEncode(ny - prevY));
-        w.varUint(zigZagEncode(np - prevP));
-        prevX = nx;
-        prevY = ny;
-        prevP = np;
+      const q = new Int32Array(pts.length * 3);
+      for (let i = 0; i < pts.length; i++) {
+        q[i * 3] = quantQ15(pts[i].x);
+        q[i * 3 + 1] = quantQ15(pts[i].y);
+        q[i * 3 + 2] = quantQ15(pts[i].p);
       }
+
+      w.u16(q[0]);
+      w.u16(q[1]);
+      w.u16(q[2]);
+      if (pts.length === 1) continue;
+
+      w.u16(q[3]);
+      w.u16(q[4]);
+      w.u16(q[5]);
+      if (pts.length === 2) continue;
+
+      const packed = GlyphCodec.pack(GlyphCodec.encode(q));
+      w.varUint(packed.length);
+      w.bytes(packed);
     }
 
     return w.finish();
+  }
+
+  function encodeGwyphPayload(): Uint8Array {
+    const raw = encodeGwyphPayloadV3Raw();
+    const compressed = encode0D(raw);
+    const out = new Uint8Array(9 + compressed.length);
+    out[0] = 0x47; // G
+    out[1] = 0x57; // W
+    out[2] = 0x59; // Y
+    out[3] = 0x50; // P
+    out[4] = 3;    // version 3: logos-compressed v3-raw payload
+    const rawLen = raw.length >>> 0;
+    out[5] = rawLen & 0xff;
+    out[6] = (rawLen >>> 8) & 0xff;
+    out[7] = (rawLen >>> 16) & 0xff;
+    out[8] = (rawLen >>> 24) & 0xff;
+    out.set(compressed, 9);
+    return out;
   }
 
   function resolveOutputName(): string {

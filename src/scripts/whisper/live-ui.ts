@@ -1495,20 +1495,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       inner.appendChild(frame);
 
       if (glyph) {
-        requestAnimationFrame(() => {
-          const dpr = devicePixelRatio || 1;
-          const rect = frame.getBoundingClientRect();
-          const cw = Math.max(1, Math.round(rect.width));
-          const ch = Math.max(1, Math.round(rect.height));
-          const outW = Math.max(1, Math.round(cw * dpr));
-          const outH = Math.max(1, Math.round(ch * dpr));
-          canvas.width = outW;
-          canvas.height = outH;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) return;
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          renderGwyphScene(ctx, glyph, outW, outH);
-        });
+        bindGlyphCanvasToHost(canvas, frame, glyph, lbSignal);
       }
     }
 
@@ -1643,20 +1630,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     canvas.className = "wl-peer-draw-inline";
     thumb.appendChild(canvas);
 
-    requestAnimationFrame(() => {
-      const dpr = devicePixelRatio || 1;
-      const rect = thumb.getBoundingClientRect();
-      const cw = Math.max(1, Math.round(rect.width));
-      const ch = Math.max(1, Math.round(rect.height));
-      const outW = Math.max(1, Math.round(cw * dpr));
-      const outH = Math.max(1, Math.round(ch * dpr));
-      canvas.width = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      renderGwyphScene(ctx, glyph, outW, outH);
-    });
+    bindGlyphCanvasToHost(canvas, thumb, glyph, abortSignal);
 
     thumb.addEventListener("click", () => {
       openMediaLightbox("", "", fileName, "glyph", glyph, glyphBytes);
@@ -1675,6 +1649,55 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     root.append(thumb, infoBar);
     return root;
+  }
+
+  function bindGlyphCanvasToHost(
+    canvas: HTMLCanvasElement,
+    host: HTMLElement,
+    glyph: GlyphPayload,
+    abortSignal: AbortSignal,
+  ): void {
+    let rafId = 0;
+    let lastOutW = 0;
+    let lastOutH = 0;
+
+    const paint = (): void => {
+      rafId = 0;
+      const dpr = devicePixelRatio || 1;
+      const rect = host.getBoundingClientRect();
+      const cw = Math.max(1, Math.round(rect.width || host.clientWidth || 1));
+      const ch = Math.max(1, Math.round(rect.height || host.clientHeight || 1));
+      const outW = Math.max(1, Math.round(cw * dpr));
+      const outH = Math.max(1, Math.round(ch * dpr));
+      if (outW === lastOutW && outH === lastOutH) return;
+      lastOutW = outW;
+      lastOutH = outH;
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      renderGwyphScene(ctx, glyph, outW, outH);
+    };
+
+    const schedule = (): void => {
+      if (rafId !== 0) return;
+      rafId = requestAnimationFrame(paint);
+    };
+
+    const ro = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => schedule())
+      : null;
+    ro?.observe(host);
+    window.addEventListener("resize", schedule, { signal: abortSignal });
+    window.visualViewport?.addEventListener("resize", schedule, { signal: abortSignal });
+
+    abortSignal.addEventListener("abort", () => {
+      if (rafId !== 0) cancelAnimationFrame(rafId);
+      ro?.disconnect();
+    }, { once: true });
+
+    schedule();
   }
 
   function renderMediaMessage(msg: LiveMessage, abortSignal: AbortSignal): HTMLElement {
@@ -3397,6 +3420,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let peerStrokeSpaceW = 0;
   let peerStrokeSpaceH = 0;
   let peerRafPending = false;
+  let peerPreviewResizeObserver: ResizeObserver | null = null;
 
   function clamp01(v: number): number {
     if (v < 0) return 0;
@@ -3481,6 +3505,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       const host = peerLiveMsgEl.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
       if (!host) throw new Error("peer draw host missing");
+      if (!peerPreviewResizeObserver && typeof ResizeObserver !== "undefined") {
+        peerPreviewResizeObserver = new ResizeObserver(() => schedulePeerRerender());
+        peerPreviewResizeObserver.observe(host);
+      }
       const dpr = devicePixelRatio || 1;
       const rect = host.getBoundingClientRect();
       const cw = Math.max(1, Math.round(rect.width));
@@ -3664,6 +3692,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       peerLiveMsgEl = null;
       peerLiveTimeEl = null;
     }
+    peerPreviewResizeObserver?.disconnect();
+    peerPreviewResizeObserver = null;
   }
 
   function handleRemoteDraw(ev: DrawStreamEvent): void {

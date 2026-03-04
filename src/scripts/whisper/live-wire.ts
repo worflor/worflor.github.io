@@ -104,6 +104,95 @@ function sanitizeFileName(name: string): string {
   return sanitized || "file";
 }
 
+/** Application-level multi-part file chunk header. */
+export interface FilePartHeader {
+  transferId: number;
+  chunkIndex: number;
+  totalChunks: number;
+  totalFileSize: number;
+  /** Only present on chunk 0. */
+  fileName?: string;
+  /** Only present on chunk 0. */
+  fileType?: string;
+  chunkData: Uint8Array;
+}
+
+/**
+ * Encode a FILE_PART plaintext chunk.
+ *
+ * Chunk 0 layout:
+ *   [0..3]   transferId (4B LE)
+ *   [4..7]   chunkIndex = 0
+ *   [8..11]  totalChunks (4B LE)
+ *   [12..15] totalFileSize (4B LE)
+ *   [16..17] nameLen (2B LE)
+ *   [18..]   name bytes, type bytes (null-terminated), chunk data
+ *
+ * Chunks 1..N-1 layout:
+ *   [0..3]   transferId (4B LE)
+ *   [4..7]   chunkIndex (4B LE)
+ *   [8..11]  totalChunks (4B LE)
+ *   [12..15] totalFileSize (4B LE)
+ *   [16..]   chunk data
+ */
+export function encodeFilePartPlaintext(
+  transferId: number,
+  chunkIndex: number,
+  totalChunks: number,
+  totalFileSize: number,
+  chunkData: Uint8Array,
+  fileName?: string,
+  fileType?: string,
+): Uint8Array {
+  if (chunkIndex === 0) {
+    const nameBytes = TE.encode(fileName ?? "");
+    const typeBytes = TE.encode(fileType ?? "");
+    const out = new Uint8Array(18 + nameBytes.length + typeBytes.length + 1 + chunkData.length);
+    const v = new DataView(out.buffer);
+    v.setUint32(0, transferId, true);
+    v.setUint32(4, 0, true);
+    v.setUint32(8, totalChunks, true);
+    v.setUint32(12, totalFileSize, true);
+    v.setUint16(16, nameBytes.length, true);
+    out.set(nameBytes, 18);
+    out.set(typeBytes, 18 + nameBytes.length);
+    out[18 + nameBytes.length + typeBytes.length] = 0; // null terminator
+    out.set(chunkData, 19 + nameBytes.length + typeBytes.length);
+    return out;
+  } else {
+    const out = new Uint8Array(16 + chunkData.length);
+    const v = new DataView(out.buffer);
+    v.setUint32(0, transferId, true);
+    v.setUint32(4, chunkIndex, true);
+    v.setUint32(8, totalChunks, true);
+    v.setUint32(12, totalFileSize, true);
+    out.set(chunkData, 16);
+    return out;
+  }
+}
+
+export function decodeFilePartPlaintext(data: Uint8Array): FilePartHeader {
+  if (data.length < 16) throw new Error("file part too short");
+  const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const transferId = v.getUint32(0, true);
+  const chunkIndex = v.getUint32(4, true);
+  const totalChunks = v.getUint32(8, true);
+  const totalFileSize = v.getUint32(12, true);
+  if (chunkIndex === 0) {
+    if (data.length < 18) throw new Error("file part first chunk too short");
+    const nameLen = v.getUint16(16, true);
+    if (18 + nameLen > data.length) throw new Error("file part name out of bounds");
+    const fileName = sanitizeFileName(TD.decode(data.subarray(18, 18 + nameLen)));
+    let typeEnd = 18 + nameLen;
+    while (typeEnd < data.length && data[typeEnd] !== 0) typeEnd++;
+    const fileType = TD.decode(data.subarray(18 + nameLen, typeEnd));
+    const chunkData = data.subarray(Math.min(typeEnd + 1, data.length));
+    return { transferId, chunkIndex, totalChunks, totalFileSize, fileName, fileType, chunkData };
+  } else {
+    return { transferId, chunkIndex, totalChunks, totalFileSize, chunkData: data.subarray(16) };
+  }
+}
+
 export function decodeFilePlaintext(data: Uint8Array): { fileName: string; fileType: string; fileBytes: Uint8Array } {
   if (data.length < 5) throw new Error("file payload too short");
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);

@@ -1,3 +1,6 @@
+import { decode0D } from "./live-wasm-logos";
+import { GlyphCodec } from "./live-wasm-glyph";
+
 export const GLYPH_MIME = "application/x-whisper-gwyph";
 
 export interface GlyphPoint {
@@ -104,6 +107,24 @@ class GlyphReader {
     return v;
   }
 
+  u32(): number {
+    this.ensure(4);
+    const v =
+      (this.data[this.off]) |
+      (this.data[this.off + 1] << 8) |
+      (this.data[this.off + 2] << 16) |
+      (this.data[this.off + 3] << 24);
+    this.off += 4;
+    return v >>> 0;
+  }
+
+  bytes(n: number): Uint8Array {
+    this.ensure(n);
+    const out = this.data.subarray(this.off, this.off + n);
+    this.off += n;
+    return out;
+  }
+
   varUint(): number {
     let shift = 0;
     let out = 0;
@@ -114,6 +135,10 @@ class GlyphReader {
       shift += 7;
     }
     throw new Error("glyph: varuint overflow");
+  }
+
+  remaining(): Uint8Array {
+    return this.data.subarray(this.off);
   }
 }
 
@@ -142,7 +167,107 @@ function glyphStrokeWidthScale(glyph: GlyphPayload, W: number, H: number): numbe
   return Math.max(0.08, Math.min(8, s));
 }
 
-export function parseGwyphPayload(bytes: Uint8Array): GlyphPayload | null {
+function parseGwyphPayloadV3Raw(raw: Uint8Array): GlyphPayload | null {
+  try {
+    const r = new GlyphReader(raw);
+    const modeByte = r.u8();
+    const logicalW = Math.max(1, r.u16());
+    const logicalH = Math.max(1, r.u16());
+    const paletteCount = r.varUint();
+    if (paletteCount > 4096) return null;
+    const palette: string[] = new Array(paletteCount);
+    for (let i = 0; i < paletteCount; i++) {
+      const cr = r.u8();
+      const cg = r.u8();
+      const cb = r.u8();
+      palette[i] = rgbToHex(cr, cg, cb);
+    }
+    const strokeCount = r.varUint();
+    if (strokeCount > 1_000_000) return null;
+    const strokes: GlyphStroke[] = [];
+
+    for (let i = 0; i < strokeCount; i++) {
+      const tag = r.u8();
+      const isFill = (tag & 0x01) !== 0;
+      if (isFill) {
+        const colorIdx = r.varUint();
+        if (colorIdx >= palette.length) return null;
+        const tolSq = r.u16();
+        const sx = q15ToNorm(r.u16());
+        const sy = q15ToNorm(r.u16());
+        strokes.push({
+          type: "fill",
+          color: palette[colorIdx],
+          tolerance: Math.max(0, Math.min(65535, tolSq)),
+          seedX: sx,
+          seedY: sy,
+        });
+        continue;
+      }
+
+      const tool = (tag & 0x02) !== 0 ? "eraser" : "pen";
+      const color = tool === "eraser" ? "#000000" : (() => {
+        const colorIdx = r.varUint();
+        if (colorIdx >= palette.length) throw new Error("glyph: bad palette index");
+        return palette[colorIdx];
+      })();
+      const width = Math.max(0.25, r.u16() / 256);
+      const pointCount = r.varUint();
+      const points: GlyphPoint[] = [];
+      if (pointCount > 0) {
+        const x0 = r.u16();
+        const y0 = r.u16();
+        const p0 = r.u16();
+        if (pointCount === 1) {
+          points.push({ x: q15ToNorm(x0), y: q15ToNorm(y0), p: q15ToNorm(p0) });
+        } else {
+          const x1 = r.u16();
+          const y1 = r.u16();
+          const p1 = r.u16();
+          if (pointCount === 2) {
+            points.push({ x: q15ToNorm(x0), y: q15ToNorm(y0), p: q15ToNorm(p0) });
+            points.push({ x: q15ToNorm(x1), y: q15ToNorm(y1), p: q15ToNorm(p1) });
+          } else {
+            const packedLen = r.varUint();
+            const packed = r.bytes(packedLen);
+            const blocks = GlyphCodec.unpack(packed);
+            if (blocks.length === 0) return null;
+            const decoded = GlyphCodec.decode(blocks, [x1, y1, p1], [x0, y0, p0]);
+            const n = Math.floor(decoded.length / 3);
+            if (n !== pointCount) return null;
+            for (let pi = 0; pi < n; pi++) {
+              points.push({
+                x: q15ToNorm(decoded[pi * 3]),
+                y: q15ToNorm(decoded[pi * 3 + 1]),
+                p: q15ToNorm(decoded[pi * 3 + 2]),
+              });
+            }
+          }
+        }
+      }
+
+      strokes.push({
+        type: "pen",
+        tool,
+        color,
+        width,
+        points,
+      });
+    }
+
+    return {
+      mode: modeByte === 0 ? "blank" : "annotate",
+      logicalW,
+      logicalH,
+      strokes,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseGwyphPayloadInner(bytes: Uint8Array, depth: number): GlyphPayload | null {
+  if (depth > 2) return null;
   try {
     const r = new GlyphReader(bytes);
     const g = r.u8();
@@ -151,6 +276,20 @@ export function parseGwyphPayload(bytes: Uint8Array): GlyphPayload | null {
     const p = r.u8();
     if (g !== 0x47 || w !== 0x57 || y !== 0x59 || p !== 0x50) return null;
     const version = r.u8();
+    if (version === 3) {
+      const rawLen = r.u32();
+      if (!Number.isFinite(rawLen) || rawLen <= 0 || rawLen > 8_388_608) return null;
+      const decoded = decode0D(r.remaining(), rawLen);
+      if (decoded.length !== rawLen) return null;
+      return parseGwyphPayloadV3Raw(decoded);
+    }
+    if (version === 2) {
+      const rawLen = r.u32();
+      if (!Number.isFinite(rawLen) || rawLen <= 0 || rawLen > 8_388_608) return null;
+      const decoded = decode0D(r.remaining(), rawLen);
+      if (decoded.length !== rawLen) return null;
+      return parseGwyphPayloadInner(decoded, depth + 1);
+    }
     if (version !== 1) return null;
     const modeByte = r.u8();
     const logicalW = Math.max(1, r.u16());
@@ -218,6 +357,10 @@ export function parseGwyphPayload(bytes: Uint8Array): GlyphPayload | null {
   } catch {
     return null;
   }
+}
+
+export function parseGwyphPayload(bytes: Uint8Array): GlyphPayload | null {
+  return parseGwyphPayloadInner(bytes, 0);
 }
 
 function renderGlyphStroke(
