@@ -654,11 +654,13 @@ body.pride {
 
 /* ─── Code blocks ─────────────────────────────────────────────────────────── */
 
-/* Shiki wraps output in <pre><code>. Reset Shiki's inline bg so we control it. */
+/* Shiki renders as <pre><code>. pre is the visual shell; code owns horizontal scrolling. */
 .prose :where(pre) {
   position: relative;
   margin-block: var(--space-md);
-  padding: var(--space-sm) var(--space-md);
+  padding-block: var(--space-sm);
+  padding-right: var(--space-md);
+  padding-left: calc(var(--space-xs) + 4px);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
   background: #0e0e0e !important;
@@ -668,45 +670,53 @@ body.pride {
     var(--depth-inset),
     var(--edge-highlight),
     0 0 0 1px rgb(0 0 0 / 0.4);
-  overflow-x: auto;
+  overflow: hidden;
 }
 
-/* Subtle, thick left accent that slowly shifts hue as the code block scrolls */
+/* Accent stays visually pinned to the pre container while code content scrolls. */
 .prose :where(pre)::before {
   content: '';
   position: absolute;
-  left: 0;
+  left: -1px;
   top: 0;
-  width: 3px;
-  height: 100%;
+  bottom: 0;
+  width: 4px;
   background: var(--parallax-gradient-vertical);
   background-attachment: fixed;
-  background-size: 3px 150vh;
+  background-size: 4px 150vh;
   opacity: 0.35;
   border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* On-theme scrollbar — thin, unobtrusive */
-.prose :where(pre)::-webkit-scrollbar {
+.prose :where(pre) code::-webkit-scrollbar {
   height: 4px;
 }
 
-.prose :where(pre)::-webkit-scrollbar-track {
+.prose :where(pre) code::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.prose :where(pre)::-webkit-scrollbar-thumb {
+.prose :where(pre) code::-webkit-scrollbar-thumb {
   background: rgb(var(--chromatic-cyan) / 0.2);
   border-radius: var(--radius-full);
 }
 
-.prose :where(pre)::-webkit-scrollbar-thumb:hover {
+.prose :where(pre) code::-webkit-scrollbar-thumb:hover {
   background: rgb(var(--chromatic-cyan) / 0.4);
 }
 
-/* Override Shiki's per-span background to stay transparent */
+/* Keep Shiki background transparent and make code the scroll container */
 .prose :where(pre) .shiki,
 .prose :where(pre) code {
+  display: block;
+  margin: 0;
+  padding: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: transparent !important;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
@@ -781,11 +791,16 @@ body.pride {
     }
 
     .prose :where(ol > li):not(:last-child)::after,
-    .prose :where(blockquote)::before,
-    .prose :where(pre)::before {
+    .prose :where(blockquote)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
       background-position: center calc(var(--ios-scroll-y) * -1);
+    }
+
+    .prose :where(pre)::before {
+      background-attachment: scroll;
+      background-size: 4px 150vh;
+      background-position: left calc(var(--ios-scroll-y) * -1);
     }
 
     .prose :where(hr),
