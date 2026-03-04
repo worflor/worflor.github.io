@@ -26,7 +26,7 @@ turns out the answer is **8**. and then **16**. and the thing waiting at 16 is w
 
 ## the tower, briefly
 
-the [Möbius predictor formula](https://doi.org/10.2307/2319793) works in any dimension. for $n$ dimensions, you sum over all $2^n - 1$ non-empty subsets of neighbors with alternating signs. it works like counting a crowd by tallying overlapping groups: add the individuals, subtract the pairs you double-counted, add back the triples you over-subtracted, and keep going until everything's been accounted for exactly once. the Möbius predictor does this with pixel values instead of people.
+the [Möbius predictor formula](https://doi.org/10.2307/2319793) works in any dimension. to predict a value, you look at every corner of the surrounding neighborhood ($2^n - 1$ of them) and combine them with alternating signs: nearest corners add, pairs subtract, triples add back, all the way out, until every contribution has landed *exactly once* and the weights total to 1. the prediction is exact for any signal without a coupling woven through all $n$ dimensions simultaneously. most smooth data qualifies. no particular algebraic structure required. just a *pattern*... working quietly in whatever dimension you hand it...
 
 the dimensions follow the Hurwitz sequence of normed division algebras:
 
@@ -56,7 +56,7 @@ Logos is an adaptive entropy coder with an ***attention*** **model** that ranks 
 
 the encoder tries all four, picks the smallest, and prepends a mode byte. if nothing beats raw, it falls back to raw. output is guaranteed $\leq \text{input} + 1$ byte.
 
-the important detail for later: Bit0's context tree has **255 nodes**. hold onto that...
+the important detail for later: Bit0's context tree has **255 nodes**. that number comes back :P
 
 ## Loup: the 8D predictor
 
@@ -66,7 +66,7 @@ $$
 P = \sum (-1)^{|S|+1} \cdot f(\text{neighbor}_S)
 $$
 
-255 terms, grouped by binomial coefficient: +8, -28, +56, -70, +56, -28, +8, -1. same crowd-counting logic as before, just scaled up. add the 8 direct neighbors, subtract the 28 pairs, add the 56 triples, on and on through all 255 groups. they sum to exactly 1. the predictor is unbiased, and the error equals the discrete 8-form, which vanishes for any polynomial of degree $\leq 7$. if your friend's train of thought takes up to seven sharp turns, Loup still knows exactly how the sentence ends. the element of surprise is mathematically zero; there is no guess needed.
+255 terms, grouped by binomial coefficient: +8, -28, +56, -70, +56, -28, +8, -1. add the 8 direct neighbors, subtract the 28 pairs, add the 56 triples, on and on through all 255 groups. they sum to exactly 1. the predictor is unbiased, and it's exact for any signal without a coupling running through all eight dimensions at once. *most data, most of the time.* if your friend's train of thought takes up to seven sharp turns, Loup still knows exactly how the sentence ends. *no guess needed.*
 
 Loup uses an anti-causal variant that looks forward instead of backward, and this unlocks the **boundary theorem**. when any coordinate of a voxel sits at the block edge, the sum telescopes to the value itself. prediction is exact. residual is zero. *always*. regardless of the data. like a jigsaw piece at the edge of the puzzle: the flat sides constrain it so completely that its identity is mathematical inevitability.
 
@@ -76,9 +76,9 @@ at block size 4, the free-zero fraction is $1 - (3/4)^8 = \mathbf{89.99\%}$. alm
 
 here's where it clicks. Logos has 255 context tree nodes. Loup has 255 spatial neighbors. both sit on the same mathematical object: the [Boolean lattice](https://en.wikipedia.org/wiki/Boolean_algebra) $2^{\{0,\ldots,7\}}$, also written as the exterior algebra $\Lambda^*(\mathbb{R}^8)$.
 
-the chain rule that decomposes a byte probability into 8 conditional bit probabilities is the probabilistic mirror of spatial inclusion-exclusion. both decompose a structure over $2^8$ outcomes into $2^8 - 1$ conditional terms. one lives in probability space, the other in coordinate space. same skeleton, opposite ends of the tower.
+think about how Logos breaks a byte into 8 binary decisions, each one depending on the ones before it. that chain of conditions has exactly 255 nodes, one for every non-empty combination of the 8 bits. and Loup has exactly 255 spatial corners, one for every non-empty combination of the 8 dimensions. *what is the next bit, given everything before it?* is the same question as *what does this voxel look like, given every corner around it?* written in a different language.
 
-this duality extends upward. a 16-bit symbol decomposes into 65,535 binary contexts. the 16D predictor has 65,535 neighbors. same lattice, same structure, one dimension higher. i fell in love with this.
+this duality extends *upward*. a 16-bit symbol decomposes into 65,535 binary contexts. the 16D predictor has 65,535 neighbors. same lattice, same structure, one dimension higher. *i fell in love with this.*
 
 which brings us to my beloved Kizuna.
 
@@ -94,7 +94,7 @@ $$
 1 - (1/2)^{16} = 65{,}535 / 65{,}536 = 99.998\%
 $$
 
-that single origin residual carries the full Möbius mixture of all 65,535 boundary voxels. it's a weighted sum with alternating signs from the inclusion-exclusion coefficients. flip the least significant bit of any byte anywhere in the block and the residual changes by exactly $\pm 1$, with the sign determined by the popcount parity of that position. this follows directly from the [Walsh-Hadamard](https://doi.org/10.1016/bs.aiep.2017.05.002) identity: the Möbius residual at the origin equals the WHT coefficient at the all-ones index.
+that single origin residual is a weighted mix of all 65,535 surrounding voxels, with alternating signs from each. change any byte anywhere in the block, any bit of any byte, and the residual shifts by exactly $\pm 1$. *nothing* is hidden from it. the whole thing is a [mathematical identity](https://doi.org/10.1016/bs.aiep.2017.05.002), *exact by construction*.
 
 holy yap. instead, try thinking of it like a wax seal on a letter. a single impression, but it captures the shape of every groove in the ring. change any groove, no matter how small, and the seal comes out different. this residual is that kind of seal for 65,536 bytes.
 
@@ -131,7 +131,7 @@ for an attacker this means you can't just intercept frame 47 and decode it. you 
 
 miss ***one frame*** and the model state diverges. the probability tables are wrong. the arithmetic decoder produces *garbage*. the trajectory has forked and there's no recovering without going all the way back to the start.
 
-this is frame ratcheting. the "key" isn't static. it's the evolving state of the codec itself, shaped by the handshake and every moment of the conversation. each frame is encrypted by the trajectory of everything before it. the conversation **encrypts itself**, and the bond deepens with every frame.
+this is frame ratcheting. the "key" is the evolving state of the codec itself, shaped by the handshake and every moment of the conversation. each frame is encrypted by the trajectory of everything before it. the conversation **encrypts itself**, and the bond deepens with every frame.
 
 that's where the name comes from. 絆 (*kizuna*) means 'bond' in Japanese; the kind that strengthens over time.
 
