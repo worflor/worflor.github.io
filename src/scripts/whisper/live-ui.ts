@@ -480,9 +480,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /** Max distinct emoji reactions tracked per message. Keeps the UI elegant. */
   const MAX_REACTIONS = 5;
 
+  function isTransientDrawPreviewMessage(el: HTMLElement | null | undefined): boolean {
+    if (!el) return false;
+    if (el.classList.contains("wl-msg--peer-draw-live")) return true;
+    if (el.dataset.drawState && el.dataset.drawState !== "sent") return true;
+    const drawCard = el.querySelector<HTMLElement>(".wl-msg-peer-draw");
+    if (!drawCard) return false;
+    // Stream preview is thumb-only; finalized draw cards include a media info bar.
+    return !drawCard.querySelector(".wl-media-info");
+  }
+
   function applyReaction(msgId: number, emoji: string, who: "self" | "peer"): void {
     const el = msgById.get(msgId);
-    if (!el || !emoji) return;
+    if (!el || !emoji || isTransientDrawPreviewMessage(el)) return;
     // Clip to first grapheme cluster — peer could send multi-emoji or malformed string
     const seg = new Intl.Segmenter();
     const firstCluster = seg.segment(emoji)[Symbol.iterator]().next().value?.segment;
@@ -517,7 +527,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function removeReaction(msgId: number, emoji: string, who: "self" | "peer"): void {
     const el = msgById.get(msgId);
-    if (!el) return;
+    if (!el || isTransientDrawPreviewMessage(el)) return;
     const pill = el.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
     if (!pill) return;
     pill.dataset[who] = "0";
@@ -540,8 +550,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * we key by emoji string in data-emoji.
    */
   function toggleSelfReaction(msgId: number, emoji: string): void {
-    haptic("reaction");
     const el = msgById.get(msgId);
+    if (!el || isTransientDrawPreviewMessage(el)) return;
+    haptic("reaction");
     const pill = el?.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
     const isUnreact = pill?.dataset.self === "1";
     if (session) {
@@ -1735,9 +1746,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   /**
-   * Render finalized peer draw content using the same visual shell as the
-   * streamed preview (thumb + draw canvas only), so stream->final merge does
-   * not introduce a layout jump.
+   * Render finalized peer draw content in the regular media-card shell
+   * (thumb + info bar), while preserving the streamed thumb geometry/snapshot
+   * so the stream->final merge doesn't jump.
    */
   function renderMergedPeerDrawMessage(
     msg: LiveMessage,
@@ -1787,7 +1798,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         openMediaLightbox("", "", fileName, "glyph", glyph, glyphBytes);
       }, { signal: abortSignal });
 
-      root.appendChild(thumb);
+      const infoBar = createMediaInfoBar(fileName, msg.fileSize, "#");
+      const dlBtn = infoBar.querySelector<HTMLAnchorElement>(".wl-media-dl");
+      if (dlBtn) {
+        dlBtn.download = gwyphPngName(fileName);
+        dlBtn.title = "Download PNG";
+        dlBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          void downloadGlyphAsPng(glyphBytes, fileName);
+        }, { signal: abortSignal });
+      }
+
+      root.append(thumb, infoBar);
       return root;
     }
 
@@ -1859,7 +1881,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       openMediaLightbox(displayUrl, dlUrl, fileName, "image");
     }, { signal: abortSignal });
 
-    root.appendChild(thumb);
+    const infoBar = createMediaInfoBar(fileName, msg.fileSize, dlUrl);
+    root.append(thumb, infoBar);
     return root;
   }
 
@@ -3245,6 +3268,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (msg.msgId !== undefined) {
       div.dataset.msgId = String(msg.msgId);
       msgById.set(msg.msgId, div);
+      const allowReactions = !isTransientDrawPreviewMessage(div);
+      if (allowReactions) {
 
       // ── Reaction shelf — hidden until message is tapped ──
       // The shelf has zero visual presence at rest; CSS transitions it in
@@ -3320,8 +3345,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
         // Ignore clicks on file attachments
         if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
-        if ((e.target as HTMLElement).closest(".wl-msg-peer-draw")) return;
-        // Ignore clicks on media thumbnail (opens lightbox) and download button
+        // Ignore lightbox/download controls, but allow media info-bar taps
+        // (including finalized draw cards) to toggle the reaction shelf.
         if ((e.target as HTMLElement).closest(".wl-media-thumb")) return;
         if ((e.target as HTMLElement).closest(".wl-media-dl")) return;
         // Ignore clicks on timestamps (which toggle time format)
@@ -3332,6 +3357,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (prev) prev.removeAttribute("data-shelf-open");
         if (!isOpen) div.setAttribute("data-shelf-open", "");
       }, { signal });
+      } else {
+        div.dataset.reactionsDisabled = "true";
+      }
     }
 
     if (msg.direction === "peer") {
