@@ -782,20 +782,20 @@ body.pride {
     .prose :where(ol > li)::before {
       background-attachment: scroll, scroll;
       background-size: auto, 100vw 200vh;
-      background-position: 0 0, center top;
+      background-position: 0 0, center 22vh;
     }
 
     .prose :where(ol > li):not(:last-child)::after,
     .prose :where(blockquote)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center top;
+      background-position: center 46vh;
     }
 
     .prose :where(pre)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: left top;
+      background-position: left 64vh;
     }
 
     .prose :where(hr),
@@ -803,7 +803,7 @@ body.pride {
       background: var(--parallax-gradient-vertical);
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center top;
+      background-position: center 82vh;
     }
   }
 }
