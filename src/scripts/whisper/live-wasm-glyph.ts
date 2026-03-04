@@ -45,6 +45,10 @@ class BitBuffer {
         }
     }
     read(bits: number): number {
+        if (bits < 0) throw new RangeError("invalid bit width");
+        if (this.bitOff + bits > this.data.length * 8) {
+            throw new RangeError("bit buffer underflow");
+        }
         let val = 0;
         for (let i = 0; i < bits; i++) {
             const bit = (this.data[this.bitOff >> 3] >> (7 - (this.bitOff & 7))) & 1;
@@ -126,9 +130,11 @@ export class GlyphCodec {
 
     static decodeBlocks(blocks: GlyphBlock[], points: Int32Array, startIdx: number): void {
         let cursor = startIdx;
+        const maxPoints = Math.floor(points.length / 3);
         for (const b of blocks) {
             const { mode, kR, kI, gR, gI, residuals } = b;
             for (let j = 0; j < residuals.length; j += 3) {
+                if (cursor >= maxPoints) return;
                 const p1 = (cursor - 1) * 3, p2 = (cursor - 2) * 3;
                 let pr, pi;
                 const pp = (points[p1 + 2] * 2) - points[p2 + 2];
@@ -176,12 +182,14 @@ export class GlyphCodec {
                 const mode = bb.read(1);
                 const wPos = bb.read(5);
                 const wPre = bb.read(5);
+                if (wPos < 0 || wPos > 31 || wPre < 0 || wPre > 31) break;
                 let kR = 0, kI = 0, gR = 0, gI = 0;
                 if (mode === GlyphMode.HARMONIC) {
                     kR = bb.read(16) - 32768; kI = bb.read(16) - 32768;
                     gR = bb.read(16) - 32768; gI = bb.read(16) - 32768;
                 }
                 const count = bb.read(5);
+                if (count < 0 || count > GLYPH_BLOCK_SIZE) break;
                 const residuals = new Int32Array(count * 3);
                 for (let i = 0; i < count * 3; i += 3) {
                     residuals[i] = bb.read(wPos);

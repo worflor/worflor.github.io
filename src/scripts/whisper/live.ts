@@ -43,6 +43,7 @@ import { sdpToCode, codeToSdp } from "./live-sdp";
 import { CTRL_OP, encodeCtrl, decodeCtrl } from "./live-ctrl";
 import {
   type DrawStreamEvent,
+  DrawStreamTracker,
   decodeDrawStreamEvent,
   encodeDrawStreamEvent,
 } from "./live-draw-stream";
@@ -360,6 +361,7 @@ export class WhisperLiveSession {
   private nRecvTotal = 0;
   private nextDrawStreamSeq = 0;
   private drawStreamSendQueue: Promise<void> = Promise.resolve();
+  private drawStreamRecvTracker = new DrawStreamTracker();
 
   // Kizuna membrane: loop states for send and receive directions.
   // initialized from ECDH-derived chain keys. reinit on each DH ratchet step.
@@ -1050,7 +1052,12 @@ export class WhisperLiveSession {
           if (this.onCtrl) this.onCtrl(frame.opcode, frame.payload);
           if (frame.opcode === CTRL_OP.DRAW_STREAM && this.onDrawStream) {
             const drawEvent = decodeDrawStreamEvent(frame.payload);
-            if (drawEvent) this.onDrawStream(drawEvent);
+            if (drawEvent) {
+              const applied = this.drawStreamRecvTracker.apply(drawEvent);
+              if (applied.applied) {
+                this.onDrawStream(drawEvent);
+              }
+            }
           }
         }
         break;

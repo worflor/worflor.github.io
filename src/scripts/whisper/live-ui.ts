@@ -2686,6 +2686,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       peerActivePoints = [];
       peerStrokes = [];
       peerRedoStack = [];
+      peerBaseAssembly = null;
+      clearPeerBaseImage();
       peerBgCanvas?.remove();
       peerBgCanvas = null;
       if (peerCanvas) {
@@ -3190,6 +3192,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   interface PeerActiveStroke {
+    strokeId: number;
     decoder: GlyphStreamDecoder;
     color: string;
     width: number;
@@ -3224,6 +3227,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let peerStrokes: PeerStrokeRecord[] = [];
   let peerRedoStack: PeerStrokeRecord[] = [];
   let peerRafPending = false;
+
+  function clamp01(v: number): number {
+    if (v < 0) return 0;
+    if (v > 1) return 1;
+    return v;
+  }
+
+  function isFiniteNorm(v: number): boolean {
+    return Number.isFinite(v) && v >= 0 && v <= 1;
+  }
+
+  function isFinitePressure(v: number): boolean {
+    return Number.isFinite(v) && v >= -0.25 && v <= 1.25;
+  }
 
   function drawPeerBackground(cw: number, ch: number): void {
     if (!peerBgCanvas) return;
@@ -3469,6 +3486,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const SCALE = 32767;
     switch (ev.kind) {
       case "begin": {
+        if (!isFiniteNorm(ev.start.x) || !isFiniteNorm(ev.start.y) || !isFinitePressure(ev.start.p)) break;
         removeLegacyPeerOverlays();
         ensurePeerCanvas();
         bringPeerPreviewToBottom();
@@ -3481,33 +3499,42 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         const sp: [number, number, number] = [
           Math.round(ev.start.x * SCALE),
           Math.round(ev.start.y * SCALE),
-          Math.round(ev.start.p * SCALE),
+          Math.round(clamp01(ev.start.p) * SCALE),
         ];
         peerActiveStroke = {
+          strokeId: ev.strokeId,
           decoder: new GlyphStreamDecoder(sp, sp),
           color: ev.color,
           width: ev.width,
           tool: ev.tool,
           lastNX: ev.start.x,
           lastNY: ev.start.y,
-          lastP: ev.start.p,
+          lastP: clamp01(ev.start.p),
           lastMidNX: 0,
           lastMidNY: 0,
           hasLastMid: false,
         };
-        peerActivePoints = [{ x: ev.start.x, y: ev.start.y, p: ev.start.p }];
+        peerActivePoints = [{ x: ev.start.x, y: ev.start.y, p: clamp01(ev.start.p) }];
         peerRedoStack = [];
         break;
       }
       case "glyph": {
         if (!peerActiveStroke) break;
+        if (ev.strokeId !== peerActiveStroke.strokeId) break;
         bringPeerPreviewToBottom();
         ensurePeerCanvas();
         const raw = peerActiveStroke.decoder.decode(ev.data);
-        for (let i = 0; i < raw.length; i += 3) {
+        const limit = raw.length - (raw.length % 3);
+        let appended = false;
+        for (let i = 0; i < limit; i += 3) {
+          const qx = raw[i];
+          const qy = raw[i + 1];
+          const qp = raw[i + 2];
+          if (!Number.isFinite(qx) || !Number.isFinite(qy) || !Number.isFinite(qp)) continue;
           const nx = raw[i] / SCALE;
           const ny = raw[i + 1] / SCALE;
-          const np = Math.max(0, Math.min(1, raw[i + 2] / SCALE));
+          const np = clamp01(raw[i + 2] / SCALE);
+          if (!isFiniteNorm(nx) || !isFiniteNorm(ny) || !Number.isFinite(np)) continue;
           peerActivePoints.push({ x: nx, y: ny, p: np });
           peerActiveStroke.lastMidNX = (peerActiveStroke.lastNX + nx) * 0.5;
           peerActiveStroke.lastMidNY = (peerActiveStroke.lastNY + ny) * 0.5;
@@ -3515,15 +3542,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           peerActiveStroke.lastNX = nx;
           peerActiveStroke.lastNY = ny;
           peerActiveStroke.lastP = np;
+          appended = true;
         }
-        schedulePeerRerender();
+        if (appended) schedulePeerRerender();
         break;
       }
       case "end": {
         if (!peerActiveStroke) break;
+        if (ev.strokeId !== peerActiveStroke.strokeId) break;
         bringPeerPreviewToBottom();
         peerStrokes.push({
-          points: peerActivePoints,
+          points: peerActivePoints.slice(),
           color: peerActiveStroke.color,
           width: peerActiveStroke.width,
           tool: peerActiveStroke.tool,
@@ -3560,17 +3589,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       case "presence":
         if (!ev.active) {
-          if (peerActiveStroke) {
-            peerStrokes.push({
-              points: peerActivePoints,
-              color: peerActiveStroke.color,
-              width: peerActiveStroke.width,
-              tool: peerActiveStroke.tool,
-            });
-            peerActivePoints = [];
-            peerActiveStroke = null;
-            peerRerender();
-          }
+          peerActivePoints = [];
+          peerActiveStroke = null;
+          peerRerender();
           peerBaseAssembly = null;
           setPeerLiveDrawState("idle");
         } else {

@@ -169,6 +169,22 @@ describe("live-draw-stream", () => {
     assert.equal(out.length, 0);
   });
 
+  it("GlyphStreamDecoder rejects oversized malformed block counts", () => {
+    const start: [number, number, number] = [0, 0, 0];
+    const dec = new GlyphStreamDecoder(start, start);
+    // mode=0, wPos=0, wPre=0, count=31 (invalid for stream decoder capacity)
+    const malformed = new Uint8Array([0x00, 0x1f]);
+    const out = dec.decode(malformed);
+    assert.equal(out.length, 0);
+  });
+
+  it("GlyphCodec.unpack drops truncated harmonic blocks", () => {
+    // mode=0 (harmonic) but payload is truncated before harmonic coefficients.
+    const truncated = new Uint8Array([0x00, 0x00]);
+    const blocks = GlyphCodec.unpack(truncated);
+    assert.equal(blocks.length, 0);
+  });
+
   it("tracks peer draw state with sequence guards", () => {
     const tracker = new DrawStreamTracker();
 

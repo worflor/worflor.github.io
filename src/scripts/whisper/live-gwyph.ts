@@ -31,6 +31,59 @@ export interface GlyphPayload {
   strokes: GlyphStroke[];
 }
 
+interface GlyphRenderScratch {
+  bgCanvas: HTMLCanvasElement;
+  bgCtx: CanvasRenderingContext2D;
+  drawCanvas: HTMLCanvasElement;
+  drawCtx: CanvasRenderingContext2D;
+  tempCanvas: HTMLCanvasElement;
+  tempCtx: CanvasRenderingContext2D;
+  fillVisited: Uint8Array;
+  fillStack: Int32Array;
+}
+
+let glyphRenderScratch: GlyphRenderScratch | null = null;
+
+function ensureGlyphRenderScratch(W: number, H: number): GlyphRenderScratch {
+  if (!glyphRenderScratch) {
+    const bgCanvas = document.createElement("canvas");
+    const drawCanvas = document.createElement("canvas");
+    const tempCanvas = document.createElement("canvas");
+    const bgCtx = bgCanvas.getContext("2d");
+    const drawCtx = drawCanvas.getContext("2d");
+    const tempCtx = tempCanvas.getContext("2d");
+    if (!bgCtx || !drawCtx || !tempCtx) {
+      throw new Error("glyph: canvas context unavailable");
+    }
+    glyphRenderScratch = {
+      bgCanvas,
+      bgCtx,
+      drawCanvas,
+      drawCtx,
+      tempCanvas,
+      tempCtx,
+      fillVisited: new Uint8Array(0),
+      fillStack: new Int32Array(0),
+    };
+  }
+
+  const s = glyphRenderScratch;
+  if (s.bgCanvas.width !== W || s.bgCanvas.height !== H) {
+    s.bgCanvas.width = W;
+    s.bgCanvas.height = H;
+  }
+  if (s.drawCanvas.width !== W || s.drawCanvas.height !== H) {
+    s.drawCanvas.width = W;
+    s.drawCanvas.height = H;
+  }
+  if (s.tempCanvas.width !== W || s.tempCanvas.height !== H) {
+    s.tempCanvas.width = W;
+    s.tempCanvas.height = H;
+  }
+
+  return s;
+}
+
 class GlyphReader {
   private off = 0;
   constructor(private readonly data: Uint8Array) { }
@@ -205,7 +258,20 @@ function renderGlyphStroke(ctx: CanvasRenderingContext2D, stroke: GlyphStrokePen
   ctx.restore();
 }
 
-function renderGlyphFill(ctx: CanvasRenderingContext2D, stroke: GlyphStrokeFill, W: number, H: number): void {
+function renderGlyphFill(
+  ctx: CanvasRenderingContext2D,
+  stroke: GlyphStrokeFill,
+  W: number,
+  H: number,
+  backgroundLayer: HTMLCanvasElement | null,
+  scratch: GlyphRenderScratch,
+): void {
+  const tempCtx = scratch.tempCtx;
+  tempCtx.clearRect(0, 0, W, H);
+  if (backgroundLayer) tempCtx.drawImage(backgroundLayer, 0, 0, W, H);
+  tempCtx.drawImage(ctx.canvas, 0, 0, W, H);
+  const composite = tempCtx.getImageData(0, 0, W, H).data;
+
   const imgData = ctx.getImageData(0, 0, W, H);
   const data = imgData.data;
   const pixelCount = W * H;
@@ -218,19 +284,22 @@ function renderGlyphFill(ctx: CanvasRenderingContext2D, stroke: GlyphStrokeFill,
   const fillB = parseInt(stroke.color.slice(5, 7), 16);
 
   const seedIdx = (sy * W + sx) * 4;
-  const seedR = data[seedIdx];
-  const seedG = data[seedIdx + 1];
-  const seedB = data[seedIdx + 2];
+  const seedR = composite[seedIdx];
+  const seedG = composite[seedIdx + 1];
+  const seedB = composite[seedIdx + 2];
   if (seedR === fillR && seedG === fillG && seedB === fillB) return;
 
   const tolSq = Math.max(0, stroke.tolerance);
-  const visited = new Uint8Array(pixelCount);
-  const stack = new Int32Array(pixelCount);
+  if (scratch.fillVisited.length < pixelCount) scratch.fillVisited = new Uint8Array(pixelCount);
+  else scratch.fillVisited.fill(0, 0, pixelCount);
+  if (scratch.fillStack.length < pixelCount) scratch.fillStack = new Int32Array(pixelCount);
+  const visited = scratch.fillVisited;
+  const stack = scratch.fillStack;
 
   const matches = (idx: number): boolean => {
-    const dr = data[idx] - seedR;
-    const dg = data[idx + 1] - seedG;
-    const db = data[idx + 2] - seedB;
+    const dr = composite[idx] - seedR;
+    const dg = composite[idx + 1] - seedG;
+    const db = composite[idx + 2] - seedB;
     return (dr * dr + dg * dg + db * db) <= tolSq;
   };
 
@@ -286,14 +355,28 @@ function renderGlyphFill(ctx: CanvasRenderingContext2D, stroke: GlyphStrokeFill,
 }
 
 export function renderGwyphScene(ctx: CanvasRenderingContext2D, glyph: GlyphPayload, W: number, H: number): void {
+  const scratch = ensureGlyphRenderScratch(W, H);
+  const { bgCanvas, bgCtx, drawCanvas, drawCtx } = scratch;
+
+  bgCtx.clearRect(0, 0, W, H);
+  drawCtx.clearRect(0, 0, W, H);
+
   if (glyph.mode === "blank") {
-    ctx.fillStyle = "#1a1a1a";
-    ctx.fillRect(0, 0, W, H);
+    bgCtx.fillStyle = "#1a1a1a";
+    bgCtx.fillRect(0, 0, W, H);
   }
+
   for (const stroke of glyph.strokes) {
-    if (stroke.type === "pen") renderGlyphStroke(ctx, stroke, W, H);
-    else renderGlyphFill(ctx, stroke, W, H);
+    if (stroke.type === "pen") renderGlyphStroke(drawCtx, stroke, W, H);
+    else renderGlyphFill(drawCtx, stroke, W, H, glyph.mode === "blank" ? bgCanvas : null, scratch);
   }
+
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0, 0, W, H);
+  if (glyph.mode === "blank") ctx.drawImage(bgCanvas, 0, 0, W, H);
+  ctx.drawImage(drawCanvas, 0, 0, W, H);
+  ctx.restore();
 }
 
 export function isWhisperGlyph(fileType?: string, fileName?: string): boolean {
