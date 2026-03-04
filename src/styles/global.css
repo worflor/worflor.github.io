@@ -790,11 +790,19 @@ body.pride {
 */
 @media (hover: none) and (pointer: coarse) {
   @supports (-webkit-touch-callout: none) {
+    @property --ios-scroll-shift {
+      syntax: "<length>";
+      inherits: true;
+      initial-value: 0px;
+    }
+
     :root {
       --ios-parallax-phase-ol: 22vh;
       --ios-parallax-phase-rule: 46vh;
       --ios-parallax-phase-pre: 64vh;
       --ios-parallax-phase-hr: 82vh;
+      --ios-parallax-sweep: -220vh;
+      --ios-scroll-shift: 0px;
     }
 
     @supports (height: 1svh) {
@@ -803,26 +811,47 @@ body.pride {
         --ios-parallax-phase-rule: 46svh;
         --ios-parallax-phase-pre: 64svh;
         --ios-parallax-phase-hr: 82svh;
+        --ios-parallax-sweep: -220svh;
+      }
+    }
+
+    /* WebKit scroll-linked animation (pure CSS) for dynamic phase on iOS. */
+    @supports (animation-timeline: scroll()) {
+      :root {
+        animation: ios-parallax-scroll-shift linear both;
+        animation-timeline: scroll(root block);
+        animation-range: 0% 100%;
+      }
+    }
+
+    @keyframes ios-parallax-scroll-shift {
+      from {
+        --ios-scroll-shift: 0px;
+      }
+
+      to {
+        /* Sweep enough distance to keep the gradient feeling alive on long reads. */
+        --ios-scroll-shift: var(--ios-parallax-sweep);
       }
     }
 
     .prose :where(ol > li)::before {
       background-attachment: scroll, scroll;
       background-size: auto, 100vw 200vh;
-      background-position: 0 0, center var(--ios-parallax-phase-ol);
+      background-position: 0 0, center calc(var(--ios-parallax-phase-ol) + var(--ios-scroll-shift));
     }
 
     .prose :where(ol > li):not(:last-child)::after,
     .prose :where(blockquote)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center var(--ios-parallax-phase-rule);
+      background-position: center calc(var(--ios-parallax-phase-rule) + var(--ios-scroll-shift));
     }
 
     .prose :where(pre)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: left var(--ios-parallax-phase-pre);
+      background-position: left calc(var(--ios-parallax-phase-pre) + var(--ios-scroll-shift));
     }
 
     .prose :where(hr),
@@ -830,7 +859,7 @@ body.pride {
       background: var(--parallax-gradient-vertical);
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center var(--ios-parallax-phase-hr);
+      background-position: center calc(var(--ios-parallax-phase-hr) + var(--ios-scroll-shift));
     }
   }
 }
