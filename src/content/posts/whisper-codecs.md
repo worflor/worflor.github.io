@@ -20,7 +20,7 @@ you can't just encrypt raw PCM (audio) and ship it over WebRTC. you need compres
 
 the whole thing works the same way two close friends develop shorthand over time. they build inside jokes. they stop needing to finish sentences because the other person already knows the ending, and can sometimes pivot a 'beat ahead' as a result. a good codec does exactly that with data: learns what shows up often, builds a shorter way to say it, and gets better the longer the conversation goes.
 
-once you have a 1D predictor, a question starts nagging. what happens in 2D? in 3D? how far does this go?
+once you have a 1D predictor, a question starts nagging. what happens in 2D? in 3D? and how far does this go?
 
 turns out the answer is **8**. and then **16**. and the thing waiting at 16 is what this post is really about.
 

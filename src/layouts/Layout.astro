@@ -144,16 +144,48 @@ const isContactPage = Astro.url.pathname === "/contact";
         iosParallaxRaf = requestAnimationFrame(applyIosParallaxScroll);
       }
 
+      function forceIosParallaxScroll() {
+        iosParallaxTarget = window.scrollY;
+        if (iosParallaxRaf) {
+          cancelAnimationFrame(iosParallaxRaf);
+          iosParallaxRaf = 0;
+        }
+        iosParallaxRaf = requestAnimationFrame(applyIosParallaxScroll);
+      }
+
+      function nudgeIosParallaxLifecycle() {
+        // Mobile WebKit can miss/strand a frame around view transitions.
+        // Force a fresh schedule across a few ticks so we always recover.
+        forceIosParallaxScroll();
+        requestAnimationFrame(forceIosParallaxScroll);
+        setTimeout(forceIosParallaxScroll, 140);
+      }
+
       applyIosParallaxScroll();
       window.addEventListener('scroll', scheduleIosParallaxScroll, { passive: true });
       window.addEventListener('resize', scheduleIosParallaxScroll, { passive: true });
-      document.addEventListener('astro:after-swap', scheduleIosParallaxScroll);
-      document.addEventListener('astro:page-load', scheduleIosParallaxScroll);
+      window.addEventListener('orientationchange', nudgeIosParallaxLifecycle, { passive: true });
+      window.addEventListener('pageshow', nudgeIosParallaxLifecycle, { passive: true });
+      window.addEventListener('pagehide', function() {
+        if (!iosParallaxRaf) return;
+        cancelAnimationFrame(iosParallaxRaf);
+        iosParallaxRaf = 0;
+      });
+      document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') nudgeIosParallaxLifecycle();
+      });
+      document.addEventListener('astro:before-swap', function() {
+        if (!iosParallaxRaf) return;
+        cancelAnimationFrame(iosParallaxRaf);
+        iosParallaxRaf = 0;
+      });
+      document.addEventListener('astro:after-swap', nudgeIosParallaxLifecycle);
+      document.addEventListener('astro:page-load', nudgeIosParallaxLifecycle);
 
       // Keep in sync through route lifecycle; some mobile WebKit transitions
       // won't emit a useful scroll tick immediately after navigation.
       document.addEventListener('astro:before-preparation', function() {
-        requestAnimationFrame(scheduleIosParallaxScroll);
+        requestAnimationFrame(nudgeIosParallaxLifecycle);
       });
     } else {
       document.documentElement.removeAttribute('data-ios-parallax');
