@@ -812,7 +812,10 @@ const isContactPage = Astro.url.pathname === "/contact";
       overflow: hidden;
       cursor: pointer;
       &:last-of-type { flex-shrink: 1; }
-      &.truncated { mask-image: linear-gradient(to right, black calc(100% - 1rem), transparent); }
+      &.truncated {
+        -webkit-mask-image: linear-gradient(to right, black calc(100% - 1rem), transparent);
+        mask-image: linear-gradient(to right, black calc(100% - 1rem), transparent);
+      }
       &:hover { opacity: var(--opacity-high); }
       &:focus-visible { opacity: var(--opacity-high); outline: 1px solid rgb(var(--color-text-rgb) / var(--opacity-subtle)); outline-offset: 2px; border-radius: 2px; }
       &:active { opacity: 1; }
@@ -829,13 +832,18 @@ const isContactPage = Astro.url.pathname === "/contact";
     95%, 100% { transform: translateX(0); }
   }
 
+  .site-header::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-bottom: 1px solid transparent;
+    opacity: 0;
+    pointer-events: none;
+  }
+
   @supports (animation-timeline: scroll()) {
     .site-header::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      z-index: -1;
-      border-bottom: 1px solid transparent;
       animation: header-scroll-effects linear both;
       animation-timeline: scroll();
       animation-range: 0 100px;
@@ -847,6 +855,16 @@ const isContactPage = Astro.url.pathname === "/contact";
         -webkit-backdrop-filter: blur(8px);
         backdrop-filter: blur(8px);
       }
+    }
+  }
+
+  /* Fallback for browsers that don't support scroll-linked animations (e.g. older iOS/WebKit). */
+  @supports not (animation-timeline: scroll()) {
+    .site-header::before {
+      border-bottom-color: var(--color-border);
+      -webkit-backdrop-filter: blur(6px);
+      backdrop-filter: blur(6px);
+      opacity: 1;
     }
   }
 
