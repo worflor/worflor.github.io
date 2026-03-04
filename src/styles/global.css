@@ -144,6 +144,11 @@
     var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
 
   /* parallax gradients */
+    --parallax-gradient-horizontal: linear-gradient(to right,
+      rgb(var(--chromatic-cyan)),
+      rgb(var(--tool-action-load)),
+      rgb(var(--chromatic-red)),
+      rgb(var(--chromatic-cyan)));
   --parallax-gradient-vertical: linear-gradient(to bottom,
       rgb(var(--chromatic-cyan)),
       rgb(var(--tool-action-load)),
@@ -465,20 +470,11 @@ body.pride {
 }
 
 /* Header — reads as field labels, not data */
-.prose :where(thead tr) {
-  position: relative;
-  /* Horizontal fixed gradient — a static spectrum spanning the reading column */
-}
-
-.prose :where(thead tr)::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  height: 1px;
-  background: var(--parallax-gradient-horizontal);
-  background-attachment: fixed;
+.prose :where(thead) {
+  background-image: var(--parallax-gradient-horizontal);
+  background-repeat: no-repeat;
+  background-size: 100% 1px;
+  background-position: left bottom;
 }
 
 .prose :where(thead th) {
@@ -764,6 +760,24 @@ body.pride {
   background: var(--parallax-gradient-vertical);
   background-attachment: fixed;
   background-size: 100vw 200vh;
+}
+
+/* iOS/WebKit fallback: fixed background attachment is unreliable on mobile Safari */
+@supports (-webkit-touch-callout: none) {
+
+  .prose :where(ol > li)::before {
+    background-attachment: scroll, scroll;
+    background-size: auto, 100% 100%;
+  }
+
+  .prose :where(ol > li):not(:last-child)::after,
+  .prose :where(blockquote)::before,
+  .prose :where(hr),
+  .prose :where(pre)::before,
+  .prose :where(h2, h3, h4)::after {
+    background-attachment: scroll;
+    background-size: 100% 100%;
+  }
 }
 
 /* h2: spans the full length of the heading's actual text */
