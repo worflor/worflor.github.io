@@ -154,6 +154,8 @@
       rgb(var(--tool-action-load)),
       rgb(var(--chromatic-red)),
       rgb(var(--chromatic-cyan)));
+  /* fallback input for iOS touch WebKit parallax emulation (set in Layout.astro) */
+  --ios-scroll-y: 0px;
 }
 
 @supports (color: color-mix(in srgb, white, black)) {
@@ -783,83 +785,52 @@ body.pride {
 }
 
 /*
-  iOS touch WebKit fallback (CSS-only): fixed attachment can be partial/no-op.
-  Keep the same gradients, but attach them to element scroll space for reliability.
-  Use stable viewport units where available so Safari toolbar show/hide does not
-  re-phase the gradient anchors while scrolling.
+  iOS touch WebKit fallback — do not remove without real-device verification.
+  Why: background-attachment: fixed can be partial/no-op on iOS WebKit in
+  scroll scenarios, which collapses the intended scroll-reactive color phase.
+  Approach: keep the same gradients, but drive background-position from
+  --ios-scroll-y (updated in Layout.astro) so visuals remain dynamic.
 */
 @media (hover: none) and (pointer: coarse) {
   @supports (-webkit-touch-callout: none) {
-    @property --ios-scroll-shift {
-      syntax: "<length>";
-      inherits: true;
-      initial-value: 0px;
-    }
 
-    :root {
-      --ios-parallax-phase-ol: 22vh;
-      --ios-parallax-phase-rule: 46vh;
-      --ios-parallax-phase-pre: 64vh;
-      --ios-parallax-phase-hr: 82vh;
-      --ios-parallax-sweep: -220vh;
-      --ios-scroll-shift: 0px;
-    }
-
-    @supports (height: 1svh) {
-      :root {
-        --ios-parallax-phase-ol: 22svh;
-        --ios-parallax-phase-rule: 46svh;
-        --ios-parallax-phase-pre: 64svh;
-        --ios-parallax-phase-hr: 82svh;
-        --ios-parallax-sweep: -220svh;
-      }
-    }
-
-    /* WebKit scroll-linked animation (pure CSS) for dynamic phase on iOS. */
-    @supports (animation-timeline: scroll()) {
-      :root {
-        animation: ios-parallax-scroll-shift linear both;
-        animation-timeline: scroll(root block);
-        animation-range: 0% 100%;
-      }
-    }
-
-    @keyframes ios-parallax-scroll-shift {
-      from {
-        --ios-scroll-shift: 0px;
-      }
-
-      to {
-        /* Sweep enough distance to keep the gradient feeling alive on long reads. */
-        --ios-scroll-shift: var(--ios-parallax-sweep);
-      }
-    }
-
-    .prose :where(ol > li)::before {
+    :root[data-ios-parallax="js"] .prose :where(ol > li)::before {
       background-attachment: scroll, scroll;
       background-size: auto, 100vw 200vh;
-      background-position: 0 0, center calc(var(--ios-parallax-phase-ol) + var(--ios-scroll-shift));
+      background-position: 0 0, center calc(var(--ios-scroll-y) * -1);
     }
 
-    .prose :where(ol > li):not(:last-child)::after,
-    .prose :where(blockquote)::before {
+    :root[data-ios-parallax="js"] .prose :where(ol > li):not(:last-child)::after,
+    :root[data-ios-parallax="js"] .prose :where(blockquote)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center calc(var(--ios-parallax-phase-rule) + var(--ios-scroll-shift));
+      background-position: center calc(var(--ios-scroll-y) * -1);
     }
 
-    .prose :where(pre)::before {
+    :root[data-ios-parallax="js"] .prose :where(pre)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: left calc(var(--ios-parallax-phase-pre) + var(--ios-scroll-shift));
+      background-position: center calc(var(--ios-scroll-y) * -1);
     }
 
-    .prose :where(hr),
-    .prose :where(h2, h3, h4)::after {
+    :root[data-ios-parallax="js"] .prose :where(hr),
+    :root[data-ios-parallax="js"] .prose :where(h2, h3, h4)::after {
       background: var(--parallax-gradient-vertical);
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center calc(var(--ios-parallax-phase-hr) + var(--ios-scroll-shift));
+      background-position: center calc(var(--ios-scroll-y) * -1);
+    }
+
+    /* JS disabled/failed: keep accents clean and stable (no rainbow phase drift). */
+    :root:not([data-ios-parallax="js"]) .prose :where(ol > li)::before,
+    :root:not([data-ios-parallax="js"]) .prose :where(ol > li):not(:last-child)::after,
+    :root:not([data-ios-parallax="js"]) .prose :where(blockquote)::before,
+    :root:not([data-ios-parallax="js"]) .prose :where(pre)::before,
+    :root:not([data-ios-parallax="js"]) .prose :where(hr),
+    :root:not([data-ios-parallax="js"]) .prose :where(h2, h3, h4)::after {
+      background-attachment: scroll;
+      background-image: none;
+      background-color: rgb(var(--chromatic-cyan) / 0.35);
     }
   }
 }
