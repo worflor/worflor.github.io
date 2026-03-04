@@ -78,7 +78,7 @@ here's where it clicks. Logos has 255 context tree nodes. Loup has 255 spatial n
 
 the chain rule that decomposes a byte probability into 8 conditional bit probabilities is the probabilistic mirror of spatial inclusion-exclusion. both decompose a structure over $2^8$ outcomes into $2^8 - 1$ conditional terms. one lives in probability space, the other in coordinate space. same skeleton, opposite ends of the tower.
 
-this duality extends upward. a 16-bit symbol decomposes into 65,535 binary contexts. the 16D predictor has 65,535 neighbors. same lattice, same structure, one dimension higher. told you to hold onto that.
+this duality extends upward. a 16-bit symbol decomposes into 65,535 binary contexts. the 16D predictor has 65,535 neighbors. same lattice, same structure, one dimension higher. i fell in love with this.
 
 which brings us to my beloved Kizuna.
 
