@@ -44,6 +44,7 @@ import {
 import { openDrawSurface } from "./live-draw";
 import { type DrawStreamEvent } from "./live-draw-stream";
 import { GlyphStreamDecoder } from "./live-wasm-glyph";
+import { LiveCallSession } from "./live-call";
 import { exchangeViaTracker } from "./live-tracker";
 import {
   exportGwyphToPngBlob,
@@ -133,6 +134,11 @@ export interface WhisperLiveUIOptions {
   fpChipEmoji: HTMLElement;
   fpChipName: HTMLElement;
   fpNicknameInput: HTMLInputElement;
+  callStage?: HTMLElement;
+  callRemoteVideo?: HTMLVideoElement;
+  callLocalVideo?: HTMLVideoElement;
+  callAudioToggle?: HTMLButtonElement;
+  callVideoToggle?: HTMLButtonElement;
 
   /* Silent phase */
   silentSection: HTMLElement;
@@ -228,6 +234,11 @@ const WHISPER_LIVE_IDS = {
   errorRetryBtn: "wl-error-retry",
   relayAssistToggle: "wl-relay-assist",
   relayConnectBtn: "wl-relay-connect",
+  callStage: "wl-call-stage",
+  callRemoteVideo: "wl-call-remote",
+  callLocalVideo: "wl-call-local",
+  callAudioToggle: "wl-call-audio-toggle",
+  callVideoToggle: "wl-call-video-toggle",
 } as const;
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -362,11 +373,21 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
   // Relay assist elements — optional
   const relayAssistToggle = inp(I.relayAssistToggle);
   const relayConnectBtn = btn(I.relayConnectBtn);
+  const callStage = el(I.callStage);
+  const callRemoteVideo = root.querySelector<HTMLVideoElement>(`#${I.callRemoteVideo}`) ?? undefined;
+  const callLocalVideo = root.querySelector<HTMLVideoElement>(`#${I.callLocalVideo}`) ?? undefined;
+  const callAudioToggle = btn(I.callAudioToggle);
+  const callVideoToggle = btn(I.callVideoToggle);
 
   return {
     ...r,
     ...(relayAssistToggle ? { relayAssistToggle } : {}),
     ...(relayConnectBtn ? { relayConnectBtn } : {}),
+    ...(callStage ? { callStage } : {}),
+    ...(callRemoteVideo ? { callRemoteVideo } : {}),
+    ...(callLocalVideo ? { callLocalVideo } : {}),
+    ...(callAudioToggle ? { callAudioToggle } : {}),
+    ...(callVideoToggle ? { callVideoToggle } : {}),
   } as WhisperLiveUIOptions;
 }
 
@@ -377,6 +398,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const { signal } = ac;
   const liveSurface = document.getElementById("wl-section");
   let session: WhisperLiveSession | null = null;
+  let callSession: LiveCallSession | null = null;
   const objectUrls = new Set<string>();
   let busy = false;
   let liveQrSupported = false;
@@ -448,6 +470,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // Adding a new voted feature = new VoteTopic + two lines here.
 
   function handleCtrl(opcode: number, payload: Uint8Array): void {
+    if (callSession?.handleCtrl(opcode, payload)) return;
     switch (opcode) {
       case CTRL_OP.CLEAR_VOTE: clearVote.receivePeer(); break;
       case CTRL_OP.CLEAR_CANCEL: clearVote.cancelPeer(); break;
@@ -3927,7 +3950,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
     }
 
-    return new WhisperLiveSession({
+    const liveSession = new WhisperLiveSession({
       onStateChange: handleStateChange,
       onFingerprint: handleFingerprint,
       onMessage: handleMessage,
@@ -3943,6 +3966,23 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       autoConfirmFingerprint: true,
       turnPool: opts.turnPool,
     });
+    callSession = new LiveCallSession(liveSession, {
+      onState: (state) => {
+        if (opts.callStage) opts.callStage.dataset.callState = state;
+        if (opts.callAudioToggle) opts.callAudioToggle.textContent = state.includes("audio") ? "Mute" : "Audio";
+        if (opts.callVideoToggle) opts.callVideoToggle.textContent = state.includes("video") ? "Camera off" : "Camera";
+      },
+      onRemoteStream: (stream) => {
+        if (opts.callRemoteVideo) opts.callRemoteVideo.srcObject = stream;
+      },
+      onLocalStream: (stream) => {
+        if (opts.callLocalVideo) opts.callLocalVideo.srcObject = stream;
+      },
+      onLog: appendLog,
+    });
+    const pc = liveSession.getPeerConnection();
+    if (pc && callSession) callSession.bindPeerConnection(pc);
+    return liveSession;
   }
 
   function handleStateChange(state: LiveState, detail?: string): void {
@@ -4012,6 +4052,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatInput.focus();
         opts.fpChip.classList.remove("wl-fp-chip--recovering");
         opts.fpChip.classList.add("wl-fp-chip--verified");
+        callSession?.sync();
+        if (opts.callAudioToggle) opts.callAudioToggle.disabled = false;
+        if (opts.callVideoToggle) opts.callVideoToggle.disabled = false;
         break;
 
       case "silent": {
@@ -4044,6 +4087,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           ? "they vanished. no trace remains."
           : "no trace remains.";
         enterPhase(opts.disconnectedSection, "session ended", false, false);
+        if (opts.callAudioToggle) opts.callAudioToggle.disabled = true;
+        if (opts.callVideoToggle) opts.callVideoToggle.disabled = true;
         resetFpChip();
         break;
       }
@@ -4101,6 +4146,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     extinguishFlare();
     if (qrScanSession.active) {
       stopJoinQrScan("cancelled");
+    }
+    if (callSession) {
+      void callSession.destroy();
+      callSession = null;
     }
     if (session) {
       session.disconnect();
@@ -5149,6 +5198,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     await sendFileToChat(file);
   }, { signal });
 
+  opts.callAudioToggle?.addEventListener("click", async () => {
+    if (!callSession) return;
+    const state = opts.callStage?.dataset.callState ?? "idle";
+    const enabled = state.includes("audio");
+    await callSession.setAudioEnabled(!enabled);
+  }, { signal });
+
+  opts.callVideoToggle?.addEventListener("click", async () => {
+    if (!callSession) return;
+    const state = opts.callStage?.dataset.callState ?? "idle";
+    const enabled = state.includes("video");
+    await callSession.setVideoEnabled(!enabled);
+  }, { signal });
+
   opts.disconnectBtn.addEventListener("click", () => {
     if (session) {
       session.disconnect();
@@ -5276,6 +5339,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     extinguishFlare();
     stopJoinQrScan("teardown");
+    if (callSession) {
+      void callSession.destroy();
+      callSession = null;
+    }
     if (session) {
       session.disconnect();
       session = null;

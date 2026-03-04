@@ -176,6 +176,15 @@
   style="display:none"
 >
   <div class="whisper-panel wl-chat-panel">
+    <div class="wl-call-stage" id="wl-call-stage" data-call-state="idle">
+      <video id="wl-call-remote" class="wl-call-video wl-call-video--remote" autoplay playsinline></video>
+      <video id="wl-call-local" class="wl-call-video wl-call-video--local" autoplay playsinline muted></video>
+      <div class="wl-call-controls">
+        <button id="wl-call-audio-toggle" type="button" class="whisper-mini-btn" disabled>Mute</button>
+        <button id="wl-call-video-toggle" type="button" class="whisper-mini-btn" disabled>Camera</button>
+      </div>
+    </div>
+
     <div
       id="wl-chat-messages"
       class="wl-chat-messages"
@@ -562,6 +571,53 @@
     border-top-right-radius: 0;
     border-top-color: rgb(var(--color-text-rgb) / 0.08);
     box-shadow: var(--edge-highlight);
+  }
+
+  :global(.wl-call-stage) {
+    position: relative;
+    border: 1px solid var(--whisper-edge);
+    border-radius: 12px;
+    background: rgb(0 0 0 / 0.55);
+    overflow: hidden;
+    margin: 0.72rem;
+    margin-bottom: 0.35rem;
+    display: none;
+    aspect-ratio: 16 / 9;
+  }
+
+  :global(.wl-call-stage[data-call-state="audio-live"]),
+  :global(.wl-call-stage[data-call-state="video-live"]),
+  :global(.wl-call-stage[data-call-state="audio-video-live"]) {
+    display: block;
+  }
+
+  :global(.wl-call-video) {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #0b0d11;
+  }
+
+  :global(.wl-call-video--local) {
+    position: absolute;
+    width: 26%;
+    right: 0.6rem;
+    bottom: 2.8rem;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.35);
+    border-radius: 10px;
+    aspect-ratio: 16 / 9;
+  }
+
+  :global(.wl-call-controls) {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.45rem;
+    background: linear-gradient(to top, rgb(0 0 0 / 0.5), transparent);
   }
 
   /* wl-chat-tools and wl-disconnect-btn live in parent template (wl-head) */
