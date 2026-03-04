@@ -188,8 +188,10 @@
   transition: opacity var(--duration-normal) var(--ease-out);
 }
 
-.group:has(a:hover, button:hover) .interactive {
-  opacity: var(--opacity-hover-dim);
+@media (hover: hover) and (pointer: fine) {
+  .group:has(a:hover, button:hover) .interactive {
+    opacity: var(--opacity-hover-dim);
+  }
 }
 
 .interactive:hover {
@@ -224,6 +226,14 @@
 
 .surface-inset {
   box-shadow: var(--depth-inset);
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .site-header {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: rgb(10 10 10 / 0.96);
+  }
 }
 
 @keyframes glitch {
@@ -775,27 +785,44 @@ body.pride {
 /*
   iOS touch WebKit fallback (CSS-only): fixed attachment can be partial/no-op.
   Keep the same gradients, but attach them to element scroll space for reliability.
+  Use stable viewport units where available so Safari toolbar show/hide does not
+  re-phase the gradient anchors while scrolling.
 */
 @media (hover: none) and (pointer: coarse) {
   @supports (-webkit-touch-callout: none) {
+    :root {
+      --ios-parallax-phase-ol: 22vh;
+      --ios-parallax-phase-rule: 46vh;
+      --ios-parallax-phase-pre: 64vh;
+      --ios-parallax-phase-hr: 82vh;
+    }
+
+    @supports (height: 1svh) {
+      :root {
+        --ios-parallax-phase-ol: 22svh;
+        --ios-parallax-phase-rule: 46svh;
+        --ios-parallax-phase-pre: 64svh;
+        --ios-parallax-phase-hr: 82svh;
+      }
+    }
 
     .prose :where(ol > li)::before {
       background-attachment: scroll, scroll;
       background-size: auto, 100vw 200vh;
-      background-position: 0 0, center 22vh;
+      background-position: 0 0, center var(--ios-parallax-phase-ol);
     }
 
     .prose :where(ol > li):not(:last-child)::after,
     .prose :where(blockquote)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center 46vh;
+      background-position: center var(--ios-parallax-phase-rule);
     }
 
     .prose :where(pre)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: left 64vh;
+      background-position: left var(--ios-parallax-phase-pre);
     }
 
     .prose :where(hr),
@@ -803,7 +830,7 @@ body.pride {
       background: var(--parallax-gradient-vertical);
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center 82vh;
+      background-position: center var(--ios-parallax-phase-hr);
     }
   }
 }
