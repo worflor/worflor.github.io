@@ -321,20 +321,26 @@
 /* Shared tool insights copy rhythm. */
 .insights-title {
   font-size: var(--text-lg);
-  font-weight: 700;
-  margin-bottom: var(--space-sm);
+  margin: 0;
+  color: rgb(var(--color-text-rgb) / 0.8);
   letter-spacing: -0.01em;
 }
 
 .insights-text {
   font-size: var(--text-sm);
-  opacity: 0.38;
-  line-height: 1.75;
-  margin-bottom: calc(var(--space-sm) * 0.85);
+  color: rgb(var(--color-text-rgb) / 0.44);
+  line-height: 1.65;
+  margin: 0;
 }
 
-.insights-text:last-of-type {
-  margin-bottom: 0;
+.insights-text strong {
+  color: rgb(var(--color-text-rgb) / 0.55);
+  font-weight: 500;
+}
+
+.insights-text em {
+  color: rgb(var(--color-text-rgb) / 0.65);
+  font-style: italic;
 }
 
 @media (hover: none) and (pointer: coarse) {

@@ -611,11 +611,8 @@ const seo = {
   /* ── Insights ───────────────────────────────────────────── */
 
   .lens-insights {
-    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
-    border-left: 2px solid rgb(var(--chromatic-cyan) / 0.18);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-    box-shadow: var(--edge-highlight);
+    display: grid;
+    gap: calc(var(--space-xs) * 0.9);
   }
 
   /* ── Action Bar ─────────────────────────────────────────── */
@@ -696,10 +693,6 @@ const seo = {
     .lens-preview-img,
     .lens-preview-video {
       max-height: clamp(10rem, 9rem + 6vw, 16rem);
-    }
-
-    .lens-insights {
-      padding: var(--space-sm);
     }
 
     .lens-summary {

@@ -992,11 +992,8 @@ const seo = {
   /* ── Insights ──────────────────────────────────────────────── */
 
   .prism-insights {
-    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
-    border-left: 2px solid rgb(var(--chromatic-cyan) / 0.18);
-    border-radius: var(--prism-radius);
-    padding: var(--space-md);
-    box-shadow: var(--edge-highlight);
+    display: grid;
+    gap: calc(var(--space-xs) * 0.9);
   }
 
   .prism-title-row {
@@ -1211,9 +1208,6 @@ const seo = {
       max-height: clamp(10rem, 9rem + 6vw, 16rem);
     }
 
-    .prism-insights {
-      padding: var(--space-sm);
-    }
   }
 
   /* ── Tablet ───────────────────────────────────────────────── */
