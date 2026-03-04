@@ -133,7 +133,7 @@ miss ***one frame*** and the model state diverges. the probability tables are wr
 
 this is frame ratcheting. the "key" isn't static. it's the evolving state of the codec itself, shaped by the handshake and every moment of the conversation. each frame is encrypted by the trajectory of everything before it. the conversation **encrypts itself**, and the bond deepens with every frame.
 
-that's where the name comes from. 絆 (kizuna) means bond in Japanese. the kind that strengthens over time.
+that's where the name comes from. 絆 (*kizuna*) means 'bond' in Japanese; the kind that strengthens over time.
 
 ### the full picture
 

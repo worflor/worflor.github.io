@@ -144,7 +144,7 @@
     var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
 
   /* parallax gradients */
-    --parallax-gradient-horizontal: linear-gradient(to right,
+  --parallax-gradient-horizontal: linear-gradient(to right,
       rgb(var(--chromatic-cyan)),
       rgb(var(--tool-action-load)),
       rgb(var(--chromatic-red)),
@@ -154,6 +154,7 @@
       rgb(var(--tool-action-load)),
       rgb(var(--chromatic-red)),
       rgb(var(--chromatic-cyan)));
+  /* fallback input for iOS touch WebKit parallax emulation (set in Layout.astro) */
   --ios-scroll-y: 0px;
 }
 
@@ -763,7 +764,13 @@ body.pride {
   background-size: 100vw 200vh;
 }
 
-/* iOS touch WebKit fallback: fixed attachment is still unreliable there */
+/*
+  iOS touch WebKit fallback — do not remove without real-device verification.
+  Why: background-attachment: fixed can be partial/no-op on iOS WebKit in
+  scroll scenarios, which collapses the intended scroll-reactive color phase.
+  Approach: keep the same gradients, but drive background-position from
+  --ios-scroll-y (updated in Layout.astro) so visuals remain dynamic.
+*/
 @media (hover: none) and (pointer: coarse) {
   @supports (-webkit-touch-callout: none) {
 

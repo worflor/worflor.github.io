@@ -107,29 +107,31 @@ const isContactPage = Astro.url.pathname === "/contact";
     updateLogoHint();
     setupLogoScroll();
 
-    // iOS touch WebKit: emulate fixed-background parallax via a scroll CSS variable
-    var isTouchWebKit = window.matchMedia('(hover: none) and (pointer: coarse)').matches
+    // Do not remove: iOS touch WebKit still has unreliable behavior for
+    // background-attachment: fixed on scrolled pages/containers.
+    // We keep the desktop effect everywhere else, and only emulate it here.
+    var needsIosParallaxFallback = window.matchMedia('(hover: none) and (pointer: coarse)').matches
       && !!(window.CSS && CSS.supports && CSS.supports('-webkit-touch-callout', 'none'));
 
-    if (isTouchWebKit) {
-      var proseTicking = false;
-      var proseRoot = document.documentElement;
+    if (needsIosParallaxFallback) {
+      var iosParallaxTicking = false;
+      var rootElement = document.documentElement;
 
-      function applyProseScroll() {
-        proseTicking = false;
-        proseRoot.style.setProperty('--ios-scroll-y', window.scrollY + 'px');
+      function applyIosParallaxScroll() {
+        iosParallaxTicking = false;
+        rootElement.style.setProperty('--ios-scroll-y', window.scrollY + 'px');
       }
 
-      function scheduleProseScroll() {
-        if (proseTicking) return;
-        proseTicking = true;
-        requestAnimationFrame(applyProseScroll);
+      function scheduleIosParallaxScroll() {
+        if (iosParallaxTicking) return;
+        iosParallaxTicking = true;
+        requestAnimationFrame(applyIosParallaxScroll);
       }
 
-      applyProseScroll();
-      window.addEventListener('scroll', scheduleProseScroll, { passive: true });
-      window.addEventListener('resize', scheduleProseScroll, { passive: true });
-      document.addEventListener('astro:after-swap', scheduleProseScroll);
+      applyIosParallaxScroll();
+      window.addEventListener('scroll', scheduleIosParallaxScroll, { passive: true });
+      window.addEventListener('resize', scheduleIosParallaxScroll, { passive: true });
+      document.addEventListener('astro:after-swap', scheduleIosParallaxScroll);
     }
 
     document.addEventListener("astro:before-preparation", prepareForNavigation);
