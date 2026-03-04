@@ -132,6 +132,13 @@ const isContactPage = Astro.url.pathname === "/contact";
       window.addEventListener('scroll', scheduleIosParallaxScroll, { passive: true });
       window.addEventListener('resize', scheduleIosParallaxScroll, { passive: true });
       document.addEventListener('astro:after-swap', scheduleIosParallaxScroll);
+      document.addEventListener('astro:page-load', scheduleIosParallaxScroll);
+
+      // Keep in sync through route lifecycle; some mobile WebKit transitions
+      // won't emit a useful scroll tick immediately after navigation.
+      document.addEventListener('astro:before-preparation', function() {
+        requestAnimationFrame(scheduleIosParallaxScroll);
+      });
     }
 
     document.addEventListener("astro:before-preparation", prepareForNavigation);
