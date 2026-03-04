@@ -26,12 +26,14 @@
   /* core colors */
   --color-bg: #0A0A0A;
   --color-text: #F5F5F5;
-  --color-text-rgb: 245 245 245; /* for rgba() usage */
+  --color-text-rgb: 245 245 245;
+  /* for rgba() usage */
   --color-border: #262626;
 
   /* typography */
   --font-body: "Inter", "Trebuchet MS", "Lucida Grande", "Lucida Sans Unicode", "Lucida Sans", Tahoma, sans-serif;
   --font-casual: "Comic Neue", "Comic Sans MS", cursive;
+  --font-mono: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* fluid sizes - scales smoothly without hardcoded breakpoints */
   --size-avatar-sm: clamp(2.25rem, 2rem + 1vw, 2.75rem);
@@ -57,7 +59,8 @@
   --text-3xl: clamp(2rem, 1.5rem + 2vw, 3rem);
 
   /* touch target minimum */
-  --touch-target: 2.75rem; /* 44px minimum for accessibility */
+  --touch-target: 2.75rem;
+  /* 44px minimum for accessibility */
 
   /* chromatic aberration */
   --chromatic-cyan: 0 255 255;
@@ -123,11 +126,11 @@
   --radius-full: 50%;
 
   /* ambient depth */
-  --ambient-vignette: radial-gradient(ellipse 80% 60% at 50% 30%, transparent 0%, transparent 50%, rgba(0, 0, 0, 0.4) 100%);
-  --surface-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.025) 0%, transparent 40%);
-  --edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-  --depth-inset: inset 0 1px 2px rgba(0, 0, 0, 0.2);
-  --glow-soft: 0 0 20px rgba(0, 255, 255, 0.04);
+  --ambient-vignette: radial-gradient(ellipse 80% 60% at 50% 30%, transparent 0%, transparent 50%, rgb(0 0 0 / 0.4) 100%);
+  --surface-sheen: linear-gradient(135deg, rgb(255 255 255 / 0.025) 0%, transparent 40%);
+  --edge-highlight: inset 0 1px 0 rgb(255 255 255 / 0.03);
+  --depth-inset: inset 0 1px 2px rgb(0 0 0 / 0.2);
+  --glow-soft: 0 0 20px rgb(0 255 255 / 0.04);
 
   /* chromatic shadows - reusable across components */
   --chromatic-shadow:
@@ -139,6 +142,13 @@
   --chromatic-text-shadow:
     calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
     var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
+
+  /* parallax gradients */
+  --parallax-gradient-vertical: linear-gradient(to bottom,
+      rgb(var(--chromatic-cyan)),
+      rgb(var(--tool-action-load)),
+      rgb(var(--chromatic-red)),
+      rgb(var(--chromatic-cyan)));
 }
 
 @supports (color: color-mix(in srgb, white, black)) {
@@ -172,8 +182,14 @@
   min-height: var(--touch-target);
   transition: opacity var(--duration-normal) var(--ease-out);
 }
-.group:has(a:hover, button:hover) .interactive { opacity: var(--opacity-hover-dim); }
-.interactive:hover { opacity: 1 !important; }
+
+.group:has(a:hover, button:hover) .interactive {
+  opacity: var(--opacity-hover-dim);
+}
+
+.interactive:hover {
+  opacity: 1 !important;
+}
 
 /* Typography utilities */
 .page-title {
@@ -206,37 +222,119 @@
 }
 
 @keyframes glitch {
-  0%, 3%, 5%, 12%, 15%, 22%, 26%, 32%, 41%, 48%, 51%, 62%, 65%, 78%, 80%, 100% { text-shadow: none; }
-  4% { text-shadow: -3px 0 0 rgb(var(--chromatic-cyan) / 0.8), 1px 0 0 rgb(var(--chromatic-red) / 0.6); }
-  13% { text-shadow: 3px 0 0 rgb(var(--chromatic-cyan) / 0.9), -3px 0 0 rgb(var(--chromatic-red) / 0.7); }
-  14% { text-shadow: -1px 1px 0 rgb(var(--chromatic-cyan) / 0.5), 3px -1px 0 rgb(var(--chromatic-red) / 0.5); }
-  23% { text-shadow: -3px 0 0 rgb(var(--chromatic-cyan) / 0.7), 3px 0 0 rgb(var(--chromatic-red) / 0.8); }
-  24% { text-shadow: 5px 1px 0 rgb(var(--chromatic-cyan)), -3px -1px 0 rgb(var(--chromatic-red) / 0.9); }
-  25% { text-shadow: -1px 0 0 rgb(var(--chromatic-cyan) / 0.4), 1px 0 0 rgb(var(--chromatic-red) / 0.4); }
-  33% { text-shadow: -5px -3px 0 rgb(var(--chromatic-cyan)), 5px 3px 0 rgb(var(--chromatic-red)); }
-  34% { text-shadow: 6px 0 0 rgb(var(--chromatic-cyan)), -5px 1px 0 rgb(var(--chromatic-red)); }
-  35% { text-shadow: -3px 3px 0 rgb(var(--chromatic-cyan) / 0.9), 5px -1px 0 rgb(var(--chromatic-red) / 0.8); }
-  36% { text-shadow: 3px -3px 0 rgb(var(--chromatic-cyan)), -5px 3px 0 rgb(var(--chromatic-red)); }
-  37% { text-shadow: -6px 1px 0 rgb(var(--chromatic-cyan)), 5px -3px 0 rgb(var(--chromatic-red) / 0.9); }
-  38% { text-shadow: 5px 3px 0 rgb(var(--chromatic-cyan) / 0.8), -3px -1px 0 rgb(var(--chromatic-red)); }
-  39% { text-shadow: -3px -1px 0 rgb(var(--chromatic-cyan) / 0.9), 5px 1px 0 rgb(var(--chromatic-red) / 0.8); }
-  40% { text-shadow: 3px 0 0 rgb(var(--chromatic-cyan) / 0.7), -3px 0 0 rgb(var(--chromatic-red) / 0.6); }
-  49% { text-shadow: -3px 0 0 rgb(var(--chromatic-cyan) / 0.7), 3px 1px 0 rgb(var(--chromatic-red) / 0.6); }
-  50% { text-shadow: 3px -1px 0 rgb(var(--chromatic-cyan) / 0.5), -1px 0 0 rgb(var(--chromatic-red) / 0.5); }
-  63% { text-shadow: -3px 0 0 rgb(var(--chromatic-cyan) / 0.5), 1px 0 0 rgb(var(--chromatic-red) / 0.4); }
-  64% { text-shadow: 1px 0 0 rgb(var(--chromatic-cyan) / 0.3), -1px 0 0 rgb(var(--chromatic-red) / 0.3); }
-  79% { text-shadow: -1px 0 0 rgb(var(--chromatic-cyan) / 0.3), 1px 0 0 rgb(var(--chromatic-red) / 0.2); }
+
+  0%,
+  3%,
+  5%,
+  12%,
+  15%,
+  22%,
+  26%,
+  32%,
+  41%,
+  48%,
+  51%,
+  62%,
+  65%,
+  78%,
+  80%,
+  100% {
+    text-shadow: none;
+  }
+
+  4% {
+    text-shadow: -3px 0 0 rgb(var(--chromatic-cyan) / 0.8), 1px 0 0 rgb(var(--chromatic-red) / 0.6);
+  }
+
+  13% {
+    text-shadow: 3px 0 0 rgb(var(--chromatic-cyan) / 0.9), -3px 0 0 rgb(var(--chromatic-red) / 0.7);
+  }
+
+  14% {
+    text-shadow: -1px 1px 0 rgb(var(--chromatic-cyan) / 0.5), 3px -1px 0 rgb(var(--chromatic-red) / 0.5);
+  }
+
+  23% {
+    text-shadow: -3px 0 0 rgb(var(--chromatic-cyan) / 0.7), 3px 0 0 rgb(var(--chromatic-red) / 0.8);
+  }
+
+  24% {
+    text-shadow: 5px 1px 0 rgb(var(--chromatic-cyan)), -3px -1px 0 rgb(var(--chromatic-red) / 0.9);
+  }
+
+  25% {
+    text-shadow: -1px 0 0 rgb(var(--chromatic-cyan) / 0.4), 1px 0 0 rgb(var(--chromatic-red) / 0.4);
+  }
+
+  33% {
+    text-shadow: -5px -3px 0 rgb(var(--chromatic-cyan)), 5px 3px 0 rgb(var(--chromatic-red));
+  }
+
+  34% {
+    text-shadow: 6px 0 0 rgb(var(--chromatic-cyan)), -5px 1px 0 rgb(var(--chromatic-red));
+  }
+
+  35% {
+    text-shadow: -3px 3px 0 rgb(var(--chromatic-cyan) / 0.9), 5px -1px 0 rgb(var(--chromatic-red) / 0.8);
+  }
+
+  36% {
+    text-shadow: 3px -3px 0 rgb(var(--chromatic-cyan)), -5px 3px 0 rgb(var(--chromatic-red));
+  }
+
+  37% {
+    text-shadow: -6px 1px 0 rgb(var(--chromatic-cyan)), 5px -3px 0 rgb(var(--chromatic-red) / 0.9);
+  }
+
+  38% {
+    text-shadow: 5px 3px 0 rgb(var(--chromatic-cyan) / 0.8), -3px -1px 0 rgb(var(--chromatic-red));
+  }
+
+  39% {
+    text-shadow: -3px -1px 0 rgb(var(--chromatic-cyan) / 0.9), 5px 1px 0 rgb(var(--chromatic-red) / 0.8);
+  }
+
+  40% {
+    text-shadow: 3px 0 0 rgb(var(--chromatic-cyan) / 0.7), -3px 0 0 rgb(var(--chromatic-red) / 0.6);
+  }
+
+  49% {
+    text-shadow: -3px 0 0 rgb(var(--chromatic-cyan) / 0.7), 3px 1px 0 rgb(var(--chromatic-red) / 0.6);
+  }
+
+  50% {
+    text-shadow: 3px -1px 0 rgb(var(--chromatic-cyan) / 0.5), -1px 0 0 rgb(var(--chromatic-red) / 0.5);
+  }
+
+  63% {
+    text-shadow: -3px 0 0 rgb(var(--chromatic-cyan) / 0.5), 1px 0 0 rgb(var(--chromatic-red) / 0.4);
+  }
+
+  64% {
+    text-shadow: 1px 0 0 rgb(var(--chromatic-cyan) / 0.3), -1px 0 0 rgb(var(--chromatic-red) / 0.3);
+  }
+
+  79% {
+    text-shadow: -1px 0 0 rgb(var(--chromatic-cyan) / 0.3), 1px 0 0 rgb(var(--chromatic-red) / 0.2);
+  }
 }
 
 body.glitch-active {
-  * { animation: glitch 3s var(--ease-out) forwards !important; }
-  &.glitch-loop * { animation: glitch 3s var(--ease-out) infinite !important; }
+  * {
+    animation: glitch 3s var(--ease-out) forwards !important;
+  }
+
+  &.glitch-loop * {
+    animation: glitch 3s var(--ease-out) infinite !important;
+  }
 
   @media (prefers-reduced-motion: reduce) {
-    &, &.glitch-loop * {
+
+    &,
+    &.glitch-loop * {
       animation: none;
       text-shadow: calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
-                   var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
+        var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
     }
   }
 }
@@ -245,14 +343,19 @@ body.invert {
   filter: invert(1) hue-rotate(180deg);
 }
 
-@keyframes logo-spin { to { transform: rotate(360deg); } }
+@keyframes logo-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 .logo-hint {
   position: relative;
   display: block;
   width: fit-content;
 
-  &::before, &::after {
+  &::before,
+  &::after {
     content: '';
     position: absolute;
     inset: -3px;
@@ -273,8 +376,13 @@ body.invert {
     opacity: 0;
   }
 
-  &:hover::before { opacity: 0; }
-  &:hover::after { opacity: 1; }
+  &:hover::before {
+    opacity: 0;
+  }
+
+  &:hover::after {
+    opacity: 1;
+  }
 
   /* Instant state change during navigation - no transition flicker */
   &.no-transition::before,
@@ -284,28 +392,406 @@ body.invert {
 }
 
 @keyframes pride-cycle {
-  0%, 8%, 100% { color: rgb(var(--pride-red)); }
-  16%, 24% { color: rgb(var(--pride-orange)); }
-  32%, 40% { color: rgb(var(--pride-yellow)); }
-  48%, 56% { color: rgb(var(--pride-green)); }
-  64%, 72% { color: rgb(var(--pride-blue)); }
-  80%, 92% { color: rgb(var(--pride-purple)); }
+
+  0%,
+  8%,
+  100% {
+    color: rgb(var(--pride-red));
+  }
+
+  16%,
+  24% {
+    color: rgb(var(--pride-orange));
+  }
+
+  32%,
+  40% {
+    color: rgb(var(--pride-yellow));
+  }
+
+  48%,
+  56% {
+    color: rgb(var(--pride-green));
+  }
+
+  64%,
+  72% {
+    color: rgb(var(--pride-blue));
+  }
+
+  80%,
+  92% {
+    color: rgb(var(--pride-purple));
+  }
 }
 
 body.pride {
   *:not(img):not(svg):not(video):not(canvas):not(iframe):not(picture):not(source) {
     animation: pride-cycle 6s ease-in-out infinite !important;
   }
-  *:nth-child(2n) { animation-delay: -0.4s !important; }
-  *:nth-child(3n) { animation-delay: -0.9s !important; }
-  *:nth-child(5n) { animation-delay: -1.6s !important; }
-  *:nth-child(7n) { animation-delay: -2.5s !important; }
-  *:nth-child(11n) { animation-delay: -3.6s !important; }
-  *:nth-child(13n) { animation-delay: -4.2s !important; }
+
+  *:nth-child(2n) {
+    animation-delay: -0.4s !important;
+  }
+
+  *:nth-child(3n) {
+    animation-delay: -0.9s !important;
+  }
+
+  *:nth-child(5n) {
+    animation-delay: -1.6s !important;
+  }
+
+  *:nth-child(7n) {
+    animation-delay: -2.5s !important;
+  }
+
+  *:nth-child(11n) {
+    animation-delay: -3.6s !important;
+  }
+
+  *:nth-child(13n) {
+    animation-delay: -4.2s !important;
+  }
+}
+
+/* ─── Tables ──────────────────────────────────────────────────────────────── */
+
+.prose :where(table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  margin-block: var(--space-md);
+}
+
+/* Header — reads as field labels, not data */
+.prose :where(thead tr) {
+  position: relative;
+  /* Horizontal fixed gradient — a static spectrum spanning the reading column */
+}
+
+.prose :where(thead tr)::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: var(--parallax-gradient-horizontal);
+  background-attachment: fixed;
+}
+
+.prose :where(thead th) {
+  padding: var(--space-xs) var(--space-sm);
+  text-align: left;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(var(--color-text-rgb) / 0.45);
+  white-space: nowrap;
+}
+
+/* Body rows — zebra stripes for instant scanability */
+.prose :where(tbody tr:nth-child(odd)) {
+  background: rgb(var(--color-text-rgb) / 0.025);
+}
+
+.prose :where(tbody tr) {
+  border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.06);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.prose :where(tbody tr:last-child) {
+  border-bottom: none;
+}
+
+.prose :where(tbody td) {
+  padding: var(--space-xs) var(--space-sm);
+  color: rgb(var(--color-text-rgb) / 0.85);
+  vertical-align: middle;
+}
+
+/* ─── Lists ───────────────────────────────────────────────────────────────── */
+
+/* Reset Tailwind's default ordered list styling */
+.prose :where(ol) {
+  list-style: none;
+  counter-reset: prose-ol;
+  padding-left: 0;
+  margin-block: var(--space-xl);
+}
+
+.prose :where(ol > li) {
+  position: relative;
+  counter-increment: prose-ol;
+  padding-left: 3rem;
+  margin-bottom: var(--space-xl);
+}
+
+/* Custom numbers acting as timeline nodes */
+.prose :where(ol > li)::before {
+  content: counter(prose-ol);
+  position: absolute;
+  left: 0;
+  top: -0.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  font-family: var(--font-casual);
+  font-weight: 700;
+  color: rgb(var(--color-text-rgb) / 0.5);
+  font-size: 1rem;
+  line-height: 1;
+  border-radius: var(--radius-full);
+  /* The gradient border trick: opaque center, gradient border, tied to the scroll position */
+  background:
+    linear-gradient(var(--color-bg), var(--color-bg)) padding-box,
+    var(--parallax-gradient-vertical) border-box;
+  background-attachment: scroll, fixed;
+  background-size: auto, 100vw 200vh;
+  border: 1px solid transparent;
+  z-index: 1;
+}
+
+/* Vertical timeline connecting the numbers */
+.prose :where(ol > li):not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: calc(1rem - 0.5px);
+  top: 2rem;
+  bottom: calc(-1 * var(--space-xl));
+  width: 1px;
+  background: var(--parallax-gradient-vertical);
+  background-attachment: fixed;
+  background-size: 100vw 200vh;
+  opacity: 0.6;
+}
+
+.prose :where(ul) {
+  padding-left: var(--space-md);
+}
+
+.prose :where(ul > li) {
+  margin-bottom: var(--space-sm);
+}
+
+.prose :where(ul > li)::marker {
+  color: rgb(var(--color-text-rgb) / 0.4);
+}
+
+/* ─── Blockquotes ─────────────────────────────────────────────────────────── */
+
+.prose :where(blockquote) {
+  position: relative;
+  margin-block: var(--space-md);
+  padding-block: var(--space-xs);
+  padding-left: var(--space-md);
+  padding-right: var(--space-sm);
+  border: none;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--color-bg);
+  box-shadow:
+    inset 0 2px 5px rgb(0 0 0 / 0.5),
+    inset 0 -1px 3px rgb(0 0 0 / 0.25);
+  font-style: normal;
+  color: rgb(var(--color-text-rgb) / 0.6);
+  overflow: hidden;
+}
+
+/* Parallax colour strip — gradient is fixed to viewport,
+   element scrolls through it, revealing different hues */
+.prose :where(blockquote)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: var(--parallax-gradient-vertical);
+  background-attachment: fixed;
+  background-size: 2px 100vh;
+  opacity: 0.7;
+}
+
+/* Drop the Tailwind-generated quotes around blockquote children */
+.prose :where(blockquote p:first-of-type)::before,
+.prose :where(blockquote p:last-of-type)::after {
+  content: none;
+}
+
+/* ─── Horizontal rule ─────────────────────────────────────────────────────── */
+
+.prose :where(hr) {
+  border: none;
+  height: 1px;
+  margin-block: var(--space-lg);
+  /* The line becomes a living horizontal slice of the vertical parallax.
+     As you scroll past, the color flows through the gap. */
+  background: var(--parallax-gradient-vertical);
+  background-attachment: fixed;
+  background-size: 100vw 200vh;
+  /* Slower, longer transition */
+  mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
+  opacity: 0.6;
+}
+
+/* ─── Code blocks ─────────────────────────────────────────────────────────── */
+
+/* Shiki wraps output in <pre><code>. Reset Shiki's inline bg so we control it. */
+.prose :where(pre) {
+  position: relative;
+  margin-block: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: #0e0e0e !important;
+  background-image: var(--surface-sheen) !important;
+  /* one step above page bg */
+  box-shadow:
+    var(--depth-inset),
+    var(--edge-highlight),
+    0 0 0 1px rgb(0 0 0 / 0.4);
+  overflow-x: auto;
+}
+
+/* Subtle, thick left accent that slowly shifts hue as the code block scrolls */
+.prose :where(pre)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  background: var(--parallax-gradient-vertical);
+  background-attachment: fixed;
+  background-size: 3px 150vh;
+  opacity: 0.35;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+}
+
+/* On-theme scrollbar — thin, unobtrusive */
+.prose :where(pre)::-webkit-scrollbar {
+  height: 4px;
+}
+
+.prose :where(pre)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.prose :where(pre)::-webkit-scrollbar-thumb {
+  background: rgb(var(--chromatic-cyan) / 0.2);
+  border-radius: var(--radius-full);
+}
+
+.prose :where(pre)::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--chromatic-cyan) / 0.4);
+}
+
+/* Override Shiki's per-span background to stay transparent */
+.prose :where(pre) .shiki,
+.prose :where(pre) code {
+  background: transparent !important;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+}
+
+/* Selection colour inside code blocks — stay on theme */
+.prose :where(pre) ::selection {
+  background: rgb(var(--chromatic-cyan) / 0.18);
+}
+
+/* ─── Typography Anchors ──────────────────────────────────────────────────── */
+
+/* Tame Tailwind's default pure #fff headings so they fit the ambient site contrast */
+.prose :where(h1, h2, h3, h4) {
+  color: var(--color-text);
+}
+
+.prose :where(h3) {
+  color: rgb(var(--color-text-rgb) / 0.9);
+}
+
+.prose :where(h4) {
+  color: rgb(var(--color-text-rgb) / 0.8);
+}
+
+.prose :where(strong) {
+  color: rgb(var(--color-text-rgb) / 0.95);
+  font-weight: 600;
+}
+
+/* Subtle shelf lines under headings to communicate hierarchy weight */
+.prose :where(h2, h3, h4) {
+  position: relative;
+  /* By snapping the bounding box to the text, we can use percentage widths 
+     on the pseudo-elements to scale them dynamically to character count! */
+  width: fit-content;
+  padding-bottom: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+
+.prose :where(h2, h3, h4)::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: var(--radius-full);
+
+  /* Tap into the vertical parallax gradient used for <hr>.
+     The line reveals the color of the gradient at its physical page location.
+     No distracting movement, just isomorphic color. */
+  background: var(--parallax-gradient-vertical);
+  background-attachment: fixed;
+  background-size: 100vw 200vh;
+}
+
+/* h2: spans the full length of the heading's actual text */
+.prose :where(h2)::after {
+  width: 100%;
+  opacity: 0.6;
+}
+
+/* h3: spans 60% of the text length */
+.prose :where(h3)::after {
+  width: 60%;
+  opacity: 0.4;
+}
+
+/* h4: spans 30% of the text length */
+.prose :where(h4)::after {
+  width: 30%;
+  opacity: 0.25;
+}
+
+/* Inline code — pill treatment, same vocabulary as borders/surfaces */
+.prose :where(:not(pre) > code) {
+  display: inline-block;
+  padding: 0.15em 0.45em;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: #0e0e0e;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  color: rgb(var(--chromatic-cyan) / 0.9);
+  box-shadow: var(--depth-inset);
+  transition: border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.prose :where(:not(pre) > code):hover {
+  border-color: rgb(var(--chromatic-cyan) / 0.3);
+  color: rgb(var(--chromatic-cyan));
 }
 
 /* Reduced motion: disable continuous decorative animations */
 @media (prefers-reduced-motion: reduce) {
+
   .logo-hint::before,
   .logo-hint::after {
     animation: none !important;

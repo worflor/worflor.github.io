@@ -293,13 +293,18 @@ const isContactPage = Astro.url.pathname === "/contact";
     <main id="main" class="pb-16">
       <slot />
     </main>
-    <footer class="border-t border-[var(--color-border)]">
+    <footer id="site-footer" class="border-t border-[var(--color-border)]" style="display: none;">
       <div class="content-section py-5 text-center">
         <p class="text-[length:var(--text-sm)] opacity-25">Patent Pending</p>
       </div>
     </footer>
     <script is:inline data-astro-rerun>
       (function() {
+        var footer = document.getElementById('site-footer');
+        if (footer && window.location.hostname.startsWith('whisper')) {
+          footer.style.display = 'block';
+        }
+
         var header = document.querySelector('.site-header');
         var breadcrumb = document.getElementById('header-breadcrumb');
         if (!(header instanceof HTMLElement)) return;

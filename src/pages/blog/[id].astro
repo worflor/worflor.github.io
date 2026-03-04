@@ -4,7 +4,13 @@ import { getCollection, getEntry, render } from "astro:content";
 import { Image } from "astro:assets";
 import ImageGallery from "../../components/ImageGallery.astro";
 import { identity } from "../../config";
-import { formatPostDate, getRelatedPosts, buildResonanceIndex, isComingSoon, getComingSoonLabel } from "../../utils/posts";
+import {
+  formatPostDate,
+  getRelatedPosts,
+  buildResonanceIndex,
+  isComingSoon,
+  getComingSoonLabel,
+} from "../../utils/posts";
 import BlogPostCard from "../../components/BlogPostCard.astro";
 
 export async function getStaticPaths() {
@@ -38,7 +44,9 @@ const relatedPosts = getRelatedPosts(id as string, allPosts, resonanceIndex);
   }}
 >
   <section class="mt-8 content-section">
-    <h1 class="font-bold text-[length:var(--text-3xl)] mb-4">{entry.data.title}</h1>
+    <h1 class="font-bold text-[length:var(--text-3xl)] mb-4">
+      {entry.data.title}
+    </h1>
     <p class="opacity-60 mb-[var(--space-md)]">
       {entry.data.description}
     </p>
@@ -56,43 +64,61 @@ const relatedPosts = getRelatedPosts(id as string, allPosts, resonanceIndex);
       <div class="min-w-0">
         <p class="font-medium">{entry.data.author || identity.name}</p>
         <p class="opacity-60 tabular-nums text-[length:var(--text-sm)]">
-          {isComingSoon(entry.data.pubDate) ? getComingSoonLabel(entry.data.pubDate) : formatPostDate(entry.data.pubDate)}{!isComingSoon(entry.data.pubDate) && remarkPluginFrontmatter?.minutesRead && <> · {remarkPluginFrontmatter.minutesRead}</>}
+          {
+            isComingSoon(entry.data.pubDate)
+              ? getComingSoonLabel(entry.data.pubDate)
+              : formatPostDate(entry.data.pubDate)
+          }{
+            !isComingSoon(entry.data.pubDate) &&
+              remarkPluginFrontmatter?.minutesRead && (
+                <> · {remarkPluginFrontmatter.minutesRead}</>
+              )
+          }
         </p>
       </div>
     </div>
-    {entry.data.images.length === 1 ? (
-      <Image
-        src={entry.data.images[0].url}
-        alt={entry.data.images[0].alt}
-        width={1200}
-        height={800}
-        loading="eager"
-        decoding="async"
-        class="w-full h-auto rounded-xl mb-[var(--space-lg)]"
-        transition:name={`blog-image-${id}`}
-      />
-    ) : (
-      <ImageGallery
-        images={entry.data.images.map(img => ({ src: img.url, alt: img.alt }))}
-        variant="scroll"
-        showIndicators={false}
-        class="mb-[var(--space-lg)]"
-        transitionName={`blog-image-${id}`}
-      />
-    )}
+    {
+      entry.data.images.length === 1 ? (
+        <Image
+          src={entry.data.images[0].url}
+          alt={entry.data.images[0].alt}
+          width={1200}
+          height={800}
+          loading="eager"
+          decoding="async"
+          class="w-full h-auto rounded-xl mb-[var(--space-lg)]"
+          transition:name={`blog-image-${id}`}
+        />
+      ) : (
+        <ImageGallery
+          images={entry.data.images.map((img) => ({
+            src: img.url,
+            alt: img.alt,
+          }))}
+          variant="scroll"
+          showIndicators={false}
+          class="mb-[var(--space-lg)]"
+          transitionName={`blog-image-${id}`}
+        />
+      )
+    }
     <article
-      class="prose prose-invert prose-a:text-blue-300 prose-a:underline-offset-4 prose-headings:mb-2 prose-p:opacity-70"
+      class="prose prose-invert prose-a:text-blue-300 prose-a:underline-offset-4 prose-headings:mb-2 prose-p:opacity-70 prose-pre:bg-transparent prose-pre:p-0 prose-pre:rounded-none prose-code:before:content-none prose-code:after:content-none prose-th:text-current prose-td:text-current prose-thead:border-b-0"
     >
       <Content />
     </article>
 
-    {relatedPosts.length > 0 && (
-      <aside class="mt-[var(--space-xl)] pt-[var(--space-lg)] border-t border-[var(--color-border)]">
-        <p class="opacity-60 mb-[var(--space-md)]">See also</p>
-        <div class="grid gap-[var(--space-md)]">
-          {relatedPosts.map((post) => <BlogPostCard post={post} />)}
-        </div>
-      </aside>
-    )}
+    {
+      relatedPosts.length > 0 && (
+        <aside class="mt-[var(--space-xl)] pt-[var(--space-lg)] border-t border-[var(--color-border)]">
+          <p class="opacity-60 mb-[var(--space-md)]">See also</p>
+          <div class="grid gap-[var(--space-md)]">
+            {relatedPosts.map((post) => (
+              <BlogPostCard post={post} />
+            ))}
+          </div>
+        </aside>
+      )
+    }
   </section>
 </Layout>

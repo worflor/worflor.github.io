@@ -858,7 +858,7 @@ const seo = {
           audio and video powered by Whisper Harmonic and Whisper Lumen media
           codecs, all encrypted with a Whisper Kizuna bond. what is that? it's
           encryption at a level that makes it impossible to decrypt without
-          <strong>preventing the handshake itself</strong>. a Kizuna bond, once
+          <strong><a href="/blog/whisper-codecs">preventing the handshake itself</a></strong>. a Kizuna bond, once
           sealed, is structurally exclusive. two seats, between two people. it's
           the best way to keep secrets safe in a world that wants to know
           everything.
@@ -2059,6 +2059,30 @@ const seo = {
   .insights-text strong {
     color: rgb(var(--color-text-rgb) / 0.55);
     font-weight: 500;
+  }
+
+  .insights-text a {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-thickness: 0.06em;
+    text-underline-offset: 0.12em;
+    text-decoration-color: rgb(var(--color-text-rgb) / 0.3);
+    transition: color 150ms ease, text-decoration-color 150ms ease;
+  }
+
+  .insights-text a:visited {
+    color: inherit;
+  }
+
+  .insights-text a:hover {
+    color: rgb(var(--color-text-rgb) / 0.68);
+    text-decoration-color: rgb(var(--color-text-rgb) / 0.5);
+  }
+
+  .insights-text a:focus-visible {
+    outline: 1px solid rgb(var(--color-text-rgb) / 0.45);
+    outline-offset: 2px;
+    border-radius: 2px;
   }
 
   .insights-text em {

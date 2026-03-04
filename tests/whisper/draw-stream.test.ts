@@ -9,6 +9,7 @@ import {
 } from "../../src/scripts/whisper/live-draw-stream.js";
 import {
   GlyphCodec,
+  GlyphMode,
   GlyphStreamEncoder,
   GlyphStreamDecoder,
   GLYPH_BLOCK_SIZE,
@@ -159,6 +160,29 @@ describe("live-draw-stream", () => {
       for (let i = 0; i < points.length; i++) {
         assert.equal(decoded[i], points[i], `exact mismatch at trial ${trial}, idx ${i}`);
       }
+    }
+  });
+
+  it("GlyphCodec prefers linear mode on perfectly linear trajectories", () => {
+    const pointCount = 2 + GLYPH_BLOCK_SIZE * 3;
+    const points = new Int32Array(pointCount * 3);
+
+    points[0] = 1200; points[1] = 2400; points[2] = 28000;
+    points[3] = 1250; points[4] = 2460; points[5] = 27920;
+
+    for (let i = 2; i < pointCount; i++) {
+      const idx = i * 3;
+      const prev = (i - 1) * 3;
+      const prev2 = (i - 2) * 3;
+      points[idx] = (points[prev] << 1) - points[prev2];
+      points[idx + 1] = (points[prev + 1] << 1) - points[prev2 + 1];
+      points[idx + 2] = Math.max(0, Math.min(32767, (points[prev + 2] << 1) - points[prev2 + 2]));
+    }
+
+    const blocks = GlyphCodec.encode(points);
+    assert.ok(blocks.length > 0);
+    for (const b of blocks) {
+      assert.equal(b.mode, GlyphMode.LINEAR, "linear trajectory should choose LINEAR mode");
     }
   });
 

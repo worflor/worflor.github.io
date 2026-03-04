@@ -61,6 +61,12 @@ class BitBuffer {
 }
 
 export class GlyphCodec {
+    private static estimateBlockBits(mode: GlyphMode, wPos: number, wPre: number, pointCount: number): number {
+        // Serialized layout:
+        // mode(1) + wPos(5) + wPre(5) + [harmonic coeffs 64] + count(5) + residual payload.
+        return 1 + 5 + 5 + (mode === GlyphMode.HARMONIC ? 64 : 0) + 5 + pointCount * (wPos + wPos + wPre);
+    }
+
     private static clampI16(v: number): number {
         if (v < -32768) return -32768;
         if (v > 32767) return 32767;
@@ -87,7 +93,13 @@ export class GlyphCodec {
             if (blockSize < 1) break;
             const harmonic = this.processBlock(points, i, blockSize, GlyphMode.HARMONIC);
             const linear = this.processBlock(points, i, blockSize, GlyphMode.LINEAR);
-            blocks.push(linear.errorSum < harmonic.errorSum ? linear.block : harmonic.block);
+            // Choose predictor by expected packed bit-cost, not residual sum alone.
+            // Tie-break toward lower error sum, then LINEAR (smaller header).
+            const chooseLinear =
+                linear.bitCost < harmonic.bitCost
+                || (linear.bitCost === harmonic.bitCost
+                    && linear.errorSum <= harmonic.errorSum);
+            blocks.push(chooseLinear ? linear.block : harmonic.block);
         }
         return blocks;
     }
@@ -115,7 +127,10 @@ export class GlyphCodec {
             maxPre = Math.max(maxPre, zp);
             errorSum += Math.abs(dr) + Math.abs(di) + Math.abs(dp);
         }
-        return { errorSum, block: { mode, kR, kI, gR, gI, wPos: 32 - Math.clz32(maxPos), wPre: 32 - Math.clz32(maxPre), residuals } as GlyphBlock };
+        const wPos = 32 - Math.clz32(maxPos);
+        const wPre = 32 - Math.clz32(maxPre);
+        const bitCost = this.estimateBlockBits(mode, wPos, wPre, len);
+        return { errorSum, bitCost, block: { mode, kR, kI, gR, gI, wPos, wPre, residuals } as GlyphBlock };
     }
 
     static decode(blocks: GlyphBlock[], seed1: [number, number, number], seed2: [number, number, number]): Int32Array {

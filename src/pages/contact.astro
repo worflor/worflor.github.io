@@ -44,7 +44,11 @@ import { contactPageContent } from "../config";
       <input type="hidden" name="_subject" value="New message from portfolio" />
 
       <!-- Redirect after submission -->
-      <input type="hidden" name="_next" value={`${Astro.url.origin}/contact?sent`} />
+      <input
+        type="hidden"
+        name="_next"
+        value={`${Astro.url.origin}/contact?sent`}
+      />
 
       <div class="flex flex-col gap-[var(--space-xs)]">
         <label for="name" class="text-[var(--text-sm)] opacity-70">Name</label>
@@ -102,54 +106,66 @@ import { contactPageContent } from "../config";
 
 <script is:inline data-astro-rerun>
   // Set data attrs before render
-  (function() {
+  (function () {
     var p = new URLSearchParams(location.search);
-    if (p.has('hey')) {
-      document.documentElement.dataset.hey = '';
-      document.querySelectorAll('[data-hey-placeholder]').forEach(function(el) {
-        el.placeholder = el.dataset.heyPlaceholder || '';
-      });
+    if (p.has("hey")) {
+      document.documentElement.dataset.hey = "";
+      document
+        .querySelectorAll("[data-hey-placeholder]")
+        .forEach(function (el) {
+          el.placeholder = el.dataset.heyPlaceholder || "";
+        });
     }
-    if (p.has('sent')) {
-      document.documentElement.dataset.sent = '';
-      history.replaceState({}, '', location.pathname);
+    if (p.has("sent")) {
+      document.documentElement.dataset.sent = "";
+      history.replaceState({}, "", location.pathname);
     }
-    document.documentElement.dataset.ready = '';
+    document.documentElement.dataset.ready = "";
   })();
 </script>
 
 <script>
-
   // Anti-spam
   const MIN_TIME_MS = 5000;
   const loadTime = Date.now();
   let interacted = false;
   const ctrl = new AbortController();
 
-  const onInteract = () => { interacted = true; ctrl.abort(); };
-  ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e =>
-    document.addEventListener(e, onInteract, { signal: ctrl.signal })
+  const onInteract = () => {
+    interacted = true;
+    ctrl.abort();
+  };
+  ["mousemove", "keydown", "touchstart", "click"].forEach((e) =>
+    document.addEventListener(e, onInteract, { signal: ctrl.signal }),
   );
 
-  const form = document.querySelector('form');
+  const form = document.querySelector("form");
   if (form instanceof HTMLFormElement) {
-    form.action = 'https://formsubmit.co/841f620dfbfbfdae899508762dca523e';
+    form.action = "https://formsubmit.co/841f620dfbfbfdae899508762dca523e";
 
-    form.addEventListener('submit', (e) => {
+    form.addEventListener("submit", (e) => {
       const hp1 = document.querySelector('input[name="website"]');
       const hp2 = document.querySelector('input[name="phone"]');
-      const hp1Value = hp1 instanceof HTMLInputElement ? hp1.value : '';
-      const hp2Value = hp2 instanceof HTMLInputElement ? hp2.value : '';
+      const hp1Value = hp1 instanceof HTMLInputElement ? hp1.value : "";
+      const hp2Value = hp2 instanceof HTMLInputElement ? hp2.value : "";
       const elapsed = Date.now() - loadTime;
 
       // Block spam
-      if (hp1Value || hp2Value || elapsed < MIN_TIME_MS || !interacted || navigator.webdriver) {
+      if (
+        hp1Value ||
+        hp2Value ||
+        elapsed < MIN_TIME_MS ||
+        !interacted ||
+        navigator.webdriver
+      ) {
         e.preventDefault();
         return;
       }
 
       // Remove honeypots before submit
-      document.querySelectorAll('input[name="website"], input[name="phone"]').forEach(el => el.remove());
+      document
+        .querySelectorAll('input[name="website"], input[name="phone"]')
+        .forEach((el) => el.remove());
     });
   }
 </script>
@@ -178,7 +194,7 @@ import { contactPageContent } from "../config";
 
   /* Chromatic line - single element with box-shadow for both colors */
   .sent-message::before {
-    content: '';
+    content: "";
     position: absolute;
     left: 0;
     top: 0;
@@ -188,12 +204,14 @@ import { contactPageContent } from "../config";
     box-shadow: -1px 0 0 rgb(var(--chromatic-red) / 0.7);
     transform-origin: top;
     will-change: transform;
-    animation: lineDown 0.6s var(--ease-spring) both !important;
+    /* Soft deliberate drop instead of a spring */
+    animation: lineDown 0.8s var(--ease-out) both !important;
   }
 
   .sent-message p {
     will-change: transform, opacity;
-    animation: textReveal 0.5s var(--ease-spring) 0.5s both !important;
+    /* Gentle dissolve instead of an aggressive slide */
+    animation: textReveal 0.8s var(--ease-out) 0.3s both !important;
   }
 
   @keyframes lineDown {
@@ -208,7 +226,7 @@ import { contactPageContent } from "../config";
   @keyframes textReveal {
     from {
       opacity: 0;
-      transform: translateX(-8px);
+      transform: translateX(-4px);
     }
     to {
       opacity: 0.7;
@@ -217,28 +235,40 @@ import { contactPageContent } from "../config";
   }
 
   /* Shared form control base */
-  .form-input, .form-submit {
-    background: transparent;
+  .form-input,
+  .form-submit {
+    background: var(--color-bg);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
     padding: var(--space-sm) var(--space-md);
     font-size: var(--text-base);
     color: var(--color-text);
     min-height: var(--touch-target);
-    box-shadow: var(--depth-inset);
-    transition: box-shadow var(--duration-normal) var(--ease-out),
-                border-color var(--duration-normal) var(--ease-out);
+    box-shadow:
+      inset 0 2px 5px rgba(0, 0, 0, 0.5),
+      inset 0 -1px 3px rgba(0, 0, 0, 0.25);
+    transition:
+      box-shadow var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
   }
 
-  .form-input:hover, .form-submit:hover {
+  .form-input:hover,
+  .form-submit:hover {
     border-color: rgb(var(--color-text-rgb) / 0.2);
-    box-shadow: var(--depth-inset), var(--chromatic-shadow);
+    box-shadow:
+      inset 0 2px 5px rgba(0, 0, 0, 0.5),
+      inset 0 -1px 3px rgba(0, 0, 0, 0.25),
+      var(--chromatic-shadow);
   }
 
-  .form-input:focus, .form-submit:focus-visible {
+  .form-input:focus,
+  .form-submit:focus-visible {
     outline: none;
     border-color: rgb(var(--color-text-rgb) / 0.3);
-    box-shadow: var(--depth-inset), var(--chromatic-shadow-lg);
+    box-shadow:
+      inset 0 2px 5px rgba(0, 0, 0, 0.5),
+      inset 0 -1px 3px rgba(0, 0, 0, 0.25),
+      var(--chromatic-shadow-lg);
   }
 
   /* Input-specific */
@@ -247,24 +277,33 @@ import { contactPageContent } from "../config";
     opacity: 0.5;
     transition: opacity var(--duration-normal) var(--ease-out);
   }
-  .form-input:hover::placeholder { opacity: 0.6; }
-  :global(html[data-hey]:not([data-ready])) .form-input::placeholder { opacity: 0; }
+  .form-input:hover::placeholder {
+    opacity: 0.6;
+  }
+  :global(html[data-hey]:not([data-ready])) .form-input::placeholder {
+    opacity: 0;
+  }
 
   /* Button-specific */
   .form-submit {
     cursor: pointer;
-    transition: box-shadow var(--duration-normal) var(--ease-out),
-                border-color var(--duration-normal) var(--ease-out),
-                background var(--duration-normal) var(--ease-out),
-                text-shadow var(--duration-normal) var(--ease-out),
-                transform var(--duration-fast) var(--ease-out);
+    transition:
+      box-shadow var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      text-shadow var(--duration-normal) var(--ease-out),
+      transform var(--duration-normal) var(--ease-out);
   }
   .form-submit:hover {
     background: rgb(var(--color-text-rgb) / 0.03);
-    text-shadow: var(--chromatic-text-shadow);
+    /* Softer glow rather than loud text-shadow bleed */
+    text-shadow:
+      calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.25),
+      var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / 0.25);
   }
   .form-submit:active {
-    transform: scale(var(--scale-active));
+    /* Minimal physical push so it feels heavy */
+    transform: scale(0.99);
     opacity: var(--opacity-muted);
   }
 </style>
