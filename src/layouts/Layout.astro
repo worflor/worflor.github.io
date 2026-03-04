@@ -107,40 +107,6 @@ const isContactPage = Astro.url.pathname === "/contact";
     updateLogoHint();
     setupLogoScroll();
 
-    // Do not remove: iOS touch WebKit still has unreliable behavior for
-    // background-attachment: fixed on scrolled pages/containers.
-    // We keep the desktop effect everywhere else, and only emulate it here.
-    var needsIosParallaxFallback = window.matchMedia('(hover: none) and (pointer: coarse)').matches
-      && !!(window.CSS && CSS.supports && CSS.supports('-webkit-touch-callout', 'none'));
-
-    if (needsIosParallaxFallback) {
-      var iosParallaxTicking = false;
-      var rootElement = document.documentElement;
-
-      function applyIosParallaxScroll() {
-        iosParallaxTicking = false;
-        rootElement.style.setProperty('--ios-scroll-y', window.scrollY + 'px');
-      }
-
-      function scheduleIosParallaxScroll() {
-        if (iosParallaxTicking) return;
-        iosParallaxTicking = true;
-        requestAnimationFrame(applyIosParallaxScroll);
-      }
-
-      applyIosParallaxScroll();
-      window.addEventListener('scroll', scheduleIosParallaxScroll, { passive: true });
-      window.addEventListener('resize', scheduleIosParallaxScroll, { passive: true });
-      document.addEventListener('astro:after-swap', scheduleIosParallaxScroll);
-      document.addEventListener('astro:page-load', scheduleIosParallaxScroll);
-
-      // Keep in sync through route lifecycle; some mobile WebKit transitions
-      // won't emit a useful scroll tick immediately after navigation.
-      document.addEventListener('astro:before-preparation', function() {
-        requestAnimationFrame(scheduleIosParallaxScroll);
-      });
-    }
-
     document.addEventListener("astro:before-preparation", prepareForNavigation);
     document.addEventListener("astro:after-swap", updateLogoHint);
     document.addEventListener("astro:after-swap", setupLogoScroll);

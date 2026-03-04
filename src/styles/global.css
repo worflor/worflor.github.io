@@ -154,8 +154,6 @@
       rgb(var(--tool-action-load)),
       rgb(var(--chromatic-red)),
       rgb(var(--chromatic-cyan)));
-  /* fallback input for iOS touch WebKit parallax emulation (set in Layout.astro) */
-  --ios-scroll-y: 0px;
 }
 
 @supports (color: color-mix(in srgb, white, black)) {
@@ -610,7 +608,7 @@ body.pride {
   height: 100%;
   background: var(--parallax-gradient-vertical);
   background-attachment: fixed;
-  background-size: 2px 100vh;
+  background-size: 100vw 200vh;
   opacity: 0.7;
 }
 
@@ -683,7 +681,7 @@ body.pride {
   width: 4px;
   background: var(--parallax-gradient-vertical);
   background-attachment: fixed;
-  background-size: 4px 150vh;
+  background-size: 100vw 200vh;
   opacity: 0.35;
   border-radius: var(--radius-lg) 0 0 var(--radius-lg);
   pointer-events: none;
@@ -775,11 +773,8 @@ body.pride {
 }
 
 /*
-  iOS touch WebKit fallback — do not remove without real-device verification.
-  Why: background-attachment: fixed can be partial/no-op on iOS WebKit in
-  scroll scenarios, which collapses the intended scroll-reactive color phase.
-  Approach: keep the same gradients, but drive background-position from
-  --ios-scroll-y (updated in Layout.astro) so visuals remain dynamic.
+  iOS touch WebKit fallback (CSS-only): fixed attachment can be partial/no-op.
+  Keep the same gradients, but attach them to element scroll space for reliability.
 */
 @media (hover: none) and (pointer: coarse) {
   @supports (-webkit-touch-callout: none) {
@@ -787,20 +782,20 @@ body.pride {
     .prose :where(ol > li)::before {
       background-attachment: scroll, scroll;
       background-size: auto, 100vw 200vh;
-      background-position: 0 0, center calc(var(--ios-scroll-y) * -1);
+      background-position: 0 0, center top;
     }
 
     .prose :where(ol > li):not(:last-child)::after,
     .prose :where(blockquote)::before {
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center calc(var(--ios-scroll-y) * -1);
+      background-position: center top;
     }
 
     .prose :where(pre)::before {
       background-attachment: scroll;
-      background-size: 4px 150vh;
-      background-position: left calc(var(--ios-scroll-y) * -1);
+      background-size: 100vw 200vh;
+      background-position: left top;
     }
 
     .prose :where(hr),
@@ -808,7 +803,7 @@ body.pride {
       background: var(--parallax-gradient-vertical);
       background-attachment: scroll;
       background-size: 100vw 200vh;
-      background-position: center calc(var(--ios-scroll-y) * -1);
+      background-position: center top;
     }
   }
 }
