@@ -478,7 +478,7 @@ body.pride {
   width: 100%;
   height: 1px;
   background: var(--parallax-gradient-horizontal);
-  background-attachment: fixed;
+  background-attachment: var(--prose-parallax-attachment, fixed);
 }
 
 .prose :where(thead th) {
@@ -550,7 +550,7 @@ body.pride {
   background:
     linear-gradient(var(--color-bg), var(--color-bg)) padding-box,
     var(--parallax-gradient-vertical) border-box;
-  background-attachment: scroll, fixed;
+  background-attachment: scroll, var(--prose-parallax-attachment, fixed);
   background-size: auto, 100vw 200vh;
   border: 1px solid transparent;
   z-index: 1;
@@ -565,7 +565,7 @@ body.pride {
   bottom: calc(-1 * var(--space-xl));
   width: 1px;
   background: var(--parallax-gradient-vertical);
-  background-attachment: fixed;
+  background-attachment: var(--prose-parallax-attachment, fixed);
   background-size: 100vw 200vh;
   opacity: 0.6;
 }
@@ -611,7 +611,7 @@ body.pride {
   width: 2px;
   height: 100%;
   background: var(--parallax-gradient-vertical);
-  background-attachment: fixed;
+  background-attachment: var(--prose-parallax-attachment, fixed);
   background-size: 2px 100vh;
   opacity: 0.7;
 }
@@ -646,7 +646,7 @@ body.pride {
   /* The line becomes a living horizontal slice of the vertical parallax.
      As you scroll past, the color flows through the gap. */
   background: var(--parallax-gradient-vertical);
-  background-attachment: fixed;
+  background-attachment: var(--prose-parallax-attachment, fixed);
   background-size: 100vw 200vh;
   /* Slower, longer transition */
   mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
@@ -682,7 +682,7 @@ body.pride {
   width: 3px;
   height: 100%;
   background: var(--parallax-gradient-vertical);
-  background-attachment: fixed;
+  background-attachment: var(--prose-parallax-attachment, fixed);
   background-size: 3px 150vh;
   opacity: 0.35;
   border-radius: var(--radius-lg) 0 0 var(--radius-lg);
@@ -762,7 +762,7 @@ body.pride {
      The line reveals the color of the gradient at its physical page location.
      No distracting movement, just isomorphic color. */
   background: var(--parallax-gradient-vertical);
-  background-attachment: fixed;
+  background-attachment: var(--prose-parallax-attachment, fixed);
   background-size: 100vw 200vh;
 }
 
@@ -782,6 +782,52 @@ body.pride {
 .prose :where(h4)::after {
   width: 30%;
   opacity: 0.25;
+}
+
+
+/* Browser-safe parallax color fallback chain for prose accents.
+   1) Prefer native fixed-attachment parallax where reliable.
+   2) If view-timelines exist, animate gradient position per-element (no JS).
+   3) On iOS/WebKit without either, keep colors vivid with oversized local gradients. */
+@keyframes prose-parallax-shift {
+  from { background-position-y: 0%; }
+  to { background-position-y: 100%; }
+}
+
+@supports (animation-timeline: view()) {
+  .prose :where(thead tr)::after,
+  .prose :where(ol > li)::before,
+  .prose :where(ol > li):not(:last-child)::after,
+  .prose :where(blockquote)::before,
+  .prose :where(hr),
+  .prose :where(pre)::before,
+  .prose :where(h2, h3, h4)::after {
+    --prose-parallax-attachment: scroll;
+    animation: prose-parallax-shift linear both;
+    animation-timeline: view(block);
+    animation-range: entry 0% exit 100%;
+  }
+}
+
+@supports not (animation-timeline: view()) {
+  @supports (-webkit-touch-callout: none) {
+    .prose :where(thead tr)::after,
+    .prose :where(ol > li):not(:last-child)::after,
+    .prose :where(blockquote)::before,
+    .prose :where(hr),
+    .prose :where(pre)::before,
+    .prose :where(h2, h3, h4)::after {
+      --prose-parallax-attachment: scroll;
+      background-size: 100vw 280vh;
+      background-position: 50% 28vh;
+    }
+
+    .prose :where(ol > li)::before {
+      --prose-parallax-attachment: scroll;
+      background-size: auto, 100vw 280vh;
+      background-position: 0 0, 50% 28vh;
+    }
+  }
 }
 
 /* Inline code — pill treatment, same vocabulary as borders/surfaces */
