@@ -1734,6 +1734,153 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return root;
   }
 
+  /**
+   * Render finalized peer draw content using the same visual shell as the
+   * streamed preview (thumb + draw canvas only), so stream->final merge does
+   * not introduce a layout jump.
+   */
+  function renderMergedPeerDrawMessage(
+    msg: LiveMessage,
+    abortSignal: AbortSignal,
+    aspectRatioHint?: string,
+    previewSnapshot?: HTMLCanvasElement | null,
+  ): HTMLElement | null {
+    if (msg.type !== "file" || !msg.fileData) return null;
+    const detected = detectMedia(msg);
+    if (!detected) return null;
+
+    const fileName = msg.fileName ?? "file";
+    const hintedAspect = (aspectRatioHint ?? "").trim();
+
+    if (detected.kind === "glyph") {
+      const glyphBytes = new Uint8Array(msg.fileData.byteLength);
+      glyphBytes.set(msg.fileData);
+      const glyph = parseGwyphPayload(glyphBytes);
+      if (!glyph) return null;
+
+      const root = document.createElement("div");
+      root.className = "wl-msg-media wl-msg-peer-draw";
+      root.dataset.drawState = "sent";
+
+      const thumb = document.createElement("div");
+      thumb.className = "wl-media-thumb wl-msg-peer-draw-thumb";
+      thumb.style.aspectRatio = hintedAspect || `${glyph.logicalW} / ${glyph.logicalH}`;
+
+      const canvas = document.createElement("canvas");
+      canvas.className = "wl-peer-draw-inline";
+      thumb.appendChild(canvas);
+
+      requestAnimationFrame(() => {
+        const dpr = devicePixelRatio || 1;
+        const rect = thumb.getBoundingClientRect();
+        const cw = Math.max(1, Math.round(rect.width));
+        const ch = Math.max(1, Math.round(rect.height));
+        canvas.width = Math.max(1, Math.round(cw * dpr));
+        canvas.height = Math.max(1, Math.round(ch * dpr));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        renderGwyphScene(ctx, glyph, cw, ch);
+      });
+
+      thumb.addEventListener("click", () => {
+        openMediaLightbox("", "", fileName, "glyph", glyph, glyphBytes);
+      }, { signal: abortSignal });
+
+      root.appendChild(thumb);
+      return root;
+    }
+
+    if (detected.kind !== "image") return null;
+
+    const blobBytes = new Uint8Array(msg.fileData);
+    const displayBlob = new Blob([blobBytes], { type: detected.mime });
+    const displayUrl = URL.createObjectURL(displayBlob);
+    objectUrls.add(displayUrl);
+    const dlBlob = new Blob([blobBytes], { type: "application/octet-stream" });
+    const dlUrl = URL.createObjectURL(dlBlob);
+    objectUrls.add(dlUrl);
+
+    const root = document.createElement("div");
+    root.className = "wl-msg-media wl-msg-peer-draw";
+    root.dataset.drawState = "sent";
+
+    const thumb = document.createElement("div");
+    thumb.className = "wl-media-thumb wl-msg-peer-draw-thumb";
+    if (hintedAspect) thumb.style.aspectRatio = hintedAspect;
+
+    const bgCanvas = document.createElement("canvas");
+    bgCanvas.className = "wl-peer-draw-bg";
+    bgCanvas.setAttribute("aria-hidden", "true");
+    const drawCanvas = document.createElement("canvas");
+    drawCanvas.className = "wl-peer-draw-inline";
+    drawCanvas.setAttribute("aria-hidden", "true");
+    thumb.append(bgCanvas, drawCanvas);
+
+    const paint = (img?: CanvasImageSource): void => {
+      const dpr = devicePixelRatio || 1;
+      const rect = thumb.getBoundingClientRect();
+      const cw = Math.max(1, Math.round(rect.width));
+      const ch = Math.max(1, Math.round(rect.height));
+      const targetW = Math.max(1, Math.round(cw * dpr));
+      const targetH = Math.max(1, Math.round(ch * dpr));
+
+      bgCanvas.width = targetW;
+      bgCanvas.height = targetH;
+      drawCanvas.width = targetW;
+      drawCanvas.height = targetH;
+
+      const bgCtx = bgCanvas.getContext("2d");
+      if (!bgCtx) return;
+      bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bgCtx.clearRect(0, 0, cw, ch);
+      bgCtx.fillStyle = "#1a1a1a";
+      bgCtx.fillRect(0, 0, cw, ch);
+      if (img) bgCtx.drawImage(img, 0, 0, cw, ch);
+
+      const fgCtx = drawCanvas.getContext("2d");
+      if (!fgCtx) return;
+      fgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      fgCtx.clearRect(0, 0, cw, ch);
+    };
+
+    paint(previewSnapshot ?? undefined);
+    const img = new Image();
+    img.onload = () => {
+      if (!hintedAspect && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        thumb.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+      }
+      requestAnimationFrame(() => paint(img));
+    };
+    img.onerror = () => paint();
+    img.src = displayUrl;
+
+    thumb.addEventListener("click", () => {
+      openMediaLightbox(displayUrl, dlUrl, fileName, "image");
+    }, { signal: abortSignal });
+
+    root.appendChild(thumb);
+    return root;
+  }
+
+  function capturePeerDrawThumbSnapshot(msgEl: HTMLElement | null): HTMLCanvasElement | null {
+    if (!msgEl) return null;
+    const bg = msgEl.querySelector<HTMLCanvasElement>("canvas.wl-peer-draw-bg");
+    const fg = msgEl.querySelector<HTMLCanvasElement>("canvas.wl-peer-draw-inline");
+    const source = fg ?? bg;
+    if (!source) return null;
+    const w = Math.max(1, source.width);
+    const h = Math.max(1, source.height);
+    const snap = document.createElement("canvas");
+    snap.width = w;
+    snap.height = h;
+    const ctx = snap.getContext("2d");
+    if (!ctx) return null;
+    if (bg) ctx.drawImage(bg, 0, 0, w, h);
+    if (fg) ctx.drawImage(fg, 0, 0, w, h);
+    return snap;
+  }
+
   /** Build the thumbnail container for an image or video. */
   function createMediaThumbnail(
     kind: MediaKind, src: string, alt: string, onError: () => void,
@@ -2661,6 +2808,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function addChatMessage(msg: LiveMessage): void {
     // Hide empty-state hint on first real message
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
+    const media = msg.type === "file" ? detectMedia(msg) : null;
 
     // If a streamed peer preview exists, replace it in-place with the finalized
     // message so it keeps the same visual location in the chat flow.
@@ -2680,6 +2828,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       )
         ? peerLiveMsgEl
         : null;
+    const replacePeerPreviewAspectRatio =
+      replacePeerPreview?.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb")?.style.aspectRatio ?? "";
+    const replacePeerPreviewSnapshot = capturePeerDrawThumbSnapshot(replacePeerPreview);
+    const mergePeerStreamFinal =
+      !!replacePeerPreview
+      && msg.direction === "peer"
+      && msg.type === "file"
+      && !!media
+      && (media.kind === "glyph" || media.kind === "image");
     const replacePreviewWasNearBottom = replacePeerPreview ? isNearBottom() : false;
     if (replacePeerPreview) {
       peerActiveStroke = null;
@@ -2687,6 +2844,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       peerStrokes = [];
       peerRedoStack = [];
       peerBaseAssembly = null;
+      peerStrokeSpaceW = 0;
+      peerStrokeSpaceH = 0;
       clearPeerBaseImage();
       peerBgCanvas?.remove();
       peerBgCanvas = null;
@@ -3005,8 +3164,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, { signal });
 
       div.appendChild(audioEl);
-    } else if (detectMedia(msg) !== null) {
-      div.appendChild(renderMediaMessage(msg, signal));
+    } else if (media !== null) {
+      const merged = mergePeerStreamFinal
+        ? renderMergedPeerDrawMessage(msg, signal, replacePeerPreviewAspectRatio, replacePeerPreviewSnapshot)
+        : null;
+      if (merged) {
+        div.appendChild(merged);
+      } else {
+        div.appendChild(renderMediaMessage(msg, signal));
+      }
     } else if (msg.type === "file") {
       const fileEl = document.createElement("div");
       fileEl.className = "wl-msg-file";
@@ -3226,6 +3392,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let peerActivePoints: Array<{ x: number; y: number; p: number }> = [];
   let peerStrokes: PeerStrokeRecord[] = [];
   let peerRedoStack: PeerStrokeRecord[] = [];
+  let peerStrokeSpaceW = 0;
+  let peerStrokeSpaceH = 0;
   let peerRafPending = false;
 
   function clamp01(v: number): number {
@@ -3353,6 +3521,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return peerCanvas ? peerCanvas.height / (devicePixelRatio || 1) : window.innerHeight;
   }
 
+  function peerStrokeWidthScale(W: number, H: number): number {
+    if (peerStrokeSpaceW <= 0 || peerStrokeSpaceH <= 0) return 1;
+    const sx = W / peerStrokeSpaceW;
+    const sy = H / peerStrokeSpaceH;
+    const s = Math.min(sx, sy);
+    if (!Number.isFinite(s)) return 1;
+    return Math.max(0.08, Math.min(8, s));
+  }
+
   function peerDrawSeg(
     ctx: CanvasRenderingContext2D,
     fromX: number, fromY: number,
@@ -3371,9 +3548,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function peerRenderStroke(
     ctx: CanvasRenderingContext2D,
     stroke: PeerStrokeRecord,
+    widthScale: number,
     W: number, H: number,
   ): void {
     if (stroke.points.length === 0) return;
+    const baseWidth = Math.max(0.1, stroke.width * widthScale);
     const pressureSens = stroke.tool !== "eraser";
     ctx.save();
     ctx.globalCompositeOperation = stroke.tool === "eraser" ? "destination-out" : "source-over";
@@ -3384,7 +3563,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     ctx.fillStyle = strokeColor;
     if (stroke.points.length === 1) {
       const pt = stroke.points[0];
-      const w = pressureSens ? stroke.width * (0.3 + pt.p * 0.7) : stroke.width;
+      const w = pressureSens ? baseWidth * (0.3 + pt.p * 0.7) : baseWidth;
       ctx.beginPath();
       ctx.arc(pt.x * W, pt.y * H, w / 2, 0, Math.PI * 2);
       ctx.fill();
@@ -3398,12 +3577,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const px = prev.x * W, py = prev.y * H;
       const cx2 = cur.x * W, cy2 = cur.y * H;
       const nmx = (px + cx2) * 0.5, nmy = (py + cy2) * 0.5;
-      peerDrawSeg(ctx, hasMid ? midX : px, hasMid ? midY : py, px, py, nmx, nmy, stroke.width, cur.p, pressureSens);
+      peerDrawSeg(ctx, hasMid ? midX : px, hasMid ? midY : py, px, py, nmx, nmy, baseWidth, cur.p, pressureSens);
       midX = nmx; midY = nmy; hasMid = true;
     }
     const last = stroke.points[stroke.points.length - 1];
     if (hasMid) {
-      peerDrawSeg(ctx, midX, midY, last.x * W, last.y * H, last.x * W, last.y * H, stroke.width, last.p, pressureSens);
+      peerDrawSeg(ctx, midX, midY, last.x * W, last.y * H, last.x * W, last.y * H, baseWidth, last.p, pressureSens);
     }
     ctx.restore();
   }
@@ -3434,15 +3613,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     const W = peerCanvasW();
     const H = peerCanvasH();
+    const widthScale = peerStrokeWidthScale(W, H);
     peerCtx.clearRect(0, 0, W, H);
-    for (const stroke of peerStrokes) peerRenderStroke(peerCtx, stroke, W, H);
+    for (const stroke of peerStrokes) peerRenderStroke(peerCtx, stroke, widthScale, W, H);
     if (peerActiveStroke && peerActivePoints.length > 0) {
       peerRenderStroke(peerCtx, {
         points: peerActivePoints,
         color: peerActiveStroke.color,
         width: peerActiveStroke.width,
         tool: peerActiveStroke.tool,
-      }, W, H);
+      }, widthScale, W, H);
     }
   }
 
@@ -3467,6 +3647,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     peerStrokes = [];
     peerRedoStack = [];
     peerBaseAssembly = null;
+    peerStrokeSpaceW = 0;
+    peerStrokeSpaceH = 0;
     clearPeerBaseImage();
     peerBgCanvas?.remove();
     peerBgCanvas = null;
@@ -3487,6 +3669,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     switch (ev.kind) {
       case "begin": {
         if (!isFiniteNorm(ev.start.x) || !isFiniteNorm(ev.start.y) || !isFinitePressure(ev.start.p)) break;
+        if (!peerBaseImage && !peerBaseAssembly) {
+          peerStrokeSpaceW = 0;
+          peerStrokeSpaceH = 0;
+        }
         removeLegacyPeerOverlays();
         ensurePeerCanvas();
         bringPeerPreviewToBottom();
@@ -3610,6 +3796,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         // matches the annotation content from the start, rather than defaulting
         // to the 4:3 CSS fallback and then jumping when the sent file arrives.
         if (ev.width > 0 && ev.height > 0) {
+          peerStrokeSpaceW = ev.width;
+          peerStrokeSpaceH = ev.height;
           const thumb = peerLiveMsgEl?.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
           if (thumb) {
             thumb.style.aspectRatio = `${ev.width} / ${ev.height}`;

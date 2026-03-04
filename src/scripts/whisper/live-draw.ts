@@ -1926,7 +1926,9 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const snapshotId = nextBaseSnapshotId & 0xffff;
     nextBaseSnapshotId = (nextBaseSnapshotId + 1) & 0xffff;
     const chunkCount = Math.max(1, Math.ceil(bytes.length / DRAW_BASE_STREAM_CHUNK_BYTES));
-    callbacks.onEvent({ kind: "base-start", snapshotId, width: outW, height: outH, mime, chunkCount });
+    // width/height represent the drawing-space dimensions used by streamed
+    // normalized points + stroke widths (not the transport snapshot pixel size).
+    callbacks.onEvent({ kind: "base-start", snapshotId, width: logicalW, height: logicalH, mime, chunkCount });
     for (let i = 0; i < chunkCount; i++) {
       if (ds.aborted || closed) return;
       const start = i * DRAW_BASE_STREAM_CHUNK_BYTES;
