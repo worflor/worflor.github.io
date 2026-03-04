@@ -39,8 +39,7 @@ the dimensions follow the Hurwitz sequence of normed division algebras:
 | 8 | O (octonions) | 255 | **Loup** |
 | 16 | S (sedenions) | 65,535 | **Kizuna** |
 
-[Hurwitz proved in 1898](https://doi.org/10.1007/978-3-0348-4160-3_39) that the algebraic sequence R → C → H → O closes at 8. octonions are the last normed division algebra. sedenions have zero divisors, so the algebraic structure breaks there.
-the Möbius formula doesn't care. it only needs the inclusion-exclusion identity, and that works in any dimension. the predictor survives past the algebraic boundary. the math *outlives* the structure it was born from.
+[Hurwitz proved in 1898](https://doi.org/10.1007/978-3-0348-4160-3_39) that the algebraic sequence R → C → H → O closes at 8. octonions are the last normed division algebra. sedenions have zero divisors, so the algebraic structure breaks there; however, the Möbius formula doesn't care. *it* only needs the inclusion-exclusion identity, and *that* works in any dimension. the predictor survives past the algebraic boundary. the math *outlives* the structure it was born from.
 
 this post covers three layers: Logos at 0D (entropy), Loup at 8D (spatial prediction), and Kizuna at 16D (the bond). the first two set the stage. Kizuna is the star.
 
@@ -48,7 +47,7 @@ this post covers three layers: Logos at 0D (entropy), Loup at 8D (spatial predic
 
 at zero dimensions there are no neighbors. no geometry. just a stream of bytes and the question: what comes next?
 
-Logos is an adaptive entropy coder with an **attention model** that ranks byte values by frequency and updates the ranking with every observation. it's learning the vocabulary. certain bytes show up constantly (the way your friend always says "honestly" before every opinion) and Logos starts assigning them shorter and shorter codes as it gets more confident. four coding strategies race on each block:
+Logos is an adaptive entropy coder with an ***attention*** **model** that ranks byte values by frequency and updates the ranking with every observation. it's learning the vocabulary. certain bytes show up constantly (the way your friend always says "honestly" before every opinion) and Logos starts assigning them shorter and shorter codes as it gets more confident. four coding strategies race on each block:
 
 - **Rice**: encodes the attention rank with an adaptive [Rice](https://en.wikipedia.org/wiki/Golomb_coding#Rice_coding) parameter. fast, simple.
 - **Bit0**: decomposes each byte into 8 binary decisions using a 255-node context tree. each node keeps its own adaptive probability with a [Laplace prior](https://doi.org/10.1515/JOS-2016-0026) of 2 (not 256), so the model converges dramatically faster on peaked distributions.
@@ -67,9 +66,9 @@ the 8D Möbius predictor sums over all *255* non-empty subsets of 8 dimensions, 
 P = Σ (-1)^(|S|+1) · f(neighbor_S)
 ```
 
-255 terms, grouped by binomial coefficient: +8, -28, +56, -70, +56, -28, +8, -1. same crowd-counting logic as before, just scaled up. add the 8 direct neighbors, subtract the 28 pairs, add the 56 triples, on and on through all 255 groups. they sum to exactly 1. the predictor is unbiased, and the error equals the discrete 8-form, which vanishes for any polynomial of degree ≤ 7.
+255 terms, grouped by binomial coefficient: +8, -28, +56, -70, +56, -28, +8, -1. same crowd-counting logic as before, just scaled up. add the 8 direct neighbors, subtract the 28 pairs, add the 56 triples, on and on through all 255 groups. they sum to exactly 1. the predictor is unbiased, and the error equals the discrete 8-form, which vanishes for any polynomial of degree ≤ 7. if your friend's train of thought takes up to seven sharp turns, Loup still knows exactly how the sentence ends. the element of surprise is mathematically zero; there is no guess needed.
 
-Loup uses an anti-causal variant that looks forward instead of backward, and this unlocks the **boundary theorem**. when any coordinate of a voxel sits at the block edge, the sum telescopes to the value itself. prediction is exact. residual is zero. *always*. regardless of the data. like a jigsaw piece at the edge of the puzzle: the flat sides constrain it so completely that there's only one thing it could be. no guessing required.
+Loup uses an anti-causal variant that looks forward instead of backward, and this unlocks the **boundary theorem**. when any coordinate of a voxel sits at the block edge, the sum telescopes to the value itself. prediction is exact. residual is zero. *always*. regardless of the data. like a jigsaw piece at the edge of the puzzle: the flat sides constrain it so completely that its identity is mathematical inevitability.
 
 at block size 4, the free-zero fraction is 1 - (3/4)⁸ = **89.99%**. almost 90% of every block is edge pieces. only 6,561 interior voxels out of 65,536 need actual computation.
 
