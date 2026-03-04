@@ -84,11 +84,11 @@ const seo = {
     </section>
 
     <!-- Actions -->
-    <div class="mirror-actions" role="group" aria-label="Mirror actions">
-      <button class="action-btn" id="action-copy">Copy</button>
-      <button class="action-btn" id="action-expand">Expand</button>
-      <button class="action-btn" id="action-collapse">Collapse</button>
-      <button class="action-btn" id="action-refresh">Rescan</button>
+    <div class="tool-actions-shell mirror-actions" role="group" aria-label="Mirror actions">
+      <button class="tool-action-btn action-btn" id="action-copy">Copy</button>
+      <button class="tool-action-btn action-btn" id="action-expand">Expand</button>
+      <button class="tool-action-btn action-btn" id="action-collapse">Collapse</button>
+      <button class="tool-action-btn action-btn" id="action-refresh">Rescan</button>
     </div>
   </div>
 
@@ -411,10 +411,6 @@ const seo = {
   /* ── Action Bar ──────────────────────────────────────────── */
 
   .mirror-actions {
-    position: fixed;
-    bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
-    left: 50%;
-    transform: translateX(-50%);
     display: flex;
     align-items: center;
     justify-content: flex-start;
@@ -423,16 +419,7 @@ const seo = {
     width: min(max-content, calc(100vw - (2 * clamp(0.75rem, 4vw, 1.5rem))));
     max-width: min(var(--content-width), 30rem);
     padding: var(--mirror-space-tight);
-    background: var(--tool-actionbar-bg);
-    -webkit-backdrop-filter: blur(16px) saturate(1.2);
-    backdrop-filter: blur(16px) saturate(1.2);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     border-radius: var(--radius-lg);
-    box-shadow:
-      var(--edge-highlight),
-      0 4px 20px rgba(0, 0, 0, 0.25);
-    z-index: 40;
-    white-space: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
@@ -443,33 +430,9 @@ const seo = {
     display: none;
   }
 
-  @supports not (
-    (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
-  ) {
-    .mirror-actions {
-      background: var(--tool-actionbar-bg-fallback);
-    }
-  }
-
   .action-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    min-height: var(--touch-target);
     min-width: 0;
-    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
-    background: transparent;
-    border: none;
     border-radius: var(--mirror-action-radius);
-    color: var(--color-text-muted);
-    font-family: var(--font-body);
-    font-size: var(--text-sm);
-    cursor: pointer;
-    white-space: nowrap;
-    transition:
-      background var(--duration-normal) var(--ease-out),
-      color var(--duration-normal) var(--ease-out);
   }
 
   .action-btn:hover {
@@ -1252,3 +1215,4 @@ const seo = {
     }
   }
 </style>
+

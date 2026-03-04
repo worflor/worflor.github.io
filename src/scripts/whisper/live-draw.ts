@@ -779,8 +779,6 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   function updateSwatchVisualState(btn: HTMLButtonElement, color: string | null): void {
     if (!color) {
       btn.classList.remove("--has-color");
-      btn.style.removeProperty("--swatch-sheen-alpha");
-      btn.style.removeProperty("--swatch-shade-alpha");
       btn.style.removeProperty("--swatch-ring-alpha");
       return;
     }
@@ -789,8 +787,6 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const s = hsv[1];
     const v = hsv[2];
     btn.classList.add("--has-color");
-    btn.style.setProperty("--swatch-sheen-alpha", (0.04 + (1 - s) * 0.5).toFixed(3));
-    btn.style.setProperty("--swatch-shade-alpha", ((1 - v) * 0.72).toFixed(3));
     btn.style.setProperty("--swatch-ring-alpha", (0.14 + (1 - v) * 0.34 + (1 - s) * 0.1).toFixed(3));
   }
 

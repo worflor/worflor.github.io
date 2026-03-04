@@ -271,16 +271,16 @@ const seo = {
     </section>
 
     <!-- ── Action Bar ─────────────────────────────────────────── -->
-    <div class="radar-actions" role="group" aria-label="Radar controls">
-      <button class="action-btn" id="radar-start" type="button">Run</button>
-      <button class="action-btn" id="radar-stop" type="button">Stop</button>
-      <button class="action-btn" id="radar-bt-scan" type="button"
+    <div class="tool-actions-shell radar-actions" role="group" aria-label="Radar controls">
+      <button class="tool-action-btn action-btn" id="radar-start" type="button">Run</button>
+      <button class="tool-action-btn action-btn" id="radar-stop" type="button">Stop</button>
+      <button class="tool-action-btn action-btn" id="radar-bt-scan" type="button"
         >BT LE Scan</button
       >
-      <button class="action-btn" id="radar-bt-pick" type="button"
+      <button class="tool-action-btn action-btn" id="radar-bt-pick" type="button"
         >BT Pair</button
       >
-      <button class="action-btn" id="radar-clear" type="button">Clear</button>
+      <button class="tool-action-btn action-btn" id="radar-clear" type="button">Clear</button>
     </div>
   </div>
 
@@ -851,23 +851,7 @@ const seo = {
   /* ── Fixed Action Bar ────────────────────────────────────────── */
 
   .radar-actions {
-    position: fixed;
-    bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
-    left: 50%;
-    transform: translateX(-50%);
-    display: inline-flex;
-    gap: calc(var(--space-xs) * 0.25);
-    padding: calc(var(--space-xs) * 0.7);
-    background: var(--tool-actionbar-bg);
-    -webkit-backdrop-filter: blur(16px) saturate(1.2);
-    backdrop-filter: blur(16px) saturate(1.2);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     border-radius: var(--radius-lg);
-    box-shadow:
-      var(--edge-highlight),
-      0 4px 20px rgba(0, 0, 0, 0.25);
-    z-index: 40;
-    white-space: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
@@ -884,33 +868,7 @@ const seo = {
   }
 
   .action-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    min-height: var(--touch-target);
-    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
-    background: transparent;
-    border: none;
     border-radius: calc(var(--radius-lg) * 0.625);
-    color: var(--color-text-muted);
-    font-family: var(--font-body);
-    font-size: var(--text-sm);
-    cursor: pointer;
-    white-space: nowrap;
-    touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
-    transition:
-      background var(--duration-normal) var(--ease-out),
-      color var(--duration-normal) var(--ease-out);
-  }
-
-  @supports not (
-    (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
-  ) {
-    .radar-actions {
-      background: var(--tool-actionbar-bg-fallback);
-    }
   }
 
   .action-btn:hover {
@@ -1114,3 +1072,4 @@ const seo = {
     }
   }
 </style>
+

@@ -231,6 +231,112 @@
   box-shadow: var(--depth-inset);
 }
 
+/* Shared tool action surfaces (Prism/Lens/Mirror/Radar/Whisper/Cage). */
+.tool-actions-shell {
+  position: fixed;
+  bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  gap: calc(var(--space-xs) * 0.25);
+  padding: calc(var(--space-xs) * 0.7);
+  background: var(--tool-actionbar-bg);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  backdrop-filter: blur(16px) saturate(1.2);
+  border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+  box-shadow:
+    var(--edge-highlight),
+    0 4px 20px rgb(0 0 0 / 0.25);
+  z-index: 40;
+  white-space: nowrap;
+}
+
+@supports not (
+  (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+) {
+  .tool-actions-shell {
+    background: var(--tool-actionbar-bg-fallback);
+  }
+}
+
+.tool-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-height: var(--touch-target);
+  padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background var(--duration-normal) var(--ease-out),
+    color var(--duration-normal) var(--ease-out);
+}
+
+/* Input-modality baseline for shared tool actions. */
+@media (hover: hover) and (pointer: fine) {
+  .tool-action-btn:hover:not(:disabled) {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: var(--color-text);
+  }
+}
+
+.tool-action-btn:active {
+  background: rgb(var(--color-text-rgb) / 0.1);
+}
+
+.tool-action-btn:focus-visible {
+  outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+  outline-offset: 1px;
+  color: var(--color-text);
+  background: rgb(var(--chromatic-cyan) / 0.08);
+}
+
+.tool-action-btn:disabled {
+  cursor: not-allowed;
+  color: rgb(var(--color-text-rgb) / 0.4);
+  background: transparent;
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .tool-action-btn:hover {
+    background: transparent;
+    color: var(--color-text-muted);
+  }
+
+  .tool-action-btn:active {
+    background: rgb(var(--color-text-rgb) / 0.1);
+    color: var(--color-text);
+  }
+}
+
+/* Shared tool insights copy rhythm. */
+.insights-title {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  margin-bottom: var(--space-sm);
+  letter-spacing: -0.01em;
+}
+
+.insights-text {
+  font-size: var(--text-sm);
+  opacity: 0.38;
+  line-height: 1.75;
+  margin-bottom: calc(var(--space-sm) * 0.85);
+}
+
+.insights-text:last-of-type {
+  margin-bottom: 0;
+}
+
 @media (hover: none) and (pointer: coarse) {
   .site-header {
     backdrop-filter: none;

@@ -424,15 +424,6 @@ export function buildLensHandoffUrl(token: string): string {
   return url.toString();
 }
 
-export function buildCageHandoffUrl(token: string): string {
-  const cleanToken = token.trim();
-  const url = new URL(window.location.href);
-  url.pathname = "/cage";
-  url.searchParams.set(HANDOFF_QUERY_PARAM, cleanToken);
-  url.hash = "";
-  return url.toString();
-}
-
 export function getHandoffTokenFromCurrentUrl(): string | null {
   try {
     const url = new URL(window.location.href);

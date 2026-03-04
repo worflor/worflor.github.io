@@ -282,31 +282,31 @@ const seo = {
 
     <!-- ── Action Bar ────────────────────────────────────────── -->
     <div
-      class="prism-actions"
+      class="tool-actions-shell prism-actions"
       id="prism-actions"
       role="group"
       aria-label="Prism controls"
       style="display:none;opacity:0"
     >
       <button
-        class="action-btn action-btn--primary"
+        class="tool-action-btn action-btn action-btn--primary"
         id="prism-btn-run"
         type="button">Run</button
       >
       <button
-        class="action-btn"
+        class="tool-action-btn action-btn"
         id="prism-btn-cancel"
         type="button"
         style="display:none">Cancel</button
       >
       <button
-        class="action-btn"
+        class="tool-action-btn action-btn"
         id="prism-btn-upload"
         type="button"
         style="display:none">New File</button
       >
       <button
-        class="action-btn action-btn--icon"
+        class="tool-action-btn action-btn action-btn--icon"
         id="prism-btn-lens"
         type="button"
         style="display:none"
@@ -331,7 +331,7 @@ const seo = {
           <line x1="21" y1="12" x2="23" y2="12"></line>
         </svg>
       </button>
-      <button class="action-btn" id="prism-btn-clear" type="button"
+      <button class="tool-action-btn action-btn" id="prism-btn-clear" type="button"
         >Clear</button
       >
     </div>
@@ -999,24 +999,6 @@ const seo = {
     box-shadow: var(--edge-highlight);
   }
 
-  .insights-title {
-    font-size: var(--text-lg);
-    font-weight: 700;
-    margin-bottom: var(--space-sm);
-    letter-spacing: -0.01em;
-  }
-
-  .insights-text {
-    font-size: var(--text-sm);
-    opacity: 0.38;
-    line-height: 1.75;
-    margin-bottom: calc(var(--space-sm) * 0.85);
-  }
-
-  .insights-text:last-of-type {
-    margin-bottom: 0;
-  }
-
   .prism-title-row {
     display: flex;
     align-items: center;
@@ -1026,23 +1008,7 @@ const seo = {
   /* ── Action Bar ────────────────────────────────────────────── */
 
   .prism-actions {
-    position: fixed;
-    bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
-    left: 50%;
-    transform: translateX(-50%);
-    display: inline-flex;
-    gap: calc(var(--space-xs) * 0.25);
-    padding: calc(var(--space-xs) * 0.7);
-    background: var(--tool-actionbar-bg);
-    -webkit-backdrop-filter: blur(16px) saturate(1.2);
-    backdrop-filter: blur(16px) saturate(1.2);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     border-radius: var(--prism-radius);
-    box-shadow:
-      var(--edge-highlight),
-      0 4px 20px rgba(0, 0, 0, 0.25);
-    z-index: 40;
-    white-space: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
@@ -1059,34 +1025,8 @@ const seo = {
     display: none;
   }
 
-  @supports not (
-    (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
-  ) {
-    .prism-actions {
-      background: var(--tool-actionbar-bg-fallback);
-    }
-  }
-
   .action-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    min-height: var(--touch-target);
-    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
-    background: transparent;
-    border: none;
     border-radius: calc(var(--prism-radius) * 0.625);
-    color: var(--color-text-muted);
-    font-family: var(--font-body);
-    font-size: var(--text-sm);
-    cursor: pointer;
-    white-space: nowrap;
-    touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
-    transition:
-      background var(--duration-normal) var(--ease-out),
-      color var(--duration-normal) var(--ease-out);
   }
 
   .action-btn:hover {
@@ -2481,3 +2421,4 @@ const seo = {
     }
   }
 </style>
+

@@ -878,23 +878,23 @@ const seo = {
 
     <!-- ── Fixed Action Bar (hidden until carrier loaded) ──── -->
     <div
-      class="whisper-actions whisper-section--solo"
+      class="tool-actions-shell whisper-actions whisper-section--solo"
       id="whisper-actions"
       role="group"
       aria-label="Whisper controls"
       style="display:none;opacity:0"
     >
       <button
-        class="action-btn action-btn--primary"
+        class="tool-action-btn action-btn action-btn--primary"
         id="whisper-action-run"
         type="button"
         disabled>Embed</button
       >
-      <button class="action-btn" id="whisper-action-upload" type="button"
+      <button class="tool-action-btn action-btn" id="whisper-action-upload" type="button"
         >New File</button
       >
       <button
-        class="action-btn action-btn--icon"
+        class="tool-action-btn action-btn action-btn--icon"
         id="whisper-action-lens"
         type="button"
         aria-label="View with Lens"
@@ -920,7 +920,7 @@ const seo = {
         </svg>
       </button>
       <button
-        class="action-btn"
+        class="tool-action-btn action-btn"
         id="whisper-action-clear"
         type="button"
         disabled>Clear</button
@@ -2092,23 +2092,7 @@ const seo = {
 
   /* ── Fixed Action Bar ──────────────────────────────────── */
   .whisper-actions {
-    position: fixed;
-    bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
-    left: 50%;
-    transform: translateX(-50%);
-    display: inline-flex;
-    gap: calc(var(--space-xs) * 0.25);
-    padding: calc(var(--space-xs) * 0.7);
-    background: var(--tool-actionbar-bg);
-    -webkit-backdrop-filter: blur(16px) saturate(1.2);
-    backdrop-filter: blur(16px) saturate(1.2);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     border-radius: var(--whisper-radius);
-    box-shadow:
-      var(--edge-highlight),
-      0 4px 20px rgba(0, 0, 0, 0.25);
-    z-index: 40;
-    white-space: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
@@ -2126,25 +2110,7 @@ const seo = {
   }
 
   .action-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    min-height: var(--touch-target);
-    padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
-    background: transparent;
-    border: none;
     border-radius: calc(var(--whisper-radius) * 0.625);
-    color: var(--color-text-muted);
-    font-family: var(--font-body);
-    font-size: var(--text-sm);
-    cursor: pointer;
-    white-space: nowrap;
-    touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
-    transition:
-      background var(--duration-normal) var(--ease-out),
-      color var(--duration-normal) var(--ease-out);
   }
 
   .action-btn--primary {
@@ -2221,14 +2187,6 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.38);
     background: transparent;
     opacity: 1;
-  }
-
-  @supports not (
-    (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
-  ) {
-    .whisper-actions {
-      background: var(--tool-actionbar-bg-fallback);
-    }
   }
 
   /* ── Responsive ────────────────────────────────────────── */
@@ -3490,3 +3448,4 @@ const seo = {
     });
   })();
 </script>
+
