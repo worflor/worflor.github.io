@@ -154,6 +154,7 @@
       rgb(var(--tool-action-load)),
       rgb(var(--chromatic-red)),
       rgb(var(--chromatic-cyan)));
+  --ios-scroll-y: 0px;
 }
 
 @supports (color: color-mix(in srgb, white, black)) {
@@ -768,24 +769,24 @@ body.pride {
 
     .prose :where(ol > li)::before {
       background-attachment: scroll, scroll;
-      background-size: auto, 100% 220%;
-      background-position: 0 0, center 35%;
+      background-size: auto, 100vw 200vh;
+      background-position: 0 0, center calc(var(--ios-scroll-y) * -1);
     }
 
     .prose :where(ol > li):not(:last-child)::after,
     .prose :where(blockquote)::before,
     .prose :where(pre)::before {
       background-attachment: scroll;
-      background-size: 100% 220%;
-      background-position: center 35%;
+      background-size: 100vw 200vh;
+      background-position: center calc(var(--ios-scroll-y) * -1);
     }
 
     .prose :where(hr),
     .prose :where(h2, h3, h4)::after {
-      background: var(--parallax-gradient-horizontal);
+      background: var(--parallax-gradient-vertical);
       background-attachment: scroll;
-      background-size: 100% 100%;
-      background-position: center;
+      background-size: 100vw 200vh;
+      background-position: center calc(var(--ios-scroll-y) * -1);
     }
   }
 }

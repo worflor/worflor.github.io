@@ -107,6 +107,31 @@ const isContactPage = Astro.url.pathname === "/contact";
     updateLogoHint();
     setupLogoScroll();
 
+    // iOS touch WebKit: emulate fixed-background parallax via a scroll CSS variable
+    var isTouchWebKit = window.matchMedia('(hover: none) and (pointer: coarse)').matches
+      && !!(window.CSS && CSS.supports && CSS.supports('-webkit-touch-callout', 'none'));
+
+    if (isTouchWebKit) {
+      var proseTicking = false;
+      var proseRoot = document.documentElement;
+
+      function applyProseScroll() {
+        proseTicking = false;
+        proseRoot.style.setProperty('--ios-scroll-y', window.scrollY + 'px');
+      }
+
+      function scheduleProseScroll() {
+        if (proseTicking) return;
+        proseTicking = true;
+        requestAnimationFrame(applyProseScroll);
+      }
+
+      applyProseScroll();
+      window.addEventListener('scroll', scheduleProseScroll, { passive: true });
+      window.addEventListener('resize', scheduleProseScroll, { passive: true });
+      document.addEventListener('astro:after-swap', scheduleProseScroll);
+    }
+
     document.addEventListener("astro:before-preparation", prepareForNavigation);
     document.addEventListener("astro:after-swap", updateLogoHint);
     document.addEventListener("astro:after-swap", setupLogoScroll);
