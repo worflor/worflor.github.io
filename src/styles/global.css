@@ -57,6 +57,9 @@
   --text-xl: clamp(1.5rem, 1.25rem + 1vw, 2rem);
   --text-2xl: clamp(1.75rem, 1.5rem + 1.25vw, 2.5rem);
   --text-3xl: clamp(2rem, 1.5rem + 2vw, 3rem);
+  /* UI copy scale - never below iOS focus-zoom threshold on touch devices */
+  --text-ui-sm: clamp(0.95rem, 0.9rem + 0.2vw, 1rem);
+  --text-ui-base: clamp(1rem, 0.95rem + 0.25vw, 1.1rem);
 
   /* touch target minimum */
   --touch-target: 2.75rem;
@@ -184,6 +187,18 @@
   container-type: inline-size;
 }
 
+/* Keep control typography predictable and prevent iOS focus zoom. */
+:where(input, textarea, select) {
+  font-size: var(--text-ui-base);
+  line-height: 1.4;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  :where(input, textarea, select) {
+    font-size: 16px !important;
+  }
+}
+
 /* Interactive elements - dims siblings on hover, pops on own hover */
 .interactive {
   opacity: var(--opacity-muted);
@@ -270,7 +285,7 @@
   border: none;
   color: var(--color-text-muted);
   font-family: var(--font-body);
-  font-size: var(--text-sm);
+  font-size: var(--text-ui-sm);
   cursor: pointer;
   white-space: nowrap;
   touch-action: manipulation;
