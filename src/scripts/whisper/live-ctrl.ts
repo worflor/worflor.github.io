@@ -2,10 +2,11 @@
  * Whisper Live — control protocol (CTRL frames).
  *
  * Opcode ranges:
- *   0x01–0x7F  no-payload signals  (bit 7 = 0)
- *     0x01–0x0F  history/storage    CLEAR_VOTE, CLEAR_CANCEL
- *     0x03–0x04  campfire voting
- *     0x10–0x1F  presence/status    (future)
+ *   0x01–0x7F  signals  (bit 7 = 0)
+ *     0x01  VOTE     [topic:1B]  — cast vote for topic
+ *     0x02  CANCEL   [topic:1B]  — retract vote for topic
+ *       topic 0x01 = clear history, 0x02 = campfire
+ *     0x20  STREAM_STATE  [flags:1B]  — bit0=audio, bit1=video, bit2=screen
  *     0x30–0x3F  session policy     (future)
  *   0x80–0xFF  payload-bearing ops (bit 7 = 1)
  *     0x81  SEEN    [msgId:4B LE]
@@ -24,14 +25,18 @@
  */
 
 export const CTRL_OP = {
-  CLEAR_VOTE: 0x01,
-  CLEAR_CANCEL: 0x02,
-  CAMPFIRE_VOTE: 0x03,
-  CAMPFIRE_CANCEL: 0x04,
+  VOTE: 0x01,    // payload: [topic:1B]
+  CANCEL: 0x02,  // payload: [topic:1B]
+  STREAM_STATE: 0x20, // payload: [flags:1B] bit0=audio, bit1=video, bit2=screen, 0x00=off
   SEEN: 0x81,  // payload: [msgId:4B LE]
   REACT: 0x82,  // payload: [msgId:4B LE][emoji:utf8]
   UNREACT: 0x83,  // payload: [msgId:4B LE][emoji:utf8]
   DRAW_STREAM: 0x90, // payload: draw-stream binary frame (live-draw-stream.ts)
+} as const;
+
+export const VOTE_TOPIC = {
+  CLEAR: 0x01,
+  CAMPFIRE: 0x02,
 } as const;
 
 /* ── Wire format ─────────────────────────────────────────── */
@@ -216,6 +221,27 @@ export class VoteTopic {
   private _clearTimer(): void {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
   }
+}
+
+/* ── Stream state ───────────────────────────────────────── */
+
+export const STREAM_FLAG = {
+  AUDIO: 0x01,
+  VIDEO: 0x02,
+  SCREEN: 0x04,
+} as const;
+
+export function encodeStreamState(flags: number): Uint8Array {
+  return new Uint8Array([flags & 0xFF]);
+}
+
+export function decodeStreamState(payload: Uint8Array): { audio: boolean; video: boolean; screen: boolean } | null {
+  if (payload.length < 1) return null;
+  return {
+    audio: (payload[0] & STREAM_FLAG.AUDIO) !== 0,
+    video: (payload[0] & STREAM_FLAG.VIDEO) !== 0,
+    screen: (payload[0] & STREAM_FLAG.SCREEN) !== 0,
+  };
 }
 
 /* ── SEEN / REACT payload encoding ───────────────────────── */

@@ -16,7 +16,7 @@ import {
 import { encodeAdpcm, decodeAdpcm } from "./live-wasm-audio";
 import { dcBlock, inverseDcBlock, wavFromPcm } from "./live-audio-dsp";
 import {
-  CTRL_OP, VoteTopic,
+  CTRL_OP, VOTE_TOPIC, VoteTopic,
   encodeSeenPayload, decodeSeenPayload,
   encodeReactPayload, decodeReactPayload,
 } from "./live-ctrl";
@@ -732,10 +732,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function handleCtrl(opcode: number, payload: Uint8Array): void {
     switch (opcode) {
-      case CTRL_OP.CLEAR_VOTE: clearVote.receivePeer(); break;
-      case CTRL_OP.CLEAR_CANCEL: clearVote.cancelPeer(); break;
-      case CTRL_OP.CAMPFIRE_VOTE: campfireVote.receivePeer(); break;
-      case CTRL_OP.CAMPFIRE_CANCEL: campfireVote.cancelPeer(); break;
+      case CTRL_OP.VOTE: {
+        const topic = payload.length >= 1 ? payload[0] : 0;
+        if (topic === VOTE_TOPIC.CLEAR) clearVote.receivePeer();
+        else if (topic === VOTE_TOPIC.CAMPFIRE) campfireVote.receivePeer();
+        break;
+      }
+      case CTRL_OP.CANCEL: {
+        const topic = payload.length >= 1 ? payload[0] : 0;
+        if (topic === VOTE_TOPIC.CLEAR) clearVote.cancelPeer();
+        else if (topic === VOTE_TOPIC.CAMPFIRE) campfireVote.cancelPeer();
+        break;
+      }
       case CTRL_OP.SEEN: {
         const msgId = decodeSeenPayload(payload);
         if (msgId !== null) markSeen(msgId);
@@ -4952,11 +4960,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     if (campfireVote.state === "pending-out") {
       campfireVote.cancelLocal();
-      session.sendCtrl(CTRL_OP.CAMPFIRE_CANCEL);
+      session.sendCtrl(CTRL_OP.CANCEL, new Uint8Array([VOTE_TOPIC.CAMPFIRE]));
       return;
     }
     if (campfireVote.localVoted) return;
-    session.sendCtrl(CTRL_OP.CAMPFIRE_VOTE);
+    session.sendCtrl(CTRL_OP.VOTE, new Uint8Array([VOTE_TOPIC.CAMPFIRE]));
     campfireVote.castLocal();
   }, { signal });
 
@@ -5527,11 +5535,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     if (clearVote.state === "pending-out") {
       clearVote.cancelLocal();
-      session.sendCtrl(CTRL_OP.CLEAR_CANCEL);
+      session.sendCtrl(CTRL_OP.CANCEL, new Uint8Array([VOTE_TOPIC.CLEAR]));
       return;
     }
     if (clearVote.localVoted) return;
-    session.sendCtrl(CTRL_OP.CLEAR_VOTE);
+    session.sendCtrl(CTRL_OP.VOTE, new Uint8Array([VOTE_TOPIC.CLEAR]));
     clearVote.castLocal();
   }, { signal });
 

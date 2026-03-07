@@ -45,7 +45,7 @@ import {
   loopExpand,
 } from "./live-loop";
 import { sdpToCode, codeToSdp, canonicalizeSdpForTranscript } from "./live-sdp";
-import { CTRL_OP, encodeCtrl, decodeCtrl } from "./live-ctrl";
+import { CTRL_OP, encodeCtrl, decodeCtrl, decodeStreamState } from "./live-ctrl";
 import {
   type DrawStreamEvent,
   DrawStreamTracker,
@@ -158,6 +158,8 @@ export interface WhisperLiveCallbacks {
   onCtrl?: (opcode: number, payload: Uint8Array) => void;
   /** Parsed live-draw stream event from peer. */
   onDrawStream?: (event: DrawStreamEvent) => void;
+  /** Peer's audio/video/screen stream state changed. */
+  onStreamState?: (audio: boolean, video: boolean, screen: boolean) => void;
 }
 
 export interface WhisperLiveSessionOptions {
@@ -477,6 +479,7 @@ export class WhisperLiveSession {
   onConnectionStats: WhisperLiveCallbacks["onConnectionStats"];
   onCtrl: WhisperLiveCallbacks["onCtrl"];
   onDrawStream: WhisperLiveCallbacks["onDrawStream"];
+  onStreamState: WhisperLiveCallbacks["onStreamState"];
 
   // Tab-aware heartbeat
   private tabHidden = false;
@@ -504,6 +507,7 @@ export class WhisperLiveSession {
     this.onConnectionStats = callbacks.onConnectionStats;
     this.onCtrl = callbacks.onCtrl;
     this.onDrawStream = callbacks.onDrawStream;
+    this.onStreamState = callbacks.onStreamState;
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
     this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
     this.autoConfirm = options.autoConfirmFingerprint ?? false;
@@ -1324,6 +1328,10 @@ export class WhisperLiveSession {
           const frame = decodeCtrl(innerPayload);
           if (frame) {
             if (this.onCtrl) this.onCtrl(frame.opcode, frame.payload);
+            if (frame.opcode === CTRL_OP.STREAM_STATE && this.onStreamState) {
+              const state = decodeStreamState(frame.payload);
+              if (state) this.onStreamState(state.audio, state.video, state.screen);
+            }
             if (frame.opcode === CTRL_OP.DRAW_STREAM && this.onDrawStream) {
               const drawEvent = decodeDrawStreamEvent(frame.payload);
               if (drawEvent) {
@@ -1619,6 +1627,12 @@ export class WhisperLiveSession {
   sendCtrl(opcode: number, payload?: Uint8Array): void {
     if (!this.isLiveState()) return;
     this.sendSealed(LIVE_MSG.CTRL, encodeCtrl(opcode, payload));
+  }
+
+  /** Update peer on our stream state. bit0=audio, bit1=video, bit2=screen, 0x00=off. */
+  sendStreamState(flags: number): void {
+    if (!this.isLiveState()) return;
+    this.sendCtrl(CTRL_OP.STREAM_STATE, new Uint8Array([flags & 0xFF]));
   }
 
   /** Send a live draw stream event to the peer over CTRL transport. */
