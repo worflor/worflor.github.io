@@ -32,6 +32,9 @@ import {
   appendToLog,
   setLogDotActive,
   haptic,
+  normalizeReactionGlyph,
+  createReactionComposer,
+  type ReactionComposer,
 } from "./ui-helpers";
 import {
   createQrDetector,
@@ -737,6 +740,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /** Max distinct emoji reactions tracked per message. Keeps the UI elegant. */
   const MAX_REACTIONS = 5;
+  const reactionComposers = new WeakMap<HTMLElement, ReactionComposer>();
+
+  function closeReactionShelf(el: Element | null): void {
+    if (!(el instanceof HTMLElement)) return;
+    reactionComposers.get(el)?.reset();
+    el.removeAttribute("data-shelf-open");
+  }
 
   function isTransientDrawPreviewMessage(el: HTMLElement | null | undefined): boolean {
     if (!el) return false;
@@ -751,11 +761,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function applyReaction(msgId: number, emoji: string, who: "self" | "peer"): void {
     const el = msgById.get(msgId);
     if (!el || !emoji || isTransientDrawPreviewMessage(el)) return;
-    // Clip to first grapheme cluster — peer could send multi-emoji or malformed string
-    const seg = new Intl.Segmenter();
-    const firstCluster = seg.segment(emoji)[Symbol.iterator]().next().value?.segment;
-    if (!firstCluster) return;
-    const normEmoji = firstCluster;
+    const normEmoji = normalizeReactionGlyph(emoji);
+    if (!normEmoji) return;
     let bar = el.querySelector<HTMLElement>(".wl-msg-reactions");
     if (!bar) {
       bar = document.createElement("div");
@@ -3662,44 +3669,23 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
             e.stopPropagation();
             toggleSelfReaction(msg.msgId!, emoji);
             localStorage.setItem("wl-last-reaction", emoji);
-            div.removeAttribute("data-shelf-open");
+            closeReactionShelf(div);
           }, { signal });
           shelf.appendChild(btn);
         });
 
-        // OS emoji picker button + offscreen input
-        const emojiBtn = document.createElement("button");
-        emojiBtn.type = "button";
-        emojiBtn.className = "wl-react-btn wl-react-btn--more";
-        emojiBtn.textContent = "＋";
-        emojiBtn.setAttribute("aria-label", "Pick any emoji");
-
-        const hiddenInput = document.createElement("input");
-        hiddenInput.type = "text";
-        hiddenInput.setAttribute("aria-hidden", "true");
-        hiddenInput.style.cssText = "position:absolute;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;";
-        hiddenInput.addEventListener("input", (e) => {
-          e.stopPropagation();
-          const raw = hiddenInput.value;
-          hiddenInput.value = "";
-          if (!raw || msg.msgId === undefined) return;
-          const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
-          const first = seg[Symbol.iterator]().next().value;
-          const emoji = first?.segment ?? raw[0];
-          if (emoji) {
-            toggleSelfReaction(msg.msgId!, emoji);
-            localStorage.setItem("wl-last-reaction", emoji);
-            div.removeAttribute("data-shelf-open");
-          }
-        }, { signal });
-
-        emojiBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          hiddenInput.focus();
-        }, { signal });
-
-        shelf.appendChild(emojiBtn);
-        shelf.appendChild(hiddenInput);
+        const composer = createReactionComposer({
+          host: div,
+          signal,
+          onCommit: (glyph) => {
+            if (msg.msgId === undefined) return;
+            toggleSelfReaction(msg.msgId, glyph);
+            localStorage.setItem("wl-last-reaction", glyph);
+            closeReactionShelf(div);
+          },
+        });
+        reactionComposers.set(div, composer);
+        shelf.appendChild(composer.element);
         div.appendChild(shelf);
 
         // Tap the message bubble to reveal / hide the shelf.
@@ -3722,7 +3708,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           const isOpen = div.hasAttribute("data-shelf-open");
           // Close any globally open shelf
           const prev = opts.chatMessages.querySelector("[data-shelf-open]");
-          if (prev) prev.removeAttribute("data-shelf-open");
+          if (prev) closeReactionShelf(prev);
           if (!isOpen) div.setAttribute("data-shelf-open", "");
         }, { signal });
       } else {
@@ -5503,11 +5489,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  async function sendFilesToChat(files: Iterable<File>, label = "file"): Promise<void> {
+    for (const file of files) {
+      await sendFileToChat(file, label);
+    }
+  }
+
   opts.chatFileInput.addEventListener("change", async () => {
-    const file = opts.chatFileInput.files?.[0];
-    if (!file) return;
+    const files = Array.from(opts.chatFileInput.files ?? []);
     opts.chatFileInput.value = "";
-    await sendFileToChat(file);
+    if (!files.length) return;
+    await sendFilesToChat(files);
   }, { signal });
 
   opts.chatMessages.addEventListener("dragover", (e) => {
@@ -5525,9 +5517,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     e.preventDefault();
     opts.chatMessages.classList.remove("wl-chat-drop-active");
     syncComposeIntent();
-    const file = (e as DragEvent).dataTransfer?.files?.[0];
-    if (!file) return;
-    await sendFileToChat(file);
+    const files = Array.from((e as DragEvent).dataTransfer?.files ?? []);
+    if (!files.length) return;
+    await sendFilesToChat(files);
   }, { signal });
 
   opts.disconnectBtn.addEventListener("click", () => {
@@ -5640,7 +5632,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   document.addEventListener("click", (e) => {
     if (opts.chatMessages.contains(e.target as Node)) return;
     const open = opts.chatMessages.querySelector("[data-shelf-open]");
-    if (open) open.removeAttribute("data-shelf-open");
+    if (open) closeReactionShelf(open);
   }, { signal });
 
   /* ── Teardown ───────────────────────────────────────────── */

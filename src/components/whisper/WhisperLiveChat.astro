@@ -300,6 +300,7 @@
         <input
           id="wl-chat-file-input"
           type="file"
+          multiple
           class="sr-only"
           aria-hidden="true"
         />
@@ -1001,6 +1002,82 @@
 
   :global(.wl-chat-messages) :global(.wl-react-btn--more:hover) {
     color: rgb(var(--color-text-rgb) / 0.72);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-custom) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+    min-width: 1.85rem;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-btn--custom) {
+    font-size: 0.82rem;
+  }
+
+  :global(.wl-chat-messages) :global([data-glyph-open] .wl-react-btn--custom) {
+    color: rgb(var(--chromatic-cyan) / 0.82);
+    border-color: rgb(var(--chromatic-cyan) / 0.34);
+    background: rgb(var(--chromatic-cyan) / 0.09);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-custom-field) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.22rem;
+    width: 0;
+    opacity: 0;
+    overflow: hidden;
+    padding: 0;
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    background: rgb(var(--color-text-rgb) / 0.03);
+    transform: translateX(-0.22rem);
+    transition:
+      width 180ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 120ms ease,
+      transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 120ms ease,
+      padding 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  :global(.wl-chat-messages) :global([data-glyph-open] .wl-react-custom-field) {
+    width: 4.5rem;
+    opacity: 1;
+    padding: 0.12rem 0.32rem 0.12rem 0.14rem;
+    transform: translateX(0);
+    border-color: rgb(var(--color-text-rgb) / 0.16);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-custom-preview) {
+    width: 1.45rem;
+    height: 1.45rem;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 0.88rem;
+    color: rgb(var(--color-text-rgb) / 0.78);
+    background: rgb(var(--color-text-rgb) / 0.06);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-custom-input) {
+    min-width: 0;
+    width: 100%;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: rgb(var(--color-text-rgb) / 0.86);
+    font: inherit;
+    font-size: 0.76rem;
+    line-height: 1;
+    padding: 0;
+    box-shadow: none;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-custom-input::placeholder) {
+    color: rgb(var(--color-text-rgb) / 0.38);
   }
 
   /* ── Reaction pills (placed below message after reacting) ── */

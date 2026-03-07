@@ -45,6 +45,139 @@ export function haptic(event: HapticEvent): void {
   navigator.vibrate(HAPTIC_PATTERNS[event]);
 }
 
+const REACTION_GLYPH_PLACEHOLDER = "✦";
+const REACTION_GLYPH_OPEN_ATTR = "data-glyph-open";
+const reactionGlyphSegmenter = new Intl.Segmenter();
+
+export function normalizeReactionGlyph(raw: string): string | null {
+  const compact = raw.replace(/\s/g, "");
+  if (!compact) return null;
+  const firstCluster = reactionGlyphSegmenter.segment(compact)[Symbol.iterator]().next().value?.segment;
+  return firstCluster ?? compact[0] ?? null;
+}
+
+export interface ReactionComposer {
+  element: HTMLDivElement;
+  reset: () => void;
+  open: () => void;
+}
+
+export interface CreateReactionComposerOptions {
+  host: HTMLElement;
+  onCommit: (glyph: string) => void;
+  signal?: AbortSignal;
+  buttonLabel?: string;
+  fieldLabel?: string;
+  inputLabel?: string;
+  placeholder?: string;
+}
+
+export function createReactionComposer({
+  host,
+  onCommit,
+  signal,
+  buttonLabel = "Add custom mark",
+  fieldLabel = "Type one reaction mark",
+  inputLabel = "Type one symbol or emoji",
+  placeholder = "mark",
+}: CreateReactionComposerOptions): ReactionComposer {
+  const wrap = document.createElement("div");
+  wrap.className = "wl-react-custom";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "wl-react-btn wl-react-btn--more wl-react-btn--custom";
+  button.textContent = REACTION_GLYPH_PLACEHOLDER;
+  button.setAttribute("aria-label", buttonLabel);
+
+  const field = document.createElement("label");
+  field.className = "wl-react-custom-field";
+  field.setAttribute("aria-label", fieldLabel);
+
+  const preview = document.createElement("span");
+  preview.className = "wl-react-custom-preview";
+  preview.textContent = REACTION_GLYPH_PLACEHOLDER;
+  preview.setAttribute("aria-hidden", "true");
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "wl-react-custom-input";
+  input.maxLength = 16;
+  input.placeholder = placeholder;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("autocapitalize", "off");
+  input.setAttribute("inputmode", "text");
+  input.setAttribute("aria-label", inputLabel);
+
+  let isComposing = false;
+  let composeSession = 0;
+  let committedSession = -1;
+
+  const listenerOptions = signal ? { signal } : undefined;
+
+  function reset(): void {
+    isComposing = false;
+    host.removeAttribute(REACTION_GLYPH_OPEN_ATTR);
+    input.value = "";
+    preview.textContent = REACTION_GLYPH_PLACEHOLDER;
+  }
+
+  function commit(): void {
+    if (committedSession === composeSession) return;
+    const glyph = normalizeReactionGlyph(input.value);
+    if (!glyph) return;
+    committedSession = composeSession;
+    preview.textContent = glyph;
+    onCommit(glyph);
+  }
+
+  function open(): void {
+    composeSession += 1;
+    reset();
+    host.setAttribute(REACTION_GLYPH_OPEN_ATTR, "");
+    requestAnimationFrame(() => input.focus());
+  }
+
+  input.addEventListener("compositionstart", () => {
+    isComposing = true;
+  }, listenerOptions);
+  input.addEventListener("compositionend", () => {
+    isComposing = false;
+    const glyph = normalizeReactionGlyph(input.value);
+    preview.textContent = glyph ?? REACTION_GLYPH_PLACEHOLDER;
+    commit();
+  }, listenerOptions);
+  input.addEventListener("input", (event) => {
+    event.stopPropagation();
+    const glyph = normalizeReactionGlyph(input.value);
+    preview.textContent = glyph ?? REACTION_GLYPH_PLACEHOLDER;
+    if (isComposing || (event instanceof InputEvent && event.isComposing)) return;
+    commit();
+  }, listenerOptions);
+  input.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      reset();
+      return;
+    }
+    if (event.key === "Enter") commit();
+  }, listenerOptions);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (host.hasAttribute(REACTION_GLYPH_OPEN_ATTR)) {
+      reset();
+      return;
+    }
+    open();
+  }, listenerOptions);
+
+  field.append(preview, input);
+  wrap.append(button, field);
+
+  return { element: wrap, reset, open };
+}
+
 export function q(root: ParentNode, id: string): HTMLElement | null {
   return root.querySelector<HTMLElement>(`#${id}`);
 }

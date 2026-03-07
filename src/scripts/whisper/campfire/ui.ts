@@ -21,6 +21,9 @@ import {
   appendToLog,
   setLogDotActive,
   haptic,
+  normalizeReactionGlyph,
+  createReactionComposer,
+  type ReactionComposer,
 } from "../ui-helpers";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -467,44 +470,22 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
           e.stopPropagation();
           toggleCfReaction(displayId!, emoji);
           localStorage.setItem("cf-last-reaction", emoji);
-          div.removeAttribute("data-shelf-open");
+          closeReactionShelf(div);
         });
         shelf.appendChild(btn);
       });
 
-      // OS emoji picker button + offscreen input
-      const emojiBtn = document.createElement("button");
-      emojiBtn.type = "button";
-      emojiBtn.className = "wl-react-btn wl-react-btn--more";
-      emojiBtn.textContent = "＋";
-      emojiBtn.setAttribute("aria-label", "Pick any emoji");
-
-      const hiddenInput = document.createElement("input");
-      hiddenInput.type = "text";
-      hiddenInput.setAttribute("aria-hidden", "true");
-      hiddenInput.style.cssText = "position:absolute;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;";
-      hiddenInput.addEventListener("input", (e) => {
-        e.stopPropagation();
-        const raw = hiddenInput.value;
-        hiddenInput.value = "";
-        if (!raw || displayId === undefined) return;
-        const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
-        const first = seg[Symbol.iterator]().next().value;
-        const emoji = first?.segment ?? raw[0];
-        if (emoji) {
-          toggleCfReaction(displayId!, emoji);
-          localStorage.setItem("cf-last-reaction", emoji);
-          div.removeAttribute("data-shelf-open");
-        }
+      const composer = createReactionComposer({
+        host: div,
+        signal,
+        onCommit: (glyph) => {
+          toggleCfReaction(displayId, glyph);
+          localStorage.setItem("cf-last-reaction", glyph);
+          closeReactionShelf(div);
+        },
       });
-
-      emojiBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        hiddenInput.focus();
-      });
-
-      shelf.appendChild(emojiBtn);
-      shelf.appendChild(hiddenInput);
+      reactionComposers.set(div, composer);
+      shelf.appendChild(composer.element);
       div.appendChild(shelf);
 
       // Tap the bubble to reveal / hide the shelf — one shelf open at a time
@@ -519,7 +500,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
         if ((e.target as HTMLElement).closest(".wl-msg-time")) return;
         const isOpen = div.hasAttribute("data-shelf-open");
         const prev = opts.chatMessages.querySelector("[data-shelf-open]");
-        if (prev) prev.removeAttribute("data-shelf-open");
+        if (prev) closeReactionShelf(prev);
         if (!isOpen) div.setAttribute("data-shelf-open", "");
       });
     }
@@ -532,15 +513,19 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
 
   /** Max distinct emoji reactions tracked per message. */
   const MAX_CF_REACTIONS = 5;
+  const reactionComposers = new WeakMap<HTMLElement, ReactionComposer>();
+
+  function closeReactionShelf(el: Element | null): void {
+    if (!(el instanceof HTMLElement)) return;
+    reactionComposers.get(el)?.reset();
+    el.removeAttribute("data-shelf-open");
+  }
 
   function applyCfReaction(displayId: number, emoji: string, who: "self" | "peer"): void {
     const el = msgById.get(displayId);
     if (!el || !emoji) return;
-    // Clip to first grapheme cluster
-    const seg = new Intl.Segmenter();
-    const firstCluster = seg.segment(emoji)[Symbol.iterator]().next().value?.segment;
-    if (!firstCluster) return;
-    const normEmoji = firstCluster;
+    const normEmoji = normalizeReactionGlyph(emoji);
+    if (!normEmoji) return;
     let bar = el.querySelector<HTMLElement>(".wl-msg-reactions");
     if (!bar) {
       bar = document.createElement("div");
@@ -1066,7 +1051,7 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   document.addEventListener("click", (e) => {
     if (opts.chatMessages.contains(e.target as Node)) return;
     const open = opts.chatMessages.querySelector("[data-shelf-open]");
-    if (open) open.removeAttribute("data-shelf-open");
+    if (open) closeReactionShelf(open);
   }, { signal });
 
   /* ── Teardown ────────────────────────────────────────────── */
