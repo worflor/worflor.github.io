@@ -9,6 +9,7 @@
 
 import {
   deriveInfoHashes,
+  deriveTrackerOrder,
   randomBinId,
   padCode,
   unpadCode,
@@ -50,6 +51,15 @@ interface OfferContext {
   paddedOffer: string;
 }
 
+function closeTrackerSocket(ws: WebSocket | null): void {
+  if (!ws) return;
+  ws.onopen = null;
+  ws.onmessage = null;
+  ws.onerror = null;
+  ws.onclose = null;
+  try { ws.close(1000); } catch { /* noop */ }
+}
+
 async function waitForNextOffer(
   getCurrentOfferCode: () => string | null,
   previousOffer: string,
@@ -79,6 +89,7 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
   };
 
   const seenAnswers = new Set<string>();
+  let handlingAnswer = false;
   let rotatingOffer = false;
 
   opts.onLog("campfire flare room is burning");
@@ -105,7 +116,7 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
     makeTrackerAnnouncePayloads(hashes, peerId, offerCtx.offerId, offerCtx.paddedOffer);
 
   const handleAnswer = async (msg: Record<string, unknown>): Promise<void> => {
-    if (rotatingOffer || opts.signal.aborted) return;
+    if (handlingAnswer || rotatingOffer || opts.signal.aborted) return;
     if (!msg.answer || typeof msg.answer !== "object") return;
 
     const answer = msg.answer as Record<string, unknown>;
@@ -124,6 +135,7 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
     if (!rememberSeen(seenAnswers, key, MAX_SEEN)) return;
 
     opts.onStatus("peer joining campfire...");
+    handlingAnswer = true;
     try {
       await opts.applyAnswerCode(answerCode);
       opts.onStatus("campfire flare is burning");
@@ -133,6 +145,8 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
       const msg = err instanceof Error ? err.message : "unknown";
       opts.onLog(`flare answer apply failed: ${msg}`);
       opts.onStatus("campfire flare is burning");
+    } finally {
+      handlingAnswer = false;
     }
   };
 
@@ -148,18 +162,33 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
     },
   }, opts.signal);
 
-  // block until abort
-  await new Promise<void>((resolve) => {
-    opts.signal.addEventListener("abort", () => resolve(), { once: true });
-  });
+  let resolveAbort: (() => void) | null = null;
+  const onAbort = (): void => {
+    resolveAbort?.();
+  };
 
-  pool.destroy();
+  try {
+    await new Promise<void>((resolve) => {
+      resolveAbort = resolve;
+      if (opts.signal.aborted) {
+        resolve();
+        return;
+      }
+      opts.signal.addEventListener("abort", onAbort, { once: true });
+    });
+  } finally {
+    opts.signal.removeEventListener("abort", onAbort);
+    pool.destroy();
+  }
 }
 
 export async function joinCampfireViaFlare(opts: CampfireJoinFlareOptions): Promise<void> {
   if (opts.signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-  const hashes = await deriveInfoHashes(opts.phrase);
+  const [hashes, orderedTrackers] = await Promise.all([
+    deriveInfoHashes(opts.phrase),
+    deriveTrackerOrder(opts.phrase, TRACKER_URLS),
+  ]);
   const peerId = randomBinId();
   const seenOffers = new Set<string>();
 
@@ -167,10 +196,11 @@ export async function joinCampfireViaFlare(opts: CampfireJoinFlareOptions): Prom
 
   const totalAc = new AbortController();
   const timeout = setTimeout(() => totalAc.abort(), JOIN_TOTAL_TIMEOUT);
-  opts.signal.addEventListener("abort", () => totalAc.abort(), { once: true });
+  const onExternalAbort = (): void => totalAc.abort();
+  opts.signal.addEventListener("abort", onExternalAbort, { once: true });
 
   try {
-    const attempts = TRACKER_URLS.map((url) => connectJoinTracker(url, hashes, peerId, seenOffers, opts, totalAc.signal));
+    const attempts = orderedTrackers.map((url) => connectJoinTracker(url, hashes, peerId, seenOffers, opts, totalAc.signal));
     await Promise.any(attempts);
   } catch (err) {
     if (err instanceof AggregateError) {
@@ -183,6 +213,7 @@ export async function joinCampfireViaFlare(opts: CampfireJoinFlareOptions): Prom
     throw err;
   } finally {
     clearTimeout(timeout);
+    opts.signal.removeEventListener("abort", onExternalAbort);
     totalAc.abort();
   }
 }
@@ -217,9 +248,14 @@ function connectJoinTracker(
 
     const stoppedPayloads = makeTrackerStoppedPayloads(hashes, peerId);
 
+    const onAbort = () => {
+      finish(new DOMException("Aborted", "AbortError"));
+    };
+
     const finish = (error?: Error) => {
       if (done) return;
       done = true;
+      signal.removeEventListener("abort", onAbort);
       clearTimeout(connectTimer);
 
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -227,16 +263,14 @@ function connectJoinTracker(
           try { ws.send(payload); } catch { break; }
         }
       }
-      try { ws?.close(1000); } catch { /* noop */ }
+      closeTrackerSocket(ws);
       ws = null;
 
       if (error) reject(error);
       else resolve();
     };
 
-    signal.addEventListener("abort", () => {
-      finish(new DOMException("Aborted", "AbortError"));
-    }, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
 
     const connectTimer = setTimeout(() => {
       finish(new Error("relay-unavailable"));
@@ -246,6 +280,7 @@ function connectJoinTracker(
       ws = new WebSocket(url);
     } catch {
       clearTimeout(connectTimer);
+      signal.removeEventListener("abort", onAbort);
       reject(new Error("relay-unavailable"));
       return;
     }

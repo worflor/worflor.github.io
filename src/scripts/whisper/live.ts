@@ -39,7 +39,7 @@ import {
   loopWipe,
   loopExpand,
 } from "./live-loop";
-import { sdpToCode, codeToSdp } from "./live-sdp";
+import { sdpToCode, codeToSdp, canonicalizeSdpForTranscript } from "./live-sdp";
 import { CTRL_OP, encodeCtrl, decodeCtrl } from "./live-ctrl";
 import {
   type DrawStreamEvent,
@@ -75,6 +75,17 @@ import {
 } from "./live-chunking";
 
 import { createMinimalPNGCarrier } from "./live-carrier";
+import {
+  derivePhraseRoot,
+  derivePhraseScopedKey,
+  deriveHandshakeTranscriptHash,
+  deriveSessionRoot,
+  deriveKizunaWitness,
+  deriveConfirmContextHash,
+  buildConfirmProof,
+  verifyConfirmProof,
+  type HandshakeRole,
+} from "./live-handshake";
 
 /* ── Types ──── */
 
@@ -246,15 +257,14 @@ export const FINGERPRINT_EMOJI = [
   "\u{1F349}", // watermelon
 ];
 
-const PHRASE_KDF_INFO = TE.encode("whisper-live-keyed");
 const TURN_KDF_INFO_PHRASE = TE.encode("whisper-turn-v1");
 const TURN_KDF_INFO_BOND = TE.encode("whisper-turn-bond-v1");
 const ZERO_SALT_32 = new Uint8Array(32);
 
 async function selectTurnServer(phrase: string, pool: RTCIceServer[]): Promise<RTCIceServer> {
-  const phraseHash = await sha256(TE.encode("whisper-phrase|" + phrase));
-  const indexBytes = await hkdf(phraseHash, ZERO_SALT_32, TURN_KDF_INFO_PHRASE, 4);
-  phraseHash.fill(0);
+  const phraseRoot = await derivePhraseRoot(phrase);
+  const indexBytes = await derivePhraseScopedKey(phraseRoot, "turn-select", 4, TURN_KDF_INFO_PHRASE);
+  phraseRoot.fill(0);
   const idx = new DataView(indexBytes.buffer, indexBytes.byteOffset).getUint32(0, false) % pool.length;
   return pool[idx];
 }
@@ -391,6 +401,14 @@ export class WhisperLiveSession {
 
   /** Ephemeral ECDH private key — exists only during handshake, then wiped */
   private ephPrivateKey: CryptoKey | null = null;
+  private localEphPublicKey: Uint8Array | null = null;
+  private transcriptHash: Uint8Array | null = null;
+  private kizunaWitness: Uint8Array | null = null;
+  private confirmContextHash: Uint8Array | null = null;
+  private pendingPeerConfirmProof: Uint8Array | null = null;
+  private localConfirmRequested = false;
+  private localConfirmSent = false;
+  private remoteConfirmVerified = false;
 
   /** Resolves when local ephemeral key generation is complete */
   private keyReady: Promise<void> = Promise.resolve();
@@ -548,8 +566,149 @@ export class WhisperLiveSession {
     this.externalAssistDropped = false;
     this.turnInjected = false;
     this.connectingGraceDone = false;
+    this.resetSessionState();
     this.sharedPhrase = sharedPhrase ?? "";
     this.isOfferer = asOfferer;
+  }
+
+  private wipeBytes(bytes: Uint8Array | null): void {
+    if (bytes) bytes.fill(0);
+  }
+
+  private replacePendingPeerConfirmProof(proof: Uint8Array | null): void {
+    this.wipeBytes(this.pendingPeerConfirmProof);
+    this.pendingPeerConfirmProof = proof;
+  }
+
+  private clearHandshakeArtifacts(): void {
+    this.wipeBytes(this.transcriptHash);
+    this.transcriptHash = null;
+    this.wipeBytes(this.kizunaWitness);
+    this.kizunaWitness = null;
+    this.wipeBytes(this.confirmContextHash);
+    this.confirmContextHash = null;
+    this.replacePendingPeerConfirmProof(null);
+    this.wipeBytes(this.localEphPublicKey);
+    this.localEphPublicKey = null;
+    this.localConfirmRequested = false;
+    this.localConfirmSent = false;
+    this.remoteConfirmVerified = false;
+  }
+
+  private clearIncomingFiles(): void {
+    for (const transfer of this.incomingFiles.values()) {
+      for (const chunk of transfer.chunks) {
+        if (chunk) chunk.fill(0);
+      }
+    }
+    this.incomingFiles.clear();
+  }
+
+  private resetSessionState(): void {
+    this.nSentTotal = 0;
+    this.nRecvTotal = 0;
+    this.nextDrawStreamSeq = 0;
+    this.drawStreamRecvTracker = new DrawStreamTracker();
+    this.msgQueue = Promise.resolve();
+    this.sendQueue = Promise.resolve();
+    this.drawStreamSendQueue = Promise.resolve();
+    this.lastPongReceived = 0;
+    this.assembler.reset();
+    this.clearIncomingFiles();
+    this.clearHandshakeArtifacts();
+  }
+
+  private ownRole(): HandshakeRole {
+    return this.isOfferer ? "offerer" : "answerer";
+  }
+
+  private peerRole(): HandshakeRole {
+    return this.isOfferer ? "answerer" : "offerer";
+  }
+
+  private async buildTranscriptHash(peerPubKeyRaw: Uint8Array): Promise<Uint8Array> {
+    const localSdp = this.pc?.localDescription?.sdp;
+    const remoteSdp = this.pc?.remoteDescription?.sdp;
+    if (!localSdp || !remoteSdp || !this.localEphPublicKey) {
+      throw new Error("handshake transcript incomplete");
+    }
+    const offerSdp = this.isOfferer ? localSdp : remoteSdp;
+    const answerSdp = this.isOfferer ? remoteSdp : localSdp;
+    const offererEphemeralKey = this.isOfferer ? this.localEphPublicKey : peerPubKeyRaw;
+    const answererEphemeralKey = this.isOfferer ? peerPubKeyRaw : this.localEphPublicKey;
+    return deriveHandshakeTranscriptHash({
+      offerSdpBytes: canonicalizeSdpForTranscript(offerSdp, "offer"),
+      answerSdpBytes: canonicalizeSdpForTranscript(answerSdp, "answer"),
+      offererEphemeralKey,
+      answererEphemeralKey,
+    });
+  }
+
+  private async updateConfirmContext(): Promise<void> {
+    if (!this.sharedSecret || !this.transcriptHash || !this.kizunaWitness || !this.ratchetState?.dhPeer) return;
+    const offererRatchetKey = this.isOfferer ? this.ratchetState.dhSelf.publicKey : this.ratchetState.dhPeer;
+    const answererRatchetKey = this.isOfferer ? this.ratchetState.dhPeer : this.ratchetState.dhSelf.publicKey;
+    this.wipeBytes(this.confirmContextHash);
+    this.confirmContextHash = await deriveConfirmContextHash({
+      transcriptHash: this.transcriptHash,
+      offererRatchetKey,
+      answererRatchetKey,
+      kizunaWitness: this.kizunaWitness,
+    });
+    if (this.localConfirmRequested && !this.localConfirmSent) {
+      await this.sendLocalConfirmProof();
+    }
+    if (this.pendingPeerConfirmProof) {
+      const pending = this.pendingPeerConfirmProof;
+      this.pendingPeerConfirmProof = null;
+      await this.handlePeerConfirmProof(pending);
+    }
+  }
+
+  private maybeEnterLive(): void {
+    if (this._state !== "verifying") return;
+    if (!this.localConfirmSent || !this.remoteConfirmVerified) return;
+    if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
+    if (this.fingerprintNudgeTimer) { clearTimeout(this.fingerprintNudgeTimer); this.fingerprintNudgeTimer = null; }
+    this.startHeartbeat();
+    this.setState(this.transportMode === "silent" ? "silent" : "live");
+  }
+
+  private async sendLocalConfirmProof(): Promise<void> {
+    if (this.localConfirmSent || this._state !== "verifying") return;
+    if (!this.sharedSecret || !this.confirmContextHash) return;
+    const proof = await buildConfirmProof(this.sharedSecret, this.confirmContextHash, this.ownRole());
+    this.localConfirmSent = true;
+    this.send(LIVE_MSG.FINGERPRINT_CONFIRMED, proof);
+    proof.fill(0);
+    this.maybeEnterLive();
+  }
+
+  private async handlePeerConfirmProof(proof: Uint8Array): Promise<void> {
+    try {
+      if (proof.length !== 16) {
+        this.onLog("invalid confirmation proof length");
+        this.setState("error", "connection confirmation failed");
+        this.cleanupConnection();
+        return;
+      }
+      if (!this.sharedSecret || !this.confirmContextHash) {
+        this.replacePendingPeerConfirmProof(proof.slice());
+        return;
+      }
+      const valid = await verifyConfirmProof(proof, this.sharedSecret, this.confirmContextHash, this.peerRole());
+      if (!valid) {
+        this.onLog("peer confirmation proof mismatch, aborting");
+        this.setState("error", "handshake proof mismatch, reconnect to continue");
+        this.cleanupConnection();
+        return;
+      }
+      this.remoteConfirmVerified = true;
+      this.onLog("peer confirmed fingerprint");
+      this.maybeEnterLive();
+    } finally {
+      proof.fill(0);
+    }
   }
 
   /** Peer A: create an offer code. */
@@ -900,6 +1059,7 @@ export class WhisperLiveSession {
         );
 
         const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
+        this.localEphPublicKey = pubKeyRaw.slice();
         if (!this.dc || this.dc.readyState !== "open") {
           this.onLog("key exchange aborted, channel not available");
           return;
@@ -926,29 +1086,25 @@ export class WhisperLiveSession {
       const sharedBits = await crypto.subtle.deriveBits(
         { name: "ECDH", public: peerPubKey }, this.ephPrivateKey, 256,
       );
-      let sharedSecret: Uint8Array = new Uint8Array(sharedBits);
+      const ecdhSecret = new Uint8Array(sharedBits);
 
       this.ephPrivateKey = null;
 
+      const transcriptHash = await this.buildTranscriptHash(peerPubKeyRaw);
+      let phraseRoot: Uint8Array | null = null;
       if (this.sharedPhrase) {
-        const phraseHash = await sha256(TE.encode("whisper-phrase|" + this.sharedPhrase));
-        this.sharedPhrase = null; // wipe phrase immediately
-        const concat = concatBytes(sharedSecret, phraseHash);
-        phraseHash.fill(0); // wipe intermediate
-        const oldSecret = sharedSecret;
-        sharedSecret = await hkdf(
-          concat,
-          ZERO_SALT_32,
-          PHRASE_KDF_INFO,
-          32,
-        );
-        concat.fill(0); // wipe concat intermediate
-        oldSecret.fill(0); // wipe raw ECDH output
-      } else {
-        this.sharedPhrase = null;
+        phraseRoot = await derivePhraseRoot(this.sharedPhrase);
       }
+      this.sharedPhrase = null;
+      const sharedSecret = await deriveSessionRoot(ecdhSecret, transcriptHash, phraseRoot);
+      ecdhSecret.fill(0);
+      phraseRoot?.fill(0);
 
       this.sharedSecret = sharedSecret;
+      this.wipeBytes(this.transcriptHash);
+      this.transcriptHash = transcriptHash;
+      this.wipeBytes(this.kizunaWitness);
+      this.kizunaWitness = await deriveKizunaWitness(sharedSecret);
 
       const fingerprint = await deriveFingerprint(sharedSecret);
       this.onLog(`fingerprint: ${fingerprint}`);
@@ -995,6 +1151,8 @@ export class WhisperLiveSession {
         this.onLog("kizuna membrane sealed");
       }
 
+      await this.updateConfirmContext();
+
       if (this.autoConfirm && this._state === "verifying") {
         this.confirmFingerprint();
       }
@@ -1005,6 +1163,7 @@ export class WhisperLiveSession {
         // both chain keys are now set after the DH step — init both loop states.
         await this.loopReinitFromChainKeys();
         this.onLog("kizuna membrane sealed");
+        await this.updateConfirmContext();
         // Confirm only after dhRatchetStep — chainKeySend is now initialized.
         if (this.autoConfirm && this._state === "verifying") {
           this.confirmFingerprint();
@@ -1034,13 +1193,7 @@ export class WhisperLiveSession {
         await this.handleEncryptedMessage(bytes.subarray(1));
         break;
       case LIVE_MSG.FINGERPRINT_CONFIRMED:
-        this.onLog("peer confirmed fingerprint");
-        if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
-        if (this.fingerprintNudgeTimer) { clearTimeout(this.fingerprintNudgeTimer); this.fingerprintNudgeTimer = null; }
-        if (this._state === "verifying") {
-          this.startHeartbeat();
-          this.setState(this.transportMode === "silent" ? "silent" : "live");
-        }
+        await this.handlePeerConfirmProof(bytes.subarray(1));
         break;
       case LIVE_MSG.FINGERPRINT_REJECTED:
         this.onLog("peer rejected fingerprint, aborting");
@@ -1665,11 +1818,13 @@ export class WhisperLiveSession {
 
   confirmFingerprint(): void {
     if (this._state !== "verifying") return;
-    if (this.handshakeTimer) { clearTimeout(this.handshakeTimer); this.handshakeTimer = null; }
-    if (this.fingerprintNudgeTimer) { clearTimeout(this.fingerprintNudgeTimer); this.fingerprintNudgeTimer = null; }
-    this.send(LIVE_MSG.FINGERPRINT_CONFIRMED);
-    this.startHeartbeat();
-    this.setState(this.transportMode === "silent" ? "silent" : "live");
+    this.localConfirmRequested = true;
+    this.sendQueue = this.sendQueue.then(() => this.sendLocalConfirmProof()).catch((err) => {
+      if (this._destroyed) return;
+      this.onLog(`confirmation failed: ${errorMessage(err)}`);
+      this.setState("error", "connection confirmation failed");
+      this.cleanupConnection();
+    });
   }
 
   rejectFingerprint(): void {
@@ -1830,11 +1985,12 @@ export class WhisperLiveSession {
       this.sharedSecret.fill(0);
       this.sharedSecret = null;
     }
+    this.clearHandshakeArtifacts();
 
     this.sharedPhrase = null;
     this.consecutiveDecryptFailures = 0;
     this.assembler.reset();
-    this.incomingFiles.clear();
+    this.clearIncomingFiles();
 
     if (this.recoveryResolve) {
       const resolve = this.recoveryResolve;

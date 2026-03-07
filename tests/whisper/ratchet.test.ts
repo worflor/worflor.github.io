@@ -64,6 +64,17 @@ describe("live-ratchet", () => {
         assert.equal(state.skippedKeys.size, 0);
       }
     });
+
+    it("does not alias the caller's shared secret into rootKey", async () => {
+      const sharedSecret = randomKey();
+      const secretSnapshot = new Uint8Array(sharedSecret);
+      const dhSelf = await generateDHKeyPair();
+      const state = await initRatchetAsOfferer(sharedSecret, dhSelf);
+
+      state.rootKey.fill(0);
+
+      assertBytesEqual(sharedSecret, secretSnapshot, "offerer init should not mutate caller shared secret");
+    });
   });
 
   describe("initRatchetAsReceiver", () => {
@@ -86,6 +97,16 @@ describe("live-ratchet", () => {
         assert.equal(receiver.nSend, 0);
         assert.equal(receiver.nRecv, 0);
       }
+    });
+
+    it("does not wipe the caller's shared secret", async () => {
+      const sharedSecret = randomKey();
+      const secretSnapshot = new Uint8Array(sharedSecret);
+      const offererKP = await generateDHKeyPair();
+
+      await initRatchetAsReceiver(sharedSecret, offererKP.publicKey);
+
+      assertBytesEqual(sharedSecret, secretSnapshot, "receiver init should preserve caller shared secret");
     });
   });
 

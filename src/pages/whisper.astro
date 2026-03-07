@@ -1560,7 +1560,7 @@ const seo = {
     min-height: var(--touch-target);
     padding: 0.6rem 0.75rem;
     font-family: var(--font-body);
-    font-size: var(--text-sm);
+    font-size: var(--text-ui-sm);
     transition:
       border-color var(--duration-normal) var(--ease-out),
       box-shadow var(--duration-normal) var(--ease-out);
@@ -1568,6 +1568,7 @@ const seo = {
 
   :global(.whisper-input)::placeholder {
     color: rgb(var(--color-text-rgb) / 0.22);
+    font-size: inherit;
   }
 
   :global(.whisper-input):focus-visible {
@@ -2346,7 +2347,8 @@ const seo = {
 
   .wl-head-title {
     margin: 0;
-    font-size: var(--text-base);
+    font-size: var(--text-ui-base);
+    line-height: 1.15;
     letter-spacing: 0.015em;
     color: rgb(var(--color-text-rgb) / 0.86);
   }
@@ -2355,8 +2357,9 @@ const seo = {
     display: inline-flex;
     align-items: center;
     gap: 0.35em;
-    font-size: calc(var(--text-sm) * 0.66);
+    font-size: calc(var(--text-ui-sm) * 0.72);
     font-weight: 700;
+    line-height: 1;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: rgb(var(--color-text-rgb) / 0.18);
@@ -2958,12 +2961,12 @@ const seo = {
     }
 
     .wl-head-title {
-      font-size: calc(var(--text-base) * 0.82);
+      font-size: var(--text-ui-sm);
       white-space: nowrap;
     }
 
     .wl-e2e-badge {
-      font-size: calc(var(--text-sm) * 0.52);
+      font-size: calc(var(--text-ui-sm) * 0.62);
       padding: 0.1em 0.35em;
       gap: 0.25em;
     }

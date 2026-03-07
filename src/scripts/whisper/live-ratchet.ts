@@ -96,7 +96,6 @@ export async function initRatchetAsReceiver(
   const dhOutput = await dhExchange(dhSelf.privateKey, peerPublicKey);
   const [rootKey, chainKeySend] = await kdfRootChain(sharedSecret, dhOutput);
   dhOutput.fill(0);
-  sharedSecret.fill(0);
 
   return {
     rootKey,
@@ -117,7 +116,8 @@ export async function initRatchetAsOfferer(
   sharedSecret: Uint8Array, dhSelf: RatchetKeyPair,
 ): Promise<RatchetState> {
   return {
-    rootKey: sharedSecret,
+    // Keep the ratchet root independent from the session root used by handshake confirmation.
+    rootKey: sharedSecret.slice(),
     dhSelf,
     dhPeer: null,
     dhPeerHex: "",

@@ -5,6 +5,8 @@ import { toArrayBuffer } from "./wasm";
 export const TE = new TextEncoder();
 export const TD = new TextDecoder();
 
+const PBKDF2_HASH = "SHA-256";
+
 /** Pre-allocated KDF chain constants (avoids per-call allocations). */
 const KDF_BYTE_01 = new Uint8Array([0x01]);
 const KDF_BYTE_02 = new Uint8Array([0x02]);
@@ -16,6 +18,16 @@ async function importHmacSha256Key(key: Uint8Array): Promise<CryptoKey> {
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
+  );
+}
+
+async function importPbkdf2Key(secret: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    toArrayBuffer(secret),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
   );
 }
 
@@ -66,6 +78,38 @@ export async function hkdf(
     length * 8,
   );
   return new Uint8Array(bits);
+}
+
+export async function pbkdf2(
+  secret: Uint8Array,
+  salt: Uint8Array,
+  iterations: number,
+  length: number,
+): Promise<Uint8Array> {
+  const key = await importPbkdf2Key(secret);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: PBKDF2_HASH,
+      salt: toArrayBuffer(salt),
+      iterations,
+    },
+    key,
+    length * 8,
+  );
+  return new Uint8Array(bits);
+}
+
+export async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  const cryptoKey = await importHmacSha256Key(key);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, toArrayBuffer(data)));
+}
+
+export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
 }
 
 export async function aesGcmEncrypt(

@@ -429,6 +429,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let liveQrUnavailableLabel = "QR camera scan unavailable here";
   let skippedIceCandidates = 0;
 
+  function revokeObjectUrls(): void {
+    for (const url of objectUrls) URL.revokeObjectURL(url);
+    objectUrls.clear();
+  }
+
   const liveCapabilities = {
     clipboardRead: typeof navigator.clipboard?.readText === "function",
     shareSheet: canUseShareSheet(),
@@ -628,6 +633,23 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (activeHoldEl) {
       activeHoldEl.classList.remove("wl-msg--holding");
       activeHoldEl = null;
+    }
+  }
+
+  function disposeCopyUi(): void {
+    if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
+    if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
+    if (copyMenuCloseTimeout) { clearTimeout(copyMenuCloseTimeout); copyMenuCloseTimeout = null; }
+    if (copiedPulseTimeout) { clearTimeout(copiedPulseTimeout); copiedPulseTimeout = null; }
+    copiedPulseEl?.classList.remove("wl-msg--copied");
+    copiedPulseEl = null;
+    copyMenuText = "";
+    copyMenuSourceEl = null;
+    cancelActiveHold();
+    if (copyMenuEl) {
+      resetCopyMenuFeedback();
+      copyMenuEl.remove();
+      copyMenuEl = null;
     }
   }
 
@@ -2637,6 +2659,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     clearMicGlow();
   }
 
+  function closeMicAudioContext(): void {
+    const ctx = micAudioCtx;
+    micAudioCtx = null;
+    if (!ctx) return;
+    try {
+      void ctx.close();
+    } catch { /* noop */ }
+  }
+
   function cleanupRecordingStream(): void {
     if (micRecorder) {
       try {
@@ -2669,6 +2700,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       for (const t of recordingStream.getTracks()) t.stop();
       recordingStream = null;
     }
+  }
+
+  function stopRecordingSilently(closeAudioContext = false): void {
+    teardownRecordingUI();
+    pcmChunks = [];
+    cleanupRecordingStream();
+    if (micPending) micDeferred = "discard";
+    if (closeAudioContext) closeMicAudioContext();
   }
 
   async function stopRecording(): Promise<void> {
@@ -2745,10 +2784,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function cancelRecording(): void {
     haptic("recording-cancel");
-    teardownRecordingUI();
-    pcmChunks = [];
-    cleanupRecordingStream();
-    if (micPending) micDeferred = "discard";
+    stopRecordingSilently();
   }
 
   /* ── Active audio management ────────────────────────────── */
@@ -4285,6 +4321,51 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     });
   }
 
+  function destroyCurrentSession(): void {
+    if (!session) return;
+    session.disconnect();
+    session = null;
+  }
+
+  async function createOfferWithFreshSession(sharedPhrase?: string): Promise<string> {
+    destroyCurrentSession();
+    session = createSession();
+    try {
+      return await session.createOffer(sharedPhrase);
+    } catch (err) {
+      destroyCurrentSession();
+      throw err;
+    }
+  }
+
+  async function acceptOfferWithFreshSession(
+    offerCode: string,
+    sharedPhrase?: string,
+  ): Promise<string> {
+    destroyCurrentSession();
+    session = createSession();
+    try {
+      return await session.acceptOffer(offerCode, sharedPhrase);
+    } catch (err) {
+      destroyCurrentSession();
+      throw err;
+    }
+  }
+
+  function createSingleFlightAcceptHandler(sharedPhrase?: string): (offerCode: string) => Promise<string> {
+    let acceptCalled = false;
+    return async (offerCode: string): Promise<string> => {
+      if (acceptCalled) throw new Error("duplicate-accept");
+      acceptCalled = true;
+      try {
+        return await acceptOfferWithFreshSession(offerCode, sharedPhrase);
+      } catch (err) {
+        acceptCalled = false;
+        throw err;
+      }
+    };
+  }
+
   function handleStateChange(state: LiveState, detail?: string): void {
     // During relay/flare exchange, suppress intermediate session states that would
     // overwrite the UI. The handler manages the connecting phase display itself
@@ -4376,8 +4457,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "disconnected": {
-        closeDrawSurface();
-        resetPeerLivePreview();
+        releaseTerminalSessionUi();
         haptic("disconnected");
         const endText = opts.disconnectedSection.querySelector(".wl-end-text");
         if (endText) endText.textContent = detail === "vanished"
@@ -4389,6 +4469,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
 
       case "error":
+        releaseTerminalSessionUi();
         enterPhase(opts.errorSection, "couldn't connect", false, false);
         opts.errorMessage.textContent = detail ?? "something went wrong";
         resetFpChip();
@@ -4426,11 +4507,28 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     addChatMessage(msg);
   }
 
+  function clearChatArtifacts(): void {
+    hideCopyMenu();
+    cancelActiveHold();
+    msgById.clear();
+    revokeObjectUrls();
+    clearNode(opts.chatMessages);
+    if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
+  }
+
+  function releaseTerminalSessionUi(): void {
+    stopRecordingSilently(true);
+    stopAllAudio();
+    closeMediaLightbox();
+    closeDrawSurface();
+    resetPeerLivePreview();
+    clearChatArtifacts();
+  }
+
   /* ── Reset to idle ─────────────────────────────────────── */
 
   function resetToIdle(): void {
-    closeDrawSurface();
-    resetPeerLivePreview();
+    releaseTerminalSessionUi();
     relayActive = false;
     lastErrorWasRelay = false;
     lastErrorWasFlare = false;
@@ -4442,18 +4540,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (qrScanSession.active) {
       stopJoinQrScan("cancelled");
     }
-    if (session) {
-      session.disconnect();
-      session = null;
-    }
+    destroyCurrentSession();
     composing = false;
     stopIdleKeepAlive();
     if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
     hidePeerTyping();
-    msgById.clear();
-    clearNode(opts.chatMessages);
-    // Restore empty-state hint
-    if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
     for (const el of [opts.offerCode, opts.answerCode, opts.fingerprintDisplay,
     opts.silentSecret, opts.joinQrStatus, opts.offerQrStatus,
     opts.answerQrStatus, opts.errorMessage]) el.textContent = "";
@@ -4625,28 +4716,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     setLogActive(true);
 
     opts.externalAssistToggle.checked = true;
-    session = createSession();
-
     try {
-      const offerCode = await session.createOffer(phrase);
+      const offerCode = await createOfferWithFreshSession(phrase);
       if (aborted()) return;
 
       opts.connectingStatus.textContent = "connecting to relay...";
 
-      let acceptCalled = false;
-      const acceptFn = async (peerOfferCode: string): Promise<string> => {
-        if (acceptCalled) throw new Error("duplicate-accept");
-        acceptCalled = true;
-        if (session) { session.disconnect(); session = null; }
-        session = createSession();
-        try {
-          return await session.acceptOffer(peerOfferCode, phrase);
-        } catch (err) {
-          if (session) { session.disconnect(); session = null; }
-          acceptCalled = false;
-          throw err;
-        }
-      };
+      const acceptFn = createSingleFlightAcceptHandler(phrase);
 
       const callbacks = {
         onStatus: (msg: string) => {
@@ -4679,7 +4755,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     } catch (err) {
       relayActive = false;
       if (aborted()) return;
-      if (session) { session.disconnect(); session = null; }
+      destroyCurrentSession();
       const raw = errMsg(err);
       appendLog(`relay error: ${raw}`);
       lastErrorWasRelay = true;
@@ -4776,21 +4852,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       const { maintainFlare } = await import("./live-flare");
 
-      let acceptCalled = false;
-      const acceptFn = async (peerOfferCode: string): Promise<string> => {
-        if (acceptCalled) throw new Error("duplicate-accept");
-        acceptCalled = true;
-        session = createSession();
-        try {
-          return await session.acceptOffer(peerOfferCode, phrase);
-        } catch (err) {
-          // WebRTC failed, clean up the orphaned session and allow retry
-          // with the next peer instead of leaving a zombie flare
-          if (session) { session.disconnect(); session = null; }
-          acceptCalled = false;
-          throw err;
-        }
-      };
+      const acceptFn = createSingleFlightAcceptHandler(phrase);
 
       const callbacks = {
         onStatus: (msg: string) => {
@@ -4843,7 +4905,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       flareActive = false;
       extinguishFlare();
       if (aborted()) return;
-      if (session) { session.disconnect(); session = null; }
+      destroyCurrentSession();
       const raw = errMsg(err);
       if (raw === "Aborted") return;
       appendLog(`flare error: ${raw}`);
@@ -4984,10 +5046,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   opts.createBtn.addEventListener("click", async () => {
-    session = createSession();
     const phrase = getActivePhrase() || undefined;
     try {
-      const offerCode = await session.createOffer(phrase);
+      const offerCode = await createOfferWithFreshSession(phrase);
       opts.offerCode.textContent = offerCode;
       renderQr(opts.offerQrCanvas, opts.offerQrStatus, "offer", offerCode);
       setOfferQrExpanded(false);
@@ -5050,10 +5111,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     normalizeTypedCodes();
     const offerCode = opts.joinInput.value.trim();
     if (!offerCode) return;
-    session = createSession();
     const phrase = getActivePhrase() || undefined;
     try {
-      const answerCodeStr = await session.acceptOffer(offerCode, phrase);
+      const answerCodeStr = await acceptOfferWithFreshSession(offerCode, phrase);
       opts.answerCode.textContent = answerCodeStr;
       renderQr(opts.answerQrCanvas, opts.answerQrStatus, "answer", answerCodeStr);
       setAnswerQrExpanded(false);
@@ -5622,6 +5682,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   return () => {
     ac.abort();
+    disposeCopyUi();
     closeDrawSurface();
     resetPeerLivePreview();
     relayActive = false;
@@ -5641,11 +5702,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
     if (composeIntentTimer) { clearTimeout(composeIntentTimer); composeIntentTimer = null; }
     if (composeActivityRaf) { cancelAnimationFrame(composeActivityRaf); composeActivityRaf = 0; }
-    cancelRecording();
+    stopRecordingSilently(true);
     stopAllAudio();
     closeMediaLightbox();
     document.title = originalTitle;
-    for (const url of objectUrls) URL.revokeObjectURL(url);
-    objectUrls.clear();
+    clearVote.destroy();
+    campfireVote.destroy();
+    revokeObjectUrls();
   };
 }

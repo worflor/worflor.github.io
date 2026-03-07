@@ -9,8 +9,9 @@
  * race trackers but kill the loser immediately, send `stopped` on exit.
  */
 
-import { sha256, randomBytes } from "./wasm";
+import { randomBytes } from "./wasm";
 import { TE, hkdf } from "./live-crypto";
+import { derivePhraseRoot, derivePhraseScopedKey } from "./live-handshake";
 
 /* ── API ──────────────────────────────────────────────────── */
 
@@ -58,7 +59,12 @@ const ZERO_SALT_32 = new Uint8Array(32);
 
 /** Hash the phrase once for use across all tracker derivations. Caller must wipe. */
 async function trackerPhraseHash(phrase: string): Promise<Uint8Array> {
-  return sha256(TE.encode("whisper-tracker|" + phrase));
+  const phraseRoot = await derivePhraseRoot(phrase);
+  try {
+    return await derivePhraseScopedKey(phraseRoot, "tracker-root", 32);
+  } finally {
+    phraseRoot.fill(0);
+  }
 }
 
 export async function deriveInfoHashes(phrase: string): Promise<string[]> {
@@ -213,8 +219,22 @@ export function createTrackerPool(
   let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 
   const sockets = new Map<string, WebSocket>();
+  const connectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const reconnectDelayByUrl = new Map<string, number>();
+  const clearConnectTimer = (url: string): void => {
+    const timer = connectTimers.get(url);
+    if (timer) clearTimeout(timer);
+    connectTimers.delete(url);
+  };
+
+  const closeSocket = (ws: WebSocket): void => {
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    try { ws.close(1000); } catch { /* noop */ }
+  };
 
   // ── send helpers ──
 
@@ -298,6 +318,7 @@ export function createTrackerPool(
     let closeHandled = false;
     let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       connectTimer = null;
+      connectTimers.delete(url);
       if (closeHandled) return;
       closeHandled = true;
       const sock = sockets.get(url);
@@ -307,12 +328,14 @@ export function createTrackerPool(
       }
       if (!destroyed) scheduleReconnect(url);
     }, POOL_CONNECT_TIMEOUT);
+    connectTimers.set(url, connectTimer);
 
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
     } catch {
-      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+      if (connectTimer) connectTimer = null;
+      clearConnectTimer(url);
       scheduleReconnect(url);
       return;
     }
@@ -321,7 +344,8 @@ export function createTrackerPool(
     const handleDrop = () => {
       if (closeHandled) return;
       closeHandled = true;
-      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+      connectTimer = null;
+      clearConnectTimer(url);
       const cur = sockets.get(url);
       if (cur === ws) sockets.delete(url);
       if (!destroyed) {
@@ -334,7 +358,8 @@ export function createTrackerPool(
 
     ws.onopen = () => {
       opened = true;
-      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+      connectTimer = null;
+      clearConnectTimer(url);
       if (destroyed) return;
 
       reconnectDelayByUrl.set(url, POOL_RECONNECT_BASE);
@@ -375,10 +400,14 @@ export function createTrackerPool(
   const destroy = (): void => {
     if (destroyed) return;
     destroyed = true;
+    signal.removeEventListener("abort", onAbort);
 
     if (maintenanceTimer) { clearInterval(maintenanceTimer); maintenanceTimer = null; }
+    for (const t of connectTimers.values()) clearTimeout(t);
+    connectTimers.clear();
     for (const t of reconnectTimers.values()) clearTimeout(t);
     reconnectTimers.clear();
+    reconnectDelayByUrl.clear();
 
     const stoppedPayloads = makeTrackerStoppedPayloads(currentHashes, peerId);
     for (const ws of sockets.values()) {
@@ -387,9 +416,13 @@ export function createTrackerPool(
           try { ws.send(payload); } catch { break; }
         }
       }
-      try { ws.close(1000); } catch { /* noop */ }
+      closeSocket(ws);
     }
     sockets.clear();
+  };
+
+  const onAbort = (): void => {
+    destroy();
   };
 
   // ── auto-destroy on abort ──
@@ -397,13 +430,21 @@ export function createTrackerPool(
   if (signal.aborted) {
     destroyed = true;
   } else {
-    signal.addEventListener("abort", destroy, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
   }
 
   // ── connect to all trackers ──
 
   if (!destroyed) {
-    for (const url of TRACKER_URLS) connectToUrl(url);
+    void deriveTrackerOrder(phrase, TRACKER_URLS)
+      .then((orderedTrackers) => {
+        if (destroyed) return;
+        for (const url of orderedTrackers) connectToUrl(url);
+      })
+      .catch(() => {
+        if (destroyed) return;
+        for (const url of TRACKER_URLS) connectToUrl(url);
+      });
   }
 
   return {
@@ -435,13 +476,14 @@ export async function exchangeViaTracker(
 
   const totalAc = new AbortController();
   const totalTimer = setTimeout(() => totalAc.abort(), TOTAL_TIMEOUT);
+  const onExternalAbort = (): void => totalAc.abort();
 
   if (signal) {
     if (signal.aborted) {
       clearTimeout(totalTimer);
       throw new DOMException("Aborted", "AbortError");
     }
-    signal.addEventListener("abort", () => totalAc.abort(), { once: true });
+    signal.addEventListener("abort", onExternalAbort, { once: true });
   }
 
   // Stagger tracker attempts to reduce simultaneous socket load on public relays,
@@ -454,15 +496,18 @@ export async function exchangeViaTracker(
         ? connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal)
         : new Promise<TrackerSignalResult>((resolve, reject) => {
           const timer = setTimeout(() => {
+            totalAc.signal.removeEventListener("abort", onAbort);
             connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal)
               .then(resolve)
               .catch(reject);
           }, TRACKER_SECOND_ATTEMPT_DELAY * index);
 
-          totalAc.signal.addEventListener("abort", () => {
+          const onAbort = () => {
             clearTimeout(timer);
             reject(new DOMException("Aborted", "AbortError"));
-          }, { once: true });
+          };
+
+          totalAc.signal.addEventListener("abort", onAbort, { once: true });
         }),
     );
     return await Promise.any(attempts);
@@ -477,6 +522,7 @@ export async function exchangeViaTracker(
     throw err;
   } finally {
     clearTimeout(totalTimer);
+    if (signal) signal.removeEventListener("abort", onExternalAbort);
     totalAc.abort();
   }
 }
@@ -504,7 +550,7 @@ function connectToTracker(
     let ws: WebSocket | null = null;
     let done = false;
     let offerAccepted = false;
-    let discoveryTimer: ReturnType<typeof setTimeout>;
+    let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
     let reannounceTimer: ReturnType<typeof setInterval> | null = null;
 
     // Pre-serialize announce payloads — one per hash, reused as-is
@@ -512,12 +558,16 @@ function connectToTracker(
 
     // Pre-serialize stopped payloads
     const stoppedPayloads = makeTrackerStoppedPayloads(infoHashes, peerId);
+    const onAbort = () => {
+      finish(undefined, new DOMException("Aborted", "AbortError"));
+    };
 
     const finish = (result?: TrackerSignalResult, error?: Error) => {
       if (done) return;
       done = true;
+      signal.removeEventListener("abort", onAbort);
       clearTimeout(connectTimer);
-      clearTimeout(discoveryTimer);
+      if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
       if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
 
       // Politely deregister from all swarms before closing
@@ -528,8 +578,18 @@ function connectToTracker(
         // Close with 1000 (normal closure) — tells the server this was
         // intentional so it can reclaim resources immediately rather than
         // waiting for TCP FIN timeout.
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
         try { ws.close(1000); } catch { /* noop */ }
       } else {
+        if (ws) {
+          ws.onopen = null;
+          ws.onmessage = null;
+          ws.onerror = null;
+          ws.onclose = null;
+        }
         try { ws?.close(1000); } catch { /* noop */ }
       }
       ws = null;
@@ -538,9 +598,7 @@ function connectToTracker(
       else reject(error ?? new Error("relay-unavailable"));
     };
 
-    signal.addEventListener("abort", () => {
-      finish(undefined, new DOMException("Aborted", "AbortError"));
-    }, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
 
     const connectTimer = setTimeout(() => {
       finish(undefined, new Error("relay-unavailable"));
@@ -615,7 +673,10 @@ function connectToTracker(
           return;
         }
         offerAccepted = true;
-        clearTimeout(discoveryTimer);
+        if (discoveryTimer) {
+          clearTimeout(discoveryTimer);
+          discoveryTimer = null;
+        }
         if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
 
         callbacks.onStatus("found your peer!");

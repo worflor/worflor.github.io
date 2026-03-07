@@ -54,26 +54,31 @@ export async function maintainFlare(
   const peerId = randomBinId();
   const initialHashes = await deriveInfoHashes(phrase);
   const seenOffers = new Set<string>();
-  let awaitingPeerDecision = false;
+  let peerFlowActive = false;
 
   callbacks.onLog("flare room ready");
 
   return new Promise<FlareResult>((resolve, reject) => {
     let done = false;
+    let pool: ReturnType<typeof createTrackerPool> | null = null;
+
+    const onAbort = () => {
+      finish(undefined, new DOMException("Aborted", "AbortError"));
+    };
 
     const finish = (result?: FlareResult, error?: Error) => {
       if (done) return;
       done = true;
-      pool.destroy();
+      signal.removeEventListener("abort", onAbort);
+      pool?.destroy();
+      pool = null;
       if (result) resolve(result);
       else reject(error ?? new Error("flare-failed"));
     };
 
-    signal.addEventListener("abort", () => {
-      finish(undefined, new DOMException("Aborted", "AbortError"));
-    }, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
 
-    const pool = createTrackerPool(phrase, peerId, initialHashes, {
+    pool = createTrackerPool(phrase, peerId, initialHashes, {
       onLog: (msg) => callbacks.onLog(`flare ${msg}`),
 
       makeAnnounce: (hashes) => makeTrackerPresencePayloads(hashes, peerId),
@@ -96,7 +101,7 @@ export async function maintainFlare(
 
         // flare only handles incoming offers, it never sends offers
         if (!msg.offer || typeof msg.offer !== "object") return;
-        if (awaitingPeerDecision) return;
+        if (peerFlowActive) return;
 
         const offer = msg.offer as Record<string, unknown>;
         const peerOfferCode = unpadCode(String(offer.sdp ?? ""));
@@ -116,14 +121,14 @@ export async function maintainFlare(
 
         callbacks.onLog("someone found your flare");
 
-        const replyHash = typeof msg.info_hash === "string" ? msg.info_hash : pool.hashes[0];
+        const replyHash = typeof msg.info_hash === "string" ? msg.info_hash : initialHashes[0];
 
         // ask the UI if the user wants to accept
-        awaitingPeerDecision = true;
+        peerFlowActive = true;
         void callbacks.onPeerArrived().then(async (accepted) => {
-          awaitingPeerDecision = false;
           if (done) return;
           if (!accepted) {
+            peerFlowActive = false;
             callbacks.onLog("peer ignored, still listening");
             callbacks.onStatus("flare is burning");
             return;
@@ -154,11 +159,12 @@ export async function maintainFlare(
             finish({ peerOfferCode });
           } catch {
             if (done) return;
+            peerFlowActive = false;
             callbacks.onLog("accept failed, still listening");
             callbacks.onStatus("flare is burning");
           }
         }).catch(() => {
-          awaitingPeerDecision = false;
+          peerFlowActive = false;
         });
       },
     }, signal);
