@@ -10,6 +10,7 @@ import { createStrokeSampler, sampleStrokePoint, type StrokeSamplerState } from 
 import { type DrawBaseMime, type DrawStreamEventNoSeq, type DrawTool } from "./live-draw-stream";
 import { GlyphCodec, GlyphStreamEncoder } from "./live-wasm-glyph";
 import { encode0D } from "./live-wasm-logos";
+import { parseGwyphPayload, renderGwyphScene, type GlyphPayload } from "./live-gwyph";
 
 /* ── Draw → message transition preview ────────────────────── */
 // Thumbnail stashed just before onSend, consumed by live-ui.ts
@@ -40,6 +41,8 @@ export interface DrawConfig {
   mediaEl?: HTMLImageElement | HTMLVideoElement;
   /** Original filename when annotating — used for output naming + format matching. */
   originalName?: string;
+  /** Raw gwyph bytes when annotating a gwyph file — skips rasterization entirely. */
+  gwyphBase?: Uint8Array;
   signal: AbortSignal;
 }
 
@@ -452,10 +455,17 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   const dpr = window.devicePixelRatio || 1;
   let logicalW = 0;
   let logicalH = 0;
+  const gwyphBasePayload: GlyphPayload | null = config.gwyphBase
+    ? parseGwyphPayload(config.gwyphBase)
+    : null;
 
   // Source media dimensions — precomputed once for sizing + encoding
   const { srcAspect, srcNatW, srcNatH } = (() => {
-    if (isBlank) return { srcAspect: 4 / 3, srcNatW: 1066, srcNatH: 800 };
+    if (gwyphBasePayload) {
+      const w = gwyphBasePayload.logicalW, h = gwyphBasePayload.logicalH;
+      return { srcAspect: w / h || 4 / 3, srcNatW: w, srcNatH: h };
+    }
+    if (isBlank || config.gwyphBase) return { srcAspect: 4 / 3, srcNatW: 1066, srcNatH: 800 };
     const media = config.mediaEl!;
     const srcNatW = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
     const srcNatH = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
@@ -463,8 +473,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   })();
 
   function computeLogicalSize(maxW: number, maxH: number): { w: number; h: number } {
-    const capW = isBlank ? srcNatW : Math.min(srcNatW, 1200);
-    const capH = isBlank ? srcNatH : Math.min(srcNatH, 900);
+    const capW = (isBlank || config.gwyphBase) ? srcNatW : Math.min(srcNatW, 1200);
+    const capH = (isBlank || config.gwyphBase) ? srcNatH : Math.min(srcNatH, 900);
     if (maxW / maxH > srcAspect) {
       const h = Math.min(maxH, capH);
       return { w: Math.round(h * srcAspect), h };
@@ -1779,14 +1789,17 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     }
   }
 
-  function encodeGwyphPayloadV3Raw(): Uint8Array {
+  function encodeGwyphPayloadV3Raw(
+    strokesOut: StrokeEntry[] = strokes,
+    modeOut: "blank" | "annotate" = isBlank ? "blank" : "annotate",
+  ): Uint8Array {
     // v3 raw:
     // mode[1], logicalW[2], logicalH[2], paletteCount[var], paletteRgb[3*n], strokeCount[var]
     // pen stroke tag[1] bit0=0 bit1=eraser, [colorIdx[var] if pen], widthQ8[2], pointCount[var],
     //   p0 xyzQ15[2*3], p1 xyzQ15[2*3], packedGlyphLen[var], packedGlyph[bytes]
     // fill stroke tag[1] bit0=1, colorIdx[var], tolerance[2], seedXQ15[2], seedYQ15[2]
     const w = new ByteWriter();
-    w.u8(config.mode === "blank" ? 0 : 1);
+    w.u8(modeOut === "blank" ? 0 : 1);
     w.u16(Math.max(1, Math.min(65535, logicalW | 0)));
     w.u16(Math.max(1, Math.min(65535, logicalH | 0)));
 
@@ -1801,7 +1814,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       paletteMap.set(key, idx);
       return idx;
     };
-    for (const stroke of strokes) {
+    for (const stroke of strokesOut) {
       if (stroke.type === "fill") {
         internColor(stroke.color);
         continue;
@@ -1817,9 +1830,9 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       w.u8(b);
     }
 
-    w.varUint(strokes.length);
+    w.varUint(strokesOut.length);
 
-    for (const stroke of strokes) {
+    for (const stroke of strokesOut) {
       if (stroke.type === "fill") {
         w.u8(0x01);
         w.varUint(internColor(stroke.color));
@@ -1862,8 +1875,11 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     return w.finish();
   }
 
-  function encodeGwyphPayload(): Uint8Array {
-    const raw = encodeGwyphPayloadV3Raw();
+  function encodeGwyphPayload(
+    strokesOut?: StrokeEntry[],
+    modeOut?: "blank" | "annotate",
+  ): Uint8Array {
+    const raw = encodeGwyphPayloadV3Raw(strokesOut, modeOut);
     const compressed = encode0D(raw);
     const out = new Uint8Array(9 + compressed.length);
     out[0] = 0x47; // G
@@ -1960,7 +1976,37 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     if (strokes.length === 0) return;
 
     const baseName = resolveOutputName();
-    if (!isBlank) {
+
+    if (config.gwyphBase && gwyphBasePayload) {
+      const ws = Math.min(
+        logicalW / Math.max(1, gwyphBasePayload.logicalW),
+        logicalH / Math.max(1, gwyphBasePayload.logicalH),
+      );
+      const baseStrokes: StrokeEntry[] = gwyphBasePayload.strokes.map(s =>
+        s.type === "fill"
+          ? { type: "fill", seedX: s.seedX * logicalW, seedY: s.seedY * logicalH,
+              color: s.color, tolerance: s.tolerance }
+          : { type: "pen", penId: s.tool, color: s.color, width: s.width * ws,
+              points: s.points },
+      );
+      const payload = encodeGwyphPayload([...baseStrokes, ...strokes], gwyphBasePayload.mode);
+      const payloadBuffer = new ArrayBuffer(payload.byteLength);
+      new Uint8Array(payloadBuffer).set(payload);
+      const previewComposite = document.createElement("canvas");
+      previewComposite.width = drawingCanvas.width;
+      previewComposite.height = drawingCanvas.height;
+      const previewCtx = previewComposite.getContext("2d")!;
+      previewCtx.drawImage(bgCanvas, 0, 0);
+      previewCtx.drawImage(drawingCanvas, 0, 0);
+      setDrawPreview(captureDrawPreview(previewComposite));
+      callbacks.onSend({
+        file: new File([payloadBuffer], `${baseName}.${OUT_EXT}`, { type: OUT_MIME }),
+      });
+      closeDraw();
+      return;
+    }
+
+    if (!isBlank && !config.gwyphBase) {
       const composite = document.createElement("canvas");
       composite.width = drawingCanvas.width;
       composite.height = drawingCanvas.height;
@@ -2113,7 +2159,12 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
     ctx.scale(dpr, dpr);
     bgCtx.scale(dpr, dpr);
-    if (isBlank) {
+    if (gwyphBasePayload) {
+      bgCtx.save();
+      bgCtx.setTransform(1, 0, 0, 1, 0, 0);
+      renderGwyphScene(bgCtx, gwyphBasePayload, logicalW * dpr, logicalH * dpr);
+      bgCtx.restore();
+    } else if (isBlank || config.gwyphBase) {
       bgCtx.fillStyle = BLANK_BG;
       bgCtx.fillRect(0, 0, logicalW, logicalH);
     } else {

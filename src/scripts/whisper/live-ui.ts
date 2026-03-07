@@ -1938,17 +1938,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     annotateBtn.title = "Draw";
     annotateBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     annotateBtn.addEventListener("click", () => {
-      if (kind === "glyph") {
-        const canvas = inner.querySelector("canvas.wl-peer-draw-inline");
-        if (!(canvas instanceof HTMLCanvasElement)) return;
-        const img = new Image();
-        img.onload = () => {
-          openManagedDrawSurface({ mode: "annotate", mediaEl: img, originalName: fileName }, {
-            onSend: (r) => sendFileToChat(r.file, "draw"),
-            onEvent: (ev) => session?.sendDrawStream(ev),
-          }, lbSignal);
-        };
-        img.src = canvas.toDataURL("image/png");
+      if (kind === "glyph" && glyphBytes) {
+        openManagedDrawSurface({ mode: "annotate", gwyphBase: glyphBytes, originalName: fileName }, {
+          onSend: (r) => sendFileToChat(r.file, "draw"),
+          onEvent: (ev) => session?.sendDrawStream(ev),
+        }, lbSignal);
         return;
       }
       const mediaEl = inner.querySelector("img, video") as HTMLImageElement | HTMLVideoElement | null;
