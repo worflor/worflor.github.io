@@ -11,6 +11,28 @@ import { type DrawBaseMime, type DrawStreamEventNoSeq, type DrawTool } from "./l
 import { GlyphCodec, GlyphStreamEncoder } from "./live-wasm-glyph";
 import { encode0D } from "./live-wasm-logos";
 
+/* ── Draw → message transition preview ────────────────────── */
+// Thumbnail stashed just before onSend, consumed by live-ui.ts
+// to show the glyph instantly in the message bubble while the
+// draw overlay fades out.  Auto-expires after 2 s to prevent
+// stale previews leaking to unrelated messages.
+
+let _drawPreview: HTMLCanvasElement | null = null;
+let _drawPreviewTimer = 0;
+
+function setDrawPreview(c: HTMLCanvasElement): void {
+  clearTimeout(_drawPreviewTimer);
+  _drawPreview = c;
+  _drawPreviewTimer = setTimeout(() => { _drawPreview = null; }, 2000) as unknown as number;
+}
+
+export function consumeDrawPreview(): HTMLCanvasElement | null {
+  const p = _drawPreview;
+  _drawPreview = null;
+  clearTimeout(_drawPreviewTimer);
+  return p;
+}
+
 /* ── Types ────────────────────────────────────────────────── */
 
 export interface DrawConfig {
@@ -161,7 +183,7 @@ const DRAW_BASE_STREAM_MAX_EDGE = 960;
 const DRAW_BASE_STREAM_WEBP_QUALITY = 0.68;
 const DRAW_BASE_STREAM_CHUNK_BYTES = 240;
 
-  let drawHintShown = false;
+let drawHintShown = false;
 
 let drawBodyLockDepth = 0;
 let drawBodyLockSnapshot: {
@@ -428,56 +450,32 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   /* ── Canvas setup ──────────────────────────────────────── */
 
   const dpr = window.devicePixelRatio || 1;
-  let logicalW: number;
-  let logicalH: number;
+  let logicalW = 0;
+  let logicalH = 0;
 
-  if (isBlank) {
-    const maxW = window.innerWidth - 48;
-    const maxH = window.innerHeight - 140;
-    if (maxW / maxH > 4 / 3) {
-      logicalH = Math.min(maxH, 800);
-      logicalW = Math.round(logicalH * 4 / 3);
-    } else {
-      logicalW = Math.min(maxW, 1066);
-      logicalH = Math.round(logicalW * 3 / 4);
-    }
-  } else {
+  // Source media dimensions — precomputed once for sizing + encoding
+  const { srcAspect, srcNatW, srcNatH } = (() => {
+    if (isBlank) return { srcAspect: 4 / 3, srcNatW: 1066, srcNatH: 800 };
     const media = config.mediaEl!;
-    const natW = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
-    const natH = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
-    const aspect = natW / natH || 4 / 3;
-    const maxW = window.innerWidth - 48;
-    const maxH = window.innerHeight - 140;
-    if (maxW / maxH > aspect) {
-      logicalH = Math.min(maxH, natH, 900);
-      logicalW = Math.round(logicalH * aspect);
-    } else {
-      logicalW = Math.min(maxW, natW, 1200);
-      logicalH = Math.round(logicalW / aspect);
+    const srcNatW = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
+    const srcNatH = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
+    return { srcAspect: srcNatW / srcNatH || 4 / 3, srcNatW, srcNatH };
+  })();
+
+  function computeLogicalSize(maxW: number, maxH: number): { w: number; h: number } {
+    const capW = isBlank ? srcNatW : Math.min(srcNatW, 1200);
+    const capH = isBlank ? srcNatH : Math.min(srcNatH, 900);
+    if (maxW / maxH > srcAspect) {
+      const h = Math.min(maxH, capH);
+      return { w: Math.round(h * srcAspect), h };
     }
+    const w = Math.min(maxW, capW);
+    return { w, h: Math.round(w / srcAspect) };
   }
 
-  drawingCanvas.width = logicalW * dpr;
-  drawingCanvas.height = logicalH * dpr;
-  drawingCanvas.style.width = `${logicalW}px`;
-  drawingCanvas.style.height = `${logicalH}px`;
-
-  bgCanvas.width = logicalW * dpr;
-  bgCanvas.height = logicalH * dpr;
-  bgCanvas.style.width = `${logicalW}px`;
-  bgCanvas.style.height = `${logicalH}px`;
-
+  // Canvas 2D contexts — obtained early; scale() applied after sizing in rAF
   const ctx = drawingCanvas.getContext("2d")!;   // keep alias "ctx" to minimise diff
-  ctx.scale(dpr, dpr);
-
   const bgCtx = bgCanvas.getContext("2d")!;
-  bgCtx.scale(dpr, dpr);
-  if (isBlank) {
-    bgCtx.fillStyle = BLANK_BG;
-    bgCtx.fillRect(0, 0, logicalW, logicalH);
-  } else {
-    bgCtx.drawImage(config.mediaEl!, 0, 0, logicalW, logicalH);
-  }
 
   /* ── State ─────────────────────────────────────────────── */
 
@@ -583,6 +581,20 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const second = it.next().value;
     if (!first || !second) return null;
     return [first, second];
+  }
+
+  function startPinch(): void {
+    const pts = getFirstTwoPointers();
+    if (!pts) return;
+    const dx = pts[1].x - pts[0].x;
+    const dy = pts[1].y - pts[0].y;
+    pinchStartDist = Math.sqrt(dx * dx + dy * dy);
+    pinchStartZoom = viewZoom;
+    pinchStartMidX = (pts[0].x + pts[1].x) / 2;
+    pinchStartMidY = (pts[0].y + pts[1].y) / 2;
+    pinchStartPanX = viewPanX;
+    pinchStartPanY = viewPanY;
+    pinchActive = false;
   }
 
   function clampPan(): void {
@@ -717,8 +729,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   }
 
   function setTool(tool: ToolId): void {
-    const nextTool = tool;
-    const enteringNonStrokeTool = (nextTool === "fill" || nextTool === "eyedropper");
+    const enteringNonStrokeTool = (tool === "fill" || tool === "eyedropper");
     if (enteringNonStrokeTool && activePointerId !== -1 && currentStroke) {
       if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
       flushPoints();
@@ -742,7 +753,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       pendingPoints.length = 0;
       activePointerId = -1;
     }
-    currentTool = nextTool;
+    currentTool = tool;
     updateToolbar();
     if (!enteringNonStrokeTool) maybeSplitActiveStrokeForStyleChange();
   }
@@ -822,8 +833,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   }
 
   function shouldSuppressSwatchClick(): boolean {
-    if (performance.now() < suppressSwatchClickUntil) return true;
-    return false;
+    return performance.now() < suppressSwatchClickUntil;
   }
 
   function shapedDragDelta(px: number): number {
@@ -1122,12 +1132,9 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
   /* ── Undo/Redo ─────────────────────────────────────────── */
 
-  const checkpointBytes = drawingCanvas.width * drawingCanvas.height * 4;
-  const checkpointCapacity = Math.max(
-    1,
-    Math.min(CHECKPOINT_MAX_COUNT, Math.floor(CHECKPOINT_MAX_BYTES / Math.max(1, checkpointBytes))),
-  );
-  const checkpointStride = checkpointCapacity <= 2 ? CHECKPOINT_EVERY * 3 : CHECKPOINT_EVERY;
+  // Initialized conservatively; recomputed in rAF after canvas is sized.
+  let checkpointCapacity = CHECKPOINT_MAX_COUNT;
+  let checkpointStride = CHECKPOINT_EVERY;
 
   function trimCheckpoints(): void {
     if (checkpoints.length <= checkpointCapacity) return;
@@ -1355,19 +1362,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       if (pointers.size >= 2) {
         cancelActiveStroke();
         activePointerId = -1;
-        if (pointers.size === 2) {
-          const pts = getFirstTwoPointers();
-          if (!pts) return;
-          const dx = pts[1].x - pts[0].x;
-          const dy = pts[1].y - pts[0].y;
-          pinchStartDist = Math.sqrt(dx * dx + dy * dy);
-          pinchStartZoom = viewZoom;
-          pinchStartMidX = (pts[0].x + pts[1].x) / 2;
-          pinchStartMidY = (pts[0].y + pts[1].y) / 2;
-          pinchStartPanX = viewPanX;
-          pinchStartPanY = viewPanY;
-          pinchActive = false;
-        }
+        if (pointers.size === 2) startPinch();
       }
       return;
     }
@@ -1376,19 +1371,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     if (pointers.size >= 2) {
       cancelActiveStroke();
       activePointerId = -1;
-      if (pointers.size === 2) {
-        const pts = getFirstTwoPointers();
-        if (!pts) return;
-        const dx = pts[1].x - pts[0].x;
-        const dy = pts[1].y - pts[0].y;
-        pinchStartDist = Math.sqrt(dx * dx + dy * dy);
-        pinchStartZoom = viewZoom;
-        pinchStartMidX = (pts[0].x + pts[1].x) / 2;
-        pinchStartMidY = (pts[0].y + pts[1].y) / 2;
-        pinchStartPanX = viewPanX;
-        pinchStartPanY = viewPanY;
-        pinchActive = false;
-      }
+      if (pointers.size === 2) startPinch();
       return;
     }
 
@@ -1996,6 +1979,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
         ext = "png";
       }
       if (!blob) return;
+      setDrawPreview(captureDrawPreview(composite));
       callbacks.onSend({ file: new File([blob], `${baseName}.${ext}`, { type: mime }) });
       closeDraw();
       return;
@@ -2004,17 +1988,30 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const payload = encodeGwyphPayload();
     const payloadBuffer = new ArrayBuffer(payload.byteLength);
     new Uint8Array(payloadBuffer).set(payload);
+    setDrawPreview(captureDrawPreview(drawingCanvas));
     callbacks.onSend({ file: new File([payloadBuffer], `${baseName}.${OUT_EXT}`, { type: OUT_MIME }) });
     closeDraw();
   }, { signal: ds });
+
+  // render a message-bubble-scale snapshot of the draw surface
+  function captureDrawPreview(src: HTMLCanvasElement): HTMLCanvasElement {
+    const pw = 288; // ~18 rem — matches .wl-msg-media max-width
+    const ph = Math.max(1, Math.round(pw * (src.height / (src.width || 1))));
+    const c = document.createElement("canvas");
+    c.width = pw; c.height = ph;
+    const pctx = c.getContext("2d")!;
+    pctx.fillStyle = "#1a1a1a";
+    pctx.fillRect(0, 0, pw, ph);
+    pctx.drawImage(src, 0, 0, pw, ph);
+    return c;
+  }
 
   /* ── Close ──────────────────────────────────────────────── */
 
   function closeDraw(): void {
     if (closed) return;
     resetCloseConfirm();
-    drawAc.abort();
-    teardownDraw();
+    drawAc.abort(); // synchronously fires teardownDraw via ds abort listener
   }
 
   // Confirm-to-close: first press with strokes enters confirm state, second closes
@@ -2086,6 +2083,43 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
   document.body.appendChild(overlay);
   requestAnimationFrame(() => {
+    /* ── Size canvas now that toolbar is in the DOM and measurable ── */
+    const vp = window.visualViewport;
+    const vph = vp?.height ?? window.innerHeight;
+    const vpw = vp?.width  ?? window.innerWidth;
+    const safeTop = parseFloat(getComputedStyle(overlay).paddingTop)    || 0;
+    const safeBot = parseFloat(getComputedStyle(overlay).paddingBottom) || 0;
+    const toolbarH = toolbar.getBoundingClientRect().height;
+    const gapPx    = parseFloat(getComputedStyle(overlay).gap) || 12;
+    const overhead = toolbarH + gapPx * 2 + safeTop + safeBot + 24;
+
+    const { w, h } = computeLogicalSize(vpw - 48, vph - overhead);
+    logicalW = w;
+    logicalH = h;
+
+    for (const cvs of [drawingCanvas, bgCanvas] as const) {
+      cvs.width        = logicalW * dpr;
+      cvs.height       = logicalH * dpr;
+      cvs.style.width  = `${logicalW}px`;
+      cvs.style.height = `${logicalH}px`;
+    }
+
+    const checkpointBytes = drawingCanvas.width * drawingCanvas.height * 4;
+    checkpointCapacity = Math.max(
+      1,
+      Math.min(CHECKPOINT_MAX_COUNT, Math.floor(CHECKPOINT_MAX_BYTES / Math.max(1, checkpointBytes))),
+    );
+    checkpointStride = checkpointCapacity <= 2 ? CHECKPOINT_EVERY * 3 : CHECKPOINT_EVERY;
+
+    ctx.scale(dpr, dpr);
+    bgCtx.scale(dpr, dpr);
+    if (isBlank) {
+      bgCtx.fillStyle = BLANK_BG;
+      bgCtx.fillRect(0, 0, logicalW, logicalH);
+    } else {
+      bgCtx.drawImage(config.mediaEl!, 0, 0, logicalW, logicalH);
+    }
+
     overlay.classList.add("--open");
     overlay.focus({ preventScroll: true });
     if (!drawHintShown) {

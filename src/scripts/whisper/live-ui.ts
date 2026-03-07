@@ -44,7 +44,7 @@ import {
   getQrScannerCapability,
   renderQrToCanvas,
 } from "./seal-qr";
-import { openDrawSurface } from "./live-draw";
+import { openDrawSurface, consumeDrawPreview } from "./live-draw";
 import { type DrawStreamEvent } from "./live-draw-stream";
 import { GlyphStreamDecoder } from "./live-wasm-glyph";
 import { exchangeViaTracker } from "./live-tracker";
@@ -2026,6 +2026,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     glyphBytes: Uint8Array,
     abortSignal: AbortSignal,
     aspectRatioHint?: string,
+    drawPreview?: HTMLCanvasElement | null,
   ): HTMLElement {
     const root = document.createElement("div");
     root.className = "wl-msg-media wl-msg-peer-draw";
@@ -2038,6 +2039,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const canvas = document.createElement("canvas");
     canvas.className = "wl-peer-draw-inline";
     thumb.appendChild(canvas);
+
+    // immediate first frame from draw preview — avoids blank flash before
+    // bindGlyphCanvasToHost repaints at proper resolution on next resize
+    if (drawPreview) {
+      canvas.width = drawPreview.width;
+      canvas.height = drawPreview.height;
+      const pctx = canvas.getContext("2d");
+      if (pctx) pctx.drawImage(drawPreview, 0, 0);
+    }
 
     bindGlyphCanvasToHost(canvas, thumb, glyph, abortSignal);
 
@@ -2109,7 +2119,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     schedule();
   }
 
-  function renderMediaMessage(msg: LiveMessage, abortSignal: AbortSignal): HTMLElement {
+  function renderMediaMessage(msg: LiveMessage, abortSignal: AbortSignal, drawPreview?: HTMLCanvasElement | null): HTMLElement {
     const { kind, mime } = detectMedia(msg)!;
     const fileData = msg.fileData!;
     const fileName = msg.fileName ?? "file";
@@ -2144,7 +2154,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         return fallback;
       }
 
-      return renderGlyphMediaMessage(fileName, fileSize, glyph, glyphBytes, abortSignal);
+      return renderGlyphMediaMessage(fileName, fileSize, glyph, glyphBytes, abortSignal, undefined, drawPreview);
     }
 
     // Display blob uses the resolved MIME so the browser can decode it.
@@ -3243,6 +3253,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function addChatMessage(msg: LiveMessage): void {
     // Hide empty-state hint on first real message
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
+
+    // consume draw preview early — covers both glyph and annotate paths
+    const drawPreview = (msg.direction === "self" && msg.type === "file")
+      ? consumeDrawPreview() : null;
+
     const media = msg.type === "file" ? detectMedia(msg) : null;
 
     // If a streamed peer preview exists, replace it in-place with the finalized
@@ -3672,7 +3687,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (merged) {
         div.appendChild(merged);
       } else {
-        div.appendChild(renderMediaMessage(msg, signal));
+        div.appendChild(renderMediaMessage(msg, signal, drawPreview));
       }
     } else if (msg.type === "file") {
       const fileEl = document.createElement("div");
@@ -3721,6 +3736,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     div.appendChild(timeEl);
 
     if (msg.direction === "peer") hidePeerTyping();
+
+    // draw → message dissolve: cross-fade with the draw overlay's 200 ms
+    // opacity transition instead of the default slide-in entrance
+    if (drawPreview && !reduceMotion) {
+      div.style.animation = "none";
+      div.animate(
+        [{ opacity: 0, transform: "scale(0.96)" }, { opacity: 1, transform: "scale(1)" }],
+        { duration: 260, delay: 80, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "backwards" },
+      );
+    }
 
     if (replacePeerPreview && replacePeerPreview.parentElement === opts.chatMessages) {
       opts.chatMessages.replaceChild(div, replacePeerPreview);

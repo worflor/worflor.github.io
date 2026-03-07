@@ -2654,6 +2654,9 @@
     overflow: hidden;
     /* Explicit baseline so toolbar/controls at z-index:1 always paint above */
     z-index: 0;
+    /* Safety net: clip canvas before it can push the toolbar off-screen.
+       dvh excludes mobile browser chrome; env() accounts for notch/home bar. */
+    max-height: calc(100dvh - 7rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   }
 
   :global(.wl-draw-bg-canvas) {
