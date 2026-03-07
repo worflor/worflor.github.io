@@ -563,8 +563,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           copyMenuFeedbackTimeout = setTimeout(hideCopyMenu, 720);
         } catch (err) {
           menuEl.disabled = false;
-          menuEl.textContent = "Copy failed";
-          menuEl.setAttribute("aria-label", "Copy failed");
+          menuEl.textContent = "copy failed";
+          menuEl.setAttribute("aria-label", "copy failed");
           menuEl.classList.remove("wl-copy-menu--copied");
           menuEl.classList.add("wl-copy-menu--error");
           haptic("send-failed");
@@ -2346,25 +2346,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
   }
 
-  function startScriptProcessorCapture(ctx: AudioContext, stream: MediaStream): void {
-    const source = ctx.createMediaStreamSource(stream);
-    micSourceNode = source; // Prevent GC
-    if (micAnalyserNode) source.connect(micAnalyserNode);
-    // @ts-ignore – deprecated but still the most cross-browser capture fallback
-    const proc = ctx.createScriptProcessor(4096, 1, 1);
-    // @ts-ignore
-    proc.onaudioprocess = (ev: AudioProcessingEvent) => {
-      const ch = ev.inputBuffer.getChannelData(0);
-      pcmChunks.push(ch.slice());
-    };
-    source.connect(proc);
-    micSinkNode = ctx.createGain();
-    micSinkNode.gain.value = 0;
-    proc.connect(micSinkNode);
-    micSinkNode.connect(ctx.destination);
-    micWorkletNode = proc as unknown as AudioWorkletNode;
-  }
-
   let smoothedBass = 0, smoothedMid = 0, smoothedTreble = 0;
   let micGlowRafId: number | null = null;
 
@@ -2576,25 +2557,27 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           micCaptureWatchdog = setTimeout(() => {
             micCaptureWatchdog = null;
             if (!recordingStream || pcmChunks.length > 0) return;
-            appendLog("mic worklet produced no frames. using compatibility capture mode.");
+            appendLog("mic worklet produced no frames. this browser needs MediaRecorder or a working AudioWorklet path.");
             try { micWorkletNode?.disconnect(); } catch { }
             micWorkletNode = null;
             try { micSourceNode?.disconnect(); } catch { }
             micSourceNode = null;
             try { micSinkNode?.disconnect(); } catch { }
             micSinkNode = null;
-            try {
-              startScriptProcessorCapture(ctx, stream);
-            } catch (err) {
-              appendLog(`mic fallback capture failed: ${errMsg(err)}`);
-            }
+            void stopRecording();
           }, 700);
         } catch (e) {
-          // AudioWorklet unavailable (very old browsers) — fall back to ScriptProcessor
-          // @ts-ignore
-          console.warn("AudioWorklet failed, using fallback:", e);
+          console.warn("AudioWorklet capture unavailable:", e);
           URL.revokeObjectURL(blobUrl);
-          startScriptProcessorCapture(ctx, stream);
+          appendLog("mic compatibility capture unavailable here. try a newer browser or one with MediaRecorder support.");
+          for (const t of stream.getTracks()) t.stop();
+          recordingStream = null;
+          if (micAnalyserNode) {
+            try { micAnalyserNode.disconnect(); } catch { }
+            micAnalyserNode = null;
+          }
+          clearMicGlow();
+          return;
         }
       }
 

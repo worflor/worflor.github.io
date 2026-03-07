@@ -1211,15 +1211,12 @@ function copyAllData(
 }
 
 function fallbackCopy(text: string, toast: (message: string) => void): void {
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.style.cssText = "position:fixed;top:-9999px";
-  document.body.appendChild(ta);
-  ta.select();
-  // @ts-ignore deprecated fallback API kept for old browsers
-  try { document.execCommand("copy"); toast("copied to clipboard. dont dox yourself :)"); }
-  catch { toast("Copy failed"); }
-  finally { ta.remove(); }
+  try {
+    window.prompt("Clipboard access was blocked. Copy the mirror JSON below:", text);
+    toast("clipboard blocked. manual copy opened.");
+  } catch {
+    toast("Copy failed");
+  }
 }
 
 // ─── Expand / Collapse ────────────────────────────────────────────────────────

@@ -217,22 +217,8 @@ export async function copyToClipboard(text: string): Promise<void> {
     return;
   }
 
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.setAttribute("readonly", "");
-  ta.style.position = "fixed";
-  ta.style.top = "-1000px";
-  ta.style.left = "-1000px";
-  document.body.appendChild(ta);
-  try {
-    ta.focus();
-    ta.select();
-    // @ts-ignore deprecated fallback API kept for compatibility
-    const ok = document.execCommand("copy");
-    if (!ok) throw new Error("Copy failed.");
-  } finally {
-    document.body.removeChild(ta);
-  }
+  const accepted = window.prompt("Clipboard access was blocked. Copy the text below:", text);
+  if (accepted === null) throw new Error("Copy cancelled.");
 }
 
 /* ── Shared Logging ──────────────────────────────────────── */

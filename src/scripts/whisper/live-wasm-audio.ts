@@ -232,7 +232,6 @@ const SHR_s = [Op.I32_SHR_S];
 const SHR_u = [Op.I32_SHR_U];
 const ROTL = [Op.I32_ROTL];
 const AND = [Op.I32_AND];
-const OR = [Op.I32_OR];
 const XOR = [Op.I32_XOR];
 const CLZ = [Op.I32_CLZ];
 
@@ -374,7 +373,7 @@ function buildEncodeBody(): number[] {
     const i32_val = next_i32++, delta = next_i32++, z = next_i32++, mz = next_i32++, W_curr = next_i32++, temp = next_i32++;
     const crypto_i = next_i32++, crypto_words = next_i32++, cipher = next_i32++, idx = next_i32++, sample_count = next_i32++;
     const mac0 = next_i32++, mac1 = next_i32++, prev1 = next_i32++, prev2 = next_i32++, block_start = next_i32++, block_end = next_i32++;
-    const v = Array.from({ length: 16 }, (_, k) => next_i32++);
+    const v = Array.from({ length: 16 }, () => next_i32++);
     const K = next_i32++, G = next_i32++, bit_cnt = next_i32++, ch = next_i32++;
     const s31_anchor = next_i32++, pred_int = next_i32++, prevK = next_i32++, prevG = next_i32++, ch_state_ptr = next_i32++;
     const i32_locals_count = next_i32 - 5;
@@ -822,7 +821,7 @@ function buildDecodeBody(): number[] {
     const expMac0 = next_i32++, expMac1 = next_i32++, i = next_i32++, bit_cnt = next_i32++, block_start = next_i32++;
     const block_end = next_i32++, K = next_i32++, G = next_i32++, W_curr = next_i32++, ch = next_i32++;
     const s31_anchor = next_i32++, pred_int = next_i32++, prevK = next_i32++, prevG = next_i32++, ch_state_ptr = next_i32++;
-    const v = Array.from({ length: 16 }, (_, k) => next_i32++);
+    const v = Array.from({ length: 16 }, () => next_i32++);
     const i32_locals_count = next_i32 - 5;
 
     let next_f32 = next_i32;
@@ -1215,7 +1214,7 @@ function buildDecodeRawBody(): number[] {
 }
 
 function buildResetStateBody(addr: number): number[] {
-    const k0 = 0, k1 = 1, k2 = 2, k3 = 3;
+    const k0 = 0, k1 = 1;
     return funcBody([], [
         ...CI32(addr + 0), ...CI32(0x61707865), ...STORE32(2, 0),
         ...CI32(addr + 4), ...CI32(0x33322033), ...STORE32(2, 0),

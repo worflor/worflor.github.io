@@ -327,7 +327,6 @@ function populateStatusMeta(container: HTMLElement, payload: SealPayload): void 
       parts.push(`expired ${agoText}`);
     } else {
       const rem = payload.t - now;
-      const mins = Math.ceil(rem / 60_000);
       const hrs = Math.round(rem / 3_600_000);
       const days = Math.round(rem / 86_400_000);
       const secs = Math.ceil(rem / 1_000);

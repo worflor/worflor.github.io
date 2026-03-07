@@ -1173,15 +1173,6 @@ function collectBrowser(): DataPoint[] {
   p.push(pt("br.mobile", "Mobile", uad?.mobile ?? null, "Whether the browser identifies as a mobile device.", false, false, 2));
   p.push(pt("br.platform", "Platform (UA-CH)", str(uad?.platform), "OS platform from Client Hints.", false, false, 2));
 
-  // Legacy navigator strings
-  p.push(pt("br.appName", "App Name", str(navigator.appName), "Legacy app name - always 'Netscape' in all browsers."));
-  p.push(pt("br.appVersion", "App Version", str(navigator.appVersion), "Legacy version string - not the actual browser version."));
-  p.push(pt("br.product", "Product", str(navigator.product), "Legacy product name - always 'Gecko' in modern browsers."));
-  p.push(pt("br.productSub", "Product Sub", str((navigator as any).productSub), "Legacy build date string."));
-  p.push(pt("br.vendor", "Vendor", str(navigator.vendor), "Browser vendor - 'Google Inc.', 'Apple Computer, Inc.', or empty.", false, false, 2));
-  p.push(pt("br.vendorSub", "Vendor Sub", str((navigator as any).vendorSub), "Vendor sub-string - almost always empty."));
-  p.push(pt("br.buildID", "Build ID", str((navigator as any).buildID), "Browser build identifier - Firefox only.", false, false, 2));
-
   // Privacy signals
   p.push(pt("br.cookieEnabled", "Cookies Enabled", navigator.cookieEnabled, "Whether the browser allows cookies."));
   p.push(pt("br.dnt", "Do Not Track", str((navigator as any).doNotTrack), "The DNT header value. This standard has been abandoned - Firefox and Safari have removed it.", false, false, 2));
@@ -1191,33 +1182,10 @@ function collectBrowser(): DataPoint[] {
   p.push(pt("br.language", "Primary Language", navigator.language, "Your browser's preferred language.", false, false, 3));
   p.push(pt("br.languages", "All Languages", navigator.languages?.join(", ") || null, "Full ordered preference list - highly fingerprintable.", true, false, 4));
 
-  // Plugins & MIME types (legacy but still exposed in some browsers)
-  try {
-    const plugins = navigator.plugins;
-    const count = plugins ? plugins.length : 0;
-    if (count > 0) {
-      const names = Array.from(plugins).map(p => p.name).filter(Boolean);
-      p.push(pt("br.pluginCount", "Plugins", count, "Legacy plugin objects reported by the browser.", false, false, 2));
-      p.push(pt("br.pluginList", "Plugin List", names.join(", ") || null, "Named plugins - modern browsers report a fixed set for PDF/viewer support.", false, false, 2));
-    } else {
-      p.push(pt("br.pluginCount", "Plugins", 0, "No legacy plugins reported."));
-    }
-  } catch {
-    p.push(pt("br.pluginCount", "Plugins", null, "Plugin enumeration blocked."));
-  }
-
-  try {
-    const mimes = navigator.mimeTypes;
-    p.push(pt("br.mimeTypeCount", "MIME Types", mimes ? mimes.length : null, "Legacy MIME type entries - reveals which file types the browser claims to handle natively.", false, false, 2));
-  } catch {
-    p.push(pt("br.mimeTypeCount", "MIME Types", null, "MIME type enumeration blocked."));
-  }
-
   // Misc
   p.push(pt("br.pdfViewer", "PDF Viewer", (navigator as any).pdfViewerEnabled ?? null, "Whether the browser has a built-in PDF viewer."));
   p.push(pt("br.webdriver", "WebDriver", (navigator as any).webdriver ?? null, "True if the browser is controlled by automation (Selenium, Puppeteer).", false, false, 2));
   p.push(pt("br.maxTouchPoints", "Max Touch Points", num(navigator.maxTouchPoints), "Simultaneous touch contacts supported.", false, false, 2));
-  p.push(pt("br.javaEnabled", "Java Enabled", (() => { try { return navigator.javaEnabled(); } catch { return null; } })(), "Legacy Java plugin detection - always false in modern browsers."));
 
   return p;
 }
@@ -1488,8 +1456,6 @@ function collectOS(): DataPoint[] {
     if (mq(falseQuery) === true) return false;
     return null;
   };
-
-  p.push(pt("os.platform", "Platform", str(navigator.platform), "Legacy platform string (deprecated but still exposed).", false, false, 2));
 
   p.push(pt("os.colorScheme", "Color Scheme",
     mqEnum([
@@ -2768,17 +2734,6 @@ function detailSource(id: string): string {
 
 const DETAIL_CONFIDENCE_LOW_IDS = new Set<string>([
   "br.ua",
-  "br.appName",
-  "br.appVersion",
-  "br.product",
-  "br.productSub",
-  "br.vendor",
-  "br.vendorSub",
-  "br.buildID",
-  "br.pluginCount",
-  "br.pluginList",
-  "br.mimeTypeCount",
-  "os.platform",
   "gpu.vendor",
   "gpu.renderer",
   "api.localIP",
@@ -2877,19 +2832,7 @@ const SIGNAL_TIER_BY_ID: Record<string, SignalTier> = {
 
   // Deep-dive / legacy / heavily derived
   "fp.canvasPreview": "deep",
-  "br.appName": "deep",
-  "br.appVersion": "deep",
-  "br.product": "deep",
-  "br.productSub": "deep",
-  "br.vendor": "deep",
-  "br.vendorSub": "deep",
-  "br.buildID": "deep",
-  "br.pluginCount": "deep",
-  "br.pluginList": "deep",
-  "br.mimeTypeCount": "deep",
-  "br.javaEnabled": "deep",
   "br.dnt": "deep",
-  "os.platform": "deep",
   "dt.numberFormat": "deep",
   "dt.currencyFormat": "deep",
   "dt.percentFormat": "deep",

@@ -425,15 +425,6 @@ const PARTICLE_COLORS: Record<string, (h: number, a: number) => string> = {
 // RESIDUE SYSTEM (Pheromones/Scent)
 // ============================================================================
 
-// A coarse grid for invisible chemical/emotional trails.
-// Creatures leave "Safety" when calm and "Distress" when scared.
-// This allows for emergent "desire paths", "safe havens", and "places to avoid".
-
-interface ResidueCell {
-  safety: number;
-  distress: number;
-}
-
 class ResidueGrid {
   width: number;
   height: number;

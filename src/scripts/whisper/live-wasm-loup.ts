@@ -163,7 +163,6 @@ function predAnti(ctx: Float32Array, ctxIdx: number): number {
 // all position fields use 16 bits (B8=65536 positions, 0..65535).
 
 const zz  = (r: number): number => r >= 0 ? r * 2 : (-r) * 2 - 1;
-const uzz = (z: number): number => (z & 1) ? -((z + 1) >> 1) : z >> 1;
 
 function fixedPayload(res: Float32Array): number {
     let maxZ = 0;
@@ -572,44 +571,51 @@ function verifyBoundaryTheorem() {
 
 // ── main ────────────────────────────────────────────────────────────────────
 
-console.log('Whisper Octonion — 8D codec stress test');
-console.log('========================================');
-console.log(`block           : ${BS}⁸ = ${B8} voxels`);
-console.log(`context         : ${CS}⁸ = ${C8} floats`);
-console.log(`free-zero bound : 1 − (${BS - 1}/${BS})⁸ = ${((1 - ((BS - 1) / BS) ** 8) * 100).toFixed(2)}%`);
-console.log(`interior voxels : ${INTERIOR.length} / ${B8} = ${(INTERIOR.length / B8 * 100).toFixed(2)}%`);
-console.log('');
-console.log('error = Δx₀·Δx₁·...·Δx₇·f  (the 8-form)');
+export function runLoupStressTest(): void {
+    console.log('Whisper Octonion — 8D codec stress test');
+    console.log('========================================');
+    console.log(`block           : ${BS}⁸ = ${B8} voxels`);
+    console.log(`context         : ${CS}⁸ = ${C8} floats`);
+    console.log(`free-zero bound : 1 − (${BS - 1}/${BS})⁸ = ${((1 - ((BS - 1) / BS) ** 8) * 100).toFixed(2)}%`);
+    console.log(`interior voxels : ${INTERIOR.length} / ${B8} = ${(INTERIOR.length / B8 * 100).toFixed(2)}%`);
+    console.log('');
+    console.log('error = Δx₀·Δx₁·...·Δx₇·f  (the 8-form)');
 
-console.log('\n── boundary theorem ────────────────────────────────────────────');
-verifyBoundaryTheorem();
+    console.log('\n── boundary theorem ────────────────────────────────────────────');
+    verifyBoundaryTheorem();
 
-console.log('\n── single block (W=4) ──────────────────────────────────────────');
-console.log('(causal = anti for single block, no inter-block context)');
+    console.log('\n── single block (W=4) ──────────────────────────────────────────');
+    console.log('(causal = anti for single block, no inter-block context)');
 
-runTest8D('gradient (linear)', makeGradient8D(BS), BS);
-runTest8D('all zeros', makeZeros8D(BS), BS);
-runTest8D('binary hypersphere', makeHypersphere8D(BS), BS);
-runTest8D('noise (xorshift32)', makeNoise8D(BS), BS);
+    runTest8D('gradient (linear)', makeGradient8D(BS), BS);
+    runTest8D('all zeros', makeZeros8D(BS), BS);
+    runTest8D('binary hypersphere', makeHypersphere8D(BS), BS);
+    runTest8D('noise (xorshift32)', makeNoise8D(BS), BS);
 
-console.log('\n── multi-block (W=8) ───────────────────────────────────────────');
-console.log('(anti-causal uses within-block future, causal imports inter-block past)');
+    console.log('\n── multi-block (W=8) ───────────────────────────────────────────');
+    console.log('(anti-causal uses within-block future, causal imports inter-block past)');
 
-const t0 = Date.now();
-runTest8D('gradient (linear)', makeGradient8D(2 * BS), 2 * BS);
-runTest8D('binary hypersphere', makeHypersphere8D(2 * BS), 2 * BS);
-runTest8D('SLERP (translating)', makeSlerp8D(2 * BS), 2 * BS);
-runTest8D('noise (xorshift32)', makeNoise8D(2 * BS), 2 * BS);
-console.log(`\n  multi-block time: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    const t0 = Date.now();
+    runTest8D('gradient (linear)', makeGradient8D(2 * BS), 2 * BS);
+    runTest8D('binary hypersphere', makeHypersphere8D(2 * BS), 2 * BS);
+    runTest8D('SLERP (translating)', makeSlerp8D(2 * BS), 2 * BS);
+    runTest8D('noise (xorshift32)', makeNoise8D(2 * BS), 2 * BS);
+    console.log(`\n  multi-block time: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
-console.log('\n── Hurwitz free-zero fractions (BS=4) ──────────────────────────');
-for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) {
-    const fz = (1 - ((BS - 1) / BS) ** n) * 100;
-    console.log(`  n=${n}: ${fz.toFixed(1)}%`);
+    console.log('\n── Hurwitz free-zero fractions (BS=4) ──────────────────────────');
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) {
+        const fz = (1 - ((BS - 1) / BS) ** n) * 100;
+        console.log(`  n=${n}: ${fz.toFixed(1)}%`);
+    }
+
+    console.log('\n── Hurwitz free-zero fractions (BS=8) ──────────────────────────');
+    for (const n of [1, 2, 3, 4, 5, 8]) {
+        const fz = (1 - ((8 - 1) / 8) ** n) * 100;
+        console.log(`  n=${n}: ${fz.toFixed(1)}%`);
+    }
 }
 
-console.log('\n── Hurwitz free-zero fractions (BS=8) ──────────────────────────');
-for (const n of [1, 2, 3, 4, 5, 8]) {
-    const fz = (1 - ((8 - 1) / 8) ** n) * 100;
-    console.log(`  n=${n}: ${fz.toFixed(1)}%`);
-}
+const loupDirectArg = typeof process !== "undefined" ? process.argv[1]?.replace(/\\/g, "/").toLowerCase() : "";
+const loupFile = import.meta.url.replace(/^file:\/\/\//, "").replace(/\\/g, "/").toLowerCase();
+
+if (loupDirectArg && loupFile.endsWith(loupDirectArg)) runLoupStressTest();

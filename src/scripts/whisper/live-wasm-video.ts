@@ -70,10 +70,8 @@ const LOOP = [0x03, VOID];
 const IF = [0x04, VOID];
 const END = [0x0b];
 
-const LOAD16s = (al: number, off: number) => [0x2e, al, ...encodeULEB(off)];
 const LOAD16u = (al: number, off: number) => [0x2f, al, ...encodeULEB(off)];
 const LOAD32 = (al: number, off: number) => [0x28, al, ...encodeULEB(off)];
-const STORE16 = (al: number, off: number) => [0x3b, al, ...encodeULEB(off)];
 const STORE32 = (al: number, off: number) => [0x36, al, ...encodeULEB(off)];
 
 const ADD = [0x6a];
@@ -217,29 +215,6 @@ function buildRatchet(stateAddr: number, v: number[], mac0: number, mac1: number
 function buildEncodeBody(): number[] {
     const i = 3, pixel = 4, outLen = 5, idx = 6, keystream_word = 7, pixel_count = 8, mac0 = 9, mac1 = 10, temp = 11, remainder = 12;
     const v = [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
-
-    const processPixel = (blockOffset: number) => [
-        // Read 32-bit pixel (RGBA) (Scalar fallback for remainder)
-        ...GET(0), ...GET(i), ...CI32(2), ...SHL, ...ADD,
-        ...LOAD32(2, 0), ...SET(temp),
-
-        // Keystream XOR
-        ...CI32(0), ...CI32(ENC_STATE_ADDR + 64), ...CI32(blockOffset), ...ADD,
-        ...LOAD32(2, 0), ...SET(idx), // idx is 6 (i32)
-        ...GET(temp), ...GET(idx), ...XOR, ...SET(temp), // temp is 11 (i32)
-
-        // MAC Update
-        ...GET(mac0), ...GET(temp), ...ADD, ...SET(mac0),
-        ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
-        ...GET(mac1), ...CI32(17), ...ROTL, ...GET(temp), ...ADD, ...SET(mac1),
-
-        // Write encrypted pixel
-        ...GET(2), ...GET(outLen), ...ADD, ...GET(temp), ...STORE32(2, 0),
-        ...GET(outLen), ...CI32(4), ...ADD, ...SET(outLen),
-
-        ...GET(pixel_count), ...CI32(1), ...ADD, ...SET(pixel_count),
-        ...GET(i), ...CI32(1), ...ADD, ...SET(i),
-    ];
 
     // We use SIMD to process 4 pixels (16 bytes = 128 bits) at a time
     // This perfectly matches 1/4th of a ChaCha block (64 bytes)
@@ -387,29 +362,6 @@ function buildEncodeBody(): number[] {
 function buildDecodeBody(): number[] {
     const i = 3, inPixel = 4, ks_v128 = 5, decodedCount = 6, pixel_count = 7, mac0 = 8, mac1 = 9, temp = 10, totalPixels = 11, expMac0 = 12, expMac1 = 13, remainder = 14;
     const v = [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30];
-
-    const processPixel = (blockOffset: number) => [
-        ...GET(0), ...CI32(HEADER_SIZE), ...ADD, ...GET(i), ...CI32(2), ...SHL, ...ADD,
-        ...LOAD32(2, 0), ...SET(expMac0), // expMac0 (11) is i32
-
-        // Update MAC with cipher text FIRST
-        ...GET(mac0), ...GET(expMac0), ...ADD, ...SET(mac0),
-        ...GET(mac0), ...CI32(13), ...ROTL, ...GET(mac1), ...XOR, ...SET(mac0),
-        ...GET(mac1), ...CI32(17), ...ROTL, ...GET(expMac0), ...ADD, ...SET(mac1),
-
-        // Keystream XOR
-        ...CI32(0), ...CI32(DEC_STATE_ADDR + 64), ...CI32(blockOffset), ...ADD,
-        ...LOAD32(2, 0), ...SET(remainder), // remainder (13) is i32
-        ...GET(expMac0), ...GET(remainder), ...XOR, ...SET(expMac0),
-
-        // Write decrypted pixel
-        ...GET(2), ...GET(decodedCount), ...CI32(2), ...SHL, ...ADD,
-        ...GET(expMac0), ...STORE32(2, 0),
-
-        ...GET(decodedCount), ...CI32(1), ...ADD, ...SET(decodedCount),
-        ...GET(pixel_count), ...CI32(1), ...ADD, ...SET(pixel_count),
-        ...GET(i), ...CI32(1), ...ADD, ...SET(i),
-    ];
 
     const processQuadPixel = (blockOffset: number) => [
         // Load cipher text (4 pixels / 16 bytes)
@@ -817,14 +769,6 @@ function frcDither(
 // zigzag maps signed to unsigned so small residuals stay small:
 //   0→0, -1→1, +1→2, -2→3, +2→4, ...
 // concentrates energy near zero for fixed-width coding.
-
-function zigzagEncode(data: Uint8Array): void {
-    simd.zigzagEncode(data);
-}
-
-function zigzagDecode(data: Uint8Array): void {
-    simd.zigzagDecode(data);
-}
 
 // --- spatial physics block codec ---
 // second-order causal Taylor expansion per 8x8 block:
@@ -1251,7 +1195,6 @@ const DEFAULT_CONFIG: VideoCodecConfig = {
 
 export class VideoCodec {
     public wasm: VideoWasmExports | null = null;
-    private initialized = false;
     private config: VideoCodecConfig = { ...DEFAULT_CONFIG };
     // Compression state (encoder side)
     private prevFrame: Uint8Array | null = null;
@@ -1273,7 +1216,6 @@ export class VideoCodec {
         this.prevFrame = null;
         this.prevDecFrame = null;
         this.framesSinceKey = 0;
-        this.initialized = true;
     }
 
     /** Maximum packet size for a given resolution (raw/uncompressed case). */

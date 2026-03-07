@@ -651,7 +651,7 @@
     --msg-bg: rgb(var(--color-text-rgb) / 0.04);
     --msg-border: rgb(var(--color-text-rgb) / 0.12);
     --msg-text-color: rgb(var(--color-text-rgb) / 0.82);
-    --msg-shadow: 0 10px 24px -24px rgb(0 0 0 / 0.9);
+    --msg-shadow: none;
     display: flex;
     flex-direction: column;
     gap: 0.18rem;
@@ -672,21 +672,22 @@
     );
     --msg-border: rgb(var(--chromatic-cyan) / 0.2);
     --msg-text-color: rgb(var(--color-text-rgb) / 0.88);
-    --msg-shadow: 0 18px 30px -28px rgb(var(--chromatic-cyan) / 0.42);
+    --msg-shadow: none;
     align-self: flex-end;
     align-items: flex-end;
     animation-name: wl-msg-in-right;
   }
 
   :global(.wl-chat-messages) :global(.wl-msg--peer) {
+    --msg-accent: var(--ring-base);
     --msg-bg: linear-gradient(
       180deg,
-      rgb(var(--color-text-rgb) / 0.042) 0%,
-      rgb(var(--color-text-rgb) / 0.026) 100%
+      rgb(var(--ring-base) / 0.12) 0%,
+      rgb(var(--ring-base) / 0.075) 100%
     );
-    --msg-border: rgb(var(--color-text-rgb) / 0.12);
-    --msg-text-color: rgb(var(--color-text-rgb) / 0.8);
-    --msg-shadow: 0 18px 30px -28px rgb(0 0 0 / 0.7);
+    --msg-border: rgb(var(--ring-base) / 0.2);
+    --msg-text-color: rgb(var(--color-text-rgb) / 0.88);
+    --msg-shadow: none;
     align-self: flex-start;
     align-items: flex-start;
   }
@@ -708,9 +709,7 @@
     border: 1px solid var(--msg-border);
     background: var(--msg-bg);
     color: var(--msg-text-color);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018),
-      var(--msg-shadow);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018);
     will-change: transform, filter, background-color, box-shadow;
     touch-action: manipulation;
   }
@@ -750,10 +749,7 @@
     transform: scale(0.98);
     filter: brightness(1.06);
     border-color: rgb(var(--msg-accent) / 0.28);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02),
-      0 18px 26px -24px rgb(var(--msg-accent) / 0.42),
-      0 0 0 1px rgb(var(--msg-accent) / 0.08);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
     cursor: wait;
     user-select: none;
   }
@@ -761,49 +757,45 @@
   :global(.wl-chat-messages) :global(.wl-msg--copy-ready .wl-msg-text) {
     animation: wl-msg-copy-ready 220ms cubic-bezier(0.16, 1, 0.3, 1);
     border-color: rgb(var(--msg-accent) / 0.32);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02),
-      0 18px 28px -24px rgb(var(--msg-accent) / 0.34),
-      0 0 0 1px rgb(var(--msg-accent) / 0.08);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg--copied .wl-msg-text) {
     animation: wl-msg-copied 900ms cubic-bezier(0.16, 1, 0.3, 1);
     border-color: rgb(var(--msg-accent) / 0.34);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.028),
-      0 20px 30px -26px rgb(var(--msg-accent) / 0.4),
-      0 0 0 1px rgb(var(--msg-accent) / 0.1);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.028);
   }
 
   /* Floating Copy Menu */
   :global(.wl-copy-menu) {
     position: fixed;
     z-index: 10000;
-    min-width: 4.25rem;
-    padding: 0.5rem 0.82rem;
+    min-width: 4rem;
+    padding: 0.46rem 0.76rem;
     font-size: calc(var(--text-sm) * 0.76);
     font-weight: 500;
     letter-spacing: 0.01em;
-    background: var(--whisper-surface);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    color: rgb(var(--color-text-rgb) / 0.82);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    line-height: 1;
+    background: rgb(10 10 10 / 0.94);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: rgb(var(--color-text-rgb) / 0.78);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     border-radius: calc(var(--whisper-radius) * 0.8);
     box-shadow:
-      0 16px 28px -24px rgb(0 0 0 / 0.92),
+      0 10px 18px -18px rgb(0 0 0 / 0.9),
       inset 0 1px 0 rgb(var(--color-text-rgb) / 0.025);
     opacity: 0;
-    transform: scale(0.85) translateY(6px);
+    transform: scale(0.96) translateY(4px);
     transform-origin: 50% 100%;
     pointer-events: none;
     transition:
       opacity 160ms ease-out,
-      transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
       background 120ms ease-out,
       border-color 120ms ease-out,
-      box-shadow 160ms ease-out;
+      box-shadow 160ms ease-out,
+      color 120ms ease-out;
     cursor: pointer;
     user-select: none;
   }
@@ -819,39 +811,34 @@
   }
 
   :global(.wl-copy-menu.wl-copy-menu--copied) {
-    background: rgb(var(--chromatic-cyan) / 0.12);
-    border-color: rgb(var(--chromatic-cyan) / 0.28);
-    color: rgb(var(--chromatic-cyan));
-    box-shadow:
-      0 18px 28px -24px rgb(var(--chromatic-cyan) / 0.28),
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+    border-color: rgb(var(--chromatic-cyan) / 0.22);
+    color: rgb(var(--chromatic-cyan) / 0.92);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
   }
 
   :global(.wl-copy-menu.wl-copy-menu--error) {
-    background: rgb(var(--chromatic-red) / 0.1);
-    border-color: rgb(var(--chromatic-red) / 0.28);
-    color: rgb(var(--chromatic-red));
-    box-shadow:
-      0 18px 28px -24px rgb(var(--chromatic-red) / 0.24),
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
+    background: rgb(var(--chromatic-red) / 0.08);
+    border-color: rgb(var(--chromatic-red) / 0.22);
+    color: rgb(var(--chromatic-red) / 0.92);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
   }
 
   :global(.wl-copy-menu:hover) {
-    background: rgb(var(--color-text-rgb) / 0.05);
-    border-color: rgb(var(--color-text-rgb) / 0.22);
+    background: rgb(var(--color-text-rgb) / 0.04);
+    border-color: rgb(var(--color-text-rgb) / 0.18);
   }
 
   :global(.wl-copy-menu:focus-visible) {
     outline: none;
-    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    border-color: rgb(var(--chromatic-cyan) / 0.34);
     box-shadow:
-      0 16px 28px -24px rgb(0 0 0 / 0.92),
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.025),
-      0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
+      0 10px 18px -18px rgb(0 0 0 / 0.9),
+      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.025);
   }
 
   :global(.wl-copy-menu:active) {
-    transform: scale(0.94);
+    transform: scale(0.98);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-text),
@@ -1167,9 +1154,7 @@
     border-radius: calc(var(--whisper-radius) * 0.72);
     border: 1px solid var(--msg-border);
     background: var(--msg-bg);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018),
-      var(--msg-shadow);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-file-name) {
@@ -1209,17 +1194,13 @@
       border-color 300ms ease,
       box-shadow 300ms ease,
       filter 180ms ease;
-    box-shadow:
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018),
-      var(--msg-shadow);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018);
   }
 
   /* Subtle glow when playing */
   :global(.wl-chat-messages) :global(.wl-msg-audio[data-playing]) {
     border-color: rgb(var(--msg-accent) / 0.28);
-    box-shadow:
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.024),
-      0 18px 28px -26px rgb(var(--msg-accent) / 0.28);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.024);
   }
 
   :global(.wl-chat-messages) :global(.wl-audio-play-btn) {
@@ -1293,9 +1274,7 @@
     transition:
       border-color 300ms ease,
       box-shadow 300ms ease;
-    box-shadow:
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018),
-      var(--msg-shadow);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-peer-draw) {

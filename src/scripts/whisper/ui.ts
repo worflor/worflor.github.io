@@ -213,7 +213,6 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   let activeMode: WhisperMode = isMode(savedMode) ? savedMode : (opts.page.dataset.mode as WhisperMode || MODE_EMBED);
   let busy = false;
   let actionBarVisible = false;
-  let liveLoggedReady = false;
   let fadeTimer: ReturnType<typeof setTimeout> | null = null;
   const releaseUrls = new Set<string>();
   const ac = new AbortController();
