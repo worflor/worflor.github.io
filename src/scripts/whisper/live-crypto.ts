@@ -133,3 +133,49 @@ export async function aesGcmDecrypt(
   const params = buildAesGcmParams(nonce, aad);
   return new Uint8Array(await crypto.subtle.decrypt(params, cryptoKey, toArrayBuffer(ciphertext)));
 }
+
+/* ── Sealed CTRL: lightweight AES-GCM with 32-bit tag + implicit nonce ── */
+
+function ctrlNonce(counter: number, directionBit: number): Uint8Array {
+  const nonce = new Uint8Array(12);
+  nonce[0] = counter & 0xff;
+  nonce[1] = (counter >>> 8) & 0xff;
+  nonce[2] = (counter >>> 16) & 0xff;
+  nonce[3] = (counter >>> 24) & 0xff;
+  nonce[11] = directionBit;
+  return nonce;
+}
+
+export async function importCtrlKey(
+  rawKey: Uint8Array,
+): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    toArrayBuffer(rawKey),
+    "AES-GCM",
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+export async function sealCtrl(
+  key: CryptoKey,
+  plaintext: Uint8Array,
+  counter: number,
+  directionBit: number,
+): Promise<Uint8Array> {
+  const nonce = ctrlNonce(counter, directionBit);
+  const params: AesGcmParams = { name: "AES-GCM", iv: nonce, tagLength: 32 };
+  return new Uint8Array(await crypto.subtle.encrypt(params, key, toArrayBuffer(plaintext)));
+}
+
+export async function openCtrl(
+  key: CryptoKey,
+  ciphertext: Uint8Array,
+  counter: number,
+  directionBit: number,
+): Promise<Uint8Array> {
+  const nonce = ctrlNonce(counter, directionBit);
+  const params: AesGcmParams = { name: "AES-GCM", iv: nonce, tagLength: 32 };
+  return new Uint8Array(await crypto.subtle.decrypt(params, key, toArrayBuffer(ciphertext)));
+}

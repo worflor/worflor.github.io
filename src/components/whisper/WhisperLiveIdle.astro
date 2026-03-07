@@ -41,10 +41,10 @@
   >
     <div class="wl-flare-head">
       <span class="wl-flare-title">Signal Flare</span>
+      <p class="wl-flare-lede">
+        leave the door open. they'll find you when they're ready.
+      </p>
     </div>
-    <p class="wl-flare-lede">
-      leave the door open. they'll find you when they're ready.
-    </p>
     <label
       class="whisper-field wl-flare-phrase-field"
       for="wl-flare-phrase"
@@ -260,11 +260,8 @@
 <style>
   /* ── Relay panel ─────────────────────────────────────── */
 
-  .wl-relay-panel {
-    display: grid;
-    gap: var(--space-sm);
-    padding: var(--space-sm);
-    background: var(--whisper-surface);
+  .wl-relay-panel :global(.whisper-field-label) {
+    font-size: var(--whisper-text-meta);
   }
 
   .wl-relay-connect-row {
@@ -288,15 +285,6 @@
     font-size: var(--whisper-text-meta);
     color: rgb(var(--color-text-rgb) / 0.42);
     line-height: 1.4;
-  }
-
-  .wl-relay-panel :global(.whisper-field-label) {
-    font-size: var(--text-sm);
-  }
-
-  .wl-relay-panel :global(.whisper-input) {
-    min-height: var(--touch-target);
-    padding: var(--whisper-control-padding);
   }
 
   /* ── Mode switch link ──────────────────────────────────── */
@@ -328,7 +316,7 @@
   .wl-mode-switch-sep {
     color: rgb(var(--color-text-rgb) / 0.15);
     font-size: var(--whisper-text-compact);
-    margin: 0 0.15em;
+    margin-inline: 0.15em;
     user-select: none;
   }
 
@@ -336,20 +324,15 @@
 
   .wl-flare-panel {
     --chromatic-flare: 255 160 40;
-    display: grid;
-    gap: var(--space-sm);
-    padding: var(--space-sm);
-    background: var(--whisper-surface);
   }
 
   .wl-flare-head {
-    display: flex;
-    align-items: center;
-    gap: calc(var(--space-xs) * 0.5);
+    display: grid;
+    gap: calc(var(--space-xs) * 0.3);
   }
 
   .wl-flare-title {
-    font-size: var(--text-sm);
+    font-size: var(--whisper-text-emphasis);
     font-weight: 600;
     color: rgb(var(--chromatic-flare));
     letter-spacing: 0.02em;
@@ -363,12 +346,7 @@
   }
 
   .wl-flare-panel :global(.whisper-field-label) {
-    font-size: var(--text-sm);
-  }
-
-  .wl-flare-panel :global(.whisper-input) {
-    min-height: var(--touch-target);
-    padding: var(--whisper-control-padding);
+    font-size: var(--whisper-text-meta);
   }
 
   .wl-flare-panel :global(.whisper-input):focus-visible {
@@ -394,7 +372,7 @@
     align-items: center;
     gap: calc(var(--space-xs) * 0.5);
     min-height: var(--touch-target);
-    padding: 0 calc(var(--space-xs) * 0.8);
+    padding-inline: calc(var(--space-xs) * 0.8);
     border-radius: var(--whisper-radius-tight);
     border: 1px solid rgb(var(--chromatic-flare) / 0.25);
     background: rgb(var(--chromatic-flare) / 0.04);
@@ -402,9 +380,9 @@
 
   .wl-flare-ember {
     display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: var(--radius-full);
     background: rgb(var(--chromatic-flare));
     box-shadow: 0 0 6px rgb(var(--chromatic-flare) / 0.5);
     animation: wl-flare-pulse 2s ease-in-out infinite;
@@ -440,7 +418,7 @@
     flex-shrink: 0;
     margin-left: calc(var(--space-xs) * 0.3);
     font-size: var(--whisper-text-support);
-    padding: 0.35rem 0.6rem;
+    padding: var(--whisper-compact-button-padding);
     min-height: calc(var(--touch-target) * 0.72);
   }
 
@@ -448,7 +426,7 @@
 
   .wl-flare-arrived {
     display: grid;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
     padding: calc(var(--space-xs) * 0.8);
     border-radius: var(--whisper-radius-tight);
     border: 1px solid rgb(var(--chromatic-flare) / 0.35);
@@ -467,7 +445,7 @@
 
   .wl-flare-arrived-text {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--whisper-text-emphasis);
     color: rgb(var(--chromatic-flare));
     font-weight: 500;
   }
@@ -484,7 +462,6 @@
     gap: var(--space-xs);
     padding-top: var(--space-xs);
     border-top: 1px solid var(--whisper-edge);
-    margin-top: 0;
   }
 
   .wl-manual-options :global(.whisper-field-label) {
@@ -517,7 +494,7 @@
   @media (max-width: 520px) {
     .wl-flare-burning-indicator {
       gap: calc(var(--space-xs) * 0.35);
-      padding: 0 calc(var(--space-xs) * 0.5);
+      padding-inline: calc(var(--space-xs) * 0.5);
     }
 
     .wl-flare-burning-text {
@@ -526,7 +503,7 @@
 
     .wl-flare-extinguish-btn {
       font-size: var(--whisper-text-fine);
-      padding: 0.3rem 0.5rem;
+      padding: calc(var(--space-xs) * 0.45) calc(var(--space-xs) * 0.75);
       margin-left: auto;
     }
 
@@ -538,7 +515,6 @@
       width: 100%;
       justify-content: center;
     }
-
   }
 
   @media (prefers-reduced-motion: reduce) {

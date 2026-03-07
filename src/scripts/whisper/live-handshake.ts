@@ -16,6 +16,7 @@ const CONFIRM_CONTEXT = TE.encode("whisper-live-confirm-context-v1");
 const KIZUNA_CONTEXT = TE.encode("whisper-live-kizuna-witness-v1");
 const INFO_SILENT_KEY = TE.encode("whisper-live-silent-key-v1");
 const INFO_AUDIO_KEY = TE.encode("whisper-live-audio-key-v1");
+const INFO_CTRL_KEY = TE.encode("whisper-live-ctrl-key-v1");
 const PBKDF2_ITERATIONS = 310_000;
 
 function le32(n: number): Uint8Array {
@@ -99,6 +100,11 @@ export async function deriveSilentKey(sessionRoot: Uint8Array): Promise<Uint8Arr
 /** Derive a purpose-specific 16-byte key for the WASM audio codec, isolated from the session root. */
 export async function deriveAudioKey(sessionRoot: Uint8Array): Promise<Uint8Array> {
   return hkdf(sessionRoot, ZERO_SALT_32, INFO_AUDIO_KEY, 16);
+}
+
+/** Derive a 32-byte AES-256 key for sealed CTRL/ACK/TYPING frames. */
+export async function deriveCtrlKey(sessionRoot: Uint8Array): Promise<Uint8Array> {
+  return hkdf(sessionRoot, ZERO_SALT_32, INFO_CTRL_KEY, 32);
 }
 
 export async function deriveKizunaWitness(sessionRoot: Uint8Array): Promise<Uint8Array> {

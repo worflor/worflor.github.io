@@ -3,9 +3,7 @@
  *
  * Whisper Loop — production runtime.
  *
- * replaces the placeholder XOR KDFs in test-loop.ts with real
- * HKDF-SHA256 and AES-CTR operations via WebCrypto. see test-loop.ts
- * for the full algorithm documentation and test spec.
+ * production implementation. see test-loop.ts for algorithm documentation and test spec.
  *
  * key derivation:
  *   expandChain(chain, step)         → HKDF(chain, le32(step), 'kizuna-expand-v1', 32)

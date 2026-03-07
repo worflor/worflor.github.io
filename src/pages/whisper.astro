@@ -704,7 +704,7 @@ const seo = {
                 role="note"
                 tabindex="0"
                 aria-label="end-to-end encrypted, peer-to-peer"
-                ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p · e2e<span
+                ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p·e2e<span
                   class="wl-e2e-tip"
                   role="tooltip">sealed end-to-end with a Kizuna bond</span
                 ></span
@@ -1201,6 +1201,7 @@ const seo = {
     --whisper-text-fine: calc(var(--text-sm) * 0.72);
     --whisper-text-hairline: calc(var(--text-sm) * 0.62);
     --whisper-text-emphasis: calc(var(--text-sm) * 0.92);
+    --whisper-text-input: var(--whisper-text-emphasis);
     --whisper-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
     padding-bottom: calc(var(--whisper-action-offset) + var(--space-lg));
   }
@@ -1573,12 +1574,12 @@ const seo = {
   :global(#whisper-page input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])),
   :global(#whisper-page textarea),
   :global(#whisper-page select) {
-    font-size: var(--text-ui-sm);
+    font-size: var(--whisper-text-input) !important;
   }
 
   :global(#whisper-page input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])::placeholder),
   :global(#whisper-page textarea::placeholder) {
-    font-size: inherit;
+    font-size: inherit !important;
   }
 
   :global(.whisper-input) {
@@ -1589,7 +1590,7 @@ const seo = {
     min-height: var(--touch-target);
     padding: var(--whisper-control-padding);
     font-family: var(--font-body);
-    font-size: var(--text-sm);
+    font-size: var(--whisper-text-input);
     transition:
       border-color var(--duration-normal) var(--ease-out),
       box-shadow var(--duration-normal) var(--ease-out);
@@ -2385,17 +2386,17 @@ const seo = {
   .wl-e2e-badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.35em;
-    font-size: calc(var(--text-ui-sm) * 0.62);
+    gap: 0.25em;
+    font-size: var(--whisper-text-hairline);
     font-weight: 700;
     line-height: 1;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
     color: rgb(var(--color-text-rgb) / 0.18);
     background: rgb(var(--color-text-rgb) / 0.04);
     border: 1px solid rgb(var(--color-text-rgb) / 0.06);
     border-radius: var(--whisper-radius-tight);
-    padding: calc(var(--space-xs) * 0.15) calc(var(--space-xs) * 0.6);
+    padding: calc(var(--space-xs) * 0.15) calc(var(--space-xs) * 0.45);
     vertical-align: middle;
     user-select: none;
     position: relative;
@@ -2480,8 +2481,8 @@ const seo = {
   }
 
   .wl-e2e-dot {
-    width: 5px;
-    height: 5px;
+    width: 0.3em;
+    height: 0.3em;
     border-radius: var(--radius-full);
     background: rgb(var(--color-text-rgb) / 0.24);
     flex: 0 0 auto;
@@ -2996,7 +2997,6 @@ const seo = {
 
     .wl-e2e-badge {
       padding: 0.1em 0.35em;
-      gap: 0.25em;
     }
   }
 

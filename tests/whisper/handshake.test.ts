@@ -12,6 +12,7 @@ import {
   verifyConfirmProof,
   deriveSilentKey,
   deriveAudioKey,
+  deriveCtrlKey,
 } from "../../src/scripts/whisper/live-handshake.js";
 import {
   sdpToCode,
@@ -143,6 +144,29 @@ describe("live-handshake", () => {
 
     sessionRoot.fill(0);
     confirmContext.fill(0);
+  });
+
+  it("deriveCtrlKey is deterministic and domain-separated from other keys", async () => {
+    const sessionRoot = randomKey();
+
+    const ctrl1 = await deriveCtrlKey(sessionRoot);
+    const ctrl2 = await deriveCtrlKey(sessionRoot);
+    assert.deepStrictEqual(Array.from(ctrl1), Array.from(ctrl2), "deterministic");
+    assert.equal(ctrl1.length, 32, "32 bytes");
+
+    // Domain separation from silent and audio keys
+    const silent = await deriveSilentKey(sessionRoot);
+    const audio = await deriveAudioKey(sessionRoot);
+    assert.notDeepStrictEqual(Array.from(ctrl1), Array.from(silent), "ctrl ≠ silent");
+    assert.notDeepStrictEqual(Array.from(ctrl1.subarray(0, 16)), Array.from(audio), "ctrl ≠ audio");
+
+    // Different session roots produce different ctrl keys
+    const otherRoot = randomKey();
+    const ctrlOther = await deriveCtrlKey(otherRoot);
+    assert.notDeepStrictEqual(Array.from(ctrl1), Array.from(ctrlOther), "different roots → different keys");
+
+    ctrl1.fill(0); ctrl2.fill(0); silent.fill(0); audio.fill(0); ctrlOther.fill(0);
+    sessionRoot.fill(0); otherRoot.fill(0);
   });
 
   it("deriveSilentKey and deriveAudioKey are deterministic and domain-separated", async () => {

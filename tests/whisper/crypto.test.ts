@@ -10,6 +10,9 @@ import {
   hmacSha256,
   pbkdf2,
   constantTimeEqual,
+  importCtrlKey,
+  sealCtrl,
+  openCtrl,
 } from "../../src/scripts/whisper/live-crypto.js";
 
 describe("live-crypto", () => {
@@ -138,8 +141,6 @@ describe("live-crypto", () => {
       const ct1 = await aesGcmEncrypt(new Uint8Array(key), new Uint8Array(plaintext), new Uint8Array(nonce));
       const ct2 = await aesGcmEncrypt(new Uint8Array(key), new Uint8Array(plaintext), new Uint8Array(nonce));
       assertBytesEqual(ct1, ct2, "identical inputs must produce identical ciphertext");
-      // This proves nonce reuse would be catastrophic — same nonce = same keystream
-      // Therefore the security of the system depends entirely on nonce uniqueness
     });
 
     it("same key+nonce on different plaintexts leaks XOR relationship (nonce reuse hazard proof)", async () => {
@@ -149,8 +150,6 @@ describe("live-crypto", () => {
       const p2 = randomBytes(64);
       const ct1 = await aesGcmEncrypt(key, p1, nonce);
       const ct2 = await aesGcmEncrypt(key, p2, nonce);
-      // Under nonce reuse, ciphertext XOR = plaintext XOR (before auth tag)
-      // Verify that the ciphertext bodies (excluding 16B tag) XOR to plaintext XOR
       const ctBody1 = ct1.subarray(0, ct1.length - 16);
       const ctBody2 = ct2.subarray(0, ct2.length - 16);
       const ctXor = new Uint8Array(64);
@@ -389,6 +388,181 @@ describe("live-crypto", () => {
       const a = await pbkdf2(secret, new Uint8Array(salt), 1000, 32);
       const b = await pbkdf2(secret, new Uint8Array(salt), 2000, 32);
       assert.notDeepStrictEqual(a, b);
+    });
+  });
+
+  describe("sealCtrl / openCtrl with chain ratchet", () => {
+    /** Derive role-swapped chain pairs from a shared root, mirroring live.ts init. */
+    async function deriveChains(root: Uint8Array): Promise<{
+      offSend: Uint8Array; offRecv: Uint8Array;
+      ansSend: Uint8Array; ansRecv: Uint8Array;
+    }> {
+      const chainA = await hkdf(root, new Uint8Array(32), new TextEncoder().encode("ctrl-send"), 32);
+      const chainB = await hkdf(root, new Uint8Array(32), new TextEncoder().encode("ctrl-recv"), 32);
+      return {
+        offSend: new Uint8Array(chainA), offRecv: new Uint8Array(chainB),
+        ansSend: new Uint8Array(chainB), ansRecv: new Uint8Array(chainA),
+      };
+    }
+
+    /** Chain-step: advance chain, derive ephemeral key, return it + mutated chain ref. */
+    async function chainStep(chain: Uint8Array): Promise<{ newChain: Uint8Array; ck: CryptoKey }> {
+      const [newChain, msgKey] = await kdfChainDirect(chain);
+      chain.fill(0);
+      const ck = await importCtrlKey(msgKey);
+      msgKey.fill(0);
+      return { newChain, ck };
+    }
+
+    it("chain ratchet round-trip: 30 messages each direction", async () => {
+      const { offSend, offRecv, ansSend, ansRecv } = await deriveChains(randomKey());
+      let oS = offSend, aR = new Uint8Array(ansRecv); // offerer→answerer
+      let aS = ansSend, oR = new Uint8Array(offRecv); // answerer→offerer
+
+      for (let i = 0; i < 30; i++) {
+        const payload = randomBytes(1 + Math.floor(Math.random() * 100));
+        // offerer sends
+        const s1 = await chainStep(oS); oS = s1.newChain;
+        const sealed = await sealCtrl(s1.ck, payload, i, 0);
+        // answerer receives
+        const r1 = await chainStep(aR); aR = r1.newChain;
+        const opened = await openCtrl(r1.ck, sealed, i, 0);
+        assertBytesEqual(opened, payload, `off→ans msg ${i}`);
+      }
+
+      for (let i = 0; i < 30; i++) {
+        const payload = randomBytes(1 + Math.floor(Math.random() * 100));
+        // answerer sends
+        const s2 = await chainStep(aS); aS = s2.newChain;
+        const sealed = await sealCtrl(s2.ck, payload, i, 1);
+        // offerer receives
+        const r2 = await chainStep(oR); oR = r2.newChain;
+        const opened = await openCtrl(r2.ck, sealed, i, 1);
+        assertBytesEqual(opened, payload, `ans→off msg ${i}`);
+      }
+    });
+
+    it("forward secrecy: snapshot chain cannot decrypt future frames", async () => {
+      const { offSend, ansRecv } = await deriveChains(randomKey());
+      let oS = offSend, aR = new Uint8Array(ansRecv);
+
+      // Advance 5 steps
+      for (let i = 0; i < 5; i++) {
+        const s = await chainStep(oS); oS = s.newChain;
+        const r = await chainStep(aR); aR = r.newChain;
+        await sealCtrl(s.ck, randomBytes(10), i, 0); // just advance
+      }
+
+      // Snapshot sender chain at step 5
+      const snapshot = new Uint8Array(oS);
+
+      // Advance 3 more steps
+      for (let i = 5; i < 8; i++) {
+        const s = await chainStep(oS); oS = s.newChain;
+        const r = await chainStep(aR); aR = r.newChain;
+      }
+
+      // Try to use snapshot to derive step-6 key — must produce wrong key
+      const [, snapshotMsgKey] = await kdfChainDirect(snapshot);
+      const snapshotCk = await importCtrlKey(snapshotMsgKey);
+      // Seal with snapshot key, try to open with current receiver chain (already at step 8)
+      const sealed = await sealCtrl(snapshotCk, randomBytes(10), 5, 0);
+      // Receiver already advanced past step 5 — no way to open
+      const [, recvMsgKey] = await kdfChainDirect(aR);
+      const recvCk = await importCtrlKey(recvMsgKey);
+      await assert.rejects(() => openCtrl(recvCk, sealed, 5, 0),
+        "snapshot chain must not decrypt future frames");
+    });
+
+    it("desync on skip: receiver fails if sender advances without it", async () => {
+      const { offSend, ansRecv } = await deriveChains(randomKey());
+      let oS = offSend, aR = new Uint8Array(ansRecv);
+
+      // Sender advances 3 steps
+      let lastSealed: Uint8Array | undefined;
+      for (let i = 0; i < 3; i++) {
+        const s = await chainStep(oS); oS = s.newChain;
+        lastSealed = await sealCtrl(s.ck, randomBytes(10), i, 0);
+      }
+
+      // Receiver only at step 0 — chain desynced
+      const r = await chainStep(aR); aR = r.newChain;
+      await assert.rejects(() => openCtrl(r.ck, lastSealed!, 2, 0),
+        "desynced chain must fail");
+    });
+
+    it("ciphertext is plaintext.length + 4 (32-bit tag)", async () => {
+      let chain = randomKey();
+      for (const size of [0, 1, 3, 6, 20, 100, 255]) {
+        const s = await chainStep(chain); chain = s.newChain;
+        const sealed = await sealCtrl(s.ck, randomBytes(size), 0, 0);
+        assert.equal(sealed.length, size + 4,
+          `${size}B plaintext → ${size + 4}B sealed (got ${sealed.length})`);
+      }
+    });
+
+    it("wrong direction rejection", async () => {
+      let chain = randomKey();
+      const s = await chainStep(chain); chain = s.newChain;
+      const sealed = await sealCtrl(s.ck, randomBytes(10), 0, 0);
+      // Same key but wrong direction
+      await assert.rejects(() => openCtrl(s.ck, sealed, 0, 1),
+        "wrong direction must fail");
+    });
+
+    it("determinism: same chain + plaintext + counter → same ciphertext", async () => {
+      const root = randomKey();
+      const plaintext = randomBytes(15);
+
+      const [chainA1] = await kdfChainDirect(new Uint8Array(root));
+      const [, msgKeyA] = await kdfChainDirect(chainA1);
+      const ckA = await importCtrlKey(msgKeyA);
+
+      const [chainB1] = await kdfChainDirect(new Uint8Array(root));
+      const [, msgKeyB] = await kdfChainDirect(chainB1);
+      const ckB = await importCtrlKey(msgKeyB);
+
+      const a = await sealCtrl(ckA, new Uint8Array(plaintext), 7, 1);
+      const b = await sealCtrl(ckB, new Uint8Array(plaintext), 7, 1);
+      assertBytesEqual(a, b, "identical chain state must produce identical ciphertext");
+    });
+
+    it("empty plaintext round-trip with chain ratchet", async () => {
+      const { offSend, ansRecv } = await deriveChains(randomKey());
+      const s = await chainStep(offSend);
+      const sealed = await sealCtrl(s.ck, new Uint8Array(0), 0, 0);
+      assert.equal(sealed.length, 4, "empty plaintext → 4B tag");
+      const r = await chainStep(new Uint8Array(ansRecv));
+      const opened = await openCtrl(r.ck, sealed, 0, 0);
+      assert.equal(opened.length, 0);
+    });
+
+    it("two-party simulation: 20+ messages each direction with chain ratchet", async () => {
+      const { offSend, offRecv, ansSend, ansRecv } = await deriveChains(randomKey());
+      let oS = offSend, aR = new Uint8Array(ansRecv);
+      let aS = ansSend, oR = new Uint8Array(offRecv);
+      let offCounter = 0, ansCounter = 0;
+
+      for (let round = 0; round < 25; round++) {
+        // Alternate: even rounds offerer sends, odd rounds answerer sends
+        if (round % 2 === 0) {
+          const payload = randomBytes(1 + Math.floor(Math.random() * 50));
+          const s = await chainStep(oS); oS = s.newChain;
+          const sealed = await sealCtrl(s.ck, payload, offCounter, 0);
+          const r = await chainStep(aR); aR = r.newChain;
+          const opened = await openCtrl(r.ck, sealed, offCounter, 0);
+          assertBytesEqual(opened, payload, `round ${round} off→ans #${offCounter}`);
+          offCounter++;
+        } else {
+          const payload = randomBytes(1 + Math.floor(Math.random() * 50));
+          const s = await chainStep(aS); aS = s.newChain;
+          const sealed = await sealCtrl(s.ck, payload, ansCounter, 1);
+          const r = await chainStep(oR); oR = r.newChain;
+          const opened = await openCtrl(r.ck, sealed, ansCounter, 1);
+          assertBytesEqual(opened, payload, `round ${round} ans→off #${ansCounter}`);
+          ansCounter++;
+        }
+      }
     });
   });
 });

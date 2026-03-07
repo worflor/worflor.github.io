@@ -28,6 +28,10 @@ import {
   hkdf,
   aesGcmEncrypt,
   aesGcmDecrypt,
+  kdfChainDirect,
+  importCtrlKey,
+  sealCtrl,
+  openCtrl,
 } from "./live-crypto";
 
 import {
@@ -86,6 +90,7 @@ import {
   verifyConfirmProof,
   deriveSilentKey,
   deriveAudioKey,
+  deriveCtrlKey,
   type HandshakeRole,
 } from "./live-handshake";
 
@@ -328,6 +333,7 @@ const LIVE_MSG = {
   TYPING: 0x42,
   ACK: 0x43,
   CTRL: 0x50,
+  SEALED: 0x51,
 } as const;
 
 const LIVE_FLAG = {
@@ -378,6 +384,10 @@ export class WhisperLiveSession {
   private sharedSecret: Uint8Array | null = null;
   private silentKey: Uint8Array | null = null;
   private audioKeyBytes: Uint8Array | null = null;
+  private ctrlChainSend: Uint8Array | null = null;
+  private ctrlChainRecv: Uint8Array | null = null;
+  private ctrlSendCounter = 0;
+  private ctrlRecvCounter = 0;
   private consecutiveDecryptFailures = 0;
   /** PBKDF2-stretched phrase root (wipeable bytes, never store the raw string). */
   private phraseRoot: Uint8Array | null = null;
@@ -394,12 +404,9 @@ export class WhisperLiveSession {
   private drawStreamSendQueue: Promise<void> = Promise.resolve();
   private drawStreamRecvTracker = new DrawStreamTracker();
 
-  // Kizuna membrane: loop states for send and receive directions.
-  // initialized from ECDH-derived chain keys. reinit on each DH ratchet step.
+  // Kizuna membrane loop states — one per direction, reinit on each DH ratchet step.
   private loopStateSend: LoopState | null = null;
   private loopStateRecv: LoopState | null = null;
-  // skipped message keys (loop-derived, for out-of-order delivery recovery).
-  // dead code with ordered SCTP DataChannels — stored for correctness.
   private skippedLoopKeys: Map<string, Uint8Array> = new Map();
 
   /** Ephemeral ECDH private key — exists only during handshake, then wiped */
@@ -565,6 +572,36 @@ export class WhisperLiveSession {
     this.dc.send(msg);
   }
 
+  private sealedSendQueue: Promise<void> = Promise.resolve();
+
+  /** Send a frame sealed with the CTRL cipher. Serialized to preserve counter order. */
+  private sendSealed(type: number, payload?: Uint8Array): void {
+    if (!this.ctrlChainSend) return; // drop — never send CTRL/ACK/TYPING in plaintext
+    if (this.ctrlSendCounter >= 0xFFFFFFFF) return; // nonce space exhausted — drop silently
+    const inner = payload
+      ? (() => { const b = new Uint8Array(1 + payload.length); b[0] = type; b.set(payload, 1); return b; })()
+      : new Uint8Array([type]);
+    const dirBit = this.isOfferer ? 0 : 1;
+    const counter = this.ctrlSendCounter++;
+    this.sealedSendQueue = this.sealedSendQueue
+      .then(async () => {
+        if (!this.dc || this.dc.readyState !== "open" || !this.ctrlChainSend) return;
+        const [newChain, msgKey] = await kdfChainDirect(this.ctrlChainSend);
+        this.ctrlChainSend.fill(0);
+        this.ctrlChainSend = newChain;
+        const ck = await importCtrlKey(msgKey);
+        msgKey.fill(0);
+        const sealed = await sealCtrl(ck, inner, counter, dirBit);
+        if (this.dc?.readyState === "open") {
+          const wire = new Uint8Array(1 + sealed.length);
+          wire[0] = LIVE_MSG.SEALED;
+          wire.set(sealed, 1);
+          this.dc.send(wire);
+        }
+      })
+      .catch(() => {});
+  }
+
   /* ── Offer/Answer Lifecycle ─────────────────────────────── */
 
   private async initSession(sharedPhrase?: string, asOfferer = true): Promise<void> {
@@ -622,6 +659,9 @@ export class WhisperLiveSession {
     this.nRecvTotal = 0;
     this.nextDrawStreamSeq = 0;
     this.drawStreamRecvTracker = new DrawStreamTracker();
+    this.ctrlSendCounter = 0;
+    this.ctrlRecvCounter = 0;
+    this.sealedSendQueue = Promise.resolve();
     this.msgQueue = Promise.resolve();
     this.sendQueue = Promise.resolve();
     this.drawStreamSendQueue = Promise.resolve();
@@ -1114,6 +1154,12 @@ export class WhisperLiveSession {
       // Derive purpose-specific keys so the session root is never directly exposed
       this.silentKey = await deriveSilentKey(sharedSecret);
       this.audioKeyBytes = await deriveAudioKey(sharedSecret);
+      const ctrlRoot = await deriveCtrlKey(sharedSecret);
+      const chainA = await hkdf(ctrlRoot, ZERO_SALT_32, TE.encode("ctrl-send"), 32);
+      const chainB = await hkdf(ctrlRoot, ZERO_SALT_32, TE.encode("ctrl-recv"), 32);
+      ctrlRoot.fill(0);
+      this.ctrlChainSend = this.isOfferer ? chainA : chainB;
+      this.ctrlChainRecv = this.isOfferer ? chainB : chainA;
       this.wipeBytes(this.transcriptHash);
       this.transcriptHash = transcriptHash;
       this.wipeBytes(this.kizunaWitness);
@@ -1138,10 +1184,7 @@ export class WhisperLiveSession {
 
       this.setState("verifying");
 
-      // Answerer auto-confirm is deferred to handleRatchetInit (after chainKeySend is set).
-      // Offerer auto-confirm is also deferred to handleRatchetInit so that chainKeySend
-      // is guaranteed initialized before entering "live" — avoids a silent send-failure
-      // race where the offerer is "live" but the send chain isn't ready yet.
+      // Auto-confirm is deferred to handleRatchetInit — chain keys aren't ready yet.
     } catch (err) {
       this.onLog(`key derivation failed: ${errorMessage(err, "unknown error")}`);
       this.setState("error", "couldn't establish encryption, try again");
@@ -1160,8 +1203,7 @@ export class WhisperLiveSession {
     if (!this.isOfferer) {
       this.ratchetState = await initRatchetAsReceiver(this.sharedSecret, peerRatchetPubKey);
 
-      // answerer has chainKeySend immediately; chainKeyRecv is null until first DH step.
-      // init loopStateSend now; loopStateRecv will be set by the first incoming DH ratchet.
+      // chainKeyRecv is null until first DH step — only init send side now.
       this.loopStateSend = loopInit(await loopExpand(this.ratchetState.chainKeySend!));
 
       if (this.dc && this.dc.readyState === "open") {
@@ -1226,33 +1268,67 @@ export class WhisperLiveSession {
         this.lastPongReceived = Date.now();
         break;
       case LIVE_MSG.TYPING:
-        if (this.onPeerTyping) this.onPeerTyping(bytes.length >= 2 ? bytes[1] : 0x00);
+      case LIVE_MSG.ACK:
+      case LIVE_MSG.CTRL:
+        // Reject plaintext CTRL/ACK/TYPING — these must arrive via SEALED (0x51).
+        // Accepting plaintext would let an attacker inject fake ACKs, reactions, or votes.
         break;
-      case LIVE_MSG.ACK: {
-        if (bytes.length >= 5 && this.onAck) {
-          const msgId = new DataView(bytes.buffer, bytes.byteOffset + 1, 4).getUint32(0, true);
-          this.onAck(msgId);
+      case LIVE_MSG.SEALED:
+        await this.handleSealedMessage(bytes.subarray(1));
+        break;
+      default:
+        this.onLog(`unknown message type: 0x${type.toString(16)}`);
+    }
+  }
+
+  private async handleSealedMessage(ciphertext: Uint8Array): Promise<void> {
+    if (!this.ctrlChainRecv) return;
+    if (ciphertext.length < 5) return; // minimum: 1B inner type + 4B tag
+    try {
+      const dirBit = this.isOfferer ? 1 : 0; // peer's direction is opposite
+      const [newChain, msgKey] = await kdfChainDirect(this.ctrlChainRecv);
+      this.ctrlChainRecv.fill(0);
+      this.ctrlChainRecv = newChain;
+      const ck = await importCtrlKey(msgKey);
+      msgKey.fill(0);
+      const inner = await openCtrl(ck, ciphertext, this.ctrlRecvCounter, dirBit);
+      this.ctrlRecvCounter++;
+      if (inner.length === 0) return;
+      // Reconstruct as if it were a raw frame and re-dispatch
+      const innerType = inner[0];
+      const innerPayload = inner.subarray(1);
+      switch (innerType) {
+        case LIVE_MSG.TYPING:
+          if (this.onPeerTyping) this.onPeerTyping(innerPayload.length >= 1 ? innerPayload[0] : 0x00);
+          break;
+        case LIVE_MSG.ACK: {
+          if (innerPayload.length >= 4 && this.onAck) {
+            const msgId = new DataView(innerPayload.buffer, innerPayload.byteOffset, 4).getUint32(0, true);
+            this.onAck(msgId);
+          }
+          break;
         }
-        break;
-      }
-      case LIVE_MSG.CTRL: {
-        const frame = decodeCtrl(bytes.subarray(1));
-        if (frame) {
-          if (this.onCtrl) this.onCtrl(frame.opcode, frame.payload);
-          if (frame.opcode === CTRL_OP.DRAW_STREAM && this.onDrawStream) {
-            const drawEvent = decodeDrawStreamEvent(frame.payload);
-            if (drawEvent) {
-              const applied = this.drawStreamRecvTracker.apply(drawEvent);
-              if (applied.applied) {
-                this.onDrawStream(drawEvent);
+        case LIVE_MSG.CTRL: {
+          const frame = decodeCtrl(innerPayload);
+          if (frame) {
+            if (this.onCtrl) this.onCtrl(frame.opcode, frame.payload);
+            if (frame.opcode === CTRL_OP.DRAW_STREAM && this.onDrawStream) {
+              const drawEvent = decodeDrawStreamEvent(frame.payload);
+              if (drawEvent) {
+                const applied = this.drawStreamRecvTracker.apply(drawEvent);
+                if (applied.applied) {
+                  this.onDrawStream(drawEvent);
+                }
               }
             }
           }
+          break;
         }
-        break;
+        default:
+          this.onLog(`unknown sealed inner type: 0x${innerType.toString(16)}`);
       }
-      default:
-        this.onLog(`unknown message type: 0x${type.toString(16)}`);
+    } catch {
+      this.onLog("sealed frame decryption failed");
     }
   }
 
@@ -1268,12 +1344,7 @@ export class WhisperLiveSession {
       const header = parseHeader(complete);
       const pubKeyHex = toHex(header.pubKey);
 
-      // try loop-derived skipped key first.
-      // NOTE: structurally dead with ordered SCTP DataChannels, AND would be broken
-      // even with unordered delivery — the loop codec is order-dependent (counts evolve
-      // from message content), so loopDecode after a skip produces garbage. the AES-GCM
-      // messageKey from the skip cache decrypts correctly, but decompression fails.
-      // kept for defense-in-depth against hypothetical transport reordering.
+      // try loop-derived skipped key first (defense-in-depth; never fires with ordered SCTP).
       let messageKey = this.tryLoopSkippedKey(pubKeyHex, header.counter);
       let didDHRatchet = false;
 
@@ -1320,7 +1391,7 @@ export class WhisperLiveSession {
         }
         throw decryptErr;
       }
-      messageKey.fill(0); // wipe message key after use
+      messageKey.fill(0);
 
       // decompress: first 4 bytes are decodedLen (LE uint32), rest is loop-encoded plaintext
       if (compressedPayload.length < 4) throw new Error("ciphertext too short");
@@ -1338,13 +1409,12 @@ export class WhisperLiveSession {
 
       this.consecutiveDecryptFailures = 0; // reset on successful decrypt+decompress
 
-      // Global msgId — must increment for ALL messages (incl. campfire) to mirror peer's nSentTotal.
       const msgId = this.nRecvTotal * 2 + (this.isOfferer ? 1 : 0);
       this.nRecvTotal++;
 
       const ackPayload = new Uint8Array(4);
       new DataView(ackPayload.buffer).setUint32(0, msgId, true);
-      this.send(LIVE_MSG.ACK, ackPayload);
+      this.sendSealed(LIVE_MSG.ACK, ackPayload);
 
       const isCampfire = (header.flags & LIVE_FLAG.CAMPFIRE) !== 0;
       const isFile     = (header.flags & LIVE_FLAG.FILE) !== 0;
@@ -1469,8 +1539,7 @@ export class WhisperLiveSession {
     } catch { /* setConfiguration unavailable or SubtleCrypto error — non-fatal */ }
   }
 
-  // reinitialize both loop states from the current ratchet chain keys.
-  // called after each DH ratchet step to give the codec layer break-in recovery.
+  // reinitialize both loop states from the current ratchet chain keys after each DH step.
   private async loopReinitFromChainKeys(): Promise<void> {
     if (!this.ratchetState) return;
     if (this.loopStateSend) { loopWipe(this.loopStateSend); this.loopStateSend = null; }
@@ -1488,8 +1557,7 @@ export class WhisperLiveSession {
   }
 
   // advance the receive loop state and ratchet counter to `until`, storing
-  // loop-derived message keys for potential out-of-order recovery.
-  // with ordered SCTP DataChannels this loop body never executes in practice.
+  // loop-derived message keys for potential out-of-order delivery.
   private async skipMessagesWithLoop(until: number): Promise<void> {
     if (!this.ratchetState || !this.loopStateRecv) return;
     if (until - this.ratchetState.nRecv > 256) throw new Error("Too many skipped messages");
@@ -1497,7 +1565,6 @@ export class WhisperLiveSession {
     while (this.ratchetState.nRecv < until) {
       const counter = this.ratchetState.nRecv;
       const { next: nextLoop, messageKey } = await loopStep(this.loopStateRecv);
-      // store for possible out-of-order recovery (matches encryptAndSend's loopStep-derived keys)
       this.skippedLoopKeys.set(`${pubHex}:${counter}`, messageKey);
       loopWipe(this.loopStateRecv);
       this.loopStateRecv = nextLoop;
@@ -1519,13 +1586,13 @@ export class WhisperLiveSession {
   /** Signal compose state. 0x00 = actively typing, 0x01 = idle with unsent text. */
   sendTyping(state: number = 0x00): void {
     if (!this.isLiveState()) return;
-    this.send(LIVE_MSG.TYPING, new Uint8Array([state]));
+    this.sendSealed(LIVE_MSG.TYPING, new Uint8Array([state]));
   }
 
   /** Send a control frame to the peer. */
   sendCtrl(opcode: number, payload?: Uint8Array): void {
     if (!this.isLiveState()) return;
-    this.send(LIVE_MSG.CTRL, encodeCtrl(opcode, payload));
+    this.sendSealed(LIVE_MSG.CTRL, encodeCtrl(opcode, payload));
   }
 
   /** Send a live draw stream event to the peer over CTRL transport. */
@@ -1542,7 +1609,7 @@ export class WhisperLiveSession {
           try { await this.waitForDrain(); } catch { return; }
         }
         if (!this.dc || this.dc.readyState !== "open" || !this.isLiveState()) return;
-        this.send(LIVE_MSG.CTRL, payload);
+        this.sendSealed(LIVE_MSG.CTRL, payload);
       })
       .catch((err) => {
         this.onLog(`draw stream send failed: ${errorMessage(err)}`);
@@ -1603,7 +1670,6 @@ export class WhisperLiveSession {
       return this.sendFileChunked(file);
     }
 
-    // Small file: single encrypted message (original path).
     const fileBytes = new Uint8Array(await file.arrayBuffer());
     let sentMsgId = -1;
     await this.enqueueSend(async () => {
@@ -1774,8 +1840,6 @@ export class WhisperLiveSession {
       throw new Error("No sending loop state, ratchet not fully initialized");
     }
 
-    // Check counter BEFORE encrypting — prevents using the exhausted counter value
-    // and ensures the throw fires before any side effects (loop advancement, send).
     if (this.ratchetState.nSend >= 0xFFFFFFFF) {
       throw new Error("Message counter exhausted — session must be restarted");
     }
@@ -1810,7 +1874,7 @@ export class WhisperLiveSession {
     );
 
     const ciphertext = await aesGcmEncrypt(messageKey, compressedPayload, nonce, header);
-    messageKey.fill(0); // wipe message key after use
+    messageKey.fill(0);
 
     const wireMessage = concatBytes(header, ciphertext);
 
@@ -1824,7 +1888,6 @@ export class WhisperLiveSession {
         try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
       }
       if (!this.dc || this.dc.readyState !== "open") return msgId;
-      // Send chunk directly (Uint8Array is a valid BufferSource).
       this.dc.send(chunk);
       bytesSent += chunk.byteLength;
       if (this.onSendProgress) {
@@ -2013,6 +2076,10 @@ export class WhisperLiveSession {
     this.silentKey = null;
     this.wipeBytes(this.audioKeyBytes);
     this.audioKeyBytes = null;
+    this.wipeBytes(this.ctrlChainSend); this.ctrlChainSend = null;
+    this.wipeBytes(this.ctrlChainRecv); this.ctrlChainRecv = null;
+    this.ctrlSendCounter = 0;
+    this.ctrlRecvCounter = 0;
     this.clearHandshakeArtifacts();
 
     this.wipeBytes(this.phraseRoot);
