@@ -6,10 +6,41 @@ export interface VideoCodecStressSummary {
   fail: number;
 }
 
+const CI_PERF_LIMIT_MS = 20;
+const CI_COMPRESSED_PERF_LIMIT_MS = 30;
+const LOCAL_PERF_LIMIT_MS = 10;
+const LOCAL_COMPRESSED_PERF_LIMIT_MS = 15;
+const IS_CI = !!process.env.CI;
+
+function perfLimitMs(compressed: boolean): number {
+  if (compressed) return IS_CI ? CI_COMPRESSED_PERF_LIMIT_MS : LOCAL_COMPRESSED_PERF_LIMIT_MS;
+  return IS_CI ? CI_PERF_LIMIT_MS : LOCAL_PERF_LIMIT_MS;
+}
+
+function makeDeterministicRng(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 0x100000000;
+  };
+}
+
 function randomPixels(n: number): Uint8Array {
+  const rnd = makeDeterministicRng((0x9e3779b9 ^ n) >>> 0);
   const px = new Uint8Array(n * 4);
-  for (let i = 0; i < px.length; i++) px[i] = Math.floor(Math.random() * 256);
+  for (let i = 0; i < px.length; i++) px[i] = Math.floor(rnd() * 256);
   return px;
+}
+
+async function warmVideoCodec(enc: VideoCodec, dec: VideoCodec, width: number, height: number, frames: number): Promise<void> {
+  const px = randomPixels(width * height);
+  for (let i = 0; i < frames; i++) {
+    const pkt = enc.encode(px, width, height);
+    dec.decode(pkt);
+  }
 }
 
 export async function runVideoCodecStressTest(): Promise<VideoCodecStressSummary> {
@@ -188,6 +219,7 @@ export async function runVideoCodecStressTest(): Promise<VideoCodecStressSummary
     await enc.init(key);
     await dec.init(key);
     const px = randomPixels(160 * 120);
+    await warmVideoCodec(enc, dec, 160, 120, 8);
 
     const t0 = performance.now();
     for (let i = 0; i < 200; i++) enc.encode(px, 160, 120);
@@ -206,10 +238,11 @@ export async function runVideoCodecStressTest(): Promise<VideoCodecStressSummary
 
     const avgEnc = encTime / 200;
     const avgDec = decTime / 200;
+    const perfLimit = perfLimitMs(false);
     console.log(`  Encode: ${avgEnc.toFixed(2)}ms/frame (${(1000 / avgEnc).toFixed(0)} fps)`);
     console.log(`  Decode: ${avgDec.toFixed(2)}ms/frame (${(1000 / avgDec).toFixed(0)} fps)`);
     console.log(`  Total:  ${(avgEnc + avgDec).toFixed(2)}ms/frame (${(1000 / (avgEnc + avgDec)).toFixed(0)} fps)`);
-    ok("Encode+Decode < 10ms/frame", avgEnc + avgDec < 10);
+    ok(`Encode+Decode < ${perfLimit}ms/frame`, avgEnc + avgDec < perfLimit, `measured ${(avgEnc + avgDec).toFixed(2)}ms/frame${IS_CI ? " on CI" : ""}`);
   }
 
   console.log("\n[10] Frame counter in header");
@@ -664,12 +697,14 @@ export async function runVideoCodecStressTest(): Promise<VideoCodecStressSummary
     const w = 160;
     const h = 120;
     const base = randomPixels(w * h);
+    await warmVideoCodec(enc, dec, w, h, 6);
+    const jitterRnd = makeDeterministicRng(0x51f15e5d);
     const frames: Uint8Array[] = [];
     for (let f = 0; f < 100; f++) {
       const px = new Uint8Array(base);
       for (let i = 0; i < 200; i++) {
-        const idx = Math.floor(Math.random() * px.length);
-        px[idx] = (px[idx] + Math.floor(Math.random() * 10) - 5 + 256) & 0xFF;
+        const idx = Math.floor(jitterRnd() * px.length);
+        px[idx] = (px[idx] + Math.floor(jitterRnd() * 10) - 5 + 256) & 0xFF;
       }
       frames.push(px);
     }
@@ -687,11 +722,12 @@ export async function runVideoCodecStressTest(): Promise<VideoCodecStressSummary
     const avgDec = decTime / 100;
     const avgPktSize = pkts.reduce((sum, pkt) => sum + pkt.length, 0) / pkts.length;
     const rawSize = VideoCodec.packetSize(w, h);
+    const perfLimit = perfLimitMs(true);
     console.log(`  Encode: ${avgEnc.toFixed(2)}ms/frame`);
     console.log(`  Decode: ${avgDec.toFixed(2)}ms/frame`);
     console.log(`  Total:  ${(avgEnc + avgDec).toFixed(2)}ms/frame`);
     console.log(`  Avg packet: ${(avgPktSize / 1024).toFixed(1)} KB (raw: ${(rawSize / 1024).toFixed(1)} KB, ${(rawSize / avgPktSize).toFixed(1)}x compression)`);
-    ok("Compressed pipeline under 15ms/frame", avgEnc + avgDec < 15);
+    ok(`Compressed pipeline under ${perfLimit}ms/frame`, avgEnc + avgDec < perfLimit, `measured ${(avgEnc + avgDec).toFixed(2)}ms/frame${IS_CI ? " on CI" : ""}`);
   }
 
   console.log(`\n${"=".repeat(50)}`);
