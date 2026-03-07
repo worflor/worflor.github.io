@@ -707,6 +707,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function disposeCopyUi(): void {
+    if (editingMsgId != null) exitEditMode();
     if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
     if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
     if (copyMenuCloseTimeout) { clearTimeout(copyMenuCloseTimeout); copyMenuCloseTimeout = null; }
@@ -4600,6 +4601,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function releaseTerminalSessionUi(): void {
+    if (editingMsgId != null) exitEditMode();
+    hideCopyMenu();
     stopRecordingSilently(true);
     stopAllAudio();
     closeMediaLightbox();
@@ -5277,17 +5280,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (editingMsgId != null) exitEditMode();
       return;
     }
-    opts.chatInput.value = "";
-    opts.chatInput.focus();
-    emitCleared();
-    updateControls();
 
     // ── Edit mode: send edit instead of new message
     if (editingMsgId != null) {
       const targetId = editingMsgId;
-      exitEditMode();
+      exitEditMode();               // restores pre-edit input + calls updateControls
       if (!session) {
-        // Preview mode — apply edit locally
         handleEdit(targetId, text);
         simulateSendEnergy();
         return;
@@ -5304,6 +5302,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       return;
     }
+
+    opts.chatInput.value = "";
+    opts.chatInput.focus();
+    emitCleared();
+    updateControls();
 
     if (!session) {
       // Preview mode — simulate the full send lifecycle visually.
@@ -5575,8 +5578,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // - Pointer ID tracking — ignore multi-touch secondary fingers.
   // - setPointerCapture — pointerup always fires on mic even if finger slides off.
   opts.chatMicBtn.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
     if (editingMsgId != null) { exitEditMode(); return; }
-    if (opts.chatMicBtn.disabled || e.button !== 0) return;
+    if (opts.chatMicBtn.disabled) return;
     if (micPointerId !== -1) return;           // already tracking a pointer
 
     // Create and resume AudioContext synchronously with user gesture
