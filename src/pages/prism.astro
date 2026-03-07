@@ -406,6 +406,7 @@ const seo = {
     --prism-muted: rgb(var(--color-text-rgb) / 0.58);
     --prism-faint: rgb(var(--color-text-rgb) / 0.3);
     --prism-edge: rgb(var(--color-text-rgb) / 0.14);
+    --prism-font-mono: var(--font-mono);
     --prism-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
     --prism-load-purple: var(--tool-action-load);
     padding-bottom: calc(var(--prism-action-offset) + var(--space-lg));
@@ -914,8 +915,7 @@ const seo = {
   .prism-preview-text {
     margin: 0;
     padding: var(--space-sm) var(--space-md);
-    font-family:
-      "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--prism-font-mono);
     font-size: calc(var(--text-sm) * 0.9);
     line-height: 1.65;
     color: rgb(var(--color-text-rgb) / 0.6);
@@ -978,8 +978,7 @@ const seo = {
   .prism-terminal-log {
     margin: 0;
     padding: var(--space-sm);
-    font-family:
-      "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--prism-font-mono);
     font-size: calc(var(--text-sm) * 0.85);
     line-height: 1.6;
     color: rgb(var(--color-text-rgb) / 0.45);
@@ -1626,7 +1625,7 @@ const seo = {
 
   .prism-page .wb-color-picker-label {
     font-size: calc(var(--text-sm) * 0.9);
-    font-family: var(--font-mono, monospace);
+    font-family: var(--prism-font-mono);
     color: rgb(var(--color-text-rgb) / 0.45);
   }
 

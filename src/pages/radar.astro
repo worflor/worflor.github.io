@@ -353,6 +353,7 @@ const seo = {
     --radar-muted: rgb(var(--color-text-rgb) / 0.58);
     --radar-faint: rgb(var(--color-text-rgb) / 0.3);
     --radar-edge: rgb(var(--color-text-rgb) / 0.14);
+    --radar-font-mono: var(--font-mono);
     --radar-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
     padding-bottom: calc(var(--radar-action-offset) + var(--space-lg));
   }
@@ -646,7 +647,7 @@ const seo = {
   }
 
   .triage-output {
-    font-family: monospace;
+    font-family: var(--radar-font-mono);
     font-size: calc(var(--text-sm) * 0.95);
     color: rgb(var(--chromatic-cyan) / 0.9);
   }
@@ -743,7 +744,7 @@ const seo = {
   }
 
   .feed-list-lock :global(li) {
-    font-family: monospace;
+    font-family: var(--radar-font-mono);
     line-height: 1.45;
   }
 
@@ -795,7 +796,7 @@ const seo = {
     margin-top: calc(var(--space-xs) * 0.5);
     padding-top: calc(var(--space-xs) * 0.5);
     border-top: 1px solid rgb(var(--color-text-rgb) / 0.08);
-    font-family: monospace;
+    font-family: var(--radar-font-mono);
     font-size: calc(var(--text-sm) * 0.9);
     color: var(--radar-muted);
     display: grid;

@@ -312,7 +312,7 @@
   /* ── My-seal phase (seal code display) ───────────────── */
 
   .ws-seal-code {
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     font-size: clamp(0.7rem, 3.8vw, 2rem);
     font-weight: 700;
     letter-spacing: 0.15em;
@@ -328,7 +328,7 @@
   .ws-seal-code-wrap {
     background: rgb(var(--chromatic-cyan) / 0.06);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     margin: var(--space-sm) 0;
     padding: 0 var(--space-sm);
     min-width: 0;
@@ -352,7 +352,7 @@
   }
 
   :global(.ws-seal-qr-canvas) {
-    border-radius: calc(var(--whisper-radius) * 0.65);
+    border-radius: var(--whisper-radius-medium);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
     background: rgb(var(--color-bg-rgb));
     max-width: 100%;
@@ -429,7 +429,7 @@
     white-space: pre-wrap;
     word-break: break-word;
     overflow-wrap: anywhere;
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     font-size: var(--text-sm);
     padding: var(--space-md);
     background: rgb(var(--color-text-rgb) / 0.02);
@@ -535,7 +535,7 @@
     gap: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.6);
     font-size: var(--whisper-text-meta);
     color: rgb(var(--color-text-rgb) / 0.32);
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.75);
     border: 1px solid rgb(var(--color-text-rgb) / 0.06);
     border-radius: var(--whisper-radius-tight);

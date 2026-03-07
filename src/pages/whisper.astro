@@ -1180,11 +1180,14 @@ const seo = {
     --whisper-radius: var(--radius-lg);
     --whisper-radius-soft: calc(var(--whisper-radius) * 0.75);
     --whisper-radius-bubble: calc(var(--whisper-radius) * 0.72);
+    --whisper-radius-medium: calc(var(--whisper-radius) * 0.65);
     --whisper-radius-tight: calc(var(--whisper-radius) * 0.55);
+    --whisper-radius-inner: calc(var(--whisper-radius) * 0.45);
     --whisper-radius-pill: calc(var(--whisper-radius) * 0.5);
     --whisper-muted: rgb(var(--color-text-rgb) / 0.58);
     --whisper-edge: rgb(var(--color-text-rgb) / 0.12);
     --whisper-surface: rgb(10 10 10 / 0.82);
+    --whisper-font-mono: var(--font-mono);
     --whisper-control-padding: 0.6rem 0.75rem;
     --whisper-toggle-padding: 0.55rem 0.75rem;
     --whisper-compact-button-padding: 0.45rem 0.7rem;
@@ -1289,7 +1292,7 @@ const seo = {
     align-items: center;
     gap: 0.4em;
     border: 1px solid transparent;
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     background: transparent;
     color: rgb(var(--color-text-rgb) / 0.55);
     padding: 0.45rem 0.85rem;
@@ -1687,7 +1690,7 @@ const seo = {
     display: flex;
     align-items: center;
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     background: rgb(var(--color-text-rgb) / 0.02);
     min-height: var(--touch-target);
     padding: 0.5rem 0.75rem;
@@ -1712,7 +1715,7 @@ const seo = {
     align-items: center;
     gap: 0.6rem;
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     background: rgb(var(--color-text-rgb) / 0.02);
     min-height: var(--touch-target);
     padding: var(--whisper-toggle-padding);
@@ -1874,7 +1877,7 @@ const seo = {
   :global(.whisper-result) {
     margin: 0;
     border: 1px solid var(--whisper-edge);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     padding: 0.6rem 0.75rem;
     font-size: var(--text-sm);
     line-height: 1.5;
@@ -1907,7 +1910,7 @@ const seo = {
 
   :global(.whisper-download-card) {
     border: 1px solid var(--whisper-edge);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     padding: 0.7rem 0.8rem;
     background: var(--whisper-surface);
     display: grid;
@@ -2054,7 +2057,7 @@ const seo = {
     min-height: 7rem;
     max-height: clamp(14rem, 12rem + 8vw, 24rem);
     overflow: auto;
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     font-size: calc(var(--text-sm) * 0.9);
     line-height: 1.6;
     padding: 0.65rem 0.8rem;
@@ -2390,7 +2393,7 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.18);
     background: rgb(var(--color-text-rgb) / 0.04);
     border: 1px solid rgb(var(--color-text-rgb) / 0.06);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     padding: calc(var(--space-xs) * 0.15) calc(var(--space-xs) * 0.6);
     vertical-align: middle;
     user-select: none;
@@ -2628,7 +2631,7 @@ const seo = {
     min-width: 0;
     overflow: hidden;
     padding: calc(var(--space-xs) * 0.5) calc(var(--space-xs) * 0.75);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     background: rgb(10 10 10 / 0.9);
     color: rgb(var(--color-text-rgb) / 0.62);
@@ -2809,7 +2812,7 @@ const seo = {
   :global(.wl-code-input) {
     flex: 1;
     min-width: 0;
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     font-size: calc(var(--text-sm) * 0.9);
   }
 
@@ -2855,7 +2858,7 @@ const seo = {
 
   :global(.wl-join-qr-panel) {
     border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     background: rgb(var(--chromatic-cyan) / 0.04);
     padding: calc(var(--space-xs) * 0.45);
     margin-top: calc(var(--space-xs) * 0.5);
@@ -2864,7 +2867,7 @@ const seo = {
   :global(.wl-join-qr-video) {
     width: 100%;
     max-height: 16rem;
-    border-radius: calc(var(--whisper-radius) * 0.45);
+    border-radius: var(--whisper-radius-inner);
     background: rgb(var(--color-bg-rgb));
     object-fit: cover;
   }
@@ -3051,14 +3054,14 @@ const seo = {
   /* Inline seal code (next to My Seal button) */
   .ws-my-seal-inline {
     --ws-copy-pulse-rgb: var(--chromatic-cyan);
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     font-size: calc(var(--text-sm) * 0.92);
     font-weight: 600;
     letter-spacing: 0.02em;
     color: rgb(var(--chromatic-cyan));
     background: rgb(var(--chromatic-cyan) / 0.06);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
-    border-radius: calc(var(--whisper-radius) * 0.5);
+    border-radius: var(--whisper-radius-pill);
     padding: 0.25em 0.55em;
     cursor: pointer;
     user-select: all;
@@ -3194,12 +3197,12 @@ const seo = {
   }
 
   .ws-sealed-url-inline {
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     font-size: calc(var(--text-sm) * 0.85);
     color: rgb(var(--chromatic-cyan));
     background: rgb(var(--chromatic-cyan) / 0.06);
     border: 1px solid rgb(var(--chromatic-cyan) / 0.2);
-    border-radius: calc(var(--whisper-radius) * 0.5);
+    border-radius: var(--whisper-radius-pill);
     padding: 0.5em 0.65em;
     margin: 0;
     word-break: break-all;
@@ -3246,7 +3249,7 @@ const seo = {
     margin-top: calc(var(--space-xs) * 0.55);
     padding: calc(var(--space-xs) * 0.6);
     border: 1px solid rgb(var(--tool-action-load) / 0.22);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     background: rgb(var(--tool-action-load) / 0.04);
     min-width: 0;
     overflow: hidden;
@@ -3277,7 +3280,7 @@ const seo = {
   .ws-textarea {
     resize: vertical;
     min-height: 8rem;
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     font-size: var(--text-sm);
   }
 
@@ -3312,7 +3315,7 @@ const seo = {
 
   .ws-recipient-qr-panel {
     border: 1px solid rgb(var(--chromatic-cyan) / 0.18);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     background: rgb(var(--chromatic-cyan) / 0.04);
     padding: calc(var(--space-xs) * 0.45);
     margin-top: calc(var(--space-xs) * -0.35);
@@ -3321,7 +3324,7 @@ const seo = {
   .ws-recipient-qr-video {
     width: 100%;
     max-height: 16rem;
-    border-radius: calc(var(--whisper-radius) * 0.45);
+    border-radius: var(--whisper-radius-inner);
     background: rgb(var(--color-bg-rgb));
     object-fit: cover;
   }

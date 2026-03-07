@@ -378,7 +378,7 @@
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
     border-radius: var(--whisper-radius-soft);
     background: rgb(var(--color-text-rgb) / 0.02);
-    font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--whisper-font-mono);
     font-size: var(--whisper-text-compact);
     line-height: 1.5;
     color: rgb(var(--color-text-rgb) / 0.72);
@@ -1493,7 +1493,7 @@
     max-height: calc(100vh - 5rem);
     max-height: calc(100dvh - 5rem);
     object-fit: contain;
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
     user-select: none;
     -webkit-user-select: none;
@@ -1504,7 +1504,7 @@
     max-width: 100%;
     max-height: calc(100vh - 5rem);
     max-height: calc(100dvh - 5rem);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
     outline: none;
     touch-action: manipulation;
@@ -1827,7 +1827,7 @@
     width: 100%;
     min-height: auto;
     padding: 0.52rem 2.4rem 0.52rem 0.72rem;
-    border-radius: calc(var(--whisper-radius) * 0.65);
+    border-radius: var(--whisper-radius-medium);
     border-color: rgb(var(--color-text-rgb) / 0.14);
     background: rgb(10 10 10 / 0.82);
     transition:
@@ -2118,7 +2118,7 @@
     flex-direction: column;
     gap: 0.2rem;
     padding: 0.3rem;
-    border-radius: calc(var(--whisper-radius, 12px) * 0.65);
+    border-radius: var(--whisper-radius-medium);
     background: rgb(10 10 10 / 0.94);
     border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     backdrop-filter: blur(12px);
@@ -2147,7 +2147,7 @@
     gap: 0.5rem;
     padding: 0.45rem 0.75rem;
     border: 1px solid transparent;
-    border-radius: calc(var(--whisper-radius, 12px) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     background: transparent;
     color: rgb(var(--color-text-rgb) / 0.68);
     font-size: calc(var(--text-sm, 0.875rem) * 0.82);
@@ -2593,7 +2593,7 @@
 
   :global(.wl-draw-canvas-wrapper) {
     position: relative;
-    border-radius: calc(var(--whisper-radius, 12px) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
     overflow: hidden;
     /* Explicit baseline so toolbar/controls at z-index:1 always paint above */
