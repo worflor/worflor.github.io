@@ -174,9 +174,10 @@ export async function sealCtrl(
   plaintext: Uint8Array,
   counter: number,
   directionBit: number,
+  aad: Uint8Array,
 ): Promise<Uint8Array> {
   const nonce = ctrlNonce(counter, directionBit);
-  const params: AesGcmParams = { name: "AES-GCM", iv: nonce, tagLength: 32 };
+  const params: AesGcmParams = { name: "AES-GCM", iv: nonce, tagLength: 32, additionalData: toArrayBuffer(aad) };
   return new Uint8Array(await crypto.subtle.encrypt(params, key, toArrayBuffer(plaintext)));
 }
 
@@ -185,8 +186,9 @@ export async function openCtrl(
   ciphertext: Uint8Array,
   counter: number,
   directionBit: number,
+  aad: Uint8Array,
 ): Promise<Uint8Array> {
   const nonce = ctrlNonce(counter, directionBit);
-  const params: AesGcmParams = { name: "AES-GCM", iv: nonce, tagLength: 32 };
+  const params: AesGcmParams = { name: "AES-GCM", iv: nonce, tagLength: 32, additionalData: toArrayBuffer(aad) };
   return new Uint8Array(await crypto.subtle.decrypt(params, key, toArrayBuffer(ciphertext)));
 }

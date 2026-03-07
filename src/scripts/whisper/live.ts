@@ -603,11 +603,17 @@ export class WhisperLiveSession {
       .then(async () => {
         if (!this.dc || this.dc.readyState !== "open" || !this.ctrlChainSend) return;
         const [newChain, msgKey] = await kdfChainDirect(this.ctrlChainSend);
+        const aad = this.ctrlChainSend.slice();  // capture old chain key as AAD before wipe
         this.ctrlChainSend.fill(0);
         this.ctrlChainSend = newChain;
         const ck = await importCtrlKey(msgKey);
         msgKey.fill(0);
-        const sealed = await sealCtrl(ck, inner, counter, dirBit);
+        let sealed: Uint8Array;
+        try {
+          sealed = await sealCtrl(ck, inner, counter, dirBit, aad);
+        } finally {
+          aad.fill(0);  // always wipe — even if sealCtrl throws
+        }
         if (this.dc?.readyState === "open") {
           const wire = new Uint8Array(1 + sealed.length);
           wire[0] = LIVE_MSG.SEALED;
@@ -1307,11 +1313,17 @@ export class WhisperLiveSession {
     try {
       const dirBit = this.isOfferer ? 1 : 0; // peer's direction is opposite
       const [newChain, msgKey] = await kdfChainDirect(this.ctrlChainRecv);
+      const aad = this.ctrlChainRecv.slice();  // capture old chain key as AAD before wipe
       this.ctrlChainRecv.fill(0);
       this.ctrlChainRecv = newChain;
       const ck = await importCtrlKey(msgKey);
       msgKey.fill(0);
-      const inner = await openCtrl(ck, ciphertext, this.ctrlRecvCounter, dirBit);
+      let inner: Uint8Array;
+      try {
+        inner = await openCtrl(ck, ciphertext, this.ctrlRecvCounter, dirBit, aad);
+      } finally {
+        aad.fill(0);  // always wipe — auth failures are normal, key must not linger
+      }
       this.ctrlRecvCounter++;
       if (inner.length === 0) return;
       // Reconstruct as if it were a raw frame and re-dispatch
