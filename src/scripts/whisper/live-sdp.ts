@@ -5,12 +5,11 @@
 
 import { concatBytes, randomBytes } from "./wasm";
 import { TE, TD, aesGcmEncrypt, aesGcmDecrypt } from "./live-crypto";
-import { derivePhraseRoot, derivePhraseScopedKey } from "./live-handshake";
+import { derivePhraseScopedKey } from "./live-handshake";
 
 /* ── SDP Sealing Constants ───────────────────────────────── */
 
 const SDP_SEAL_INFO = TE.encode("whisper-sdp-seal");
-const ZERO_SALT_32 = new Uint8Array(32);
 const SDP_AAD_PREFIX = "whisper-sdp-seal-aad-v1|";
 
 /** Flag bytes for wire format */
@@ -264,24 +263,19 @@ async function decompressFromBytes(data: Uint8Array): Promise<CompactSDP> {
 
 /* ── Public API ──────────────────────────────────────────── */
 
-async function sealKey(phrase: string): Promise<Uint8Array> {
-  const phraseRoot = await derivePhraseRoot(phrase);
-  try {
-    return await derivePhraseScopedKey(phraseRoot, "sdp-seal", 32, SDP_SEAL_INFO);
-  } finally {
-    phraseRoot.fill(0);
-  }
+async function sealKeyFromRoot(phraseRoot: Uint8Array): Promise<Uint8Array> {
+  return derivePhraseScopedKey(phraseRoot, "sdp-seal", 32, SDP_SEAL_INFO);
 }
 
 export async function sdpToCode(
-  sdp: string, type: "offer" | "answer", phrase?: string,
+  sdp: string, type: "offer" | "answer", phraseRoot?: Uint8Array,
 ): Promise<string> {
   const compact = parseSDP(sdp);
   compact.type = type;
   const innerBytes = await compressToBytes(compact);
 
-  if (phrase) {
-    const key = await sealKey(phrase);
+  if (phraseRoot) {
+    const key = await sealKeyFromRoot(phraseRoot);
     const nonce = randomBytes(12);
     const aad = TE.encode(SDP_AAD_PREFIX + type);
     const ciphertext = await aesGcmEncrypt(key, innerBytes, nonce, aad);
@@ -293,18 +287,18 @@ export async function sdpToCode(
 }
 
 export async function codeToSdp(
-  code: string, type: "offer" | "answer", phrase?: string,
+  code: string, type: "offer" | "answer", phraseRoot?: Uint8Array,
 ): Promise<string> {
   const data = base64urlDecode(code);
 
   if (data.length < 2) throw new Error("Connection code is too short");
 
   if (data[0] === FLAG_SEALED) {
-    if (!phrase) throw new Error("This code is sealed with a shared phrase — enter it to connect");
+    if (!phraseRoot) throw new Error("This code is sealed with a shared phrase — enter it to connect");
     if (data.length < 30) throw new Error("Sealed code is truncated"); // 1 flag + 12 nonce + 16 GCM tag min
     const nonce = data.subarray(1, 13);
     const ciphertext = data.subarray(13);
-    const key = await sealKey(phrase);
+    const key = await sealKeyFromRoot(phraseRoot);
     let innerBytes: Uint8Array;
     try {
       const aad = TE.encode(SDP_AAD_PREFIX + type);

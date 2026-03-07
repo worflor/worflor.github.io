@@ -84,6 +84,8 @@ import {
   deriveConfirmContextHash,
   buildConfirmProof,
   verifyConfirmProof,
+  deriveSilentKey,
+  deriveAudioKey,
   type HandshakeRole,
 } from "./live-handshake";
 
@@ -261,10 +263,8 @@ const TURN_KDF_INFO_PHRASE = TE.encode("whisper-turn-v1");
 const TURN_KDF_INFO_BOND = TE.encode("whisper-turn-bond-v1");
 const ZERO_SALT_32 = new Uint8Array(32);
 
-async function selectTurnServer(phrase: string, pool: RTCIceServer[]): Promise<RTCIceServer> {
-  const phraseRoot = await derivePhraseRoot(phrase);
+async function selectTurnServer(phraseRoot: Uint8Array, pool: RTCIceServer[]): Promise<RTCIceServer> {
   const indexBytes = await derivePhraseScopedKey(phraseRoot, "turn-select", 4, TURN_KDF_INFO_PHRASE);
-  phraseRoot.fill(0);
   const idx = new DataView(indexBytes.buffer, indexBytes.byteOffset).getUint32(0, false) % pool.length;
   return pool[idx];
 }
@@ -376,8 +376,11 @@ export class WhisperLiveSession {
   private dc: RTCDataChannel | null = null;
   private ratchetState: RatchetState | null = null;
   private sharedSecret: Uint8Array | null = null;
+  private silentKey: Uint8Array | null = null;
+  private audioKeyBytes: Uint8Array | null = null;
   private consecutiveDecryptFailures = 0;
-  private sharedPhrase: string | null = "";
+  /** PBKDF2-stretched phrase root (wipeable bytes, never store the raw string). */
+  private phraseRoot: Uint8Array | null = null;
   private transportMode: TransportMode = "naked";
   private assembler = new ChunkAssembler();
   private incomingFiles = new Map<number, IncomingFileTransfer>();
@@ -406,6 +409,7 @@ export class WhisperLiveSession {
   private kizunaWitness: Uint8Array | null = null;
   private confirmContextHash: Uint8Array | null = null;
   private pendingPeerConfirmProof: Uint8Array | null = null;
+  private ratchetInitReceived = false;
   private localConfirmRequested = false;
   private localConfirmSent = false;
   private remoteConfirmVerified = false;
@@ -498,8 +502,8 @@ export class WhisperLiveSession {
   }
 
   private async buildRtcConfig(): Promise<RTCConfiguration> {
-    if (!this.turnPool.length || !this.sharedPhrase) return this.rtcConfig;
-    const turn = await selectTurnServer(this.sharedPhrase, this.turnPool);
+    if (!this.turnPool.length || !this.phraseRoot) return this.rtcConfig;
+    const turn = await selectTurnServer(this.phraseRoot, this.turnPool);
     this.turnInjected = true;
     return {
       ...this.rtcConfig,
@@ -531,11 +535,13 @@ export class WhisperLiveSession {
   /** Whether this side created the session (offerer). Cryptographically established during handshake. */
   get isHost(): boolean { return this.isOfferer; }
 
-  /** Retrieve the 256-bit shared session secret as a Uint32Array for the WebAssembly audio codec. */
+  /** Retrieve a purpose-derived 128-bit key for the WebAssembly audio codec. */
   get audioKey(): Uint32Array | undefined {
-    if (!this.sharedSecret) return undefined;
-    // Extract first 16 bytes for the 128-bit seed expected by the WASM codec
-    return new Uint32Array(this.sharedSecret.buffer, this.sharedSecret.byteOffset, 4);
+    if (!this.audioKeyBytes) return undefined;
+    // Return a copy — prevents external code from holding a reference to wipeable memory
+    return new Uint32Array(this.audioKeyBytes.buffer.slice(
+      this.audioKeyBytes.byteOffset, this.audioKeyBytes.byteOffset + 16,
+    ));
   }
 
   private setState(state: LiveState, detail?: string): void {
@@ -561,13 +567,19 @@ export class WhisperLiveSession {
 
   /* ── Offer/Answer Lifecycle ─────────────────────────────── */
 
-  private initSession(sharedPhrase?: string, asOfferer = true): void {
+  private async initSession(sharedPhrase?: string, asOfferer = true): Promise<void> {
     this._destroyed = false;
     this.externalAssistDropped = false;
     this.turnInjected = false;
     this.connectingGraceDone = false;
     this.resetSessionState();
-    this.sharedPhrase = sharedPhrase ?? "";
+    // Derive phraseRoot immediately so the raw string never persists in session state.
+    // phraseRoot is a wipeable Uint8Array — the string leaves scope and is GC'd.
+    if (sharedPhrase) {
+      this.phraseRoot = await derivePhraseRoot(sharedPhrase);
+    } else {
+      this.phraseRoot = null;
+    }
     this.isOfferer = asOfferer;
   }
 
@@ -590,6 +602,7 @@ export class WhisperLiveSession {
     this.replacePendingPeerConfirmProof(null);
     this.wipeBytes(this.localEphPublicKey);
     this.localEphPublicKey = null;
+    this.ratchetInitReceived = false;
     this.localConfirmRequested = false;
     this.localConfirmSent = false;
     this.remoteConfirmVerified = false;
@@ -713,7 +726,7 @@ export class WhisperLiveSession {
 
   /** Peer A: create an offer code. */
   async createOffer(sharedPhrase?: string): Promise<string> {
-    this.initSession(sharedPhrase, true);
+    await this.initSession(sharedPhrase, true);
     this.setState("offering");
     this.onLog("creating offer...");
 
@@ -732,9 +745,9 @@ export class WhisperLiveSession {
     this.onLog("gathering network candidates...");
     await this.waitForICE();
 
-    const code = await sdpToCode(this.pc.localDescription!.sdp, "offer", this.sharedPhrase || undefined);
+    const code = await sdpToCode(this.pc.localDescription!.sdp, "offer", this.phraseRoot ?? undefined);
 
-    this.onLog(`offer code ready${this.sharedPhrase ? " (sealed)" : ""}`);
+    this.onLog(`offer code ready${this.phraseRoot ? " (sealed)" : ""}`);
     this.setState("waiting-for-answer");
 
     return code;
@@ -745,7 +758,7 @@ export class WhisperLiveSession {
     if (!this.pc) throw new Error("No connection, create offer first");
 
     this.onLog("applying answer code...");
-    const sdp = await codeToSdp(answerCode, "answer", this.sharedPhrase || undefined);
+    const sdp = await codeToSdp(answerCode, "answer", this.phraseRoot ?? undefined);
     await this.pc.setRemoteDescription({ type: "answer", sdp });
     this.setState("connecting");
     this.onLog("connecting peer-to-peer...");
@@ -753,11 +766,11 @@ export class WhisperLiveSession {
 
   /** Peer B: accept an offer code, return an answer code. */
   async acceptOffer(offerCode: string, sharedPhrase?: string): Promise<string> {
-    this.initSession(sharedPhrase, false);
+    await this.initSession(sharedPhrase, false);
     this.setState("answering");
     this.onLog("accepting offer code...");
 
-    const offerSDP = await codeToSdp(offerCode, "offer", this.sharedPhrase || undefined);
+    const offerSDP = await codeToSdp(offerCode, "offer", this.phraseRoot ?? undefined);
 
     this.pc = new RTCPeerConnection(await this.buildRtcConfig());
     this.setupPeerConnection(this.pc);
@@ -775,9 +788,9 @@ export class WhisperLiveSession {
     this.onLog("gathering network candidates...");
     await this.waitForICE();
 
-    const answerCode = await sdpToCode(this.pc.localDescription!.sdp, "answer", this.sharedPhrase || undefined);
+    const answerCode = await sdpToCode(this.pc.localDescription!.sdp, "answer", this.phraseRoot ?? undefined);
 
-    this.onLog(`answer code ready${this.sharedPhrase ? " (sealed)" : ""}`);
+    this.onLog(`answer code ready${this.phraseRoot ? " (sealed)" : ""}`);
     this.setState("connecting");
     this.onLog("connecting peer-to-peer...");
 
@@ -1091,16 +1104,16 @@ export class WhisperLiveSession {
       this.ephPrivateKey = null;
 
       const transcriptHash = await this.buildTranscriptHash(peerPubKeyRaw);
-      let phraseRoot: Uint8Array | null = null;
-      if (this.sharedPhrase) {
-        phraseRoot = await derivePhraseRoot(this.sharedPhrase);
-      }
-      this.sharedPhrase = null;
-      const sharedSecret = await deriveSessionRoot(ecdhSecret, transcriptHash, phraseRoot);
+      const sharedSecret = await deriveSessionRoot(ecdhSecret, transcriptHash, this.phraseRoot);
       ecdhSecret.fill(0);
-      phraseRoot?.fill(0);
+      // phraseRoot is no longer needed — wipe the stretched phrase key
+      this.wipeBytes(this.phraseRoot);
+      this.phraseRoot = null;
 
       this.sharedSecret = sharedSecret;
+      // Derive purpose-specific keys so the session root is never directly exposed
+      this.silentKey = await deriveSilentKey(sharedSecret);
+      this.audioKeyBytes = await deriveAudioKey(sharedSecret);
       this.wipeBytes(this.transcriptHash);
       this.transcriptHash = transcriptHash;
       this.wipeBytes(this.kizunaWitness);
@@ -1138,6 +1151,11 @@ export class WhisperLiveSession {
   private async handleRatchetInit(peerRatchetPubKey: Uint8Array): Promise<void> {
     if (this._state !== "handshaking" && this._state !== "verifying") return;
     if (!this.sharedSecret) return;
+
+    // Guard: only accept one RATCHET_INIT per handshake. A duplicate would
+    // overwrite (answerer) or desync (offerer) the ratchet state. Reject silently.
+    if (this.ratchetInitReceived) return;
+    this.ratchetInitReceived = true;
 
     if (!this.isOfferer) {
       this.ratchetState = await initRatchetAsReceiver(this.sharedSecret, peerRatchetPubKey);
@@ -1309,6 +1327,9 @@ export class WhisperLiveSession {
       const decodedLen = new DataView(
         compressedPayload.buffer, compressedPayload.byteOffset,
       ).getUint32(0, true);
+      // Sanity bound — even with chunked reassembly, no single message should decode
+      // to more than 64 MB. Prevents a compromised peer from forcing a huge allocation.
+      if (decodedLen > 64 * 1024 * 1024) throw new Error("decodedLen exceeds safety limit");
       const compressed = compressedPayload.subarray(4);
 
       if (!this.loopStateRecv) throw new Error("No receiving loop state after step");
@@ -1753,6 +1774,12 @@ export class WhisperLiveSession {
       throw new Error("No sending loop state, ratchet not fully initialized");
     }
 
+    // Check counter BEFORE encrypting — prevents using the exhausted counter value
+    // and ensures the throw fires before any side effects (loop advancement, send).
+    if (this.ratchetState.nSend >= 0xFFFFFFFF) {
+      throw new Error("Message counter exhausted — session must be restarted");
+    }
+
     const msgId = this.nSentTotal * 2 + (this.isOfferer ? 0 : 1);
     this.nSentTotal++;
 
@@ -1787,9 +1814,6 @@ export class WhisperLiveSession {
 
     const wireMessage = concatBytes(header, ciphertext);
 
-    if (this.ratchetState.nSend >= 0xFFFFFFFF) {
-      throw new Error("Message counter exhausted — session must be restarted");
-    }
     this.ratchetState.nSend++;
 
     const totalBytes = estimateChunkedPrefixedSize(wireMessage.length);
@@ -1848,10 +1872,10 @@ export class WhisperLiveSession {
     }
   }
 
-  /** Get the shared secret as a hex string for Silent mode (use as Whisper solo password). */
+  /** Get a purpose-derived key for Silent mode (Whisper solo password). Isolated from the session root. */
   getSharedSecret(): string | null {
-    if (!this.sharedSecret) return null;
-    return toHex(this.sharedSecret);
+    if (!this.silentKey) return null;
+    return toHex(this.silentKey);
   }
 
   /* ── Teardown ───────────────────────────────────────────── */
@@ -1985,9 +2009,14 @@ export class WhisperLiveSession {
       this.sharedSecret.fill(0);
       this.sharedSecret = null;
     }
+    this.wipeBytes(this.silentKey);
+    this.silentKey = null;
+    this.wipeBytes(this.audioKeyBytes);
+    this.audioKeyBytes = null;
     this.clearHandshakeArtifacts();
 
-    this.sharedPhrase = null;
+    this.wipeBytes(this.phraseRoot);
+    this.phraseRoot = null;
     this.consecutiveDecryptFailures = 0;
     this.assembler.reset();
     this.clearIncomingFiles();

@@ -119,10 +119,10 @@ describe("live-sdp hardening", () => {
 
   it("sealed SDP rejects role confusion", async () => {
     const offerSdp = sampleSdp("actpass", [candidateA, candidateB]);
-    const phrase = "shared tower phrase";
-    const code = await sdpToCode(offerSdp, "offer", phrase);
-    await assert.rejects(() => codeToSdp(code, "answer", phrase));
-    const unsealed = await codeToSdp(code, "offer", phrase);
+    const phraseRoot = await derivePhraseRoot("shared tower phrase");
+    const code = await sdpToCode(offerSdp, "offer", phraseRoot);
+    await assert.rejects(() => codeToSdp(code, "answer", phraseRoot));
+    const unsealed = await codeToSdp(code, "offer", phraseRoot);
     assert.match(unsealed, /a=setup:actpass/);
   });
 });
