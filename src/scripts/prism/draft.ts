@@ -5,7 +5,9 @@ export type PrismDraftModuleId =
   | "shrubber"
   | "audio"
   | "subtitles"
-  | "transparency";
+  | "transparency"
+  | "scribe"
+  | "flatcap";
 
 const PRISM_DRAFT_VERSION = 2;
 const PRISM_DRAFT_MAX_DEPTH = 8;
@@ -17,6 +19,8 @@ const PRISM_DRAFT_MODULE_IDS: PrismDraftModuleId[] = [
   "audio",
   "subtitles",
   "transparency",
+  "scribe",
+  "flatcap",
 ];
 
 export interface PrismFileSignature {

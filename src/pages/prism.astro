@@ -61,7 +61,7 @@ const seo = {
         <p class="upload-text">drop a file here</p>
         <p class="upload-subtext">or click / paste to browse</p>
         <p class="upload-formats">
-          video &middot; audio &middot; image &middot; subtitle
+          video &middot; audio &middot; image &middot; subtitle &middot; document
         </p>
         <input
           type="file"
@@ -69,7 +69,7 @@ const seo = {
           class="sr-only"
           aria-hidden="true"
           multiple
-          accept="video/*,audio/*,image/*,.srt,.ass,.ssa,.vtt,.sub,.mkv,.webm,.flac,.ogg,.opus"
+          accept="video/*,audio/*,image/*,.srt,.ass,.ssa,.vtt,.sub,.mkv,.webm,.flac,.ogg,.opus,.md,.markdown,.pdf"
         />
       </div>
     </section>
@@ -163,6 +163,18 @@ const seo = {
           role="tab"
           aria-selected="false"
           data-module="transparency">Transparency</button
+        >
+        <button
+          class="prism-tab"
+          role="tab"
+          aria-selected="false"
+          data-module="scribe">Scribe</button
+        >
+        <button
+          class="prism-tab"
+          role="tab"
+          aria-selected="false"
+          data-module="flatcap">Flatcap</button
         >
       </div>
     </section>
@@ -1659,7 +1671,9 @@ const seo = {
   .prism-page .shrub-tab,
   .prism-page .al-tab,
   .prism-page .sub-tab,
-  .prism-page .trans-tab {
+  .prism-page .trans-tab,
+  .prism-page .scr-tab,
+  .prism-page .fc-tab {
     padding: calc(var(--space-xs) * 0.55) calc(var(--space-xs) * 1.1);
     background: rgb(var(--color-text-rgb) / 0.02);
     border: 1px solid rgb(var(--color-text-rgb) / 0.08);
@@ -1678,7 +1692,9 @@ const seo = {
   .prism-page .shrub-tab:hover,
   .prism-page .al-tab:hover,
   .prism-page .sub-tab:hover,
-  .prism-page .trans-tab:hover {
+  .prism-page .trans-tab:hover,
+  .prism-page .scr-tab:hover,
+  .prism-page .fc-tab:hover {
     background: rgb(var(--color-text-rgb) / 0.04);
     color: rgb(var(--color-text-rgb) / 0.7);
   }
@@ -1686,7 +1702,9 @@ const seo = {
   .prism-page .shrub-tab.shrub-tab--active,
   .prism-page .al-tab.al-tab--active,
   .prism-page .sub-tab.sub-tab--active,
-  .prism-page .trans-tab.trans-tab--active {
+  .prism-page .trans-tab.trans-tab--active,
+  .prism-page .scr-tab.scr-tab--active,
+  .prism-page .fc-tab.fc-tab--active {
     background: rgb(var(--color-text-rgb) / 0.05);
     border-color: rgb(var(--color-text-rgb) / 0.18);
     color: var(--color-text);
@@ -1696,7 +1714,9 @@ const seo = {
   .prism-page .shrub-panel,
   .prism-page .al-panel,
   .prism-page .sub-panel,
-  .prism-page .trans-panel {
+  .prism-page .trans-panel,
+  .prism-page .scr-panel,
+  .prism-page .fc-panel {
     display: grid;
     gap: var(--space-sm);
   }
@@ -1704,7 +1724,9 @@ const seo = {
   .prism-page .shrub-field,
   .prism-page .al-field,
   .prism-page .sub-field,
-  .prism-page .trans-field {
+  .prism-page .trans-field,
+  .prism-page .scr-field,
+  .prism-page .fc-field {
     display: grid;
     gap: calc(var(--space-xs) * 0.4);
   }
@@ -1712,14 +1734,18 @@ const seo = {
   .prism-page .shrub-field--row,
   .prism-page .al-field--row,
   .prism-page .sub-field--row,
-  .prism-page .trans-field--row {
+  .prism-page .trans-field--row,
+  .prism-page .scr-field--row,
+  .prism-page .fc-field--row {
     gap: calc(var(--space-xs) * 0.3);
   }
 
   .prism-page .shrub-label,
   .prism-page .al-label,
   .prism-page .sub-label,
-  .prism-page .trans-label {
+  .prism-page .trans-label,
+  .prism-page .scr-label,
+  .prism-page .fc-label {
     font-size: var(--text-sm);
     color: rgb(var(--color-text-rgb) / 0.55);
     font-weight: 500;
@@ -1728,7 +1754,9 @@ const seo = {
   .prism-page .shrub-hint,
   .prism-page .al-hint,
   .prism-page .sub-hint,
-  .prism-page .trans-hint {
+  .prism-page .trans-hint,
+  .prism-page .scr-hint,
+  .prism-page .fc-hint {
     font-size: calc(var(--text-sm) * 0.9);
     color: rgb(var(--color-text-rgb) / 0.3);
     margin: 0;
@@ -1738,7 +1766,9 @@ const seo = {
   .prism-page .shrub-toggle-label,
   .prism-page .al-toggle-label,
   .prism-page .sub-toggle-label,
-  .prism-page .trans-toggle-label {
+  .prism-page .trans-toggle-label,
+  .prism-page .scr-toggle-label,
+  .prism-page .fc-toggle-label {
     display: inline-flex;
     align-items: center;
     gap: calc(var(--space-xs) * 0.5);
@@ -1751,10 +1781,44 @@ const seo = {
   .prism-page .shrub-toggle-label input[type="checkbox"],
   .prism-page .al-toggle-label input[type="checkbox"],
   .prism-page .sub-toggle-label input[type="checkbox"],
-  .prism-page .trans-toggle-label input[type="checkbox"] {
+  .prism-page .trans-toggle-label input[type="checkbox"],
+  .prism-page .scr-toggle-label input[type="checkbox"],
+  .prism-page .fc-toggle-label input[type="checkbox"] {
     accent-color: rgb(var(--chromatic-cyan));
     width: 0.95rem;
     height: 0.95rem;
+  }
+
+  /* ── Scribe Preview ──────────────────────────────────────── */
+
+  .prism-page .scr-preview-frame {
+    width: 100%;
+    max-height: 420px;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: var(--radius-lg);
+    background: #fff;
+    overflow: hidden;
+    margin-top: var(--space-sm);
+  }
+
+  /* ── Flatcap Action Tabs ────────────────────────────────── */
+
+  .prism-page .fc-action-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--space-xs) * 0.3);
+    margin-bottom: var(--space-sm);
+  }
+
+  /* ── Document Output Preview ────────────────────────────── */
+
+  .prism-page .prism-preview-doc {
+    width: 100%;
+    min-height: 300px;
+    max-height: 500px;
+    border: none;
+    border-radius: var(--radius-lg);
+    background: #fff;
   }
 
   /* ── Audio Lab Toggle Rows ──────────────────────────────── */
@@ -2382,7 +2446,9 @@ const seo = {
     .prism-page .shrub-tab:hover,
     .prism-page .al-tab:hover,
     .prism-page .sub-tab:hover,
-    .prism-page .trans-tab:hover {
+    .prism-page .trans-tab:hover,
+    .prism-page .scr-tab:hover,
+    .prism-page .fc-tab:hover {
       background: rgb(var(--color-text-rgb) / 0.02);
       color: rgb(var(--color-text-rgb) / 0.5);
     }

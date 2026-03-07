@@ -379,8 +379,7 @@ interface IncomingFileTransfer {
   fileType: string;
   totalSize: number;
   totalChunks: number;
-  chunks: (Uint8Array | null)[];
-  received: number;
+  chunks: Map<number, Uint8Array>;
   firstMsgId: number;
 }
 
@@ -1533,31 +1532,30 @@ export class WhisperLiveSession {
         fileType: fileType ?? "",
         totalSize: totalFileSize,
         totalChunks,
-        chunks: new Array(totalChunks).fill(null),
-        received: 0,
+        chunks: new Map(),
         firstMsgId: msgId,
       };
       this.incomingFiles.set(transferId, transfer);
     }
 
-    if (chunkIndex >= transfer.totalChunks || transfer.chunks[chunkIndex] !== null) return; // out-of-range or duplicate
+    if (chunkIndex >= transfer.totalChunks || transfer.chunks.has(chunkIndex)) return; // out-of-range or duplicate
 
     // chunkData is a subarray of the decrypted plaintext. Slice so the backing
     // buffer can be freed; we only keep the ~4 MB slice, not the full allocation.
-    transfer.chunks[chunkIndex] = chunkData.slice();
-    transfer.received++;
+    transfer.chunks.set(chunkIndex, chunkData.slice());
 
-    if (transfer.received < transfer.totalChunks) return; // still waiting
+    if (transfer.chunks.size < transfer.totalChunks) return; // still waiting
 
-    // All chunks received — assemble and emit.
+    // All chunks received — assemble in order and emit.
     this.incomingFiles.delete(transferId);
     let total = 0;
-    for (const c of transfer.chunks) total += (c as Uint8Array).length;
+    for (const c of transfer.chunks.values()) total += c.length;
     const assembled = new Uint8Array(total);
     let offset = 0;
-    for (const c of transfer.chunks) {
-      assembled.set(c as Uint8Array, offset);
-      offset += (c as Uint8Array).length;
+    for (let i = 0; i < transfer.totalChunks; i++) {
+      const c = transfer.chunks.get(i)!;
+      assembled.set(c, offset);
+      offset += c.length;
     }
     this.onMessage({
       type: "file",

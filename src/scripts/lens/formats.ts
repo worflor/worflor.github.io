@@ -1729,6 +1729,13 @@ async function extractPdfMeta(view: DataView): Promise<ExifCategory[]> {
     }
   }
 
+  // Annotations
+  const annotMatches = rawScan.match(/\/Type\s*\/Annot\b/g);
+  const annotCount = annotMatches ? annotMatches.length : 0;
+  if (annotCount > 0) {
+    fields.push(field("pdf.annotations", "Annotations", `${annotCount} annotation${annotCount !== 1 ? "s" : ""}`));
+  }
+
   // XMP & Encryption
   if (textSlice.indexOf("<?xpacket") >= 0) fields.push(field("pdf.xmp", "XMP Metadata", "present", "Yes"));
   if (textSlice.includes("/Encrypt")) fields.push(field("pdf.encrypted", "Encrypted", 1, "Yes"));
@@ -3155,6 +3162,25 @@ async function analyzeText(
   // Sub-format specific analysis
   if (subFormat === "JSON" || subFormat === "JSON (partial)") {
     fields.push(...analyzeJsonStructure(text));
+  }
+
+  if (subFormat === "Markdown" || ext === "md" || ext === "markdown") {
+    // Frontmatter
+    const fmMatch = text.match(/^---\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      const fmLines = fmMatch[1].split("\n").filter((l: string) => /^\w[\w-]*:/.test(l));
+      for (const line of fmLines.slice(0, 10)) {
+        const [key, ...rest] = line.split(":");
+        const val = rest.join(":").trim();
+        if (val) fields.push(field(`md.fm.${key.trim()}`, key.trim(), val));
+      }
+    }
+
+    // Heading structure
+    const headings = (text.match(/^#{1,6}\s.+$/gm) ?? []);
+    if (headings.length > 0) {
+      fields.push(field("md.headings", "Headings", `${headings.length} heading${headings.length !== 1 ? "s" : ""}`));
+    }
   }
 
   // Preview: first N lines

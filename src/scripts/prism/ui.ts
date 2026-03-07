@@ -42,18 +42,32 @@ import { createShrubber } from "./shrubber";
 import { createAudioLab } from "./audio";
 import { createSubtitles } from "./subtitles";
 import { createTransparency } from "./transparency";
+import { createScribe } from "./scribe";
+import { createFlatcap } from "./flatcap";
+import type { DocumentBuildResult } from "./scribe";
 import type { MetadataDiffResult } from "./metadata-diff";
 
 // ─── Module Type ──────────────────────────────────────────────────────────────
 
-type ModuleId = "workbench" | "shrubber" | "audio" | "subtitles" | "transparency";
+type ModuleId = "workbench" | "shrubber" | "audio" | "subtitles" | "transparency" | "scribe" | "flatcap";
+
+type FfmpegBuildResult = {
+  pipeline?: "ffmpeg";
+  args: string[];
+  outputName: string;
+  prepare?: (engine: PrismEngine) => Promise<void>;
+  multiFile?: boolean;
+};
+
+type BuildResult = FfmpegBuildResult | DocumentBuildResult | null;
 
 interface PrismModule {
   render(container: HTMLElement): void;
   configure(file: FileInfo): void;
-  build(): { args: string[]; outputName: string; prepare?: (engine: PrismEngine) => Promise<void> } | null;
+  build(): BuildResult;
   getConfig(): unknown;
   setConfig?(config: unknown): void;
+  setFile?(file: File): void;
   reset(): void;
 }
 
@@ -63,7 +77,19 @@ const MODULE_VISIBILITY: Record<ModuleId, FileInfo["category"][]> = {
   audio: ["video", "audio"],
   subtitles: ["video", "subtitle"],
   transparency: ["video"],
+  scribe: ["markdown"],
+  flatcap: ["pdf"],
 };
+
+const DOCUMENT_MODULES: ReadonlySet<ModuleId> = new Set(["scribe", "flatcap"]);
+
+function isDocumentModule(id: ModuleId): boolean {
+  return DOCUMENT_MODULES.has(id);
+}
+
+function isDocumentResult(r: NonNullable<BuildResult>): r is DocumentBuildResult {
+  return "pipeline" in r && r.pipeline === "document";
+}
 
 // ─── Options ─────────────────────────────────────────────────────────────────
 
@@ -393,6 +419,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
     audio: createAudioLab(),
     subtitles: createSubtitles(),
     transparency: createTransparency(),
+    scribe: createScribe(),
+    flatcap: createFlatcap(),
   };
 
   let activeModuleId: ModuleId = "workbench";
@@ -539,6 +567,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     for (const [id, mod] of Object.entries(modules) as [ModuleId, PrismModule][]) {
       if (!MODULE_VISIBILITY[id].includes(currentFileInfo.category)) continue;
       mod.configure(currentFileInfo);
+      if (typeof mod.setFile === "function") mod.setFile(currentFile);
     }
 
     const requestedModule = MODULE_VISIBILITY[activeModuleId].includes(currentFileInfo.category)
@@ -804,6 +833,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
     const loadableState = isLoadableState(prismState);
     const engineLoading = Boolean(engine && engine.state === "loading");
     const engineLoaded = Boolean(engine && (engine.state === "ready" || engine.state === "running"));
+    const isDocMod = isDocumentModule(activeModuleId);
+
     if (prismState === "complete") {
       opts.btnRun.textContent = runAckActive ? "Ran" : "Run";
       opts.btnRun.style.display = "";
@@ -811,20 +842,24 @@ export function initPrism(opts: PrismUIOptions): () => void {
       opts.btnRun.textContent = "Try Again";
       opts.btnRun.style.display = "";
     } else if (loadableState) {
-      opts.btnRun.textContent = engineLoading ? "Loading..." : engineLoaded ? "Run" : "Load";
+      if (isDocMod) {
+        opts.btnRun.textContent = "Run";
+      } else {
+        opts.btnRun.textContent = engineLoading ? "Loading..." : engineLoaded ? "Run" : "Load";
+      }
       opts.btnRun.style.display = "";
     } else {
       opts.btnRun.style.display = "none";
     }
 
-    if (!engineLoaded && loadableState) {
+    if (!engineLoaded && loadableState && !isDocMod) {
       opts.btnRun.classList.add("action-btn--load");
     } else {
       opts.btnRun.classList.remove("action-btn--load");
     }
     opts.btnRun.classList.toggle("action-btn--ran", runAckActive && prismState === "complete");
 
-    if (engineLoading && loadableState) {
+    if (engineLoading && loadableState && !isDocMod) {
       opts.btnRun.classList.add("action-btn--loading");
       opts.btnRun.disabled = true;
       opts.btnRun.setAttribute("aria-busy", "true");
@@ -886,6 +921,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.previewImg.onclick = null;
     opts.previewImg.onkeydown = null;
     opts.previewText.textContent = "";
+    // Remove any document preview iframes
+    opts.previewSection.querySelectorAll<HTMLIFrameElement>(".prism-preview-doc").forEach((f) => f.remove());
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
       previewUrl = null;
@@ -1213,6 +1250,38 @@ export function initPrism(opts: PrismUIOptions): () => void {
       showToast("Nothing to do. Configure an operation first.");
       return;
     }
+
+    // ── Document pipeline ──────────────────────────────────────────────
+    if (isDocumentResult(result)) {
+      setState("processing");
+      opts.terminalLog.textContent = "";
+      opts.progressFill.classList.add("prism-progress-fill--indeterminate");
+      opts.progressText.textContent = "Processing...";
+
+      try {
+        opts.terminalLog.appendChild(document.createTextNode(`[${activeModuleId}] processing...\n`));
+        const data = await result.execute();
+        if (destroyed) return;
+
+        opts.terminalLog.appendChild(document.createTextNode(`[${activeModuleId}] done. ${formatSize(data.byteLength)} output.\n`));
+        opts.terminalLog.scrollTop = opts.terminalLog.scrollHeight;
+        outputData = data;
+        outputName = result.outputName;
+        showOutputPreview(data, result.outputName, false);
+        triggerRunAck();
+        setState("complete");
+        scrollToOutputSummary();
+      } catch (err) {
+        if (destroyed) return;
+        const msg = err instanceof Error ? err.message : "Document processing failed.";
+        opts.terminalLog.appendChild(document.createTextNode(`error: ${msg}\n`));
+        showToast(msg);
+        setState("error");
+      }
+      return;
+    }
+
+    // ── FFmpeg pipeline ────────────────────────────────────────────────
     const eng = ensureEngine();
 
     // Load engine if needed
@@ -1530,6 +1599,15 @@ export function initPrism(opts: PrismUIOptions): () => void {
         }
       };
       show(opts.previewImg);
+    } else if (ext === "html") {
+      const iframe = document.createElement("iframe");
+      iframe.className = "prism-preview-doc";
+      iframe.sandbox.add("allow-same-origin");
+      iframe.srcdoc = new TextDecoder().decode(data);
+      iframe.title = "Document preview";
+      const preview = opts.previewSection.querySelector(".prism-preview");
+      if (preview) preview.appendChild(iframe);
+      else opts.previewSection.appendChild(iframe);
     } else if (mime.startsWith("text/") || ext === "srt" || ext === "ass" || ext === "ssa" || ext === "vtt") {
       const text = new TextDecoder().decode(data);
       opts.previewText.textContent = text;

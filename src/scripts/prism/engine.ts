@@ -98,7 +98,7 @@ export interface FileInfo {
   /** Human-readable size string */
   sizeLabel: string;
   /** Detected media category */
-  category: "video" | "audio" | "image" | "subtitle" | "unknown";
+  category: "video" | "audio" | "image" | "subtitle" | "markdown" | "pdf" | "unknown";
   /** Resolution as "WxH" string, e.g. "1920x1080" (video only, null otherwise) */
   resolution: string | null;
   /** Video codec name (e.g. "h264"), null if not a video or not detected */
@@ -201,6 +201,8 @@ export function detectCategory(file: File): FileInfo["category"] {
   if (t.startsWith("audio/") || /\.(mp3|wav|flac|aac|ogg|opus|m4a|wma|aiff|ape|wv)$/.test(n)) return "audio";
   if (t.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|heic|heif|avif|svg|ico)$/.test(n)) return "image";
   if (/\.(srt|ass|ssa|vtt|sub|idx|smi|sami|lrc)$/.test(n)) return "subtitle";
+  if (/\.(md|markdown)$/.test(n)) return "markdown";
+  if (t === "application/pdf" || /\.pdf$/.test(n)) return "pdf";
   return "unknown";
 }
 
@@ -983,6 +985,7 @@ export function mimeForExtension(ext: string): string {
     mp3: "audio/mpeg", wav: "audio/wav", flac: "audio/flac", aac: "audio/aac", ogg: "audio/ogg", opus: "audio/opus", m4a: "audio/mp4",
     jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", bmp: "image/bmp",
     srt: "text/plain", vtt: "text/vtt", ass: "text/plain", ssa: "text/plain",
+    html: "text/html", md: "text/markdown", pdf: "application/pdf",
   };
   return map[ext.toLowerCase()] || "application/octet-stream";
 }
