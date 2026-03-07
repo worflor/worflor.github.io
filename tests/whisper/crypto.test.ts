@@ -405,13 +405,14 @@ describe("live-crypto", () => {
       };
     }
 
-    /** Chain-step: advance chain, derive ephemeral key, return it + mutated chain ref. */
-    async function chainStep(chain: Uint8Array): Promise<{ newChain: Uint8Array; ck: CryptoKey }> {
+    /** Chain-step: advance chain, derive ephemeral key, return it + old chain as AAD. */
+    async function chainStep(chain: Uint8Array): Promise<{ newChain: Uint8Array; ck: CryptoKey; aad: Uint8Array }> {
+      const aad = chain.slice();  // capture old chain key before wipe — mirrors live.ts sendSealed
       const [newChain, msgKey] = await kdfChainDirect(chain);
       chain.fill(0);
       const ck = await importCtrlKey(msgKey);
       msgKey.fill(0);
-      return { newChain, ck };
+      return { newChain, ck, aad };
     }
 
     it("chain ratchet round-trip: 30 messages each direction", async () => {
@@ -423,10 +424,12 @@ describe("live-crypto", () => {
         const payload = randomBytes(1 + Math.floor(Math.random() * 100));
         // offerer sends
         const s1 = await chainStep(oS); oS = s1.newChain;
-        const sealed = await sealCtrl(s1.ck, payload, i, 0);
-        // answerer receives
+        const sealed = await sealCtrl(s1.ck, payload, i, 0, s1.aad);
+        s1.aad.fill(0);
+        // answerer receives (aad matches: both chains start equal and advance in lockstep)
         const r1 = await chainStep(aR); aR = r1.newChain;
-        const opened = await openCtrl(r1.ck, sealed, i, 0);
+        const opened = await openCtrl(r1.ck, sealed, i, 0, r1.aad);
+        r1.aad.fill(0);
         assertBytesEqual(opened, payload, `off→ans msg ${i}`);
       }
 
@@ -434,10 +437,12 @@ describe("live-crypto", () => {
         const payload = randomBytes(1 + Math.floor(Math.random() * 100));
         // answerer sends
         const s2 = await chainStep(aS); aS = s2.newChain;
-        const sealed = await sealCtrl(s2.ck, payload, i, 1);
+        const sealed = await sealCtrl(s2.ck, payload, i, 1, s2.aad);
+        s2.aad.fill(0);
         // offerer receives
         const r2 = await chainStep(oR); oR = r2.newChain;
-        const opened = await openCtrl(r2.ck, sealed, i, 1);
+        const opened = await openCtrl(r2.ck, sealed, i, 1, r2.aad);
+        r2.aad.fill(0);
         assertBytesEqual(opened, payload, `ans→off msg ${i}`);
       }
     });
@@ -450,27 +455,29 @@ describe("live-crypto", () => {
       for (let i = 0; i < 5; i++) {
         const s = await chainStep(oS); oS = s.newChain;
         const r = await chainStep(aR); aR = r.newChain;
-        await sealCtrl(s.ck, randomBytes(10), i, 0); // just advance
+        await sealCtrl(s.ck, randomBytes(10), i, 0, s.aad); // just advance
+        s.aad.fill(0); r.aad.fill(0);
       }
 
-      // Snapshot sender chain at step 5
+      // Snapshot sender chain at step 5 — this IS the aad for any seal using this chain epoch
       const snapshot = new Uint8Array(oS);
 
       // Advance 3 more steps
       for (let i = 5; i < 8; i++) {
         const s = await chainStep(oS); oS = s.newChain;
         const r = await chainStep(aR); aR = r.newChain;
+        s.aad.fill(0); r.aad.fill(0);
       }
 
       // Try to use snapshot to derive step-6 key — must produce wrong key
       const [, snapshotMsgKey] = await kdfChainDirect(snapshot);
       const snapshotCk = await importCtrlKey(snapshotMsgKey);
-      // Seal with snapshot key, try to open with current receiver chain (already at step 8)
-      const sealed = await sealCtrl(snapshotCk, randomBytes(10), 5, 0);
-      // Receiver already advanced past step 5 — no way to open
-      const [, recvMsgKey] = await kdfChainDirect(aR);
+      // Seal with snapshot key (aad = snapshot = chain-at-step-5)
+      const sealed = await sealCtrl(snapshotCk, randomBytes(10), 5, 0, snapshot);
+      // Receiver already advanced past step 5 — no way to open (aad mismatch + chain mismatch)
+      const [, recvMsgKey] = await kdfChainDirect(aR); // kdfChainDirect does not mutate aR
       const recvCk = await importCtrlKey(recvMsgKey);
-      await assert.rejects(() => openCtrl(recvCk, sealed, 5, 0),
+      await assert.rejects(() => openCtrl(recvCk, sealed, 5, 0, aR),
         "snapshot chain must not decrypt future frames");
     });
 
@@ -482,20 +489,23 @@ describe("live-crypto", () => {
       let lastSealed: Uint8Array | undefined;
       for (let i = 0; i < 3; i++) {
         const s = await chainStep(oS); oS = s.newChain;
-        lastSealed = await sealCtrl(s.ck, randomBytes(10), i, 0);
+        lastSealed = await sealCtrl(s.ck, randomBytes(10), i, 0, s.aad);
+        s.aad.fill(0);
       }
 
-      // Receiver only at step 0 — chain desynced
+      // Receiver only at step 0 — chain desynced, aad mismatch guarantees rejection
       const r = await chainStep(aR); aR = r.newChain;
-      await assert.rejects(() => openCtrl(r.ck, lastSealed!, 2, 0),
+      await assert.rejects(() => openCtrl(r.ck, lastSealed!, 2, 0, r.aad),
         "desynced chain must fail");
+      r.aad.fill(0);
     });
 
     it("ciphertext is plaintext.length + 4 (32-bit tag)", async () => {
       let chain = randomKey();
       for (const size of [0, 1, 3, 6, 20, 100, 255]) {
         const s = await chainStep(chain); chain = s.newChain;
-        const sealed = await sealCtrl(s.ck, randomBytes(size), 0, 0);
+        const sealed = await sealCtrl(s.ck, randomBytes(size), 0, 0, s.aad);
+        s.aad.fill(0);
         assert.equal(sealed.length, size + 4,
           `${size}B plaintext → ${size + 4}B sealed (got ${sealed.length})`);
       }
@@ -504,10 +514,11 @@ describe("live-crypto", () => {
     it("wrong direction rejection", async () => {
       let chain = randomKey();
       const s = await chainStep(chain); chain = s.newChain;
-      const sealed = await sealCtrl(s.ck, randomBytes(10), 0, 0);
-      // Same key but wrong direction
-      await assert.rejects(() => openCtrl(s.ck, sealed, 0, 1),
+      const sealed = await sealCtrl(s.ck, randomBytes(10), 0, 0, s.aad);
+      // Same key and aad but wrong direction — direction bit in nonce causes auth failure
+      await assert.rejects(() => openCtrl(s.ck, sealed, 0, 1, s.aad),
         "wrong direction must fail");
+      s.aad.fill(0);
     });
 
     it("determinism: same chain + plaintext + counter → same ciphertext", async () => {
@@ -522,18 +533,20 @@ describe("live-crypto", () => {
       const [, msgKeyB] = await kdfChainDirect(chainB1);
       const ckB = await importCtrlKey(msgKeyB);
 
-      const a = await sealCtrl(ckA, new Uint8Array(plaintext), 7, 1);
-      const b = await sealCtrl(ckB, new Uint8Array(plaintext), 7, 1);
+      // aad = chain key input to the msgKey derivation step (chainA1 == chainB1 by construction)
+      const a = await sealCtrl(ckA, new Uint8Array(plaintext), 7, 1, chainA1);
+      const b = await sealCtrl(ckB, new Uint8Array(plaintext), 7, 1, chainB1);
       assertBytesEqual(a, b, "identical chain state must produce identical ciphertext");
     });
 
     it("empty plaintext round-trip with chain ratchet", async () => {
       const { offSend, ansRecv } = await deriveChains(randomKey());
       const s = await chainStep(offSend);
-      const sealed = await sealCtrl(s.ck, new Uint8Array(0), 0, 0);
+      const sealed = await sealCtrl(s.ck, new Uint8Array(0), 0, 0, s.aad);
       assert.equal(sealed.length, 4, "empty plaintext → 4B tag");
       const r = await chainStep(new Uint8Array(ansRecv));
-      const opened = await openCtrl(r.ck, sealed, 0, 0);
+      const opened = await openCtrl(r.ck, sealed, 0, 0, r.aad);
+      s.aad.fill(0); r.aad.fill(0);
       assert.equal(opened.length, 0);
     });
 
@@ -548,17 +561,21 @@ describe("live-crypto", () => {
         if (round % 2 === 0) {
           const payload = randomBytes(1 + Math.floor(Math.random() * 50));
           const s = await chainStep(oS); oS = s.newChain;
-          const sealed = await sealCtrl(s.ck, payload, offCounter, 0);
+          const sealed = await sealCtrl(s.ck, payload, offCounter, 0, s.aad);
+          s.aad.fill(0);
           const r = await chainStep(aR); aR = r.newChain;
-          const opened = await openCtrl(r.ck, sealed, offCounter, 0);
+          const opened = await openCtrl(r.ck, sealed, offCounter, 0, r.aad);
+          r.aad.fill(0);
           assertBytesEqual(opened, payload, `round ${round} off→ans #${offCounter}`);
           offCounter++;
         } else {
           const payload = randomBytes(1 + Math.floor(Math.random() * 50));
           const s = await chainStep(aS); aS = s.newChain;
-          const sealed = await sealCtrl(s.ck, payload, ansCounter, 1);
+          const sealed = await sealCtrl(s.ck, payload, ansCounter, 1, s.aad);
+          s.aad.fill(0);
           const r = await chainStep(oR); oR = r.newChain;
-          const opened = await openCtrl(r.ck, sealed, ansCounter, 1);
+          const opened = await openCtrl(r.ck, sealed, ansCounter, 1, r.aad);
+          r.aad.fill(0);
           assertBytesEqual(opened, payload, `round ${round} ans→off #${ansCounter}`);
           ansCounter++;
         }
