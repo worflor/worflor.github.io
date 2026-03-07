@@ -398,18 +398,18 @@
   }
 
   .ws-result-warning {
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--whisper-text-meta);
     color: rgb(var(--chromatic-amber, 234 179 8));
     font-style: italic;
     margin-top: var(--space-sm);
   }
 
   .ws-result-url-length-warning {
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--whisper-text-meta);
     color: rgb(var(--chromatic-amber, 234 179 8));
     background: rgb(var(--chromatic-amber, 234 179 8) / 0.06);
     border: 1px solid rgb(var(--chromatic-amber, 234 179 8) / 0.2);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     padding: calc(var(--space-xs) * 0.7) var(--space-sm);
     margin: var(--space-xs) 0 0;
     line-height: 1.5;
@@ -434,7 +434,7 @@
     padding: var(--space-md);
     background: rgb(var(--color-text-rgb) / 0.02);
     border: 1px solid var(--whisper-edge);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     max-width: 100%;
     max-height: 20rem;
     overflow-y: auto;
@@ -533,12 +533,12 @@
     display: flex;
     flex-wrap: wrap;
     gap: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.6);
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--whisper-text-meta);
     color: rgb(var(--color-text-rgb) / 0.32);
     font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
     padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 0.75);
     border: 1px solid rgb(var(--color-text-rgb) / 0.06);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     background: rgb(var(--color-text-rgb) / 0.015);
     margin-bottom: var(--space-sm);
   }

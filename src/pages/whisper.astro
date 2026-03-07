@@ -1178,12 +1178,26 @@ const seo = {
   /* ── Page Shell ────────────────────────────────────────── */
   .whisper-page {
     --whisper-radius: var(--radius-lg);
+    --whisper-radius-soft: calc(var(--whisper-radius) * 0.75);
+    --whisper-radius-bubble: calc(var(--whisper-radius) * 0.72);
+    --whisper-radius-tight: calc(var(--whisper-radius) * 0.55);
+    --whisper-radius-pill: calc(var(--whisper-radius) * 0.5);
     --whisper-muted: rgb(var(--color-text-rgb) / 0.58);
-    --whisper-faint: rgb(var(--color-text-rgb) / 0.3);
     --whisper-edge: rgb(var(--color-text-rgb) / 0.12);
     --whisper-surface: rgb(10 10 10 / 0.82);
-    --whisper-surface-deep: rgb(10 10 10 / 0.94);
-    --whisper-surface-glass: none;
+    --whisper-control-padding: 0.6rem 0.75rem;
+    --whisper-toggle-padding: 0.55rem 0.75rem;
+    --whisper-compact-button-padding: 0.45rem 0.7rem;
+    --whisper-bubble-padding: 0.56rem 0.78rem;
+    --whisper-text-meta: calc(var(--text-sm) * 0.88);
+    --whisper-text-soft: calc(var(--text-sm) * 0.85);
+    --whisper-text-compact: calc(var(--text-sm) * 0.8);
+    --whisper-text-label-compact: calc(var(--text-sm) * 0.82);
+    --whisper-text-support: calc(var(--text-sm) * 0.78);
+    --whisper-text-micro: calc(var(--text-sm) * 0.76);
+    --whisper-text-fine: calc(var(--text-sm) * 0.72);
+    --whisper-text-hairline: calc(var(--text-sm) * 0.62);
+    --whisper-text-emphasis: calc(var(--text-sm) * 0.92);
     --whisper-action-offset: calc(var(--touch-target) + (var(--space-sm) * 2));
     padding-bottom: calc(var(--whisper-action-offset) + var(--space-lg));
   }
@@ -1213,7 +1227,7 @@ const seo = {
     flex: 0 0 auto;
     min-height: calc(var(--touch-target) * 0.5);
     padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     border: 1px solid rgb(var(--chromatic-red) / 0.35);
     background: rgb(var(--chromatic-red) / 0.1);
     color: rgb(var(--chromatic-red));
@@ -1432,7 +1446,7 @@ const seo = {
   }
 
   .upload-formats {
-    font-size: calc(var(--text-sm) * 0.85);
+    font-size: var(--whisper-text-soft);
     margin: 0;
     color: rgb(var(--color-text-rgb) / 0.15);
     letter-spacing: 0.06em;
@@ -1526,7 +1540,7 @@ const seo = {
   }
 
   :global(.whisper-panel-mode) {
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--whisper-text-meta);
     color: rgb(var(--color-text-rgb) / 0.42);
     letter-spacing: 0.04em;
     transition: color var(--duration-normal) var(--ease-out);
@@ -1549,16 +1563,27 @@ const seo = {
 
   :global(.whisper-field-hint) {
     color: rgb(var(--color-text-rgb) / 0.32);
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--whisper-text-meta);
+  }
+
+  :global(#whisper-page input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])),
+  :global(#whisper-page textarea),
+  :global(#whisper-page select) {
+    font-size: var(--text-ui-sm);
+  }
+
+  :global(#whisper-page input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])::placeholder),
+  :global(#whisper-page textarea::placeholder) {
+    font-size: inherit;
   }
 
   :global(.whisper-input) {
     border: 1px solid rgb(var(--color-text-rgb) / 0.12);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     background: rgb(10 10 10 / 0.9);
     color: var(--color-text);
     min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
+    padding: var(--whisper-control-padding);
     font-family: var(--font-body);
     font-size: var(--text-ui-sm);
     transition:
@@ -1593,8 +1618,8 @@ const seo = {
   :global(.whisper-mini-btn) {
     flex: 0 0 auto;
     min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    padding: var(--whisper-control-padding);
+    border-radius: var(--whisper-radius-soft);
     border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     background: rgb(10 10 10 / 0.88);
     color: rgb(var(--color-text-rgb) / 0.6);
@@ -1613,7 +1638,7 @@ const seo = {
     display: inline-flex;
     align-items: stretch;
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     background: rgb(var(--color-text-rgb) / 0.02);
     overflow: hidden;
   }
@@ -1690,7 +1715,7 @@ const seo = {
     border-radius: calc(var(--whisper-radius) * 0.75);
     background: rgb(var(--color-text-rgb) / 0.02);
     min-height: var(--touch-target);
-    padding: 0.55rem 0.75rem;
+    padding: var(--whisper-toggle-padding);
     cursor: pointer;
     user-select: none;
     transition:
@@ -1994,7 +2019,7 @@ const seo = {
   :global(.whisper-log-hint) {
     margin: 0;
     padding: 0.45rem 0.8rem 0;
-    font-size: calc(var(--text-sm) * 0.76);
+    font-size: var(--whisper-text-micro);
     color: rgb(var(--color-text-rgb) / 0.38);
     line-height: 1.35;
   }
@@ -2403,7 +2428,7 @@ const seo = {
       var(--edge-highlight),
       0 8px 32px rgba(0, 0, 0, 0.5);
     color: var(--color-text-muted);
-    font-size: calc(var(--text-sm) * 0.85);
+    font-size: var(--whisper-text-soft);
     font-weight: 500;
     letter-spacing: 0.01em;
     text-transform: none;

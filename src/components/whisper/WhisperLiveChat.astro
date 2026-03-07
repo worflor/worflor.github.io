@@ -367,19 +367,19 @@
 
   :global(.wl-code-display-wrap) :global(.whisper-mini-btn) {
     min-height: auto;
-    padding: 0.45rem 0.7rem;
+    padding: var(--whisper-compact-button-padding);
   }
 
   :global(.wl-code-display) {
     flex: 1;
     min-width: 0;
     margin: 0;
-    padding: 0.6rem 0.75rem;
+    padding: var(--whisper-control-padding);
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     background: rgb(var(--color-text-rgb) / 0.02);
     font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--whisper-text-compact);
     line-height: 1.5;
     color: rgb(var(--color-text-rgb) / 0.72);
     word-break: break-all;
@@ -415,7 +415,7 @@
 
   .wl-fingerprint {
     margin: 0;
-    font-size: 3rem;
+    font-size: var(--text-3xl);
     letter-spacing: 0.3em;
     line-height: 1.4;
     user-select: none;
@@ -458,7 +458,7 @@
     align-items: center;
     gap: 0.4em;
     padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.8);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     border: 1px solid rgb(var(--color-text-rgb) / 0.1);
     background: rgb(10 10 10 / 0.6);
     cursor: pointer;
@@ -479,7 +479,7 @@
 
   /* Emoji inside chip — compact */
   :global(.wl-fp-chip-emoji) {
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
     letter-spacing: 0.15em;
     line-height: 1;
     white-space: nowrap;
@@ -496,7 +496,7 @@
   /* Nickname label inside chip */
   :global(.wl-fp-chip-name) {
     display: none;
-    font-size: 0.78rem;
+    font-size: calc(var(--text-sm) * 0.9);
     font-weight: 500;
     max-width: 8rem;
     overflow: hidden;
@@ -516,7 +516,7 @@
     display: none;
     width: 8rem;
     padding: calc(var(--space-xs) * 0.4) calc(var(--space-xs) * 0.8);
-    border-radius: calc(var(--whisper-radius) * 0.75);
+    border-radius: var(--whisper-radius-soft);
     border: 1px solid rgb(var(--color-text-rgb) / 0.2);
     background: rgb(10 10 10 / 0.6);
     font-size: var(--text-ui-sm);
@@ -572,7 +572,7 @@
   }
 
   :global(.wl-disconnect-btn) {
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--whisper-text-compact);
     padding: 0.32rem 0.62rem;
     min-height: auto;
     color: rgb(var(--chromatic-red) / 0.7);
@@ -635,7 +635,7 @@
   .wl-chat-empty {
     margin: auto 0;
     text-align: center;
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--whisper-text-compact);
     color: rgb(var(--color-text-rgb) / 0.22);
     user-select: none;
     pointer-events: none;
@@ -700,8 +700,8 @@
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-text) {
-    padding: 0.56rem 0.78rem;
-    border-radius: calc(var(--whisper-radius) * 0.72);
+    padding: var(--whisper-bubble-padding);
+    border-radius: var(--whisper-radius-bubble);
     font-size: var(--text-sm);
     line-height: 1.48;
     word-break: break-word;
@@ -772,7 +772,7 @@
     z-index: 10000;
     min-width: 4rem;
     padding: 0.46rem 0.76rem;
-    font-size: calc(var(--text-sm) * 0.76);
+    font-size: var(--whisper-text-micro);
     font-weight: 500;
     letter-spacing: 0.01em;
     line-height: 1;
@@ -861,7 +861,7 @@
 
   :global(.wl-chat-messages) :global(.wl-msg-system) {
     padding: 0.28rem 0.7rem;
-    font-size: calc(var(--text-sm) * 0.76);
+    font-size: var(--whisper-text-micro);
     color: rgb(var(--color-text-rgb) / 0.34);
     text-align: center;
     border: 1px solid rgb(var(--color-text-rgb) / 0.08);
@@ -911,7 +911,7 @@
 
   :global(.wl-chat-messages) :global(.wl-msg-time) {
     display: block;
-    font-size: calc(var(--text-sm) * 0.62);
+    font-size: var(--whisper-text-hairline);
     color: rgb(var(--color-text-rgb) / 0.24);
     padding: 0 0.3rem;
     letter-spacing: 0.02em;
@@ -955,7 +955,7 @@
     border-radius: 50%;
     border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     background: rgb(var(--color-text-rgb) / 0.03);
-    font-size: 1rem;
+    font-size: var(--text-ui-base);
     line-height: 1;
     display: flex;
     align-items: center;
@@ -981,7 +981,7 @@
 
   /* "+" more-emoji button: slightly muted */
   :global(.wl-chat-messages) :global(.wl-react-btn--more) {
-    font-size: 0.75rem;
+    font-size: calc(var(--text-sm) * 0.9);
     color: rgb(var(--color-text-rgb) / 0.42);
     font-weight: 600;
     letter-spacing: 0;
@@ -999,7 +999,7 @@
   }
 
   :global(.wl-chat-messages) :global(.wl-react-btn--custom) {
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
   }
 
   :global(.wl-chat-messages) :global([data-glyph-open] .wl-react-btn--custom) {
@@ -1044,7 +1044,7 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    font-size: 0.88rem;
+    font-size: var(--text-sm);
     color: rgb(var(--color-text-rgb) / 0.78);
     background: rgb(var(--color-text-rgb) / 0.06);
   }
@@ -1057,7 +1057,7 @@
     background: transparent;
     color: rgb(var(--color-text-rgb) / 0.86);
     font: inherit;
-    font-size: 0.76rem;
+    font-size: var(--text-ui-sm);
     line-height: 1;
     padding: 0;
     box-shadow: none;
@@ -1076,7 +1076,7 @@
   }
 
   :global(.wl-chat-messages) :global(.wl-reaction) {
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     padding: 0.07rem 0.32rem;
     border-radius: 9999px;
     border: 1px solid rgb(var(--color-text-rgb) / 0.12);
@@ -1150,27 +1150,27 @@
   :global(.wl-chat-messages) :global(.wl-msg-file) {
     display: grid;
     gap: calc(var(--space-xs) * 0.15);
-    padding: 0.56rem 0.78rem;
-    border-radius: calc(var(--whisper-radius) * 0.72);
+    padding: var(--whisper-bubble-padding);
+    border-radius: var(--whisper-radius-bubble);
     border: 1px solid var(--msg-border);
     background: var(--msg-bg);
     box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-file-name) {
-    font-size: calc(var(--text-sm) * 0.92);
+    font-size: var(--whisper-text-emphasis);
     font-weight: 600;
     color: var(--msg-text-color);
     word-break: break-word;
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-file-size) {
-    font-size: calc(var(--text-sm) * 0.72);
+    font-size: var(--whisper-text-fine);
     color: rgb(var(--color-text-rgb) / 0.32);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-file-download) {
-    font-size: calc(var(--text-sm) * 0.78);
+    font-size: var(--whisper-text-support);
     color: rgb(var(--msg-accent) / 0.72);
     text-decoration: none;
     width: fit-content;
@@ -1186,7 +1186,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem 0.72rem;
-    border-radius: calc(var(--whisper-radius) * 0.72);
+    border-radius: var(--whisper-radius-bubble);
     border: 1px solid var(--msg-border);
     background: var(--msg-bg);
     min-width: 11rem;
@@ -1266,7 +1266,7 @@
   :global(.wl-chat-messages) :global(.wl-msg-media) {
     display: grid;
     gap: 0;
-    border-radius: calc(var(--whisper-radius) * 0.72);
+    border-radius: var(--whisper-radius-bubble);
     border: 1px solid var(--msg-border);
     background: var(--msg-bg);
     overflow: hidden;
@@ -1407,7 +1407,7 @@
   :global(.wl-chat-messages) :global(.wl-media-name) {
     flex: 1 1 0;
     min-width: 0;
-    font-size: calc(var(--text-sm) * 0.72);
+    font-size: var(--whisper-text-fine);
     color: rgb(var(--msg-accent) / 0.62);
     white-space: nowrap;
     overflow: hidden;
@@ -1523,7 +1523,7 @@
   }
 
   :global(.wl-lightbox-name) {
-    font-size: calc(var(--text-sm) * 0.72);
+    font-size: var(--whisper-text-fine);
     color: rgb(255 255 255 / 0.55);
     white-space: nowrap;
     overflow: hidden;
@@ -2459,7 +2459,7 @@
     }
 
     .wl-fingerprint {
-      font-size: 2.2rem;
+      font-size: var(--text-2xl);
       letter-spacing: 0.2em;
     }
 

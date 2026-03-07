@@ -285,7 +285,7 @@
 
   .wl-relay-hint {
     margin: 0;
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--whisper-text-meta);
     color: rgb(var(--color-text-rgb) / 0.42);
     line-height: 1.4;
   }
@@ -296,7 +296,7 @@
 
   .wl-relay-panel :global(.whisper-input) {
     min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
+    padding: var(--whisper-control-padding);
     font-size: var(--text-ui-sm);
   }
 
@@ -310,7 +310,7 @@
   .wl-mode-switch-btn {
     all: unset;
     --switch-hover: var(--chromatic-cyan);
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--whisper-text-compact);
     color: rgb(var(--color-text-rgb) / 0.3);
     cursor: pointer;
     letter-spacing: 0.01em;
@@ -328,7 +328,7 @@
 
   .wl-mode-switch-sep {
     color: rgb(var(--color-text-rgb) / 0.15);
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--whisper-text-compact);
     margin: 0 0.15em;
     user-select: none;
   }
@@ -358,7 +358,7 @@
 
   .wl-flare-lede {
     margin: 0;
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--whisper-text-meta);
     color: rgb(var(--color-text-rgb) / 0.42);
     line-height: 1.4;
   }
@@ -369,8 +369,8 @@
 
   .wl-flare-panel :global(.whisper-input) {
     min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
-    font-size: var(--text-sm);
+    padding: var(--whisper-control-padding);
+    font-size: var(--text-ui-sm);
   }
 
   .wl-flare-panel :global(.whisper-input):focus-visible {
@@ -397,7 +397,7 @@
     gap: calc(var(--space-xs) * 0.5);
     min-height: var(--touch-target);
     padding: 0 calc(var(--space-xs) * 0.8);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     border: 1px solid rgb(var(--chromatic-flare) / 0.25);
     background: rgb(var(--chromatic-flare) / 0.04);
   }
@@ -426,13 +426,13 @@
   }
 
   .wl-flare-burning-text {
-    font-size: calc(var(--text-sm) * 0.88);
+    font-size: var(--whisper-text-meta);
     color: rgb(var(--chromatic-flare));
     font-weight: 500;
   }
 
   .wl-flare-elapsed {
-    font-size: calc(var(--text-sm) * 0.78);
+    font-size: var(--whisper-text-support);
     color: rgb(var(--color-text-rgb) / 0.35);
     margin-left: auto;
     font-variant-numeric: tabular-nums;
@@ -441,7 +441,7 @@
   .wl-flare-extinguish-btn {
     flex-shrink: 0;
     margin-left: calc(var(--space-xs) * 0.3);
-    font-size: calc(var(--text-sm) * 0.78);
+    font-size: var(--whisper-text-support);
     padding: 0.35rem 0.6rem;
     min-height: calc(var(--touch-target) * 0.72);
   }
@@ -452,7 +452,7 @@
     display: grid;
     gap: var(--space-sm);
     padding: calc(var(--space-xs) * 0.8);
-    border-radius: calc(var(--whisper-radius) * 0.55);
+    border-radius: var(--whisper-radius-tight);
     border: 1px solid rgb(var(--chromatic-flare) / 0.35);
     background: rgb(var(--chromatic-flare) / 0.06);
     animation: wl-flare-arrived-flash 0.6s ease-out;
@@ -495,13 +495,13 @@
 
   .wl-manual-options :global(.whisper-input) {
     min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
-    font-size: var(--text-sm);
+    padding: var(--whisper-control-padding);
+    font-size: var(--text-ui-sm);
   }
 
   .wl-manual-options :global(.whisper-toggle) {
     min-height: var(--touch-target);
-    padding: 0.55rem 0.75rem;
+    padding: var(--whisper-toggle-padding);
   }
 
   .wl-manual-options :global(.whisper-toggle-text) {
@@ -524,11 +524,11 @@
     }
 
     .wl-flare-burning-text {
-      font-size: calc(var(--text-sm) * 0.8);
+      font-size: var(--whisper-text-compact);
     }
 
     .wl-flare-extinguish-btn {
-      font-size: calc(var(--text-sm) * 0.72);
+      font-size: var(--whisper-text-fine);
       padding: 0.3rem 0.5rem;
       margin-left: auto;
     }

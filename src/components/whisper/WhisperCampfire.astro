@@ -326,13 +326,13 @@
 
   .wl-phrase-panel :global(.whisper-input) {
     min-height: var(--touch-target);
-    padding: 0.6rem 0.75rem;
+    padding: var(--whisper-control-padding);
     font-size: var(--text-ui-sm);
   }
 
   .wl-phrase-panel :global(.whisper-toggle) {
     min-height: var(--touch-target);
-    padding: 0.55rem 0.75rem;
+    padding: var(--whisper-toggle-padding);
   }
 
   .wl-phrase-panel :global(.whisper-toggle-text) {
@@ -368,7 +368,7 @@
   }
   :global(.cf-live-mode-toggle[data-compact]) :global(.cf-head-btn) {
     padding: calc(var(--space-xs) * 0.3) calc(var(--space-xs) * 0.6);
-    font-size: calc(var(--text-sm) * 0.78);
+    font-size: var(--whisper-text-support);
     min-height: 1.95rem;
   }
   :global(.cf-live-mode-toggle[data-compact]) :global(.wl-disconnect-btn) :global(svg) {
@@ -391,7 +391,7 @@
     display: flex;
     align-items: center;
     padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
-    font-size: calc(var(--text-sm) * 0.82);
+    font-size: var(--whisper-text-label-compact);
     color: var(--whisper-muted);
     transition:
       background 0.15s,
@@ -412,7 +412,7 @@
   :global(.cf-head-btn) {
     min-height: 2rem;
     padding: calc(var(--space-xs) * 0.35) calc(var(--space-xs) * 0.7);
-    font-size: calc(var(--text-sm) * 0.82);
+    font-size: var(--whisper-text-label-compact);
     color: var(--whisper-muted);
     background: transparent;
     letter-spacing: 0.01em;
@@ -476,7 +476,7 @@
   }
 
   .cf-peer-label {
-    font-size: calc(var(--text-sm) * 0.85);
+    font-size: var(--whisper-text-soft);
     color: var(--whisper-muted);
     flex: 0 0 auto;
   }
@@ -495,7 +495,7 @@
     padding: calc(var(--space-xs) * 0.2) calc(var(--space-xs) * 0.6);
     border-radius: calc(var(--whisper-radius) * 0.4);
     background: rgb(var(--color-text-rgb) / 0.05);
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--whisper-text-compact);
     cursor: pointer;
     transition: background 0.15s;
   }
@@ -524,7 +524,7 @@
 
   :global(.cf-msg-name) {
     display: block;
-    font-size: calc(var(--text-sm) * 0.8);
+    font-size: var(--whisper-text-compact);
     color: rgb(var(--chromatic-cyan) / 0.7);
     margin-bottom: calc(var(--space-xs) * 0.2);
   }
