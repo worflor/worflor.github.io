@@ -8,7 +8,7 @@
  * On top of the DTLS transport, messages are protected by:
  *   - ECDH P-256 key exchange (ephemeral, wiped after derivation)
  *   - Full Double Ratchet forward secrecy (Signal protocol pattern)
- *   - AES-256-GCM per-message encryption (32-byte keys, 12-byte random nonces)
+ *   - AES-256-GCM per-message encryption (32-byte keys, derived nonces with 4-byte random salt)
  *   - Whisper Loop (Kizuna membrane): unified ratchet+codec, HKDF+AES-CTR symmetric chain
  *     the ratchet IS the codec — compressed traffic is opaque without the chain key.
  * SDP offers/answers are compressed and exchanged manually (no signaling server).
@@ -29,6 +29,7 @@ import {
   aesGcmEncrypt,
   aesGcmDecrypt,
   kdfChainDirect,
+  compressP256,
   importCtrlKey,
   sealCtrl,
   openCtrl,
@@ -62,7 +63,10 @@ import {
 
 import {
   HEADER_SIZE,
+  HEADER_SIZE_COMPACT,
+  LIVE_FLAG_SAME_KEY,
   buildHeader,
+  buildNonce,
   parseHeader,
   encodeFilePlaintext,
   decodeFilePlaintext,
@@ -404,6 +408,10 @@ export class WhisperLiveSession {
   private drawStreamSendQueue: Promise<void> = Promise.resolve();
   private drawStreamRecvTracker = new DrawStreamTracker();
 
+  // Pubkey dedup — track last sent/received DH pubkey to elide from compact headers
+  private lastSentPubKeyHex = "";
+  private lastRecvPubKeyHex = "";
+
   // Kizuna membrane loop states — one per direction, reinit on each DH ratchet step.
   private loopStateSend: LoopState | null = null;
   private loopStateRecv: LoopState | null = null;
@@ -661,6 +669,8 @@ export class WhisperLiveSession {
     this.drawStreamRecvTracker = new DrawStreamTracker();
     this.ctrlSendCounter = 0;
     this.ctrlRecvCounter = 0;
+    this.lastSentPubKeyHex = "";
+    this.lastRecvPubKeyHex = "";
     this.sealedSendQueue = Promise.resolve();
     this.msgQueue = Promise.resolve();
     this.sendQueue = Promise.resolve();
@@ -1112,12 +1122,14 @@ export class WhisperLiveSession {
         );
 
         const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
-        this.localEphPublicKey = pubKeyRaw.slice();
+        const pubKeyCompressed = compressP256(pubKeyRaw);
+        pubKeyRaw.fill(0);
+        this.localEphPublicKey = pubKeyCompressed;
         if (!this.dc || this.dc.readyState !== "open") {
           this.onLog("key exchange aborted, channel not available");
           return;
         }
-        this.send(LIVE_MSG.KEY_EXCHANGE, pubKeyRaw);
+        this.send(LIVE_MSG.KEY_EXCHANGE, pubKeyCompressed);
 
         this.ephPrivateKey = keyPair.privateKey;
       } catch (err) {
@@ -1338,11 +1350,22 @@ export class WhisperLiveSession {
 
     if (!this.ratchetState) return;
 
-    if (complete.length < HEADER_SIZE + 16) return; // header + minimum AES-GCM tag
+    const isCompact = (complete[0] & LIVE_FLAG_SAME_KEY) !== 0;
+    const headerSize = isCompact ? HEADER_SIZE_COMPACT : HEADER_SIZE;
+    if (complete.length < headerSize + 16) return; // header + minimum AES-GCM tag
 
     try {
       const header = parseHeader(complete);
-      const pubKeyHex = toHex(header.pubKey);
+
+      // Resolve pubkey: compact headers use cached peer key
+      let pubKeyHex: string;
+      if (header.pubKey) {
+        pubKeyHex = toHex(header.pubKey);
+        this.lastRecvPubKeyHex = pubKeyHex;
+      } else {
+        pubKeyHex = this.lastRecvPubKeyHex;
+        if (!pubKeyHex) return; // no cached key — can't process
+      }
 
       // try loop-derived skipped key first (defense-in-depth; never fires with ordered SCTP).
       let messageKey = this.tryLoopSkippedKey(pubKeyHex, header.counter);
@@ -1351,6 +1374,7 @@ export class WhisperLiveSession {
       if (!messageKey) {
         // check if this is a new DH ratchet key
         if (pubKeyHex !== this.ratchetState.dhPeerHex) {
+          if (!header.pubKey) return; // DH ratchet needs the actual key bytes
           // new DH ratchet — skip remaining messages in current receive chain
           if (this.ratchetState.chainKeyRecv && this.loopStateRecv) {
             await this.skipMessagesWithLoop(header.prevChainLen);
@@ -1375,10 +1399,12 @@ export class WhisperLiveSession {
         messageKey = mk;
       }
 
-      const aad = complete.subarray(0, HEADER_SIZE);
+      const aad = complete.subarray(0, headerSize);
+      const peerDirBit = this.isOfferer ? 1 : 0;
+      const nonce = buildNonce(header.counter, peerDirBit, header.salt);
       let compressedPayload: Uint8Array;
       try {
-        compressedPayload = await aesGcmDecrypt(messageKey, header.ciphertext, header.nonce, aad);
+        compressedPayload = await aesGcmDecrypt(messageKey, header.ciphertext, nonce, aad);
       } catch (decryptErr) {
         messageKey.fill(0);
         // if a DH ratchet step was performed and decrypt still fails, the ratchet
@@ -1861,17 +1887,22 @@ export class WhisperLiveSession {
     new DataView(decodedLenBytes.buffer).setUint32(0, plaintext.length, true);
     const compressedPayload = concatBytes(decodedLenBytes, compressed);
 
-    const nonce = randomBytes(12);
+    const salt = randomBytes(4);
     const counter = this.ratchetState.nSend;
     const prevChainLen = this.ratchetState.prevChainLength;
+    const dirBit = this.isOfferer ? 0 : 1;
+    const nonce = buildNonce(counter, dirBit, salt);
+    const pubKeyHex = toHex(this.ratchetState.dhSelf.publicKey);
+    const sameKey = pubKeyHex === this.lastSentPubKeyHex;
 
     const header = buildHeader(
-      flags,
+      sameKey ? (flags | LIVE_FLAG_SAME_KEY) : flags,
       this.ratchetState.dhSelf.publicKey,
       counter,
       prevChainLen,
-      nonce,
+      salt,
     );
+    this.lastSentPubKeyHex = pubKeyHex;
 
     const ciphertext = await aesGcmEncrypt(messageKey, compressedPayload, nonce, header);
     messageKey.fill(0);
@@ -2080,6 +2111,8 @@ export class WhisperLiveSession {
     this.wipeBytes(this.ctrlChainRecv); this.ctrlChainRecv = null;
     this.ctrlSendCounter = 0;
     this.ctrlRecvCounter = 0;
+    this.lastSentPubKeyHex = "";
+    this.lastRecvPubKeyHex = "";
     this.clearHandshakeArtifacts();
 
     this.wipeBytes(this.phraseRoot);

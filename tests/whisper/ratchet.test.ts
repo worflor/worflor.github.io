@@ -14,11 +14,11 @@ import { kdfChainDirect, aesGcmEncrypt, aesGcmDecrypt } from "../../src/scripts/
 
 describe("live-ratchet", () => {
   describe("generateDHKeyPair", () => {
-    it("produces 65-byte uncompressed P-256 pubkey", async () => {
+    it("produces 33-byte compressed P-256 pubkey", async () => {
       for (let i = 0; i < 5; i++) {
         const kp = await generateDHKeyPair();
-        assert.equal(kp.publicKey.length, 65, `pubkey length iter ${i}`);
-        assert.equal(kp.publicKey[0], 0x04, `uncompressed prefix iter ${i}`);
+        assert.equal(kp.publicKey.length, 33, `pubkey length iter ${i}`);
+        assert.ok(kp.publicKey[0] === 0x02 || kp.publicKey[0] === 0x03, `compressed prefix iter ${i}`);
         assert.ok(kp.privateKey, `privateKey exists iter ${i}`);
       }
     });
@@ -53,7 +53,7 @@ describe("live-ratchet", () => {
         assert.ok(state.rootKey instanceof Uint8Array);
         assert.equal(state.rootKey.length, 32);
         assert.ok(state.dhSelf);
-        assert.equal(state.dhSelf.publicKey.length, 65);
+        assert.equal(state.dhSelf.publicKey.length, 33);
         assert.equal(state.dhPeer, null);
         assert.equal(state.dhPeerHex, "");
         assert.equal(state.chainKeySend, null);

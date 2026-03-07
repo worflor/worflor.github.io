@@ -134,6 +134,17 @@ export async function aesGcmDecrypt(
   return new Uint8Array(await crypto.subtle.decrypt(params, cryptoKey, toArrayBuffer(ciphertext)));
 }
 
+/** Compress an uncompressed P-256 public key (65B, 0x04||x||y) to 33B (0x02/0x03||x). */
+export function compressP256(uncompressed: Uint8Array): Uint8Array {
+  if (uncompressed.length !== 65 || uncompressed[0] !== 0x04) {
+    throw new Error("invalid uncompressed P-256 point");
+  }
+  const compressed = new Uint8Array(33);
+  compressed[0] = (uncompressed[64] & 1) ? 0x03 : 0x02;
+  compressed.set(uncompressed.subarray(1, 33), 1);
+  return compressed;
+}
+
 /* ── Sealed CTRL: lightweight AES-GCM with 32-bit tag + implicit nonce ── */
 
 function ctrlNonce(counter: number, directionBit: number): Uint8Array {

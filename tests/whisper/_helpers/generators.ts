@@ -52,10 +52,10 @@ export function randomMsgId(): Uint8Array {
   return randomBytes(32);
 }
 
-/** Fake uncompressed P-256 public key (65 bytes, starts with 0x04). */
+/** Fake compressed P-256 public key (33 bytes, starts with 0x02 or 0x03). */
 export function fakeP256PubKey(): Uint8Array {
-  const buf = randomBytes(65);
-  buf[0] = 0x04;
+  const buf = randomBytes(33);
+  buf[0] = (buf[0] & 1) ? 0x03 : 0x02;
   return buf;
 }
 

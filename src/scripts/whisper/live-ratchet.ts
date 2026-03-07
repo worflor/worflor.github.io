@@ -10,7 +10,7 @@
  */
 
 import { toHex, toArrayBuffer } from "./wasm";
-import { hkdf, kdfChainDirect } from "./live-crypto";
+import { hkdf, kdfChainDirect, compressP256 } from "./live-crypto";
 
 /** Pre-encoded constant — avoids per-call TextEncoder allocations */
 const KDF_INFO_RATCHET = new TextEncoder().encode("whisper-ratchet");
@@ -22,7 +22,7 @@ function skippedKeyId(pubHex: string, nr: number): string {
 }
 
 interface RatchetKeyPair {
-  publicKey: Uint8Array;    // raw 65-byte uncompressed P-256 point
+  publicKey: Uint8Array;    // 33-byte compressed P-256 point (0x02/0x03 || x)
   privateKey: CryptoKey;    // non-extractable ECDH private key
 }
 
@@ -65,7 +65,7 @@ export async function generateDHKeyPair(): Promise<RatchetKeyPair> {
     ["deriveBits"],
   );
   const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  return { publicKey: pubRaw, privateKey: pair.privateKey };
+  return { publicKey: compressP256(pubRaw), privateKey: pair.privateKey };
 }
 
 async function dhExchange(privateKey: CryptoKey, peerPublicRaw: Uint8Array): Promise<Uint8Array> {

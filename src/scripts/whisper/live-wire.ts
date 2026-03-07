@@ -1,14 +1,27 @@
 /**
  * Whisper Live — message wire format.
  *
- * Header:
- *   [0]      flags (1B): bit0 = isFile
- *   [1..65]  ratchet public key (65B, uncompressed P-256)
- *   [66..69] message counter (4B LE)
- *   [70..73] previous chain length (4B LE)
- *   [74..85] nonce (12B)
- * Payload:
- *   [86..]   AES-256-GCM ciphertext (includes 16B auth tag)
+ * Nonce reconstruction:
+ *   Both sides build the 12-byte AES-GCM nonce deterministically:
+ *     [0..3]  counter (4B LE)
+ *     [4]     direction bit (0 = offerer, 1 = answerer)
+ *     [5..8]  salt (4B random, sent on wire — safety net against key reuse bugs)
+ *     [9..11] 0x00 padding
+ *
+ * Full header (flags bit3 = 0):
+ *   [0]      flags (1B): bit0 = isFile, bit3 = sameKey
+ *   [1..33]  ratchet public key (33B, compressed P-256)
+ *   [34..37] message counter (4B LE)
+ *   [38..41] previous chain length (4B LE)
+ *   [42..45] salt (4B)
+ *   [46..]   ciphertext
+ *
+ * Compact header (flags bit3 = 1, pubkey omitted):
+ *   [0]      flags (1B)
+ *   [1..4]   message counter (4B LE)
+ *   [5..8]   previous chain length (4B LE)
+ *   [9..12]  salt (4B)
+ *   [13..]   ciphertext
  *
  * For file messages, the plaintext is:
  *   [0..3]   filename length (4B LE)
@@ -20,17 +33,37 @@ import { TD } from "./live-crypto";
 
 const TE = new TextEncoder();
 
-export const HEADER_SIZE = 86;
-const PUBKEY_LEN = 65;
-const NONCE_LEN = 12;
+export const HEADER_SIZE = 46;
+export const HEADER_SIZE_COMPACT = 13;
+const PUBKEY_LEN = 33;
+const SALT_LEN = 4;
+export const LIVE_FLAG_SAME_KEY = 0x08;
 const HEADER_OFFSET = {
   FLAGS: 0,
   PUBKEY: 1,
-  COUNTER: 66,
-  PREV_CHAIN_LEN: 70,
-  NONCE: 74,
-  CIPHERTEXT: 86,
+  COUNTER: 34,
+  PREV_CHAIN_LEN: 38,
+  SALT: 42,
+  CIPHERTEXT: 46,
 } as const;
+const COMPACT_OFFSET = {
+  FLAGS: 0,
+  COUNTER: 1,
+  PREV_CHAIN_LEN: 5,
+  SALT: 9,
+  CIPHERTEXT: 13,
+} as const;
+
+/** Reconstruct the 12-byte AES-GCM nonce from counter, direction bit, and salt. */
+export function buildNonce(counter: number, dirBit: number, salt: Uint8Array): Uint8Array {
+  const nonce = new Uint8Array(12);
+  const view = new DataView(nonce.buffer);
+  view.setUint32(0, counter, true);
+  nonce[4] = dirBit;
+  nonce.set(salt, 5);
+  // bytes 9..11 remain 0x00
+  return nonce;
+}
 
 const FILE_PLAINTEXT_OFFSET = {
   NAME_LENGTH: 0,
@@ -38,36 +71,59 @@ const FILE_PLAINTEXT_OFFSET = {
 } as const;
 
 export function buildHeader(
-  flags: number, pubKey: Uint8Array, counter: number, prevChainLen: number, nonce: Uint8Array,
+  flags: number, pubKey: Uint8Array, counter: number, prevChainLen: number, salt: Uint8Array,
 ): Uint8Array {
-  if (pubKey.length !== PUBKEY_LEN) throw new Error("invalid ratchet pubkey length");
-  if (nonce.length !== NONCE_LEN) throw new Error("invalid nonce length");
+  if (salt.length !== SALT_LEN) throw new Error("invalid salt length");
 
+  if (flags & LIVE_FLAG_SAME_KEY) {
+    // Compact header — no pubkey
+    const header = new Uint8Array(HEADER_SIZE_COMPACT);
+    const view = new DataView(header.buffer);
+    header[COMPACT_OFFSET.FLAGS] = flags;
+    view.setUint32(COMPACT_OFFSET.COUNTER, counter, true);
+    view.setUint32(COMPACT_OFFSET.PREV_CHAIN_LEN, prevChainLen, true);
+    header.set(salt, COMPACT_OFFSET.SALT);
+    return header;
+  }
+
+  if (pubKey.length !== PUBKEY_LEN) throw new Error("invalid ratchet pubkey length");
   const header = new Uint8Array(HEADER_SIZE);
   const view = new DataView(header.buffer);
   header[HEADER_OFFSET.FLAGS] = flags;
   header.set(pubKey, HEADER_OFFSET.PUBKEY);
   view.setUint32(HEADER_OFFSET.COUNTER, counter, true);
   view.setUint32(HEADER_OFFSET.PREV_CHAIN_LEN, prevChainLen, true);
-  header.set(nonce, HEADER_OFFSET.NONCE);
+  header.set(salt, HEADER_OFFSET.SALT);
   return header;
 }
 
 export function parseHeader(data: Uint8Array): {
   flags: number;
-  pubKey: Uint8Array;
+  pubKey: Uint8Array | null;  // null when sameKey flag is set
   counter: number;
   prevChainLen: number;
-  nonce: Uint8Array;
+  salt: Uint8Array;
   ciphertext: Uint8Array;
 } {
+  const flags = data[0];
+  if (flags & LIVE_FLAG_SAME_KEY) {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    return {
+      flags,
+      pubKey: null,
+      counter: view.getUint32(COMPACT_OFFSET.COUNTER, true),
+      prevChainLen: view.getUint32(COMPACT_OFFSET.PREV_CHAIN_LEN, true),
+      salt: data.subarray(COMPACT_OFFSET.SALT, COMPACT_OFFSET.CIPHERTEXT),
+      ciphertext: data.subarray(COMPACT_OFFSET.CIPHERTEXT),
+    };
+  }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   return {
-    flags: data[HEADER_OFFSET.FLAGS],
+    flags,
     pubKey: data.subarray(HEADER_OFFSET.PUBKEY, HEADER_OFFSET.COUNTER),
     counter: view.getUint32(HEADER_OFFSET.COUNTER, true),
     prevChainLen: view.getUint32(HEADER_OFFSET.PREV_CHAIN_LEN, true),
-    nonce: data.subarray(HEADER_OFFSET.NONCE, HEADER_OFFSET.CIPHERTEXT),
+    salt: data.subarray(HEADER_OFFSET.SALT, HEADER_OFFSET.CIPHERTEXT),
     ciphertext: data.subarray(HEADER_OFFSET.CIPHERTEXT),
   };
 }
