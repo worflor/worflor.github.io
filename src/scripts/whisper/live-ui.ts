@@ -444,8 +444,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let typingSendTimer: ReturnType<typeof setTimeout> | null = null;
   let peerTypingTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // ── Floating Action Menu (Copy) ──────────────────────────
-  let copyMenuEl: HTMLButtonElement | null = null;
+  // ── Floating Action Menu (Copy / Edit) ──────────────────────────
+  let actionMenuEl: HTMLDivElement | null = null;
+  let actionEditBtn: HTMLButtonElement | null = null;
+  let actionCopyBtn: HTMLButtonElement | null = null;
   let copyMenuText = "";
   let copyMenuTimeout: ReturnType<typeof setTimeout> | null = null;
   let copyMenuFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -457,6 +459,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let copiedPulseTimeout: ReturnType<typeof setTimeout> | null = null;
   let copiedPulseEl: HTMLElement | null = null;
   let activeHoldPointerId = -1;
+  let actionMenuMsgId: number | null = null;
+
+  // ── Edit Mode ──
+  let editingMsgId: number | null = null;
+  let preEditInputValue = "";
+  let preEditPlaceholder = "";
 
   // Gesture State (Singleton for memory efficiency)
   let activeHoldTimer: ReturnType<typeof setTimeout> | null = null;
@@ -465,7 +473,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let holdStartX = 0, holdStartY = 0;
 
   function isCopyMenuVisible(): boolean {
-    return !!copyMenuEl?.classList.contains("wl-copy-menu--visible");
+    return !!actionMenuEl?.classList.contains("wl-action-menu--visible");
   }
 
   function armCopyMenuTimeout(ms = 4_000): void {
@@ -487,16 +495,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function resetCopyMenuFeedback(): void {
-    if (!copyMenuEl) return;
-    copyMenuEl.disabled = false;
-    copyMenuEl.textContent = "copy";
-    copyMenuEl.setAttribute("aria-label", "copy message");
-    copyMenuEl.classList.remove("wl-copy-menu--copied", "wl-copy-menu--error", "wl-copy-menu--closing");
+    if (!actionCopyBtn) return;
+    actionCopyBtn.disabled = false;
+    actionCopyBtn.textContent = "copy";
+    actionCopyBtn.setAttribute("aria-label", "copy message");
+    actionMenuEl?.classList.remove("wl-action-menu--closing");
   }
 
-  function positionCopyMenu(x: number, y: number): void {
-    if (!copyMenuEl) return;
-    const rect = copyMenuEl.getBoundingClientRect();
+  function positionActionMenu(x: number, y: number): void {
+    if (!actionMenuEl) return;
+    const rect = actionMenuEl.getBoundingClientRect();
     const menuW = rect.width || 72;
     const menuH = rect.height || 36;
     let left = x - menuW / 2;
@@ -507,8 +515,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     left = Math.max(8, Math.min(window.innerWidth - menuW - 8, left));
     top = Math.max(8, Math.min(window.innerHeight - menuH - 8, top));
 
-    copyMenuEl.style.left = `${left}px`;
-    copyMenuEl.style.top = `${top}px`;
+    actionMenuEl.style.left = `${left}px`;
+    actionMenuEl.style.top = `${top}px`;
   }
 
   function pulseCopiedMessage(el: HTMLElement | null): void {
@@ -529,7 +537,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }, 1200);
   }
 
-  function showCopyMenu(x: number, y: number, text: string, sourceEl: HTMLElement | null = null): void {
+  function showActionMenu(x: number, y: number, text: string, sourceEl: HTMLElement | null = null, msgId: number | null = null, direction: "self" | "peer" | "system" = "peer"): void {
     if (!text.trim()) return;
     if (
       isCopyMenuVisible()
@@ -541,60 +549,94 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       armCopyMenuTimeout();
       return;
     }
-    if (!copyMenuEl) {
-      copyMenuEl = document.createElement("button");
-      copyMenuEl.className = "wl-copy-menu";
-      copyMenuEl.type = "button";
-      copyMenuEl.textContent = "copy";
-      copyMenuEl.setAttribute("aria-label", "copy message");
-      copyMenuEl.addEventListener("click", async (e) => {
+    if (!actionMenuEl) {
+      actionMenuEl = document.createElement("div");
+      actionMenuEl.className = "wl-action-menu";
+
+      actionEditBtn = document.createElement("button");
+      actionEditBtn.className = "wl-action-btn wl-action-edit";
+      actionEditBtn.type = "button";
+      actionEditBtn.textContent = "edit";
+      actionEditBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (actionMenuMsgId == null) return;
+        const srcEl = copyMenuSourceEl;
+        const targetText = srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.textContent ?? "";
+        const targetId = actionMenuMsgId;
+        hideCopyMenu();
+        // Enter edit mode — clear any active typing indicator first
+        emitCleared();
+        preEditInputValue = opts.chatInput.value;
+        preEditPlaceholder = opts.chatInput.placeholder;
+        editingMsgId = targetId;
+        opts.chatInput.value = targetText;
+        opts.chatInput.placeholder = "editing...";
+        chatCompose?.setAttribute("data-editing", "1");
+        srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.add("wl-msg--editing");
+        updateControls();
+        opts.chatInput.focus();
+      }, { signal });
+
+      actionCopyBtn = document.createElement("button");
+      actionCopyBtn.className = "wl-action-btn wl-action-copy";
+      actionCopyBtn.type = "button";
+      actionCopyBtn.textContent = "copy";
+      actionCopyBtn.setAttribute("aria-label", "copy message");
+      actionCopyBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         e.preventDefault();
         if (!copyMenuText) return;
-        const menuEl = copyMenuEl;
-        if (!menuEl) return;
-        if (menuEl.disabled) return;
+        const btn = actionCopyBtn;
+        if (!btn) return;
+        if (btn.disabled) return;
         if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
         if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
         try {
-          menuEl.disabled = true;
+          btn.disabled = true;
           await copyToClipboard(copyMenuText);
-          menuEl.textContent = "copied";
-          menuEl.setAttribute("aria-label", "message copied");
-          menuEl.classList.remove("wl-copy-menu--error");
-          menuEl.classList.add("wl-copy-menu--copied");
+          btn.textContent = "copied";
+          btn.setAttribute("aria-label", "message copied");
           pulseCopiedMessage(copyMenuSourceEl);
           haptic("reaction");
           copyMenuFeedbackTimeout = setTimeout(hideCopyMenu, 720);
         } catch (err) {
-          menuEl.disabled = false;
-          menuEl.textContent = "copy failed";
-          menuEl.setAttribute("aria-label", "copy failed");
-          menuEl.classList.remove("wl-copy-menu--copied");
-          menuEl.classList.add("wl-copy-menu--error");
+          btn.disabled = false;
+          btn.textContent = "copy failed";
+          btn.setAttribute("aria-label", "copy failed");
           haptic("send-failed");
           appendLog(`copy failed: ${errMsg(err)}`);
           copyMenuFeedbackTimeout = setTimeout(() => {
-            if (!copyMenuEl || !copyMenuEl.classList.contains("wl-copy-menu--visible")) return;
+            if (!actionMenuEl || !isCopyMenuVisible()) return;
             resetCopyMenuFeedback();
-            positionCopyMenu(copyMenuAnchorX, copyMenuAnchorY);
+            positionActionMenu(copyMenuAnchorX, copyMenuAnchorY);
           }, 1100);
         }
       }, { signal });
-      copyMenuEl.addEventListener("pointerenter", () => {
+
+      actionMenuEl.appendChild(actionEditBtn);
+      actionMenuEl.appendChild(actionCopyBtn);
+
+      actionMenuEl.addEventListener("pointerenter", () => {
         if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
       }, { signal });
-      copyMenuEl.addEventListener("pointerleave", () => {
+      actionMenuEl.addEventListener("pointerleave", () => {
         if (isCopyMenuVisible()) armCopyMenuTimeout(2200);
       }, { signal });
-      copyMenuEl.addEventListener("focusin", () => {
+      actionMenuEl.addEventListener("focusin", () => {
         if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
       }, { signal });
-      copyMenuEl.addEventListener("focusout", () => {
+      actionMenuEl.addEventListener("focusout", () => {
         if (isCopyMenuVisible()) armCopyMenuTimeout(1800);
       }, { signal });
-      document.body.appendChild(copyMenuEl);
+      document.body.appendChild(actionMenuEl);
     }
+
+    // Show/hide edit button based on message ownership
+    const canEdit = direction === "self" && msgId != null && sourceEl?.querySelector(".wl-msg-text");
+    actionEditBtn!.style.display = canEdit ? "" : "none";
+    actionMenuMsgId = msgId;
+
     copyMenuText = text;
     copyMenuSourceEl = sourceEl;
     copyMenuAnchorX = x;
@@ -602,28 +644,56 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (copyMenuCloseTimeout) { clearTimeout(copyMenuCloseTimeout); copyMenuCloseTimeout = null; }
     if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
     resetCopyMenuFeedback();
-    copyMenuEl.classList.add("wl-copy-menu--visible");
+    actionMenuEl.classList.add("wl-action-menu--visible");
     menuJustOpenedAt = Date.now();
 
-    requestAnimationFrame(() => positionCopyMenu(x, y));
+    requestAnimationFrame(() => positionActionMenu(x, y));
     armCopyMenuTimeout();
   }
 
   function hideCopyMenu(): void {
     if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
     if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
-    if (!copyMenuEl) return;
-    if (!isCopyMenuVisible() && !copyMenuEl.classList.contains("wl-copy-menu--closing")) return;
-    copyMenuEl.classList.remove("wl-copy-menu--visible");
-    copyMenuEl.classList.add("wl-copy-menu--closing");
+    if (!actionMenuEl) return;
+    if (!isCopyMenuVisible() && !actionMenuEl.classList.contains("wl-action-menu--closing")) return;
+    actionMenuEl.classList.remove("wl-action-menu--visible");
+    actionMenuEl.classList.add("wl-action-menu--closing");
     copyMenuText = "";
     copyMenuSourceEl = null;
+    actionMenuMsgId = null;
     if (copyMenuCloseTimeout) clearTimeout(copyMenuCloseTimeout);
     copyMenuCloseTimeout = setTimeout(() => {
-      if (!copyMenuEl) return;
+      if (!actionMenuEl) return;
       resetCopyMenuFeedback();
       copyMenuCloseTimeout = null;
     }, 180);
+  }
+
+  function exitEditMode(): void {
+    if (editingMsgId == null) return;
+    const srcEl = msgById.get(editingMsgId);
+    srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.remove("wl-msg--editing");
+    opts.chatInput.value = preEditInputValue;
+    opts.chatInput.placeholder = preEditPlaceholder;
+    chatCompose?.removeAttribute("data-editing");
+    editingMsgId = null;
+    updateControls();
+  }
+
+  function handleEdit(targetMsgId: number, newText: string): void {
+    const el = msgById.get(targetMsgId);
+    if (!el) return;
+    const textEl = el.querySelector<HTMLElement>(".wl-msg-text");
+    if (!textEl) return;
+    textEl.textContent = newText;
+    if (!el.querySelector(".wl-msg-edited")) {
+      const tag = document.createElement("span");
+      tag.className = "wl-msg-edited";
+      tag.textContent = "(edited)";
+      const timeEl = el.querySelector(".wl-msg-time");
+      if (timeEl) timeEl.appendChild(tag);
+      else el.appendChild(tag);
+    }
   }
 
   function cancelActiveHold(): void {
@@ -645,11 +715,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     copiedPulseEl = null;
     copyMenuText = "";
     copyMenuSourceEl = null;
+    actionMenuMsgId = null;
     cancelActiveHold();
-    if (copyMenuEl) {
+    if (actionMenuEl) {
       resetCopyMenuFeedback();
-      copyMenuEl.remove();
-      copyMenuEl = null;
+      actionMenuEl.remove();
+      actionMenuEl = null;
+      actionEditBtn = null;
+      actionCopyBtn = null;
     }
   }
 
@@ -661,7 +734,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   window.addEventListener("pointerdown", (e) => {
     if (Date.now() - menuJustOpenedAt < 180) return;
-    if (copyMenuEl && !copyMenuEl.contains(e.target as Node)) hideCopyMenu();
+    if (actionMenuEl && !actionMenuEl.contains(e.target as Node)) hideCopyMenu();
   }, { signal });
 
   window.addEventListener("keydown", (e) => {
@@ -1615,7 +1688,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const canChat = hasSession || chatVisible;       // preview mode has no session but chat is visible
     opts.chatSendBtn.disabled = busy || !canChat || !hasChatText;
     opts.chatMediaBtn.disabled = busy || !canChat;
-    opts.chatMicBtn.disabled = busy || !canChat || !micSupported;
+    opts.chatMicBtn.disabled = editingMsgId != null ? false : (busy || !canChat || !micSupported);
     opts.chatMicCancel.disabled = busy || !canChat || !micSupported;
     opts.chatMicSend.disabled = busy || !canChat || !micSupported;
     const hasChatMessages = opts.chatMessages.children.length > 0
@@ -3113,6 +3186,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function emitTyping(): void {
+    if (editingMsgId != null) return;       // editing — don't leak typing state
     if (typingSendTimer || !session) return;
     if (env.saveData || env.constrainedNetwork) return;
 
@@ -3243,7 +3317,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           window.setTimeout(() => div.classList.remove("wl-msg--copy-ready"), 240);
           activeHoldEl = null;
           activeHoldTimer = null;
-          showCopyMenu(x, y, msg.text!, div);
+          showActionMenu(x, y, msg.text!, div, msg.msgId ?? null, msg.direction);
           haptic("reaction");
         }, delayMs);
       };
@@ -4321,6 +4395,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onSendProgress: (sent, total) => sendProgress(sent / total),
       onConnectionStats: handleConnectionStats,
       onCtrl: handleCtrl,
+      onEdit: (id, text) => handleEdit(id, text),
       onDrawStream: (ev) => handleRemoteDraw(ev),
     }, {
       rtcConfig,
@@ -5198,11 +5273,38 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   const sendMessage = async () => {
     const text = opts.chatInput.value.trim();
-    if (!text) return;
+    if (!text) {
+      if (editingMsgId != null) exitEditMode();
+      return;
+    }
     opts.chatInput.value = "";
     opts.chatInput.focus();
     emitCleared();
     updateControls();
+
+    // ── Edit mode: send edit instead of new message
+    if (editingMsgId != null) {
+      const targetId = editingMsgId;
+      exitEditMode();
+      if (!session) {
+        // Preview mode — apply edit locally
+        handleEdit(targetId, text);
+        simulateSendEnergy();
+        return;
+      }
+      sendBeginFill();
+      try {
+        const editMsgId = await session.sendEdit(targetId, text);
+        sendInFlight(editMsgId);
+      } catch (err) {
+        send.phase = "delivered"; send.velocity = -4;
+        haptic("send-failed");
+        appendLog(`edit failed: ${errMsg(err)}`);
+        pulseComposeIntent("error", 1100);
+      }
+      return;
+    }
+
     if (!session) {
       // Preview mode — simulate the full send lifecycle visually.
       // Assign a synthetic negative msgId so the shelf is built for this message.
@@ -5226,6 +5328,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   opts.chatSendBtn.addEventListener("click", sendMessage, { signal });
   opts.chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && editingMsgId != null) {
+      e.preventDefault();
+      exitEditMode();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -5468,6 +5575,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // - Pointer ID tracking — ignore multi-touch secondary fingers.
   // - setPointerCapture — pointerup always fires on mic even if finger slides off.
   opts.chatMicBtn.addEventListener("pointerdown", (e) => {
+    if (editingMsgId != null) { exitEditMode(); return; }
     if (opts.chatMicBtn.disabled || e.button !== 0) return;
     if (micPointerId !== -1) return;           // already tracking a pointer
 

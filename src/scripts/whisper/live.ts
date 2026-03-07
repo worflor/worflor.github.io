@@ -160,6 +160,8 @@ export interface WhisperLiveCallbacks {
   onDrawStream?: (event: DrawStreamEvent) => void;
   /** Peer's audio/video/screen stream state changed. */
   onStreamState?: (audio: boolean, video: boolean, screen: boolean) => void;
+  /** A message was edited (by self or peer). */
+  onEdit?: (targetMsgId: number, newText: string, direction: "self" | "peer") => void;
 }
 
 export interface WhisperLiveSessionOptions {
@@ -346,6 +348,7 @@ const LIVE_FLAG = {
   FILE: 0x01,
   CAMPFIRE: 0x02,
   FILE_PART: 0x04, // application-level multi-part file chunk
+  EDIT: 0x10,      // [targetMsgId:4B LE][new text:UTF-8]
 } as const;
 /** Each application-layer file chunk is this many bytes of raw file data. */
 const FILE_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB
@@ -480,6 +483,7 @@ export class WhisperLiveSession {
   onCtrl: WhisperLiveCallbacks["onCtrl"];
   onDrawStream: WhisperLiveCallbacks["onDrawStream"];
   onStreamState: WhisperLiveCallbacks["onStreamState"];
+  onEdit: WhisperLiveCallbacks["onEdit"];
 
   // Tab-aware heartbeat
   private tabHidden = false;
@@ -508,6 +512,7 @@ export class WhisperLiveSession {
     this.onCtrl = callbacks.onCtrl;
     this.onDrawStream = callbacks.onDrawStream;
     this.onStreamState = callbacks.onStreamState;
+    this.onEdit = callbacks.onEdit;
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
     this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
     this.autoConfirm = options.autoConfirmFingerprint ?? false;
@@ -1450,6 +1455,17 @@ export class WhisperLiveSession {
       new DataView(ackPayload.buffer).setUint32(0, msgId, true);
       this.sendSealed(LIVE_MSG.ACK, ackPayload);
 
+      const isEdit     = (header.flags & LIVE_FLAG.EDIT) !== 0;
+      if (isEdit) {
+        if (plaintext.length < 5) return; // 4B id + at least 1B text
+        const targetId = new DataView(plaintext.buffer, plaintext.byteOffset).getUint32(0, true);
+        // Security: peer can only edit their own messages (parity check)
+        const peerParity = this.isOfferer ? 1 : 0;
+        if ((targetId & 1) !== peerParity) return;
+        this.onEdit?.(targetId, TD.decode(plaintext.subarray(4)), "peer");
+        return;
+      }
+
       const isCampfire = (header.flags & LIVE_FLAG.CAMPFIRE) !== 0;
       const isFile     = (header.flags & LIVE_FLAG.FILE) !== 0;
       const isFilePart = (header.flags & LIVE_FLAG.FILE_PART) !== 0;
@@ -1699,6 +1715,22 @@ export class WhisperLiveSession {
       if (msgId < 0) return;
       sentMsgId = msgId;
       this.onMessage({ type: "text", direction: "self", msgId, text, timestamp: Date.now() });
+    });
+    return sentMsgId;
+  }
+
+  async sendEdit(targetMsgId: number, newText: string): Promise<number> {
+    let sentMsgId = -1;
+    await this.enqueueSend(async () => {
+      if (!await this.canSend()) return;
+      const textBytes = TE.encode(newText);
+      const payload = new Uint8Array(4 + textBytes.length);
+      new DataView(payload.buffer).setUint32(0, targetMsgId, true);
+      payload.set(textBytes, 4);
+      const msgId = await this.encryptAndSend(payload, LIVE_FLAG.EDIT);
+      if (msgId < 0) return;
+      sentMsgId = msgId;
+      this.onEdit?.(targetMsgId, newText, "self");
     });
     return sentMsgId;
   }

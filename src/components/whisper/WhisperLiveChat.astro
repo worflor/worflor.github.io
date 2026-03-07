@@ -204,6 +204,16 @@
               <path d="M3 7.5a5 5 0 0010 0"></path>
               <path d="M8 13v2"></path>
             </svg>
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              class="wl-edit-cancel-icon"
+              aria-hidden="true"
+            >
+              <path d="M4.5 4.5l7 7M11.5 4.5l-7 7"></path>
+            </svg>
           </button>
           <button
             id="wl-chat-mic-send"
@@ -767,19 +777,14 @@
   }
 
   /* Floating Copy Menu */
-  :global(.wl-copy-menu) {
+  :global(.wl-action-menu) {
     position: fixed;
     z-index: 10000;
-    min-width: 4rem;
-    padding: 0.46rem 0.76rem;
-    font-size: var(--whisper-text-micro);
-    font-weight: 500;
-    letter-spacing: 0.01em;
-    line-height: 1;
+    display: flex;
+    overflow: hidden;
     background: rgb(10 10 10 / 0.94);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    color: rgb(var(--color-text-rgb) / 0.78);
     border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     border-radius: calc(var(--whisper-radius) * 0.8);
     box-shadow:
@@ -794,51 +799,111 @@
       transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
       background 120ms ease-out,
       border-color 120ms ease-out,
-      box-shadow 160ms ease-out,
-      color 120ms ease-out;
-    cursor: pointer;
+      box-shadow 160ms ease-out;
+    cursor: default;
     user-select: none;
   }
 
-  :global(.wl-copy-menu.wl-copy-menu--visible) {
+  :global(.wl-action-menu--visible) {
     opacity: 1;
     transform: scale(1) translateY(0);
     pointer-events: auto;
   }
 
-  :global(.wl-copy-menu.wl-copy-menu--closing) {
+  :global(.wl-action-menu--closing) {
     pointer-events: none;
   }
 
-  :global(.wl-copy-menu.wl-copy-menu--copied) {
-    background: rgb(var(--chromatic-cyan) / 0.08);
-    border-color: rgb(var(--chromatic-cyan) / 0.22);
-    color: rgb(var(--chromatic-cyan) / 0.92);
-    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
+  :global(.wl-action-btn) {
+    padding: 0.46rem 0.76rem;
+    font-size: var(--whisper-text-micro);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    line-height: 1;
+    background: transparent;
+    color: rgb(var(--color-text-rgb) / 0.78);
+    border: none;
+    cursor: pointer;
+    transition: background 120ms ease-out, color 120ms ease-out;
   }
 
-  :global(.wl-copy-menu.wl-copy-menu--error) {
-    background: rgb(var(--chromatic-red) / 0.08);
-    border-color: rgb(var(--chromatic-red) / 0.22);
-    color: rgb(var(--chromatic-red) / 0.92);
-    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
+  :global(.wl-action-btn + .wl-action-btn) {
+    border-left: 1px solid rgb(var(--color-text-rgb) / 0.10);
   }
 
-  :global(.wl-copy-menu:hover) {
-    background: rgb(var(--color-text-rgb) / 0.04);
+  :global(.wl-action-btn:hover) {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: rgb(var(--color-text-rgb) / 0.92);
+  }
+
+  :global(.wl-action-btn:active) {
+    background: rgb(var(--color-text-rgb) / 0.10);
+  }
+
+  :global(.wl-action-menu:hover) {
     border-color: rgb(var(--color-text-rgb) / 0.18);
   }
 
-  :global(.wl-copy-menu:focus-visible) {
-    outline: none;
+  :global(.wl-action-menu:focus-within) {
     border-color: rgb(var(--chromatic-cyan) / 0.34);
     box-shadow:
       0 10px 18px -18px rgb(0 0 0 / 0.9),
       inset 0 1px 0 rgb(var(--color-text-rgb) / 0.025);
   }
 
-  :global(.wl-copy-menu:active) {
-    transform: scale(0.98);
+  :global(.wl-msg-edited) {
+    font-size: var(--whisper-text-micro);
+    color: rgb(var(--color-text-rgb) / 0.25);
+    margin-left: 0.4em;
+    font-style: italic;
+    user-select: none;
+  }
+
+  :global(.wl-msg--editing) {
+    outline: 1px solid rgb(var(--chromatic-cyan) / 0.25);
+    outline-offset: 1px;
+  }
+
+  :global(.wl-edit-cancel-icon) {
+    position: absolute;
+    width: 0.7rem;
+    height: 0.7rem;
+    opacity: 0;
+    transform: rotate(-90deg) scale(0.5);
+    transition: opacity 200ms ease, transform 200ms ease;
+  }
+
+  :global(.wl-chat-compose[data-editing]) :global(.wl-mic-icon) {
+    opacity: 0;
+    transform: scale(0.5);
+    transition: opacity 200ms ease, transform 200ms ease;
+  }
+
+  :global(.wl-chat-compose[data-editing]) :global(.wl-edit-cancel-icon) {
+    opacity: 1;
+    transform: rotate(0deg) scale(1);
+  }
+
+  :global(.wl-chat-compose[data-editing]) :global(.wl-chat-mic-btn) {
+    color: rgb(var(--chromatic-red) / 0.7);
+    border-color: rgb(var(--chromatic-red) / 0.3);
+    background: rgb(var(--chromatic-red) / 0.08);
+    opacity: 1 !important;
+  }
+
+  :global(.wl-chat-compose[data-editing]) :global(.wl-chat-mic-btn:hover) {
+    color: rgb(var(--chromatic-red));
+    border-color: rgb(var(--chromatic-red) / 0.5);
+    background: rgb(var(--chromatic-red) / 0.18);
+  }
+
+  :global(.wl-chat-compose[data-editing])::before {
+    background: rgb(var(--chromatic-cyan) / 0.4) !important;
+    clip-path: inset(0 0 0 0) !important;
+  }
+
+  :global(.wl-chat-compose[data-editing]) :global(.wl-chat-text-input)::placeholder {
+    color: rgb(var(--chromatic-cyan) / 0.4);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg--delivered .wl-msg-text),
@@ -1974,6 +2039,7 @@
   .wl-mic-icon {
     width: 0.85rem;
     height: 0.85rem;
+    transition: opacity 200ms ease, transform 200ms ease;
   }
 
   .wl-chat-compose[data-intent="connecting"] .wl-chat-text-input {
@@ -2378,7 +2444,7 @@
     .wl-chat-compose::after {
       display: none !important;
     }
-    :global(.wl-copy-menu),
+    :global(.wl-action-menu),
     :global(.wl-chat-messages) :global(.wl-msg-text) {
       transition: none !important;
       animation: none !important;
