@@ -114,6 +114,32 @@ describe("live-wire", () => {
       assert.equal(parsed.counter, 0);
       assert.equal(parsed.prevChainLen, 0);
     });
+
+    it("parseHeader throws on severely undersized packets", () => {
+      // DataView.getUint32 at offset 70 needs at least 74 bytes.
+      // Packets < 74 bytes will cause a RangeError from DataView.
+      for (const size of [0, 1, 10, 50, 65, 73]) {
+        const packet = randomBytes(size);
+        assert.throws(
+          () => parseHeader(packet),
+          `${size}-byte packet should throw (DataView out of bounds)`,
+        );
+      }
+    });
+
+    it("parseHeader on 74-85 byte packets does not crash (truncated fields)", () => {
+      // Packets ≥ 74 bytes won't throw (DataView reads succeed), but
+      // the nonce and ciphertext subarrays may be truncated or empty.
+      for (const size of [74, 80, 85]) {
+        const packet = randomBytes(size);
+        const parsed = parseHeader(packet);
+        assert.equal(typeof parsed.flags, "number");
+        assert.equal(typeof parsed.counter, "number");
+        assert.ok(parsed.nonce.length <= 12, `nonce length for ${size}B packet`);
+        assert.equal(parsed.ciphertext.length, Math.max(0, size - HEADER_SIZE),
+          `ciphertext length for ${size}B packet`);
+      }
+    });
   });
 
   describe("encodeFilePlaintext/decodeFilePlaintext", () => {

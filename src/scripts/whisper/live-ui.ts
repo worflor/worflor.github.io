@@ -5097,8 +5097,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   opts.answerApplyBtn.addEventListener("click", async () => {
     normalizeTypedCodes();
-    const code = opts.answerInput.value.trim();
-    if (!code || !session) return;
+    const raw = opts.answerInput.value.trim();
+    if (!raw || !session) {
+      opts.answerInput.focus();
+      opts.answerInput.classList.add("ws-reject-pulse");
+      setTimeout(() => opts.answerInput.classList.remove("ws-reject-pulse"), 400);
+      return;
+    }
+    const code = extractLiveCodeCandidate(raw, "answer");
+    if (!code) {
+      opts.answerInput.focus();
+      opts.answerInput.classList.add("ws-reject-pulse");
+      setTimeout(() => opts.answerInput.classList.remove("ws-reject-pulse"), 400);
+      return;
+    }
+    opts.answerInput.value = code;
     try {
       await session.applyAnswer(code);
     } catch (err) {
@@ -5109,8 +5122,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   opts.joinBtn.addEventListener("click", async () => {
     normalizeTypedCodes();
-    const offerCode = opts.joinInput.value.trim();
-    if (!offerCode) return;
+    const raw = opts.joinInput.value.trim();
+    if (!raw) {
+      opts.joinInput.focus();
+      opts.joinInput.classList.add("ws-reject-pulse");
+      setTimeout(() => opts.joinInput.classList.remove("ws-reject-pulse"), 400);
+      return;
+    }
+    const offerCode = extractLiveCodeCandidate(raw, "offer");
+    if (!offerCode) {
+      opts.joinInput.focus();
+      opts.joinInput.classList.add("ws-reject-pulse");
+      setTimeout(() => opts.joinInput.classList.remove("ws-reject-pulse"), 400);
+      setJoinQrStatus("doesn\u2019t look like an invite code");
+      return;
+    }
+    opts.joinInput.value = offerCode;
     const phrase = getActivePhrase() || undefined;
     try {
       const answerCodeStr = await acceptOfferWithFreshSession(offerCode, phrase);

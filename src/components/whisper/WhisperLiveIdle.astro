@@ -135,7 +135,7 @@
             id="wl-join-input"
             type="text"
             class="whisper-input wl-code-input"
-            placeholder="connection code"
+            placeholder="code"
             autocomplete="off"
             spellcheck="false"
           />
@@ -297,7 +297,6 @@
   .wl-relay-panel :global(.whisper-input) {
     min-height: var(--touch-target);
     padding: var(--whisper-control-padding);
-    font-size: var(--text-ui-sm);
   }
 
   /* ── Mode switch link ──────────────────────────────────── */
@@ -370,7 +369,6 @@
   .wl-flare-panel :global(.whisper-input) {
     min-height: var(--touch-target);
     padding: var(--whisper-control-padding);
-    font-size: var(--text-ui-sm);
   }
 
   .wl-flare-panel :global(.whisper-input):focus-visible {
@@ -483,29 +481,28 @@
 
   .wl-manual-options {
     display: grid;
-    gap: var(--space-sm);
-    padding-top: var(--space-sm);
+    gap: var(--space-xs);
+    padding-top: var(--space-xs);
     border-top: 1px solid var(--whisper-edge);
     margin-top: 0;
   }
 
   .wl-manual-options :global(.whisper-field-label) {
-    font-size: var(--text-sm);
+    font-size: var(--whisper-text-meta);
   }
 
   .wl-manual-options :global(.whisper-input) {
-    min-height: var(--touch-target);
-    padding: var(--whisper-control-padding);
-    font-size: var(--text-ui-sm);
+    min-height: calc(var(--touch-target) * 0.82);
+    padding: calc(var(--space-xs) * 0.5) var(--space-xs);
   }
 
   .wl-manual-options :global(.whisper-toggle) {
-    min-height: var(--touch-target);
-    padding: var(--whisper-toggle-padding);
+    min-height: calc(var(--touch-target) * 0.82);
+    padding: calc(var(--space-xs) * 0.4) var(--space-xs);
   }
 
   .wl-manual-options :global(.whisper-toggle-text) {
-    font-size: var(--text-sm);
+    font-size: var(--whisper-text-meta);
   }
 
   @media (min-width: 860px) {
@@ -542,15 +539,6 @@
       justify-content: center;
     }
 
-    .wl-flare-panel :global(.whisper-field-label),
-    .wl-relay-panel :global(.whisper-field-label) {
-      font-size: var(--whisper-text-meta);
-    }
-
-    .wl-flare-panel :global(.whisper-input),
-    .wl-relay-panel :global(.whisper-input) {
-      font-size: var(--whisper-text-soft);
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {

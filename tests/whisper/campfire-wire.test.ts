@@ -112,6 +112,36 @@ describe("campfire/wire", () => {
       const decrypted = await decryptGroupMsg(parsed.ciphertext, parsed.nonce, groupKey);
       assertBytesEqual(decrypted, plaintext, "binary plaintext");
     });
+
+    it("tampered ciphertext rejects (integrity check)", async () => {
+      const plaintext = new TextEncoder().encode("campfire secret message");
+      const groupKey = randomKey();
+      const wire = await buildGroupMsg(randomMsgId(), randomPeerId(), Date.now(), 0, 1, 0, plaintext, groupKey);
+      const parsed = parseGroupMsgHeader(wire.subarray(1));
+
+      // Flip a random byte in the ciphertext
+      const tampered = new Uint8Array(parsed.ciphertext);
+      const flipIdx = Math.floor(Math.random() * tampered.length);
+      tampered[flipIdx] ^= 0x01;
+      await assert.rejects(
+        () => decryptGroupMsg(tampered, parsed.nonce, groupKey),
+        "tampered ciphertext must fail decryption",
+      );
+    });
+
+    it("tampered nonce rejects", async () => {
+      const plaintext = randomBytes(100);
+      const groupKey = randomKey();
+      const wire = await buildGroupMsg(randomMsgId(), randomPeerId(), Date.now(), 0, 1, 0, plaintext, groupKey);
+      const parsed = parseGroupMsgHeader(wire.subarray(1));
+
+      const wrongNonce = new Uint8Array(parsed.nonce);
+      wrongNonce[0] ^= 0xFF;
+      await assert.rejects(
+        () => decryptGroupMsg(parsed.ciphertext, wrongNonce, groupKey),
+        "wrong nonce must fail decryption",
+      );
+    });
   });
 
   describe("rewrapGroupMsg", () => {

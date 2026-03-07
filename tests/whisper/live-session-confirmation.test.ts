@@ -148,4 +148,45 @@ describe("WhisperLiveSession confirmation", () => {
     assert.equal(states.some((entry) => entry.state === "live"), true);
     assert.equal(sentFrames.length, 1);
   });
+
+  it("rejects a valid proof built from a different session root", async () => {
+    const { session, states, logs } = createSession();
+    const sentFrames: Uint8Array[] = [];
+    attachOpenChannel(session, sentFrames);
+
+    const internals = session as unknown as {
+      _state: LiveState;
+      isOfferer: boolean;
+      sharedSecret: Uint8Array | null;
+      confirmContextHash: Uint8Array | null;
+      startHeartbeat: () => void;
+      sendQueue: Promise<void>;
+      handlePeerConfirmProof: (proof: Uint8Array) => Promise<void>;
+      localConfirmSent: boolean;
+      remoteConfirmVerified: boolean;
+    };
+
+    const realSessionRoot = randomKey();
+    const wrongSessionRoot = randomKey();
+    const confirmContextHash = randomKey();
+
+    internals._state = "verifying";
+    internals.isOfferer = true;
+    internals.sharedSecret = realSessionRoot;
+    internals.confirmContextHash = confirmContextHash;
+    internals.startHeartbeat = () => {};
+
+    session.confirmFingerprint();
+    await internals.sendQueue;
+
+    // Build a proof that's valid for a DIFFERENT session — not random garbage
+    const wrongProof = await buildConfirmProof(wrongSessionRoot, confirmContextHash, "answerer");
+    await internals.handlePeerConfirmProof(wrongProof);
+    wrongProof.fill(0);
+
+    assert.equal(internals.remoteConfirmVerified, false, "wrong-root proof must not verify");
+    assert.equal(internals._state, "error", "should enter error state");
+    assert.ok(logs.some((line) => line.includes("proof mismatch")), "should log proof mismatch");
+    assert.equal(states.some((entry) => entry.state === "live"), false, "must not reach live");
+  });
 });

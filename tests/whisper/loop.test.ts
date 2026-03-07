@@ -176,15 +176,19 @@ describe("live-loop", () => {
       }
     });
 
-    it("30 random sizes round-trip correctly", () => {
-      const state = loopInit(makeSharedBlock());
+    it("30 random sizes round-trip correctly with accumulating state", () => {
+      const block = makeSharedBlock();
+      let encState = loopInit(new Uint8Array(block));
+      let decState = loopInit(new Uint8Array(block));
       const rng = makeDeterministicRng(0x51E5A11);
       for (let i = 0; i < 30; i++) {
         const size = (rng() * 5000) | 0;
         const data = randomBytes(size);
-        const { encoded } = loopEncode(state, data);
-        const { decoded } = loopDecode(state, encoded, data.length);
+        const { encoded, next: encNext } = loopEncode(encState, data);
+        const { decoded, next: decNext } = loopDecode(decState, encoded, data.length);
         assertBytesEqual(decoded, data, `random size ${size}B iter ${i}`);
+        encState = encNext;
+        decState = decNext;
       }
     });
   });
@@ -288,6 +292,53 @@ describe("live-loop", () => {
       const { messageKey: mk2 } = await loopStep(state2);
       assert.notDeepStrictEqual(mk1, mk2,
         "different shared blocks → different message keys");
+    });
+
+    it("desync detection: different shared blocks produce different message keys", async () => {
+      const blockA = makeSharedBlock();
+      const blockB = makeSharedBlock();
+
+      const stateA = loopInit(blockA);
+      const stateB = loopInit(blockB);
+
+      // The security-critical keying is in loopStep (message keys), not loopEncode (compression)
+      const { messageKey: mkA } = await loopStep(stateA);
+      const { messageKey: mkB } = await loopStep(stateB);
+
+      assert.notDeepStrictEqual(mkA, mkB,
+        "different shared blocks must produce different message keys");
+
+      // After multiple steps, keys should continue to diverge
+      let sA = stateA;
+      let sB = stateB;
+      for (let i = 0; i < 5; i++) {
+        const a = await loopStep(sA);
+        const b = await loopStep(sB);
+        sA = a.next;
+        sB = b.next;
+        assert.notDeepStrictEqual(a.messageKey, b.messageKey,
+          `step ${i + 1}: keys must differ with different shared blocks`);
+      }
+    });
+
+    it("desync detection: skipped loopStep produces different message keys", async () => {
+      const block = makeSharedBlock();
+      const stateSync = loopInit(new Uint8Array(block));
+      const stateSkip = loopInit(new Uint8Array(block));
+
+      // Both do step 0
+      const { next: syncNext, messageKey: mkSync0 } = await loopStep(stateSync);
+      const { next: skipNext0, messageKey: mkSkip0 } = await loopStep(stateSkip);
+      assertBytesEqual(mkSync0, mkSkip0, "step 0 should match");
+
+      // Sync does step 1, skip does step 1 AND step 2 (skipping ahead)
+      const { next: syncNext1, messageKey: mkSync1 } = await loopStep(syncNext);
+      const { next: skipNext1 } = await loopStep(skipNext0);
+      const { messageKey: mkSkip2 } = await loopStep(skipNext1);
+
+      // sync step 1 key ≠ skip step 2 key (different chain positions)
+      assert.notDeepStrictEqual(mkSync1, mkSkip2,
+        "different chain positions must produce different keys");
     });
   });
 });

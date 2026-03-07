@@ -1503,6 +1503,7 @@ const seo = {
   /* ── Operation Panel ───────────────────────────────────── */
   :global(.whisper-panel) {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-sm);
     border: 1px solid var(--whisper-edge);
     border-radius: var(--whisper-radius);
@@ -1588,7 +1589,7 @@ const seo = {
     min-height: var(--touch-target);
     padding: var(--whisper-control-padding);
     font-family: var(--font-body);
-    font-size: var(--text-ui-sm);
+    font-size: var(--text-sm);
     transition:
       border-color var(--duration-normal) var(--ease-out),
       box-shadow var(--duration-normal) var(--ease-out);
@@ -2701,23 +2702,23 @@ const seo = {
   }
 
   :global(.wl-actions-panel) {
-    gap: var(--space-sm);
+    gap: var(--space-xs);
     padding: var(--space-sm);
   }
 
   :global(.wl-actions-row) {
     display: flex;
     align-items: start;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
   }
 
   :global(.wl-action-label) {
     display: block;
-    font-size: calc(var(--text-sm) * 0.82);
+    font-size: var(--whisper-text-fine);
     color: rgb(var(--color-text-rgb) / 0.38);
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    margin-bottom: calc(var(--space-xs) * 0.25);
+    margin-bottom: calc(var(--space-xs) * 0.15);
   }
 
   :global(.wl-action-create) {
@@ -2966,20 +2967,6 @@ const seo = {
 
     :global(.wl-inline-hint) {
       font-size: calc(var(--text-sm) * 0.8);
-    }
-
-    :global(.wl-actions-row) {
-      flex-direction: column;
-    }
-
-    :global(.wl-actions-divider) {
-      width: 100%;
-      height: 1px;
-      align-self: auto;
-    }
-
-    :global(.wl-manual-options .whisper-toggle-text) {
-      font-size: var(--whisper-text-meta);
     }
 
     :global(.wl-join-row .whisper-mini-btn) {

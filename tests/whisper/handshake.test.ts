@@ -10,6 +10,8 @@ import {
   deriveConfirmContextHash,
   buildConfirmProof,
   verifyConfirmProof,
+  deriveSilentKey,
+  deriveAudioKey,
 } from "../../src/scripts/whisper/live-handshake.js";
 import {
   sdpToCode,
@@ -54,6 +56,33 @@ describe("live-handshake", () => {
     rootB.fill(0);
     keyA.fill(0);
     keyB.fill(0);
+  });
+
+  it("different phrases produce different roots (phrase separation)", async () => {
+    const phrases = [
+      "alpha bravo charlie",
+      "alpha bravo charli",  // one char difference
+      "Alpha Bravo Charlie", // case difference
+      "delta echo foxtrot",
+      "",                    // empty phrase
+      " ",                   // whitespace-only
+      "tower",
+      "tower ",              // trailing space
+    ];
+    const roots: Uint8Array[] = [];
+    for (const phrase of phrases) {
+      roots.push(await derivePhraseRoot(phrase));
+    }
+    // Every pair must differ
+    for (let i = 0; i < roots.length; i++) {
+      for (let j = i + 1; j < roots.length; j++) {
+        assert.notDeepStrictEqual(
+          Array.from(roots[i]), Array.from(roots[j]),
+          `"${phrases[i]}" and "${phrases[j]}" must produce different roots`,
+        );
+      }
+    }
+    for (const r of roots) r.fill(0);
   });
 
   it("session root changes when transcript changes", async () => {
@@ -103,6 +132,65 @@ describe("live-handshake", () => {
     witnessB.fill(0);
     confirmContext.fill(0);
   });
+
+  it("answerer proof verified by answerer role, rejected by offerer role", async () => {
+    const sessionRoot = randomKey();
+    const confirmContext = randomKey();
+
+    const answererProof = await buildConfirmProof(sessionRoot, confirmContext, "answerer");
+    assert.equal(await verifyConfirmProof(answererProof, sessionRoot, confirmContext, "answerer"), true);
+    assert.equal(await verifyConfirmProof(answererProof, sessionRoot, confirmContext, "offerer"), false);
+
+    sessionRoot.fill(0);
+    confirmContext.fill(0);
+  });
+
+  it("deriveSilentKey and deriveAudioKey are deterministic and domain-separated", async () => {
+    const sessionRoot = randomKey();
+
+    const silent1 = await deriveSilentKey(sessionRoot);
+    const silent2 = await deriveSilentKey(sessionRoot);
+    assert.deepStrictEqual(Array.from(silent1), Array.from(silent2));
+    assert.equal(silent1.length, 32);
+
+    const audio1 = await deriveAudioKey(sessionRoot);
+    const audio2 = await deriveAudioKey(sessionRoot);
+    assert.deepStrictEqual(Array.from(audio1), Array.from(audio2));
+    assert.equal(audio1.length, 16);
+
+    // Domain separation: silent key !== audio key (different lengths, but also different derivation)
+    assert.notDeepStrictEqual(Array.from(silent1.subarray(0, 16)), Array.from(audio1));
+
+    // Different session roots produce different keys
+    const otherRoot = randomKey();
+    const silentOther = await deriveSilentKey(otherRoot);
+    const audioOther = await deriveAudioKey(otherRoot);
+    assert.notDeepStrictEqual(Array.from(silent1), Array.from(silentOther));
+    assert.notDeepStrictEqual(Array.from(audio1), Array.from(audioOther));
+
+    sessionRoot.fill(0);
+    otherRoot.fill(0);
+    silent1.fill(0);
+    silent2.fill(0);
+    audio1.fill(0);
+    audio2.fill(0);
+    silentOther.fill(0);
+    audioOther.fill(0);
+  });
+
+  it("session root differs with vs without phraseRoot", async () => {
+    const ecdh = randomKey();
+    const transcript = randomKey();
+    const phraseRoot = await derivePhraseRoot("some phrase");
+
+    const withPhrase = await deriveSessionRoot(new Uint8Array(ecdh), transcript, phraseRoot);
+    const without = await deriveSessionRoot(new Uint8Array(ecdh), transcript, null);
+    assert.notDeepStrictEqual(Array.from(withPhrase), Array.from(without));
+
+    phraseRoot.fill(0);
+    withPhrase.fill(0);
+    without.fill(0);
+  });
 });
 
 describe("live-sdp hardening", () => {
@@ -124,5 +212,39 @@ describe("live-sdp hardening", () => {
     await assert.rejects(() => codeToSdp(code, "answer", phraseRoot));
     const unsealed = await codeToSdp(code, "offer", phraseRoot);
     assert.match(unsealed, /a=setup:actpass/);
+  });
+
+  it("sealed SDP rejects wrong phrase", async () => {
+    const offerSdp = sampleSdp("actpass", [candidateA, candidateB]);
+    const phraseRoot = await derivePhraseRoot("correct phrase");
+    const wrongRoot = await derivePhraseRoot("wrong phrase");
+    const code = await sdpToCode(offerSdp, "offer", phraseRoot);
+    await assert.rejects(() => codeToSdp(code, "offer", wrongRoot), /unseal/i);
+    phraseRoot.fill(0);
+    wrongRoot.fill(0);
+  });
+
+  it("sealed SDP rejects truncated code", async () => {
+    const offerSdp = sampleSdp("actpass", [candidateA]);
+    const phraseRoot = await derivePhraseRoot("truncation test");
+    const code = await sdpToCode(offerSdp, "offer", phraseRoot);
+    // Truncate the base64url code to simulate corruption
+    const truncated = code.slice(0, 10);
+    await assert.rejects(() => codeToSdp(truncated, "offer", phraseRoot));
+    phraseRoot.fill(0);
+  });
+
+  it("unsealed SDP round-trips correctly with random candidates", async () => {
+    const candidates = [
+      "a=candidate:1 1 udp 2130706431 10.0.0.1 9000 typ host",
+      "a=candidate:2 1 tcp 1694498815 172.16.0.5 443 typ srflx raddr 10.0.0.1 rport 9000",
+      "a=candidate:3 1 udp 100 192.0.2.1 3478 typ relay raddr 172.16.0.5 rport 443",
+    ];
+    const sdp = sampleSdp("passive", candidates);
+    const code = await sdpToCode(sdp, "answer");
+    const restored = await codeToSdp(code, "answer");
+    assert.match(restored, /a=ice-ufrag:testUfrag/);
+    assert.match(restored, /a=setup:passive/);
+    assert.match(restored, /typ relay/);
   });
 });

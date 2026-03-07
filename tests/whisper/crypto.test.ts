@@ -7,6 +7,9 @@ import {
   aesGcmDecrypt,
   kdfChainDirect,
   hkdf,
+  hmacSha256,
+  pbkdf2,
+  constantTimeEqual,
 } from "../../src/scripts/whisper/live-crypto.js";
 
 describe("live-crypto", () => {
@@ -126,6 +129,38 @@ describe("live-crypto", () => {
       const ct1 = await aesGcmEncrypt(key, plaintext, randomNonce());
       const ct2 = await aesGcmEncrypt(key, plaintext, randomNonce());
       assert.notDeepStrictEqual(ct1, ct2, "different nonces should produce different ciphertext");
+    });
+
+    it("same key+nonce+plaintext is deterministic (proves nonce is sole randomness source)", async () => {
+      const key = randomKey();
+      const plaintext = randomBytes(128);
+      const nonce = randomNonce();
+      const ct1 = await aesGcmEncrypt(new Uint8Array(key), new Uint8Array(plaintext), new Uint8Array(nonce));
+      const ct2 = await aesGcmEncrypt(new Uint8Array(key), new Uint8Array(plaintext), new Uint8Array(nonce));
+      assertBytesEqual(ct1, ct2, "identical inputs must produce identical ciphertext");
+      // This proves nonce reuse would be catastrophic — same nonce = same keystream
+      // Therefore the security of the system depends entirely on nonce uniqueness
+    });
+
+    it("same key+nonce on different plaintexts leaks XOR relationship (nonce reuse hazard proof)", async () => {
+      const key = randomKey();
+      const nonce = randomNonce();
+      const p1 = randomBytes(64);
+      const p2 = randomBytes(64);
+      const ct1 = await aesGcmEncrypt(key, p1, nonce);
+      const ct2 = await aesGcmEncrypt(key, p2, nonce);
+      // Under nonce reuse, ciphertext XOR = plaintext XOR (before auth tag)
+      // Verify that the ciphertext bodies (excluding 16B tag) XOR to plaintext XOR
+      const ctBody1 = ct1.subarray(0, ct1.length - 16);
+      const ctBody2 = ct2.subarray(0, ct2.length - 16);
+      const ctXor = new Uint8Array(64);
+      const ptXor = new Uint8Array(64);
+      for (let i = 0; i < 64; i++) {
+        ctXor[i] = ctBody1[i] ^ ctBody2[i];
+        ptXor[i] = p1[i] ^ p2[i];
+      }
+      assertBytesEqual(ctXor, ptXor,
+        "nonce reuse leaks plaintext XOR — this test proves why unique nonces are critical");
     });
   });
 
@@ -256,6 +291,104 @@ describe("live-crypto", () => {
         const allZero = result.every(b => b === 0);
         assert.equal(allZero, false, `HKDF output should not be all zeros (iter ${i})`);
       }
+    });
+  });
+
+  describe("constantTimeEqual", () => {
+    it("returns true for identical arrays", () => {
+      for (let i = 0; i < 10; i++) {
+        const a = randomBytes(32);
+        assert.equal(constantTimeEqual(a, new Uint8Array(a)), true, `iter ${i}`);
+      }
+    });
+
+    it("returns false for different arrays", () => {
+      for (let i = 0; i < 10; i++) {
+        const a = randomBytes(32);
+        const b = randomBytes(32);
+        assert.equal(constantTimeEqual(a, b), false, `iter ${i}`);
+      }
+    });
+
+    it("returns false for single-bit difference", () => {
+      const a = randomBytes(32);
+      const b = new Uint8Array(a);
+      // Flip one bit in a random position
+      const pos = Math.floor(Math.random() * 32);
+      b[pos] ^= 0x01;
+      assert.equal(constantTimeEqual(a, b), false);
+    });
+
+    it("returns false for different lengths", () => {
+      assert.equal(constantTimeEqual(randomBytes(16), randomBytes(32)), false);
+      assert.equal(constantTimeEqual(new Uint8Array(0), randomBytes(1)), false);
+    });
+
+    it("handles empty arrays", () => {
+      assert.equal(constantTimeEqual(new Uint8Array(0), new Uint8Array(0)), true);
+    });
+  });
+
+  describe("hmacSha256", () => {
+    it("produces 32-byte output", async () => {
+      const mac = await hmacSha256(randomKey(), randomBytes(100));
+      assert.equal(mac.length, 32);
+    });
+
+    it("deterministic: same key+data → same MAC", async () => {
+      const key = randomKey();
+      const data = randomBytes(64);
+      const a = await hmacSha256(new Uint8Array(key), new Uint8Array(data));
+      const b = await hmacSha256(new Uint8Array(key), new Uint8Array(data));
+      assertBytesEqual(a, b, "same inputs → same MAC");
+    });
+
+    it("different keys → different MACs", async () => {
+      const data = randomBytes(64);
+      const a = await hmacSha256(randomKey(), data);
+      const b = await hmacSha256(randomKey(), data);
+      assert.notDeepStrictEqual(a, b);
+    });
+
+    it("different data → different MACs", async () => {
+      const key = randomKey();
+      const a = await hmacSha256(key, randomBytes(64));
+      const b = await hmacSha256(key, randomBytes(64));
+      assert.notDeepStrictEqual(a, b);
+    });
+  });
+
+  describe("pbkdf2", () => {
+    it("produces correct output length", async () => {
+      const secret = new TextEncoder().encode("password");
+      const salt = randomBytes(16);
+      for (const len of [16, 32, 64]) {
+        const result = await pbkdf2(secret, salt, 1000, len);
+        assert.equal(result.length, len);
+      }
+    });
+
+    it("deterministic: same inputs → same output", async () => {
+      const secret = new TextEncoder().encode("test-phrase");
+      const salt = randomBytes(16);
+      const a = await pbkdf2(secret, new Uint8Array(salt), 1000, 32);
+      const b = await pbkdf2(secret, new Uint8Array(salt), 1000, 32);
+      assertBytesEqual(a, b, "deterministic");
+    });
+
+    it("different salts → different output", async () => {
+      const secret = new TextEncoder().encode("same-password");
+      const a = await pbkdf2(secret, randomBytes(16), 1000, 32);
+      const b = await pbkdf2(secret, randomBytes(16), 1000, 32);
+      assert.notDeepStrictEqual(a, b);
+    });
+
+    it("different iteration counts → different output", async () => {
+      const secret = new TextEncoder().encode("password");
+      const salt = randomBytes(16);
+      const a = await pbkdf2(secret, new Uint8Array(salt), 1000, 32);
+      const b = await pbkdf2(secret, new Uint8Array(salt), 2000, 32);
+      assert.notDeepStrictEqual(a, b);
     });
   });
 });

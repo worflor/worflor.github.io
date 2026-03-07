@@ -274,5 +274,50 @@ describe("live-chunking", () => {
         assertBytesEqual(result!, data, `single chunk ${i} content`);
       }
     });
+
+    it("oversized declared totalLen does not cause OOM (assembler ignores declared length)", () => {
+      const assembler = new ChunkAssembler();
+      // Craft a START chunk claiming totalLen = 4GB but only providing 10 bytes of payload
+      const startChunk = new Uint8Array(5 + 10);
+      startChunk[0] = CHUNK_START;
+      new DataView(startChunk.buffer).setUint32(1, 0xFFFFFFFF, true); // 4GB declared
+      for (let i = 0; i < 10; i++) startChunk[5 + i] = 0x41 + i;
+
+      // Should not throw or allocate 4GB — just buffers the 10 actual bytes
+      const result = assembler.feed(startChunk);
+      assert.equal(result, null, "incomplete multi-chunk returns null");
+
+      // Feed an END chunk with small payload
+      const endChunk = new Uint8Array(1 + 5);
+      endChunk[0] = CHUNK_END;
+      for (let i = 0; i < 5; i++) endChunk[1 + i] = 0x61 + i;
+
+      const complete = assembler.feed(endChunk);
+      assert.ok(complete, "should reassemble from actual bytes");
+      // Total should be 10 + 5 = 15 bytes, NOT 4GB
+      assert.equal(complete!.length, 15, "result size = actual bytes, not declared totalLen");
+    });
+
+    it("mismatched totalLen in header doesn't affect reassembly", () => {
+      // Build a real multi-chunk message
+      const data = randomBytes(20000);
+      const chunks = chunkMessagePrefixed(data, 0x20);
+
+      // Corrupt the totalLen in the START chunk to a wrong value
+      const startChunk = new Uint8Array(chunks[0].subarray(1)); // strip prefix
+      new DataView(startChunk.buffer, startChunk.byteOffset).setUint32(1, 999999, true);
+
+      const assembler = new ChunkAssembler();
+      assembler.feed(startChunk);
+      for (let i = 1; i < chunks.length; i++) {
+        const result = assembler.feed(chunks[i].subarray(1));
+        if (result) {
+          // Reassembly should succeed based on actual data, not declared length
+          assertBytesEqual(result, data, "corrupted totalLen doesn't affect data integrity");
+          return;
+        }
+      }
+      assert.fail("should have reassembled");
+    });
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertBytesEqual } from "./_helpers/assertions.js";
-import { randomKey } from "./_helpers/generators.js";
+import { randomKey, randomBytes, randomNonce } from "./_helpers/generators.js";
 import {
   generateDHKeyPair,
   initRatchetAsOfferer,
@@ -10,6 +10,7 @@ import {
   skipMessageKeys,
   trySkippedKey,
 } from "../../src/scripts/whisper/live-ratchet.js";
+import { kdfChainDirect, aesGcmEncrypt, aesGcmDecrypt } from "../../src/scripts/whisper/live-crypto.js";
 
 describe("live-ratchet", () => {
   describe("generateDHKeyPair", () => {
@@ -350,6 +351,142 @@ describe("live-ratchet", () => {
 
       const mk = trySkippedKey(offerer, offerer.dhPeerHex, 999);
       assert.equal(mk, null, "non-existent counter returns null");
+    });
+  });
+
+  describe("two-party encrypt/decrypt exchange", () => {
+    /**
+     * Simulates what live.ts does: derive a message key from the chain,
+     * encrypt with AES-GCM, and decrypt on the other side. This proves
+     * two independently initialized ratchet states can actually communicate.
+     */
+    async function chainEncrypt(
+      chainKey: Uint8Array,
+    ): Promise<{ newChainKey: Uint8Array; messageKey: Uint8Array }> {
+      const [newChainKey, messageKey] = await kdfChainDirect(chainKey);
+      return { newChainKey, messageKey };
+    }
+
+    it("offerer encrypts, receiver decrypts (initial handshake)", async () => {
+      const sharedSecret = randomKey();
+      const dhOfferer = await generateDHKeyPair();
+
+      // Both sides init from same shared secret
+      const offerer = await initRatchetAsOfferer(new Uint8Array(sharedSecret), dhOfferer);
+      const receiver = await initRatchetAsReceiver(new Uint8Array(sharedSecret), dhOfferer.publicKey);
+
+      // Offerer performs DH ratchet step with receiver's public key
+      await dhRatchetStep(offerer, receiver.dhSelf.publicKey);
+
+      // Now offerer has chainKeySend, receiver has chainKeySend
+      // But offerer's chainKeySend corresponds to receiver's chainKeyRecv (after receiver does its DH step)
+      // Receiver needs to do a DH step with offerer's NEW pubkey to derive chainKeyRecv
+      await dhRatchetStep(receiver, offerer.dhSelf.publicKey);
+
+      // Now: offerer.chainKeySend should derive same message keys as receiver.chainKeyRecv
+      assert.ok(offerer.chainKeySend, "offerer has chainKeySend");
+      assert.ok(receiver.chainKeyRecv, "receiver has chainKeyRecv");
+
+      // Offerer sends 5 messages, receiver decrypts each
+      let offererChain = new Uint8Array(offerer.chainKeySend!);
+      let receiverChain = new Uint8Array(receiver.chainKeyRecv!);
+
+      for (let i = 0; i < 5; i++) {
+        const plaintext = randomBytes(50 + i * 30);
+        const nonce = randomNonce();
+
+        // Offerer: derive message key, encrypt
+        const send = await chainEncrypt(offererChain);
+        offererChain = send.newChainKey;
+        const ciphertext = await aesGcmEncrypt(
+          send.messageKey.subarray(0, 32), plaintext, nonce,
+        );
+
+        // Receiver: derive same message key, decrypt
+        const recv = await chainEncrypt(receiverChain);
+        receiverChain = recv.newChainKey;
+        const decrypted = await aesGcmDecrypt(
+          recv.messageKey.subarray(0, 32), ciphertext, nonce,
+        );
+
+        assertBytesEqual(decrypted, plaintext, `message ${i} round-trip`);
+        // Message keys should be identical
+        assertBytesEqual(send.messageKey, recv.messageKey, `message key ${i} matches`);
+      }
+    });
+
+    it("chain key symmetry: both sides derive identical send/recv chains after DH exchange", async () => {
+      // This tests the core ratchet invariant: after both sides complete
+      // a DH ratchet step with each other's pubkey, the sender's chainKeySend
+      // must match the receiver's chainKeyRecv so message keys align.
+      const sharedSecret = randomKey();
+      const dhOfferer = await generateDHKeyPair();
+
+      const offerer = await initRatchetAsOfferer(new Uint8Array(sharedSecret), dhOfferer);
+      const receiver = await initRatchetAsReceiver(new Uint8Array(sharedSecret), dhOfferer.publicKey);
+
+      // Offerer sees receiver's pubkey and ratchets
+      const receiverPub = new Uint8Array(receiver.dhSelf.publicKey);
+      await dhRatchetStep(offerer, receiverPub);
+
+      // Receiver sees offerer's NEW pubkey (post-ratchet) and ratchets
+      const offererNewPub = new Uint8Array(offerer.dhSelf.publicKey);
+      await dhRatchetStep(receiver, offererNewPub);
+
+      // offerer.chainKeySend should match receiver.chainKeyRecv
+      assert.ok(offerer.chainKeySend, "offerer has chainKeySend");
+      assert.ok(receiver.chainKeyRecv, "receiver has chainKeyRecv");
+
+      // Derive 5 message keys from each and verify they match
+      let sendChain = new Uint8Array(offerer.chainKeySend!);
+      let recvChain = new Uint8Array(receiver.chainKeyRecv!);
+
+      for (let i = 0; i < 5; i++) {
+        const [newSend, sendMK] = await kdfChainDirect(sendChain);
+        const [newRecv, recvMK] = await kdfChainDirect(recvChain);
+        sendChain = newSend;
+        recvChain = newRecv;
+
+        assertBytesEqual(sendMK, recvMK, `message key ${i} must match between offerer send and receiver recv`);
+
+        // Prove actual encrypt/decrypt works
+        const plaintext = randomBytes(100 + i * 50);
+        const nonce = randomNonce();
+        const ct = await aesGcmEncrypt(sendMK, plaintext, nonce);
+        const pt = await aesGcmDecrypt(recvMK, ct, nonce);
+        assertBytesEqual(pt, plaintext, `encrypt/decrypt ${i}`);
+      }
+    });
+
+    it("wrong shared secret prevents communication", async () => {
+      const secretA = randomKey();
+      const secretB = randomKey(); // different secret!
+      const dhOfferer = await generateDHKeyPair();
+
+      const offerer = await initRatchetAsOfferer(new Uint8Array(secretA), dhOfferer);
+      const receiver = await initRatchetAsReceiver(new Uint8Array(secretB), dhOfferer.publicKey);
+
+      await dhRatchetStep(offerer, receiver.dhSelf.publicKey);
+      await dhRatchetStep(receiver, offerer.dhSelf.publicKey);
+
+      // Derive message keys from each side
+      const [, sendMK] = await kdfChainDirect(offerer.chainKeySend!);
+      const [, recvMK] = await kdfChainDirect(receiver.chainKeyRecv!);
+
+      // Keys should NOT match — different root secrets
+      assert.notDeepStrictEqual(
+        Array.from(sendMK), Array.from(recvMK),
+        "different shared secrets must produce different message keys",
+      );
+
+      // Encryption with one key, decryption with other should fail
+      const plaintext = randomBytes(64);
+      const nonce = randomNonce();
+      const ct = await aesGcmEncrypt(sendMK, plaintext, nonce);
+      await assert.rejects(
+        () => aesGcmDecrypt(recvMK, ct, nonce),
+        "cross-secret decryption must fail",
+      );
     });
   });
 });
