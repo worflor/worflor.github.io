@@ -74,7 +74,7 @@ const FONT_MAP: Record<ScribeConfig["fontFamily"], string> = {
 };
 
 function buildStandaloneHtml(markdown: string, config: ScribeConfig, title: string): string {
-  const rendered = marked.parse(markdown, { gfm: true, breaks: true }) as string;
+  const rendered = marked.parse(markdown, { gfm: true, breaks: true, async: false });
   const pageSize = config.pageSize === "letter" ? "letter" : "A4";
   const margin = MARGIN_MAP[config.margins];
   const fontFamily = FONT_MAP[config.fontFamily];
@@ -284,6 +284,7 @@ export function createScribe(): ScribeModule {
 
     configure(file: FileInfo): void {
       currentFile = file;
+      rawFile = null;
       cachedMarkdown = null;
       if (container) renderControls();
     },

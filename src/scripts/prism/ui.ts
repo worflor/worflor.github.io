@@ -1056,7 +1056,11 @@ export function initPrism(opts: PrismUIOptions): () => void {
             ? "AUD"
             : info.category === "subtitle"
               ? "SUB"
-              : "FILE";
+              : info.category === "markdown"
+                ? "MD"
+                : info.category === "pdf"
+                  ? "PDF"
+                  : "FILE";
       }
       row.appendChild(thumb);
 
