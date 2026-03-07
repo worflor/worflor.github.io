@@ -1,0 +1,9 @@
+﻿rag_tests/legacy/one_offs/test_chem5.ts(31,62): error TS7006: Parameter 'k' implicitly has an 'any' type.
+rag_tests/legacy/one_offs/test_chem5.ts(129,31): error TS7006: Parameter 'e' implicitly has an 'any' type.
+rag_tests/legacy/one_offs/test_chem5.ts(144,30): error TS7006: Parameter 'v' implicitly has an 'any' type.
+rag_tests/legacy/one_offs/test_chem5.ts(144,33): error TS7006: Parameter 'idx' implicitly has an 'any' type.
+rag_tests/legacy/one_offs/test_chem5.ts(156,36): error TS7006: Parameter 'v' implicitly has an 'any' type.
+rag_tests/legacy/one_offs/test_chem5.ts(156,39): error TS7006: Parameter 'idx' implicitly has an 'any' type.
+rag_tests/legacy/one_offs/test_chem5.ts(168,28): error TS7006: Parameter 'c' implicitly has an 'any' type.
+rag_tests/legacy/one_offs/test_chem5.ts(170,25): error TS7006: Parameter 'v' implicitly has an 'any' type.
+rag_tests/legacy/one_offs/test_chem5.ts(170,28): error TS7006: Parameter 'idx' implicitly has an 'any' type.

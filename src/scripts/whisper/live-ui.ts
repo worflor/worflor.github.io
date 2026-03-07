@@ -236,6 +236,49 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : "unknown";
 }
 
+type AudioContextCtor = new () => AudioContext;
+
+function getAudioContextCtor(): AudioContextCtor | null {
+  const view = window as Window & {
+    AudioContext?: AudioContextCtor;
+    webkitAudioContext?: AudioContextCtor;
+  };
+  const maybeCtor = view.AudioContext ?? view.webkitAudioContext;
+  return maybeCtor ?? null;
+}
+
+function createAudioContext(): AudioContext | null {
+  const Ctor = getAudioContextCtor();
+  if (!Ctor) return null;
+  try {
+    return new Ctor();
+  } catch {
+    return null;
+  }
+}
+
+function canUseShareSheet(): boolean {
+  if (typeof navigator.share !== "function") return false;
+  if (typeof navigator.canShare !== "function") return true;
+  try {
+    return navigator.canShare({ text: "whisper" });
+  } catch {
+    return false;
+  }
+}
+
+function getQrCapabilityLabel(reason?: string): string {
+  switch (reason) {
+    case "qr format not supported":
+      return "QR camera scan unavailable here";
+    case "qr check failed":
+      return "QR camera scan could not be verified here";
+    case "qr scan not supported":
+    default:
+      return "QR camera scan unavailable here";
+  }
+}
+
 const _storedPref = localStorage.getItem("wl-time-12h");
 let use12h = _storedPref !== null
   ? _storedPref === "1"
@@ -380,10 +423,225 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const objectUrls = new Set<string>();
   let busy = false;
   let liveQrSupported = false;
+  let liveQrUnavailableLabel = "QR camera scan unavailable here";
   let skippedIceCandidates = 0;
+
+  const liveCapabilities = {
+    clipboardRead: typeof navigator.clipboard?.readText === "function",
+    shareSheet: canUseShareSheet(),
+    qrImageDecode: typeof createImageBitmap === "function",
+    audioContext: getAudioContextCtor() !== null,
+  };
 
   let typingSendTimer: ReturnType<typeof setTimeout> | null = null;
   let peerTypingTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // ── Floating Action Menu (Copy) ──────────────────────────
+  let copyMenuEl: HTMLButtonElement | null = null;
+  let copyMenuText = "";
+  let copyMenuTimeout: ReturnType<typeof setTimeout> | null = null;
+  let copyMenuFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
+  let copyMenuCloseTimeout: ReturnType<typeof setTimeout> | null = null;
+  let copyMenuSourceEl: HTMLElement | null = null;
+  let copyMenuAnchorX = 0;
+  let copyMenuAnchorY = 0;
+  let menuJustOpenedAt = 0;
+  let copiedPulseTimeout: ReturnType<typeof setTimeout> | null = null;
+  let copiedPulseEl: HTMLElement | null = null;
+  let activeHoldPointerId = -1;
+
+  // Gesture State (Singleton for memory efficiency)
+  let activeHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeHoldVisualTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeHoldEl: HTMLElement | null = null;
+  let holdStartX = 0, holdStartY = 0;
+
+  function isCopyMenuVisible(): boolean {
+    return !!copyMenuEl?.classList.contains("wl-copy-menu--visible");
+  }
+
+  function armCopyMenuTimeout(ms = 4_000): void {
+    if (copyMenuTimeout) clearTimeout(copyMenuTimeout);
+    copyMenuTimeout = setTimeout(hideCopyMenu, ms);
+  }
+
+  function hasInteractiveSelectionWithin(el: HTMLElement): boolean {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+    const range = selection.getRangeAt(0);
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    return !!(
+      (anchorNode && el.contains(anchorNode))
+      || (focusNode && el.contains(focusNode))
+      || (range.commonAncestorContainer && el.contains(range.commonAncestorContainer))
+    );
+  }
+
+  function resetCopyMenuFeedback(): void {
+    if (!copyMenuEl) return;
+    copyMenuEl.disabled = false;
+    copyMenuEl.textContent = "copy";
+    copyMenuEl.setAttribute("aria-label", "copy message");
+    copyMenuEl.classList.remove("wl-copy-menu--copied", "wl-copy-menu--error", "wl-copy-menu--closing");
+  }
+
+  function positionCopyMenu(x: number, y: number): void {
+    if (!copyMenuEl) return;
+    const rect = copyMenuEl.getBoundingClientRect();
+    const menuW = rect.width || 72;
+    const menuH = rect.height || 36;
+    let left = x - menuW / 2;
+    let top = y - menuH - 12;
+
+    if (top < 8) top = y + 12;
+
+    left = Math.max(8, Math.min(window.innerWidth - menuW - 8, left));
+    top = Math.max(8, Math.min(window.innerHeight - menuH - 8, top));
+
+    copyMenuEl.style.left = `${left}px`;
+    copyMenuEl.style.top = `${top}px`;
+  }
+
+  function pulseCopiedMessage(el: HTMLElement | null): void {
+    if (!el) return;
+    if (copiedPulseTimeout) {
+      clearTimeout(copiedPulseTimeout);
+      copiedPulseTimeout = null;
+    }
+    if (copiedPulseEl && copiedPulseEl !== el) copiedPulseEl.classList.remove("wl-msg--copied");
+    copiedPulseEl = el;
+    el.classList.remove("wl-msg--copied");
+    void el.offsetWidth;
+    el.classList.add("wl-msg--copied");
+    copiedPulseTimeout = setTimeout(() => {
+      el.classList.remove("wl-msg--copied");
+      if (copiedPulseEl === el) copiedPulseEl = null;
+      copiedPulseTimeout = null;
+    }, 1200);
+  }
+
+  function showCopyMenu(x: number, y: number, text: string, sourceEl: HTMLElement | null = null): void {
+    if (!text.trim()) return;
+    if (
+      isCopyMenuVisible()
+      && copyMenuSourceEl === sourceEl
+      && copyMenuText === text
+      && Math.abs(copyMenuAnchorX - x) < 6
+      && Math.abs(copyMenuAnchorY - y) < 6
+    ) {
+      armCopyMenuTimeout();
+      return;
+    }
+    if (!copyMenuEl) {
+      copyMenuEl = document.createElement("button");
+      copyMenuEl.className = "wl-copy-menu";
+      copyMenuEl.type = "button";
+      copyMenuEl.textContent = "copy";
+      copyMenuEl.setAttribute("aria-label", "copy message");
+      copyMenuEl.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (!copyMenuText) return;
+        const menuEl = copyMenuEl;
+        if (!menuEl) return;
+        if (menuEl.disabled) return;
+        if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
+        if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
+        try {
+          menuEl.disabled = true;
+          await copyToClipboard(copyMenuText);
+          menuEl.textContent = "copied";
+          menuEl.setAttribute("aria-label", "message copied");
+          menuEl.classList.remove("wl-copy-menu--error");
+          menuEl.classList.add("wl-copy-menu--copied");
+          pulseCopiedMessage(copyMenuSourceEl);
+          haptic("reaction");
+          copyMenuFeedbackTimeout = setTimeout(hideCopyMenu, 720);
+        } catch (err) {
+          menuEl.disabled = false;
+          menuEl.textContent = "Copy failed";
+          menuEl.setAttribute("aria-label", "Copy failed");
+          menuEl.classList.remove("wl-copy-menu--copied");
+          menuEl.classList.add("wl-copy-menu--error");
+          haptic("send-failed");
+          appendLog(`copy failed: ${errMsg(err)}`);
+          copyMenuFeedbackTimeout = setTimeout(() => {
+            if (!copyMenuEl || !copyMenuEl.classList.contains("wl-copy-menu--visible")) return;
+            resetCopyMenuFeedback();
+            positionCopyMenu(copyMenuAnchorX, copyMenuAnchorY);
+          }, 1100);
+        }
+      }, { signal });
+      copyMenuEl.addEventListener("pointerenter", () => {
+        if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
+      }, { signal });
+      copyMenuEl.addEventListener("pointerleave", () => {
+        if (isCopyMenuVisible()) armCopyMenuTimeout(2200);
+      }, { signal });
+      copyMenuEl.addEventListener("focusin", () => {
+        if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
+      }, { signal });
+      copyMenuEl.addEventListener("focusout", () => {
+        if (isCopyMenuVisible()) armCopyMenuTimeout(1800);
+      }, { signal });
+      document.body.appendChild(copyMenuEl);
+    }
+    copyMenuText = text;
+    copyMenuSourceEl = sourceEl;
+    copyMenuAnchorX = x;
+    copyMenuAnchorY = y;
+    if (copyMenuCloseTimeout) { clearTimeout(copyMenuCloseTimeout); copyMenuCloseTimeout = null; }
+    if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
+    resetCopyMenuFeedback();
+    copyMenuEl.classList.add("wl-copy-menu--visible");
+    menuJustOpenedAt = Date.now();
+
+    requestAnimationFrame(() => positionCopyMenu(x, y));
+    armCopyMenuTimeout();
+  }
+
+  function hideCopyMenu(): void {
+    if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
+    if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
+    if (!copyMenuEl) return;
+    if (!isCopyMenuVisible() && !copyMenuEl.classList.contains("wl-copy-menu--closing")) return;
+    copyMenuEl.classList.remove("wl-copy-menu--visible");
+    copyMenuEl.classList.add("wl-copy-menu--closing");
+    copyMenuText = "";
+    copyMenuSourceEl = null;
+    if (copyMenuCloseTimeout) clearTimeout(copyMenuCloseTimeout);
+    copyMenuCloseTimeout = setTimeout(() => {
+      if (!copyMenuEl) return;
+      resetCopyMenuFeedback();
+      copyMenuCloseTimeout = null;
+    }, 180);
+  }
+
+  function cancelActiveHold(): void {
+    if (activeHoldTimer) { clearTimeout(activeHoldTimer); activeHoldTimer = null; }
+    if (activeHoldVisualTimer) { clearTimeout(activeHoldVisualTimer); activeHoldVisualTimer = null; }
+    activeHoldPointerId = -1;
+    if (activeHoldEl) {
+      activeHoldEl.classList.remove("wl-msg--holding");
+      activeHoldEl = null;
+    }
+  }
+
+  // Dismiss menu/gesture on scroll or pointer elsewhere
+  opts.chatMessages.addEventListener("scroll", () => {
+    hideCopyMenu();
+    cancelActiveHold();
+  }, { passive: true, signal });
+
+  window.addEventListener("pointerdown", (e) => {
+    if (Date.now() - menuJustOpenedAt < 180) return;
+    if (copyMenuEl && !copyMenuEl.contains(e.target as Node)) hideCopyMenu();
+  }, { signal });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideCopyMenu();
+  }, { signal });
 
   /** Active-typing debounce scaled to current network. Reads live so it adapts
    *  if the connection shifts (e.g. wifi → cellular). */
@@ -960,12 +1218,49 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function setJoinQrUiState(scanning: boolean): void {
     opts.joinQrScanBtn.disabled = busy || scanning || !liveQrSupported;
-    opts.joinQrImageBtn.disabled = busy || scanning;
+    opts.joinQrImageBtn.disabled = busy || scanning || !liveCapabilities.qrImageDecode;
     opts.joinQrStopBtn.style.display = scanning ? "" : "none";
   }
 
   function setJoinQrStatus(text: string): void {
     opts.joinQrStatus.textContent = text;
+  }
+
+  function refreshCapabilityUi(): void {
+    opts.joinPasteBtn.title = liveCapabilities.clipboardRead
+      ? "Paste offer code from clipboard"
+      : "Clipboard paste unavailable here";
+    opts.joinPasteBtn.setAttribute("aria-label", opts.joinPasteBtn.title);
+
+    opts.joinQrScanBtn.title = liveQrSupported
+      ? "Scan an offer code with your camera"
+      : liveQrUnavailableLabel;
+    opts.joinQrScanBtn.setAttribute("aria-label", opts.joinQrScanBtn.title);
+
+    opts.joinQrImageBtn.title = liveCapabilities.qrImageDecode
+      ? "Load an offer code from an image"
+      : "Image QR import unavailable here";
+    opts.joinQrImageBtn.setAttribute("aria-label", opts.joinQrImageBtn.title);
+
+    const shareLabel = liveCapabilities.shareSheet ? "Share" : "Copy";
+    const shareTitle = liveCapabilities.shareSheet
+      ? "Share this code using a system share sheet"
+      : "Share sheet unavailable here. This will copy instead";
+    for (const [btn, kind] of [
+      [opts.offerShareBtn, "offer code"],
+      [opts.answerShareBtn, "answer code"],
+    ] as const) {
+      if (!btn) continue;
+      btn.textContent = shareLabel;
+      btn.title = shareTitle;
+      btn.setAttribute("aria-label", `${shareLabel.toLowerCase()} ${kind}`);
+    }
+
+    const micTitle = micSupported
+      ? "Record audio message"
+      : "Voice recording unavailable here";
+    opts.chatMicBtn.title = micTitle;
+    opts.chatMicBtn.setAttribute("aria-label", micTitle);
   }
 
   function setQrExpanded(
@@ -1058,19 +1353,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const capability = await getQrScannerCapability();
     if (aborted() || runId !== qrScanSession.runId) return;
     if (!capability.supported) {
-      setJoinQrStatus("Camera unavailable.");
+      liveQrUnavailableLabel = getQrCapabilityLabel(capability.reason);
+      refreshCapabilityUi();
+      setJoinQrStatus(`${liveQrUnavailableLabel}.`);
       return;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setJoinQrStatus("Camera unavailable.");
+      setJoinQrStatus("Camera capture unavailable.");
       return;
     }
 
     const detector = await createQrDetector();
     if (aborted() || runId !== qrScanSession.runId) return;
     if (!detector) {
-      setJoinQrStatus("Camera unavailable.");
+      setJoinQrStatus(`${liveQrUnavailableLabel}.`);
       return;
     }
 
@@ -1127,7 +1424,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       qrScanSession.rafId = requestAnimationFrame((t) => { void loop(t); });
     } catch {
       stopJoinQrScan("error");
-      setJoinQrStatus("Camera unavailable.");
+      setJoinQrStatus("Camera access failed.");
     }
   }
 
@@ -1234,7 +1531,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     opts.createBtn.disabled = busy;
     opts.joinBtn.disabled = busy || !joinHasCode;
-    opts.joinPasteBtn.disabled = busy;
+    opts.joinPasteBtn.disabled = busy || !liveCapabilities.clipboardRead;
     opts.answerApplyBtn.disabled = busy || !hasSession || !answerHasCode;
 
     opts.externalAssistToggle.disabled = busy || hasSession;
@@ -1281,9 +1578,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const canChat = hasSession || chatVisible;       // preview mode has no session but chat is visible
     opts.chatSendBtn.disabled = busy || !canChat || !hasChatText;
     opts.chatMediaBtn.disabled = busy || !canChat;
-    opts.chatMicBtn.disabled = busy || !canChat;
-    opts.chatMicCancel.disabled = busy || !canChat;
-    opts.chatMicSend.disabled = busy || !canChat;
+    opts.chatMicBtn.disabled = busy || !canChat || !micSupported;
+    opts.chatMicCancel.disabled = busy || !canChat || !micSupported;
+    opts.chatMicSend.disabled = busy || !canChat || !micSupported;
     const hasChatMessages = opts.chatMessages.children.length > 0
       && !(opts.chatMessages.children.length === 1 && opts.chatMessages.firstElementChild?.classList.contains("wl-chat-empty"));
     opts.chatMediaClear.disabled = busy || !hasChatMessages;
@@ -1292,6 +1589,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.rejectBtn.disabled = busy || !hasSession;
     opts.disconnectBtn.disabled = busy || (!hasSession && !chatVisible);
     opts.silentDisconnectBtn.disabled = busy || !hasSession;
+    refreshCapabilityUi();
     syncComposeIntent();
   }
 
@@ -1997,7 +2295,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let micRecorder: MediaRecorder | null = null;
   let micRecorderChunks: Blob[] = [];
 
-  const micSupported = !!navigator.mediaDevices?.getUserMedia;
+  const micSupported = !!navigator.mediaDevices?.getUserMedia && liveCapabilities.audioContext;
   if (!micSupported) opts.chatMicWrap.setAttribute("data-hidden", "");
 
   function formatRecordDuration(ms: number): string {
@@ -2153,7 +2451,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       try {
         const blob = new Blob(blobs, { type: rec.mimeType || "audio/webm" });
         const ab = await blob.arrayBuffer();
-        const actx = new AudioContext();
+        const actx = createAudioContext();
+        if (!actx) return null;
         const decoded = await actx.decodeAudioData(ab.slice(0));
         const pcm = decoded.getChannelData(0).slice();
         const sampleRate = decoded.sampleRate;
@@ -2210,7 +2509,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       // fallback only when MediaRecorder cannot start.
       if (!micRecorder) {
         // Fallback: If started without pointer event, create context here (it might be suspended and blocked, but fail gracefully)
-        if (!micAudioCtx) micAudioCtx = new AudioContext();
+        if (!micAudioCtx) micAudioCtx = createAudioContext();
+        if (!micAudioCtx) {
+          appendLog("mic audio pipeline unavailable here");
+          for (const t of stream.getTracks()) t.stop();
+          recordingStream = null;
+          return;
+        }
         if (micAudioCtx.state !== "running") {
           try { await micAudioCtx.resume(); } catch { }
         }
@@ -2839,14 +3144,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // annotation (PNG/JPEG composite) without inspecting the file type.
     const replacePeerPreview =
       msg.direction === "peer"
-      && msg.type === "file"
-      && !!peerLiveMsgEl
-      && peerLiveMsgEl.parentElement === opts.chatMessages
-      && (
-        peerLiveMsgEl.dataset.drawState === "sent"
-        // Backstop for older peers/edge ordering where drawState may miss "sent".
-        || isWhisperGlyph(msg.fileType, msg.fileName)
-      )
+        && msg.type === "file"
+        && !!peerLiveMsgEl
+        && peerLiveMsgEl.parentElement === opts.chatMessages
+        && (
+          peerLiveMsgEl.dataset.drawState === "sent"
+          // Backstop for older peers/edge ordering where drawState may miss "sent".
+          || isWhisperGlyph(msg.fileType, msg.fileName)
+        )
         ? peerLiveMsgEl
         : null;
     const replacePeerPreviewAspectRatio =
@@ -2886,6 +3191,71 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const textEl = document.createElement("span");
       textEl.className = "wl-msg-text";
       textEl.textContent = msg.text ?? "";
+
+      // ── Unified Copy Action (Right-click or Long-press)
+      const startUnifiedCopyPop = (x: number, y: number, delayMs: number, visualDelayMs = 0) => {
+        cancelActiveHold();
+        activeHoldEl = div;
+        if (visualDelayMs > 0) {
+          activeHoldVisualTimer = setTimeout(() => {
+            if (activeHoldEl !== div) return;
+            div.classList.add("wl-msg--holding");
+          }, visualDelayMs);
+        }
+        activeHoldTimer = setTimeout(() => {
+          if (activeHoldVisualTimer) { clearTimeout(activeHoldVisualTimer); activeHoldVisualTimer = null; }
+          div.classList.remove("wl-msg--holding");
+          div.classList.add("wl-msg--copy-ready");
+          window.setTimeout(() => div.classList.remove("wl-msg--copy-ready"), 240);
+          activeHoldEl = null;
+          activeHoldTimer = null;
+          showCopyMenu(x, y, msg.text!, div);
+          haptic("reaction");
+        }, delayMs);
+      };
+
+      // ── Native Context Menu (Right-click / Mac Two-finger tap)
+      div.addEventListener("contextmenu", (e) => {
+        if (!msg.text) return;
+        if (hasInteractiveSelectionWithin(div)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        startUnifiedCopyPop(e.clientX, e.clientY, 0, 0);
+      }, { signal });
+
+      // ── Tracked Long-Press (Mouse/Touch hold)
+      div.addEventListener("pointerdown", (e) => {
+        if (!msg.text || e.button !== 0 || !e.isPrimary) return;
+        if (hasInteractiveSelectionWithin(div)) return;
+        if (isCopyMenuVisible()) {
+          hideCopyMenu();
+          return;
+        }
+        activeHoldPointerId = e.pointerId;
+        holdStartX = e.clientX; holdStartY = e.clientY;
+        const isTouchLike = e.pointerType === "touch" || e.pointerType === "pen";
+        startUnifiedCopyPop(e.clientX, e.clientY, isTouchLike ? 440 : 520, 110);
+      }, { signal });
+
+      div.addEventListener("pointerup", (e) => {
+        if (activeHoldPointerId !== -1 && e.pointerId !== activeHoldPointerId) return;
+        cancelActiveHold();
+      }, { signal });
+      div.addEventListener("pointercancel", (e) => {
+        if (activeHoldPointerId !== -1 && e.pointerId !== activeHoldPointerId) return;
+        cancelActiveHold();
+      }, { signal });
+      div.addEventListener("pointerleave", (e) => {
+        if (activeHoldPointerId !== -1 && e.pointerId !== activeHoldPointerId) return;
+        cancelActiveHold();
+      }, { signal });
+      div.addEventListener("pointermove", (e) => {
+        if (activeHoldPointerId !== -1 && e.pointerId !== activeHoldPointerId) return;
+        if (activeHoldTimer && (Math.abs(e.clientX - holdStartX) > 5 || Math.abs(e.clientY - holdStartY) > 5)) {
+          cancelActiveHold();
+        }
+      }, { signal });
+
       div.appendChild(textEl);
     } else if (isRenderableAudioMessage(msg)) {
       const fileData = msg.fileData;
@@ -3075,7 +3445,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
             }
           } else {
             // Unused fallback, since we only send ADPCM now
-            const actx = new AudioContext();
+            const actx = createAudioContext();
+            if (!actx) throw new Error("audio decode unavailable");
             const decoded = await actx.decodeAudioData(abCopy.slice(0));
             pcmData = decoded.getChannelData(0);
             durationSeconds = decoded.duration;
@@ -3268,92 +3639,92 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const allowReactions = !isTransientDrawPreviewMessage(div);
       if (allowReactions) {
 
-      // ── Reaction shelf — hidden until message is tapped ──
-      // The shelf has zero visual presence at rest; CSS transitions it in
-      // when data-shelf-open is present on the parent .wl-msg element.
-      const shelf = document.createElement("div");
-      shelf.className = "wl-react-shelf";
-      shelf.setAttribute("role", "toolbar");
-      shelf.setAttribute("aria-label", "React");
+        // ── Reaction shelf — hidden until message is tapped ──
+        // The shelf has zero visual presence at rest; CSS transitions it in
+        // when data-shelf-open is present on the parent .wl-msg element.
+        const shelf = document.createElement("div");
+        shelf.className = "wl-react-shelf";
+        shelf.setAttribute("role", "toolbar");
+        shelf.setAttribute("aria-label", "React");
 
-      // Predefined + last-used quick-picks
-      const predefined = ["👍", "👎", "❤️", "😂"];
-      const lastUsed = localStorage.getItem("wl-last-reaction");
-      if (lastUsed && !predefined.includes(lastUsed)) predefined.push(lastUsed);
+        // Predefined + last-used quick-picks
+        const predefined = ["👍", "👎", "❤️", "😂"];
+        const lastUsed = localStorage.getItem("wl-last-reaction");
+        if (lastUsed && !predefined.includes(lastUsed)) predefined.push(lastUsed);
 
-      predefined.forEach((emoji) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "wl-react-btn";
-        btn.textContent = emoji;
-        btn.setAttribute("aria-label", `React with ${emoji}`);
-        btn.addEventListener("click", (e) => {
+        predefined.forEach((emoji) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "wl-react-btn";
+          btn.textContent = emoji;
+          btn.setAttribute("aria-label", `React with ${emoji}`);
+          btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            toggleSelfReaction(msg.msgId!, emoji);
+            localStorage.setItem("wl-last-reaction", emoji);
+            div.removeAttribute("data-shelf-open");
+          }, { signal });
+          shelf.appendChild(btn);
+        });
+
+        // OS emoji picker button + offscreen input
+        const emojiBtn = document.createElement("button");
+        emojiBtn.type = "button";
+        emojiBtn.className = "wl-react-btn wl-react-btn--more";
+        emojiBtn.textContent = "＋";
+        emojiBtn.setAttribute("aria-label", "Pick any emoji");
+
+        const hiddenInput = document.createElement("input");
+        hiddenInput.type = "text";
+        hiddenInput.setAttribute("aria-hidden", "true");
+        hiddenInput.style.cssText = "position:absolute;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;";
+        hiddenInput.addEventListener("input", (e) => {
           e.stopPropagation();
-          toggleSelfReaction(msg.msgId!, emoji);
-          localStorage.setItem("wl-last-reaction", emoji);
-          div.removeAttribute("data-shelf-open");
+          const raw = hiddenInput.value;
+          hiddenInput.value = "";
+          if (!raw || msg.msgId === undefined) return;
+          const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
+          const first = seg[Symbol.iterator]().next().value;
+          const emoji = first?.segment ?? raw[0];
+          if (emoji) {
+            toggleSelfReaction(msg.msgId!, emoji);
+            localStorage.setItem("wl-last-reaction", emoji);
+            div.removeAttribute("data-shelf-open");
+          }
         }, { signal });
-        shelf.appendChild(btn);
-      });
 
-      // OS emoji picker button + offscreen input
-      const emojiBtn = document.createElement("button");
-      emojiBtn.type = "button";
-      emojiBtn.className = "wl-react-btn wl-react-btn--more";
-      emojiBtn.textContent = "＋";
-      emojiBtn.setAttribute("aria-label", "Pick any emoji");
+        emojiBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          hiddenInput.focus();
+        }, { signal });
 
-      const hiddenInput = document.createElement("input");
-      hiddenInput.type = "text";
-      hiddenInput.setAttribute("aria-hidden", "true");
-      hiddenInput.style.cssText = "position:absolute;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;";
-      hiddenInput.addEventListener("input", (e) => {
-        e.stopPropagation();
-        const raw = hiddenInput.value;
-        hiddenInput.value = "";
-        if (!raw || msg.msgId === undefined) return;
-        const seg = new Intl.Segmenter().segment(raw.replace(/\s/g, ""));
-        const first = seg[Symbol.iterator]().next().value;
-        const emoji = first?.segment ?? raw[0];
-        if (emoji) {
-          toggleSelfReaction(msg.msgId!, emoji);
-          localStorage.setItem("wl-last-reaction", emoji);
-          div.removeAttribute("data-shelf-open");
-        }
-      }, { signal });
+        shelf.appendChild(emojiBtn);
+        shelf.appendChild(hiddenInput);
+        div.appendChild(shelf);
 
-      emojiBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        hiddenInput.focus();
-      }, { signal });
-
-      shelf.appendChild(emojiBtn);
-      shelf.appendChild(hiddenInput);
-      div.appendChild(shelf);
-
-      // Tap the message bubble to reveal / hide the shelf.
-      // One shelf at a time: close the previously open one first.
-      div.addEventListener("click", (e) => {
-        // Ignore clicks on shelf buttons themselves (handled above)
-        if ((e.target as HTMLElement).closest(".wl-react-shelf")) return;
-        // Ignore clicks on reaction pills
-        if ((e.target as HTMLElement).closest(".wl-reaction")) return;
-        // Ignore clicks on audio player (play button, download button, waveform)
-        if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
-        // Ignore clicks on file attachments
-        if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
-        // Ignore lightbox/download controls, but allow media info-bar taps
-        // (including finalized draw cards) to toggle the reaction shelf.
-        if ((e.target as HTMLElement).closest(".wl-media-thumb")) return;
-        if ((e.target as HTMLElement).closest(".wl-media-dl")) return;
-        // Ignore clicks on timestamps (which toggle time format)
-        if ((e.target as HTMLElement).closest(".wl-msg-time")) return;
-        const isOpen = div.hasAttribute("data-shelf-open");
-        // Close any globally open shelf
-        const prev = opts.chatMessages.querySelector("[data-shelf-open]");
-        if (prev) prev.removeAttribute("data-shelf-open");
-        if (!isOpen) div.setAttribute("data-shelf-open", "");
-      }, { signal });
+        // Tap the message bubble to reveal / hide the shelf.
+        // One shelf at a time: close the previously open one first.
+        div.addEventListener("click", (e) => {
+          // Ignore clicks on shelf buttons themselves (handled above)
+          if ((e.target as HTMLElement).closest(".wl-react-shelf")) return;
+          // Ignore clicks on reaction pills
+          if ((e.target as HTMLElement).closest(".wl-reaction")) return;
+          // Ignore clicks on audio player (play button, download button, waveform)
+          if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
+          // Ignore clicks on file attachments
+          if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
+          // Ignore lightbox/download controls, but allow media info-bar taps
+          // (including finalized draw cards) to toggle the reaction shelf.
+          if ((e.target as HTMLElement).closest(".wl-media-thumb")) return;
+          if ((e.target as HTMLElement).closest(".wl-media-dl")) return;
+          // Ignore clicks on timestamps (which toggle time format)
+          if ((e.target as HTMLElement).closest(".wl-msg-time")) return;
+          const isOpen = div.hasAttribute("data-shelf-open");
+          // Close any globally open shelf
+          const prev = opts.chatMessages.querySelector("[data-shelf-open]");
+          if (prev) prev.removeAttribute("data-shelf-open");
+          if (!isOpen) div.setAttribute("data-shelf-open", "");
+        }, { signal });
       } else {
         div.dataset.reactionsDisabled = "true";
       }
@@ -4675,13 +5046,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const code = (el.textContent ?? "").trim();
       if (!code) return;
       try {
-        if (navigator.share) {
+        if (liveCapabilities.shareSheet) {
           await navigator.share({ text: code });
+          appendLog(`${label} shared`);
         } else {
           await copyToClipboard(code);
           flashText(btn, "Copied");
+          appendLog(`${label} copied to clipboard`);
         }
-        appendLog(`${label} shared`);
       } catch {
         appendLog("share cancelled or unavailable");
       }
@@ -4852,6 +5224,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   opts.joinPasteBtn.addEventListener("click", async () => {
+    if (!liveCapabilities.clipboardRead) {
+      pulsePasteState(false);
+      appendLog("clipboard paste unavailable here");
+      return;
+    }
     try {
       const text = await navigator.clipboard.readText();
       const ok = applyJoinOfferCandidate(text, "paste");
@@ -4866,6 +5243,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }, { signal });
 
   opts.joinQrImageBtn.addEventListener("click", () => {
+    if (!liveCapabilities.qrImageDecode) {
+      setJoinQrStatus("Image QR import unavailable.");
+      return;
+    }
     opts.joinQrFileInput.click();
   }, { signal });
 
@@ -5027,8 +5408,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (micPointerId !== -1) return;           // already tracking a pointer
 
     // Create and resume AudioContext synchronously with user gesture
-    if (!micAudioCtx) micAudioCtx = new AudioContext();
-    if (micAudioCtx.state === "suspended") void micAudioCtx.resume();
+    if (!micAudioCtx) micAudioCtx = createAudioContext();
+    if (micAudioCtx?.state === "suspended") void micAudioCtx.resume();
 
     e.preventDefault();
     micPointerId = e.pointerId;
@@ -5245,10 +5626,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   void getQrScannerCapability().then((capability) => {
     if (aborted()) return;
     liveQrSupported = capability.supported;
+    liveQrUnavailableLabel = getQrCapabilityLabel(capability.reason);
     setJoinQrUiState(false);
-    if (!capability.supported) {
-      opts.joinQrScanBtn.title = "Camera QR scan unavailable in this browser";
-    }
+    refreshCapabilityUi();
   });
 
   showPhase(opts.liveSection);

@@ -613,10 +613,89 @@ export function decode0DBitM(data: Uint8Array, len: number): Uint8Array {
     return out;
 }
 
+// --- Möbius order-2: conditions bit k on same-bit in BOTH the prev and prev-prev byte ---
+// captures AR(2) patterns in bit space: oscillating signs (audio PCM), correlated residuals.
+// slot = (pb1 << 1) | pb2: 4-tap history per bit position → 4×256 tree contexts.
+// 4 × 256 × 2 = 2048 Uint32 (vs 1024 for BitM).
+
+class BitContextModelM2 {
+    private counts: Uint32Array;  // (4 × 256) × 2 = 2048
+
+    constructor() {
+        this.counts = new Uint32Array(2048);
+        for (let i = 0; i < 1024; i++) {
+            this.counts[i * 2]     = 1;
+            this.counts[i * 2 + 1] = 1;
+        }
+    }
+
+    encodeByte(enc: ArithEncoder, byte: number, prev1: number, prev2: number): void {
+        let ctx = 1;
+        for (let k = 7; k >= 0; k--) {
+            const bit    = (byte  >> k) & 1;
+            const pb1    = (prev1 >> k) & 1;
+            const pb2    = (prev2 >> k) & 1;
+            const slot   = (pb1 << 1) | pb2;  // 0..3: (p1_bit, p2_bit) history
+            const idx    = (slot * 256 + ctx) * 2;
+            const c0     = this.counts[idx];
+            const c1     = this.counts[idx + 1];
+            const total  = c0 + c1;
+            if (bit === 0) enc.encode(0, c0, total);
+            else           enc.encode(c0, total, total);
+            this.counts[idx + bit]++;
+            ctx = (ctx << 1) | bit;
+        }
+    }
+
+    decodeByte(dec: ArithDecoder, prev1: number, prev2: number): number {
+        let ctx = 1, byte = 0;
+        for (let k = 7; k >= 0; k--) {
+            const pb1    = (prev1 >> k) & 1;
+            const pb2    = (prev2 >> k) & 1;
+            const slot   = (pb1 << 1) | pb2;
+            const idx    = (slot * 256 + ctx) * 2;
+            const c0     = this.counts[idx];
+            const c1     = this.counts[idx + 1];
+            const total  = c0 + c1;
+            const offset = dec.getCDF(total);
+            const bit    = offset >= c0 ? 1 : 0;
+            if (bit === 0) dec.advance(0, c0, total);
+            else           dec.advance(c0, total, total);
+            this.counts[idx + bit]++;
+            byte = (byte << 1) | bit;
+            ctx  = (ctx << 1) | bit;
+        }
+        return byte;
+    }
+}
+
+export function encode0DBitM2(data: Uint8Array): Uint8Array {
+    const model = new BitContextModelM2();
+    const enc   = new ArithEncoder();
+    let prev1 = 0, prev2 = 0;
+    for (const sym of data) {
+        model.encodeByte(enc, sym, prev1, prev2);
+        prev2 = prev1; prev1 = sym;
+    }
+    return enc.flush();
+}
+
+export function decode0DBitM2(data: Uint8Array, len: number): Uint8Array {
+    const model = new BitContextModelM2();
+    const dec   = new ArithDecoder(data);
+    const out   = new Uint8Array(len);
+    let prev1 = 0, prev2 = 0;
+    for (let i = 0; i < len; i++) {
+        out[i] = model.decodeByte(dec, prev1, prev2);
+        prev2 = prev1; prev1 = out[i];
+    }
+    return out;
+}
+
 // --- primary encode0D / decode0D ---
 //
 // tries all coders, picks the smallest, prepends a 1-byte mode flag.
-// header byte: 0x00=Rice, 0x01=Bit0, 0x02=Bit1, 0x03=BitM (Möbius), 0xFF=raw.
+// header byte: 0x00=Rice, 0x01=Bit0, 0x02=Bit1, 0x03=BitM (Möbius), 0x04=BitM2 (order-2), 0xFF=raw.
 // guarantees output ≤ input + 1 byte.
 
 export function encode0D(data: Uint8Array): Uint8Array {
@@ -627,6 +706,7 @@ export function encode0D(data: Uint8Array): Uint8Array {
         { mode: 0x01, encoded: encode0DBit(data) },
         { mode: 0x02, encoded: encode0DBitO1(data) },
         { mode: 0x03, encoded: encode0DBitM(data) },
+        { mode: 0x04, encoded: encode0DBitM2(data) },
     ];
 
     // find smallest
@@ -657,6 +737,7 @@ export function decode0D(data: Uint8Array, len: number): Uint8Array {
         case 0x01: return decode0DBit(payload, len);
         case 0x02: return decode0DBitO1(payload, len);
         case 0x03: return decode0DBitM(payload, len);
+        case 0x04: return decode0DBitM2(payload, len);
         default:   return decode0DRice(payload, len);  // fallback
     }
 }

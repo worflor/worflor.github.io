@@ -1,5 +1,6 @@
 ---
 import "../styles/global.css";
+import "katex/dist/katex.min.css";
 import { Image } from "astro:assets";
 import Icon from "../components/Icon.astro";
 import { ClientRouter } from "astro:transitions";
@@ -245,7 +246,6 @@ const isContactPage = Astro.url.pathname === "/contact";
     )}
     {isContactPage && <link rel="preconnect" href="https://formsubmit.co" crossorigin />}
     {isContactPage && <link rel="dns-prefetch" href="//formsubmit.co" />}
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.20/dist/katex.min.css" integrity="sha384-sMefwaIGs//i0Qj5m1QEEebh1nBrsZgY+2S/Zc5tIehH2uEwS1hF4QZlDk8A/rN/" crossorigin="anonymous">
     <meta name="generator" content={Astro.generator} />
     <title>{seo.title}</title>
     <meta name="description" content={seo.description} />
