@@ -145,6 +145,45 @@ export function compressP256(uncompressed: Uint8Array): Uint8Array {
   return compressed;
 }
 
+// P-256 curve constants for point decompression
+const P256_P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFFn;
+const P256_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604Bn;
+const P256_A = P256_P - 3n;
+// p ≡ 3 (mod 4), so modular square root is base^((p+1)/4)
+const P256_SQRT_EXP = (P256_P + 1n) >> 2n;
+
+function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
+  let result = 1n;
+  base = ((base % mod) + mod) % mod;
+  while (exp > 0n) {
+    if (exp & 1n) result = (result * base) % mod;
+    exp >>= 1n;
+    base = (base * base) % mod;
+  }
+  return result;
+}
+
+/** Decompress a compressed P-256 public key (33B, 0x02/0x03||x) to 65B (0x04||x||y). */
+export function decompressP256(compressed: Uint8Array): Uint8Array {
+  if (compressed.length !== 33 || (compressed[0] !== 0x02 && compressed[0] !== 0x03)) {
+    throw new Error("invalid compressed P-256 point");
+  }
+  const wantOdd = compressed[0] === 0x03;
+  // read x as big-endian BigInt
+  let x = 0n;
+  for (let i = 1; i < 33; i++) x = (x << 8n) | BigInt(compressed[i]);
+  // y² = x³ + ax + b (mod p)
+  const ySquared = (modPow(x, 3n, P256_P) + ((P256_A * x) % P256_P) + P256_B) % P256_P;
+  let y = modPow((ySquared + P256_P) % P256_P, P256_SQRT_EXP, P256_P);
+  if (((y & 1n) === 1n) !== wantOdd) y = P256_P - y;
+  // build uncompressed point
+  const out = new Uint8Array(65);
+  out[0] = 0x04;
+  for (let i = 32; i >= 1; i--) { out[i] = Number(x & 0xFFn); x >>= 8n; }
+  for (let i = 64; i >= 33; i--) { out[i] = Number(y & 0xFFn); y >>= 8n; }
+  return out;
+}
+
 /* ── Sealed CTRL: lightweight AES-GCM with 32-bit tag + implicit nonce ── */
 
 function ctrlNonce(counter: number, directionBit: number): Uint8Array {

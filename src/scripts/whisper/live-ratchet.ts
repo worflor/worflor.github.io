@@ -10,7 +10,7 @@
  */
 
 import { toHex, toArrayBuffer } from "./wasm";
-import { hkdf, kdfChainDirect, compressP256 } from "./live-crypto";
+import { hkdf, kdfChainDirect, compressP256, decompressP256 } from "./live-crypto";
 
 /** Pre-encoded constant — avoids per-call TextEncoder allocations */
 const KDF_INFO_RATCHET = new TextEncoder().encode("whisper-ratchet");
@@ -69,8 +69,10 @@ export async function generateDHKeyPair(): Promise<RatchetKeyPair> {
 }
 
 async function dhExchange(privateKey: CryptoKey, peerPublicRaw: Uint8Array): Promise<Uint8Array> {
+  // compressed (33B) keys must be decompressed for WebCrypto importKey("raw")
+  const keyBytes = peerPublicRaw.length === 33 ? decompressP256(peerPublicRaw) : peerPublicRaw;
   const peerKey = await crypto.subtle.importKey(
-    "raw", toArrayBuffer(peerPublicRaw), { name: "ECDH", namedCurve: "P-256" }, false, [],
+    "raw", toArrayBuffer(keyBytes), { name: "ECDH", namedCurve: "P-256" }, false, [],
   );
   const bits = await crypto.subtle.deriveBits(
     { name: "ECDH", public: peerKey }, privateKey, 256,

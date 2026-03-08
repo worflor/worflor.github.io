@@ -30,6 +30,7 @@ import {
   aesGcmDecrypt,
   kdfChainDirect,
   compressP256,
+  decompressP256,
   importCtrlKey,
   sealCtrl,
   openCtrl,
@@ -1168,8 +1169,10 @@ export class WhisperLiveSession {
       await this.keyReady;
       if (!this.ephPrivateKey) throw new Error("No ephemeral private key");
 
+      // peer sends compressed (33B) — WebCrypto importKey("raw") needs uncompressed (65B)
+      const peerPubUncompressed = peerPubKeyRaw.length === 33 ? decompressP256(peerPubKeyRaw) : peerPubKeyRaw;
       const peerPubKey = await crypto.subtle.importKey(
-        "raw", toArrayBuffer(peerPubKeyRaw), { name: "ECDH", namedCurve: "P-256" }, false, [],
+        "raw", toArrayBuffer(peerPubUncompressed), { name: "ECDH", namedCurve: "P-256" }, false, [],
       );
       const sharedBits = await crypto.subtle.deriveBits(
         { name: "ECDH", public: peerPubKey }, this.ephPrivateKey, 256,
