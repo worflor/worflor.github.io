@@ -1329,16 +1329,21 @@ export class WhisperLiveSession {
       const dirBit = this.isOfferer ? 1 : 0; // peer's direction is opposite
       const [newChain, msgKey] = await kdfChainDirect(this.ctrlChainRecv);
       const aad = this.ctrlChainRecv.slice();  // capture old chain key as AAD before wipe
-      this.ctrlChainRecv.fill(0);
-      this.ctrlChainRecv = newChain;
       const ck = await importCtrlKey(msgKey);
       msgKey.fill(0);
       let inner: Uint8Array;
       try {
         inner = await openCtrl(ck, ciphertext, this.ctrlRecvCounter, dirBit, aad);
-      } finally {
-        aad.fill(0);  // always wipe — auth failures are normal, key must not linger
+      } catch (e) {
+        // decrypt failed — wipe speculative chain, leave current chain intact
+        newChain.fill(0);
+        aad.fill(0);
+        throw e;
       }
+      aad.fill(0);
+      // commit: decrypt succeeded, advance chain
+      this.ctrlChainRecv.fill(0);
+      this.ctrlChainRecv = newChain;
       this.ctrlRecvCounter++;
       if (inner.length === 0) return;
       // Reconstruct as if it were a raw frame and re-dispatch
@@ -1409,6 +1414,7 @@ export class WhisperLiveSession {
       // try loop-derived skipped key first (defense-in-depth; never fires with ordered SCTP).
       let messageKey = this.tryLoopSkippedKey(pubKeyHex, header.counter);
       let didDHRatchet = false;
+      let nextLoopRecv: LoopState | undefined;
 
       if (!messageKey) {
         // check if this is a new DH ratchet key
@@ -1426,16 +1432,15 @@ export class WhisperLiveSession {
         }
 
         // advance loop and ratchet counter to the message's position
+        // (with ordered SCTP, skip count is always 0 — loop body never executes)
         await this.skipMessagesWithLoop(header.counter);
 
         if (!this.loopStateRecv) throw new Error("No receiving loop state");
 
-        // derive this message's key via loopStep (advances chain, primes counts)
-        const { next: nextLoopRecv, messageKey: mk } = await loopStep(this.loopStateRecv);
-        loopWipe(this.loopStateRecv);
-        this.loopStateRecv = nextLoopRecv;
-        this.ratchetState.nRecv++;
-        messageKey = mk;
+        // derive this message's key via loopStep — speculative, not committed yet
+        const stepResult = await loopStep(this.loopStateRecv);
+        nextLoopRecv = stepResult.next;
+        messageKey = stepResult.messageKey;
       }
 
       const aad = complete.subarray(0, headerSize);
@@ -1454,9 +1459,18 @@ export class WhisperLiveSession {
           this.cleanupConnection();
           return;
         }
+        // non-DH path: wipe speculative loop state, leave current state intact
+        if (nextLoopRecv) loopWipe(nextLoopRecv);
         throw decryptErr;
       }
       messageKey.fill(0);
+
+      // commit loop state — decrypt succeeded
+      if (nextLoopRecv && this.loopStateRecv) {
+        loopWipe(this.loopStateRecv);
+        this.loopStateRecv = nextLoopRecv;
+        this.ratchetState.nRecv++;
+      }
 
       // decompress: first 4 bytes are decodedLen (LE uint32), rest is loop-encoded plaintext
       if (compressedPayload.length < 4) throw new Error("ciphertext too short");

@@ -172,9 +172,11 @@ export function decompressP256(compressed: Uint8Array): Uint8Array {
   // read x as big-endian BigInt
   let x = 0n;
   for (let i = 1; i < 33; i++) x = (x << 8n) | BigInt(compressed[i]);
+  if (x >= P256_P) throw new Error("invalid P-256 point: x not in field");
   // y² = x³ + ax + b (mod p)
   const ySquared = (modPow(x, 3n, P256_P) + ((P256_A * x) % P256_P) + P256_B) % P256_P;
   let y = modPow((ySquared + P256_P) % P256_P, P256_SQRT_EXP, P256_P);
+  if ((y * y) % P256_P !== ySquared) throw new Error("invalid P-256 point: not on curve");
   if (((y & 1n) === 1n) !== wantOdd) y = P256_P - y;
   // build uncompressed point
   const out = new Uint8Array(65);

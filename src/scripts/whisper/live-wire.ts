@@ -105,8 +105,10 @@ export function parseHeader(data: Uint8Array): {
   salt: Uint8Array;
   ciphertext: Uint8Array;
 } {
+  if (data.length < 1) throw new Error("parseHeader: empty data");
   const flags = data[0];
   if (flags & LIVE_FLAG_SAME_KEY) {
+    if (data.length < HEADER_SIZE_COMPACT) throw new Error("parseHeader: truncated compact header");
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     return {
       flags,
@@ -117,6 +119,7 @@ export function parseHeader(data: Uint8Array): {
       ciphertext: data.subarray(COMPACT_OFFSET.CIPHERTEXT),
     };
   }
+  if (data.length < HEADER_SIZE) throw new Error("parseHeader: truncated full header");
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   return {
     flags,

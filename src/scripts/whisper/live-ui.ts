@@ -690,9 +690,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const tag = document.createElement("span");
       tag.className = "wl-msg-edited";
       tag.textContent = "(edited)";
-      const timeEl = el.querySelector(".wl-msg-time");
-      if (timeEl) timeEl.appendChild(tag);
-      else el.appendChild(tag);
+      el.appendChild(tag);
     }
   }
 

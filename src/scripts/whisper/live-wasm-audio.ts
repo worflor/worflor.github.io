@@ -8,10 +8,10 @@
  *
  *   pred = K·prev₁ − G·prev₂
  *
- * K (tension) and G (friction) are fitted per 32-sample block via two-pass
- * SIMD linear regression, then quantized to i16 (×16384). a cubic mesh blend
- * anchors the prediction to the last sample of the previous block, eliminating
- * the boundary discontinuity. zigzag-coded residuals pack at variable bit-width.
+ * K (tension) and G (friction) are fitted per 32-sample block via a scalar
+ * joint 2×2 normal-equation regression: for a pure sinusoid at frequency ω,
+ * the solution is exactly K = 2cos(ω), G = 1. residuals are Golomb-Rice coded
+ * with a per-block adaptive M derived from mean residual magnitude.
  *
  * stereo uses Mid/Side decomposition: Mid = (L+R)/2, Side = L−R, each channel
  * carrying its own K/G pair so the soundstage is preserved, not averaged out.
@@ -19,8 +19,8 @@
  * the codec emits raw WebAssembly bytecode from TypeScript arrays; no
  * toolchain, no .wasm files, no build step.
  *
- * wire format per block (61-bit header + variable payload):
- *   [K:16][G:16][W:5][anchor_delta:24] [delta₀:W]...[delta₃₁:W]
+ * wire format per block (36-bit header + variable payload):
+ *   [K:16][G:16][M:4] [Rice(M)-coded residuals₀..₃₁]
  *
  * encryption: ChaCha20 stream cipher + SipHash-lite 64-bit MAC.
  * quality: Q=80 → scalar=4096 (~79 dB SNR). Q=100 → lossless float32 passthrough.
@@ -94,6 +94,7 @@ const Op = {
     I32_GT_S: 0x4a,
     I32_GT_U: 0x4b,
     I32_GE_S: 0x4e,
+    I32_GE_U: 0x4f,
     I32_CLZ: 0x67,
     I32_ADD: 0x6a,
     I32_SUB: 0x6b,
@@ -107,9 +108,12 @@ const Op = {
     I32_SHR_U: 0x76,
     I32_ROTL: 0x77,
     // I64 Math
+    I64_AND: 0x83,
     I64_OR: 0x84,
+    I64_XOR: 0x85,
     I64_SHL: 0x86,
     I64_SHR_U: 0x88,
+    I64_CTZ: 0x7a,
     // F32 Math
     F32_ABS: 0x8b,
     F32_NEAREST: 0x90,
@@ -117,6 +121,7 @@ const Op = {
     F32_SUB: 0x93,
     F32_MUL: 0x94,
     F32_DIV: 0x95,
+    F32_LT: 0x5d,
     F32_MIN: 0x96,
     F32_MAX: 0x97,
     // Conversions
@@ -180,6 +185,9 @@ const I32_WRAP_I64 = [Op.I32_WRAP_I64];
 const I64_SHL = [Op.I64_SHL];
 const I64_SHR_u = [Op.I64_SHR_U];
 const I64_OR = [Op.I64_OR];
+const I64_XOR_op = [Op.I64_XOR];
+const I64_AND_op = [Op.I64_AND];
+const I64_CTZ_op = [Op.I64_CTZ];
 const CI64 = (v: number) => [Op.I64_CONST, ...encodeSLEB(v)];
 
 const V128 = Op.V128;
@@ -232,6 +240,7 @@ const SHR_s = [Op.I32_SHR_S];
 const SHR_u = [Op.I32_SHR_U];
 const ROTL = [Op.I32_ROTL];
 const AND = [Op.I32_AND];
+const OR = [Op.I32_OR];
 const XOR = [Op.I32_XOR];
 const CLZ = [Op.I32_CLZ];
 
@@ -241,12 +250,14 @@ const LT_u = [Op.I32_LT_U];
 const GT_s = [Op.I32_GT_S];
 const GT_u = [Op.I32_GT_U];
 const GE_s = [Op.I32_GE_S];
+const GE_u = [Op.I32_GE_U];
 
 const F32_NEAREST = [Op.F32_NEAREST];
 const F32_ADD = [Op.F32_ADD];
 const F32_SUB = [Op.F32_SUB];
 const F32_MUL = [Op.F32_MUL];
 const F32_DIV = [Op.F32_DIV];
+const F32_LT = [Op.F32_LT];
 const F32_MIN = [Op.F32_MIN];
 const F32_MAX = [Op.F32_MAX];
 
@@ -355,34 +366,36 @@ function buildChaChaBlock(stateAddr: number, v: number[]): number[] {
 /**
  * build the WASM encode function body.
  *
- * four passes per block per channel:
- *   PASS 1: SIMD regression for K (tension)      — 4-wide, splat-lag
- *   PASS 2: SIMD regression for G (friction)     — 4-wide, uses K from pass 1
- *   PASS 3: entropy scan (determines W_curr)     — scalar, tracks max zigzag
- *   PASS 4: emit deltas at W_curr bits each      — scalar, identical predictor to pass 3
+ * two passes per block per channel:
+ *   PASS KG: scalar joint 2×2 regression — fits K and G simultaneously via
+ *            Cramer's rule; K conditional 1D fallback for near-DC (det < 1);
+ *            G always re-derived as 1D conditional on K (gives G=1 for any
+ *            pure sinusoid, and gives the correct G when K is clamped).
+ *   PASS 3:  entropy scan — runs the predictor forward to sum zigzag residuals,
+ *            derives Rice parameter M = floor(log2(mean_z)).
+ *   PASS 4:  emit — same predictor, Rice(M)-codes each residual.
  *
- * K and G are linearly interpolated from prevK/prevG to K/G across the block
- * for smooth transitions. a cubic Hermite mesh blends the oscillator prediction
- * toward the block's last sample (anchor), producing a continuous bridge.
+ * K and G are held flat across the block (no within-block interpolation),
+ * which is consistent with the regression objective.
  */
 function buildEncodeBody(): number[] {
     const pcmPtr = 0, numSamples = 1, outPtr = 2, scalar_arg = 3, numChannels = 4; // args
 
     let next_i32 = 5;
-    const packedLen = next_i32++, i = next_i32++, j = next_i32++, p1_sim = next_i32++, p2_sim = next_i32++;
+    const packedLen = next_i32++, i = next_i32++, p1_sim = next_i32++, p2_sim = next_i32++;
     const i32_val = next_i32++, delta = next_i32++, z = next_i32++, mz = next_i32++, W_curr = next_i32++, temp = next_i32++;
     const crypto_i = next_i32++, crypto_words = next_i32++, cipher = next_i32++, idx = next_i32++, sample_count = next_i32++;
     const mac0 = next_i32++, mac1 = next_i32++, prev1 = next_i32++, prev2 = next_i32++, block_start = next_i32++, block_end = next_i32++;
     const v = Array.from({ length: 16 }, () => next_i32++);
     const K = next_i32++, G = next_i32++, bit_cnt = next_i32++, ch = next_i32++;
-    const s31_anchor = next_i32++, pred_int = next_i32++, prevK = next_i32++, prevG = next_i32++, ch_state_ptr = next_i32++;
+    const s31_anchor = next_i32++, pred_int = next_i32++, ch_state_ptr = next_i32++;
     const i32_locals_count = next_i32 - 5;
 
     let next_f32 = next_i32;
     const framePeak = next_f32++, f32_val = next_f32++, sum_p1_p1 = next_f32++, sum_p1_val = next_f32++;
     const sum_p2_p2 = next_f32++, sum_p2_err = next_f32++, K_float = next_f32++, G_float = next_f32++;
     const f32_x = next_f32++, f32_w = next_f32++, f32_scalar = next_f32++;
-    const left = next_f32++, right = next_f32++, f32_span = next_f32++;
+    const left = next_f32++, right = next_f32++;
     const f32_locals_count = next_f32 - next_i32;
 
     let next_i64 = next_f32;
@@ -390,9 +403,7 @@ function buildEncodeBody(): number[] {
     const i64_locals_count = next_i64 - next_f32;
 
     let next_v128 = next_i64;
-    const v_sum_p1_p1 = next_v128++, v_sum_p1_val = next_v128++, v_sum_p2_p2 = next_v128++, v_sum_p2_err = next_v128++;
-    const v_p1 = next_v128++, v_p2 = next_v128++, v_val = next_v128++, v_tmp1 = next_v128++, v_tmp2 = next_v128++, v_peak = next_v128++;
-    const v_scalar = next_v128++;
+    const v_peak = next_v128++; // only v128 needed in encoder (peak scan)
     const v128_locals_count = next_v128 - next_i64;
 
     // pack value into LSB-first bit buffer, drain complete bytes to output
@@ -472,129 +483,87 @@ function buildEncodeBody(): number[] {
         // Calculate channel state pointer
         ...CI32(ENC_STATE_ADDR + 144), ...GET(ch), ...CI32(4), ...SHL, ...ADD, ...SET(ch_state_ptr),
 
-        // Load channel state
+        // Load channel state (prev1/prev2 seed the regression and predictor)
         ...GET(ch_state_ptr), ...LOAD32(2, 0), ...SET(prev1),
         ...GET(ch_state_ptr), ...CI32(4), ...ADD, ...LOAD32(2, 0), ...SET(prev2),
-        ...GET(ch_state_ptr), ...CI32(8), ...ADD, ...LOAD32(2, 0), ...SET(prevK),
-        ...GET(ch_state_ptr), ...CI32(12), ...ADD, ...LOAD32(2, 0), ...SET(prevG),
 
-        // PASS 1: FIT TENSION (K)
-        ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p1_p1),
-        ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p1_val),
-        ...GET(prev1), ...SET(p1_sim),
-        ...GET(prev2), ...SET(p2_sim),
+        // ── PASS KG: scalar joint 2×2 regression ──────────────────────────────
+        // Solves the normal equations for pred = K·p1 − G·p2 simultaneously.
+        // For a pure sinusoid at any frequency: K = 2cos(ω), G = 1 — exact.
+        //
+        //   system: [s11  s12][K] = [sv1]   s11=Σp1², s22=Σp2², s12=Σp1p2
+        //           [s12  s22][G]   [sv2]   sv1=Σp1·val, sv2=Σp2·val
+        //   solution (Cramer): det = s11·s22 − s12²
+        //     K = (sv1·s22 − sv2·s12) / det
+        //     G = (sv1·s12 − sv2·s11) / det
+        //   degenerate (DC, silence, det≈0): fallback 1D → K = sv1/s11, G = 0
+        ...GET(scalar_arg), ...F32_CONVERT_I32_S, ...SET(f32_scalar), // quantization scale
 
-        ...GET(framePeak), ...FSPLAT, ...SET(v_peak),
-        ...GET(scalar_arg), ...F32_CONVERT_I32_S, ...FSPLAT, ...SET(v_scalar),
-
-        ...GET(block_start), ...SET(i),
-        ...BLOCK, ...LOOP, // pass 1 loop
-        ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
-
-        // build sample vector (v_val) and state vectors (v_p1, v_p2)
-        ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
-        // stereo vector load & deinterleave
-        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADV128(4, 0), ...SET(v_tmp1), // [L0, R0, L1, R1]
-        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(16), ...ADD, ...ADD, ...LOADV128(4, 0), ...SET(v_tmp2), // [L2, R2, L3, R3]
-
-        ...GET(v_tmp1), ...GET(v_tmp2), ...SHUFFLE([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]), ...SET(v_p1), // vL = [L0..L3]
-        ...GET(v_tmp1), ...GET(v_tmp2), ...SHUFFLE([4, 5, 6, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31]), ...SET(v_p2), // vR = [R0..R3]
-
-        ...GET(ch), ...CI32(0), ...EQ, ...IF,
-        ...GET(v_p1), ...GET(v_p2), ...FADDV, ...F32_CONST(0.5), ...FSPLAT, ...FMULV, ...SET(v_val), // Mid
-        ...ELSE,
-        ...GET(v_p1), ...GET(v_p2), ...FSUBV, ...SET(v_val), // Side
-        ...END,
-        ...ELSE,
-        // mono vector load
-        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADV128(4, 0), ...SET(v_val),
-        ...END,
-
-        // vectorized quantization & state sync
-        ...GET(v_val), ...GET(v_peak), ...FDIVV, ...GET(v_scalar), ...FMULV,
-        ...F32X4_NEAREST_V, ...I32X4_TRUNC_V, ...F32X4_CONVERT_V, ...SET(v_val),
-
-        // build p1, p2 prediction windows
-        ...GET(p1_sim), ...I32_SPLAT, ...F32X4_CONVERT_V, ...SET(v_p1),
-        ...GET(p2_sim), ...I32_SPLAT, ...F32X4_CONVERT_V, ...SET(v_p2),
-
-        // accumulate
-        ...GET(v_sum_p1_p1), ...GET(v_p1), ...GET(v_p1), ...FMULV, ...FADDV, ...SET(v_sum_p1_p1),
-        ...GET(v_sum_p1_val), ...GET(v_p1), ...GET(v_val), ...FMULV, ...FADDV, ...SET(v_sum_p1_val),
-
-        // end of vector: update scalar state for next window
-        // samples are [s0, s1, s2, s3]. new prev1 = s3, prev2 = s2.
-        ...GET(v_val), ...EXTRACT_F32(3), ...I32_TRUNC_SAT_F32_S, ...SET(p1_sim),
-        ...GET(v_val), ...EXTRACT_F32(2), ...I32_TRUNC_SAT_F32_S, ...SET(p2_sim),
-
-        ...GET(i), ...CI32(4), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END, // pass 1 loop
-
-        // horizontal sum & extract K
-        ...f32x4_hsum(v_sum_p1_val), ...SET(sum_p1_val),
-        ...f32x4_hsum(v_sum_p1_p1), ...SET(sum_p1_p1),
-        ...GET(sum_p1_val), ...GET(sum_p1_p1), ...F32_CONST(1e-6), ...F32_ADD, ...F32_DIV, ...SET(K_float),
-        // clamp K
-        ...GET(K_float), ...F32_CONST(-2.0), ...F32_MAX, ...F32_CONST(1.9999), ...F32_MIN, ...SET(K_float), // clamp: K_int ≤ 32766 (avoids 0x8000 sign-flip in 16-bit decode)
-
-        // FIT FRICTION (G)
-        ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p2_p2),
-        ...CV128([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), ...SET(v_sum_p2_err),
+        ...F32_CONST(0.0), ...SET(sum_p1_p1),   // s11 = Σ p1²
+        ...F32_CONST(0.0), ...SET(sum_p2_p2),   // s22 = Σ p2²
+        ...F32_CONST(0.0), ...SET(f32_w),       // s12 = Σ p1·p2
+        ...F32_CONST(0.0), ...SET(sum_p1_val),  // sv1 = Σ p1·val
+        ...F32_CONST(0.0), ...SET(sum_p2_err),  // sv2 = Σ p2·val
         ...GET(prev1), ...SET(p1_sim),
         ...GET(prev2), ...SET(p2_sim),
 
         ...GET(block_start), ...SET(i),
-        ...BLOCK, ...LOOP, // pass 2 loop
+        ...BLOCK, ...LOOP, // regression loop — scalar, one sample at a time
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        // build sample vector (v_val) and state vectors (v_p1, v_p2)
+        // load and quantize sample → i32_val
         ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
-        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADV128(4, 0), ...SET(v_tmp1), // [L0, R0, L1, R1]
-        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(16), ...ADD, ...ADD, ...LOADV128(4, 0), ...SET(v_tmp2), // [L2, R2, L3, R3]
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
+        ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 0), ...SET(right),
+        ...GET(ch), ...CI32(0), ...EQ, ...IF, ...GET(left), ...GET(right), ...F32_ADD, ...F32_CONST(0.5), ...F32_MUL, ...SET(f32_val), ...ELSE, ...GET(left), ...GET(right), ...F32_SUB, ...SET(f32_val), ...END,
+        ...ELSE, ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val), ...END,
+        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(f32_scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        ...GET(v_tmp1), ...GET(v_tmp2), ...SHUFFLE([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]), ...SET(v_p1), // vL
-        ...GET(v_tmp1), ...GET(v_tmp2), ...SHUFFLE([4, 5, 6, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31]), ...SET(v_p2), // vR
+        // temporarily borrow K_float/G_float as fp1/fp2 (overwritten after loop)
+        ...GET(p1_sim), ...F32_CONVERT_I32_S, ...SET(K_float),   // K_float = (float)p1
+        ...GET(p2_sim), ...F32_CONVERT_I32_S, ...SET(G_float),   // G_float = (float)p2
+        ...GET(i32_val), ...F32_CONVERT_I32_S, ...SET(f32_val),  // f32_val = (float)val
 
-        ...GET(ch), ...CI32(0), ...EQ, ...IF,
-        ...GET(v_p1), ...GET(v_p2), ...FADDV, ...F32_CONST(0.5), ...FSPLAT, ...FMULV, ...SET(v_val), // Mid
+        // accumulate 5 cross-products
+        ...GET(sum_p1_p1), ...GET(K_float), ...GET(K_float), ...F32_MUL, ...F32_ADD, ...SET(sum_p1_p1),
+        ...GET(sum_p2_p2), ...GET(G_float), ...GET(G_float), ...F32_MUL, ...F32_ADD, ...SET(sum_p2_p2),
+        ...GET(f32_w), ...GET(K_float), ...GET(G_float), ...F32_MUL, ...F32_ADD, ...SET(f32_w),
+        ...GET(sum_p1_val), ...GET(K_float), ...GET(f32_val), ...F32_MUL, ...F32_ADD, ...SET(sum_p1_val),
+        ...GET(sum_p2_err), ...GET(G_float), ...GET(f32_val), ...F32_MUL, ...F32_ADD, ...SET(sum_p2_err),
+
+        // advance predictor state
+        ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
+        ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
+        ...END, ...END, // end regression loop
+
+        // solve 2×2 system: det = s11·s22 − s12²  (stored in f32_x)
+        ...GET(sum_p1_p1), ...GET(sum_p2_p2), ...F32_MUL,
+        ...GET(f32_w), ...GET(f32_w), ...F32_MUL, ...F32_SUB, ...SET(f32_x), // f32_x = det
+
+        // degenerate case (DC, silence): det < 1 → 1D fallback: K = sv1/s11
+        ...GET(f32_x), ...F32_CONST(1.0), ...F32_LT, ...IF,
+        ...GET(sum_p1_val), ...GET(sum_p1_p1), ...F32_CONST(1.0), ...F32_ADD, ...F32_DIV, ...SET(K_float),
         ...ELSE,
-        ...GET(v_p1), ...GET(v_p2), ...FSUBV, ...SET(v_val), // Side
+        // K from Cramer's rule: K = (sv1·s22 − sv2·s12) / det
+        ...GET(sum_p1_val), ...GET(sum_p2_p2), ...F32_MUL,
+        ...GET(sum_p2_err), ...GET(f32_w), ...F32_MUL, ...F32_SUB,
+        ...GET(f32_x), ...F32_DIV, ...SET(K_float),
         ...END,
-        ...ELSE,
-        ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADV128(4, 0), ...SET(v_val),
-        ...END,
 
-        // vectorized quantization
-        ...GET(v_val), ...GET(v_peak), ...FDIVV, ...GET(v_scalar), ...FMULV,
-        ...F32X4_NEAREST_V, ...I32X4_TRUNC_V, ...F32X4_CONVERT_V, ...SET(v_val),
+        // clamp K to safe range (avoid 0x8000 sign-flip in 16-bit decode)
+        ...GET(K_float), ...F32_CONST(-2.0), ...F32_MAX, ...F32_CONST(1.9999), ...F32_MIN, ...SET(K_float),
 
-        // build p1, p2 prediction windows
-        ...GET(p1_sim), ...I32_SPLAT, ...F32X4_CONVERT_V, ...SET(v_p1),
-        ...GET(p2_sim), ...I32_SPLAT, ...F32X4_CONVERT_V, ...SET(v_p2),
+        // G = conditional 1D optimal given clamped K: G = (K·s12 − sv2) / s22
+        // • correct for any pure sinusoid (gives G=1 for any freq, independent of K clamping)
+        // • correct when K is clamped (avoids the wrong Cramer G for near-DC signals)
+        ...GET(K_float), ...GET(f32_w), ...F32_MUL,  // K_float * s12
+        ...GET(sum_p2_err), ...F32_SUB,               // − sv2
+        ...GET(sum_p2_p2), ...F32_CONST(1.0), ...F32_ADD, ...F32_DIV, ...SET(G_float), // / (s22+ε)
 
-        // calculate error (K*p1 - val)
-        ...GET(K_float), ...FSPLAT, ...GET(v_p1), ...FMULV, ...SET(v_tmp1), // Prediction = K*p1
-        ...GET(v_tmp1), ...GET(v_val), ...FSUBV, ...SET(v_tmp1), // Error = K*p1 - val
+        // clamp G to safe range
+        ...GET(G_float), ...F32_CONST(-2.0), ...F32_MAX, ...F32_CONST(1.9999), ...F32_MIN, ...SET(G_float),
 
-        // accumulate
-        ...GET(v_sum_p2_p2), ...GET(v_p2), ...GET(v_p2), ...FMULV, ...FADDV, ...SET(v_sum_p2_p2),
-        ...GET(v_sum_p2_err), ...GET(v_p2), ...GET(v_tmp1), ...FMULV, ...FADDV, ...SET(v_sum_p2_err),
-
-        // advance state
-        ...GET(v_val), ...EXTRACT_F32(3), ...I32_TRUNC_SAT_F32_S, ...SET(p1_sim),
-        ...GET(v_val), ...EXTRACT_F32(2), ...I32_TRUNC_SAT_F32_S, ...SET(p2_sim),
-
-        ...GET(i), ...CI32(4), ...ADD, ...SET(i), ...BR(0),
-        ...END, ...END, // pass 2 loop
-
-        // horizontal sum & extract G
-        ...f32x4_hsum(v_sum_p2_err), ...SET(sum_p2_err),
-        ...f32x4_hsum(v_sum_p2_p2), ...SET(sum_p2_p2),
-        ...GET(sum_p2_err), ...GET(sum_p2_p2), ...F32_CONST(1e-6), ...F32_ADD, ...F32_DIV, ...SET(G_float),
-        // clamp G
-        ...GET(G_float), ...F32_CONST(-2.0), ...F32_MAX, ...F32_CONST(1.9999), ...F32_MIN, ...SET(G_float), // clamp: G_int ≤ 32766 (avoids 0x8000 sign-flip; G > 2 truncates badly)
-
-        // scale K and G to 14-bit precision (scale 16384 per 1.0)
+        // scale to 14-bit fixed-point (16384 per 1.0)
         ...GET(K_float), ...F32_CONST(16384.0), ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(K),
         ...GET(G_float), ...F32_CONST(16384.0), ...F32_MUL, ...I32_TRUNC_SAT_F32_S, ...SET(G),
 
@@ -605,43 +574,21 @@ function buildEncodeBody(): number[] {
         // reset predictor state for pass 3/4
         ...GET(prev1), ...SET(p1_sim),
         ...GET(prev2), ...SET(p2_sim),
-        ...GET(scalar_arg), ...F32_CONVERT_I32_S, ...SET(f32_scalar),
 
-        // resolve anchor: quantized value of last sample in this block
-        ...GET(block_end), ...CI32(1), ...SUB, ...SET(j),
-        ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
-        ...GET(pcmPtr), ...GET(j), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
-        ...GET(pcmPtr), ...GET(j), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 0), ...SET(right),
-        ...GET(ch), ...CI32(0), ...EQ, ...IF, ...GET(left), ...GET(right), ...F32_ADD, ...F32_CONST(0.5), ...F32_MUL, ...SET(f32_val), ...ELSE, ...GET(left), ...GET(right), ...F32_SUB, ...SET(f32_val), ...END,
-        ...ELSE, ...GET(pcmPtr), ...GET(j), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val), ...END,
-        ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(f32_scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(s31_anchor),
-
-        // span for x ∈ [0, 1] interpolation across block
-        ...GET(j), ...GET(block_start), ...SUB, ...SET(temp),
-        ...GET(temp), ...CI32(1), ...LT_s, ...IF, ...CI32(1), ...SET(temp), ...END,
-        ...GET(temp), ...F32_CONVERT_I32_S, ...SET(f32_span),
-
-        // PASS 3: Entropy Assessment
+        // PASS 3: Entropy Assessment — sum zigzag residuals for Rice M selection
+        // K_float / G_float already hold the regression result — use them flat over the block.
+        // s31_anchor repurposed as pred_int (oscillator pred), mz as sum_z, W_curr as M
         ...GET(block_start), ...SET(i),
-        ...CI32(0), ...SET(mz),
+        ...CI32(0), ...SET(mz), // mz = sum_z
         ...BLOCK, ...LOOP,
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        ...GET(i), ...GET(block_start), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_span), ...F32_DIV, ...SET(f32_x),
-        ...GET(prevK), ...F32_CONVERT_I32_S, ...GET(K), ...GET(prevK), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_x), ...F32_MUL, ...F32_ADD, ...F32_CONST(16384.0), ...F32_DIV, ...SET(K_float),
-        ...GET(prevG), ...F32_CONVERT_I32_S, ...GET(G), ...GET(prevG), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_x), ...F32_MUL, ...F32_ADD, ...F32_CONST(16384.0), ...F32_DIV, ...SET(G_float),
-
-        // Predictor (K*p1 - G*p2)
+        // Pure oscillator predictor — flat K/G (no per-sample ramp)
         ...GET(K_float), ...GET(p1_sim), ...F32_CONVERT_I32_S, ...F32_MUL,
-        ...GET(G_float), ...GET(p2_sim), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_SUB, ...SET(f32_val),
+        ...GET(G_float), ...GET(p2_sim), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_SUB,
+        ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(s31_anchor), // s31_anchor = pred_int
 
-        // cubic Hermite blend: w(x) = 3x² − 2x³, smooth bridge to anchor
-        ...GET(f32_x), ...GET(f32_x), ...F32_MUL, ...SET(f32_w),
-        ...F32_CONST(3.0), ...GET(f32_w), ...F32_MUL,
-        ...F32_CONST(2.0), ...GET(f32_w), ...GET(f32_x), ...F32_MUL, ...F32_MUL, ...F32_SUB, ...SET(f32_w),
-        ...GET(s31_anchor), ...F32_CONVERT_I32_S, ...GET(f32_val), ...F32_SUB, ...GET(f32_w), ...F32_MUL, ...GET(f32_val), ...F32_ADD, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(pred_int),
-
-        // quantize actual sample, compute residue against prediction
+        // quantize actual sample, compute residue
         ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
         ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
         ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 0), ...SET(right),
@@ -649,43 +596,41 @@ function buildEncodeBody(): number[] {
         ...ELSE, ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val), ...END,
         ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(f32_scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        ...GET(i32_val), ...GET(pred_int), ...SUB, ...SET(delta),
-        ...zigzag(delta, z), ...updateMaxZ(z, mz),
+        ...GET(i32_val), ...GET(s31_anchor), ...SUB, ...SET(delta),
+        ...zigzag(delta, z),
+        ...GET(mz), ...GET(z), ...ADD, ...SET(mz), // sum_z += z
 
         ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END, // end Pass 3 loop
 
-        // W_curr = ceil(log2(max_zigzag + 1)) — minimum bits per delta
-        ...CI32(32), ...GET(mz), ...CLZ, ...SUB, ...SET(W_curr),
+        // M = floor(log2(max(1, sum_z >> 5))) — Rice parameter from mean residual magnitude
+        ...GET(mz), ...CI32(5), ...SHR_u, ...SET(W_curr), // W_curr = mean_z = sum_z / 32
+        ...GET(W_curr), ...CI32(0), ...EQ, ...IF,
+        ...CI32(0), ...SET(W_curr), // M=0 when mean_z=0 (perfect predictor)
+        ...ELSE,
+        ...CI32(31), ...GET(W_curr), ...CLZ, ...SUB, ...SET(W_curr), // M = floor(log2(mean_z))
+        ...END,
+        ...GET(W_curr), ...CI32(14), ...GT_s, ...IF, ...CI32(14), ...SET(W_curr), ...END, // cap M at 14
 
-        // emit block header: K(16) + G(16) + W(5) + zigzag(anchor − prev1)(24) = 61 bits
+        // emit block header: K(16) + G(16) + M(4) = 36 bits (no anchor, no fixed W)
         ...emitBits([...GET(K)], [...CI32(16)]),
         ...emitBits([...GET(G)], [...CI32(16)]),
-        ...emitBits([...GET(W_curr)], [...CI32(5)]),
-        ...GET(s31_anchor), ...GET(prev1), ...SUB, ...SET(temp), ...zigzag(temp, z), ...emitBits([...GET(z)], [...CI32(24)]),
+        ...emitBits([...GET(W_curr)], [...CI32(4)]),
 
-        // PASS 4: Final Encode
+        // PASS 4: Final Encode with Rice(M) residual coding
         ...GET(block_start), ...SET(i),
         ...GET(prev1), ...SET(p1_sim),
         ...GET(prev2), ...SET(p2_sim),
         ...BLOCK, ...LOOP,
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        // Predictor logic identical to Pass 3
-        ...GET(i), ...GET(block_start), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_span), ...F32_DIV, ...SET(f32_x),
-        ...GET(prevK), ...F32_CONVERT_I32_S, ...GET(K), ...GET(prevK), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_x), ...F32_MUL, ...F32_ADD, ...F32_CONST(16384.0), ...F32_DIV, ...SET(K_float),
-        ...GET(prevG), ...F32_CONVERT_I32_S, ...GET(G), ...GET(prevG), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_x), ...F32_MUL, ...F32_ADD, ...F32_CONST(16384.0), ...F32_DIV, ...SET(G_float),
-
+        // Pure oscillator predictor — flat K/G (no per-sample ramp)
         ...GET(K_float), ...GET(p1_sim), ...F32_CONVERT_I32_S, ...F32_MUL,
-        ...GET(G_float), ...GET(p2_sim), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_SUB, ...SET(f32_val),
+        ...GET(G_float), ...GET(p2_sim), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_SUB,
+        ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(s31_anchor), // s31_anchor = pred_int
 
-        ...GET(f32_x), ...GET(f32_x), ...F32_MUL, ...SET(f32_w),
-        ...F32_CONST(3.0), ...GET(f32_w), ...F32_MUL,
-        ...F32_CONST(2.0), ...GET(f32_w), ...GET(f32_x), ...F32_MUL, ...F32_MUL, ...F32_SUB, ...SET(f32_w),
-        ...GET(s31_anchor), ...F32_CONVERT_I32_S, ...GET(f32_val), ...F32_SUB, ...GET(f32_w), ...F32_MUL, ...GET(f32_val), ...F32_ADD, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(pred_int),
-
-        // quantize actual sample, emit zigzag-coded residue at W_curr bits
+        // quantize actual sample
         ...GET(numChannels), ...CI32(2), ...EQ, ...IF,
         ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(left),
         ...GET(pcmPtr), ...GET(i), ...CI32(3), ...SHL, ...CI32(4), ...ADD, ...ADD, ...LOADF32(2, 0), ...SET(right),
@@ -693,8 +638,24 @@ function buildEncodeBody(): number[] {
         ...ELSE, ...GET(pcmPtr), ...GET(i), ...CI32(2), ...SHL, ...ADD, ...LOADF32(2, 0), ...SET(f32_val), ...END,
         ...GET(f32_val), ...GET(framePeak), ...F32_DIV, ...GET(f32_scalar), ...F32_MUL, ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(i32_val),
 
-        ...GET(i32_val), ...GET(pred_int), ...SUB, ...SET(delta),
-        ...zigzag(delta, z), ...emitBits([...GET(z)], [...GET(W_curr)]),
+        ...GET(i32_val), ...GET(s31_anchor), ...SUB, ...SET(delta),
+        ...zigzag(delta, z),
+
+        // Rice(M) emit: q = z >> M; if q < 15: emit (q ones + stop 0) + M-bit remainder
+        //               else: escape — emit 15 ones + 17-bit raw value (covers Q up to ~99)
+        ...GET(z), ...GET(W_curr), ...SHR_u, ...SET(pred_int), // pred_int = q
+        ...GET(pred_int), ...CI32(15), ...GE_u, ...IF,
+        // escape: 15 ones then 17-bit raw (max z = 131071, covers scalar up to ~32768)
+        ...emitBits([...CI32(0x7FFF)], [...CI32(15)]),
+        ...emitBits([...GET(z), ...CI32(0x1FFFF), ...AND], [...CI32(17)]),
+        ...ELSE,
+        // normal: emit (1<<q)-1 as (q+1) bits, then remainder r = z & ((1<<M)-1) in M bits
+        ...emitBits([...CI32(1), ...GET(pred_int), ...SHL, ...CI32(1), ...SUB], [...GET(pred_int), ...CI32(1), ...ADD]),
+        ...GET(W_curr), ...CI32(0), ...GT_u, ...IF,
+        ...CI32(1), ...GET(W_curr), ...SHL, ...CI32(1), ...SUB, ...GET(z), ...AND, ...SET(temp),
+        ...emitBits([...GET(temp)], [...GET(W_curr)]),
+        ...END,
+        ...END,
 
         ...GET(p1_sim), ...SET(p2_sim), ...GET(i32_val), ...SET(p1_sim),
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
@@ -702,13 +663,12 @@ function buildEncodeBody(): number[] {
 
         // carry predictor state to next block
         ...GET(p1_sim), ...SET(prev1), ...GET(p2_sim), ...SET(prev2),
-        ...GET(K), ...SET(prevK), ...GET(G), ...SET(prevG),
 
         // ── Save Channel State ──
         ...GET(ch_state_ptr), ...GET(prev1), ...STORE32(2, 0),
         ...GET(ch_state_ptr), ...GET(prev2), ...STORE32(2, 4),
-        ...GET(ch_state_ptr), ...GET(prevK), ...STORE32(2, 8),
-        ...GET(ch_state_ptr), ...GET(prevG), ...STORE32(2, 12),
+        ...GET(ch_state_ptr), ...GET(K), ...STORE32(2, 8),
+        ...GET(ch_state_ptr), ...GET(G), ...STORE32(2, 12),
 
         // increment channel
         ...GET(ch), ...CI32(1), ...ADD, ...SET(ch),
@@ -820,13 +780,13 @@ function buildDecodeBody(): number[] {
     const idx = next_i32++, sample_count = next_i32++, mac0 = next_i32++, mac1 = next_i32++, temp = next_i32++;
     const expMac0 = next_i32++, expMac1 = next_i32++, i = next_i32++, bit_cnt = next_i32++, block_start = next_i32++;
     const block_end = next_i32++, K = next_i32++, G = next_i32++, W_curr = next_i32++, ch = next_i32++;
-    const s31_anchor = next_i32++, pred_int = next_i32++, prevK = next_i32++, prevG = next_i32++, ch_state_ptr = next_i32++;
+    const s31_anchor = next_i32++, pred_int = next_i32++, ch_state_ptr = next_i32++;
     const v = Array.from({ length: 16 }, () => next_i32++);
     const i32_locals_count = next_i32 - 5;
 
     let next_f32 = next_i32;
     const framePeak = next_f32++, f32_val = next_f32++, K_float = next_f32++, G_float = next_f32++;
-    const f32_x = next_f32++, f32_w = next_f32++, f32_scalar = next_f32++, f32_span = next_f32++;
+    const f32_scalar = next_f32++;
     const f32_locals_count = next_f32 - next_i32;
 
     let next_i64 = next_f32;
@@ -973,52 +933,60 @@ function buildDecodeBody(): number[] {
         // Load channel state
         ...GET(ch_state_ptr), ...LOAD32(2, 0), ...SET(prev1),
         ...GET(ch_state_ptr), ...CI32(4), ...ADD, ...LOAD32(2, 0), ...SET(prev2),
-        ...GET(ch_state_ptr), ...CI32(8), ...ADD, ...LOAD32(2, 0), ...SET(prevK),
-        ...GET(ch_state_ptr), ...CI32(12), ...ADD, ...LOAD32(2, 0), ...SET(prevG),
 
-        // read block header (61 bits: K16 + G16 + W5 + anchor24)
-        // refill before each field to keep bit_cnt ≤ 56 (avoids i64 overflow)
+        // read block header: K(16) + G(16) + M(4) = 36 bits
         ...refillBits([...CI32(16)]),
         ...extractBits([...CI32(16)]), ...CI32(16), ...SHL, ...CI32(16), ...SHR_s, ...SET(K),
         ...refillBits([...CI32(16)]),
         ...extractBits([...CI32(16)]), ...CI32(16), ...SHL, ...CI32(16), ...SHR_s, ...SET(G),
-        ...refillBits([...CI32(5)]),
-        ...extractBits([...CI32(5)]), ...SET(W_curr),
-        ...refillBits([...CI32(24)]),
-        ...extractBits([...CI32(24)]), ...SET(z), // s31_anchor delta
-        ...GET(z), ...CI32(1), ...AND, ...CI32(0), ...EQ, ...IF, ...GET(z), ...CI32(1), ...SHR_u, ...SET(delta), ...ELSE, ...GET(z), ...CI32(1), ...SHR_u, ...CI32(-1), ...XOR, ...SET(delta), ...END,
-        ...GET(delta), ...GET(prev1), ...ADD, ...SET(s31_anchor),
+        ...refillBits([...CI32(4)]),
+        ...extractBits([...CI32(4)]), ...SET(W_curr), // W_curr = M (Rice parameter)
 
-        // span for x ∈ [0, 1] interpolation across block
-        ...GET(block_end), ...CI32(1), ...SUB, ...GET(block_start), ...SUB, ...SET(temp),
-        ...GET(temp), ...CI32(1), ...LT_s, ...IF, ...CI32(1), ...SET(temp), ...END,
-        ...GET(temp), ...F32_CONVERT_I32_S, ...SET(f32_span),
+        // K_float / G_float are constant over the block (flat, matching the encoder's regression)
+        ...GET(K), ...F32_CONVERT_I32_S, ...F32_CONST(16384.0), ...F32_DIV, ...SET(K_float),
+        ...GET(G), ...F32_CONVERT_I32_S, ...F32_CONST(16384.0), ...F32_DIV, ...SET(G_float),
 
         ...GET(block_start), ...SET(i),
         ...BLOCK, ...LOOP, // RECONSTRUCTION LOOP
         ...GET(i), ...GET(block_end), ...GE_s, ...BRIF(1),
 
-        // interpolate K/G linearly from prev to current across block
-        ...GET(i), ...GET(block_start), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_span), ...F32_DIV, ...SET(f32_x),
-        ...GET(prevK), ...F32_CONVERT_I32_S, ...GET(K), ...GET(prevK), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_x), ...F32_MUL, ...F32_ADD, ...F32_CONST(16384.0), ...F32_DIV, ...SET(K_float),
-        ...GET(prevG), ...F32_CONVERT_I32_S, ...GET(G), ...GET(prevG), ...SUB, ...F32_CONVERT_I32_S, ...GET(f32_x), ...F32_MUL, ...F32_ADD, ...F32_CONST(16384.0), ...F32_DIV, ...SET(G_float),
-
-        // harmonic predictor + cubic Hermite mesh blend
+        // Pure oscillator predictor — flat K/G over whole block
         ...GET(K_float), ...GET(prev1), ...F32_CONVERT_I32_S, ...F32_MUL,
-        ...GET(G_float), ...GET(prev2), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_SUB, ...SET(f32_val),
+        ...GET(G_float), ...GET(prev2), ...F32_CONVERT_I32_S, ...F32_MUL, ...F32_SUB,
+        ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(pred_int), // pred_int = oscillator pred
 
-        ...GET(f32_x), ...GET(f32_x), ...F32_MUL, ...SET(f32_w), // w = x^2
-        ...F32_CONST(3.0), ...GET(f32_w), ...F32_MUL,
-        ...F32_CONST(2.0), ...GET(f32_w), ...GET(f32_x), ...F32_MUL, ...F32_MUL, ...F32_SUB, ...SET(f32_w),
+        // Rice(M) decode: q = CTZ(~bit_buf), then normal or escape
+        // Ensure enough bits: max possible read = 15 (unary escape) + 17 (raw) = 32 bits
+        ...refillBits([...CI32(32)]),
+        // q = count of trailing 1s in bit_buf = CTZ(~bit_buf)
+        ...GET(i64_bit_buf), ...CI64(-1), ...I64_XOR_op, ...I64_CTZ_op, ...I32_WRAP_I64, ...SET(s31_anchor), // s31_anchor = q
 
-        ...GET(s31_anchor), ...F32_CONVERT_I32_S, ...GET(f32_val), ...F32_SUB, ...GET(f32_w), ...F32_MUL, ...GET(f32_val), ...F32_ADD,
-        ...F32_NEAREST, ...I32_TRUNC_SAT_F32_S, ...SET(pred_int),
-
-        // read zigzag-coded residue (W_curr bits, or 0 if W_curr == 0)
+        ...GET(s31_anchor), ...CI32(15), ...GE_u, ...IF,
+        // Escape: consume 15 bits (the 15 ones), then read 17-bit raw value
+        // (after refilling 32 bits and consuming 15, we have ≥17 left — no extra refill needed)
+        ...GET(i64_bit_buf), ...CI64(15), ...I64_SHR_u, ...SET(i64_bit_buf),
+        ...GET(bit_cnt), ...CI32(15), ...SUB, ...SET(bit_cnt),
+        ...GET(i64_bit_buf), ...I32_WRAP_I64, ...CI32(0x1FFFF), ...AND, ...SET(z),
+        ...GET(i64_bit_buf), ...CI64(17), ...I64_SHR_u, ...SET(i64_bit_buf),
+        ...GET(bit_cnt), ...CI32(17), ...SUB, ...SET(bit_cnt),
+        ...ELSE,
+        // Normal Rice: consume q+1 bits (q ones + stop 0)
+        ...GET(i64_bit_buf), ...GET(s31_anchor), ...CI32(1), ...ADD, ...I64_EXTEND_I32_U, ...I64_SHR_u, ...SET(i64_bit_buf),
+        ...GET(bit_cnt), ...GET(s31_anchor), ...CI32(1), ...ADD, ...SUB, ...SET(bit_cnt),
+        // read M-bit remainder
         ...GET(W_curr), ...CI32(0), ...GT_u, ...IF,
-        ...refillBits([...GET(W_curr)]), ...extractBits([...GET(W_curr)]), ...SET(z),
+        ...GET(i64_bit_buf), ...I32_WRAP_I64, ...CI32(1), ...GET(W_curr), ...SHL, ...CI32(1), ...SUB, ...AND, ...SET(temp), // r
+        ...GET(i64_bit_buf), ...GET(W_curr), ...I64_EXTEND_I32_U, ...I64_SHR_u, ...SET(i64_bit_buf),
+        ...GET(bit_cnt), ...GET(W_curr), ...SUB, ...SET(bit_cnt),
+        ...ELSE,
+        ...CI32(0), ...SET(temp), // r = 0 when M = 0
+        ...END,
+        // z = (q << M) | r
+        ...GET(s31_anchor), ...GET(W_curr), ...SHL, ...GET(temp), ...OR, ...SET(z),
+        ...END,
+
+        // zigzag decode: delta from z
         ...GET(z), ...CI32(1), ...AND, ...CI32(0), ...EQ, ...IF, ...GET(z), ...CI32(1), ...SHR_u, ...SET(delta), ...ELSE, ...GET(z), ...CI32(1), ...SHR_u, ...CI32(-1), ...XOR, ...SET(delta), ...END,
-        ...ELSE, ...CI32(0), ...SET(delta), ...END,
 
         ...GET(pred_int), ...GET(delta), ...ADD, ...SET(i32_val),
 
@@ -1029,12 +997,11 @@ function buildDecodeBody(): number[] {
         ...GET(i), ...CI32(1), ...ADD, ...SET(i), ...BR(0),
         ...END, ...END,
 
-        // carry K/G and predictor state to next block
-        ...GET(K), ...SET(prevK), ...GET(G), ...SET(prevG),
+        // carry predictor state to next block
         ...GET(ch_state_ptr), ...GET(prev1), ...STORE32(2, 0),
         ...GET(ch_state_ptr), ...GET(prev2), ...STORE32(2, 4),
-        ...GET(ch_state_ptr), ...GET(prevK), ...STORE32(2, 8),
-        ...GET(ch_state_ptr), ...GET(prevG), ...STORE32(2, 12),
+        ...GET(ch_state_ptr), ...GET(K), ...STORE32(2, 8),
+        ...GET(ch_state_ptr), ...GET(G), ...STORE32(2, 12),
 
         // increment channel
         ...GET(ch), ...CI32(1), ...ADD, ...SET(ch),
