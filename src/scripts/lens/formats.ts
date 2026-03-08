@@ -1734,6 +1734,26 @@ async function extractPdfMeta(view: DataView): Promise<ExifCategory[]> {
   const annotCount = annotMatches ? annotMatches.length : 0;
   if (annotCount > 0) {
     fields.push(field("pdf.annotations", "Annotations", `${annotCount} annotation${annotCount !== 1 ? "s" : ""}`));
+
+    // Annotation type breakdown — find /Subtype within 512 chars after /Type /Annot
+    const subtypeCounts: Record<string, number> = {};
+    const annotRe = /\/Type\s*\/Annot\b/g;
+    let am: RegExpExecArray | null;
+    while ((am = annotRe.exec(rawScan)) !== null) {
+      const window = rawScan.slice(am.index, am.index + 512);
+      const sm = window.match(/\/Subtype\s*\/(\w+)/);
+      if (sm) subtypeCounts[sm[1]] = (subtypeCounts[sm[1]] || 0) + 1;
+    }
+    const subtypeLabels: Record<string, string> = {
+      Text: "Comments", Popup: "Popups", Highlight: "Highlights",
+      Underline: "Underlines", StrikeOut: "Strikeouts", Squiggly: "Squiggly",
+      FreeText: "Free Text", Ink: "Ink", Stamp: "Stamps", Link: "Links",
+      Widget: "Form Fields", FileAttachment: "Attachments",
+    };
+    for (const [subtype, count] of Object.entries(subtypeCounts).sort((a, b) => b[1] - a[1])) {
+      const label = subtypeLabels[subtype] || subtype;
+      fields.push(field(`pdf.annot.${subtype.toLowerCase()}`, label, count));
+    }
   }
 
   // XMP & Encryption
@@ -3176,10 +3196,53 @@ async function analyzeText(
       }
     }
 
+    // Strip frontmatter + fenced code for body analysis
+    const mdBody = text
+      .replace(/^---\n[\s\S]*?\n---\n?/, "")
+      .replace(/```[\s\S]*?```/g, "");
+
+    // Body word count (excludes frontmatter and code blocks)
+    const mdBodyWords = mdBody.replace(/[#*_\[\]()>`~|-]/g, "").match(/\S+/g);
+    const mdWordCount = mdBodyWords ? mdBodyWords.length : 0;
+    fields.push(field("md.words", "Body Words", mdWordCount, `${approx}${mdWordCount.toLocaleString()}`));
+
     // Heading structure
     const headings = (text.match(/^#{1,6}\s.+$/gm) ?? []);
     if (headings.length > 0) {
       fields.push(field("md.headings", "Headings", `${headings.length} heading${headings.length !== 1 ? "s" : ""}`));
+    }
+
+    // Links
+    const links = (mdBody.match(/\[([^\]]*)\]\([^)]+\)/g) ?? []);
+    if (links.length > 0) {
+      fields.push(field("md.links", "Links", `${links.length} link${links.length !== 1 ? "s" : ""}`));
+    }
+
+    // Images
+    const images = (mdBody.match(/!\[([^\]]*)\]\([^)]+\)/g) ?? []);
+    if (images.length > 0) {
+      fields.push(field("md.images", "Images", `${images.length} image${images.length !== 1 ? "s" : ""}`));
+    }
+
+    // Code blocks
+    const codeBlocks = (text.match(/^```/gm) ?? []);
+    const codeBlockCount = Math.floor(codeBlocks.length / 2);
+    if (codeBlockCount > 0) {
+      fields.push(field("md.codeBlocks", "Code Blocks", `${codeBlockCount} block${codeBlockCount !== 1 ? "s" : ""}`));
+    }
+
+    // Tables (lines starting with |)
+    const tableRows = (text.match(/^\|.+\|$/gm) ?? []);
+    // A table needs at least 3 rows (header, separator, data)
+    if (tableRows.length >= 3) {
+      fields.push(field("md.tables", "Tables", "yes"));
+    }
+
+    // Checkboxes / task lists
+    const tasks = (mdBody.match(/^[\s]*[-*]\s\[[ xX]\]/gm) ?? []);
+    if (tasks.length > 0) {
+      const done = (mdBody.match(/^[\s]*[-*]\s\[[xX]\]/gm) ?? []).length;
+      fields.push(field("md.tasks", "Tasks", `${done}/${tasks.length} done`));
     }
   }
 
@@ -3201,68 +3264,134 @@ async function analyzeText(
 
 // ── Layer 6: XML/SVG Analysis ────────────────────────────────
 
-function analyzeXmlContent(text: string): ExifCategory[] {
+function analyzeXmlContent(text: string, subFormat?: string): ExifCategory[] {
   const categories: ExifCategory[] = [];
   const fields: ExifField[] = [];
 
+  const isHtml = subFormat === "HTML";
+
   try {
     const parser = new DOMParser();
-    const doc = parser.parseFromString(text, "text/xml");
-    const errors = doc.querySelectorAll("parsererror");
+    const doc = isHtml
+      ? parser.parseFromString(text, "text/html")
+      : parser.parseFromString(text, "text/xml");
 
-    if (errors.length === 0) {
-      const root = doc.documentElement;
-      fields.push(field("xml.rootElement", "Root Element", root.tagName));
+    if (isHtml) {
+      // ── HTML-specific analysis ──
+      const title = doc.querySelector("title")?.textContent?.trim();
+      if (title) fields.push(field("html.title", "Title", title));
 
-      // Count total elements
-      const allElements = doc.querySelectorAll("*");
-      fields.push(field("xml.elements", "Total Elements", allElements.length));
-
-      // Unique element names
-      const names = new Set<string>();
-      allElements.forEach((el) => names.add(el.tagName));
-      fields.push(field("xml.uniqueTags", "Unique Tags", names.size));
-
-      // Namespace
-      if (root.namespaceURI) {
-        fields.push(field("xml.namespace", "Namespace", root.namespaceURI));
+      const metas = doc.querySelectorAll("meta");
+      for (const meta of metas) {
+        const name = meta.getAttribute("name") || meta.getAttribute("property");
+        const content = meta.getAttribute("content");
+        if (name && content) {
+          fields.push(field(`html.meta.${name}`, name, content));
+        }
       }
 
-      // SVG specific
-      if (root.tagName === "svg" || root.tagName.toLowerCase() === "svg") {
-        const viewBox = root.getAttribute("viewBox");
-        const width = root.getAttribute("width");
-        const height = root.getAttribute("height");
+      const body = doc.body;
+      if (body) {
+        // Word count from body text
+        const bodyText = body.textContent ?? "";
+        const words = bodyText.split(/\s+/).filter((w) => w.length > 0).length;
+        if (words > 0) fields.push(field("html.words", "Words", words));
 
-        if (viewBox) fields.push(field("svg.viewBox", "ViewBox", viewBox));
-        if (width && height) {
-          fields.push(field("svg.dimensions", "Dimensions", `${width} × ${height}`));
+        // Heading structure
+        const headings = body.querySelectorAll("h1, h2, h3, h4, h5, h6");
+        if (headings.length > 0) {
+          fields.push(field("html.headings", "Headings", headings.length));
         }
 
-        // Count SVG features
-        const features: string[] = [];
-        if (doc.querySelectorAll("linearGradient, radialGradient").length > 0) features.push("gradients");
-        if (doc.querySelectorAll("filter").length > 0) features.push("filters");
-        if (doc.querySelectorAll("animate, animateTransform, animateMotion, set").length > 0) features.push("animations");
-        if (doc.querySelectorAll("text, tspan").length > 0) features.push("text");
-        if (doc.querySelectorAll("clipPath").length > 0) features.push("clip paths");
-        if (doc.querySelectorAll("mask").length > 0) features.push("masks");
-        if (doc.querySelectorAll("use").length > 0) features.push("symbol refs");
-        if (doc.querySelectorAll("image").length > 0) features.push("embedded images");
+        // Links
+        const links = body.querySelectorAll("a[href]");
+        if (links.length > 0) fields.push(field("html.links", "Links", links.length));
 
-        if (features.length > 0) {
-          fields.push(field("svg.features", "Features", features.join(", ")));
+        // Images
+        const images = body.querySelectorAll("img");
+        if (images.length > 0) fields.push(field("html.images", "Images", images.length));
+
+        // Tables
+        const tables = body.querySelectorAll("table");
+        if (tables.length > 0) fields.push(field("html.tables", "Tables", tables.length));
+
+        // Code blocks
+        const codeBlocks = body.querySelectorAll("pre");
+        if (codeBlocks.length > 0) fields.push(field("html.codeBlocks", "Code Blocks", codeBlocks.length));
+      }
+
+      // Stylesheets
+      const styles = doc.querySelectorAll("style");
+      const styleLinks = doc.querySelectorAll("link[rel='stylesheet']");
+      const totalStyles = styles.length + styleLinks.length;
+      if (totalStyles > 0) {
+        const parts: string[] = [];
+        if (styles.length > 0) parts.push(`${styles.length} inline`);
+        if (styleLinks.length > 0) parts.push(`${styleLinks.length} linked`);
+        fields.push(field("html.styles", "Stylesheets", parts.join(", ")));
+      }
+
+      // Scripts
+      const scripts = doc.querySelectorAll("script");
+      if (scripts.length > 0) fields.push(field("html.scripts", "Scripts", scripts.length));
+    } else {
+      // ── XML analysis ──
+      const errors = doc.querySelectorAll("parsererror");
+
+      if (errors.length === 0) {
+        const root = doc.documentElement;
+        fields.push(field("xml.rootElement", "Root Element", root.tagName));
+
+        // Count total elements
+        const allElements = doc.querySelectorAll("*");
+        fields.push(field("xml.elements", "Total Elements", allElements.length));
+
+        // Unique element names
+        const names = new Set<string>();
+        allElements.forEach((el) => names.add(el.tagName));
+        fields.push(field("xml.uniqueTags", "Unique Tags", names.size));
+
+        // Namespace
+        if (root.namespaceURI) {
+          fields.push(field("xml.namespace", "Namespace", root.namespaceURI));
         }
 
-        // Path count
-        const paths = doc.querySelectorAll("path");
-        if (paths.length > 0) {
-          fields.push(field("svg.paths", "Paths", paths.length));
+        // SVG specific
+        if (root.tagName === "svg" || root.tagName.toLowerCase() === "svg") {
+          const viewBox = root.getAttribute("viewBox");
+          const width = root.getAttribute("width");
+          const height = root.getAttribute("height");
+
+          if (viewBox) fields.push(field("svg.viewBox", "ViewBox", viewBox));
+          if (width && height) {
+            fields.push(field("svg.dimensions", "Dimensions", `${width} × ${height}`));
+          }
+
+          // Count SVG features
+          const features: string[] = [];
+          if (doc.querySelectorAll("linearGradient, radialGradient").length > 0) features.push("gradients");
+          if (doc.querySelectorAll("filter").length > 0) features.push("filters");
+          if (doc.querySelectorAll("animate, animateTransform, animateMotion, set").length > 0) features.push("animations");
+          if (doc.querySelectorAll("text, tspan").length > 0) features.push("text");
+          if (doc.querySelectorAll("clipPath").length > 0) features.push("clip paths");
+          if (doc.querySelectorAll("mask").length > 0) features.push("masks");
+          if (doc.querySelectorAll("use").length > 0) features.push("symbol refs");
+          if (doc.querySelectorAll("image").length > 0) features.push("embedded images");
+
+          if (features.length > 0) {
+            fields.push(field("svg.features", "Features", features.join(", ")));
+          }
+
+          // Path count
+          const paths = doc.querySelectorAll("path");
+          if (paths.length > 0) {
+            fields.push(field("svg.paths", "Paths", paths.length));
+          }
         }
       }
     }
   } catch {
-    // XML parsing failed — not valid XML
+    // Parsing failed
   }
 
   if (fields.length > 0) {
@@ -3505,7 +3634,7 @@ export async function analyzeFile(
       previewType = textResult.subFormat === "SVG" ? "image" : "text";
 
       if (textResult.subFormat === "XML" || textResult.subFormat === "SVG" || textResult.subFormat === "HTML") {
-        const xmlCats = analyzeXmlContent(textResult.preview);
+        const xmlCats = analyzeXmlContent(textResult.preview, textResult.subFormat);
         categories.push(...xmlCats);
       }
     }
@@ -3559,10 +3688,11 @@ export async function analyzeFile(
         { label: dur ? "duration" : "resolution", value: dur?.displayValue ?? dim?.displayValue ?? "unknown" },
       );
     } else if (primaryCat.id === "content") {
+      const words = primaryCat.fields.find((f) => f.label === "Words");
       const lines = primaryCat.fields.find((f) => f.label === "Lines");
       summary.push(
         { label: "type", value: formatName },
-        { label: "lines", value: lines?.displayValue ?? "-" },
+        { label: words ? "words" : "lines", value: words?.displayValue ?? lines?.displayValue ?? "-" },
       );
     } else if (primaryCat.id === "image") {
       const dim = primaryCat.fields.find((f) => f.label === "Dimensions");
@@ -3572,11 +3702,15 @@ export async function analyzeFile(
       );
     } else if (primaryCat.id === "document") {
       const pages = primaryCat.fields.find((f) => f.label === "Pages");
+      const annots = primaryCat.fields.find((f) => f.label === "Annotations");
       const name = primaryCat.fields.find((f) => f.label === "Family" || f.label === "Full Name");
       summary.push(
         { label: "format", value: formatName },
         { label: pages ? "pages" : "name", value: pages?.displayValue ?? name?.displayValue ?? "-" },
       );
+      if (annots) {
+        summary.push({ label: "annotations", value: annots.displayValue });
+      }
     } else if (primaryCat.id === "structure") {
       const count = primaryCat.fields.find((f) => f.label === "File Count");
       const sub = primaryCat.fields.find((f) => f.label === "Format");

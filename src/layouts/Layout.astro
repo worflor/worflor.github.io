@@ -380,13 +380,13 @@ const isContactPage = Astro.url.pathname === "/contact";
     </main>
     <footer id="site-footer" class="border-t border-[var(--color-border)]" style="display: none;">
       <div class="content-section py-5 text-center">
-        <p class="text-[length:var(--text-sm)] opacity-25">Patent Pending</p>
+        <p class="text-[length:var(--text-sm)] opacity-25">Whisper Codec Stack | Patent Pending | <a href="https://github.com/worflor/worflor.github.io/blob/main/src/scripts/whisper/LICENSE.md" target="_blank" rel="noopener" class="underline-offset-2 hover:opacity-60 transition-opacity" title="License tl;dr: only for-profit companies need a license">License</a></p>
       </div>
     </footer>
     <script is:inline data-astro-rerun>
       (function() {
         var footer = document.getElementById('site-footer');
-        if (footer && window.location.hostname.startsWith('whisper')) {
+        if (footer && window.location.pathname.startsWith('/whisper')) {
           footer.style.display = 'block';
         }
 

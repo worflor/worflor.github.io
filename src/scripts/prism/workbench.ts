@@ -1074,7 +1074,7 @@ export function createWorkbench(): WorkbenchModule {
         { value: "filter",  label: "Re-encode" },
       ] as { value: WorkbenchConfig["concatMode"]; label: string }[],
       config.concatMode,
-      (v) => { config.concatMode = v; },
+      (v) => { config.concatMode = v; renderAll(); },
     ));
     opts.appendChild(modeGroup);
 

@@ -8,6 +8,7 @@ import {
   isMobileDevice,
   mimeForExtension,
   formatSize,
+  detectCategory,
   type PrismEngine,
   type FileInfo,
   type EngineState,
@@ -37,7 +38,7 @@ import {
   type PrismDraftSnapshot,
 } from "./draft";
 
-import { createWorkbench, type WorkbenchModule } from "./workbench";
+import { createWorkbench } from "./workbench";
 import { createShrubber } from "./shrubber";
 import { createAudioLab } from "./audio";
 import { createSubtitles } from "./subtitles";
@@ -68,6 +69,7 @@ interface PrismModule {
   getConfig(): unknown;
   setConfig?(config: unknown): void;
   setFile?(file: File): void;
+  setFileQueue?(queue: { file: File; info: FileInfo }[]): void;
   reset(): void;
 }
 
@@ -77,7 +79,7 @@ const MODULE_VISIBILITY: Record<ModuleId, FileInfo["category"][]> = {
   audio: ["video", "audio"],
   subtitles: ["video", "subtitle"],
   transparency: ["video"],
-  scribe: ["markdown"],
+  scribe: ["markdown", "image", "text"],
   flatcap: ["pdf"],
 };
 
@@ -115,8 +117,9 @@ export interface PrismUIOptions {
   previewImg: HTMLImageElement;
   previewText: HTMLPreElement;
   terminalSection: HTMLElement;
-  terminalToggle: HTMLButtonElement;
-  terminalBody: HTMLElement;
+  terminalToggle: HTMLElement;
+  logWrap: HTMLElement;
+  logDot: HTMLElement;
   terminalLog: HTMLPreElement;
   progressSection: HTMLElement;
   progressBar: HTMLElement;
@@ -132,7 +135,6 @@ export interface PrismUIOptions {
   btnClear: HTMLButtonElement;
   sizeWarning: HTMLElement;
   outputSummary: HTMLElement;
-  terminalCopy: HTMLButtonElement;
 }
 
 type PrismUIIdMap = { [K in keyof PrismUIOptions]: string };
@@ -160,7 +162,8 @@ export const PRISM_UI_IDS: PrismUIIdMap = {
   previewText: "prism-preview-text",
   terminalSection: "prism-terminal-section",
   terminalToggle: "prism-terminal-toggle",
-  terminalBody: "prism-terminal-body",
+  logWrap: "prism-log-wrap",
+  logDot: "prism-log-dot",
   terminalLog: "prism-terminal-log",
   progressSection: "prism-progress-section",
   progressBar: "prism-progress-bar",
@@ -176,7 +179,6 @@ export const PRISM_UI_IDS: PrismUIIdMap = {
   btnClear: "prism-btn-clear",
   sizeWarning: "prism-size-warning",
   outputSummary: "prism-output-summary",
-  terminalCopy: "prism-terminal-copy",
 };
 
 // ─── ID resolution ───────────────────────────────────────────────────────────
@@ -208,7 +210,8 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
   const previewText = q(root, PRISM_UI_IDS.previewText);
   const terminalSection = q(root, PRISM_UI_IDS.terminalSection);
   const terminalToggle = q(root, PRISM_UI_IDS.terminalToggle);
-  const terminalBody = q(root, PRISM_UI_IDS.terminalBody);
+  const logWrap = q(root, PRISM_UI_IDS.logWrap);
+  const logDot = q(root, PRISM_UI_IDS.logDot);
   const terminalLog = q(root, PRISM_UI_IDS.terminalLog);
   const progressSection = q(root, PRISM_UI_IDS.progressSection);
   const progressBar = q(root, PRISM_UI_IDS.progressBar);
@@ -224,17 +227,17 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
   const btnClear = q(root, PRISM_UI_IDS.btnClear);
   const sizeWarning = q(root, PRISM_UI_IDS.sizeWarning);
   const outputSummary = q(root, PRISM_UI_IDS.outputSummary);
-  const terminalCopy = q(root, PRISM_UI_IDS.terminalCopy);
+
 
   if (!page || !uploadZone || !fileInput || !inputPreview || !inputVideo ||
     !inputAudio || !inputImg || !inputGlyph || !sourceName || !sourceSize || !sourceType ||
     !fileQueue || !fileQueueList ||
     !moduleBar || !modulePanel || !previewSection || !previewVideo ||
     !previewAudio || !previewImg || !previewText || !terminalSection ||
-    !terminalToggle || !terminalBody || !terminalLog || !progressSection ||
+    !terminalToggle || !logWrap || !logDot || !terminalLog || !progressSection ||
     !progressBar || !progressFill || !progressText || !engineStatus ||
     !actionBar || !btnRun || !btnCancel || !btnLens || !alphaBadge || !btnUpload ||
-    !btnClear || !sizeWarning || !outputSummary || !terminalCopy) {
+    !btnClear || !sizeWarning || !outputSummary) {
     return null;
   }
 
@@ -260,8 +263,9 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
     previewImg: previewImg as HTMLImageElement,
     previewText: previewText as HTMLPreElement,
     terminalSection,
-    terminalToggle: terminalToggle as HTMLButtonElement,
-    terminalBody,
+    terminalToggle,
+    logWrap,
+    logDot,
     terminalLog: terminalLog as HTMLPreElement,
     progressSection,
     progressBar,
@@ -277,7 +281,6 @@ export function resolvePrismUIOptions(root: ParentNode): PrismUIOptions | null {
     btnClear: btnClear as HTMLButtonElement,
     sizeWarning,
     outputSummary,
-    terminalCopy: terminalCopy as HTMLButtonElement,
   };
 }
 
@@ -297,6 +300,11 @@ const TOAST_EXIT_MS = 300;
 const RUN_ACK_MS = 1200;
 const PRISM_WARM_ENGINE_KEY = "__prismWarmEngine";
 const PRISM_REFRESH_FILE_KEY = "prism.refreshFileToken.v1";
+const LOG_DIM_MS = 2000;
+
+function logTimestamp(): string {
+  return new Date().toISOString().slice(11, 19);
+}
 
 type PrismWarmWindow = Window & {
   [PRISM_WARM_ENGINE_KEY]?: PrismEngine;
@@ -316,7 +324,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let previewUrl: string | null = null;
   let inputPreviewUrl: string | null = null;
   let downloadUrl: string | null = null;
-  let terminalOpen = false;
+  let terminalOpen = true;
+  let logDimTimer: ReturnType<typeof setTimeout> | null = null;
   let dragCounter = 0;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let runAckTimer: ReturnType<typeof setTimeout> | null = null;
@@ -324,6 +333,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
   let lensHandoffInFlight = false;
   let handoffSupported = true;
   let bootRestorePending = false;
+  let configDirty = false;
   const vfsInputSignatures = new Map<string, string>();
   const queueThumbUrls = new Set<string>();
   const cleanups: Array<() => void> = [];
@@ -489,8 +499,11 @@ export function initPrism(opts: PrismUIOptions): () => void {
       },
       onLog: (msg: string) => {
         if (destroyed) return;
-        opts.terminalLog.textContent += msg + "\n";
+        opts.terminalLog.textContent += `[${logTimestamp()}] ${msg}\n`;
         opts.terminalLog.scrollTop = opts.terminalLog.scrollHeight;
+        opts.logDot.classList.add("prism-log-active");
+        if (logDimTimer !== null) clearTimeout(logDimTimer);
+        logDimTimer = setTimeout(() => { opts.logDot.classList.remove("prism-log-active"); logDimTimer = null; }, LOG_DIM_MS);
       },
       onError: (err: EngineError) => {
         if (destroyed) return;
@@ -561,7 +574,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
       hide(opts.sizeWarning);
     }
 
-    hideInputPreview();
+    showInputPreview(currentFile, currentFileInfo);
     updateModuleTabVisibility(currentFileInfo.category);
 
     for (const [id, mod] of Object.entries(modules) as [ModuleId, PrismModule][]) {
@@ -577,7 +590,9 @@ export function initPrism(opts: PrismUIOptions): () => void {
       ) ?? "workbench";
     switchModule(requestedModule);
     renderFileQueue();
-    (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
+    for (const mod of Object.values(modules) as PrismModule[]) {
+      if (typeof mod.setFileQueue === "function") mod.setFileQueue(fileQueue);
+    }
     void persistCurrentFileForRefresh(currentFile);
   }
 
@@ -678,15 +693,17 @@ export function initPrism(opts: PrismUIOptions): () => void {
   function switchModule(id: ModuleId): void {
     activeModuleId = id;
 
-    // Update tab styling
+    // Update tab styling + roving tabindex (WAI-ARIA tabs)
     const tabs = opts.moduleBar.querySelectorAll<HTMLButtonElement>("[data-module]");
     tabs.forEach((tab) => {
       if (tab.dataset.module === id) {
         tab.classList.add("prism-tab--active");
         tab.setAttribute("aria-selected", "true");
+        tab.setAttribute("tabindex", "0");
       } else {
         tab.classList.remove("prism-tab--active");
         tab.setAttribute("aria-selected", "false");
+        tab.setAttribute("tabindex", "-1");
       }
     });
 
@@ -703,22 +720,22 @@ export function initPrism(opts: PrismUIOptions): () => void {
       const modId = tab.dataset.module as ModuleId;
       if (!modId || !MODULE_VISIBILITY[modId]) return;
 
-      const visible = MODULE_VISIBILITY[modId].includes(category);
-      tab.style.display = visible ? "" : "none";
-      tab.disabled = !visible;
+      const applicable = MODULE_VISIBILITY[modId].includes(category);
+      tab.style.display = applicable ? "" : "none";
+      tab.disabled = !applicable;
 
-      if (modId === activeModuleId && visible) {
+      if (modId === activeModuleId && applicable) {
         activeStillVisible = true;
       }
     });
 
-    // If active module is now hidden, fall back to workbench (or first visible)
+    // If active module doesn't apply, fall back to first applicable
     if (!activeStillVisible) {
-      const firstVisible = (Object.keys(MODULE_VISIBILITY) as ModuleId[]).find(
+      const firstApplicable = (Object.keys(MODULE_VISIBILITY) as ModuleId[]).find(
         (id) => MODULE_VISIBILITY[id].includes(category),
       );
-      if (firstVisible) {
-        switchModule(firstVisible);
+      if (firstApplicable) {
+        switchModule(firstApplicable);
       }
     }
   }
@@ -770,6 +787,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     // Guard: only active during processing
     setBeforeUnload(newState === "processing");
 
+    updateClearButton();
     updateUI();
   }
 
@@ -788,9 +806,10 @@ export function initPrism(opts: PrismUIOptions): () => void {
       show(opts.btnUpload);
     }
 
-    // File queue
+    // File queue + input preview
     if (prismState === "idle") {
       hide(opts.fileQueue);
+      hide(opts.inputPreview);
     } else {
       show(opts.fileQueue);
     }
@@ -806,8 +825,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
       show(opts.modulePanel);
     }
 
-    // Progress
-    if (prismState === "processing") {
+    // Progress — hide for document modules (instant ops, no ffmpeg progress to show)
+    if (prismState === "processing" && !isDocumentModule(activeModuleId)) {
       show(opts.progressSection);
     } else {
       hide(opts.progressSection);
@@ -879,6 +898,18 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.btnLens.setAttribute("aria-busy", lensHandoffInFlight ? "true" : "false");
     opts.alphaBadge.style.display = hasFile ? "" : "none";
 
+    // Engine status: hide entire status line for document modules (no ffmpeg)
+    const statusLine = opts.engineStatus.parentElement;
+    if (isDocMod && hasFile) {
+      opts.engineStatus.textContent = "";
+      if (statusLine) statusLine.style.display = "none";
+    } else {
+      if (statusLine) statusLine.style.display = "";
+      if (!engine || engine.state === "idle") {
+        opts.engineStatus.textContent = "engine idle";
+      }
+    }
+
     // Show action bar when not idle
     if (prismState === "idle") {
       opts.actionBar.style.opacity = "0";
@@ -888,11 +919,15 @@ export function initPrism(opts: PrismUIOptions): () => void {
       requestAnimationFrame(() => { if (!destroyed) opts.actionBar.style.opacity = "1"; });
     }
 
-    // Disable module controls during processing
+    // Disable module controls and queue actions during processing
     const locked = prismState === "processing";
     opts.modulePanel.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button").forEach((el) => {
       el.disabled = locked;
     });
+    opts.fileQueueList.querySelectorAll<HTMLButtonElement>(".prism-queue-btn").forEach((btn) => {
+      btn.disabled = locked;
+    });
+    opts.fileQueueList.classList.toggle("prism-queue--locked", locked);
 
     // Queue status
     if (prismState === "processing") {
@@ -921,8 +956,8 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.previewImg.onclick = null;
     opts.previewImg.onkeydown = null;
     opts.previewText.textContent = "";
-    // Remove any document preview iframes
-    opts.previewSection.querySelectorAll<HTMLIFrameElement>(".prism-preview-doc").forEach((f) => f.remove());
+    // Remove any document preview iframes and notes
+    opts.previewSection.querySelectorAll<HTMLElement>(".prism-preview-doc, .prism-preview-doc-wrap, .prism-doc-card, .prism-preview-note").forEach((f) => f.remove());
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
       previewUrl = null;
@@ -945,11 +980,70 @@ export function initPrism(opts: PrismUIOptions): () => void {
     opts.sourceName.textContent = "";
     opts.sourceSize.textContent = "";
     opts.sourceType.textContent = "";
+    document.title = "Prism | woflo";
+    const strip = opts.inputPreview.querySelector(".prism-input-preview");
+    if (strip) strip.classList.remove("prism-input-preview--hero");
     hide(opts.inputPreview);
     if (inputPreviewUrl) {
       URL.revokeObjectURL(inputPreviewUrl);
       inputPreviewUrl = null;
     }
+  }
+
+  function showInputPreview(file: File, info: FileInfo): void {
+    hideInputPreview();
+
+    opts.sourceName.textContent = info.name;
+    opts.sourceSize.textContent = info.sizeLabel;
+    document.title = `${info.name} — Prism`;
+
+    const cat = info.category;
+    const typeLabel =
+      cat === "video" ? (info.videoCodec ?? "Video")
+        : cat === "audio" ? (info.audioCodec ?? "Audio")
+          : cat === "image" ? "Image"
+            : cat === "subtitle" ? "Subtitle"
+              : cat === "markdown" ? "Markdown"
+                : cat === "pdf" ? "PDF"
+                  : file.type || "File";
+    opts.sourceType.textContent = typeLabel;
+
+    // Show media preview or glyph
+    const strip = opts.inputPreview.querySelector(".prism-input-preview");
+    if (cat === "video") {
+      if (inputPreviewUrl) URL.revokeObjectURL(inputPreviewUrl);
+      inputPreviewUrl = URL.createObjectURL(file);
+      opts.inputVideo.src = inputPreviewUrl;
+      show(opts.inputVideo);
+      hide(opts.inputGlyph);
+      if (strip) strip.classList.add("prism-input-preview--hero");
+    } else if (cat === "image") {
+      if (inputPreviewUrl) URL.revokeObjectURL(inputPreviewUrl);
+      inputPreviewUrl = URL.createObjectURL(file);
+      opts.inputImg.src = inputPreviewUrl;
+      show(opts.inputImg);
+      hide(opts.inputGlyph);
+      if (strip) strip.classList.add("prism-input-preview--hero");
+    } else if (cat === "audio") {
+      // Show glyph + audio player below strip
+      opts.inputGlyph.textContent = "AUD";
+      show(opts.inputGlyph);
+      if (inputPreviewUrl) URL.revokeObjectURL(inputPreviewUrl);
+      inputPreviewUrl = URL.createObjectURL(file);
+      opts.inputAudio.src = inputPreviewUrl;
+      show(opts.inputAudio);
+    } else {
+      const glyphText =
+        cat === "markdown" ? "MD"
+          : cat === "pdf" ? "PDF"
+            : cat === "text" ? "TXT"
+              : cat === "subtitle" ? "SUB"
+                : "FILE";
+      opts.inputGlyph.textContent = glyphText;
+      show(opts.inputGlyph);
+    }
+
+    show(opts.inputPreview);
   }
 
   // ── Toast ──────────────────────────────────────────────────────────────
@@ -999,13 +1093,56 @@ export function initPrism(opts: PrismUIOptions): () => void {
   async function processFile(file: File): Promise<void> {
     if (destroyed) return;
 
-    const eng = ensureEngine();
+    // Check category first — document files don't need the ffmpeg engine
+    const category = detectCategory(file);
+    let fileInfo: FileInfo;
 
-    // Probe the file
-    const fileInfo = await eng.probeFile(file);
+    if (category === "unknown") {
+      showToast(`Unsupported file type: ${file.name}`);
+      return;
+    }
 
-    // Append to queue (first file becomes primary)
+    if (category === "markdown" || category === "pdf" || category === "text") {
+      fileInfo = {
+        name: file.name,
+        size: file.size,
+        type: file.type || "application/octet-stream",
+        duration: null,
+        sizeLabel: formatSize(file.size),
+        category,
+        resolution: null,
+        videoCodec: null,
+        audioCodec: null,
+        channels: null,
+        bitrate: null,
+      };
+    } else {
+      const eng = ensureEngine();
+      fileInfo = await eng.probeFile(file);
+    }
+
+    // Check compatibility with current queue
     const isFirst = fileQueue.length === 0;
+    if (!isFirst) {
+      const primaryCat = fileQueue[primaryIndex].info.category;
+      const hasSharedModule = (Object.keys(MODULE_VISIBILITY) as ModuleId[]).some(
+        (id) => MODULE_VISIBILITY[id].includes(primaryCat) && MODULE_VISIBILITY[id].includes(fileInfo.category),
+      );
+      if (!hasSharedModule) {
+        // Incompatible type — replace the entire queue with this new file
+        clearAll();
+        fileQueue = [{ file, info: fileInfo }];
+        primaryIndex = 0;
+        renderFileQueue();
+        for (const mod of Object.values(modules) as PrismModule[]) {
+          if (typeof mod.setFileQueue === "function") mod.setFileQueue(fileQueue);
+        }
+        applyPrimaryFileContext();
+        setState("files_loaded");
+        return;
+      }
+    }
+
     fileQueue.push({ file, info: fileInfo });
     if (isFirst) primaryIndex = 0;
 
@@ -1013,7 +1150,9 @@ export function initPrism(opts: PrismUIOptions): () => void {
     renderFileQueue();
 
     // Notify workbench of file queue changes
-    (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
+    for (const mod of Object.values(modules) as PrismModule[]) {
+      if (typeof mod.setFileQueue === "function") mod.setFileQueue(fileQueue);
+    }
 
     if (isFirst) {
       applyPrimaryFileContext();
@@ -1025,7 +1164,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
   function renderFileQueue(): void {
     revokeQueueThumbUrls();
     opts.fileQueueList.innerHTML = "";
-    if (fileQueue.length === 0) return;
+    if (fileQueue.length <= 1) return;
 
     for (let idx = 0; idx < fileQueue.length; idx++) {
       const { info, file } = fileQueue[idx];
@@ -1060,7 +1199,9 @@ export function initPrism(opts: PrismUIOptions): () => void {
                 ? "MD"
                 : info.category === "pdf"
                   ? "PDF"
-                  : "FILE";
+                  : info.category === "text"
+                    ? "TXT"
+                    : "FILE";
       }
       row.appendChild(thumb);
 
@@ -1110,6 +1251,24 @@ export function initPrism(opts: PrismUIOptions): () => void {
         row.appendChild(actions);
       }
 
+      // Click row to select as active file
+      row.style.cursor = "pointer";
+      row.setAttribute("role", "button");
+      row.setAttribute("tabindex", "0");
+      const selectIdx = idx;
+      row.addEventListener("click", (e: MouseEvent) => {
+        // Don't select if clicking a queue action button
+        if ((e.target as HTMLElement).closest(".prism-queue-actions")) return;
+        if (selectIdx === primaryIndex) return;
+        selectQueueItem(selectIdx);
+      });
+      row.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          if (selectIdx !== primaryIndex) selectQueueItem(selectIdx);
+        }
+      });
+
       const statusEl = el("span", "prism-queue-status prism-queue-status--ready", "ready");
       row.appendChild(statusEl);
 
@@ -1153,7 +1312,9 @@ export function initPrism(opts: PrismUIOptions): () => void {
     else if (from < primaryIndex && to >= primaryIndex) primaryIndex--;
     else if (from > primaryIndex && to <= primaryIndex) primaryIndex++;
     renderFileQueue();
-    (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
+    for (const mod of Object.values(modules) as PrismModule[]) {
+      if (typeof mod.setFileQueue === "function") mod.setFileQueue(fileQueue);
+    }
   }
 
   function removeQueueItem(idx: number): void {
@@ -1177,7 +1338,18 @@ export function initPrism(opts: PrismUIOptions): () => void {
     }
 
     renderFileQueue();
-    (modules.workbench as WorkbenchModule).setFileQueue(fileQueue);
+    for (const mod of Object.values(modules) as PrismModule[]) {
+      if (typeof mod.setFileQueue === "function") mod.setFileQueue(fileQueue);
+    }
+  }
+
+  function selectQueueItem(idx: number): void {
+    if (idx < 0 || idx >= fileQueue.length || idx === primaryIndex) return;
+    if (prismState === "processing") return;
+    primaryIndex = idx;
+    resetOutput();
+    applyPrimaryFileContext();
+    setState("files_loaded");
   }
 
   function formatDuration(sec: number | null): string {
@@ -1220,7 +1392,9 @@ export function initPrism(opts: PrismUIOptions): () => void {
     const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     requestAnimationFrame(() => {
       if (destroyed) return;
-      opts.outputSummary.scrollIntoView({
+      // If outputSummary is hidden (doc card mode), scroll to the preview section instead
+      const target = opts.outputSummary.style.display === "none" ? opts.previewSection : opts.outputSummary;
+      target.scrollIntoView({
         behavior: smooth ? "smooth" : "auto",
         block: "start",
       });
@@ -1259,15 +1433,15 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (isDocumentResult(result)) {
       setState("processing");
       opts.terminalLog.textContent = "";
-      opts.progressFill.classList.add("prism-progress-fill--indeterminate");
-      opts.progressText.textContent = "Processing...";
+      // Skip the progress bar for document ops — they're typically instant
+      // (Scribe is sync, Flatcap only waits on CDN load which has its own feedback)
 
       try {
-        opts.terminalLog.appendChild(document.createTextNode(`[${activeModuleId}] processing...\n`));
+        opts.terminalLog.appendChild(document.createTextNode(`[${logTimestamp()}] ${activeModuleId} processing...\n`));
         const data = await result.execute();
         if (destroyed) return;
 
-        opts.terminalLog.appendChild(document.createTextNode(`[${activeModuleId}] done. ${formatSize(data.byteLength)} output.\n`));
+        opts.terminalLog.appendChild(document.createTextNode(`[${logTimestamp()}] ${activeModuleId} done \u2014 ${formatSize(data.byteLength)}\n`));
         opts.terminalLog.scrollTop = opts.terminalLog.scrollHeight;
         outputData = data;
         outputName = result.outputName;
@@ -1275,11 +1449,18 @@ export function initPrism(opts: PrismUIOptions): () => void {
         triggerRunAck();
         setState("complete");
         scrollToOutputSummary();
+
+        // Fire metadata diff for document outputs (e.g. verify annotation removal)
+        const currentFile = getCurrentFile();
+        if (currentFile && outputData) {
+          runMetadataDiffAsync(currentFile, outputData, outputName);
+        }
       } catch (err) {
         if (destroyed) return;
         const msg = err instanceof Error ? err.message : "Document processing failed.";
-        opts.terminalLog.appendChild(document.createTextNode(`error: ${msg}\n`));
+        opts.terminalLog.appendChild(document.createTextNode(`[${logTimestamp()}] error: ${msg}\n`));
         showToast(msg);
+        if (!terminalOpen) toggleTerminal();
         setState("error");
       }
       return;
@@ -1380,15 +1561,25 @@ export function initPrism(opts: PrismUIOptions): () => void {
       }
     });
 
+    row.appendChild(el("span", "prism-output-dl-icon", "\u2913")); // ⤓ download arrow
     row.appendChild(el("span", "prism-output-name", name));
     row.appendChild(el("span", "prism-output-size", formatSize(data.byteLength)));
 
     // Compression ratio vs input
+    // Skip for document pipeline cross-format (e.g. md→html) where size increase is inherent
     const cfi = getCurrentFileInfo();
     if (cfi) {
+      const inputExt = cfi.name.split(".").pop()?.toLowerCase() || "";
+      const outputExt = name.split(".").pop()?.toLowerCase() || "";
+      const crossFormatDoc = isDocumentModule(activeModuleId) && inputExt !== outputExt;
+      // Flatcap: only show size ratio when flatten or strip actually removed content
+      const flatcapNoStrip = activeModuleId === "flatcap" && (() => {
+        const cfg = modules[activeModuleId].getConfig() as { flattenAnnotations?: boolean; stripMetadata?: boolean };
+        return !cfg.flattenAnnotations && !cfg.stripMetadata;
+      })();
       const inputSize = cfi.size;
       const outputSize = data.byteLength;
-      if (inputSize > 0 && outputSize !== inputSize) {
+      if (inputSize > 0 && outputSize !== inputSize && !crossFormatDoc && !flatcapNoStrip) {
         const ratio = ((1 - outputSize / inputSize) * 100);
         const ratioEl = el("span", "prism-output-ratio");
         if (ratio > 0) {
@@ -1407,6 +1598,29 @@ export function initPrism(opts: PrismUIOptions): () => void {
     }
 
     opts.outputSummary.appendChild(row);
+
+    // "Inspect in Lens" link — lets users analyze their output
+    if (handoffSupported) {
+      const inspectBtn = el("button", "prism-output-inspect", "Inspect output in Lens");
+      inspectBtn.addEventListener("click", async () => {
+        if (!outputData || !outputName) return;
+        inspectBtn.textContent = "Handing off...";
+        inspectBtn.disabled = true;
+        try {
+          const ext = outputName.split(".").pop()?.toLowerCase() || "";
+          const mime = mimeForExtension(ext);
+          const outFile = new File([outputData], outputName, { type: mime });
+          const token = await createFileHandoff(outFile);
+          window.location.href = buildLensHandoffUrl(token);
+        } catch {
+          showToast("Could not hand off to Lens.");
+          inspectBtn.textContent = "Inspect output in Lens";
+          inspectBtn.disabled = false;
+        }
+      });
+      opts.outputSummary.appendChild(inspectBtn);
+    }
+
     show(opts.outputSummary);
   }
 
@@ -1576,47 +1790,179 @@ export function initPrism(opts: PrismUIOptions): () => void {
   function showOutputPreview(data: Uint8Array, name: string, visualUnchanged = false): void {
     hideAllPreviews();
     show(opts.previewSection);
-    renderOutputSummary(data, name, visualUnchanged);
 
     const ext = name.split(".").pop()?.toLowerCase() || "";
     const mime = mimeForExtension(ext);
     const blob = new Blob([data], { type: mime });
     previewUrl = URL.createObjectURL(blob);
 
-    if (mime.startsWith("video/")) {
-      opts.previewVideo.src = previewUrl;
-      show(opts.previewVideo);
-    } else if (mime.startsWith("audio/")) {
-      opts.previewAudio.src = previewUrl;
-      show(opts.previewAudio);
-    } else if (mime.startsWith("image/")) {
-      opts.previewImg.src = previewUrl;
-      opts.previewImg.style.cursor = "pointer";
-      opts.previewImg.setAttribute("role", "button");
-      opts.previewImg.setAttribute("tabindex", "0");
-      opts.previewImg.setAttribute("title", "Open full-size image");
-      opts.previewImg.onclick = () => { openImageViewer(); };
-      opts.previewImg.onkeydown = (e: KeyboardEvent) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          openImageViewer();
+    if (ext === "html" || ext === "pdf") {
+      // Unified card: download header → preview → actions → inspect
+      renderDocCard(data, name, ext, visualUnchanged);
+    } else {
+      // All other types: separate download bar + inline preview
+      renderOutputSummary(data, name, visualUnchanged);
+
+      if (mime.startsWith("video/")) {
+        opts.previewVideo.src = previewUrl;
+        show(opts.previewVideo);
+      } else if (mime.startsWith("audio/")) {
+        opts.previewAudio.src = previewUrl;
+        show(opts.previewAudio);
+      } else if (mime.startsWith("image/")) {
+        opts.previewImg.src = previewUrl;
+        opts.previewImg.style.cursor = "pointer";
+        opts.previewImg.setAttribute("role", "button");
+        opts.previewImg.setAttribute("tabindex", "0");
+        opts.previewImg.setAttribute("title", "Open full-size image");
+        opts.previewImg.onclick = () => { openImageViewer(); };
+        opts.previewImg.onkeydown = (e: KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openImageViewer();
+          }
+        };
+        show(opts.previewImg);
+      } else if (mime.startsWith("text/") || ext === "srt" || ext === "ass" || ext === "ssa" || ext === "vtt") {
+        const text = new TextDecoder().decode(data);
+        opts.previewText.textContent = text;
+        show(opts.previewText);
+      }
+      // pdf + unknown: download bar is sufficient, no inline preview
+    }
+  }
+
+  function renderDocCard(data: Uint8Array, name: string, ext: string, visualUnchanged: boolean): void {
+    // Hide the separate output summary — everything lives in one card
+    opts.outputSummary.innerHTML = "";
+    hide(opts.outputSummary);
+
+    const card = document.createElement("div");
+    card.className = "prism-doc-card";
+
+    // ── Download header ──────────────────────────────────────────────
+    const header = el("div", "prism-doc-card-header");
+    header.setAttribute("role", "button");
+    header.setAttribute("tabindex", "0");
+    header.setAttribute("aria-label", `Download ${name}`);
+    header.addEventListener("click", () => { downloadOutput(); });
+    header.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); downloadOutput(); }
+    });
+    header.appendChild(el("span", "prism-output-dl-icon", "\u2913"));
+    header.appendChild(el("span", "prism-output-name", name));
+    header.appendChild(el("span", "prism-output-size", formatSize(data.byteLength)));
+
+    const cfi = getCurrentFileInfo();
+    if (cfi) {
+      const inputExt = cfi.name.split(".").pop()?.toLowerCase() || "";
+      const outputExt = name.split(".").pop()?.toLowerCase() || "";
+      const crossFormatDoc = isDocumentModule(activeModuleId) && inputExt !== outputExt;
+      const flatcapNoStrip = activeModuleId === "flatcap" && (() => {
+        const cfg = modules[activeModuleId].getConfig() as { flattenAnnotations?: boolean; stripMetadata?: boolean };
+        return !cfg.flattenAnnotations && !cfg.stripMetadata;
+      })();
+      const inputSize = cfi.size;
+      const outputSize = data.byteLength;
+      if (inputSize > 0 && outputSize !== inputSize && !crossFormatDoc && !flatcapNoStrip) {
+        const ratio = ((1 - outputSize / inputSize) * 100);
+        const ratioEl = el("span", "prism-output-ratio");
+        if (ratio > 0) {
+          ratioEl.textContent = `${Math.round(ratio)}% smaller`;
+        } else {
+          ratioEl.textContent = `${Math.round(Math.abs(ratio))}% larger`;
+          ratioEl.classList.add("prism-output-ratio--larger");
         }
-      };
-      show(opts.previewImg);
-    } else if (ext === "html") {
+        header.appendChild(ratioEl);
+      }
+    }
+
+    if (visualUnchanged) {
+      header.appendChild(el("span", "prism-output-badge", "No visual change"));
+    }
+
+    card.appendChild(header);
+
+    // ── Content area (format-specific) ───────────────────────────────
+    if (ext === "html") {
+      const htmlContent = new TextDecoder().decode(data);
+
       const iframe = document.createElement("iframe");
       iframe.className = "prism-preview-doc";
       iframe.sandbox.add("allow-same-origin");
-      iframe.srcdoc = new TextDecoder().decode(data);
+      iframe.srcdoc = htmlContent;
       iframe.title = "Document preview";
-      const preview = opts.previewSection.querySelector(".prism-preview");
-      if (preview) preview.appendChild(iframe);
-      else opts.previewSection.appendChild(iframe);
-    } else if (mime.startsWith("text/") || ext === "srt" || ext === "ass" || ext === "ssa" || ext === "vtt") {
-      const text = new TextDecoder().decode(data);
-      opts.previewText.textContent = text;
-      show(opts.previewText);
+      card.appendChild(iframe);
+
+      const btnRow = el("div", "prism-preview-doc-actions");
+      const printBtn = el("button", "prism-preview-doc-print", "Save as PDF");
+      printBtn.addEventListener("click", () => {
+        const w = window.open("", "_blank");
+        if (w) {
+          w.document.write(htmlContent);
+          w.document.close();
+          w.addEventListener("load", () => w.print());
+          setTimeout(() => { try { w.print(); } catch { /* already printed */ } }, 600);
+        }
+      });
+      btnRow.appendChild(printBtn);
+      const openBtn = el("button", "prism-preview-doc-open", "Open HTML");
+      openBtn.addEventListener("click", () => {
+        if (previewUrl) window.open(previewUrl, "_blank", "noopener,noreferrer");
+      });
+      btnRow.appendChild(openBtn);
+      card.appendChild(btnRow);
+    } else if (ext === "pdf") {
+      const pdfFrame = document.createElement("iframe");
+      pdfFrame.className = "prism-preview-doc";
+      if (previewUrl) pdfFrame.src = previewUrl;
+      pdfFrame.title = "PDF preview";
+      card.appendChild(pdfFrame);
+
+      const btnRow = el("div", "prism-preview-doc-actions");
+      const printBtn = el("button", "prism-preview-doc-print", "Save as PDF");
+      printBtn.addEventListener("click", () => {
+        if (!previewUrl) return;
+        const w = window.open(previewUrl, "_blank");
+        if (w) {
+          w.addEventListener("load", () => { try { w.print(); } catch { /* blocked */ } });
+          setTimeout(() => { try { w.print(); } catch { /* already printed or blocked */ } }, 600);
+        }
+      });
+      btnRow.appendChild(printBtn);
+      const openBtn = el("button", "prism-preview-doc-open", "View");
+      openBtn.addEventListener("click", () => {
+        if (previewUrl) window.open(previewUrl, "_blank", "noopener,noreferrer");
+      });
+      btnRow.appendChild(openBtn);
+      card.appendChild(btnRow);
     }
+
+    // ── Inspect in Lens ──────────────────────────────────────────────
+    if (handoffSupported) {
+      const inspectBtn = el("button", "prism-doc-card-inspect", "Inspect output in Lens");
+      inspectBtn.addEventListener("click", async () => {
+        if (!outputData || !outputName) return;
+        inspectBtn.textContent = "Handing off...";
+        inspectBtn.disabled = true;
+        try {
+          const ext = outputName.split(".").pop()?.toLowerCase() || "";
+          const inspectMime = mimeForExtension(ext);
+          const outFile = new File([outputData], outputName, { type: inspectMime });
+          const token = await createFileHandoff(outFile);
+          window.location.href = buildLensHandoffUrl(token);
+        } catch {
+          showToast("Could not hand off to Lens.");
+          inspectBtn.textContent = "Inspect output in Lens";
+          inspectBtn.disabled = false;
+        }
+      });
+      card.appendChild(inspectBtn);
+    }
+
+    const preview = opts.previewSection.querySelector(".prism-preview");
+    if (preview) preview.appendChild(card);
+    else opts.previewSection.appendChild(card);
   }
 
   // ── Download ───────────────────────────────────────────────────────────
@@ -1653,6 +1999,54 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   // ── Clear ──────────────────────────────────────────────────────────────
 
+  function markConfigDirty(): void {
+    if (!configDirty) {
+      configDirty = true;
+      updateClearButton();
+    }
+  }
+
+  function updateClearButton(): void {
+    if (configDirty && prismState !== "idle") {
+      opts.btnClear.textContent = "Defaults";
+    } else {
+      opts.btnClear.textContent = "Clear";
+    }
+  }
+
+  function resetDefaults(): void {
+    // Reset only configs, keep files
+    const currentFile = getCurrentFile();
+    const currentFileInfo = getCurrentFileInfo();
+    for (const mod of Object.values(modules)) {
+      mod.reset();
+    }
+    // Re-apply file context so modules reconfigure for the current file
+    if (currentFile && currentFileInfo) {
+      for (const [id, mod] of Object.entries(modules) as [ModuleId, PrismModule][]) {
+        if (!MODULE_VISIBILITY[id].includes(currentFileInfo.category)) continue;
+        mod.configure(currentFileInfo);
+        if (typeof mod.setFile === "function") mod.setFile(currentFile);
+      }
+      if (fileQueue.length > 0) {
+        for (const mod of Object.values(modules) as PrismModule[]) {
+          if (typeof mod.setFileQueue === "function") mod.setFileQueue(fileQueue);
+        }
+      }
+    }
+    // Re-render active module
+    opts.modulePanel.innerHTML = "";
+    modules[activeModuleId].render(opts.modulePanel);
+    configDirty = false;
+    updateClearButton();
+    // Reset output if any
+    if (prismState === "complete" || prismState === "error") {
+      resetOutput();
+      setState("files_loaded");
+    }
+    showToast("Reset to defaults.");
+  }
+
   function clearAll(): void {
     fileQueue = [];
     primaryIndex = 0;
@@ -1679,6 +2073,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
       mod.reset();
     }
     activeModuleId = "workbench";
+    configDirty = false;
     setBeforeUnload(false);
     setState("idle");
   }
@@ -1686,16 +2081,10 @@ export function initPrism(opts: PrismUIOptions): () => void {
   // ── Terminal Toggle ────────────────────────────────────────────────────
 
   function toggleTerminal(): void {
-    terminalOpen = !terminalOpen;
-    if (terminalOpen) {
-      show(opts.terminalBody);
-      opts.terminalToggle.setAttribute("aria-expanded", "true");
-      opts.terminalToggle.textContent = "\u25be Terminal";
-    } else {
-      hide(opts.terminalBody);
-      opts.terminalToggle.setAttribute("aria-expanded", "false");
-      opts.terminalToggle.textContent = "\u25b8 Terminal";
-    }
+    const collapsed = opts.logWrap.classList.toggle("prism-log-collapsed");
+    terminalOpen = !collapsed;
+    opts.terminalToggle.setAttribute("aria-expanded", String(!collapsed));
+    localStorage.setItem("prism-log-collapsed", collapsed ? "1" : "0");
   }
 
   // ── Upload Zone Events ─────────────────────────────────────────────────
@@ -1753,15 +2142,18 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   // Page-level drag-and-drop (allows dropping files anywhere on the page)
   on(opts.page, "dragover", (e: DragEvent) => {
-    e.preventDefault();
+    // Only accept file drags (not text/link drags)
+    if (e.dataTransfer?.types.includes("Files")) {
+      e.preventDefault();
+    }
   });
 
   on(opts.page, "drop", (e: DragEvent) => {
-    e.preventDefault();
-    dragCounter = 0;
-    opts.uploadZone.classList.remove("prism-drop-active");
     const files = e.dataTransfer?.files;
-    if (files) {
+    if (files && files.length > 0) {
+      e.preventDefault();
+      dragCounter = 0;
+      opts.uploadZone.classList.remove("prism-drop-active");
       for (let i = 0; i < files.length; i++) {
         processFile(files[i]);
       }
@@ -1779,7 +2171,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     }
   });
 
-  // ── Module Tab Clicks ─────────────────────────────────────────────────
+  // ── Module Tab Clicks + Keyboard ──────────────────────────────────────
 
   on(opts.moduleBar, "click", (e: MouseEvent) => {
     const target = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-module]");
@@ -1788,6 +2180,36 @@ export function initPrism(opts: PrismUIOptions): () => void {
     const modId = target.dataset.module as ModuleId;
     if (modId && modules[modId]) {
       switchModule(modId);
+    }
+  });
+
+  // Arrow key navigation between visible tabs (WAI-ARIA tabs pattern)
+  on(opts.moduleBar, "keydown", (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement;
+    if (!target.matches("[data-module]")) return;
+
+    const visibleTabs = Array.from(
+      opts.moduleBar.querySelectorAll<HTMLButtonElement>("[data-module]"),
+    ).filter((t) => t.style.display !== "none" && !t.disabled);
+    const idx = visibleTabs.indexOf(target as HTMLButtonElement);
+    if (idx < 0) return;
+
+    let next: HTMLButtonElement | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      next = visibleTabs[(idx + 1) % visibleTabs.length];
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      next = visibleTabs[(idx - 1 + visibleTabs.length) % visibleTabs.length];
+    } else if (e.key === "Home") {
+      next = visibleTabs[0];
+    } else if (e.key === "End") {
+      next = visibleTabs[visibleTabs.length - 1];
+    }
+
+    if (next) {
+      e.preventDefault();
+      next.focus();
+      const modId = next.dataset.module as ModuleId;
+      if (modId && modules[modId]) switchModule(modId);
     }
   });
 
@@ -1802,15 +2224,19 @@ export function initPrism(opts: PrismUIOptions): () => void {
     }
 
     const loadableState = isLoadableState(prismState);
+    const isDocMod = isDocumentModule(activeModuleId);
     const currentEngineState = engine?.state ?? "idle";
-    if (loadableState && (currentEngineState === "idle" || currentEngineState === "error")) {
-      const eng = ensureEngine();
-      opts.engineStatus.textContent = "loading engine...";
-      void eng.load().catch(() => { });
-      return;
-    }
 
-    if (currentEngineState === "loading") return;
+    // Document modules skip engine loading entirely
+    if (!isDocMod) {
+      if (loadableState && (currentEngineState === "idle" || currentEngineState === "error")) {
+        const eng = ensureEngine();
+        opts.engineStatus.textContent = "loading engine...";
+        void eng.load().catch(() => { });
+        return;
+      }
+      if (currentEngineState === "loading") return;
+    }
 
     void run();
   });
@@ -1818,6 +2244,22 @@ export function initPrism(opts: PrismUIOptions): () => void {
   on(opts.btnCancel, "click", () => {
     vfsInputSignatures.clear();
     void engine?.cancel();
+  });
+
+  // Keyboard shortcuts: Ctrl+Enter to run, Escape to cancel
+  on(document, "keydown", (e: KeyboardEvent) => {
+    if (destroyed) return;
+    // Don't intercept when focus is in an input/textarea/contenteditable
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      opts.btnRun.click();
+    } else if (e.key === "Escape" && prismState === "processing") {
+      e.preventDefault();
+      opts.btnCancel.click();
+    }
   });
   on(opts.btnLens, "click", async () => {
     const currentFile = getCurrentFile();
@@ -1841,27 +2283,35 @@ export function initPrism(opts: PrismUIOptions): () => void {
     }
   });
   on(opts.btnUpload, "click", () => { opts.fileInput.click(); });
-  on(opts.btnClear, "click", () => { clearAll(); });
+  on(opts.btnClear, "click", () => {
+    if (configDirty && prismState !== "idle") {
+      resetDefaults();
+    } else {
+      clearAll();
+    }
+  });
 
-  // ── Terminal Toggle + Copy ──────────────────────────────────────────────
+  // Track config changes via delegated events on the module panel
+  on(opts.modulePanel, "input", () => { markConfigDirty(); });
+  on(opts.modulePanel, "change", () => { markConfigDirty(); });
+
+  // ── Runtime Log Toggle ─────────────────────────────────────────────────
 
   on(opts.terminalToggle, "click", () => { toggleTerminal(); });
-
-  on(opts.terminalCopy, "click", () => {
-    const log = opts.terminalLog.textContent || "";
-    // Find the ffmpeg command line (starts with "$ ffmpeg")
-    const cmdLine = log.split("\n").find((l) => l.startsWith("$ ffmpeg"));
-    const text = cmdLine ? cmdLine.slice(2) : log; // strip the "$ " prefix
-    navigator.clipboard.writeText(text).then(
-      () => { showToast("Copied to clipboard."); },
-      () => { showToast("Couldn't copy \u2014 try selecting manually."); },
-    );
+  on(opts.terminalToggle, "keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTerminal(); }
   });
+
+  // Restore collapsed state from localStorage
+  if (localStorage.getItem("prism-log-collapsed") === "1") {
+    opts.logWrap.classList.add("prism-log-collapsed");
+    opts.terminalToggle.setAttribute("aria-expanded", "false");
+    terminalOpen = false;
+  }
 
   // ── Initial UI State ───────────────────────────────────────────────────
 
   setState("idle");
-  hide(opts.terminalBody);
 
   async function initLensHandoffSupport(): Promise<void> {
     handoffSupported = await supportsFileHandoff();
@@ -1961,6 +2411,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
 
   return () => {
     destroyed = true;
+    if (logDimTimer !== null) { clearTimeout(logDimTimer); logDimTimer = null; }
     setBeforeUnload(false);
     opts.previewVideo.pause();
     opts.previewVideo.removeAttribute("src");
@@ -1981,6 +2432,7 @@ export function initPrism(opts: PrismUIOptions): () => void {
     if (toast) toast.remove();
     engine?.setCallbacks({});
     engine = null;
+    document.title = "Prism | woflo";
     cleanups.forEach((fn) => fn());
     cleanups.length = 0;
   };

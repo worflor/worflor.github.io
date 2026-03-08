@@ -109,6 +109,18 @@ const seo = {
           class="lens-preview-text"
           style="display:none">
         </pre>
+        <div
+          id="lens-preview-markdown"
+          class="lens-preview-markdown"
+          style="display:none">
+        </div>
+        <iframe
+          id="lens-preview-html"
+          class="lens-preview-html"
+          sandbox="allow-same-origin"
+          title="HTML preview"
+          style="display:none">
+        </iframe>
       </div>
     </section>
 
@@ -194,30 +206,6 @@ const seo = {
           <line x1="12" y1="2" x2="12" y2="22"></line>
           <line x1="2" y1="8.5" x2="22" y2="8.5"></line>
           <line x1="2" y1="15.5" x2="22" y2="15.5"></line>
-        </svg>
-      </button>
-      <button
-        class="tool-action-btn action-btn action-btn--icon"
-        id="lens-action-cage"
-        style="display:none"
-        aria-label="Throw in the Cage"
-        title="Throw in the Cage"
-      >
-        <svg
-          class="cage-handoff-icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <rect x="3" y="3" width="18" height="18" rx="3"></rect>
-          <path d="M7 6v12"></path>
-          <path d="M17 6v12"></path>
-          <path d="M9.5 13.5l1.6-2.2 1.8 1.9 1.6-2.7"></path>
-          <circle cx="12" cy="8.5" r="1"></circle>
         </svg>
       </button>
       <button class="tool-action-btn action-btn" id="lens-action-upload">Upload New</button>
@@ -519,6 +507,99 @@ const seo = {
     -moz-tab-size: 4;
   }
 
+  .lens-preview-markdown {
+    padding: var(--space-md) var(--space-lg);
+    max-height: clamp(14rem, 12rem + 8vw, 24rem);
+    overflow: auto;
+    font-size: var(--text-sm);
+    line-height: 1.7;
+    color: rgb(var(--color-text-rgb) / 0.85);
+  }
+  .lens-preview-markdown h1,
+  .lens-preview-markdown h2,
+  .lens-preview-markdown h3,
+  .lens-preview-markdown h4,
+  .lens-preview-markdown h5,
+  .lens-preview-markdown h6 {
+    margin-top: 1.2em;
+    margin-bottom: 0.4em;
+    line-height: 1.3;
+    color: rgb(var(--color-text-rgb));
+  }
+  .lens-preview-markdown h1 { font-size: 1.5em; }
+  .lens-preview-markdown h2 { font-size: 1.3em; }
+  .lens-preview-markdown h3 { font-size: 1.15em; }
+  .lens-preview-markdown p { margin: 0.6em 0; }
+  .lens-preview-markdown code {
+    background: rgb(var(--color-text-rgb) / 0.06);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+  }
+  .lens-preview-markdown pre {
+    background: rgb(var(--color-text-rgb) / 0.05);
+    padding: 0.8em 1em;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+  .lens-preview-markdown pre code {
+    background: none;
+    padding: 0;
+  }
+  .lens-preview-markdown blockquote {
+    margin: 0.8em 0;
+    padding: 0.4em 1em;
+    border-left: 3px solid rgb(var(--color-text-rgb) / 0.15);
+    color: rgb(var(--color-text-rgb) / 0.6);
+  }
+  .lens-preview-markdown table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.8em 0;
+    font-size: 0.92em;
+  }
+  .lens-preview-markdown th,
+  .lens-preview-markdown td {
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    padding: 0.4em 0.6em;
+    text-align: left;
+  }
+  .lens-preview-markdown th {
+    background: rgb(var(--color-text-rgb) / 0.04);
+    font-weight: 600;
+  }
+  .lens-preview-markdown ul,
+  .lens-preview-markdown ol {
+    padding-left: 1.6em;
+  }
+  .lens-preview-markdown li { margin: 0.2em 0; }
+  .lens-preview-markdown a {
+    color: rgb(var(--color-text-rgb) / 0.7);
+    text-decoration: underline;
+    text-decoration-color: rgb(var(--color-text-rgb) / 0.2);
+  }
+  .lens-preview-markdown img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+  }
+  .lens-preview-markdown hr {
+    border: none;
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    margin: 1.5em 0;
+  }
+  .lens-preview-html {
+    width: 100%;
+    min-height: 300px;
+    max-height: 500px;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-lg);
+    background: #fff;
+  }
+
   /* ── Summary ────────────────────────────────────────────── */
 
   .lens-summary {
@@ -648,11 +729,6 @@ const seo = {
     flex-shrink: 0;
   }
 
-  .cage-handoff-icon {
-    width: 1.05rem;
-    height: 1.05rem;
-    flex-shrink: 0;
-  }
 
   /* ── Reduced Motion ─────────────────────────────────────── */
 
@@ -905,6 +981,17 @@ const seo = {
     text-wrap: pretty;
   }
 
+  .lens-page .dp-value.dp-copyable {
+    cursor: pointer;
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+  .lens-page .dp-value.dp-copyable:hover {
+    color: rgb(var(--chromatic-cyan));
+  }
+  .lens-page .dp-value.dp-copied {
+    color: rgb(var(--chromatic-cyan)) !important;
+  }
+
   .lens-page .dp-value.dp-na {
     opacity: 0.2;
     font-style: italic;
@@ -1048,6 +1135,10 @@ const seo = {
     .lens-page .dp-row:hover {
       background: transparent;
       box-shadow: none;
+    }
+
+    .lens-page .dp-value.dp-copyable:hover {
+      color: inherit;
     }
   }
 

@@ -2,6 +2,7 @@
 // Consumes data from lens-exif.ts. No module-level mutable state — all
 // state is scoped inside initLens() so Astro lifecycle produces a clean tear-down.
 
+import { marked } from "marked";
 import { parseFile, LENS_CATEGORY_ORDER, type ExifCategory, type ExifField, type LensData } from "./exif";
 import { isPrismSupportedFile } from "../prism/engine";
 import { parsePrismDraftSnapshot } from "../prism/draft";
@@ -25,6 +26,8 @@ export interface LensUIOptions {
   previewAudio: HTMLAudioElement;
   previewVideo: HTMLVideoElement;
   previewText: HTMLPreElement;
+  previewMarkdown: HTMLElement;
+  previewHtml: HTMLIFrameElement;
   summarySection: HTMLElement;
   summaryFields: HTMLElement;
   summaryDynamic: HTMLElement;
@@ -47,6 +50,8 @@ export const LENS_UI_IDS: LensUIIdMap = {
   previewAudio: "lens-preview-audio",
   previewVideo: "lens-preview-video",
   previewText: "lens-preview-text",
+  previewMarkdown: "lens-preview-markdown",
+  previewHtml: "lens-preview-html",
   summarySection: "lens-summary-section",
   summaryFields: "lens-summary-fields",
   summaryDynamic: "lens-summary-dynamic",
@@ -101,6 +106,9 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
   const previewAudio = queryAudioById(root, LENS_UI_IDS.previewAudio);
   const previewVideo = queryVideoById(root, LENS_UI_IDS.previewVideo);
   const previewText = queryPreById(root, LENS_UI_IDS.previewText);
+  const previewMarkdown = queryById(root, LENS_UI_IDS.previewMarkdown);
+  const previewHtmlEl = queryById(root, LENS_UI_IDS.previewHtml);
+  const previewHtml = previewHtmlEl instanceof HTMLIFrameElement ? previewHtmlEl : null;
   const summarySection = queryById(root, LENS_UI_IDS.summarySection);
   const summaryFields = queryById(root, LENS_UI_IDS.summaryFields);
   const summaryDynamic = queryById(root, LENS_UI_IDS.summaryDynamic);
@@ -113,7 +121,7 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
 
   if (
     !container || !uploadZone || !fileInput || !previewSection ||
-    !previewImg || !previewAudio || !previewVideo || !previewText ||
+    !previewImg || !previewAudio || !previewVideo || !previewText || !previewMarkdown || !previewHtml ||
     !summarySection || !summaryFields || !summaryDynamic ||
     !actionsBar || !actionCopyBtn ||
     !actionPrismBtn ||
@@ -124,7 +132,7 @@ export function resolveLensUIOptions(root: ParentNode = document): LensUIOptions
 
   return {
     container, uploadZone, fileInput, previewSection,
-    previewImg, previewAudio, previewVideo, previewText,
+    previewImg, previewAudio, previewVideo, previewText, previewMarkdown, previewHtml,
     summarySection, summaryFields, summaryDynamic,
     actionsBar, actionCopyBtn, actionPrismBtn, actionUploadBtn,
     loadingIndicator, emptyState,
@@ -291,6 +299,10 @@ export function initLens(opts: LensUIOptions): () => void {
     opts.previewVideo.removeAttribute("src");
     opts.previewText.style.display = "none";
     opts.previewText.textContent = "";
+    opts.previewMarkdown.style.display = "none";
+    opts.previewMarkdown.innerHTML = "";
+    opts.previewHtml.style.display = "none";
+    opts.previewHtml.removeAttribute("srcdoc");
   }
 
   function showPreview(data: LensData, objectUrl: string): void {
@@ -333,8 +345,19 @@ export function initLens(opts: LensUIOptions): () => void {
 
       case "text": {
         if (data.textPreview) {
-          opts.previewText.textContent = data.textPreview;
-          opts.previewText.style.display = "";
+          if (data.formatName === "Markdown") {
+            // Render markdown as styled HTML instead of raw text
+            const rendered = marked.parse(data.textPreview, { gfm: true, breaks: true, async: false });
+            opts.previewMarkdown.innerHTML = rendered;
+            opts.previewMarkdown.style.display = "";
+          } else if (data.formatName === "HTML") {
+            // Render HTML in a sandboxed iframe
+            opts.previewHtml.srcdoc = data.textPreview;
+            opts.previewHtml.style.display = "";
+          } else {
+            opts.previewText.textContent = data.textPreview;
+            opts.previewText.style.display = "";
+          }
           opts.previewSection.style.display = "";
         }
         break;
@@ -466,6 +489,7 @@ export function initLens(opts: LensUIOptions): () => void {
 
     opts.loadingIndicator.style.display = "none";
     currentData = data;
+    document.title = `${data.fileName} — Lens`;
 
     // Set up preview based on detected format
     showPreview(data, currentObjectUrl);
@@ -519,6 +543,7 @@ export function initLens(opts: LensUIOptions): () => void {
       if (!destroyed) opts.actionsBar.style.display = "none";
       actionBarTimer = null;
     }, ACTION_BAR_FADE_MS);
+    document.title = "Lens | woflo";
     opts.uploadZone.style.display = "";
     opts.fileInput.value = "";
   }
@@ -552,6 +577,25 @@ export function initLens(opts: LensUIOptions): () => void {
     const dt = (e as DragEvent).dataTransfer;
     if (dt && dt.files.length > 0) processFile(dt.files[0]);
   });
+
+  // Page-level drag-and-drop: accept files even when results are shown
+  const lensPage = opts.uploadZone.closest(".lens-page");
+  if (lensPage) {
+    on(lensPage as HTMLElement, "dragover", (e) => {
+      // Only accept if file is being dragged (not text/links)
+      const dt = (e as DragEvent).dataTransfer;
+      if (dt && dt.types.includes("Files")) {
+        e.preventDefault();
+      }
+    });
+    on(lensPage as HTMLElement, "drop", (e) => {
+      const dt = (e as DragEvent).dataTransfer;
+      if (dt && dt.files.length > 0) {
+        e.preventDefault();
+        processFile(dt.files[0]);
+      }
+    });
+  }
 
   // Click-to-upload
   on(opts.uploadZone, "click", () => {
@@ -695,6 +739,20 @@ export function initLens(opts: LensUIOptions): () => void {
       valueEl.textContent = "-";
     } else {
       valueEl.textContent = f.displayValue;
+      valueEl.classList.add("dp-copyable");
+      valueEl.setAttribute("role", "button");
+      valueEl.setAttribute("tabindex", "0");
+      valueEl.title = "Click to copy";
+      const copyVal = () => {
+        navigator.clipboard.writeText(f.displayValue).then(() => {
+          valueEl.classList.add("dp-copied");
+          setTimeout(() => valueEl.classList.remove("dp-copied"), 800);
+        }).catch(() => { /* ignore */ });
+      };
+      valueEl.addEventListener("click", copyVal);
+      valueEl.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copyVal(); }
+      });
     }
 
     header.append(label, valueEl);
@@ -930,6 +988,7 @@ export function initLens(opts: LensUIOptions): () => void {
     if (actionBarTimer) clearTimeout(actionBarTimer);
     const toast = document.querySelector(".lens-toast");
     if (toast) toast.remove();
+    document.title = "Lens | woflo";
     cleanups.forEach((fn) => fn());
     cleanups.length = 0;
   };

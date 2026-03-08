@@ -98,7 +98,7 @@ export interface FileInfo {
   /** Human-readable size string */
   sizeLabel: string;
   /** Detected media category */
-  category: "video" | "audio" | "image" | "subtitle" | "markdown" | "pdf" | "unknown";
+  category: "video" | "audio" | "image" | "subtitle" | "markdown" | "pdf" | "text" | "unknown";
   /** Resolution as "WxH" string, e.g. "1920x1080" (video only, null otherwise) */
   resolution: string | null;
   /** Video codec name (e.g. "h264"), null if not a video or not detected */
@@ -201,8 +201,10 @@ export function detectCategory(file: File): FileInfo["category"] {
   if (t.startsWith("audio/") || /\.(mp3|wav|flac|aac|ogg|opus|m4a|wma|aiff|ape|wv)$/.test(n)) return "audio";
   if (t.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|heic|heif|avif|svg|ico)$/.test(n)) return "image";
   if (/\.(srt|ass|ssa|vtt|sub|idx|smi|sami|lrc)$/.test(n)) return "subtitle";
+  if (/\.txt$/.test(n)) return "markdown";
   if (/\.(md|markdown)$/.test(n)) return "markdown";
   if (t === "application/pdf" || /\.pdf$/.test(n)) return "pdf";
+  if (/\.(json|xml|ya?ml|toml|csv|tsv|log|ini|cfg|conf)$/.test(n)) return "text";
   return "unknown";
 }
 
@@ -501,7 +503,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
           });
 
           const coreCDN = useMultiThread ? provider.coreMt : provider.core;
-          log(`fetching engine assets via ${provider.name}...`);
+          log(`fetching assets via ${provider.name}...`);
           const assetUrls: string[] = [
             `${provider.ffmpeg}/worker.js`,
             `${coreCDN}/ffmpeg-core.js`,
@@ -557,7 +559,7 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
               })
             : undefined;
 
-          log(`initializing engine runtime (${provider.name})...`);
+          log(`initializing runtime via ${provider.name}...`);
           await withTimeout(
             candidate.load({ classWorkerURL, coreURL, wasmURL, workerURL }),
             ENGINE_BOOT_TIMEOUT_MS,
@@ -568,13 +570,13 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
 
           ffmpeg = candidate;
           activeCallbacks.onLoadProgress?.({ loadedBytes: totalBytes, totalBytes, ratio: 1 });
-          log(`engine ready (${tier}, ${provider.name})`);
+          log(`engine ready \u2014 ${tier} via ${provider.name}`);
           setState("ready");
           return;
         } catch (err) {
           lastLoadError = err;
           const raw = err instanceof Error ? err.message : String(err);
-          log(`engine load attempt failed (${provider.name}): ${raw}`);
+          log(`engine load failed via ${provider.name}: ${raw}`);
           try {
             candidate?.terminate?.();
           } catch {
@@ -876,7 +878,8 @@ export function createEngine(callbacks: EngineCallbacks = {}): PrismEngine {
       bitrate: null,
     };
 
-    if (state === "ready" && ffmpeg) {
+    const isMedia = category === "video" || category === "audio" || category === "image" || category === "subtitle";
+    if (state === "ready" && ffmpeg && isMedia) {
       // Path B: engine is available — use native ffprobe for structured probe
       await probeViaFfprobe(file, info);
       // Fill in any gaps with browser element
@@ -986,6 +989,10 @@ export function mimeForExtension(ext: string): string {
     jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", bmp: "image/bmp",
     srt: "text/plain", vtt: "text/vtt", ass: "text/plain", ssa: "text/plain",
     html: "text/html", md: "text/markdown", pdf: "application/pdf",
+    txt: "text/plain", json: "application/json", xml: "application/xml",
+    yaml: "text/yaml", yml: "text/yaml", toml: "text/plain",
+    csv: "text/csv", tsv: "text/tab-separated-values", log: "text/plain",
+    ini: "text/plain", cfg: "text/plain", conf: "text/plain",
   };
   return map[ext.toLowerCase()] || "application/octet-stream";
 }

@@ -142,6 +142,14 @@ export async function analyzeMetadataDiff(
     outputData: Uint8Array,
     outputName: string,
 ): Promise<MetadataDiffResult> {
+    // Skip diff when the output format differs from the input (e.g. md → html).
+    // Cross-format diffs produce misleading "all fields removed" results.
+    const inputExt = inputFile.name.split(".").pop()?.toLowerCase() || "";
+    const outputExt = outputName.split(".").pop()?.toLowerCase() || "";
+    if (inputExt !== outputExt) {
+        return { inputFieldCount: 0, outputFieldCount: 0, removedCount: 0, survivingCount: 0, categories: [], cleanLevel: "none" };
+    }
+
     const { parseFile } = await import("../lens/exif");
 
     // Parse input metadata
