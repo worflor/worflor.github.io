@@ -300,45 +300,37 @@ export async function deriveFingerprint(sharedSecret: Uint8Array): Promise<strin
 
 /* ── WhisperLiveSession ──── */
 
-/**
- * Default: local-only ICE.
- * This prevents accidental metadata leakage to public STUN servers.
- * Users can opt-in to STUN via UI/URL wiring by passing `rtcConfig`.
- */
+/** Local-only ICE. No STUN/TURN — no metadata leaves the device. Default. */
 export const WHISPER_LIVE_RTC_LOCAL_ONLY: RTCConfiguration = {
   iceServers: [],
 };
 
-/** STUN config (opt-in). Multiple servers for redundancy.
- *  Port-443 servers are listed first — 443/TCP is the least-blocked port globally
- *  and passes through most restrictive firewalls. Standard 3478 servers are fallback. */
+/**
+ * Public STUN (opt-in).
+ * Each entry is contacted in parallel — diverse ports and providers maximise the
+ * chance of punching through whatever firewall combination the peer is behind.
+ *   :443  — passes QUIC-aware / HTTPS-only firewalls
+ *   :19302 — Google's dedicated STUN port, widely allowlisted
+ *   :3478  — standard STUN/TURN port, almost universally open
+ */
 export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   iceServers: [
-    {
-      urls: [
-        "stun:stun.nextcloud.com:443",       // port 443 — passes most firewalls
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-        "stun:stun.cloudflare.com:3478",
-      ]
-    },
+    { urls: "stun:stun.nextcloud.com:443" },
+    { urls: "stun:stun.relay.metered.ca:80" },
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302", "stun:stun4.l.google.com:19302"] },
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:stun.stunprotocol.org:3478" },
   ],
-  // Keep pre-gathering modest to reduce load on shared STUN infra.
-  // This remains a good reliability/latency balance for chat setup.
-  iceCandidatePoolSize: 1,
+  iceCandidatePoolSize: 2,
 };
 
 /**
- * Stealth / relay-only config.
- * Forces ALL traffic through a TURN relay (iceTransportPolicy: "relay").
- * No direct P2P — peer IPs are never exposed; data exits only via TURN.
- * Requires a TURN server in turnPool using `turns:host:443?transport=tcp`
- * so traffic is indistinguishable from HTTPS on port 443.
- * Will fail to connect if no TURN server is reachable.
+ * Relay-only. Forces all traffic through a TURN server; peer IPs are never exposed.
+ * Requires a TURN entry in turnPool, e.g. `turns:host:443?transport=tcp`.
  */
 export const WHISPER_LIVE_RTC_STEALTH: RTCConfiguration = {
   iceTransportPolicy: "relay",
-  iceServers: [], // TURN injected at connect time from turnPool
+  iceServers: [],
   iceCandidatePoolSize: 0,
 };
 
