@@ -43,6 +43,31 @@ function sampleSdp(setup: "active" | "passive" | "actpass", candidates: string[]
   ].join("\r\n");
 }
 
+function exactTransportSdp(): string {
+  return [
+    "v=0",
+    "o=- 123456789 2 IN IP4 127.0.0.1",
+    "s=-",
+    "t=0 0",
+    "a=group:BUNDLE data",
+    "a=extmap-allow-mixed",
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel",
+    "c=IN IP4 0.0.0.0",
+    "a=ice-ufrag:rawUfrag",
+    "a=ice-pwd:rawPwd1234567890",
+    "a=ice-options:trickle renomination",
+    "a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00",
+    "a=setup:actpass",
+    "a=mid:data",
+    "a=sctp-port:5000",
+    "a=max-message-size:262144",
+    "a=candidate:1 1 udp 2130706431 192.168.1.10 5000 typ host generation 0 network-id 1 network-cost 10",
+    "a=candidate:2 1 udp 1694498815 203.0.113.20 3478 typ srflx raddr 192.168.1.10 rport 5000 generation 0 network-id 1 network-cost 10",
+    "a=end-of-candidates",
+    "",
+  ].join("\r\n");
+}
+
 describe("live-handshake", () => {
   it("phrase root and scoped keys are deterministic and domain separated", async () => {
     const rootA = await derivePhraseRoot("tower lantern signal");
@@ -234,8 +259,8 @@ describe("live-sdp hardening", () => {
     const phraseRoot = await derivePhraseRoot("shared tower phrase");
     const code = await sdpToCode(offerSdp, "offer", phraseRoot);
     await assert.rejects(() => codeToSdp(code, "answer", phraseRoot));
-    const unsealed = await codeToSdp(code, "offer", phraseRoot);
-    assert.match(unsealed, /a=setup:actpass/);
+    const restored = await codeToSdp(code, "offer", phraseRoot);
+    assert.equal(restored, offerSdp);
   });
 
   it("sealed SDP rejects wrong phrase", async () => {
@@ -258,45 +283,15 @@ describe("live-sdp hardening", () => {
     phraseRoot.fill(0);
   });
 
-  it("unsealed SDP round-trips correctly with random candidates", async () => {
-    const candidates = [
-      "a=candidate:1 1 udp 2130706431 10.0.0.1 9000 typ host",
-      "a=candidate:2 1 tcp 1694498815 172.16.0.5 443 typ srflx raddr 10.0.0.1 rport 9000 tcptype passive",
-      "a=candidate:3 1 tcp 100 192.0.2.1 3478 typ relay raddr 172.16.0.5 rport 443 tcptype passive",
-    ];
-    const sdp = sampleSdp("passive", candidates);
-    const code = await sdpToCode(sdp, "answer");
+  it("unsealed SDP round-trips exactly", async () => {
+    const original = exactTransportSdp();
+    const code = await sdpToCode(original, "answer");
     const restored = await codeToSdp(code, "answer");
-    assert.match(restored, /a=ice-ufrag:testUfrag/);
-    assert.match(restored, /a=setup:passive/);
-    assert.match(restored, /typ relay/);
-    assert.match(restored, /tcptype passive/);
+    assert.equal(restored, original);
   });
 
-  it("preserves the original SDP exactly for transport compatibility", async () => {
-    const original = [
-      "v=0",
-      "o=- 123456789 2 IN IP4 127.0.0.1",
-      "s=-",
-      "t=0 0",
-      "a=group:BUNDLE data",
-      "a=extmap-allow-mixed",
-      "m=application 9 UDP/DTLS/SCTP webrtc-datachannel",
-      "c=IN IP4 0.0.0.0",
-      "a=ice-ufrag:rawUfrag",
-      "a=ice-pwd:rawPwd1234567890",
-      "a=ice-options:trickle renomination",
-      "a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00",
-      "a=setup:actpass",
-      "a=mid:data",
-      "a=sctp-port:5000",
-      "a=max-message-size:262144",
-      "a=candidate:1 1 udp 2130706431 192.168.1.10 5000 typ host generation 0 network-id 1 network-cost 10",
-      "a=candidate:2 1 udp 1694498815 203.0.113.20 3478 typ srflx raddr 192.168.1.10 rport 5000 generation 0 network-id 1 network-cost 10",
-      "a=end-of-candidates",
-      "",
-    ].join("\r\n");
-
+  it("sealed SDP round-trips exactly for transport compatibility", async () => {
+    const original = exactTransportSdp();
     const phraseRoot = await derivePhraseRoot("exact transport sdp");
     const code = await sdpToCode(original, "offer", phraseRoot);
     const restored = await codeToSdp(code, "offer", phraseRoot);

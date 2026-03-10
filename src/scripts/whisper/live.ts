@@ -323,7 +323,7 @@ export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
     { urls: "stun:global.stun.twilio.com:3478" },                     // :3478  — Twilio, major telecom
     { urls: "stun:turn.matrix.org:3478" },                            // :3478  — Matrix Foundation, nonprofit
   ],
-  iceCandidatePoolSize: 0,
+  iceCandidatePoolSize: 1,
 };
 
 /**
@@ -1025,7 +1025,7 @@ export class WhisperLiveSession {
         const uniqueTypes = [...new Set(types)];
         this.onLog(`gathered ${types.length} network path(s): ${uniqueTypes.join(", ") || "none"}`);
         if (!types.includes("srflx") && this.hasExternalAssistConfigured())
-          this.onLog("no relay candidates found, external assist may be unavailable");
+          this.onLog("no server-reflexive candidates found, cross-network connection may fail");
         if (types.length === 0)
           this.onLog("no network paths found, connection may fail");
       };
@@ -1070,7 +1070,7 @@ export class WhisperLiveSession {
     if (this.connectingGraceDone) return;
     if (this.connectingGraceTimer) return;
     this.connectingGraceDone = true;
-    this.onLog("establishing connection...");
+    this.onLog("negotiating connection, waiting for peer to finish exchange...");
 
     // On the answerer side, ICE can enter "failed" before the offerer has applied
     // the answer and started its own checks — an inherent race in non-trickle exchange.
@@ -1083,21 +1083,21 @@ export class WhisperLiveSession {
         if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
         return;
       }
-      const rd = pc.remoteDescription;
-      const ss = pc.signalingState;
-      if (rd?.type === "offer" && (ss === "stable" || ss === "have-remote-offer")) {
-        pc.setRemoteDescription(rd).catch(() => { /* non-fatal */ });
+      if (s === "failed" || s === "disconnected") {
+        const rd = pc.remoteDescription;
+        if (rd) pc.setRemoteDescription(rd).catch(() => { /* non-fatal */ });
       }
     }, 8_000);
 
     this.connectingGraceTimer = setTimeout(() => {
       this.connectingGraceTimer = null;
+      if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
       if (this.isLiveState() || this._state === "disconnected" || this._state === "error") return;
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") return;
-      this.onLog("connection timed out");
-      this.setState("error", "couldn't reach your peer. try again, or ask them to retry at the same time.");
+      this.onLog(`connection failed after waiting period (ICE: ${pc.iceConnectionState})`);
+      this.setState("error", "couldn't reach your peer. make sure both sides have external assist enabled if connecting across networks.");
       this.cleanupConnection();
-    }, CONNECTING_GRACE_TIMEOUT);
+    }, HEARTBEAT_TIMEOUT);
   }
 
   private setupPeerConnection(pc: RTCPeerConnection): void {
