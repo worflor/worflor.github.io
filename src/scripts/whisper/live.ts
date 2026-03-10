@@ -308,20 +308,21 @@ export const WHISPER_LIVE_RTC_LOCAL_ONLY: RTCConfiguration = {
 /**
  * Public STUN (opt-in).
  * Each entry is contacted in parallel — diverse ports and providers maximise the
- * chance of punching through whatever firewall combination the peer is behind.
- *   :443  — passes QUIC-aware / HTTPS-only firewalls
+ * chance of punching through whatever firewall the peer is behind.
+ *   :80    — HTTP port, almost never blocked
+ *   :443   — HTTPS port, passes strict firewalls
  *   :19302 — Google's dedicated STUN port, widely allowlisted
- *   :3478  — standard STUN/TURN port, almost universally open
+ *   :3478  — standard STUN port, universally open
  */
 export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   iceServers: [
-    { urls: ["stun:stun.nextcloud.com:443",        "stun:stun.nextcloud.com:443?transport=tcp"] },
-    { urls: ["stun:stun.relay.metered.ca:80",       "stun:stun.relay.metered.ca:80?transport=tcp"] },
-    { urls: ["stun:stun.l.google.com:19302",        "stun:stun1.l.google.com:19302",
-             "stun:stun2.l.google.com:19302",       "stun:stun3.l.google.com:19302",
-             "stun:stun4.l.google.com:19302",       "stun:stun.l.google.com:19302?transport=tcp"] },
-    { urls: ["stun:stun.cloudflare.com:3478",       "stun:stun.cloudflare.com:3478?transport=tcp"] },
-    { urls: ["stun:stun.stunprotocol.org:3478",     "stun:stun.stunprotocol.org:3478?transport=tcp"] },
+    { urls: "stun:stun.nextcloud.com:443" },
+    { urls: "stun:stun.relay.metered.ca:80" },
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302",
+             "stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302",
+             "stun:stun4.l.google.com:19302"] },
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:stun.stunprotocol.org:3478" },
   ],
   iceCandidatePoolSize: 2,
 };
