@@ -148,6 +148,8 @@ describe("live-tracker cleanup", () => {
 
     assert.equal(result.role, "offerer");
     assert.equal(getEventListeners(ac.signal, "abort").length, 0);
+    assert.ok(result.relay);
+    result.relay.destroy();
     assert.ok(FakeTrackerWebSocket.instances.length >= 1);
     for (const ws of FakeTrackerWebSocket.instances) {
       assert.ok(ws.closeCodes.length <= 1);

@@ -47,7 +47,7 @@ import {
 import { openDrawSurface, consumeDrawPreview } from "./live-draw";
 import { type DrawStreamEvent } from "./live-draw-stream";
 import { GlyphStreamDecoder } from "./live-wasm-glyph";
-import { exchangeViaTracker } from "./live-tracker";
+import { exchangeViaTracker, type TrackerRelayHandle } from "./live-tracker";
 import {
   exportGwyphToPngBlob,
   gwyphPngName,
@@ -423,6 +423,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const { signal } = ac;
   const liveSurface = document.getElementById("wl-section");
   let session: WhisperLiveSession | null = null;
+  let relayHandle: TrackerRelayHandle | null = null;
   const objectUrls = new Set<string>();
   let busy = false;
 
@@ -4438,7 +4439,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     });
   }
 
+  function attachRelayHandle(handle: TrackerRelayHandle | undefined): void {
+    if (relayHandle) relayHandle.destroy();
+    relayHandle = handle ?? null;
+    if (!relayHandle || !session) return;
+    relayHandle.setOnSignal((signal) => {
+      void session?.handleRelaySignal(signal);
+    });
+    session.setRelaySignalSender((signal) => relayHandle?.sendSignal(signal));
+  }
+
   function destroyCurrentSession(): void {
+    if (relayHandle) {
+      relayHandle.destroy();
+      relayHandle = null;
+    }
     if (!session) return;
     session.disconnect();
     session = null;
@@ -4528,6 +4543,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "handshaking":
+        if (relayHandle) {
+          relayHandle.destroy();
+          relayHandle = null;
+          session?.setRelaySignalSender(null);
+        }
         enterPhase(opts.connectingSection, "starting encryption...", true, true);
         opts.connectingStatus.textContent = "starting end-to-end encryption...";
         break;
@@ -4574,6 +4594,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "disconnected": {
+        if (relayHandle) {
+          relayHandle.destroy();
+          relayHandle = null;
+          session?.setRelaySignalSender(null);
+        }
         releaseTerminalSessionUi();
         haptic("disconnected");
         const endText = opts.disconnectedSection.querySelector(".wl-end-text");
@@ -4586,6 +4611,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
 
       case "error":
+        if (relayHandle) {
+          relayHandle.destroy();
+          relayHandle = null;
+          session?.setRelaySignalSender(null);
+        }
         releaseTerminalSessionUi();
         enterPhase(opts.errorSection, "couldn't connect", false, false);
         opts.errorMessage.textContent = detail ?? "something went wrong";
@@ -4863,6 +4893,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (aborted() || !session) return;
 
       relayActive = false;
+      attachRelayHandle(result.relay);
 
       if (result.role === "offerer" && result.peerAnswerCode) {
         await session.applyAnswer(result.peerAnswerCode);

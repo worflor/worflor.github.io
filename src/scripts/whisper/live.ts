@@ -98,6 +98,7 @@ import {
   deriveCtrlKey,
   type HandshakeRole,
 } from "./live-handshake";
+import type { TrackerRelaySignal } from "./live-tracker";
 
 /* ── Types ──── */
 
@@ -488,6 +489,10 @@ export class WhisperLiveSession {
   private connectingGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private connectingGraceDone = false;
   private iceRetryInterval: ReturnType<typeof setInterval> | null = null;
+  private setupRestartPending = false;
+  private relaySignalSender: ((signal: TrackerRelaySignal) => void) | null = null;
+  private pendingRelaySignals: TrackerRelaySignal[] = [];
+  private pendingRemoteIce: (RTCIceCandidateInit | null)[] = [];
 
   // External assist (STUN) lifecycle
   private externalAssistEstablishmentOnly: boolean;
@@ -1002,6 +1007,8 @@ export class WhisperLiveSession {
     this.onLog("applying answer code...");
     const sdp = await codeToSdp(answerCode, "answer", this.phraseRoot ?? undefined);
     await this.pc.setRemoteDescription({ type: "answer", sdp });
+    await this.flushPendingRemoteIce();
+    this.emitRelaySignal({ kind: "answer-ack" });
     this.setState("connecting");
     this.onLog("connecting peer-to-peer...");
   }
@@ -1023,6 +1030,7 @@ export class WhisperLiveSession {
     };
 
     await this.pc.setRemoteDescription({ type: "offer", sdp: offerSDP });
+    await this.flushPendingRemoteIce();
 
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
@@ -1160,8 +1168,12 @@ export class WhisperLiveSession {
   }
 
   private setupPeerConnection(pc: RTCPeerConnection): void {
-    pc.onicecandidate = (_event) => {
-      // Per-candidate logs omitted; summary logged after gathering completes
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        this.emitRelaySignal({ kind: "ice", candidate: event.candidate.toJSON() });
+      } else {
+        this.emitRelaySignal({ kind: "ice", candidate: null });
+      }
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -1187,6 +1199,7 @@ export class WhisperLiveSession {
       }
 
       if (s === "failed") {
+        if (this.isSetupState()) void this.maybeSignalIceRestart(pc);
         if ((this.isLiveState() || this._state === "recovering") && !this.iceRestartAttempted) {
           this.iceRestartAttempted = true;
           this.onLog("connection failed, waiting for path to recover...");
@@ -1242,6 +1255,101 @@ export class WhisperLiveSession {
         this.cleanupConnection();
       }
     };
+  }
+
+  setRelaySignalSender(sender: ((signal: TrackerRelaySignal) => void) | null): void {
+    this.relaySignalSender = sender;
+    if (!sender) return;
+    while (this.pendingRelaySignals.length) sender(this.pendingRelaySignals.shift()!);
+  }
+
+  async handleRelaySignal(signal: TrackerRelaySignal): Promise<void> {
+    switch (signal.kind) {
+      case "answer-ack":
+        this.onLog("peer received our answer");
+        return;
+      case "ice":
+        if (!this.pc || !this.pc.remoteDescription) {
+          this.pendingRemoteIce.push(signal.candidate);
+          return;
+        }
+        await this.applyRemoteIceCandidate(signal.candidate);
+        return;
+      case "restart-offer":
+        await this.handleRemoteRestartOffer(signal.code);
+        return;
+      case "restart-answer":
+        await this.handleRemoteRestartAnswer(signal.code);
+        return;
+    }
+  }
+
+  private emitRelaySignal(signal: TrackerRelaySignal): void {
+    if (!this.isSetupState()) return;
+    if (this.relaySignalSender) {
+      this.relaySignalSender(signal);
+    } else {
+      this.pendingRelaySignals.push(signal);
+    }
+  }
+
+  private async applyRemoteIceCandidate(candidate: RTCIceCandidateInit | null): Promise<void> {
+    if (!this.pc) return;
+    try {
+      if (candidate === null) await this.pc.addIceCandidate();
+      else await this.pc.addIceCandidate(candidate);
+    } catch (err) {
+      this.onLog(`remote candidate rejected: ${errorMessage(err)}`);
+    }
+  }
+
+  private async flushPendingRemoteIce(): Promise<void> {
+    if (!this.pc || !this.pc.remoteDescription) return;
+    while (this.pendingRemoteIce.length) {
+      await this.applyRemoteIceCandidate(this.pendingRemoteIce.shift() ?? null);
+    }
+  }
+
+  private async maybeSignalIceRestart(pc: RTCPeerConnection): Promise<void> {
+    if (!this.relaySignalSender || !this.isOfferer || this.setupRestartPending) return;
+    this.setupRestartPending = true;
+    try {
+      this.onLog("retrying connection with fresh network paths...");
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      await this.waitForICE();
+      const localSdp = pc.localDescription?.sdp;
+      if (!localSdp) return;
+      const code = await sdpToCode(localSdp, "offer", this.phraseRoot ?? undefined);
+      this.emitRelaySignal({ kind: "restart-offer", code });
+    } catch (err) {
+      this.onLog(`restart signaling failed: ${errorMessage(err)}`);
+    } finally {
+      this.setupRestartPending = false;
+    }
+  }
+
+  private async handleRemoteRestartOffer(code: string): Promise<void> {
+    if (!this.pc || !this.phraseRoot || this.isOfferer) return;
+    this.onLog("peer is retrying the connection...");
+    const sdp = await codeToSdp(code, "offer", this.phraseRoot);
+    await this.pc.setRemoteDescription({ type: "offer", sdp });
+    await this.flushPendingRemoteIce();
+    const answer = await this.pc.createAnswer();
+    await this.pc.setLocalDescription(answer);
+    await this.waitForICE();
+    const localSdp = this.pc.localDescription?.sdp;
+    if (!localSdp) return;
+    const answerCode = await sdpToCode(localSdp, "answer", this.phraseRoot);
+    this.emitRelaySignal({ kind: "restart-answer", code: answerCode });
+  }
+
+  private async handleRemoteRestartAnswer(code: string): Promise<void> {
+    if (!this.pc || !this.phraseRoot || !this.isOfferer) return;
+    this.onLog("peer sent fresh network paths");
+    const sdp = await codeToSdp(code, "answer", this.phraseRoot);
+    await this.pc.setRemoteDescription({ type: "answer", sdp });
+    await this.flushPendingRemoteIce();
   }
 
   /* ── DataChannel ────────────────────────────────────────── */
@@ -2347,8 +2455,12 @@ export class WhisperLiveSession {
     this.connectingGraceDone = false;
     this.stateBeforeRecovery = null;
     this.iceRestartAttempted = false;
+    this.setupRestartPending = false;
     this.externalAssistDropped = false;
     this.turnInjected = false;
+    this.relaySignalSender = null;
+    this.pendingRelaySignals.length = 0;
+    this.pendingRemoteIce.length = 0;
 
     const { dc, pc } = this;
     this.dc = this.pc = null;

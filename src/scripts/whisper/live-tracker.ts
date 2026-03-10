@@ -10,7 +10,7 @@
  */
 
 import { randomBytes } from "./wasm";
-import { TE, hkdf } from "./live-crypto";
+import { TE, TD, hkdf } from "./live-crypto";
 import { derivePhraseRoot, derivePhraseScopedKey } from "./live-handshake";
 
 /* ── API ──────────────────────────────────────────────────── */
@@ -18,11 +18,24 @@ import { derivePhraseRoot, derivePhraseScopedKey } from "./live-handshake";
 interface TrackerSignalResult {
   role: "offerer" | "answerer";
   peerAnswerCode?: string; // present when role === "offerer"
+  relay?: TrackerRelayHandle;
 }
 
 interface TrackerSignalCallbacks {
   onStatus: (msg: string) => void;
   onLog: (msg: string) => void;
+}
+
+export type TrackerRelaySignal =
+  | { kind: "answer-ack" }
+  | { kind: "ice"; candidate: RTCIceCandidateInit | null }
+  | { kind: "restart-offer"; code: string }
+  | { kind: "restart-answer"; code: string };
+
+export interface TrackerRelayHandle {
+  destroy: () => void;
+  sendSignal: (signal: TrackerRelaySignal) => void;
+  setOnSignal: (cb: ((signal: TrackerRelaySignal) => void) | null) => void;
 }
 
 /* ── Constants ────────────────────────────────────────────── */
@@ -44,6 +57,7 @@ export const PAD_CHAR = ".";
 export const MIN_CODE_LEN = 40;
 export const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 export const TRACKER_MAX_MESSAGE_LEN = 8192;
+const TRACKER_SIGNAL_TYPE = "whisper-signal";
 
 // Concurrent tracker socket budget (module-scoped, survives pool teardown).
 let liveSockets = 0;
@@ -160,6 +174,43 @@ export function parseTrackerMessage(raw: unknown): Record<string, unknown> | nul
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
     return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function b64url(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function b64urlDecode(s: string): Uint8Array {
+  const pad = (4 - (s.length % 4)) % 4;
+  const b64 = (s + "=".repeat(pad)).replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function encodeTrackerRelaySignal(signal: TrackerRelaySignal): string {
+  return b64url(TE.encode(JSON.stringify(signal)));
+}
+
+function decodeTrackerRelaySignal(encoded: string): TrackerRelaySignal | null {
+  try {
+    const parsed = JSON.parse(TD.decode(b64urlDecode(encoded))) as Partial<TrackerRelaySignal>;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.kind !== "string") return null;
+    if (parsed.kind === "answer-ack") return { kind: "answer-ack" };
+    if (parsed.kind === "ice") {
+      if (!("candidate" in parsed)) return null;
+      return { kind: "ice", candidate: (parsed as { candidate: RTCIceCandidateInit | null }).candidate ?? null };
+    }
+    if ((parsed.kind === "restart-offer" || parsed.kind === "restart-answer") && typeof (parsed as { code?: unknown }).code === "string") {
+      return { kind: parsed.kind, code: (parsed as { code: string }).code };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -557,9 +608,17 @@ function connectToTracker(
 
     let ws: WebSocket | null = null;
     let done = false;
+    let resolved = false;
     let offerAccepted = false;
+    let settled = false;
     let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
     let reannounceTimer: ReturnType<typeof setInterval> | null = null;
+    let relayDestroyed = false;
+    let relayRole: "offerer" | "answerer" | null = null;
+    let activeInfoHash = "";
+    let remotePeerId = "";
+    let relaySignalCb: ((signal: TrackerRelaySignal) => void) | null = null;
+    const pendingSignals: TrackerRelaySignal[] = [];
 
     // Pre-serialize announce payloads — one per hash, reused as-is
     const announcePayloads = makeTrackerAnnouncePayloads(infoHashes, peerId, offerId, paddedOffer);
@@ -571,6 +630,8 @@ function connectToTracker(
     };
 
     const closeSocket = (sendStopped: boolean) => {
+      if (settled) return;
+      settled = true;
       if (ws && ws.readyState === WebSocket.OPEN) {
         if (sendStopped) {
           for (const payload of stoppedPayloads) {
@@ -595,20 +656,84 @@ function connectToTracker(
       ws = null;
     };
 
+    const emitRelaySignal = (signal: TrackerRelaySignal) => {
+      if (relaySignalCb) {
+        relaySignalCb(signal);
+      } else {
+        pendingSignals.push(signal);
+      }
+    };
+
+    const destroyRelay = () => {
+      if (relayDestroyed) return;
+      relayDestroyed = true;
+      closeSocket(false);
+    };
+
+    const sendRelaySignal = (signal: TrackerRelaySignal) => {
+      if (relayDestroyed || !ws || ws.readyState !== WebSocket.OPEN || !relayRole || !activeInfoHash || !remotePeerId) return;
+      const encoded = encodeTrackerRelaySignal(signal);
+      if (relayRole === "answerer") {
+        ws.send(JSON.stringify({
+          action: "announce",
+          info_hash: activeInfoHash,
+          peer_id: peerId,
+          to_peer_id: remotePeerId,
+          answer: {
+            type: TRACKER_SIGNAL_TYPE,
+            sdp: encoded,
+            whisper_session: offerId,
+          },
+          offer_id: offerId,
+        }));
+        return;
+      }
+
+      ws.send(JSON.stringify({
+        action: "announce",
+        info_hash: activeInfoHash,
+        peer_id: peerId,
+        numwant: 1,
+        offers: [{
+          offer_id: randomBinId(),
+          offer: {
+            type: TRACKER_SIGNAL_TYPE,
+            sdp: encoded,
+            whisper_session: offerId,
+            to_peer_id: remotePeerId,
+          },
+        }],
+      }));
+    };
+
+    const buildRelayHandle = (): TrackerRelayHandle => ({
+      destroy: destroyRelay,
+      sendSignal: sendRelaySignal,
+      setOnSignal: (cb) => {
+        relaySignalCb = cb;
+        if (!cb) return;
+        while (pendingSignals.length) cb(pendingSignals.shift()!);
+      },
+    });
+
     const finish = (result?: TrackerSignalResult, error?: Error) => {
+      if (result) {
+        if (resolved) return;
+        resolved = true;
+        signal.removeEventListener("abort", onAbort);
+        clearTimeout(connectTimer);
+        if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
+        if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
+        resolve(result);
+        return;
+      }
+
       if (done) return;
       done = true;
       signal.removeEventListener("abort", onAbort);
       clearTimeout(connectTimer);
       if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
       if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
-
-      if (result) {
-        resolve(result);
-        closeSocket(false);
-        return;
-      }
-
       closeSocket(true);
       reject(error ?? new Error("relay-unavailable"));
     };
@@ -670,6 +795,37 @@ function connectToTracker(
         return;
       }
 
+      if (msg.offer && typeof msg.offer === "object") {
+        const offer = msg.offer as Record<string, unknown>;
+        if (offer.type === TRACKER_SIGNAL_TYPE) {
+          const encoded = typeof offer.sdp === "string" ? unpadCode(offer.sdp) : "";
+          const sessionId = String(offer.whisper_session ?? "");
+          const toPeerId = String(offer.to_peer_id ?? "");
+          const fromPeerId = String(msg.peer_id ?? "");
+          if (!encoded || sessionId !== offerId || toPeerId !== peerId || !fromPeerId || fromPeerId === peerId) return;
+          const signalPayload = decodeTrackerRelaySignal(encoded);
+          if (signalPayload) emitRelaySignal(signalPayload);
+          return;
+        }
+      }
+
+      if (msg.answer && typeof msg.answer === "object") {
+        const answer = msg.answer as Record<string, unknown>;
+        if (answer.type === TRACKER_SIGNAL_TYPE) {
+          const encoded = typeof answer.sdp === "string" ? unpadCode(answer.sdp) : "";
+          const sessionId = String(answer.whisper_session ?? "");
+          const fromPeerId = String(msg.peer_id ?? "");
+          const toPeerId = String(msg.to_peer_id ?? "");
+          const incomingOfferId = String(msg.offer_id ?? "");
+          if (!encoded || sessionId !== offerId || incomingOfferId !== offerId) return;
+          if (!fromPeerId || fromPeerId === peerId) return;
+          if (toPeerId && toPeerId !== peerId) return;
+          const signalPayload = decodeTrackerRelaySignal(encoded);
+          if (signalPayload) emitRelaySignal(signalPayload);
+          return;
+        }
+      }
+
       // ── Offer received → we may become the answerer ──
 
       if (msg.offer && typeof msg.offer === "object") {
@@ -729,7 +885,10 @@ function connectToTracker(
 
             callbacks.onLog("exchange complete, connecting directly");
             callbacks.onStatus("connecting directly...");
-            finish({ role: "answerer" });
+            relayRole = "answerer";
+            activeInfoHash = replyHash;
+            remotePeerId = peerPeerId;
+            finish({ role: "answerer", relay: buildRelayHandle() });
           })
           .catch(() => {
             finish(undefined, new Error("handshake-failed"));
@@ -756,14 +915,24 @@ function connectToTracker(
 
         callbacks.onStatus("found your peer!");
         callbacks.onLog("peer accepted our offer");
-        finish({ role: "offerer", peerAnswerCode });
+        relayRole = "offerer";
+        activeInfoHash = infoHash || infoHashes[0];
+        remotePeerId = fromPeerId;
+        finish({ role: "offerer", peerAnswerCode, relay: buildRelayHandle() });
         return;
       }
     };
 
-    ws.onerror = () => finish(undefined, new Error("relay-unavailable"));
+    ws.onerror = () => {
+      if (resolved) return;
+      finish(undefined, new Error("relay-unavailable"));
+    };
 
     ws.onclose = () => {
+      if (resolved) {
+        destroyRelay();
+        return;
+      }
       if (!done) finish(undefined, new Error("relay-unavailable"));
     };
   });
