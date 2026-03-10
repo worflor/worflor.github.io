@@ -570,18 +570,12 @@ function connectToTracker(
       finish(undefined, new DOMException("Aborted", "AbortError"));
     };
 
-    const finish = (result?: TrackerSignalResult, error?: Error) => {
-      if (done) return;
-      done = true;
-      signal.removeEventListener("abort", onAbort);
-      clearTimeout(connectTimer);
-      if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
-      if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
-
-      // Politely deregister from all swarms before closing
+    const closeSocket = (sendStopped: boolean) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        for (const payload of stoppedPayloads) {
-          try { ws.send(payload); } catch { break; }
+        if (sendStopped) {
+          for (const payload of stoppedPayloads) {
+            try { ws.send(payload); } catch { break; }
+          }
         }
         ws.onopen = null;
         ws.onmessage = null;
@@ -599,9 +593,24 @@ function connectToTracker(
       }
       if (ws) liveSockets--;
       ws = null;
+    };
 
-      if (result) resolve(result);
-      else reject(error ?? new Error("relay-unavailable"));
+    const finish = (result?: TrackerSignalResult, error?: Error) => {
+      if (done) return;
+      done = true;
+      signal.removeEventListener("abort", onAbort);
+      clearTimeout(connectTimer);
+      if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
+      if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
+
+      if (result) {
+        resolve(result);
+        closeSocket(false);
+        return;
+      }
+
+      closeSocket(true);
+      reject(error ?? new Error("relay-unavailable"));
     };
 
     if (liveSockets >= MAX_SOCKETS) {
