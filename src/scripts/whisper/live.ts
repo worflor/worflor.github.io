@@ -514,6 +514,7 @@ export class WhisperLiveSession {
   private rtcConfig: RTCConfiguration;
   private turnPool: RTCIceServer[] = [];
   private turnInjected = false;
+  private sessionGeneration = 0;
 
   constructor(callbacks: WhisperLiveCallbacks, options: WhisperLiveSessionOptions = {}) {
     this.onStateChange = callbacks.onStateChange;
@@ -645,6 +646,7 @@ export class WhisperLiveSession {
 
   private async initSession(sharedPhrase?: string, asOfferer = true): Promise<void> {
     this._destroyed = false;
+    this.sessionGeneration++;
     this.externalAssistDropped = false;
     this.turnInjected = false;
     this.connectingGraceDone = false;
@@ -661,6 +663,133 @@ export class WhisperLiveSession {
 
   private wipeBytes(bytes: Uint8Array | null): void {
     if (bytes) bytes.fill(0);
+  }
+
+  private isSessionCurrent(generation: number): boolean {
+    return !this._destroyed && this.sessionGeneration === generation;
+  }
+
+  private cloneLoopState(state: LoopState): LoopState {
+    return {
+      chain: state.chain.slice(),
+      countsBitM: state.countsBitM.slice(),
+      countsBit1: state.countsBit1.slice(),
+      step: state.step,
+    };
+  }
+
+  private wipeLoopState(state: LoopState | null): void {
+    if (!state) return;
+    loopWipe(state);
+  }
+
+  private cloneSkippedLoopKeys(): Map<string, Uint8Array> {
+    const out = new Map<string, Uint8Array>();
+    for (const [key, value] of this.skippedLoopKeys.entries()) out.set(key, value.slice());
+    return out;
+  }
+
+  private wipeSkippedLoopKeys(map: Map<string, Uint8Array>): void {
+    for (const mk of map.values()) mk.fill(0);
+    map.clear();
+  }
+
+  private cloneRatchetState(state: RatchetState): RatchetState {
+    const skippedKeys = new Map<string, Uint8Array>();
+    for (const [key, value] of state.skippedKeys.entries()) skippedKeys.set(key, value.slice());
+    return {
+      rootKey: state.rootKey.slice(),
+      dhSelf: {
+        publicKey: state.dhSelf.publicKey.slice(),
+        privateKey: state.dhSelf.privateKey,
+      },
+      dhPeer: state.dhPeer ? state.dhPeer.slice() : null,
+      dhPeerHex: state.dhPeerHex,
+      chainKeySend: state.chainKeySend ? state.chainKeySend.slice() : null,
+      chainKeyRecv: state.chainKeyRecv ? state.chainKeyRecv.slice() : null,
+      nSend: state.nSend,
+      nRecv: state.nRecv,
+      prevChainLength: state.prevChainLength,
+      skippedKeys,
+    };
+  }
+
+  private wipeRatchetState(state: RatchetState | null): void {
+    if (!state) return;
+    state.rootKey.fill(0);
+    if (state.chainKeySend) state.chainKeySend.fill(0);
+    if (state.chainKeyRecv) state.chainKeyRecv.fill(0);
+    if (state.dhPeer) state.dhPeer.fill(0);
+    state.dhSelf.publicKey.fill(0);
+    for (const mk of state.skippedKeys.values()) mk.fill(0);
+    state.skippedKeys.clear();
+  }
+
+  private async buildLoopStateFromChainKey(chainKey: Uint8Array): Promise<LoopState> {
+    const expanded = await loopExpand(chainKey);
+    try {
+      return loopInit(expanded);
+    } finally {
+      expanded.fill(0);
+    }
+  }
+
+  private async loopStatesFromRatchetState(state: RatchetState): Promise<{ send: LoopState | null; recv: LoopState | null }> {
+    return {
+      send: state.chainKeySend ? await this.buildLoopStateFromChainKey(state.chainKeySend) : null,
+      recv: state.chainKeyRecv ? await this.buildLoopStateFromChainKey(state.chainKeyRecv) : null,
+    };
+  }
+
+  private async skipMessagesWithLoopState(
+    ratchetState: RatchetState,
+    loopStateRecv: LoopState,
+    skippedLoopKeys: Map<string, Uint8Array>,
+    until: number,
+  ): Promise<LoopState> {
+    if (until - ratchetState.nRecv > 256) throw new Error("Too many skipped messages");
+    const pubHex = ratchetState.dhPeerHex;
+    let current = loopStateRecv;
+    while (ratchetState.nRecv < until) {
+      const counter = ratchetState.nRecv;
+      const { next, messageKey } = await loopStep(current);
+      skippedLoopKeys.set(`${pubHex}:${counter}`, messageKey);
+      loopWipe(current);
+      current = next;
+      ratchetState.nRecv++;
+    }
+    return current;
+  }
+
+  private takeSkippedLoopKey(
+    skippedLoopKeys: Map<string, Uint8Array>,
+    pubHex: string,
+    nr: number,
+  ): Uint8Array | null {
+    const key = `${pubHex}:${nr}`;
+    const mk = skippedLoopKeys.get(key);
+    if (!mk) return null;
+    skippedLoopKeys.delete(key);
+    return mk;
+  }
+
+  private commitReceiveState(
+    ratchetState: RatchetState,
+    loopStateSend: LoopState | null,
+    loopStateRecv: LoopState | null,
+    skippedLoopKeys: Map<string, Uint8Array>,
+    lastRecvPubKeyHex: string,
+  ): void {
+    this.wipeLoopState(this.loopStateSend);
+    this.wipeLoopState(this.loopStateRecv);
+    this.wipeSkippedLoopKeys(this.skippedLoopKeys);
+    this.wipeRatchetState(this.ratchetState);
+
+    this.ratchetState = ratchetState;
+    this.loopStateSend = loopStateSend;
+    this.loopStateRecv = loopStateRecv;
+    this.skippedLoopKeys = skippedLoopKeys;
+    this.lastRecvPubKeyHex = lastRecvPubKeyHex;
   }
 
   private replacePendingPeerConfirmProof(proof: Uint8Array | null): void {
@@ -1001,12 +1130,11 @@ export class WhisperLiveSession {
       if (s === "failed") {
         if ((this.isLiveState() || this._state === "recovering") && !this.iceRestartAttempted) {
           this.iceRestartAttempted = true;
-          this.onLog("connection failed, attempting restart...");
+          this.onLog("connection failed, waiting for path to recover...");
           if (this._state !== "recovering") {
             this.stateBeforeRecovery = this._state as "live" | "silent";
             this.setState("recovering");
           }
-          this.attemptIceRestart(pc);
         } else if (this.isSetupState()) {
           this.startConnectingGrace(pc);
         } else if (this._state === "recovering") {
@@ -1055,29 +1183,6 @@ export class WhisperLiveSession {
         this.cleanupConnection();
       }
     };
-  }
-
-  /**
-   * ICE restart limitation: only the offerer can create a new offer with
-   * iceRestart. The answerer can only call restartIce() to signal the browser,
-   * but without a signaling channel the new offer/answer cannot be exchanged.
-   * This means ICE restarts only work if the network path recovers on its own.
-   */
-  private attemptIceRestart(pc: RTCPeerConnection): void {
-    if (this.isOfferer) {
-      // Offerer: create new offer with iceRestart flag
-      pc.createOffer({ iceRestart: true })
-        .then((offer) => pc.setLocalDescription(offer))
-        .catch((err) => {
-          this.onLog(`restart failed: ${errorMessage(err)}`);
-          this.setState("disconnected", "vanished");
-          this.cleanupConnection();
-        });
-    } else {
-      // Answerer: restartIce() signals the browser to expect a new offer
-      pc.restartIce();
-      this.onLog("restart requested, waiting for path to recover");
-    }
   }
 
   /* ── DataChannel ────────────────────────────────────────── */
@@ -1146,6 +1251,7 @@ export class WhisperLiveSession {
   *   [LIVE_MSG.PONG]                                → pong (heartbeat reply)
    */
   private async performKeyExchange(): Promise<void> {
+    const generation = this.sessionGeneration;
     this.keyReady = (async () => {
       try {
         const keyPair = await crypto.subtle.generateKey(
@@ -1157,6 +1263,10 @@ export class WhisperLiveSession {
         const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
         const pubKeyCompressed = compressP256(pubKeyRaw);
         pubKeyRaw.fill(0);
+        if (!this.isSessionCurrent(generation)) {
+          pubKeyCompressed.fill(0);
+          return;
+        }
         this.localEphPublicKey = pubKeyCompressed;
         if (!this.dc || this.dc.readyState !== "open") {
           this.onLog("key exchange aborted, channel not available");
@@ -1166,16 +1276,20 @@ export class WhisperLiveSession {
 
         this.ephPrivateKey = keyPair.privateKey;
       } catch (err) {
+        if (!this.isSessionCurrent(generation)) return;
         this.onLog(`key exchange failed: ${errorMessage(err, "unknown error")}`);
         this.setState("error", "couldn't establish encryption, try again");
+        this.cleanupConnection();
       }
     })();
   }
 
   private async handleKeyExchangeMessage(peerPubKeyRaw: Uint8Array): Promise<void> {
     if (this._state !== "handshaking") return;
+    const generation = this.sessionGeneration;
     try {
       await this.keyReady;
+      if (!this.isSessionCurrent(generation)) return;
       if (!this.ephPrivateKey) throw new Error("No ephemeral private key");
 
       // peer sends compressed (33B) — WebCrypto importKey("raw") needs uncompressed (65B)
@@ -1186,6 +1300,7 @@ export class WhisperLiveSession {
       const sharedBits = await crypto.subtle.deriveBits(
         { name: "ECDH", public: peerPubKey }, this.ephPrivateKey, 256,
       );
+      if (!this.isSessionCurrent(generation)) return;
       const ecdhSecret = new Uint8Array(sharedBits);
 
       this.ephPrivateKey = null;
@@ -1193,6 +1308,11 @@ export class WhisperLiveSession {
       const transcriptHash = await this.buildTranscriptHash(peerPubKeyRaw);
       const sharedSecret = await deriveSessionRoot(ecdhSecret, transcriptHash, this.phraseRoot);
       ecdhSecret.fill(0);
+      if (!this.isSessionCurrent(generation)) {
+        transcriptHash.fill(0);
+        sharedSecret.fill(0);
+        return;
+      }
       // phraseRoot is no longer needed — wipe the stretched phrase key
       this.wipeBytes(this.phraseRoot);
       this.phraseRoot = null;
@@ -1217,11 +1337,12 @@ export class WhisperLiveSession {
       this.onFingerprint(fingerprint);
       this.fingerprintNudgeTimer = setTimeout(() => {
         this.fingerprintNudgeTimer = null;
-        if (this._state === "verifying") this.onLog("awaiting fingerprint confirmation");
+        if (this.isSessionCurrent(generation) && this._state === "verifying") this.onLog("awaiting fingerprint confirmation");
       }, 8000);
 
       if (this.isOfferer) {
         const dhSelf = await generateDHKeyPair();
+        if (!this.isSessionCurrent(generation)) return;
         this.ratchetState = await initRatchetAsOfferer(sharedSecret, dhSelf);
         this.ratchetInitSentPubKey = dhSelf.publicKey.slice();
 
@@ -1234,14 +1355,17 @@ export class WhisperLiveSession {
 
       // Auto-confirm is deferred to handleRatchetInit — chain keys aren't ready yet.
     } catch (err) {
+      if (!this.isSessionCurrent(generation)) return;
       this.onLog(`key derivation failed: ${errorMessage(err, "unknown error")}`);
       this.setState("error", "couldn't establish encryption, try again");
+      this.cleanupConnection();
     }
   }
 
   private async handleRatchetInit(peerRatchetPubKey: Uint8Array): Promise<void> {
     if (this._state !== "handshaking" && this._state !== "verifying") return;
     if (!this.sharedSecret) return;
+    const generation = this.sessionGeneration;
 
     // Guard: only accept one RATCHET_INIT per handshake. A duplicate would
     // overwrite (answerer) or desync (offerer) the ratchet state. Reject silently.
@@ -1250,9 +1374,10 @@ export class WhisperLiveSession {
 
     if (!this.isOfferer) {
       this.ratchetState = await initRatchetAsReceiver(this.sharedSecret, peerRatchetPubKey);
+      if (!this.isSessionCurrent(generation) || !this.ratchetState) return;
 
       // chainKeyRecv is null until first DH step — only init send side now.
-      this.loopStateSend = loopInit(await loopExpand(this.ratchetState.chainKeySend!));
+      this.loopStateSend = await this.buildLoopStateFromChainKey(this.ratchetState.chainKeySend!);
 
       this.ratchetInitSentPubKey = this.ratchetState.dhSelf.publicKey.slice();
 
@@ -1269,6 +1394,7 @@ export class WhisperLiveSession {
     } else {
       if (this.ratchetState) {
         await dhRatchetStep(this.ratchetState, peerRatchetPubKey);
+        if (!this.isSessionCurrent(generation)) return;
 
         // both chain keys are now set after the DH step — init both loop states.
         await this.loopReinitFromChainKeys();
@@ -1402,6 +1528,7 @@ export class WhisperLiveSession {
     if (!complete) return; // Still waiting for more chunks
 
     if (!this.ratchetState) return;
+    const generation = this.sessionGeneration;
 
     const isCompact = (complete[0] & LIVE_FLAG_SAME_KEY) !== 0;
     const headerSize = isCompact ? HEADER_SIZE_COMPACT : HEADER_SIZE;
@@ -1409,47 +1536,51 @@ export class WhisperLiveSession {
 
     try {
       const header = parseHeader(complete);
+      const ratchetState = this.cloneRatchetState(this.ratchetState);
+      let loopStateSend = this.loopStateSend ? this.cloneLoopState(this.loopStateSend) : null;
+      let loopStateRecv = this.loopStateRecv ? this.cloneLoopState(this.loopStateRecv) : null;
+      const skippedLoopKeys = this.cloneSkippedLoopKeys();
 
       // Resolve pubkey: compact headers use cached peer key
       let pubKeyHex: string;
       if (header.pubKey) {
         pubKeyHex = toHex(header.pubKey);
-        this.lastRecvPubKeyHex = pubKeyHex;
       } else {
         pubKeyHex = this.lastRecvPubKeyHex;
         if (!pubKeyHex) return; // no cached key — can't process
       }
 
       // try loop-derived skipped key first (defense-in-depth; never fires with ordered SCTP).
-      let messageKey = this.tryLoopSkippedKey(pubKeyHex, header.counter);
+      let messageKey = this.takeSkippedLoopKey(skippedLoopKeys, pubKeyHex, header.counter);
       let didDHRatchet = false;
-      let nextLoopRecv: LoopState | undefined;
 
       if (!messageKey) {
         // check if this is a new DH ratchet key
-        if (pubKeyHex !== this.ratchetState.dhPeerHex) {
+        if (pubKeyHex !== ratchetState.dhPeerHex) {
           if (!header.pubKey) return; // DH ratchet needs the actual key bytes
           // new DH ratchet — skip remaining messages in current receive chain
-          if (this.ratchetState.chainKeyRecv && this.loopStateRecv) {
-            await this.skipMessagesWithLoop(header.prevChainLen);
+          if (ratchetState.chainKeyRecv && loopStateRecv) {
+            loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.prevChainLen);
           }
-          await dhRatchetStep(this.ratchetState, header.pubKey);
+          await dhRatchetStep(ratchetState, header.pubKey.slice());
           // reinit both loop states from the new DH-derived chain keys
-          await this.loopReinitFromChainKeys();
-          this.onLog("bond renewed");
+          const reinit = await this.loopStatesFromRatchetState(ratchetState);
+          loopStateSend = reinit.send;
+          loopStateRecv = reinit.recv;
           didDHRatchet = true;
         }
 
         // advance loop and ratchet counter to the message's position
         // (with ordered SCTP, skip count is always 0 — loop body never executes)
-        await this.skipMessagesWithLoop(header.counter);
+        if (!loopStateRecv) throw new Error("No receiving loop state");
+        loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.counter);
 
-        if (!this.loopStateRecv) throw new Error("No receiving loop state");
-
-        // derive this message's key via loopStep — speculative, not committed yet
-        const stepResult = await loopStep(this.loopStateRecv);
-        nextLoopRecv = stepResult.next;
+        // derive this message's key via loopStep — speculative until decrypt succeeds
+        const stepResult = await loopStep(loopStateRecv);
+        loopWipe(loopStateRecv);
+        loopStateRecv = stepResult.next;
         messageKey = stepResult.messageKey;
+        ratchetState.nRecv++;
       }
 
       const aad = complete.subarray(0, headerSize);
@@ -1468,18 +1599,9 @@ export class WhisperLiveSession {
           this.cleanupConnection();
           return;
         }
-        // non-DH path: wipe speculative loop state, leave current state intact
-        if (nextLoopRecv) loopWipe(nextLoopRecv);
         throw decryptErr;
       }
       messageKey.fill(0);
-
-      // commit loop state — decrypt succeeded
-      if (nextLoopRecv && this.loopStateRecv) {
-        loopWipe(this.loopStateRecv);
-        this.loopStateRecv = nextLoopRecv;
-        this.ratchetState.nRecv++;
-      }
 
       // decompress: first 4 bytes are decodedLen (LE uint32), rest is loop-encoded plaintext
       if (compressedPayload.length < 4) throw new Error("ciphertext too short");
@@ -1491,9 +1613,21 @@ export class WhisperLiveSession {
       if (decodedLen > 64 * 1024 * 1024) throw new Error("decodedLen exceeds safety limit");
       const compressed = compressedPayload.subarray(4);
 
-      if (!this.loopStateRecv) throw new Error("No receiving loop state after step");
-      const { decoded: plaintext, next: afterDecode } = loopDecode(this.loopStateRecv, compressed, decodedLen);
-      this.loopStateRecv = afterDecode;
+      if (!loopStateRecv) throw new Error("No receiving loop state after step");
+      const { decoded: plaintext, next: afterDecode } = loopDecode(loopStateRecv, compressed, decodedLen);
+      loopWipe(loopStateRecv);
+      loopStateRecv = afterDecode;
+
+      if (!this.isSessionCurrent(generation)) {
+        this.wipeRatchetState(ratchetState);
+        this.wipeLoopState(loopStateSend);
+        this.wipeLoopState(loopStateRecv);
+        this.wipeSkippedLoopKeys(skippedLoopKeys);
+        return;
+      }
+
+      this.commitReceiveState(ratchetState, loopStateSend, loopStateRecv, skippedLoopKeys, pubKeyHex);
+      if (didDHRatchet) this.onLog("bond renewed");
 
       this.consecutiveDecryptFailures = 0; // reset on successful decrypt+decompress
 
@@ -1643,10 +1777,10 @@ export class WhisperLiveSession {
     if (this.loopStateSend) { loopWipe(this.loopStateSend); this.loopStateSend = null; }
     if (this.loopStateRecv) { loopWipe(this.loopStateRecv); this.loopStateRecv = null; }
     if (this.ratchetState.chainKeySend) {
-      this.loopStateSend = loopInit(await loopExpand(this.ratchetState.chainKeySend));
+      this.loopStateSend = await this.buildLoopStateFromChainKey(this.ratchetState.chainKeySend);
     }
     if (this.ratchetState.chainKeyRecv) {
-      this.loopStateRecv = loopInit(await loopExpand(this.ratchetState.chainKeyRecv));
+      this.loopStateRecv = await this.buildLoopStateFromChainKey(this.ratchetState.chainKeyRecv);
     }
     // reselect TURN only when external assist survives post-establishment.
     // if externalAssistEstablishmentOnly (default), dropExternalAssist already
@@ -1656,29 +1790,6 @@ export class WhisperLiveSession {
 
   // advance the receive loop state and ratchet counter to `until`, storing
   // loop-derived message keys for potential out-of-order delivery.
-  private async skipMessagesWithLoop(until: number): Promise<void> {
-    if (!this.ratchetState || !this.loopStateRecv) return;
-    if (until - this.ratchetState.nRecv > 256) throw new Error("Too many skipped messages");
-    const pubHex = this.ratchetState.dhPeerHex;
-    while (this.ratchetState.nRecv < until) {
-      const counter = this.ratchetState.nRecv;
-      const { next: nextLoop, messageKey } = await loopStep(this.loopStateRecv);
-      this.skippedLoopKeys.set(`${pubHex}:${counter}`, messageKey);
-      loopWipe(this.loopStateRecv);
-      this.loopStateRecv = nextLoop;
-      this.ratchetState.nRecv++;
-    }
-  }
-
-  // retrieve and remove a previously skipped loop-derived message key. O(1) lookup.
-  private tryLoopSkippedKey(pubHex: string, nr: number): Uint8Array | null {
-    const key = `${pubHex}:${nr}`;
-    const mk = this.skippedLoopKeys.get(key);
-    if (!mk) return null;
-    this.skippedLoopKeys.delete(key);
-    return mk;
-  }
-
   /* ── Sending ────────────────────────────────────────────── */
 
   /** Signal compose state. 0x00 = actively typing, 0x01 = idle with unsent text. */
