@@ -336,11 +336,10 @@ export const WHISPER_LIVE_RTC_STEALTH: RTCConfiguration = {
   iceCandidatePoolSize: 0,
 };
 
-// Timeout for ICE gathering (ms)
-const ICE_GATHER_TIMEOUT = 8000;
-
+const ICE_GATHER_TIMEOUT = 8_000;         // max wait for ICE candidate gathering
+const CONNECTING_GRACE_TIMEOUT = 20_000;  // setup ICE grace window — checks complete well within this
 const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
-const HEARTBEAT_TIMEOUT = 45_000;        // drop peer after 45s silence
+const HEARTBEAT_TIMEOUT = 45_000;         // drop peer after 45s silence
 
 const LIVE_MSG = {
   KEY_EXCHANGE: 0x10,
@@ -942,23 +941,19 @@ export class WhisperLiveSession {
     if (this.connectingGraceDone) return;
     if (this.connectingGraceTimer) return;
     this.connectingGraceDone = true;
-    this.onLog("negotiating connection, waiting for peer to finish exchange...");
+    this.onLog("establishing connection...");
 
     // Re-applying the remote description here restarts ICE renegotiation on the
     // answerer, invalidating the credentials the offerer will check against.
 
     this.connectingGraceTimer = setTimeout(() => {
       this.connectingGraceTimer = null;
-      if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
-      if (this.isLiveState() ||
-        this._state === "disconnected" || this._state === "error") return;
-      // Check current state — ICE may have recovered during the wait
-      const iceState = pc.iceConnectionState;
-      if (iceState === "connected" || iceState === "completed") return;
-      this.onLog("connection failed after waiting period");
-      this.setState("error", "couldn't reach your peer. make sure both sides have external assist enabled if connecting across networks.");
+      if (this.isLiveState() || this._state === "disconnected" || this._state === "error") return;
+      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") return;
+      this.onLog("connection timed out");
+      this.setState("error", "couldn't reach your peer. try again, or ask them to retry at the same time.");
       this.cleanupConnection();
-    }, HEARTBEAT_TIMEOUT);
+    }, CONNECTING_GRACE_TIMEOUT);
   }
 
   private setupPeerConnection(pc: RTCPeerConnection): void {
@@ -968,7 +963,6 @@ export class WhisperLiveSession {
 
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
-      this.onLog(`ice: ${s}`);
 
       if (s === "checking") return;
 
@@ -1006,7 +1000,7 @@ export class WhisperLiveSession {
           this.cleanupConnection();
         } else {
           this.onLog("connection failed, could not reach peer");
-          this.setState("error", "couldn't reach your peer. make sure both sides have external assist enabled if connecting across networks.");
+          this.setState("error", "couldn't reach your peer. try again, or ask them to retry at the same time.");
           this.cleanupConnection();
         }
         return;
