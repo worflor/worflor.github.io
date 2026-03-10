@@ -165,7 +165,7 @@ the duality connects it all. 255 contexts mirror 255 neighbors. 65,535 contexts 
 
 ## closing thoughts
 
-i started with a problem (encrypt stuff *properly*, peer-to-peer, no servers) and ended up building a codec stack where the encryption grows out of the same math that powers the compression. that wasn't the plan. the plan was just good audio over WebRTC. but once the 1D predictor worked, and the tower was there... and the only honest thing to do was climb it.
+i started with a problem (encrypt stuff *properly*, peer-to-peer, no servers) and ended up building a codec stack where the encryption grows out of the same math that powers the compression. that wasn't the plan. the plan was just good audio over WebRTC. but once the 1D predictor worked, and the tower was there... the only honest thing to do was climb it.
 
 the scary algebra turned out to be the kindest part. 65,535 terms sounds absurd until you realize 99.998% of them collapse to zero and the single survivor is a wax seal of everything in the block. the Möbius formula does the heavy lifting. you just have to trust the math and let it work.
 
