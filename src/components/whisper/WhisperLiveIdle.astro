@@ -241,6 +241,20 @@
     aria-hidden="true"
   />
 
+  <div class="wl-field-helper" aria-hidden="true">
+    <label for="wl-session-token">Session token</label>
+    <input
+      id="wl-session-token"
+      name="session-token"
+      type="text"
+      tabindex="-1"
+      autocomplete="off"
+      data-lpignore="true"
+      data-1p-ignore="true"
+      data-form-type="other"
+    />
+  </div>
+
   <!-- Mode switch links -->
   <p class="wl-mode-switch" id="wl-mode-switch">
     <button
@@ -521,5 +535,13 @@
     .wl-flare-ember {
       animation: none;
     }
+  }
+
+  .wl-field-helper {
+    position: absolute;
+    left: -9999px;
+    top: -9999px;
+    opacity: 0;
+    pointer-events: none;
   }
 </style>

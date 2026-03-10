@@ -45,6 +45,10 @@ export const MIN_CODE_LEN = 40;
 export const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 export const TRACKER_MAX_MESSAGE_LEN = 8192;
 
+// Concurrent tracker socket budget (module-scoped, survives pool teardown).
+let liveSockets = 0;
+const MAX_SOCKETS = 6;
+
 /* ── Helpers ──────────────────────────────────────────────── */
 
 export function toBin(bytes: Uint8Array): string {
@@ -311,16 +315,18 @@ export function createTrackerPool(
   const connectToUrl = (url: string): void => {
     if (destroyed) return;
     if (sockets.has(url)) return;
+    if (liveSockets >= MAX_SOCKETS) return;
 
     const host = new URL(url).host;
 
     let opened = false;
     let closeHandled = false;
+    const releaseSocket = () => { if (!closeHandled) { closeHandled = true; liveSockets--; } };
     let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       connectTimer = null;
       connectTimers.delete(url);
       if (closeHandled) return;
-      closeHandled = true;
+      releaseSocket();
       const sock = sockets.get(url);
       if (sock) sockets.delete(url);
       if (sock) {
@@ -333,6 +339,7 @@ export function createTrackerPool(
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
+      liveSockets++;
     } catch {
       if (connectTimer) connectTimer = null;
       clearConnectTimer(url);
@@ -343,7 +350,7 @@ export function createTrackerPool(
 
     const handleDrop = () => {
       if (closeHandled) return;
-      closeHandled = true;
+      releaseSocket();
       connectTimer = null;
       clearConnectTimer(url);
       const cur = sockets.get(url);
@@ -417,6 +424,7 @@ export function createTrackerPool(
         }
       }
       closeSocket(ws);
+      liveSockets--;
     }
     sockets.clear();
   };
@@ -575,9 +583,6 @@ function connectToTracker(
         for (const payload of stoppedPayloads) {
           try { ws.send(payload); } catch { break; }
         }
-        // Close with 1000 (normal closure) — tells the server this was
-        // intentional so it can reclaim resources immediately rather than
-        // waiting for TCP FIN timeout.
         ws.onopen = null;
         ws.onmessage = null;
         ws.onerror = null;
@@ -592,11 +597,17 @@ function connectToTracker(
         }
         try { ws?.close(1000); } catch { /* noop */ }
       }
+      if (ws) liveSockets--;
       ws = null;
 
       if (result) resolve(result);
       else reject(error ?? new Error("relay-unavailable"));
     };
+
+    if (liveSockets >= MAX_SOCKETS) {
+      reject(new Error("relay-unavailable"));
+      return;
+    }
 
     signal.addEventListener("abort", onAbort, { once: true });
 
@@ -606,8 +617,10 @@ function connectToTracker(
 
     try {
       ws = new WebSocket(url);
+      liveSockets++;
     } catch {
       clearTimeout(connectTimer);
+      signal.removeEventListener("abort", onAbort);
       reject(new Error("relay-unavailable"));
       return;
     }

@@ -41,12 +41,15 @@ let wasmMem: Uint8Array | null = null;
 let bufStart = 576;
 
 /** 4x4 Bayer ordered dithering matrix — written to WASM memory at offset 512
- *  for use by dither_plane() and frc_dither() (16 f32 = 64 bytes). */
+ *  for use by dither_plane() and frc_dither() (16 f32 = 64 bytes).
+ *  Centered at 0: values are (rank - 7.5)/16, range [-0.469, +0.469].
+ *  This eliminates the systematic positive bias of the uncentered [0,1) form,
+ *  which was causing non-monotonic PSNR at unlucky quantization step alignments. */
 const BAYER4 = new Float32Array([
-    0 / 16, 8 / 16, 2 / 16, 10 / 16,
-    12 / 16, 4 / 16, 14 / 16, 6 / 16,
-    3 / 16, 11 / 16, 1 / 16, 9 / 16,
-    15 / 16, 7 / 16, 13 / 16, 5 / 16,
+    (0 - 7.5) / 16, (8 - 7.5) / 16, (2 - 7.5) / 16, (10 - 7.5) / 16,
+    (12 - 7.5) / 16, (4 - 7.5) / 16, (14 - 7.5) / 16, (6 - 7.5) / 16,
+    (3 - 7.5) / 16, (11 - 7.5) / 16, (1 - 7.5) / 16, (9 - 7.5) / 16,
+    (15 - 7.5) / 16, (7 - 7.5) / 16, (13 - 7.5) / 16, (5 - 7.5) / 16,
 ]);
 
 /** Instantiate the SIMD WASM module. Returns true on success. */
@@ -164,6 +167,36 @@ export function yuv420ToRgba(yuv: Uint8Array, width: number, height: number): Ui
     w(yuv, yp);
     wasm!.yuv420_to_rgba_bilinear(yp, rp, width, height);
     return r(rp, rgbaSize);
+}
+
+/** Nearest-neighbor chroma upsampling decoder.
+ *  Each pixel uses its UV block directly — no interpolation across block
+ *  boundaries. Eliminates colour fringing at hard colour edges (bilinear
+ *  blending at UV block boundaries caused ~150/255 RGB error in the worst
+ *  case). Slower than WASM bilinear but correct at colour transitions.
+ *  Uses limited-range BT.601 (Y=16..235, studio swing) matching the WASM encoder. */
+export function yuv420ToRgbaNN(yuv: Uint8Array, width: number, height: number): Uint8Array {
+    const rgba = new Uint8Array(width * height * 4);
+    const ySize = width * height;
+    const uvW = width >> 1;
+    const uvSize = uvW * (height >> 1);
+    for (let py = 0; py < height; py++) {
+        const uvRow = (py >> 1) * uvW;
+        for (let px = 0; px < width; px++) {
+            const uvX = px >> 1;
+            const yy = yuv[py * width + px] - 16;
+            const Cb = yuv[ySize + uvRow + uvX];
+            const Cr = yuv[ySize + uvSize + uvRow + uvX];
+            const pb = Cb - 128, pr = Cr - 128;
+            // BT.601 limited-range (studio swing) — matches WASM rgba_to_yuv420 / yuv420_to_rgba_bilinear
+            const R = Math.max(0, Math.min(255, Math.round(1.164 * yy + 1.596 * pr)));
+            const G = Math.max(0, Math.min(255, Math.round(1.164 * yy - 0.391 * pb - 0.813 * pr)));
+            const B = Math.max(0, Math.min(255, Math.round(1.164 * yy + 2.018 * pb)));
+            const off = (py * width + px) * 4;
+            rgba[off] = R; rgba[off + 1] = G; rgba[off + 2] = B; rgba[off + 3] = 255;
+        }
+    }
+    return rgba;
 }
 
 export function quantizeChroma(data: Uint8Array, ySamples: number, yInv: number, uvInv: number): Uint8Array {

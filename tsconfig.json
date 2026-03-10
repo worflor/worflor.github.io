@@ -1,5 +1,5 @@
 {
   "extends": "astro/tsconfigs/strict",
   "include": [".astro/types.d.ts", "**/*"],
-  "exclude": ["dist", "rag_tests/**/*", "src/scripts/whisper/test-*.ts"]
+  "exclude": ["dist", "rag_tests/**/*", "src/scripts/whisper/test-*.ts", "scripts/codec-compare/**/*"]
 }

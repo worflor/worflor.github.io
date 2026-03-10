@@ -497,6 +497,10 @@ export class WhisperLiveSession {
   // Recovery send queue — holds jobs until session returns to live
   private recoveryResolve: (() => void) | null = null;
 
+  // Send rate shaping: decaying burst level, threshold 15, decay τ=4s, ceil 2s.
+  private burstLevel = 0;
+  private burstLastSend = 0;
+
   private rtcConfig: RTCConfiguration;
   private turnPool: RTCIceServer[] = [];
   private turnInjected = false;
@@ -1729,13 +1733,28 @@ export class WhisperLiveSession {
     });
   }
 
+  /** Decaying burst delay: 0 below threshold, exponential curve above. */
+  private burstDelay(): number {
+    const now = Date.now();
+    if (this.burstLastSend) this.burstLevel *= Math.exp(-(now - this.burstLastSend) / 4_000);
+    this.burstLastSend = now;
+    const excess = ++this.burstLevel - 15;
+    return excess > 0 ? 2_000 * (1 - Math.exp(-excess / 5)) : 0;
+  }
+
   /** Enqueue a send job — serializes through sendQueue so ratchet state is never concurrent. */
-  private enqueueSend(job: () => Promise<void>): Promise<void> {
-    const wrapped = () => job().catch((err) => {
-      const msg = errorMessage(err);
-      this.onLog(`send failed: ${msg}`);
-      this.onMessage({ type: "system", direction: "system", text: `message not sent: ${msg}`, timestamp: Date.now() });
-    });
+  private enqueueSend(job: () => Promise<void>, skipBurst = false): Promise<void> {
+    const wrapped = async () => {
+      if (!skipBurst) {
+        const delay = this.burstDelay();
+        if (delay > 1) await new Promise<void>((r) => setTimeout(r, delay));
+      }
+      await job().catch((err) => {
+        const msg = errorMessage(err);
+        this.onLog(`send failed: ${msg}`);
+        this.onMessage({ type: "system", direction: "system", text: `message not sent: ${msg}`, timestamp: Date.now() });
+      });
+    };
     this.sendQueue = this.sendQueue.then(wrapped);
     return this.sendQueue;
   }
@@ -1821,6 +1840,7 @@ export class WhisperLiveSession {
       const chunkIdx = i;
       const chunkLen = chunkBytes.length;
 
+      // Chunked file transfer = single user action — skip rate shaping
       await this.enqueueSend(async () => {
         if (!await this.canSend()) return;
         const plaintext = encodeFilePartPlaintext(
@@ -1842,7 +1862,7 @@ export class WhisperLiveSession {
         }
         bytesSent += chunkLen;
         if (this.onSendProgress) this.onSendProgress(bytesSent, file.size);
-      });
+      }, true);
     }
     return firstMsgId;
   }
@@ -1873,7 +1893,7 @@ export class WhisperLiveSession {
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
       await this.encryptAndSend(plaintext, flags);
-    });
+    }, true);
   }
 
   private async sendFileDressed(

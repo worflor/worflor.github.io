@@ -425,6 +425,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let session: WhisperLiveSession | null = null;
   const objectUrls = new Set<string>();
   let busy = false;
+
+  // ── Pre-connection gate ──
+  let interacted = false;
+  {
+    const gateAc = new AbortController();
+    signal.addEventListener("abort", () => gateAc.abort(), { once: true });
+    const onInteract = () => { interacted = true; gateAc.abort(); };
+    for (const e of ["mousemove", "keydown", "touchstart", "pointerdown"] as const)
+      document.addEventListener(e, onInteract, { signal: gateAc.signal });
+  }
+  const honeypot = document.getElementById("wl-session-token") as HTMLInputElement | null;
+
+  function passGate(auto = false): boolean {
+    return auto || (interacted && !honeypot?.value && !(navigator as any).webdriver);
+  }
+
   let liveQrSupported = false;
   let liveQrUnavailableLabel = "QR camera scan unavailable here";
   let skippedIceCandidates = 0;
@@ -4798,7 +4814,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return raw;
   }
 
-  async function handleRelayConnect(): Promise<void> {
+  async function handleRelayConnect(auto = false): Promise<void> {
+    if (!passGate(auto)) return;
     const phrase = opts.phraseInput.value.trim();
     if (!phrase) {
       opts.phraseInput.focus();
@@ -4907,7 +4924,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     document.title = originalTitle;
   }
 
-  async function handleFlareConnect(): Promise<void> {
+  async function handleFlareConnect(auto = false): Promise<void> {
+    if (!passGate(auto)) return;
     const phrase = flarePhraseInput?.value.trim() ?? "";
     if (!phrase) {
       flarePhraseInput?.focus();
@@ -5149,6 +5167,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   opts.createBtn.addEventListener("click", async () => {
+    if (!passGate()) return;
     const phrase = getActivePhrase() || undefined;
     try {
       const offerCode = await createOfferWithFreshSession(phrase);
@@ -5224,6 +5243,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }, { signal });
 
   opts.joinBtn.addEventListener("click", async () => {
+    if (!passGate()) return;
     normalizeTypedCodes();
     const raw = opts.joinInput.value.trim();
     if (!raw) {
@@ -5814,12 +5834,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // ?auto=1 with ?relay=1 and a phrase → auto-trigger relay connect
   if (urlFlag("auto") && opts.relayAssistToggle?.checked && !urlFlag("flare") && opts.phraseInput.value.trim()) {
     // Slight delay so the UI has rendered before we start connecting
-    setTimeout(() => { if (!aborted()) void handleRelayConnect(); }, 100);
+    setTimeout(() => { if (!aborted()) void handleRelayConnect(true); }, 100);
   }
 
   // ?auto=1 with ?flare=1 and a phrase → auto-fire flare
   if (urlFlag("auto") && urlFlag("flare") && flarePhraseInput && flarePhraseInput.value.trim()) {
-    setTimeout(() => { if (!aborted()) void handleFlareConnect(); }, 100);
+    setTimeout(() => { if (!aborted()) void handleFlareConnect(true); }, 100);
   }
 
   void getQrScannerCapability().then((capability) => {

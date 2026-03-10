@@ -1,25 +1,13 @@
 /**
- * live-wasm-video.ts
+ * live-wasm-video.ts — Whisper Lumen Video Codec (Woflo / MB)
  *
- * the Whisper Lumen Video Codec by Woflo / MB
- *
- * every 8x8 block is modelled as a physical surface. the encoder fits the
- * second-order causal Taylor expansion of that surface:
- *
- *   pred = D + α·(L-D) + β·(A-D) + γ·(fyy + fxx + fxy)
- *
- * α is horizontal gradient (fy), β is vertical gradient (fx), and γ covers the
- * full Hessian correction ½ΔᵀHΔ, all three second-order curvature terms at once.
- * a 3x3 normal equation solver (Gaussian elimination) fits these per block.
- * whatever the surface model can't explain becomes the residual.
- *
- * a digital twin of light. the wire carries surface geometry, the decoder
- * reconstructs pixels from physics.
- *
- * all hot-path functions (color conversion, delta, zigzag, PQ, quantization,
- * block ops, dithering) run in hand-written WebAssembly with v128 SIMD.
+ * VBS DCT (8/16/32) + 3D Möbius coefficient prediction + 8-mode intra +
+ * adaptive quantization + CfL chroma-from-luma + deblocking + delta P-frames.
+ * format 0x07 = I-frame, 0x08 = P-frame (delta through same VBS pipeline).
+ * encrypted: ChaCha20 + HalfSipHash-2-4 MAC, hand-written WASM+SIMD.
  */
 import * as simd from "./video-simd";
+import { encode0D, decode0D } from "./live-wasm-logos";
 
 function encodeULEB(v: number): number[] {
     v = v >>> 0;
@@ -638,7 +626,7 @@ function rgbaToYuv420(rgba: Uint8Array, w: number, h: number): Uint8Array {
 }
 
 function yuv420ToRgba(yuv: Uint8Array, w: number, h: number): Uint8Array {
-    return simd.yuv420ToRgba(yuv, w, h);
+    return simd.yuv420ToRgbaNN(yuv, w, h);
 }
 
 // --- delta frame engine ---
@@ -653,51 +641,19 @@ function computeDelta(current: Uint8Array, previous: Uint8Array): Uint8Array {
 function applyDelta(delta: Uint8Array, previous: Uint8Array): Uint8Array {
     return simd.applyDelta(delta, previous);
 }
-
-// --- block skip ---
-// operates on spatial blocks across the Y plane for motion detection,
-// but extracts/reinserts from the full YUV420 buffer so UV planes are included.
-
-function buildBlockBitmap(
-    yDelta: Uint8Array, w: number, h: number, blockSize: number, threshold: number
-): { bitmap: Uint8Array; blocksX: number; blocksY: number; changedCount: number } {
-    return simd.buildBlockBitmap(yDelta, w, h, blockSize, threshold);
-}
-
-function extractChangedBlocksPlane(
-    data: Uint8Array, planeW: number, planeH: number,
-    bitmap: Uint8Array, blocksX: number, blocksY: number,
-    planeBlockSize: number
-): Uint8Array {
-    return simd.extractChangedBlocksPlane(data, planeW, planeH, bitmap, blocksX, blocksY, planeBlockSize);
-}
-
-function reinsertChangedBlocksPlane(
-    blockData: Uint8Array, readStart: number,
-    planeW: number, planeH: number,
-    bitmap: Uint8Array, blocksX: number, blocksY: number,
-    planeBlockSize: number, base: Uint8Array
-): number {
-    return simd.reinsertChangedBlocksPlane(blockData, readStart, planeW, planeH, bitmap, blocksX, blocksY, planeBlockSize, base);
-}
-
 // --- perceptual transfer function (sqrt PQ) ---
 // human vision follows Weber's law: sensitivity scales as 1/L. sqrt transfer
 // (gamma=0.5) redistributes quantization to give 2x more precision in darks.
 // same principle as sRGB gamma, µ-law companding, SMPTE ST 2084 PQ.
 // applied to Y plane of I-frames only.
 //
-// gamma=0.55: gentler than sqrt, avoids harsh bright-value inversion errors.
-// still 1.8x more levels in the dark half vs linear. LUTs are bijective:
-// PQ_INV[PQ_FWD[v]] ≈ v (max error 1, from rounding).
-const PQ_GAMMA = 0.55;
-const PQ_GAMMA_INV = 1 / PQ_GAMMA;
-const PQ_FWD = new Uint8Array(256); // linear → perceptual
-const PQ_INV = new Uint8Array(256); // perceptual → linear
-for (let i = 0; i < 256; i++) {
-    PQ_FWD[i] = Math.min(255, (Math.pow(i / 255, PQ_GAMMA) * 255 + 0.5) | 0);
-    PQ_INV[i] = Math.min(255, (Math.pow(i / 255, PQ_GAMMA_INV) * 255 + 0.5) | 0);
-}
+// Identity PQ tables: SDR Y is display-referred (already gamma-encoded by camera/display
+// pipeline). Applying a second perceptual curve warps the quantization spacing non-uniformly,
+// causing non-monotonic PSNR at specific Q levels (Y error direction flips, unclamps RGB).
+// Identity is the mathematically correct choice for 8-bit SDR input.
+const PQ_FWD = new Uint8Array(256); // identity
+const PQ_INV = new Uint8Array(256); // identity
+for (let i = 0; i < 256; i++) { PQ_FWD[i] = i; PQ_INV[i] = i; }
 
 function pqForward(data: Uint8Array, offset: number, count: number): void {
     simd.pqForward(data, offset, count);
@@ -707,490 +663,1591 @@ function pqInverse(data: Uint8Array, offset: number, count: number): void {
     simd.pqInverse(data, offset, count);
 }
 
-// --- quantization ---
-// maps quality 1-99 to a smooth divisor curve.
-// q=99 → step=2, q=50 → step=8, q=1 → step=128.
-// UV planes get a quality-scaled boost (1.0-1.2x) since
-// human vision is less sensitive to chrominance.
+// ── DCT-8 transform ──────────────────────────────────────────────────────────
+//
+// Orthonormal 2D type-II DCT for 8×8 blocks.  Forward and inverse are
+// transposes of each other (IDCT = DCT of transposed input), so one cosine
+// table covers both directions.
+//
+// Frequency convention (same as JPEG):
+//   C[v][u] = orthonormal DCT coefficient at vertical freq v, horizontal freq u
+//   u,v ∈ [0,7].  Stored row-major: index = v*8+u.
+//
+// Input pixels are centred before the transform (subtract `centre`, e.g. 128
+// for Y), so C[0][0] ≈ block_mean * 8.  After quantisation the DC level for
+// Y ≈ ±100 at Q=70, well within signed-byte range.
+//
+// Precision: Float32 — sufficient for 8-bit source pixels.
 
-function qstep(quality: number): number {
-    // exponential curve: step = 2^((100-q)/17) clamped to [1, 128]
-    // float step, no rounding, smooth gradient with no plateaus.
-    // exponent 17: preserves 45% of luma levels at q80, q30 step=17.4 still compresses hard.
-    return Math.max(1, Math.min(128, Math.pow(2, (100 - quality) / 17)));
-}
+const _DCTT: Float32Array = (() => {
+    // _DCTT[k*8+n] = c(k) * cos(π*k*(2n+1)/16),  c(0)=1/√2, c(k>0)=1
+    const t = new Float32Array(64);
+    const sq2inv = 1 / Math.SQRT2;
+    for (let k = 0; k < 8; k++)
+        for (let n = 0; n < 8; n++)
+            t[k * 8 + n] = (k === 0 ? sq2inv : 1) * Math.cos(Math.PI * k * (2 * n + 1) / 16);
+    return t;
+})();
+const _DCTNORM = 0.5; // √(2/8)
 
-function uvQstep(quality: number): number {
-    const yS = qstep(quality);
-    // quality-adaptive chroma boost:
-    //   q>=75: boost=1.0, color accuracy matters at high quality
-    //   q<75:  ramp from 1.0 to 1.15, saves chroma bits where the eye can't tell
-    const boost = quality >= 75 ? 1.0 : 1.0 + 0.15 * ((75 - quality) / 75);
-    return Math.min(128, yS * boost);
-}
-
-function quantizeChroma(data: Uint8Array, ySamples: number, quality: number): Uint8Array {
-    const yS = qstep(quality), uvS = uvQstep(quality);
-    return simd.quantizeChroma(data, ySamples, 1 / yS, 1 / uvS);
-}
-
-function dequantizeChroma(data: Uint8Array, ySamples: number, quality: number): Uint8Array {
-    const yS = qstep(quality), uvS = uvQstep(quality);
-    return simd.dequantizeChroma(data, ySamples, yS, uvS);
-}
-
-function quantizeChromaSigned(data: Uint8Array, ySamples: number, quality: number): Uint8Array {
-    const yS = qstep(quality), uvS = uvQstep(quality);
-    const dzFactor = 0.5 + 0.35 * (1 - quality / 100);
-    return simd.quantizeChromaSigned(data, ySamples, 1 / yS, 1 / uvS, yS * dzFactor, uvS * dzFactor);
-}
-
-function dequantizeChromaSigned(data: Uint8Array, ySamples: number, quality: number): Uint8Array {
-    const yS = qstep(quality), uvS = uvQstep(quality);
-    return simd.dequantizeChromaSigned(data, ySamples, yS, uvS);
-}
-
-function ditherYUV(yuv: Uint8Array, w: number, h: number, quality: number): void {
-    const yS = qstep(quality), uvS = uvQstep(quality);
-    simd.ditherYUV(yuv, w, h, yS, uvS);
-}
-
-function frcDither(
-    yuv: Uint8Array, w: number, h: number, quality: number, frameNum: number
+/** Forward 2D DCT-8 of an 8×8 block.
+ *  @param src  source plane (Uint8Array or Float32Array)
+ *  @param sOff pixel (row=0,col=0) offset into src
+ *  @param stride row stride of src (pixels per row)
+ *  @param centre value subtracted from each pixel before transform (e.g. 128)
+ *  @param out  output Float32Array(64), row-major [v*8+u] */
+function dct8x8Fwd(
+    src: Uint8Array | Float32Array,
+    sOff: number, stride: number, centre: number,
+    out: Float32Array
 ): void {
-    const step = qstep(quality);
-    if (step < 1.5) return;
-    const baseStrength = step * (0.2 + 0.15 * (1 - quality / 100));
-    simd.frcDither(yuv, w, h, baseStrength, frameNum);
+    const tmp = new Float32Array(64);
+    // 1. Row-wise 1D DCT
+    for (let r = 0; r < 8; r++) {
+        for (let k = 0; k < 8; k++) {
+            let s = 0;
+            for (let n = 0; n < 8; n++) s += (src[sOff + r * stride + n] - centre) * _DCTT[k * 8 + n];
+            tmp[r * 8 + k] = s * _DCTNORM;
+        }
+    }
+    // 2. Column-wise 1D DCT  (rows of tmp are horizontal-frequency vectors)
+    for (let v = 0; v < 8; v++) {
+        for (let u = 0; u < 8; u++) {
+            let s = 0;
+            for (let r = 0; r < 8; r++) s += tmp[r * 8 + u] * _DCTT[v * 8 + r];
+            out[v * 8 + u] = s * _DCTNORM;
+        }
+    }
 }
 
-// --- zigzag transform ---
-// residuals after spatial prediction are signed mod 256 (255 means -1, etc).
-// zigzag maps signed to unsigned so small residuals stay small:
-//   0→0, -1→1, +1→2, -2→3, +2→4, ...
-// concentrates energy near zero for fixed-width coding.
+/** Inverse 2D DCT-8.  Adds `centre` to each reconstructed sample.
+ *  @param coeffs Float32Array(64), row-major [v*8+u]
+ *  @param cOff   offset into coeffs
+ *  @param dst    output plane (Uint8Array for clamped, or Float32Array)
+ *  @param dOff   pixel (row=0,col=0) offset into dst
+ *  @param stride row stride of dst
+ *  @param centre value added to each reconstructed sample */
+function dct8x8Inv(
+    coeffs: Float32Array,
+    cOff: number,
+    dst: Uint8Array | Float32Array,
+    dOff: number, stride: number, centre: number
+): void {
+    const tmp = new Float32Array(64);
+    // 1. Column-wise IDCT  (invert the second pass of forward)
+    for (let u = 0; u < 8; u++) {
+        for (let r = 0; r < 8; r++) {
+            let s = 0;
+            for (let v = 0; v < 8; v++) s += coeffs[cOff + v * 8 + u] * _DCTT[v * 8 + r];
+            tmp[r * 8 + u] = s * _DCTNORM;
+        }
+    }
+    // 2. Row-wise IDCT  (invert the first pass of forward)
+    for (let r = 0; r < 8; r++) {
+        for (let n = 0; n < 8; n++) {
+            let s = 0;
+            for (let k = 0; k < 8; k++) s += tmp[r * 8 + k] * _DCTT[k * 8 + n];
+            const v = s * _DCTNORM + centre;
+            if (dst instanceof Uint8Array)
+                dst[dOff + r * stride + n] = Math.max(0, Math.min(255, Math.round(v)));
+            else
+                (dst as Float32Array)[dOff + r * stride + n] = v;
+        }
+    }
+}
 
-// --- spatial physics block codec ---
-// second-order causal Taylor expansion per 8x8 block:
-//   pred = D + α·(L-D) + β·(A-D) + γ·(fyy + fxx + fxy)
-// D=diagonal, L=left, A=above. α=fy, β=fx, γ=Hessian (fyy+fxx+fxy).
-// 3x3 normal equation solver fits coefficients. W-bit residual packing.
+// ── DCT-16 transform ──────────────────────────────────────────────────────────
+//
+// Orthonormal 2D type-II DCT for 16×16 blocks.
+// T16[k,n] = c(k) * cos(π*k*(2n+1)/32),  c(0)=1/√2, c(k>0)=1
+// Frequency (v,u) covers 16×16 = 256 coefficients.  _DCTNORM16 = 0.25 = 1/√16.
 
-/** clz32: count leading zeros of a 32-bit unsigned integer */
-function clz32(v: number): number { return Math.clz32(v); }
+const _DCTT16: Float32Array = (() => {
+    const t = new Float32Array(256);
+    const sq2inv = 1 / Math.SQRT2;
+    for (let k = 0; k < 16; k++)
+        for (let n = 0; n < 16; n++)
+            t[k * 16 + n] = (k === 0 ? sq2inv : 1) * Math.cos(Math.PI * k * (2 * n + 1) / 32);
+    return t;
+})();
+const _DCTNORM16 = Math.sqrt(2 / 16); // √(2/N) for N=16, same convention as _DCTNORM=√(2/8)=0.5
 
-/**
- * blockEncode: I-frame spatial physics encoder.
- * full plane in 8x8 raster-order blocks with causal neighbors.
- * pred = D + α·(L-D) + β·(A-D) + γ·(fyy + fxx + fxy)
- * fyy = L-2D+AD, fxx = A-2D+DL, fxy = A-D-AA+AD.
- * per-block header [α_q:8][β_q:8][γ_q:8][W:6] + W-bit residuals.
+function dct16x16Fwd(
+    src: Uint8Array | Float32Array,
+    sOff: number, stride: number, centre: number,
+    out: Float32Array
+): void {
+    const tmp = new Float32Array(256);
+    for (let r = 0; r < 16; r++) {
+        for (let k = 0; k < 16; k++) {
+            let s = 0;
+            for (let n = 0; n < 16; n++) s += (src[sOff + r * stride + n] - centre) * _DCTT16[k * 16 + n];
+            tmp[r * 16 + k] = s * _DCTNORM16;
+        }
+    }
+    for (let v = 0; v < 16; v++) {
+        for (let u = 0; u < 16; u++) {
+            let s = 0;
+            for (let r = 0; r < 16; r++) s += tmp[r * 16 + u] * _DCTT16[v * 16 + r];
+            out[v * 16 + u] = s * _DCTNORM16;
+        }
+    }
+}
+
+function dct16x16Inv(
+    coeffs: Float32Array, cOff: number,
+    dst: Uint8Array | Float32Array,
+    dOff: number, stride: number, centre: number
+): void {
+    const tmp = new Float32Array(256);
+    for (let u = 0; u < 16; u++) {
+        for (let r = 0; r < 16; r++) {
+            let s = 0;
+            for (let v = 0; v < 16; v++) s += coeffs[cOff + v * 16 + u] * _DCTT16[v * 16 + r];
+            tmp[r * 16 + u] = s * _DCTNORM16;
+        }
+    }
+    for (let r = 0; r < 16; r++) {
+        for (let n = 0; n < 16; n++) {
+            let s = 0;
+            for (let k = 0; k < 16; k++) s += tmp[r * 16 + k] * _DCTT16[k * 16 + n];
+            const v = s * _DCTNORM16 + centre;
+            if (dst instanceof Uint8Array)
+                dst[dOff + r * stride + n] = Math.max(0, Math.min(255, Math.round(v)));
+            else
+                (dst as Float32Array)[dOff + r * stride + n] = v;
+        }
+    }
+}
+
+// ── 32×32 DCT ─────────────────────────────────────────────────────────────────
+// T32[k,n] = c(k) * cos(π*k*(2n+1)/64),  c(0)=1/√2, c(k>0)=1
+// Frequency (v,u) covers 32×32 = 1024 coefficients. _DCTNORM32 = √(2/32).
+
+const _DCTT32: Float32Array = (() => {
+    const t = new Float32Array(32 * 32);
+    const sq2inv = 1 / Math.SQRT2;
+    for (let k = 0; k < 32; k++)
+        for (let n = 0; n < 32; n++)
+            t[k * 32 + n] = (k === 0 ? sq2inv : 1) * Math.cos(Math.PI * k * (2 * n + 1) / 64);
+    return t;
+})();
+const _DCTNORM32 = Math.sqrt(2 / 32); // 1/4
+
+function dct32x32Fwd(
+    src: Uint8Array | Float32Array,
+    sOff: number, stride: number, centre: number,
+    out: Float32Array
+): void {
+    const tmp = new Float32Array(1024);
+    for (let r = 0; r < 32; r++) {
+        for (let k = 0; k < 32; k++) {
+            let s = 0;
+            for (let n = 0; n < 32; n++) s += (src[sOff + r * stride + n] - centre) * _DCTT32[k * 32 + n];
+            tmp[r * 32 + k] = s * _DCTNORM32;
+        }
+    }
+    for (let v = 0; v < 32; v++) {
+        for (let u = 0; u < 32; u++) {
+            let s = 0;
+            for (let r = 0; r < 32; r++) s += tmp[r * 32 + u] * _DCTT32[v * 32 + r];
+            out[v * 32 + u] = s * _DCTNORM32;
+        }
+    }
+}
+
+function dct32x32Inv(
+    coeffs: Float32Array, cOff: number,
+    dst: Uint8Array | Float32Array,
+    dOff: number, stride: number, centre: number
+): void {
+    const tmp = new Float32Array(1024);
+    for (let u = 0; u < 32; u++) {
+        for (let r = 0; r < 32; r++) {
+            let s = 0;
+            for (let v = 0; v < 32; v++) s += coeffs[cOff + v * 32 + u] * _DCTT32[v * 32 + r];
+            tmp[r * 32 + u] = s * _DCTNORM32;
+        }
+    }
+    for (let r = 0; r < 32; r++) {
+        for (let n = 0; n < 32; n++) {
+            let s = 0;
+            for (let k = 0; k < 32; k++) s += tmp[r * 32 + k] * _DCTT32[k * 32 + n];
+            const v = s * _DCTNORM32 + centre;
+            if (dst instanceof Uint8Array)
+                dst[dOff + r * stride + n] = Math.max(0, Math.min(255, Math.round(v)));
+            else
+                (dst as Float32Array)[dOff + r * stride + n] = v;
+        }
+    }
+}
+
+/** Build N×N quantisation step array (N=16,32) by upscaling from 8×8 baseline. */
+function makeQdctN(base8: Uint8Array, quality: number, N: number): Float32Array {
+    const q8 = makeQdct(base8, quality);
+    const scale = N / 8;
+    const qN = new Float32Array(N * N);
+    for (let v = 0; v < N; v++)
+        for (let u = 0; u < N; u++) {
+            const v8 = Math.min(Math.round(v / scale), 7);
+            const u8 = Math.min(Math.round(u / scale), 7);
+            qN[v * N + u] = q8[v8 * 8 + u8];
+        }
+    return qN;
+}
+
+/** Extract N-pixel border references for an N×N block from reconstructed plane. */
+function intraRefsN(
+    recon: Float32Array, bx: number, by: number, w: number, h: number, centre: number, N: number
+): { lc: Float32Array | null; tr: Float32Array | null; tl: number } {
+    const px = bx * N, py = by * N;
+    const lc = bx > 0 ? (() => {
+        const c = new Float32Array(N);
+        for (let y = 0; y < N; y++) c[y] = recon[Math.min(py + y, h - 1) * w + (px - 1)] - centre;
+        return c;
+    })() : null;
+    const tr = by > 0 ? (() => {
+        const c = new Float32Array(N);
+        for (let x = 0; x < N; x++) c[x] = recon[(py - 1) * w + Math.min(px + x, w - 1)] - centre;
+        return c;
+    })() : null;
+    const tl = (bx > 0 && by > 0) ? recon[(py - 1) * w + (px - 1)] - centre : 0;
+    return { lc, tr, tl };
+}
+
+/** 8-mode intra prediction for any N×N block (N=8,16,32). */
+function intraPredN(mode: number, lc: Float32Array | null, tr: Float32Array | null, tl: number, N: number): Float32Array {
+    const pred = new Float32Array(N * N);
+    const M = N - 1;
+    if (mode === 1) { // DC + H.265 boundary smoothing
+        let sum = 0, n = 0;
+        if (lc) for (let i = 0; i < N; i++) { sum += lc[i]; n++; }
+        if (tr) for (let i = 0; i < N; i++) { sum += tr[i]; n++; }
+        const dc = n > 0 ? Math.round(sum / n) : 0;
+        pred.fill(dc);
+        if (tr) { for (let x = 0; x < N; x++) pred[x] = (tr[x] + 3*dc + 2) >> 2; }
+        if (lc) { for (let y = 1; y < N; y++) pred[y*N] = (lc[y] + 3*dc + 2) >> 2; }
+        if (tr && lc) pred[0] = (tr[0] + lc[0] + 2*dc + 2) >> 2;
+        else if (tr) pred[0] = (tr[0] + 3*dc + 2) >> 2;
+        else if (lc) pred[0] = (lc[0] + 3*dc + 2) >> 2;
+    } else if (mode === 4) { // DDL
+        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++)
+            pred[y*N+x] = tr ? tr[Math.min(x+y+1, M)] : 0;
+    } else if (mode === 5) { // DDR
+        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++)
+            pred[y*N+x] = x > y ? (tr ? tr[x-y-1] : 0) : x < y ? (lc ? lc[y-x-1] : 0) : tl;
+    } else if (mode === 6) { // Smooth-H
+        const right = tr ? tr[M] : 0;
+        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++)
+            pred[y*N+x] = ((lc ? lc[y] : 0) * (M - x) + right * x) / M;
+    } else if (mode === 7) { // Smooth-V
+        const bot = lc ? lc[M] : 0;
+        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++)
+            pred[y*N+x] = ((tr ? tr[x] : 0) * (M - y) + bot * y) / M;
+    } else if (mode === 0) { // H.265/AV1 Planar
+        const botLeft = lc ? lc[M] : 0, topRight = tr ? tr[M] : 0;
+        const shift = 31 - Math.clz32(N) + 1; // 8→4, 16→5, 32→6
+        const round = 1 << (shift - 1);
+        for (let y = 0; y < N; y++) {
+            const L = lc ? lc[y] : 0;
+            for (let x = 0; x < N; x++)
+                pred[y*N+x] = ((M-x)*L + (x+1)*topRight + (M-y)*(tr ? tr[x] : 0) + (y+1)*botLeft + round) >> shift;
+        }
+    } else { // 2 H, 3 V
+        for (let y = 0; y < N; y++) {
+            const L = lc ? lc[y] : 0;
+            for (let x = 0; x < N; x++)
+                pred[y*N+x] = mode === 2 ? L : (tr ? tr[x] : 0);
+        }
+    }
+    return pred;
+}
+
+
+
+// ── JPEG-standard quantisation tables (Q=50 baseline) ────────────────────────
+//
+// Lumen maps its quality parameter to JPEG-quality via:
+//   jpegQ = quality   (direct mapping to start; tune later)
+// Scale factor: jpegQ < 50 → s = 5000/q, else s = 200 − 2*q
+// Step = max(1, round(base * s / 100))
+
+const _QDCT_LUMA_BASE = new Uint8Array([
+    16,11,10,16,24,40,51,61,
+    12,12,14,19,26,58,60,55,
+    14,13,16,24,40,57,69,56,
+    14,17,22,29,51,87,80,62,
+    18,22,37,56,68,109,103,77,
+    24,35,55,64,81,104,113,92,
+    49,64,78,87,103,121,120,101,
+    72,92,95,98,112,100,103,99,
+]);
+const _QDCT_CHROMA_BASE = new Uint8Array([
+    17,18,24,47,99,99,99,99,
+    18,21,26,66,99,99,99,99,
+    24,26,56,99,99,99,99,99,
+    47,66,99,99,99,99,99,99,
+    99,99,99,99,99,99,99,99,
+    99,99,99,99,99,99,99,99,
+    99,99,99,99,99,99,99,99,
+    99,99,99,99,99,99,99,99,
+]);
+
+/** Build a 64-element quantisation step array from a baseline table and quality. */
+function makeQdct(base: Uint8Array, quality: number): Float32Array {
+    const s = quality < 50 ? 5000 / quality : 200 - 2 * quality;
+    const q = new Float32Array(64);
+    for (let i = 0; i < 64; i++) q[i] = Math.max(1, Math.round(base[i] * s / 100));
+    return q;
+}
+
+/** AC dead-zone quantization: extends rounding threshold from 0.5q to 0.6q for AC
+ *  coefficients (fi > 0). Coefficients in (0.5q, 0.6q) that would normally round to ±1
+ *  are instead rounded to 0, creating more all-zero frequency planes that compress away. */
+function dzQuant(c: number, q: number, fi: number): number {
+    return (fi > 0 && Math.abs(c) < q * 0.60) ? 0 : Math.round(c / q);
+}
+
+/** per-block AQ: boundary gradient activity → qdct multiplier [0.8, 1.25].
+ *  textured blocks get coarser Q (masking), smooth blocks get finer Q. */
+function blockAQ(lc: Float32Array | null, tr: Float32Array | null, bs: number): number {
+    let sum2 = 0, n = 0;
+    if (lc) for (let i = 1; i < bs; i++) { const d = lc[i] - lc[i-1]; sum2 += d * d; n++; }
+    if (tr) for (let i = 1; i < bs; i++) { const d = tr[i] - tr[i-1]; sum2 += d * d; n++; }
+    if (n === 0) return 1.0;
+    const activity = sum2 / n + 1; // +1 avoids log(0); values are integer-exact
+    return Math.max(0.8, Math.min(1.25, Math.pow(activity / 80, 0.12)));
+}
+// ════════════════════════════════════════════════════════════════════════════════
+// AKASHA INTRA PREDICTION + 3D/4D MÖBIUS COEFFICIENT CODING
+//
+// two-pass: (1) spatial — intra-predict 8×8 blocks, DCT, quantize, closed-loop recon.
+//           (2) entropy — 3D Möbius (bx,by,fi) for Y; 4D Möbius (ubx,uby,fi,yAvg) for UV.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** Predict one 8×8 block in centred pixel space.
+ *  lc = left column, tr = top row, tl = top-left (all centred). null at image edges.
+ *
+ *  Modes (4 bits/block):
+ *  0 PLANAR  pred[y][x] = lc[y] + tr[x] − tl           (gradient blend, L+A−D)
+ *  1 DC      pred = mean(lc ∪ tr)
+ *  2 H       pred[y][x] = lc[y]                         (horizontal copy)
+ *  3 V       pred[y][x] = tr[x]                         (vertical copy)
+ *  4 DDL     pred[y][x] = tr[min(x+y+1,7)]              (diagonal down-left ~135°)
+ *  5 DDR     pred[y][x] = x>y→tr[x-y-1] | x<y→lc[y-x-1] | x==y→tl  (diagonal ~45°)
+ *  6 SMOOTH_H pred[y][x] = lerp(lc[y], tr[7], x/7)     (smooth horizontal)
+ *  7 SMOOTH_V pred[y][x] = lerp(tr[x], lc[7], y/7)     (smooth vertical)
  */
-function blockEncode(data: Uint8Array, width: number, height: number): Uint8Array {
-    const BS = 8;
-    const blocksX = Math.ceil(width / BS);
-    const blocksY = Math.ceil(height / BS);
-    // Worst case: 30 header bits + 8*8*8=512 data bits = 542 bits per block
-    const buf = new Uint8Array(Math.ceil(blocksX * blocksY * 542 / 8) + 16);
-    let bytePos = 0, bitBuf = 0, bitCount = 0;
 
-    function flushBits() {
-        while (bitCount >= 8) {
-            buf[bytePos++] = bitBuf & 0xFF;
-            bitBuf >>>= 8;
-            bitCount -= 8;
-        }
+// ── Entropy-domain L+A-D (Möbius web at the byte level) ─────────────────────
+//
+// Applies mod-256 L+A-D prediction to a cb-plane before/after encode0D.
+// The decoded bytes are bitwise-identical to the input — purely lossless entropy coding.
+// No effect on the spatial reconstruction path whatsoever.
+//
+// Residual distribution: adjacent cb values are spatially correlated → residuals
+// cluster near 0 (and 255 = −1 mod 256). The Logos Bit0/Bit1 models code near-0
+// bytes at ~0.03–0.2 bits vs ~3–6 bits for raw centred bytes. Large gain on smooth content.
+
+function l2dCbEncode(cb: Uint8Array, nB: number, bxN: number, byN: number): Uint8Array {
+    const res = new Uint8Array(nB);
+    for (let by = 0; by < byN; by++) for (let bx = 0; bx < bxN; bx++) {
+        const bi = by * bxN + bx;
+        const L = bx > 0 ? cb[bi-1] : 128;
+        const A = by > 0 ? cb[bi-bxN] : 128;
+        const D = (bx > 0 && by > 0) ? cb[bi-bxN-1] : 128;
+        // CLAMP predictor: clamp L+A−D to [min(L,A), max(L,A)] — avoids overshoot at edges
+        const lad = L + A - D;
+        const P = Math.max(Math.min(L, A), Math.min(Math.max(L, A), lad));
+        res[bi] = (cb[bi] - P) & 0xFF;
     }
-
-    function writeBits(val: number, count: number) {
-        bitBuf |= (val & ((1 << count) - 1)) << bitCount;
-        bitCount += count;
-        flushBits();
-    }
-
-    // 3×3 Gaussian elimination with partial pivoting
-    function solve3x3(
-        m00: number, m01: number, m02: number,
-        m11: number, m12: number, m22: number,
-        r0: number, r1: number, r2: number
-    ): [number, number, number] {
-        const a = [m00, m01, m02, r0];
-        const b = [m01, m11, m12, r1];
-        const c = [m02, m12, m22, r2];
-        const rows = [a, b, c];
-        for (let col = 0; col < 3; col++) {
-            let maxVal = Math.abs(rows[col][col]), maxRow = col;
-            for (let row = col + 1; row < 3; row++) {
-                const v = Math.abs(rows[row][col]);
-                if (v > maxVal) { maxVal = v; maxRow = row; }
-            }
-            if (maxVal < 1e-10) continue;
-            if (maxRow !== col) { const tmp = rows[col]; rows[col] = rows[maxRow]; rows[maxRow] = tmp; }
-            for (let row = col + 1; row < 3; row++) {
-                const f = rows[row][col] / rows[col][col];
-                for (let j = col; j < 4; j++) rows[row][j] -= f * rows[col][j];
-            }
-        }
-        const x = [0, 0, 0];
-        for (let i = 2; i >= 0; i--) {
-            if (Math.abs(rows[i][i]) < 1e-10) continue;
-            let sum = rows[i][3];
-            for (let j = i + 1; j < 3; j++) sum -= rows[i][j] * x[j];
-            x[i] = sum / rows[i][i];
-        }
-        return x as [number, number, number];
-    }
-
-    // Work buffer for reconstructed values (needed for causal prediction)
-    const recon = new Uint8Array(data);
-
-    for (let by = 0; by < blocksY; by++) {
-        for (let bx = 0; bx < blocksX; bx++) {
-            const bw = Math.min(BS, width - bx * BS);
-            const bh = Math.min(BS, height - by * BS);
-
-            // Accumulate 3×3 normal equations: M^T·M and M^T·y
-            // b1 = L-D (fy), b2 = A-D (fx), b3 = fyy+fxx+fxy (full Hessian correction)
-            let m00 = 0, m01 = 0, m02 = 0, m11 = 0, m12 = 0, m22 = 0;
-            let r0 = 0, r1 = 0, r2 = 0;
-            for (let ly = 0; ly < bh; ly++) {
-                const gy = by * BS + ly;
-                for (let lx = 0; lx < bw; lx++) {
-                    const gx = bx * BS + lx;
-                    if (gx === 0 || gy === 0) continue;
-                    const val = recon[gy * width + gx];
-                    const L = recon[gy * width + gx - 1];
-                    const A = recon[(gy - 1) * width + gx];
-                    const D = recon[(gy - 1) * width + gx - 1];
-                    const b1 = L - D;
-                    const b2 = A - D;
-                    // Full second-order correction: fyy + fxx + fxy
-                    const fyy = gy > 1 ? (L - 2 * D + recon[(gy - 2) * width + gx - 1]) : 0;
-                    const fxx = gx > 1 ? (A - 2 * D + recon[(gy - 1) * width + gx - 2]) : 0;
-                    const fxy = gy > 1 ? (A - D - recon[(gy - 2) * width + gx] + recon[(gy - 2) * width + gx - 1]) : 0;
-                    const b3 = fyy + fxx + fxy;
-                    const target = val - D;
-                    m00 += b1 * b1; m01 += b1 * b2; m02 += b1 * b3;
-                    m11 += b2 * b2; m12 += b2 * b3;
-                    m22 += b3 * b3;
-                    r0 += b1 * target; r1 += b2 * target; r2 += b3 * target;
-                }
-            }
-
-            const [alpha, beta, gamma] = solve3x3(m00, m01, m02, m11, m12, m22, r0, r1, r2);
-
-            // Quantize coefficients to 8-bit signed (Q5: multiply by 32)
-            const aq = Math.max(-128, Math.min(127, Math.round(alpha * 32))) | 0;
-            const bq = Math.max(-128, Math.min(127, Math.round(beta * 32))) | 0;
-            const cq = Math.max(-128, Math.min(127, Math.round(gamma * 32))) | 0;
-
-            // Pass 2: compute predictions with quantized coefficients, zigzag residuals, find maxZ
-            let maxZ = 0;
-            const residuals = new Uint8Array(bw * bh);
-            for (let ly = 0; ly < bh; ly++) {
-                const gy = by * BS + ly;
-                for (let lx = 0; lx < bw; lx++) {
-                    const gx = bx * BS + lx;
-                    const val = recon[gy * width + gx];
-                    let pred: number;
-                    if (gx > 0 && gy > 0) {
-                        const L = recon[gy * width + gx - 1];
-                        const A = recon[(gy - 1) * width + gx];
-                        const D = recon[(gy - 1) * width + gx - 1];
-                        const fyy = gy > 1 ? (L - 2 * D + recon[(gy - 2) * width + gx - 1]) : 0;
-                        const fxx = gx > 1 ? (A - 2 * D + recon[(gy - 1) * width + gx - 2]) : 0;
-                        const fxy = gy > 1 ? (A - D - recon[(gy - 2) * width + gx] + recon[(gy - 2) * width + gx - 1]) : 0;
-                        pred = D + ((aq * (L - D) + bq * (A - D) + cq * (fyy + fxx + fxy)) >> 5);
-                    } else if (gx > 0) {
-                        pred = recon[gy * width + gx - 1];
-                    } else if (gy > 0) {
-                        pred = recon[(gy - 1) * width + gx];
-                    } else {
-                        pred = 0;
-                    }
-                    const r = (val - pred) & 0xFF;
-                    // Zigzag: signed mod 256 → unsigned
-                    const z = r < 128 ? (r << 1) : (((256 - r) << 1) - 1);
-                    residuals[ly * bw + lx] = z;
-                    if (z > maxZ) maxZ = z;
-                }
-            }
-
-            const W = maxZ > 0 ? (32 - clz32(maxZ)) : 0;
-
-            // Emit header: α_q(8) + β_q(8) + γ_q(8) + W(6) = 30 bits
-            writeBits(aq & 0xFF, 8);
-            writeBits(bq & 0xFF, 8);
-            writeBits(cq & 0xFF, 8);
-            writeBits(W, 6);
-
-            // Emit data: each residual in W bits
-            if (W > 0) {
-                for (let i = 0; i < bw * bh; i++) {
-                    writeBits(residuals[i], W);
-                }
-            }
-        }
-    }
-
-    // Flush remaining bits
-    if (bitCount > 0) buf[bytePos++] = bitBuf & 0xFF;
-    return buf.subarray(0, bytePos);
+    return encode0D(res);
 }
 
-/** blockDecode: I-frame spatial physics decoder, mirror of blockEncode. */
-function blockDecode(bitstream: Uint8Array, width: number, height: number): Uint8Array {
-    const BS = 8;
-    const blocksX = Math.ceil(width / BS);
-    const blocksY = Math.ceil(height / BS);
-    const out = new Uint8Array(width * height);
-    let bytePos = 0, bitBuf = 0, bitCount = 0;
-
-    function readBits(count: number): number {
-        while (bitCount < count) {
-            bitBuf |= (bytePos < bitstream.length ? bitstream[bytePos++] : 0) << bitCount;
-            bitCount += 8;
-        }
-        const val = bitBuf & ((1 << count) - 1);
-        bitBuf >>>= count;
-        bitCount -= count;
-        return val;
+function l2dCbDecode(data: Uint8Array, nB: number, bxN: number, byN: number): Uint8Array {
+    const res = decode0D(data, nB);
+    const cb = new Uint8Array(nB);
+    for (let by = 0; by < byN; by++) for (let bx = 0; bx < bxN; bx++) {
+        const bi = by * bxN + bx;
+        const L = bx > 0 ? cb[bi-1] : 128;
+        const A = by > 0 ? cb[bi-bxN] : 128;
+        const D = (bx > 0 && by > 0) ? cb[bi-bxN-1] : 128;
+        // CLAMP predictor: clamp L+A−D to [min(L,A), max(L,A)] — avoids overshoot at edges
+        const lad = L + A - D;
+        const P = Math.max(Math.min(L, A), Math.min(Math.max(L, A), lad));
+        cb[bi] = (res[bi] + P) & 0xFF;
     }
-
-    for (let by = 0; by < blocksY; by++) {
-        for (let bx = 0; bx < blocksX; bx++) {
-            const bw = Math.min(BS, width - bx * BS);
-            const bh = Math.min(BS, height - by * BS);
-
-            // Read header: α_q(8) + β_q(8) + γ_q(8) + W(6) = 30 bits
-            const aq = (readBits(8) << 24) >> 24; // sign extend
-            const bq = (readBits(8) << 24) >> 24;
-            const cq = (readBits(8) << 24) >> 24;
-            const W = readBits(6);
-
-            for (let ly = 0; ly < bh; ly++) {
-                const gy = by * BS + ly;
-                for (let lx = 0; lx < bw; lx++) {
-                    const gx = bx * BS + lx;
-                    let pred: number;
-                    if (gx > 0 && gy > 0) {
-                        const L = out[gy * width + gx - 1];
-                        const A = out[(gy - 1) * width + gx];
-                        const D = out[(gy - 1) * width + gx - 1];
-                        const fyy = gy > 1 ? (L - 2 * D + out[(gy - 2) * width + gx - 1]) : 0;
-                        const fxx = gx > 1 ? (A - 2 * D + out[(gy - 1) * width + gx - 2]) : 0;
-                        const fxy = gy > 1 ? (A - D - out[(gy - 2) * width + gx] + out[(gy - 2) * width + gx - 1]) : 0;
-                        pred = D + ((aq * (L - D) + bq * (A - D) + cq * (fyy + fxx + fxy)) >> 5);
-                    } else if (gx > 0) {
-                        pred = out[gy * width + gx - 1];
-                    } else if (gy > 0) {
-                        pred = out[(gy - 1) * width + gx];
-                    } else {
-                        pred = 0;
-                    }
-                    const z = W > 0 ? readBits(W) : 0;
-                    // Inverse zigzag
-                    const r = (z & 1) ? (256 - ((z + 1) >> 1)) : (z >> 1);
-                    out[gy * width + gx] = (pred + r) & 0xFF;
-                }
-            }
-        }
-    }
-
-    return out;
+    return cb;
 }
 
-/** blockEncodeMulti: P-frame encoder. independent blocks, 30-bit header + W-bit residuals each. */
-function blockEncodeMulti(blockData: Uint8Array, blockDims: { w: number; h: number }[]): Uint8Array {
-    const buf = new Uint8Array(Math.ceil(blockData.length * 10 / 8) + blockDims.length * 4 + 16);
-    let bytePos = 0, bitBuf = 0, bitCount = 0;
+// ── Entropy-domain 3D Möbius: L+A+B − DXY − DXF − DYF + DXYF ──────────────
+//
+// Extends the 2D spatial prediction to include the frequency axis (B = previous
+// frequency plane's cb value for the same block position).  The inclusion-exclusion
+// formula over the unit 3-cube has error = Δx·Δy·Δf·g — zero for any signal
+// whose cb values are at most bilinear in (x,y,f).  Adjacent DCT frequency planes
+// are strongly correlated for natural images (energy rolls off smoothly), so the
+// B neighbor reduces residual entropy beyond what 2D spatial prediction achieves.
+//
+// Uses mod-256 arithmetic (same as l2dCbEncode). No clamping — the full Möbius
+// is optimal for polynomial signals, and encode0D handles wrapped residuals well.
 
-    function flushBits() {
-        while (bitCount >= 8) {
-            buf[bytePos++] = bitBuf & 0xFF;
-            bitBuf >>>= 8;
-            bitCount -= 8;
-        }
-    }
-
-    function writeBits(val: number, count: number) {
-        bitBuf |= (val & ((1 << count) - 1)) << bitCount;
-        bitCount += count;
-        flushBits();
-    }
-
-    let readPos = 0;
-    for (const { w, h } of blockDims) {
-        const n = w * h;
-        const block = blockData.subarray(readPos, readPos + n);
-        readPos += n;
-
-        // Zigzag all residuals, find maxZ
-        let maxZ = 0;
-        const zz = new Uint8Array(n);
-        for (let i = 0; i < n; i++) {
-            const v = block[i];
-            const z = v < 128 ? (v << 1) : (((256 - v) << 1) - 1);
-            zz[i] = z;
-            if (z > maxZ) maxZ = z;
-        }
-
-        const W = maxZ > 0 ? (32 - clz32(maxZ)) : 0;
-
-        // For P-frame blocks: no spatial prediction, just α=β=γ=0
-        writeBits(0, 8); // α_q = 0
-        writeBits(0, 8); // β_q = 0
-        writeBits(0, 8); // γ_q = 0
-        writeBits(W, 6);
-
-        if (W > 0) {
-            for (let i = 0; i < n; i++) writeBits(zz[i], W);
-        }
-    }
-
-    if (bitCount > 0) buf[bytePos++] = bitBuf & 0xFF;
-    return buf.subarray(0, bytePos);
-}
-
-/** blockDecodeMulti: P-frame decoder. */
-function blockDecodeMulti(bitstream: Uint8Array, blockDims: { w: number; h: number }[], totalPixels: number): Uint8Array {
-    const out = new Uint8Array(totalPixels);
-    let bytePos = 0, bitBuf = 0, bitCount = 0;
-
-    function readBits(count: number): number {
-        while (bitCount < count) {
-            bitBuf |= (bytePos < bitstream.length ? bitstream[bytePos++] : 0) << bitCount;
-            bitCount += 8;
-        }
-        const val = bitBuf & ((1 << count) - 1);
-        bitBuf >>>= count;
-        bitCount -= count;
-        return val;
-    }
-
-    let writePos = 0;
-    for (const { w, h } of blockDims) {
-        const n = w * h;
-        // read header (α_q, β_q, γ_q are ignored for P-frame blocks, no spatial prediction)
-        readBits(8); // α_q
-        readBits(8); // β_q
-        readBits(8); // γ_q
-        const W = readBits(6);
-
-        for (let i = 0; i < n; i++) {
-            const z = W > 0 ? readBits(W) : 0;
-            // Inverse zigzag
-            out[writePos++] = (z & 1) ? (256 - ((z + 1) >> 1)) : (z >> 1);
-        }
-    }
-
-    return out;
-}
-
-/** build {w, h} dimensions for each changed block (Y + U + V). */
-function buildChangedBlockDims(
-    bitmap: Uint8Array, blocksX: number, blocksY: number,
-    blockSize: number, planeW: number, planeH: number,
-    uvBlockSize: number, uvW: number, uvH: number
-): { w: number; h: number }[] {
-    const dims: { w: number; h: number }[] = [];
-    // Y plane blocks
-    for (let by = 0; by < blocksY; by++) {
-        for (let bx = 0; bx < blocksX; bx++) {
-            const blockIdx = by * blocksX + bx;
-            if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
-            const bw = Math.min(blockSize, planeW - bx * blockSize);
-            const bh = Math.min(blockSize, planeH - by * blockSize);
-            dims.push({ w: bw, h: bh });
-        }
-    }
-    // U plane blocks
-    for (let by = 0; by < blocksY; by++) {
-        for (let bx = 0; bx < blocksX; bx++) {
-            const blockIdx = by * blocksX + bx;
-            if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
-            const bw = Math.min(uvBlockSize, uvW - bx * uvBlockSize);
-            const bh = Math.min(uvBlockSize, uvH - by * uvBlockSize);
-            dims.push({ w: bw, h: bh });
-        }
-    }
-    // V plane blocks (same dims as U)
-    for (let by = 0; by < blocksY; by++) {
-        for (let bx = 0; bx < blocksX; bx++) {
-            const blockIdx = by * blocksX + bx;
-            if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
-            const bw = Math.min(uvBlockSize, uvW - bx * uvBlockSize);
-            const bh = Math.min(uvBlockSize, uvH - by * uvBlockSize);
-            dims.push({ w: bw, h: bh });
-        }
-    }
-    return dims;
-}
-
-// --- compressed payload assembly ---
-
-/** I-frame payload: [yLen:4][yBitstream][uLen:4][uBitstream][vLen:4][vBitstream] */
-
-function packIframePayload(yBits: Uint8Array, uBits: Uint8Array, vBits: Uint8Array): Uint8Array {
-    const out = new Uint8Array(12 + yBits.length + uBits.length + vBits.length);
-    const dv = new DataView(out.buffer);
-    let off = 0;
-    dv.setUint32(off, yBits.length, true); off += 4;
-    out.set(yBits, off); off += yBits.length;
-    dv.setUint32(off, uBits.length, true); off += 4;
-    out.set(uBits, off); off += uBits.length;
-    dv.setUint32(off, vBits.length, true); off += 4;
-    out.set(vBits, off);
-    return out;
-}
-
-function unpackIframePayload(payload: Uint8Array): { yBits: Uint8Array; uBits: Uint8Array; vBits: Uint8Array } {
-    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-    let off = 0;
-    const yLen = dv.getUint32(off, true); off += 4;
-    const yBits = payload.subarray(off, off + yLen); off += yLen;
-    const uLen = dv.getUint32(off, true); off += 4;
-    const uBits = payload.subarray(off, off + uLen); off += uLen;
-    const vLen = dv.getUint32(off, true); off += 4;
-    const vBits = payload.subarray(off, off + vLen);
-    return { yBits, uBits, vBits };
-}
-
-/** P-frame payload: [bitmap][blockBitstream] */
-
-function packPframePayload(
-    blockBitstream: Uint8Array,
-    blocksX: number, blocksY: number, bitmap: Uint8Array
+function l3dCbEncode(
+    cb: Uint8Array, prevCb: Uint8Array,
+    nB: number, bxN: number, byN: number
 ): Uint8Array {
-    const bitmapLen = Math.ceil(blocksX * blocksY / 8);
-    const out = new Uint8Array(bitmapLen + blockBitstream.length);
-    out.set(bitmap.subarray(0, bitmapLen), 0);
-    out.set(blockBitstream, bitmapLen);
+    const res = new Uint8Array(nB);
+    for (let by = 0; by < byN; by++) for (let bx = 0; bx < bxN; bx++) {
+        const bi = by * bxN + bx;
+        const L    = bx > 0 ? cb[bi-1] : 128;
+        const A    = by > 0 ? cb[bi-bxN] : 128;
+        const B    = prevCb[bi];
+        const DXY  = (bx > 0 && by > 0) ? cb[bi-bxN-1] : 128;
+        const DXF  = bx > 0 ? prevCb[bi-1] : 128;
+        const DYF  = by > 0 ? prevCb[bi-bxN] : 128;
+        const DXYF = (bx > 0 && by > 0) ? prevCb[bi-bxN-1] : 128;
+        // Full 3D Möbius clamped to [min(L,A,B), max(L,A,B)]
+        const raw = L + A + B - DXY - DXF - DYF + DXYF;
+        const lo = Math.min(L, A, B), hi = Math.max(L, A, B);
+        const P = Math.max(lo, Math.min(hi, raw));
+        // Zigzag fold: mod-256 residual → small-abs-first byte ordering
+        // 0→0, 255(-1)→1, 1→2, 254(-2)→3, 2→4, ... so ±small → small byte
+        const r = (cb[bi] - P) & 0xFF;
+        res[bi] = r < 128 ? r * 2 : (256 - r) * 2 - 1;
+    }
+    return encode0D(res);
+}
+
+function l3dCbDecode(
+    data: Uint8Array, prevCb: Uint8Array,
+    nB: number, bxN: number, byN: number
+): Uint8Array {
+    const res = decode0D(data, nB);
+    const cb = new Uint8Array(nB);
+    for (let by = 0; by < byN; by++) for (let bx = 0; bx < bxN; bx++) {
+        const bi = by * bxN + bx;
+        const L    = bx > 0 ? cb[bi-1] : 128;
+        const A    = by > 0 ? cb[bi-bxN] : 128;
+        const B    = prevCb[bi];
+        const DXY  = (bx > 0 && by > 0) ? cb[bi-bxN-1] : 128;
+        const DXF  = bx > 0 ? prevCb[bi-1] : 128;
+        const DYF  = by > 0 ? prevCb[bi-bxN] : 128;
+        const DXYF = (bx > 0 && by > 0) ? prevCb[bi-bxN-1] : 128;
+        const raw = L + A + B - DXY - DXF - DYF + DXYF;
+        const lo = Math.min(L, A, B), hi = Math.max(L, A, B);
+        const P = Math.max(lo, Math.min(hi, raw));
+        // Unfold zigzag: even → positive, odd → negative
+        const m = res[bi];
+        const r = (m & 1) ? (256 - ((m + 1) >> 1)) & 0xFF : (m >> 1);
+        cb[bi] = (r + P) & 0xFF;
+    }
+    return cb;
+}
+
+// ---------------------------------------------------------------------------
+// ── Akasha encode/decode helpers ─────────────────────────────────────────────
+
+/** 3D Möbius predictor for the Y coefficient tensor (bx, by, fi). */
+function mob3D(dec: Int16Array, fi: number, by: number, bx: number, bxN: number, nB: number): number {
+    const bi = by * bxN + bx;
+    const hL = bx > 0, hA = by > 0, hB = fi > 0;
+    const L    = hL           ? dec[fi*nB + bi - 1]          : 0;
+    const A    = hA           ? dec[fi*nB + bi - bxN]        : 0;
+    const B    = hB           ? dec[(fi-1)*nB + bi]          : 0;
+    const DXY  = hL&&hA       ? dec[fi*nB + bi-1-bxN]        : 0;
+    const DXF  = hL&&hB       ? dec[(fi-1)*nB + bi - 1]      : 0;
+    const DYF  = hA&&hB       ? dec[(fi-1)*nB + bi - bxN]    : 0;
+    const DXYF = hL&&hA&&hB   ? dec[(fi-1)*nB + bi-1-bxN]    : 0;
+    return L + A + B - DXY - DXF - DYF + DXYF;
+}
+
+/** 4D Möbius predictor for UV: T dimension = Y_avg channel. */
+function mob4DUV(
+    dec: Int16Array, yAvg: Float32Array,
+    fi: number, uby: number, ubx: number, ubxN: number, nBUV: number
+): number {
+    const bi = uby * ubxN + ubx;
+    const hL = ubx > 0, hA = uby > 0, hB = fi > 0;
+    // T: Y_avg at current position
+    const T    =                  yAvg[fi * nBUV + bi];
+    const L    = hL           ? dec[fi*nBUV + bi - 1]           : 0;
+    const A    = hA           ? dec[fi*nBUV + bi - ubxN]        : 0;
+    const B    = hB           ? dec[(fi-1)*nBUV + bi]           : 0;
+    const DXT  = hL           ? yAvg[fi*nBUV + bi - 1]          : 0;
+    const DYT  = hA           ? yAvg[fi*nBUV + bi - ubxN]       : 0;
+    const DFT  = hB           ? yAvg[(fi-1)*nBUV + bi]          : 0;
+    const DXY  = hL&&hA       ? dec[fi*nBUV + bi-1-ubxN]        : 0;
+    const DXF  = hL&&hB       ? dec[(fi-1)*nBUV + bi - 1]       : 0;
+    const DYF  = hA&&hB       ? dec[(fi-1)*nBUV + bi - ubxN]    : 0;
+    const DXYT = hL&&hA       ? yAvg[fi*nBUV + bi-1-ubxN]       : 0;
+    const DXFT = hL&&hB       ? yAvg[(fi-1)*nBUV + bi - 1]      : 0;
+    const DYFT = hA&&hB       ? yAvg[(fi-1)*nBUV + bi - ubxN]   : 0;
+    const DXYF = hL&&hA&&hB   ? dec[(fi-1)*nBUV + bi-1-ubxN]    : 0;
+    const D4   = hL&&hA&&hB   ? yAvg[(fi-1)*nBUV + bi-1-ubxN]   : 0;
+    return (L + A + B + T)
+         - (DXY + DXF + DXT + DYF + DYT + DFT)
+         + (DXYF + DXYT + DXFT + DYFT)
+         - D4;
+}
+
+/** Encode 64 frequency planes using closed-loop 3D Möbius prediction.
+ *  Wire layout: 8-byte bitmap + (2B-len + 1B-sc + encode0D(cb)) per non-zero plane. */
+function encodeFreqPlanes3D(rawLvl: Int16Array, nB: number, bxN: number, byN: number): Uint8Array {
+    const dec = new Int16Array(64 * nB);
+    const pBufs: (Uint8Array | null)[] = [];
+    for (let fi = 0; fi < 64; fi++) {
+        let maxAbs = 0;
+        for (let bi = 0; bi < nB; bi++) { const a = Math.abs(rawLvl[fi*nB+bi]); if (a > maxAbs) maxAbs = a; }
+        if (maxAbs === 0) { pBufs.push(null); continue; }
+
+        // Pass 1: open-loop using rawLvl as spatial neighbours to bound closed-loop residuals
+        for (let bi = 0; bi < nB; bi++) dec[fi*nB+bi] = rawLvl[fi*nB+bi];
+        let maxR = 0;
+        for (let by = 0; by < byN; by++) for (let bx = 0; bx < bxN; bx++) {
+            const bi = by*bxN+bx;
+            const r = rawLvl[fi*nB+bi] - mob3D(dec, fi, by, bx, bxN, nB);
+            const a = Math.abs(r); if (a > maxR) maxR = a;
+        }
+        const sc = Math.ceil(maxR / 120) || 1;  // /120 not /127: 6% headroom for closed-loop drift
+
+        // Pass 2: closed-loop encode; dec tracks decoder's exact state (uses clamped q)
+        const cb = new Uint8Array(nB);
+        for (let bi = 0; bi < nB; bi++) dec[fi*nB+bi] = 0;  // reset current fi for closed-loop
+        for (let by = 0; by < byN; by++) for (let bx = 0; bx < bxN; bx++) {
+            const bi = by * bxN + bx;
+            const P = mob3D(dec, fi, by, bx, bxN, nB);
+            const q = Math.round((rawLvl[fi*nB+bi] - P) / sc);
+            cb[bi] = Math.min(255, Math.max(0, q + 128));
+            dec[fi*nB+bi] = (cb[bi] - 128) * sc + P;  // mirror decoder exactly
+        }
+        const enc = encode0D(cb);
+        const pb = new Uint8Array(1 + enc.length);
+        pb[0] = sc & 0x7F; pb.set(enc, 1);
+        pBufs.push(pb);
+    }
+    const bm = new Uint8Array(8);
+    let total = 8;
+    for (let fi = 0; fi < 64; fi++) if (pBufs[fi]) { bm[fi>>3] |= 1<<(fi&7); total += 2+pBufs[fi]!.length; }
+    const out = new Uint8Array(total); out.set(bm); let off = 8;
+    for (let fi = 0; fi < 64; fi++) if (pBufs[fi]) {
+        const pb = pBufs[fi]!; out[off]=pb.length&0xFF; out[off+1]=pb.length>>8; off+=2; out.set(pb,off); off+=pb.length;
+    }
     return out;
 }
 
-function unpackPframePayload(
-    payload: Uint8Array,
-    blocksX: number, blocksY: number
-): { blockBitstream: Uint8Array; bitmap: Uint8Array } {
-    const bitmapLen = Math.ceil(blocksX * blocksY / 8);
-    const bitmap = payload.subarray(0, bitmapLen);
-    const blockBitstream = payload.subarray(bitmapLen);
-    return { blockBitstream, bitmap };
+/** Decode 64 frequency planes encoded by encodeFreqPlanes3D. */
+function decodeFreqPlanes3D(bits: Uint8Array, nB: number, bxN: number, byN: number): Int16Array {
+    const levels = new Int16Array(64 * nB);
+    let off = 8; // skip bitmap bytes
+    for (let fi = 0; fi < 64; fi++) {
+        if (!(bits[fi>>3] & (1<<(fi&7)))) continue;
+        const plen = bits[off] | (bits[off+1]<<8); off += 2;
+        const sc = bits[off] & 0x7F;
+        const cb = decode0D(bits.subarray(off+1, off+plen), nB); off += plen;
+        for (let by = 0; by < byN; by++) for (let bx = 0; bx < bxN; bx++) {
+            const bi = by*bxN+bx;
+            levels[fi*nB+bi] = (cb[bi]-128)*sc + mob3D(levels, fi, by, bx, bxN, nB);
+        }
+    }
+    return levels;
 }
+
+/** Encode 64 UV frequency planes with 4D Möbius (T = Y_avg channel). */
+function encodeFreqPlanes4DUV(
+    rawLvl: Int16Array, nBUV: number, ubxN: number, ubyN: number,
+    yAvg: Float32Array
+): Uint8Array {
+    const dec = new Int16Array(64 * nBUV);
+    const pBufs: (Uint8Array | null)[] = [];
+    for (let fi = 0; fi < 64; fi++) {
+        let maxAbs = 0;
+        for (let bi = 0; bi < nBUV; bi++) { const a = Math.abs(rawLvl[fi*nBUV+bi]); if (a > maxAbs) maxAbs = a; }
+        if (maxAbs === 0) { pBufs.push(null); continue; }
+
+        // Pass 1: open-loop with rawLvl as spatial neighbours
+        for (let bi = 0; bi < nBUV; bi++) dec[fi*nBUV+bi] = rawLvl[fi*nBUV+bi];
+        let maxR = 0;
+        for (let uby = 0; uby < ubyN; uby++) for (let ubx = 0; ubx < ubxN; ubx++) {
+            const bi = uby*ubxN+ubx;
+            const r = rawLvl[fi*nBUV+bi] - mob4DUV(dec, yAvg, fi, uby, ubx, ubxN, nBUV);
+            const a = Math.abs(r); if (a > maxR) maxR = a;
+        }
+        const sc = Math.ceil(maxR / 120) || 1;
+
+        // Pass 2: closed-loop; mirror decoder state exactly
+        const cb = new Uint8Array(nBUV);
+        for (let bi = 0; bi < nBUV; bi++) dec[fi*nBUV+bi] = 0;
+        for (let uby = 0; uby < ubyN; uby++) for (let ubx = 0; ubx < ubxN; ubx++) {
+            const bi = uby * ubxN + ubx;
+            const P = mob4DUV(dec, yAvg, fi, uby, ubx, ubxN, nBUV);
+            const q = Math.round((rawLvl[fi*nBUV+bi] - P) / sc);
+            cb[bi] = Math.min(255, Math.max(0, q + 128));
+            dec[fi*nBUV+bi] = (cb[bi] - 128) * sc + P;
+        }
+        const enc = encode0D(cb);
+        const pb = new Uint8Array(1 + enc.length);
+        pb[0] = sc & 0x7F; pb.set(enc, 1);
+        pBufs.push(pb);
+    }
+    const bm = new Uint8Array(8);
+    let total = 8;
+    for (let fi = 0; fi < 64; fi++) if (pBufs[fi]) { bm[fi>>3] |= 1<<(fi&7); total += 2+pBufs[fi]!.length; }
+    const out = new Uint8Array(total); out.set(bm); let off = 8;
+    for (let fi = 0; fi < 64; fi++) if (pBufs[fi]) {
+        const pb = pBufs[fi]!; out[off]=pb.length&0xFF; out[off+1]=pb.length>>8; off+=2; out.set(pb,off); off+=pb.length;
+    }
+    return out;
+}
+
+/** Decode UV planes encoded with encodeFreqPlanes4DUV. */
+function decodeFreqPlanes4DUV(
+    bits: Uint8Array, nBUV: number, ubxN: number, ubyN: number,
+    yAvg: Float32Array
+): Int16Array {
+    const levels = new Int16Array(64 * nBUV);
+    let off = 8;
+    for (let fi = 0; fi < 64; fi++) {
+        if (!(bits[fi>>3] & (1<<(fi&7)))) continue;
+        const plen = bits[off] | (bits[off+1]<<8); off += 2;
+        const sc = bits[off] & 0x7F;
+        const cb = decode0D(bits.subarray(off+1, off+plen), nBUV); off += plen;
+        for (let uby = 0; uby < ubyN; uby++) for (let ubx = 0; ubx < ubxN; ubx++) {
+            const bi = uby*ubxN+ubx;
+            levels[fi*nBUV+bi] = (cb[bi]-128)*sc + mob4DUV(levels, yAvg, fi, uby, ubx, ubxN, nBUV);
+        }
+    }
+    return levels;
+}
+
+/** Build Y_avg tensor: yAvg[fi * nBUV + uby*ubxN + ubx] = mean of 4 Y decoded levels. */
+function buildYAvg(
+    yDecLvl: Int16Array, bxNY: number, byNY: number,
+    ubxN: number, ubyN: number
+): Float32Array {
+    const nBUV = ubxN * ubyN;
+    const nBY = bxNY * byNY;
+    const yAvg = new Float32Array(64 * nBUV);
+    for (let fi = 0; fi < 64; fi++) {
+        const yBase = fi * nBY;
+        for (let uby = 0; uby < ubyN; uby++) for (let ubx = 0; ubx < ubxN; ubx++) {
+            const iy0 = Math.min(uby*2,   byNY-1), iy1 = Math.min(uby*2+1, byNY-1);
+            const ix0 = Math.min(ubx*2,   bxNY-1), ix1 = Math.min(ubx*2+1, bxNY-1);
+            yAvg[fi*nBUV + uby*ubxN+ubx] = (
+                yDecLvl[yBase + iy0*bxNY + ix0] + yDecLvl[yBase + iy0*bxNY + ix1] +
+                yDecLvl[yBase + iy1*bxNY + ix0] + yDecLvl[yBase + iy1*bxNY + ix1]
+            ) / 4;
+        }
+    }
+    return yAvg;
+}
+
+// ── Akasha: intra prediction + per-block scalar quantization ───────────────────
+//
+// Correctness guarantee: for each block, the encoder quantizes to cb, then
+// immediately dequantizes to update recon — exactly mirroring the decoder.
+// No cross-block frequency-domain predictor → no circular dependency.
+//
+// Wire format:
+//   [8B bitmap: active fi planes]
+//   [2B scLen][encode0D(scArr)]     — per-block scale, nB bytes
+//   for each active fi: [2B len][encode0D(cb_plane)]  — nB bytes each
+
+/** Encode one plane (luma or chroma) with 8-mode intra + per-block scalar quant.
+ *  modeBits uses 4-bit nibble packing (2 blocks/byte).
+ *  cb planes and scArr are entropy-coded with L+A-D prediction (Möbius entropy web). */
+/** CfL global alpha: OLS regression of UV block means on Y block means. */
+function cflGlobalAlpha(
+    uvPlane: Uint8Array, uvW: number, uvH: number,
+    yRecon: Uint8Array, yW: number, yH: number
+): number {
+    const uvBxN = Math.ceil(uvW / 8), uvByN = Math.ceil(uvH / 8);
+    let sYY = 0, sYUV = 0;
+    for (let uvBy = 0; uvBy < uvByN; uvBy++) {
+        for (let uvBx = 0; uvBx < uvBxN; uvBx++) {
+            let ySum = 0, yN = 0;
+            for (let dy = 0; dy < 16 && uvBy*16+dy < yH; dy++)
+                for (let dx = 0; dx < 16 && uvBx*16+dx < yW; dx++) {
+                    ySum += yRecon[(uvBy*16+dy)*yW+(uvBx*16+dx)]; yN++;
+                }
+            const yMean = yN > 0 ? ySum/yN : 128;
+            let uvSum = 0, uvN = 0;
+            for (let dy = 0; dy < 8 && uvBy*8+dy < uvH; dy++)
+                for (let dx = 0; dx < 8 && uvBx*8+dx < uvW; dx++) {
+                    uvSum += uvPlane[(uvBy*8+dy)*uvW+(uvBx*8+dx)]; uvN++;
+                }
+            const uvMean = uvN > 0 ? uvSum/uvN : 128;
+            sYY  += (yMean-128)*(yMean-128);
+            sYUV += (yMean-128)*(uvMean-128);
+        }
+    }
+    return sYY < 1 ? 0 : Math.max(-2, Math.min(2, sYUV / sYY));
+}
+
+function encodeAkashaPlane(
+    plane: Uint8Array, w: number, h: number, qdct: Float32Array, centre: number,
+    cflAlpha?: number, yRecon?: Uint8Array, yW?: number, yH?: number
+): { bits: Uint8Array; modeBits: Uint8Array; decLvl: Int16Array; recon: Uint8Array } {
+    const bxN = Math.ceil(w / 8), byN = Math.ceil(h / 8), nB = bxN * byN;
+    const modes  = new Uint8Array(nB);
+    const scArr  = new Uint8Array(nB);
+    const cbMat  = new Uint8Array(64 * nB).fill(128); // cbMat[fi*nB+bi]
+    const dec    = new Int16Array(64 * nB);
+    const recon  = new Float32Array(w * h).fill(centre);
+    const coeff  = new Float32Array(64);
+    const lvl    = new Int16Array(64);
+    const res    = new Float32Array(64);
+
+    for (let by = 0; by < byN; by++) {
+        for (let bx = 0; bx < bxN; bx++) {
+            const bi = by * bxN + bx;
+            const px = bx * 8, py = by * 8;
+            const { lc, tr, tl } = intraRefsN(recon, bx, by, w, h, centre, 8);
+
+            // CfL: compute block-constant Y-mean correction BEFORE mode selection
+            // so mode selection can account for CfL shifting the DC residual.
+            let cflInt = 0;
+            if (cflAlpha && yRecon) {
+                let ySum = 0, yN = 0;
+                for (let dy = 0; dy < 16 && by*16+dy < yH!; dy++)
+                    for (let dx = 0; dx < 16 && bx*16+dx < yW!; dx++) {
+                        ySum += yRecon[(by*16+dy)*yW!+(bx*16+dx)]; yN++;
+                    }
+                cflInt = Math.round(cflAlpha * ((yN>0 ? ySum/yN : 128) - 128));
+            }
+
+            // Adaptive quantization: scale Q by boundary activity (decoder-derivable)
+            const aq = blockAQ(lc, tr, 8);
+
+            // 8-mode selection: DCT-domain quantization error (Parseval optimal).
+            // CfL correction included so mode selection uses the actual encoded residual.
+            let bestMode = 0, bestQErr = Infinity;
+            for (let m = 0; m < 8; m++) {
+                const pred = intraPredN(m, lc, tr, tl, 8);
+                for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+                    const ry = py+y, rx = px+x;
+                    res[y*8+x] = ry < h && rx < w ? (plane[ry*w+rx] - centre) - pred[y*8+x] - cflInt : 0;
+                }
+                dct8x8Fwd(res, 0, 8, 0, coeff);
+                let qErr = 0;
+                for (let fi = 0; fi < 64; fi++) {
+                    const lv = dzQuant(coeff[fi], qdct[fi] * aq, fi);
+                    const e = coeff[fi] - lv * qdct[fi] * aq;
+                    qErr += e * e;
+                }
+                if (qErr < bestQErr) { bestQErr = qErr; bestMode = m; }
+            }
+            modes[bi] = bestMode;
+
+            const pred = intraPredN(bestMode, lc, tr, tl, 8);
+            // cflInt already computed above (no redundant Y-mean recomputation)
+
+            for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+                const ry = py+y, rx = px+x;
+                res[y*8+x] = ry < h && rx < w ? (plane[ry*w+rx] - centre) - pred[y*8+x] - cflInt : 0;
+            }
+            dct8x8Fwd(res, 0, 8, 0, coeff);
+            for (let fi = 0; fi < 64; fi++) lvl[fi] = dzQuant(coeff[fi], qdct[fi] * aq, fi);
+
+            // Per-block scale with soft-clip RD: if one outlier forces sc=2, compare
+            // distortion of sc=2 (all coefficients lose precision) vs sc=1 (clip outliers to ±127).
+            let maxAbs = 0;
+            for (let fi = 0; fi < 64; fi++) { const a = Math.abs(lvl[fi]); if (a > maxAbs) maxAbs = a; }
+            let sc = Math.ceil(maxAbs / 127) || 1;
+            if (sc > 1) {
+                // Distortion from sc>1: every coefficient rounds to nearest multiple of sc
+                let distSc = 0;
+                for (let fi = 0; fi < 64; fi++) {
+                    const q = qdct[fi] * aq;
+                    const dec_lv = (Math.round(lvl[fi] / sc)) * sc;
+                    const e = (lvl[fi] - dec_lv) * q;
+                    distSc += e * e;
+                }
+                // Distortion from clip: outliers clipped to ±127, rest exact (sc=1)
+                let distClip = 0;
+                for (let fi = 0; fi < 64; fi++) {
+                    const q = qdct[fi] * aq;
+                    const clamped = Math.max(-127, Math.min(127, lvl[fi]));
+                    const e = (lvl[fi] - clamped) * q;
+                    distClip += e * e;
+                }
+                if (distClip < distSc) {
+                    // Clip is better: clamp levels and use sc=1
+                    for (let fi = 0; fi < 64; fi++) lvl[fi] = Math.max(-127, Math.min(127, lvl[fi]));
+                    sc = 1;
+                }
+            }
+            scArr[bi] = sc;
+
+            // Quantize + immediate dequantize (mirrors decoder exactly)
+            for (let fi = 0; fi < 64; fi++) {
+                const cb = Math.round(lvl[fi] / sc) + 128;
+                cbMat[fi * nB + bi] = cb;
+                dec[fi * nB + bi] = (cb - 128) * sc;
+            }
+
+            // Recon WITHOUT cflInt (for intra predictor consistency — neighbors see CfL-free recon)
+            for (let fi = 0; fi < 64; fi++) coeff[fi] = dec[fi * nB + bi] * qdct[fi] * aq;
+            dct8x8Inv(coeff, 0, res, 0, 8, 0);
+            for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+                const ry = py+y, rx = px+x;
+                if (ry < h && rx < w)
+                    recon[ry*w+rx] = Math.max(0, Math.min(255, Math.round(pred[y*8+x] + res[y*8+x] + centre)));
+            }
+        }
+    }
+
+    // Entropy-encode sc array (Logos handles small integers efficiently)
+    const scBits = encode0D(scArr);
+
+    // Entropy-encode 64 cb planes.
+    // DC (fi=0): always l2dCbEncode (block means spatially smooth → huge gain from skip).
+    // AC (fi>0): per-plane best of encode0D / l2dCb / l3dCb (3D Möbius with freq axis).
+    // 2-byte length field: bits 15:14 = method (0=encode0D, 1=l3dCb, 2=l2dCb).
+    const bm = new Uint8Array(8);
+    const planeBufs: (Uint8Array | null)[] = [];
+    const planeFlags = new Uint8Array(64); // 0=encode0D, 1=l3dCb, 2=l2dCb
+    const prevCbPlane = new Uint8Array(nB).fill(128);
+    for (let fi = 0; fi < 64; fi++) {
+        const cbPlane = cbMat.subarray(fi * nB, (fi + 1) * nB);
+        let allMid = true;
+        for (let bi = 0; bi < nB; bi++) if (cbPlane[bi] !== 128) { allMid = false; break; }
+        if (allMid) { planeBufs.push(null); prevCbPlane.set(cbPlane); continue; }
+        bm[fi >> 3] |= 1 << (fi & 7);
+        const cbCopy = new Uint8Array(cbPlane);
+        if (fi === 0) {
+            planeBufs.push(l2dCbEncode(cbCopy, nB, bxN, byN));
+            planeFlags[fi] = 2; // l2dCb
+        } else {
+            const enc0  = encode0D(cbCopy);
+            const encL2 = l2dCbEncode(cbCopy, nB, bxN, byN);
+            const encL3 = l3dCbEncode(cbCopy, prevCbPlane, nB, bxN, byN);
+            if (encL3.length <= encL2.length && encL3.length <= enc0.length) {
+                planeBufs.push(encL3); planeFlags[fi] = 1; // l3dCb
+            } else if (encL2.length < enc0.length) {
+                planeBufs.push(encL2); planeFlags[fi] = 2; // l2dCb
+            } else {
+                planeBufs.push(enc0); // planeFlags[fi] = 0 (encode0D)
+            }
+        }
+        prevCbPlane.set(cbPlane);
+    }
+
+    // Pack: [8B bm][2B scLen][scBits][active planes: 2B len + data]
+    // Bits 15:14 of 2B length field = method (0=encode0D, 1=l3dCb, 2=l2dCb).
+    let total = 10 + scBits.length;
+    for (const pb of planeBufs) if (pb) total += 2 + pb.length;
+    const bits = new Uint8Array(total);
+    bits.set(bm);
+    bits[8] = scBits.length & 0xFF; bits[9] = scBits.length >> 8;
+    bits.set(scBits, 10);
+    let off = 10 + scBits.length;
+    for (let fi = 0; fi < 64; fi++) if (planeBufs[fi]) {
+        const pb = planeBufs[fi]!;
+        const lenField = (pb.length & 0x3FFF) | (planeFlags[fi] << 14);
+        bits[off] = lenField & 0xFF; bits[off + 1] = (lenField >> 8) & 0xFF; off += 2;
+        bits.set(pb, off); off += pb.length;
+    }
+
+    // modeBits: L-predicted mode bytes → Logos-compressed
+    const modeBits = encode0D(modes);
+    return { bits, modeBits, decLvl: dec, recon: new Uint8Array(recon) };
+}
+
+/** Decode one plane encoded with encodeAkashaPlane. */
+function decodeAkashaPlane(
+    bits: Uint8Array, modeBits: Uint8Array, w: number, h: number, qdct: Float32Array, centre: number,
+    cflAlpha?: number, yRecon?: Uint8Array, yW?: number, yH?: number
+): Uint8Array {
+    const bxN = Math.ceil(w / 8), byN = Math.ceil(h / 8), nB = bxN * byN;
+
+    // Parse bitstream
+    const bm = bits.subarray(0, 8);
+    const scBitsLen = bits[8] | (bits[9] << 8);
+    const scArr = decode0D(bits.subarray(10, 10 + scBitsLen), nB);
+    let off = 10 + scBitsLen;
+
+    // Decode cb planes: bits 15:14 = method (0=encode0D, 1=l3dCb, 2=l2dCb).
+    // DC (fi=0) always uses l2dCbDecode regardless of method bits.
+    const cbMat = new Uint8Array(64 * nB).fill(128);
+    const prevCbPlane = new Uint8Array(nB).fill(128);
+    for (let fi = 0; fi < 64; fi++) {
+        if (!(bm[fi >> 3] & (1 << (fi & 7)))) {
+            prevCbPlane.fill(128);
+            continue;
+        }
+        const raw = bits[off] | (bits[off + 1] << 8); off += 2;
+        const plen = raw & 0x3FFF;
+        const method = (raw >> 14) & 3;
+        let cb: Uint8Array;
+        if (fi === 0 || method === 2) {
+            cb = l2dCbDecode(bits.subarray(off, off + plen), nB, bxN, byN);
+        } else if (method === 1) {
+            cb = l3dCbDecode(bits.subarray(off, off + plen), prevCbPlane, nB, bxN, byN);
+        } else {
+            cb = decode0D(bits.subarray(off, off + plen), nB);
+        }
+        off += plen;
+        cbMat.set(cb, fi * nB);
+        prevCbPlane.set(cb);
+    }
+
+    // Decompress mode array (Logos-encoded raw mode bytes)
+    const modeArr = decode0D(modeBits, nB);
+
+    // Spatial pass: identical to encoder's encoding pass
+    const plane  = new Uint8Array(w * h);
+    const recon  = new Float32Array(w * h).fill(centre);
+    const coeff  = new Float32Array(64);
+    const res    = new Float32Array(64);
+
+    for (let by = 0; by < byN; by++) {
+        for (let bx = 0; bx < bxN; bx++) {
+            const bi = by * bxN + bx;
+            const px = bx * 8, py = by * 8;
+            const mode = modeArr[bi];
+            const { lc, tr, tl } = intraRefsN(recon, bx, by, w, h, centre, 8);
+            const pred = intraPredN(mode, lc, tr, tl, 8);
+
+            // CfL: same block-constant Y-mean correction as encoder.
+            // recon is CfL-free (for intra predictor consistency); plane output includes CfL.
+            let cflInt = 0;
+            if (cflAlpha && yRecon) {
+                let ySum = 0, yN = 0;
+                for (let dy = 0; dy < 16 && by*16+dy < yH!; dy++)
+                    for (let dx = 0; dx < 16 && bx*16+dx < yW!; dx++) {
+                        ySum += yRecon[(by*16+dy)*yW!+(bx*16+dx)]; yN++;
+                    }
+                cflInt = Math.round(cflAlpha * ((yN>0 ? ySum/yN : 128) - 128));
+            }
+
+            // Adaptive quantization: same boundary-derived scale as encoder
+            const aq = blockAQ(lc, tr, 8);
+
+            const sc = scArr[bi];
+            for (let fi = 0; fi < 64; fi++) coeff[fi] = (cbMat[fi * nB + bi] - 128) * sc * qdct[fi] * aq;
+            dct8x8Inv(coeff, 0, res, 0, 8, 0);
+
+            for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+                const ry = py+y, rx = px+x;
+                if (ry < h && rx < w) {
+                    const reconVal = Math.max(0, Math.min(255, Math.round(pred[y*8+x] + res[y*8+x] + centre)));
+                    // Recon: no CfL (consistent with encoder, used for neighboring blocks)
+                    recon[ry*w+rx] = reconVal;
+                    // Plane output: add CfL correction back (actual decoded chroma value)
+                    plane[ry*w+rx] = Math.max(0, Math.min(255, reconVal + cflInt));
+                }
+            }
+        }
+    }
+    return plane;
+}
+
+/** H.264-style deblocking at 8px and 16px block boundaries.
+ *  alpha/beta thresholds derived from dcStep; second pass at MB boundaries is 1.5× stronger. */
+function deblockPlane(plane: Uint8Array, w: number, h: number, dcStep: number): void {
+    // Thresholds calibrated to H.264 deblocking at equivalent QP
+    const alpha = Math.max(2, Math.round(dcStep * 2.0));
+    const beta  = Math.max(1, Math.round(dcStep * 0.75));
+    // Stronger thresholds for 16-pixel MB boundaries
+    const alpha16 = Math.max(3, Math.round(dcStep * 3.0));
+    const beta16  = Math.max(2, Math.round(dcStep * 1.0));
+    // Even stronger for 32-pixel SMB boundaries (VBS format 0x07)
+    const alpha32 = Math.max(4, Math.round(dcStep * 3.5));
+    const beta32  = Math.max(2, Math.round(dcStep * 1.25));
+
+    // Helper: apply 4-tap deblock to a single crossing
+    const filt = (p1: number, p0: number, q0: number, q1: number, a: number, b: number): [number, number] | null => {
+        if (Math.abs(p0-q0) < a && Math.abs(p1-p0) < b && Math.abs(q1-q0) < b) {
+            const delta = ((q0-p0)*3 + (p1-q1) + 4) >> 3;
+            return [Math.max(0, Math.min(255, p0 + delta)), Math.max(0, Math.min(255, q0 - delta))];
+        }
+        return null;
+    };
+
+    // Horizontal deblocking: block boundary rows at y = 8, 16, 24, ...
+    for (let y = 8; y < h - 1; y += 8) {
+        const is32 = (y & 31) === 0;
+        const is16 = !is32 && (y & 15) === 0;
+        const a = is32 ? alpha32 : is16 ? alpha16 : alpha;
+        const b = is32 ? beta32  : is16 ? beta16  : beta;
+        for (let x = 0; x < w; x++) {
+            const res = filt(plane[(y-2)*w+x], plane[(y-1)*w+x], plane[y*w+x], plane[(y+1)*w+x], a, b);
+            if (res) { plane[(y-1)*w+x] = res[0]; plane[y*w+x] = res[1]; }
+        }
+    }
+    // Vertical deblocking: block boundary columns at x = 8, 16, 24, ...
+    for (let x = 8; x < w - 1; x += 8) {
+        const is32 = (x & 31) === 0;
+        const is16 = !is32 && (x & 15) === 0;
+        const a = is32 ? alpha32 : is16 ? alpha16 : alpha;
+        const b = is32 ? beta32  : is16 ? beta16  : beta;
+        for (let y = 0; y < h; y++) {
+            const res = filt(plane[y*w+(x-2)], plane[y*w+(x-1)], plane[y*w+x], plane[y*w+(x+1)], a, b);
+            if (res) { plane[y*w+(x-1)] = res[0]; plane[y*w+x] = res[1]; }
+        }
+    }
+}
+
+/** Helper: encode one freq-plane section (nFreqs planes × nBlocks each).
+ *  bitmap (ceil(nFreqs/8)B) + scLen(2B) + scBits + [2B len+data per active plane].
+ *  DC (fi=0): l2dCbEncode; AC (fi>0): per-plane best of encode0D / l2dCb / l3dCb.
+ *  2-byte length field: bits 15:14 = method (0=encode0D, 1=l3dCb, 2=l2dCb). */
+function encodeFreqSection(
+    cbMat: Uint8Array, nFreqs: number, nBlocks: number, scArr: Uint8Array, gridW: number, gridH: number
+): Uint8Array {
+    const bmBytes = Math.ceil(nFreqs / 8);
+    const bm = new Uint8Array(bmBytes);
+    const bufs: (Uint8Array | null)[] = [];
+    const flags = new Uint8Array(nFreqs); // 0=encode0D, 1=l3dCb, 2=l2dCb
+    const prevCb = new Uint8Array(nBlocks).fill(128);
+    for (let fi = 0; fi < nFreqs; fi++) {
+        const cbPlane = cbMat.subarray(fi * nBlocks, (fi + 1) * nBlocks);
+        let allMid = true;
+        for (let i = 0; i < nBlocks; i++) if (cbPlane[i] !== 128) { allMid = false; break; }
+        if (allMid) { bufs.push(null); prevCb.set(cbPlane); continue; }
+        bm[fi >> 3] |= 1 << (fi & 7);
+        const cbCopy = new Uint8Array(cbPlane);
+        if (fi === 0) {
+            bufs.push(l2dCbEncode(cbCopy, nBlocks, gridW, gridH));
+            flags[fi] = 2; // l2dCb
+        } else {
+            const enc0  = encode0D(cbCopy);
+            const encL2 = l2dCbEncode(cbCopy, nBlocks, gridW, gridH);
+            const encL3 = l3dCbEncode(cbCopy, prevCb, nBlocks, gridW, gridH);
+            if (encL3.length <= encL2.length && encL3.length <= enc0.length) {
+                bufs.push(encL3); flags[fi] = 1; // l3dCb
+            } else if (encL2.length < enc0.length) {
+                bufs.push(encL2); flags[fi] = 2; // l2dCb
+            } else {
+                bufs.push(enc0); // flags[fi] = 0 (encode0D)
+            }
+        }
+        prevCb.set(cbPlane);
+    }
+    // Compress the presence bitmap (especially helpful for 16×16/32×32 sections with 32-128B bitmaps)
+    const bmEncoded = encode0D(bm);
+    const scBits = encode0D(scArr);
+    let total = 2 + bmEncoded.length + 2 + scBits.length;
+    for (const pb of bufs) if (pb) total += 2 + pb.length;
+    const out = new Uint8Array(total);
+    const dv = new DataView(out.buffer, out.byteOffset);
+    dv.setUint16(0, bmEncoded.length, true);
+    out.set(bmEncoded, 2);
+    let off = 2 + bmEncoded.length;
+    dv.setUint16(off, scBits.length, true); off += 2;
+    out.set(scBits, off); off += scBits.length;
+    for (let fi = 0; fi < nFreqs; fi++) if (bufs[fi]) {
+        const pb = bufs[fi]!;
+        const lenField = (pb.length & 0x3FFF) | (flags[fi] << 14);
+        out[off] = lenField & 0xFF; out[off + 1] = (lenField >> 8) & 0xFF; off += 2;
+        out.set(pb, off); off += pb.length;
+    }
+    return out;
+}
+
+/** Helper: decode one freq-plane section. Returns cbMat (nFreqs×nBlocks).
+ *  2-byte length field: bits 15:14 = method (0=encode0D, 1=l3dCb, 2=l2dCb). */
+function decodeFreqSection(
+    data: Uint8Array, nFreqs: number, nBlocks: number, gridW: number, gridH: number
+): { cbMat: Uint8Array; scArr: Uint8Array } {
+    const bmBytes = Math.ceil(nFreqs / 8);
+    const cbMat = new Uint8Array(nFreqs * nBlocks).fill(128);
+    // Decode compressed presence bitmap
+    const bmEncLen = data[0] | (data[1] << 8);
+    const bm = decode0D(data.subarray(2, 2 + bmEncLen), bmBytes);
+    let off = 2 + bmEncLen;
+    const scBitsLen = data[off] | (data[off + 1] << 8); off += 2;
+    const scArr = decode0D(data.subarray(off, off + scBitsLen), nBlocks);
+    off += scBitsLen;
+    const prevCb = new Uint8Array(nBlocks).fill(128);
+    for (let fi = 0; fi < nFreqs; fi++) {
+        if (!(bm[fi >> 3] & (1 << (fi & 7)))) {
+            prevCb.fill(128); // skipped plane → all 128 for next plane's B prediction
+            continue;
+        }
+        const raw = data[off] | (data[off + 1] << 8); off += 2;
+        const plen = raw & 0x3FFF;
+        const method = (raw >> 14) & 3;
+        let cb: Uint8Array;
+        if (fi === 0 || method === 2) {
+            cb = l2dCbDecode(data.subarray(off, off + plen), nBlocks, gridW, gridH);
+        } else if (method === 1) {
+            cb = l3dCbDecode(data.subarray(off, off + plen), prevCb, nBlocks, gridW, gridH);
+        } else {
+            cb = decode0D(data.subarray(off, off + plen), nBlocks);
+        }
+        off += plen;
+        cbMat.set(cb, fi * nBlocks);
+        prevCb.set(cb);
+    }
+    return { cbMat, scArr };
+}
+
+/** Encode Y luma with 3-level variable block size: 8×8 / 16×16 / 32×32.
+ *  Outer pass: per-32×32 SMB, compare combined sub-MB error vs 32×32 error.
+ *  Inner pass: per-16×16 MB, compare 8×8 vs 16×16 error.
+ *  Both decisions use ≥5% improvement threshold with non-trivial error guard. */
+function encodeAkashaPlaneVBS(
+    plane: Uint8Array, w: number, h: number,
+    qdct8: Float32Array, qdct16: Float32Array, qdct32: Float32Array, centre: number
+): {
+    bits8: Uint8Array; modeBits8: Uint8Array;
+    bits16: Uint8Array; modeBits16: Uint8Array;
+    bits32: Uint8Array; modeBits32: Uint8Array;
+    smbBitmap: Uint8Array; smbW: number; smbH: number; smbModeMap: Uint8Array;
+    mbBitmap: Uint8Array; mbW: number; mbH: number;
+    recon: Uint8Array;
+} {
+    const bxN = Math.ceil(w / 8), byN = Math.ceil(h / 8), nB = bxN * byN;
+    const mbW = Math.ceil(w / 16), mbH = Math.ceil(h / 16), nMB = mbW * mbH;
+    const smbW = Math.ceil(w / 32), smbH = Math.ceil(h / 32), nSMB = smbW * smbH;
+
+    // Storage: all 3 levels. Non-active positions stay at 128 (neutral) → compressed away.
+    const modes8   = new Uint8Array(nB);
+    const scArr8   = new Uint8Array(nB).fill(1);
+    const cbMat8   = new Uint8Array(64 * nB).fill(128);
+    const dec8     = new Int16Array(64 * nB);
+    const modeArr16 = new Uint8Array(nMB);
+    const scArr16  = new Uint8Array(nMB).fill(1);
+    const cbMat16  = new Uint8Array(256 * nMB).fill(128);
+    const modeArr32 = new Uint8Array(nSMB);
+    const scArr32  = new Uint8Array(nSMB).fill(1);
+    const cbMat32  = new Uint8Array(1024 * nSMB).fill(128);
+    const mbModeMap  = new Uint8Array(nMB);  // 1 = 16×16
+    const smbModeMap = new Uint8Array(nSMB); // 1 = 32×32
+
+    const recon   = new Float32Array(w * h).fill(centre);
+    const coeff8  = new Float32Array(64);
+    const coeff16 = new Float32Array(256);
+    const coeff32 = new Float32Array(1024);
+    const res8    = new Float32Array(64);
+    const res16   = new Float32Array(256);
+    const res32   = new Float32Array(1024);
+    const lvl8    = new Int16Array(64);
+    const lvl16   = new Int16Array(256);
+    const lvl32   = new Int16Array(1024);
+
+    // Per-size dispatch tables for unified trial/commit
+    const _qdct  = [qdct8, qdct16, qdct32] as const;
+    const _res   = [res8, res16, res32] as const;
+    const _coeff = [coeff8, coeff16, coeff32] as const;
+    const _lvl   = [lvl8, lvl16, lvl32] as const;
+    const _fwd   = [dct8x8Fwd, dct16x16Fwd, dct32x32Fwd] as const;
+    const _inv   = [dct8x8Inv, dct16x16Inv, dct32x32Inv] as const;
+    const _cbMat = [cbMat8, cbMat16, cbMat32] as const;
+    const _scArr = [scArr8, scArr16, scArr32] as const;
+    const _modes = [modes8, modeArr16, modeArr32] as const;
+    const _nBlk  = [nB, nMB, nSMB] as const;
+    // Map N → index: 8→0, 16→1, 32→2
+    const _idx = (N: number) => N === 8 ? 0 : N === 16 ? 1 : 2;
+
+    /** Compute best-mode quantization error at any block size (does NOT update recon). */
+    const trialN = (bx: number, by: number, N: number): { qErr: number; mode: number } => {
+        if (N === 8 && (bx >= bxN || by >= byN)) return { qErr: 0, mode: 0 };
+        const i = _idx(N), N2 = N * N, px = bx * N, py = by * N;
+        const qdctN = _qdct[i], resN = _res[i], coeffN = _coeff[i], fwd = _fwd[i];
+        const { lc, tr, tl } = intraRefsN(recon, bx, by, w, h, centre, N);
+        const aq = blockAQ(lc, tr, N);
+        let best = Infinity, bestMode = 0;
+        for (let m = 0; m < 8; m++) {
+            const pred = intraPredN(m, lc, tr, tl, N);
+            for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+                const ry = py+y, rx = px+x;
+                resN[y*N+x] = ry < h && rx < w ? (plane[ry*w+rx]-centre) - pred[y*N+x] : 0;
+            }
+            fwd(resN, 0, N, 0, coeffN);
+            let qe = 0;
+            for (let fi = 0; fi < N2; fi++) { const lv = dzQuant(coeffN[fi], qdctN[fi] * aq, fi); const e = coeffN[fi] - lv*qdctN[fi]*aq; qe += e*e; }
+            if (qe < best) { best = qe; bestMode = m; }
+        }
+        return { qErr: best, mode: bestMode };
+    };
+
+    /** Commit one block at size N: quantize, store coefficients, update recon.
+     *  bestMode is searched internally when omitted (8×8 path). */
+    const commitN = (bx: number, by: number, N: number, bestMode?: number) => {
+        if (N === 8 && (bx >= bxN || by >= byN)) return;
+        const i = _idx(N), N2 = N * N, px = bx * N, py = by * N;
+        const qdctN = _qdct[i], resN = _res[i], coeffN = _coeff[i], lvlN = _lvl[i];
+        const fwd = _fwd[i], inv = _inv[i];
+        const cbMatN = _cbMat[i], scArrN = _scArr[i], modesN = _modes[i], nBlk = _nBlk[i];
+        const bi = N === 8 ? by*bxN+bx : N === 16 ? by*mbW+bx : by*smbW+bx;
+        const { lc, tr, tl } = intraRefsN(recon, bx, by, w, h, centre, N);
+        const aq = blockAQ(lc, tr, N);
+        if (bestMode === undefined) {
+            bestMode = 0; let bestQErr = Infinity;
+            for (let m = 0; m < 8; m++) {
+                const pred = intraPredN(m, lc, tr, tl, N);
+                for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+                    const ry = py+y, rx = px+x;
+                    resN[y*N+x] = ry < h && rx < w ? (plane[ry*w+rx]-centre) - pred[y*N+x] : 0;
+                }
+                fwd(resN, 0, N, 0, coeffN);
+                let qe = 0;
+                for (let fi = 0; fi < N2; fi++) { const lv = dzQuant(coeffN[fi], qdctN[fi] * aq, fi); const e = coeffN[fi] - lv*qdctN[fi]*aq; qe += e*e; }
+                if (qe < bestQErr) { bestQErr = qe; bestMode = m; }
+            }
+        }
+        modesN[bi] = bestMode;
+        const pred = intraPredN(bestMode, lc, tr, tl, N);
+        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+            const ry = py+y, rx = px+x;
+            resN[y*N+x] = ry < h && rx < w ? (plane[ry*w+rx]-centre) - pred[y*N+x] : 0;
+        }
+        fwd(resN, 0, N, 0, coeffN);
+        for (let fi = 0; fi < N2; fi++) lvlN[fi] = dzQuant(coeffN[fi], qdctN[fi] * aq, fi);
+        let maxAbs = 0;
+        for (let fi = 0; fi < N2; fi++) { const a = Math.abs(lvlN[fi]); if (a > maxAbs) maxAbs = a; }
+        let sc = Math.ceil(maxAbs / 127) || 1;
+        if (sc > 1) {
+            let dSc = 0, dClip = 0;
+            for (let fi = 0; fi < N2; fi++) {
+                const q = qdctN[fi] * aq;
+                const dec_lv = Math.round(lvlN[fi] / sc) * sc;
+                dSc += (lvlN[fi] - dec_lv) * (lvlN[fi] - dec_lv) * q * q;
+                const cl = Math.max(-127, Math.min(127, lvlN[fi]));
+                dClip += (lvlN[fi] - cl) * (lvlN[fi] - cl) * q * q;
+            }
+            if (dClip < dSc) { for (let fi = 0; fi < N2; fi++) lvlN[fi] = Math.max(-127, Math.min(127, lvlN[fi])); sc = 1; }
+        }
+        scArrN[bi] = sc;
+        for (let fi = 0; fi < N2; fi++) {
+            const cb = Math.round(lvlN[fi]/sc)+128;
+            cbMatN[fi*nBlk+bi] = cb;
+            const decoded = (cb-128)*sc;
+            if (N === 8) dec8[fi*nB+bi] = decoded;
+            coeffN[fi] = decoded * qdctN[fi] * aq;
+        }
+        inv(coeffN, 0, resN, 0, N, 0);
+        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+            const ry = py+y, rx = px+x;
+            if (ry < h && rx < w) recon[ry*w+rx] = Math.max(0, Math.min(255, Math.round(pred[y*N+x]+resN[y*N+x]+centre)));
+        }
+    };
+
+    // ── Main loop: SMB-outer, MB-inner ───────────────────────────────────────
+    for (let smby = 0; smby < smbH; smby++) {
+        for (let smbx = 0; smbx < smbW; smbx++) {
+            const smbi = smby * smbW + smbx;
+
+            // Trial: combined error of up to 4 constituent MBs (8×8 or 16×16)
+            let totalQErrSub = 0;
+            for (let sy = 0; sy < 2; sy++) for (let sx = 0; sx < 2; sx++) {
+                const mbx = smbx*2+sx, mby = smby*2+sy;
+                if (mbx >= mbW || mby >= mbH) continue;
+                const qErr8mb = trialN(mbx*2, mby*2, 8).qErr + trialN(mbx*2+1, mby*2, 8).qErr +
+                                trialN(mbx*2, mby*2+1, 8).qErr + trialN(mbx*2+1, mby*2+1, 8).qErr;
+                const { qErr: qErr16mb } = trialN(mbx, mby, 16);
+                // 16×16 wins over 8×8 for this trial MB if clearly better
+                const subErr = (qErr16mb < qErr8mb * 0.95 && qErr8mb > 8) ? qErr16mb : qErr8mb;
+                totalQErrSub += subErr;
+            }
+
+            // Trial: 32×32 single block
+            const { qErr: qErr32, mode: best32Mode } = trialN(smbx, smby, 32);
+
+            // 32×32 wins if ≥15% better than combined sub-MB errors AND sub has non-trivial error
+            const use32 = qErr32 < totalQErrSub * 0.85 && totalQErrSub > 32;
+            smbModeMap[smbi] = use32 ? 1 : 0;
+
+            if (use32) {
+                commitN(smbx, smby, 32, best32Mode);
+            } else {
+                // Process 4 constituent MBs (same 8×8 vs 16×16 decision as before)
+                for (let sy = 0; sy < 2; sy++) for (let sx = 0; sx < 2; sx++) {
+                    const mbx = smbx*2+sx, mby = smby*2+sy;
+                    if (mbx >= mbW || mby >= mbH) continue;
+                    const mbi = mby*mbW + mbx;
+                    const { qErr: qErr16mb, mode: best16Mode } = trialN(mbx, mby, 16);
+                    const qErr8mb = trialN(mbx*2, mby*2, 8).qErr + trialN(mbx*2+1, mby*2, 8).qErr +
+                                   trialN(mbx*2, mby*2+1, 8).qErr + trialN(mbx*2+1, mby*2+1, 8).qErr;
+                    const use16 = qErr16mb < qErr8mb * 0.95 && qErr8mb > 8;
+                    mbModeMap[mbi] = use16 ? 1 : 0;
+                    if (use16) {
+                        commitN(mbx, mby, 16, best16Mode);
+                    } else {
+                        commitN(mbx*2, mby*2, 8); commitN(mbx*2+1, mby*2, 8);
+                        commitN(mbx*2, mby*2+1, 8); commitN(mbx*2+1, mby*2+1, 8);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Entropy encode all 3 sections ────────────────────────────────────────
+    const bits8  = encodeFreqSection(cbMat8,  64,   nB,  scArr8,  bxN, byN);
+    const bits16 = encodeFreqSection(cbMat16, 256,  nMB, scArr16, mbW, mbH);
+    const bits32 = encodeFreqSection(cbMat32, 1024, nSMB, scArr32, smbW, smbH);
+
+    // SMB bitmap — omitted (empty) if no SMBs chose 32×32 (saves ~163B overhead)
+    const any32 = smbModeMap.some(v => v !== 0);
+    const smbBitmap = any32 ? (() => {
+        const bm = new Uint8Array(Math.ceil(nSMB / 8));
+        for (let i = 0; i < nSMB; i++) if (smbModeMap[i]) bm[i >> 3] |= 1 << (i & 7);
+        return bm;
+    })() : new Uint8Array(0);
+
+    // MB bitmap (1 bit per MB)
+    const mbBitmapLen = Math.ceil(nMB / 8);
+    const mbBitmap = new Uint8Array(mbBitmapLen);
+    for (let mbi = 0; mbi < nMB; mbi++) if (mbModeMap[mbi]) mbBitmap[mbi >> 3] |= 1 << (mbi & 7);
+
+    return {
+        bits8,  modeBits8:  encode0D(modes8),
+        bits16, modeBits16: encode0D(modeArr16),
+        bits32: any32 ? bits32 : new Uint8Array(0),
+        modeBits32: any32 ? encode0D(modeArr32) : new Uint8Array(0),
+        smbBitmap, smbW, smbH, smbModeMap,
+        mbBitmap,  mbW,  mbH,
+        recon: new Uint8Array(recon),
+    };
+}
+
+/** Decode Y plane encoded with encodeAkashaPlaneVBS (format 0x07: 8×8/16×16/32×32). */
+function decodeAkashaPlaneVBS(
+    bits8: Uint8Array, modeBits8: Uint8Array,
+    bits16: Uint8Array, modeBits16: Uint8Array,
+    bits32: Uint8Array, modeBits32: Uint8Array,
+    smbBitmap: Uint8Array, smbW: number, smbH: number,
+    mbBitmap: Uint8Array, mbW: number, mbH: number,
+    w: number, h: number,
+    qdct8: Float32Array, qdct16: Float32Array, qdct32: Float32Array, centre: number
+): Uint8Array {
+    const bxN = Math.ceil(w / 8), byN = Math.ceil(h / 8), nB = bxN * byN;
+    const nMB = mbW * mbH;
+    const nSMB = smbW * smbH;
+
+    // Decode all 3 sections using the helper
+    const { cbMat: cbMat8,  scArr: scArr8  } = decodeFreqSection(bits8,  64,   nB,   bxN, byN);
+    const { cbMat: cbMat16, scArr: scArr16 } = decodeFreqSection(bits16, 256,  nMB,  mbW, mbH);
+    // 32×32 section is omitted (empty) when no SMBs chose 32×32 (smbBitmap.length===0)
+    const any32 = smbBitmap.length > 0;
+    // cbMat32/scArr32/modes32 only allocated when any32 — avoid 256KB dummy allocation
+    const dec32 = any32 ? decodeFreqSection(bits32, 1024, nSMB, smbW, smbH) : null;
+    const cbMat32 = dec32?.cbMat ?? null;
+    const scArr32 = dec32?.scArr ?? null;
+    const modes8   = decode0D(modeBits8,  nB);
+    const modes16  = decode0D(modeBits16, nMB);
+    const modes32  = any32 ? decode0D(modeBits32, nSMB) : null;
+
+    // Mode maps
+    const smbModeMap = new Uint8Array(nSMB);
+    if (any32) for (let i = 0; i < nSMB; i++) if (smbBitmap[i >> 3] & (1 << (i & 7))) smbModeMap[i] = 1;
+    const mbModeMap = new Uint8Array(nMB);
+    for (let i = 0; i < nMB; i++) if (mbBitmap[i >> 3] & (1 << (i & 7))) mbModeMap[i] = 1;
+
+    // Spatial decode — SMB raster order mirrors encoder
+    const plane = new Uint8Array(w * h);
+    const recon = new Float32Array(w * h).fill(centre);
+    const coeff8  = new Float32Array(64);
+    const coeff16 = new Float32Array(256);
+    const coeff32 = new Float32Array(1024);
+    const res8  = new Float32Array(64);
+    const res16 = new Float32Array(256);
+    const res32 = new Float32Array(1024);
+
+    for (let smby = 0; smby < smbH; smby++) {
+        for (let smbx = 0; smbx < smbW; smbx++) {
+            const smbi = smby * smbW + smbx;
+            const spx = smbx * 32, spy = smby * 32;
+
+            if (smbModeMap[smbi] && cbMat32 && scArr32 && modes32) {
+                // ─── 32×32 block ─────────────────────────────────────────────
+                const { lc, tr, tl } = intraRefsN(recon, smbx, smby, w, h, centre, 32);
+                const aq32 = blockAQ(lc, tr, 32);
+                const pred32 = intraPredN(modes32[smbi], lc, tr, tl, 32);
+                const sc32 = scArr32[smbi] || 1;
+                for (let fi = 0; fi < 1024; fi++)
+                    coeff32[fi] = (cbMat32[fi*nSMB+smbi] - 128) * sc32 * qdct32[fi] * aq32;
+                dct32x32Inv(coeff32, 0, res32, 0, 32, 0);
+                for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+                    const ry = spy+y, rx = spx+x;
+                    if (ry < h && rx < w) {
+                        const v = Math.max(0, Math.min(255, Math.round(pred32[y*32+x] + res32[y*32+x] + centre)));
+                        recon[ry*w+rx] = v; plane[ry*w+rx] = v;
+                    }
+                }
+            } else {
+                // ─── 4 constituent MBs ───────────────────────────────────────
+                for (let sy = 0; sy < 2; sy++) for (let sx = 0; sx < 2; sx++) {
+                    const mbx = smbx*2+sx, mby = smby*2+sy;
+                    if (mbx >= mbW || mby >= mbH) continue;
+                    const mbi = mby*mbW+mbx, mpx = mbx*16, mpy = mby*16;
+
+                    if (mbModeMap[mbi]) {
+                        // ─── 16×16 block ─────────────────────────────────────
+                        const { lc, tr, tl } = intraRefsN(recon, mbx, mby, w, h, centre, 16);
+                        const aq16 = blockAQ(lc, tr, 16);
+                        const pred16 = intraPredN(modes16[mbi], lc, tr, tl, 16);
+                        const sc16 = scArr16[mbi] || 1;
+                        for (let fi = 0; fi < 256; fi++)
+                            coeff16[fi] = (cbMat16[fi*nMB+mbi] - 128) * sc16 * qdct16[fi] * aq16;
+                        dct16x16Inv(coeff16, 0, res16, 0, 16, 0);
+                        for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+                            const ry = mpy+y, rx = mpx+x;
+                            if (ry < h && rx < w) {
+                                const v = Math.max(0, Math.min(255, Math.round(pred16[y*16+x]+res16[y*16+x]+centre)));
+                                recon[ry*w+rx] = v; plane[ry*w+rx] = v;
+                            }
+                        }
+                    } else {
+                        // ─── 4 × 8×8 blocks ──────────────────────────────────
+                        for (let sy2 = 0; sy2 < 2; sy2++) for (let sx2 = 0; sx2 < 2; sx2++) {
+                            const bx = mbx*2+sx2, by = mby*2+sy2;
+                            if (bx >= bxN || by >= byN) continue;
+                            const bi = by*bxN+bx, px = bx*8, py = by*8;
+                            const { lc, tr, tl } = intraRefsN(recon, bx, by, w, h, centre, 8);
+                            const aq8 = blockAQ(lc, tr, 8);
+                            const pred = intraPredN(modes8[bi], lc, tr, tl, 8);
+                            const sc8 = scArr8[bi] || 1;
+                            for (let fi = 0; fi < 64; fi++)
+                                coeff8[fi] = (cbMat8[fi*nB+bi] - 128) * sc8 * qdct8[fi] * aq8;
+                            dct8x8Inv(coeff8, 0, res8, 0, 8, 0);
+                            for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+                                const ry = py+y, rx = px+x;
+                                if (ry < h && rx < w) {
+                                    const v = Math.max(0, Math.min(255, Math.round(pred[y*8+x]+res8[y*8+x]+centre)));
+                                    recon[ry*w+rx] = v; plane[ry*w+rx] = v;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return plane;
+}
+function encodeAkasha4DUV(
+    uvPlane: Uint8Array, uvW: number, uvH: number,
+    yRecon: Uint8Array, yW: number, yH: number,
+    qdct: Float32Array
+): { bits: Uint8Array; modeBits: Uint8Array } {
+    const alpha = cflGlobalAlpha(uvPlane, uvW, uvH, yRecon, yW, yH);
+    const alphaInt = Math.round(alpha * 64); // store as int8, scale=1/64
+    const { bits: planeBits, modeBits } = encodeAkashaPlane(
+        uvPlane, uvW, uvH, qdct, 128, alpha, yRecon, yW, yH
+    );
+    // Prepend 1-byte quantized alpha to bits payload
+    const bits = new Uint8Array(1 + planeBits.length);
+    bits[0] = alphaInt & 0xFF; // int8 stored as uint8
+    bits.set(planeBits, 1);
+    return { bits, modeBits };
+}
+
+function decodeAkasha4DUV(
+    bits: Uint8Array, modeBits: Uint8Array, uvW: number, uvH: number,
+    yRecon: Uint8Array, yW: number, yH: number, qdct: Float32Array
+): Uint8Array {
+    // Read quantized alpha (int8) from first byte
+    const alphaInt = bits[0] << 24 >> 24; // sign-extend uint8 → int8
+    const alpha = alphaInt / 64;
+    return decodeAkashaPlane(bits.subarray(1), modeBits, uvW, uvH, qdct, 128, alpha, yRecon, yW, yH);
+}
+
+/** Pack Akasha VBS frame (format 0x07 I-frame, 0x08 P-frame). Y plane: 3-level VBS (8×8/16×16/32×32); UV: 8×8 only.
+ *  Wire layout:
+ *  [0x07][2B bxN8][2B byN8]
+ *  [2B smbW][2B smbH][2B smbBmLen][smbBitmap]
+ *  [2B mbW][2B mbH][2B mbBmLen][mbBitmap]
+ *  [4B yMod8Len][yMod8][4B yBits8Len][yBits8]
+ *  [4B yMod16Len][yMod16][4B yBits16Len][yBits16]
+ *  [4B yMod32Len][yMod32][4B yBits32Len][yBits32]
+ *  [4B uModLen][uMod][4B uBitsLen][uBits]
+ *  [4B vModLen][vMod][4B vBitsLen][vBits] */
+function packAkashaVBS(
+    yMod8: Uint8Array, yBits8: Uint8Array,
+    yMod16: Uint8Array, yBits16: Uint8Array,
+    yMod32: Uint8Array, yBits32: Uint8Array,
+    smbBitmap: Uint8Array, smbW: number, smbH: number,
+    mbBitmap: Uint8Array, mbW: number, mbH: number,
+    uBits: Uint8Array, uMod: Uint8Array,
+    vBits: Uint8Array, vMod: Uint8Array,
+    bxN8: number, byN8: number,
+    fmt: number = 0x07
+): Uint8Array {
+    const smbBmLen = smbBitmap.length;
+    // Compress mbBitmap with encode0D (saves ~30-80B for 512×512 images)
+    const mbBmEnc = encode0D(mbBitmap);
+    const totalLen = 1 + 4    // fmt + bxN8,byN8
+        + 6 + smbBmLen        // smbW,smbH,smbBmLen,smbBitmap
+        + 6 + mbBmEnc.length  // mbW,mbH,mbBmEncLen,mbBitmapEncoded
+        + (4+yMod8.length) + (4+yBits8.length)
+        + (4+yMod16.length) + (4+yBits16.length)
+        + (4+yMod32.length) + (4+yBits32.length)
+        + (4+uMod.length) + (4+uBits.length)
+        + (4+vMod.length) + (4+vBits.length);
+    const out = new Uint8Array(totalLen);
+    const dv = new DataView(out.buffer);
+    out[0] = fmt; let off = 1;
+    dv.setUint16(off, bxN8, true); off += 2;
+    dv.setUint16(off, byN8, true); off += 2;
+    dv.setUint16(off, smbW, true);   off += 2;
+    dv.setUint16(off, smbH, true);   off += 2;
+    dv.setUint16(off, smbBmLen, true); off += 2;
+    out.set(smbBitmap, off); off += smbBmLen;
+    dv.setUint16(off, mbW, true);    off += 2;
+    dv.setUint16(off, mbH, true);    off += 2;
+    dv.setUint16(off, mbBmEnc.length, true); off += 2;
+    out.set(mbBmEnc, off); off += mbBmEnc.length;
+    const write = (mod: Uint8Array, bts: Uint8Array) => {
+        dv.setUint32(off, mod.length, true); off += 4; out.set(mod, off); off += mod.length;
+        dv.setUint32(off, bts.length, true); off += 4; out.set(bts, off); off += bts.length;
+    };
+    write(yMod8, yBits8); write(yMod16, yBits16); write(yMod32, yBits32);
+    write(uMod, uBits); write(vMod, vBits);
+    return out;
+}
+
+function unpackAkashaVBS(data: Uint8Array): {
+    bxN8: number; byN8: number;
+    smbW: number; smbH: number; smbBitmap: Uint8Array;
+    mbW: number;  mbH: number;  mbBitmap: Uint8Array;
+    yMod8: Uint8Array; yBits8: Uint8Array;
+    yMod16: Uint8Array; yBits16: Uint8Array;
+    yMod32: Uint8Array; yBits32: Uint8Array;
+    uMod: Uint8Array; uBits: Uint8Array;
+    vMod: Uint8Array; vBits: Uint8Array;
+} | null {
+    if ((data[0] !== 0x07 && data[0] !== 0x08) || data.length < 13) return null;
+    const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const bxN8 = dv.getUint16(1, true), byN8 = dv.getUint16(3, true);
+    let off = 5;
+    const smbW = dv.getUint16(off, true); off += 2;
+    const smbH = dv.getUint16(off, true); off += 2;
+    const smbBmLen = dv.getUint16(off, true); off += 2;
+    const smbBitmap = data.subarray(off, off + smbBmLen); off += smbBmLen;
+    const mbW = dv.getUint16(off, true); off += 2;
+    const mbH = dv.getUint16(off, true); off += 2;
+    const mbBmEncLen = dv.getUint16(off, true); off += 2;
+    // mbBitmap is encode0D-compressed; decode back to raw bits
+    const mbBitmapBytes = Math.ceil(mbW * mbH / 8);
+    const mbBitmap = decode0D(data.subarray(off, off + mbBmEncLen), mbBitmapBytes); off += mbBmEncLen;
+    const read = (): [Uint8Array, Uint8Array] => {
+        const mlen = dv.getUint32(off, true); off += 4;
+        const mod = data.subarray(off, off + mlen); off += mlen;
+        const blen = dv.getUint32(off, true); off += 4;
+        const bts = data.subarray(off, off + blen); off += blen;
+        return [mod, bts];
+    };
+    const [yMod8, yBits8] = read();
+    const [yMod16, yBits16] = read();
+    const [yMod32, yBits32] = read();
+    const [uMod, uBits] = read();
+    const [vMod, vBits] = read();
+    return { bxN8, byN8, smbW, smbH, smbBitmap, mbW, mbH, mbBitmap,
+             yMod8, yBits8, yMod16, yBits16, yMod32, yBits32, uMod, uBits, vMod, vBits };
+}
+
 
 export interface VideoCodecConfig {
     quality: number;          // 1-100, default 80
     keyFrameInterval: number; // frames between forced I-frames, default 30
-    blockSize: number;        // pixels per block side, default 8
-    blockThreshold: number;   // energy threshold for block skip, default 4
 }
 
 const DEFAULT_CONFIG: VideoCodecConfig = {
     quality: 100,
     keyFrameInterval: 30,
-    blockSize: 8,
-    blockThreshold: 4,
 };
 
 export class VideoCodec {
@@ -1199,9 +2256,9 @@ export class VideoCodec {
     // Compression state (encoder side)
     private prevFrame: Uint8Array | null = null;
     private framesSinceKey = 0;
+    private lastIframeSize = 0;
     // Decompression state (decoder side)
     private prevDecFrame: Uint8Array | null = null;
-    private decFrameCount = 0; // for temporal FRC dithering
 
     async init(encryptionKey: Uint32Array, config?: Partial<VideoCodecConfig>) {
         if (encryptionKey.length < 8) throw new Error("Key must be 256 bits (Uint32Array of 8)");
@@ -1236,125 +2293,142 @@ export class VideoCodec {
     }
 
     private compressFrame(pixels: Uint8Array, w: number, h: number): { payload: Uint8Array; flags: number } {
-        const { quality, keyFrameInterval, blockSize, blockThreshold: baseThreshold } = this.config;
-        const thresholdScale = 0.5 + 1.5 * (1 - quality / 100);
-        const blockThreshold = Math.max(2, (baseThreshold * thresholdScale + 0.5) | 0);
+        const { quality, keyFrameInterval } = this.config;
         const ySize = w * h;
         const uvW = w >> 1, uvH = h >> 1;
         const uvSize = uvW * uvH;
         const yuvSize = ySize + uvSize * 2;
-        const uvBlockSize = blockSize >> 1;
 
         const yuv = rgbaToYuv420(pixels, w, h);
-        let isKeyframe = !this.prevFrame || this.framesSinceKey >= keyFrameInterval;
-
-        let blocksX = 0, blocksY = 0;
-        let bitmap = new Uint8Array(0);
+        const isKeyframe = !this.prevFrame || this.framesSinceKey >= keyFrameInterval;
 
         pqForward(yuv, 0, ySize);
 
         if (isKeyframe) {
-            // I-frame: dither → quantize → blockEncode per plane
-            ditherYUV(yuv, w, h, quality);
-            const quantized = quantizeChroma(yuv, ySize, quality);
-            this.prevFrame = dequantizeChroma(quantized, ySize, quality);
-
-            const yBits = blockEncode(quantized.subarray(0, ySize), w, h);
-            const uBits = blockEncode(quantized.subarray(ySize, ySize + uvSize), uvW, uvH);
-            const vBits = blockEncode(quantized.subarray(ySize + uvSize), uvW, uvH);
-
-            let payload = packIframePayload(yBits, uBits, vBits);
-            this.framesSinceKey = 1;
-
-            const flags = encodeFlags(true, true, quality);
-            return { payload, flags };
+            return this.encodeIframe(yuv, w, h, ySize, uvW, uvH, uvSize, yuvSize, quality);
         } else {
-            // P-frame: delta → block skip → extract → quantize → blockEncodeMulti
+            // P-frame: delta → Akasha VBS encode (format 0x08)
             const delta = computeDelta(yuv, this.prevFrame!);
+            const result = this.encodePframe(delta, w, h, ySize, uvW, uvH, uvSize, yuvSize, quality);
 
-            const blockInfo = buildBlockBitmap(delta.subarray(0, ySize), w, h, blockSize, blockThreshold);
-            blocksX = blockInfo.blocksX;
-            blocksY = blockInfo.blocksY;
-            bitmap = new Uint8Array(blockInfo.bitmap);
-
-            const yBlocks = extractChangedBlocksPlane(
-                delta.subarray(0, ySize), w, h,
-                bitmap, blocksX, blocksY, blockSize
-            );
-            const uBlocks = extractChangedBlocksPlane(
-                delta.subarray(ySize, ySize + uvSize), uvW, uvH,
-                bitmap, blocksX, blocksY, uvBlockSize
-            );
-            const vBlocks = extractChangedBlocksPlane(
-                delta.subarray(ySize + uvSize), uvW, uvH,
-                bitmap, blocksX, blocksY, uvBlockSize
-            );
-
-            const allBlocks = new Uint8Array(yBlocks.length + uBlocks.length + vBlocks.length);
-            allBlocks.set(yBlocks, 0);
-            allBlocks.set(uBlocks, yBlocks.length);
-            allBlocks.set(vBlocks, yBlocks.length + uBlocks.length);
-
-            const quantizedBlocks = quantizeChromaSigned(allBlocks, yBlocks.length, quality);
-
-            // Track decoder state
-            const lossyDelta = new Uint8Array(yuvSize);
-            const lossyBlocks = dequantizeChromaSigned(quantizedBlocks, yBlocks.length, quality);
-
-            let pos = 0;
-            pos = reinsertChangedBlocksPlane(
-                lossyBlocks, pos, w, h, bitmap, blocksX, blocksY, blockSize,
-                lossyDelta.subarray(0, ySize)
-            );
-            pos = reinsertChangedBlocksPlane(
-                lossyBlocks, pos, uvW, uvH, bitmap, blocksX, blocksY, uvBlockSize,
-                lossyDelta.subarray(ySize, ySize + uvSize)
-            );
-            reinsertChangedBlocksPlane(
-                lossyBlocks, pos, uvW, uvH, bitmap, blocksX, blocksY, uvBlockSize,
-                lossyDelta.subarray(ySize + uvSize)
-            );
-            this.prevFrame = applyDelta(lossyDelta, this.prevFrame!);
-            this.framesSinceKey++;
-
-            // Encode with blockEncodeMulti
-            const dims = buildChangedBlockDims(bitmap, blocksX, blocksY, blockSize, w, h, uvBlockSize, uvW, uvH);
-            const blockBitstream = blockEncodeMulti(quantizedBlocks, dims);
-
-            let payload = packPframePayload(blockBitstream, blocksX, blocksY, bitmap);
-
-            // Scene-change detection: if P-frame > I-frame estimate, redo as I-frame
-            const iframeEstimate = this.estimateIframeSize(yuv, w, h, ySize, uvW, uvH, uvSize, quality);
-            if (payload.length > iframeEstimate) {
-                isKeyframe = true;
-                ditherYUV(yuv, w, h, quality);
-                const q = quantizeChroma(yuv, ySize, quality);
-                this.prevFrame = dequantizeChroma(q, ySize, quality);
-
-                const yBits = blockEncode(q.subarray(0, ySize), w, h);
-                const uBits = blockEncode(q.subarray(ySize, ySize + uvSize), uvW, uvH);
-                const vBits = blockEncode(q.subarray(ySize + uvSize), uvW, uvH);
-
-                this.framesSinceKey = 1;
-                payload = packIframePayload(yBits, uBits, vBits);
-                return { payload, flags: encodeFlags(true, true, quality) };
+            // scene-change: if P-frame exceeds last I-frame size, redo as I-frame
+            const iframeRef = this.lastIframeSize || Math.round(yuvSize * 0.15);
+            if (result.payload.length > iframeRef) {
+                return this.encodeIframe(yuv, w, h, ySize, uvW, uvH, uvSize, yuvSize, quality);
             }
-
-            return { payload, flags: encodeFlags(true, false, quality) };
+            return result;
         }
     }
 
-    /** Quick I-frame size estimate using blockEncode. */
-    private estimateIframeSize(
+    /** Encode an I-frame using format 0x07 (Akasha VBS). Shared by keyframe and scene-change paths. */
+    private encodeIframe(
         yuv: Uint8Array, w: number, h: number,
-        ySize: number, uvW: number, uvH: number, uvSize: number,
+        ySize: number, uvW: number, uvH: number, uvSize: number, yuvSize: number,
         quality: number
-    ): number {
-        const q = quantizeChroma(yuv, ySize, quality);
-        const yBits = blockEncode(q.subarray(0, ySize), w, h);
-        const uBits = blockEncode(q.subarray(ySize, ySize + uvSize), uvW, uvH);
-        const vBits = blockEncode(q.subarray(ySize + uvSize), uvW, uvH);
-        return yBits.length + uBits.length + vBits.length + 12;
+    ): { payload: Uint8Array; flags: number } {
+        const qdctY   = makeQdct(_QDCT_LUMA_BASE,   quality);
+        const qdctUV  = makeQdct(_QDCT_CHROMA_BASE, quality);
+        const qdctY16 = makeQdctN(_QDCT_LUMA_BASE, quality, 16);
+        const qdctY32 = makeQdctN(_QDCT_LUMA_BASE, quality, 32);
+        const bxNY = Math.ceil(w / 8), byNY = Math.ceil(h / 8);
+
+        const yVBS = encodeAkashaPlaneVBS(yuv.subarray(0, ySize), w, h, qdctY, qdctY16, qdctY32, 128);
+        const uEnc = encodeAkasha4DUV(yuv.subarray(ySize, ySize+uvSize), uvW, uvH, yVBS.recon, w, h, qdctUV);
+        const vEnc = encodeAkasha4DUV(yuv.subarray(ySize+uvSize),        uvW, uvH, yVBS.recon, w, h, qdctUV);
+
+        const uRec = decodeAkasha4DUV(uEnc.bits, uEnc.modeBits, uvW, uvH, yVBS.recon, w, h, qdctUV);
+        const vRec = decodeAkasha4DUV(vEnc.bits, vEnc.modeBits, uvW, uvH, yVBS.recon, w, h, qdctUV);
+        // store raw recon as P-frame reference (deblocking would inject noise into deltas)
+        this.prevFrame = new Uint8Array(yuvSize);
+        this.prevFrame.set(yVBS.recon); this.prevFrame.set(uRec, ySize); this.prevFrame.set(vRec, ySize+uvSize);
+        this.framesSinceKey = 1;
+
+        const payload = packAkashaVBS(
+            yVBS.modeBits8, yVBS.bits8, yVBS.modeBits16, yVBS.bits16,
+            yVBS.modeBits32, yVBS.bits32,
+            yVBS.smbBitmap, yVBS.smbW, yVBS.smbH,
+            yVBS.mbBitmap,  yVBS.mbW,  yVBS.mbH,
+            uEnc.bits, uEnc.modeBits, vEnc.bits, vEnc.modeBits,
+            bxNY, byNY
+        );
+        this.lastIframeSize = payload.length;
+        return { payload, flags: encodeFlags(true, true, quality) };
+    }
+
+    /** Encode a P-frame using format 0x08 (Akasha VBS on delta, no CfL, no deblocking). */
+    private encodePframe(
+        delta: Uint8Array, w: number, h: number,
+        ySize: number, uvW: number, uvH: number, uvSize: number, yuvSize: number,
+        quality: number
+    ): { payload: Uint8Array; flags: number } {
+        const qdctY   = makeQdct(_QDCT_LUMA_BASE,   quality);
+        const qdctUV  = makeQdct(_QDCT_CHROMA_BASE, quality);
+        const qdctY16 = makeQdctN(_QDCT_LUMA_BASE, quality, 16);
+        const qdctY32 = makeQdctN(_QDCT_LUMA_BASE, quality, 32);
+        const bxNY = Math.ceil(w / 8), byNY = Math.ceil(h / 8);
+
+        // zero out 8x8 blocks where all deltas are below threshold (saves bits)
+        const dThresh = Math.max(2, Math.round(qdctY[0] * 0.5));
+        const bxN = Math.ceil(w / 8), byN = Math.ceil(h / 8);
+        for (let by = 0; by < byN; by++) for (let bx = 0; bx < bxN; bx++) {
+            let maxD = 0;
+            for (let dy = 0; dy < 8 && by*8+dy < h; dy++)
+                for (let dx = 0; dx < 8 && bx*8+dx < w; dx++) {
+                    const d = delta[(by*8+dy)*w + bx*8+dx];
+                    const sd = d > 128 ? 256 - d : d; // signed magnitude
+                    if (sd > maxD) maxD = sd;
+                }
+            if (maxD <= dThresh) {
+                for (let dy = 0; dy < 8 && by*8+dy < h; dy++)
+                    for (let dx = 0; dx < 8 && bx*8+dx < w; dx++)
+                        delta[(by*8+dy)*w + bx*8+dx] = 0;
+            }
+        }
+        // same for UV planes
+        const uvBxN = Math.ceil(uvW / 8), uvByN = Math.ceil(uvH / 8);
+        const uvThresh = Math.max(2, Math.round(qdctUV[0] * 0.5));
+        for (let ch = 0; ch < 2; ch++) {
+            const off = ySize + ch * uvSize;
+            for (let by = 0; by < uvByN; by++) for (let bx = 0; bx < uvBxN; bx++) {
+                let maxD = 0;
+                for (let dy = 0; dy < 8 && by*8+dy < uvH; dy++)
+                    for (let dx = 0; dx < 8 && bx*8+dx < uvW; dx++) {
+                        const d = delta[off + (by*8+dy)*uvW + bx*8+dx];
+                        const sd = d > 128 ? 256 - d : d;
+                        if (sd > maxD) maxD = sd;
+                    }
+                if (maxD <= uvThresh) {
+                    for (let dy = 0; dy < 8 && by*8+dy < uvH; dy++)
+                        for (let dx = 0; dx < 8 && bx*8+dx < uvW; dx++)
+                            delta[off + (by*8+dy)*uvW + bx*8+dx] = 0;
+                }
+            }
+        }
+
+        // encode delta planes through VBS with centre=0 (deltas cluster around 0)
+        const yVBS = encodeAkashaPlaneVBS(delta.subarray(0, ySize), w, h, qdctY, qdctY16, qdctY32, 0);
+        const uEnc = encodeAkashaPlane(delta.subarray(ySize, ySize+uvSize), uvW, uvH, qdctUV, 0);
+        const vEnc = encodeAkashaPlane(delta.subarray(ySize+uvSize),        uvW, uvH, qdctUV, 0);
+
+        // reconstruct lossy delta for prevFrame tracking (no deblocking on deltas)
+        const uRec = decodeAkashaPlane(uEnc.bits, uEnc.modeBits, uvW, uvH, qdctUV, 0);
+        const vRec = decodeAkashaPlane(vEnc.bits, vEnc.modeBits, uvW, uvH, qdctUV, 0);
+        const lossyDelta = new Uint8Array(yuvSize);
+        lossyDelta.set(yVBS.recon, 0);
+        lossyDelta.set(uRec, ySize);
+        lossyDelta.set(vRec, ySize + uvSize);
+        this.prevFrame = applyDelta(lossyDelta, this.prevFrame!);
+        this.framesSinceKey++;
+
+        const payload = packAkashaVBS(
+            yVBS.modeBits8, yVBS.bits8, yVBS.modeBits16, yVBS.bits16,
+            yVBS.modeBits32, yVBS.bits32,
+            yVBS.smbBitmap, yVBS.smbW, yVBS.smbH,
+            yVBS.mbBitmap,  yVBS.mbW,  yVBS.mbH,
+            uEnc.bits, uEnc.modeBits, vEnc.bits, vEnc.modeBits,
+            bxNY, byNY, 0x08
+        );
+        return { payload, flags: encodeFlags(true, false, quality) };
     }
 
     private decompressFrame(decrypted: Uint8Array, w: number, h: number, flags: number): Uint8Array {
@@ -1363,73 +2437,52 @@ export class VideoCodec {
         const uvW = w >> 1, uvH = h >> 1;
         const uvSize = uvW * uvH;
         const yuvSize = ySize + uvSize * 2;
-        const blockSize = this.config.blockSize;
-        const uvBlockSize = blockSize >> 1;
-        const blocksX = Math.ceil(w / blockSize);
-        const blocksY = Math.ceil(h / blockSize);
+        const qdctY   = makeQdct(_QDCT_LUMA_BASE,   quality);
+        const qdctUV  = makeQdct(_QDCT_CHROMA_BASE, quality);
+        const qdctY16 = makeQdctN(_QDCT_LUMA_BASE, quality, 16);
+        const qdctY32 = makeQdctN(_QDCT_LUMA_BASE, quality, 32);
+
+        const vbs = unpackAkashaVBS(decrypted);
+        if (!vbs) return yuv420ToRgba(this.prevDecFrame || new Uint8Array(yuvSize), w, h);
 
         if (keyframe) {
-            // I-frame: blockDecode per plane → reassemble → dequantize → PQ inv → FRC → RGBA
-            const { yBits, uBits, vBits } = unpackIframePayload(decrypted);
-            const yPlane = blockDecode(yBits, w, h);
-            const uPlane = blockDecode(uBits, uvW, uvH);
-            const vPlane = blockDecode(vBits, uvW, uvH);
-
-            const quantized = new Uint8Array(yuvSize);
-            quantized.set(yPlane, 0);
-            quantized.set(uPlane, ySize);
-            quantized.set(vPlane, ySize + uvSize);
-
-            const yuv = dequantizeChroma(quantized, ySize, quality);
-            this.prevDecFrame = new Uint8Array(yuv);
+            // Format 0x07: Akasha VBS I-frame
+            const yPlane = decodeAkashaPlaneVBS(
+                vbs.yBits8,  vbs.yMod8,  vbs.yBits16, vbs.yMod16,
+                vbs.yBits32, vbs.yMod32,
+                vbs.smbBitmap, vbs.smbW, vbs.smbH,
+                vbs.mbBitmap,  vbs.mbW,  vbs.mbH,
+                w, h, qdctY, qdctY16, qdctY32, 128
+            );
+            const uPlane = decodeAkasha4DUV(vbs.uBits, vbs.uMod, uvW, uvH, yPlane, w, h, qdctUV);
+            const vPlane = decodeAkasha4DUV(vbs.vBits, vbs.vMod, uvW, uvH, yPlane, w, h, qdctUV);
+            // raw recon as P-frame reference (before deblocking)
+            this.prevDecFrame = new Uint8Array(yuvSize);
+            this.prevDecFrame.set(yPlane); this.prevDecFrame.set(uPlane, ySize); this.prevDecFrame.set(vPlane, ySize+uvSize);
+            deblockPlane(yPlane, w,   h,   qdctY[0]);
+            deblockPlane(uPlane, uvW, uvH, qdctUV[0]);
+            deblockPlane(vPlane, uvW, uvH, qdctUV[0]);
+            const yuv = new Uint8Array(yuvSize);
+            yuv.set(yPlane); yuv.set(uPlane, ySize); yuv.set(vPlane, ySize+uvSize);
             pqInverse(yuv, 0, ySize);
-            frcDither(yuv, w, h, quality, this.decFrameCount++);
             return yuv420ToRgba(yuv, w, h);
         } else {
-            // P-frame: unpack bitmap → blockDecodeMulti → dequantize → reinsert → un-delta → RGBA
-            const { blockBitstream, bitmap } = unpackPframePayload(decrypted, blocksX, blocksY);
-
-            const dims = buildChangedBlockDims(bitmap, blocksX, blocksY, blockSize, w, h, uvBlockSize, uvW, uvH);
-            let totalBlockBytes = 0;
-            for (const d of dims) totalBlockBytes += d.w * d.h;
-
-            const quantizedBlocks = blockDecodeMulti(blockBitstream, dims, totalBlockBytes);
-
-            // Count Y block bytes for dequantize split
-            let yBlockBytes = 0;
-            for (let by = 0; by < blocksY; by++) {
-                for (let bx = 0; bx < blocksX; bx++) {
-                    const blockIdx = by * blocksX + bx;
-                    if (!(bitmap[blockIdx >> 3] & (1 << (blockIdx & 7)))) continue;
-                    const bw = Math.min(blockSize, w - bx * blockSize);
-                    const bh = Math.min(blockSize, h - by * blockSize);
-                    yBlockBytes += bw * bh;
-                }
-            }
-
-            const deltaBlocks = dequantizeChromaSigned(quantizedBlocks, yBlockBytes, quality);
-
+            // Format 0x08: Akasha VBS P-frame (delta)
+            const yDelta = decodeAkashaPlaneVBS(
+                vbs.yBits8,  vbs.yMod8,  vbs.yBits16, vbs.yMod16,
+                vbs.yBits32, vbs.yMod32,
+                vbs.smbBitmap, vbs.smbW, vbs.smbH,
+                vbs.mbBitmap,  vbs.mbW,  vbs.mbH,
+                w, h, qdctY, qdctY16, qdctY32, 0
+            );
+            const uDelta = decodeAkashaPlane(vbs.uBits, vbs.uMod, uvW, uvH, qdctUV, 0);
+            const vDelta = decodeAkashaPlane(vbs.vBits, vbs.vMod, uvW, uvH, qdctUV, 0);
             const fullDelta = new Uint8Array(yuvSize);
-            let pos = 0;
-            pos = reinsertChangedBlocksPlane(
-                deltaBlocks, pos, w, h, bitmap, blocksX, blocksY, blockSize,
-                fullDelta.subarray(0, ySize)
-            );
-            pos = reinsertChangedBlocksPlane(
-                deltaBlocks, pos, uvW, uvH, bitmap, blocksX, blocksY, uvBlockSize,
-                fullDelta.subarray(ySize, ySize + uvSize)
-            );
-            reinsertChangedBlocksPlane(
-                deltaBlocks, pos, uvW, uvH, bitmap, blocksX, blocksY, uvBlockSize,
-                fullDelta.subarray(ySize + uvSize)
-            );
-
+            fullDelta.set(yDelta); fullDelta.set(uDelta, ySize); fullDelta.set(vDelta, ySize + uvSize);
             const base = this.prevDecFrame || new Uint8Array(yuvSize);
             const yuv = applyDelta(fullDelta, base);
-
             this.prevDecFrame = new Uint8Array(yuv);
             pqInverse(yuv, 0, ySize);
-            frcDither(yuv, w, h, quality, this.decFrameCount++);
             return yuv420ToRgba(yuv, w, h);
         }
     }
