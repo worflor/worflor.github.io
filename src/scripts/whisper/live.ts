@@ -275,12 +275,25 @@ export const FINGERPRINT_EMOJI = [
 
 const TURN_KDF_INFO_PHRASE = TE.encode("whisper-turn-v1");
 const TURN_KDF_INFO_BOND = TE.encode("whisper-turn-bond-v1");
+const STUN_KDF_INFO_PHRASE = TE.encode("whisper-stun-v1");
 const ZERO_SALT_32 = new Uint8Array(32);
 
 async function selectTurnServer(phraseRoot: Uint8Array, pool: RTCIceServer[]): Promise<RTCIceServer> {
   const indexBytes = await derivePhraseScopedKey(phraseRoot, "turn-select", 4, TURN_KDF_INFO_PHRASE);
   const idx = new DataView(indexBytes.buffer, indexBytes.byteOffset).getUint32(0, false) % pool.length;
   return pool[idx];
+}
+
+async function selectStunServers(phraseRoot: Uint8Array | null, pool: RTCIceServer[]): Promise<RTCIceServer[]> {
+  const targetCount = Math.min(3, pool.length);
+  if (targetCount === pool.length) return pool;
+  if (!phraseRoot) return pool.slice(0, targetCount);
+
+  const seedBytes = await derivePhraseScopedKey(phraseRoot, "stun-select", 4, STUN_KDF_INFO_PHRASE);
+  const start = new DataView(seedBytes.buffer, seedBytes.byteOffset).getUint32(0, false) % pool.length;
+  const out: RTCIceServer[] = [];
+  for (let i = 0; i < targetCount; i++) out.push(pool[(start + i) % pool.length]);
+  return out;
 }
 
 export async function deriveFingerprint(sharedSecret: Uint8Array): Promise<string> {
@@ -337,7 +350,8 @@ export const WHISPER_LIVE_RTC_STEALTH: RTCConfiguration = {
 };
 
 const ICE_GATHER_TIMEOUT = 8_000;         // max wait for ICE candidate gathering
-const CONNECTING_GRACE_TIMEOUT = 20_000;  // setup ICE grace window — checks complete well within this
+const ICE_GATHER_SETTLE_MS = 1_500;       // stop once candidates have gone quiet long enough
+const ICE_GATHER_TIMEOUT_ASSIST = 15_000; // public STUN needs a wider ceiling than local-only
 const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
 const HEARTBEAT_TIMEOUT = 45_000;         // drop peer after 45s silence
 
@@ -543,12 +557,23 @@ export class WhisperLiveSession {
   }
 
   private async buildRtcConfig(): Promise<RTCConfiguration> {
-    if (!this.turnPool.length || !this.phraseRoot) return this.rtcConfig;
+    let iceServers = this.rtcConfig.iceServers ?? [];
+    if (iceServers.length > 3) {
+      iceServers = await selectStunServers(this.phraseRoot, iceServers);
+    }
+
+    if (!this.turnPool.length || !this.phraseRoot) {
+      return {
+        ...this.rtcConfig,
+        iceServers,
+      };
+    }
+
     const turn = await selectTurnServer(this.phraseRoot, this.turnPool);
     this.turnInjected = true;
     return {
       ...this.rtcConfig,
-      iceServers: [...(this.rtcConfig.iceServers ?? []), turn],
+      iceServers: [...iceServers, turn],
     };
   }
 
@@ -1018,9 +1043,12 @@ export class WhisperLiveSession {
   private waitForICE(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.pc) { resolve(); return; }
+      const pc = this.pc;
+      const maxWait = this.hasExternalAssistConfigured() ? ICE_GATHER_TIMEOUT_ASSIST : ICE_GATHER_TIMEOUT;
+      let lastCandidateAt = Date.now();
 
       const logGatherResult = () => {
-        const sdp = this.pc?.localDescription?.sdp ?? "";
+        const sdp = pc.localDescription?.sdp ?? "";
         const types = [...sdp.matchAll(/typ (\w+)/g)].map(m => m[1]);
         const uniqueTypes = [...new Set(types)];
         this.onLog(`gathered ${types.length} network path(s): ${uniqueTypes.join(", ") || "none"}`);
@@ -1030,7 +1058,17 @@ export class WhisperLiveSession {
           this.onLog("no network paths found, connection may fail");
       };
 
-      if (this.pc.iceGatheringState === "complete") {
+      const candidateCount = (): number => {
+        const sdp = pc.localDescription?.sdp ?? "";
+        return [...sdp.matchAll(/^a=candidate:/gm)].length;
+      };
+
+      const hasUsefulCandidates = (): boolean => {
+        const sdp = pc.localDescription?.sdp ?? "";
+        return / typ (host|srflx|relay)\b/.test(sdp);
+      };
+
+      if (pc.iceGatheringState === "complete") {
         logGatherResult();
         resolve();
         return;
@@ -1041,18 +1079,39 @@ export class WhisperLiveSession {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (this.pc) this.pc.onicegatheringstatechange = null;
+        clearInterval(settlePoll);
+        pc.removeEventListener("icecandidate", onIceCandidate);
+        pc.onicegatheringstatechange = null;
         logGatherResult();
         resolve();
       };
 
+      const onIceCandidate = (event: RTCPeerConnectionIceEvent) => {
+        if (event.candidate) lastCandidateAt = Date.now();
+      };
+
+      pc.addEventListener("icecandidate", onIceCandidate);
+
+      const settlePoll = setInterval(() => {
+        if (settled) return;
+        if (pc.iceGatheringState === "complete") {
+          done();
+          return;
+        }
+        if (!hasUsefulCandidates()) return;
+        if (candidateCount() === 0) return;
+        if (Date.now() - lastCandidateAt < ICE_GATHER_SETTLE_MS) return;
+        this.onLog("path discovery settled, proceeding with gathered candidates");
+        done();
+      }, 250);
+
       const timer = setTimeout(() => {
         this.onLog("path discovery timed out, proceeding with what we have");
         done();
-      }, ICE_GATHER_TIMEOUT);
+      }, maxWait);
 
-      this.pc.onicegatheringstatechange = () => {
-        if (this.pc?.iceGatheringState === "complete") done();
+      pc.onicegatheringstatechange = () => {
+        if (pc.iceGatheringState === "complete") done();
       };
     });
   }
