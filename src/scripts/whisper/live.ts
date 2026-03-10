@@ -468,6 +468,8 @@ export class WhisperLiveSession {
   private msgQueue: Promise<void> = Promise.resolve();
   /** Serializes async sends to prevent chain key reuse */
   private sendQueue: Promise<void> = Promise.resolve();
+  /** Serializes encrypted send/receive ratchet mutations across both directions. */
+  private ratchetOpQueue: Promise<void> = Promise.resolve();
 
   // Heartbeat
   private heartbeatSend: ReturnType<typeof setInterval> | null = null;
@@ -820,6 +822,20 @@ export class WhisperLiveSession {
     this.loopStateRecv = loopStateRecv;
     this.skippedLoopKeys = skippedLoopKeys;
     this.lastRecvPubKeyHex = lastRecvPubKeyHex;
+  }
+
+  private async withRatchetLock<T>(op: () => Promise<T>): Promise<T> {
+    const prior = this.ratchetOpQueue;
+    let release!: () => void;
+    this.ratchetOpQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await op();
+    } finally {
+      release();
+    }
   }
 
   private replacePendingPeerConfirmProof(proof: Uint8Array | null): void {
@@ -1702,152 +1718,154 @@ export class WhisperLiveSession {
     if (complete.length < headerSize + 16) return; // header + minimum AES-GCM tag
 
     try {
-      const header = parseHeader(complete);
-      const ratchetState = this.cloneRatchetState(this.ratchetState);
-      let loopStateSend = this.loopStateSend ? this.cloneLoopState(this.loopStateSend) : null;
-      let loopStateRecv = this.loopStateRecv ? this.cloneLoopState(this.loopStateRecv) : null;
-      const skippedLoopKeys = this.cloneSkippedLoopKeys();
+      await this.withRatchetLock(async () => {
+        const header = parseHeader(complete);
+        const ratchetState = this.cloneRatchetState(this.ratchetState!);
+        let loopStateSend = this.loopStateSend ? this.cloneLoopState(this.loopStateSend) : null;
+        let loopStateRecv = this.loopStateRecv ? this.cloneLoopState(this.loopStateRecv) : null;
+        const skippedLoopKeys = this.cloneSkippedLoopKeys();
 
-      // Resolve pubkey: compact headers use cached peer key
-      let pubKeyHex: string;
-      if (header.pubKey) {
-        pubKeyHex = toHex(header.pubKey);
-      } else {
-        pubKeyHex = this.lastRecvPubKeyHex;
-        if (!pubKeyHex) return; // no cached key — can't process
-      }
-
-      // try loop-derived skipped key first (defense-in-depth; never fires with ordered SCTP).
-      let messageKey = this.takeSkippedLoopKey(skippedLoopKeys, pubKeyHex, header.counter);
-      let didDHRatchet = false;
-
-      if (!messageKey) {
-        // check if this is a new DH ratchet key
-        if (pubKeyHex !== ratchetState.dhPeerHex) {
-          if (!header.pubKey) return; // DH ratchet needs the actual key bytes
-          // new DH ratchet — skip remaining messages in current receive chain
-          if (ratchetState.chainKeyRecv && loopStateRecv) {
-            loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.prevChainLen);
-          }
-          await dhRatchetStep(ratchetState, header.pubKey.slice());
-          // reinit both loop states from the new DH-derived chain keys
-          const reinit = await this.loopStatesFromRatchetState(ratchetState);
-          loopStateSend = reinit.send;
-          loopStateRecv = reinit.recv;
-          didDHRatchet = true;
+        // Resolve pubkey: compact headers use cached peer key
+        let pubKeyHex: string;
+        if (header.pubKey) {
+          pubKeyHex = toHex(header.pubKey);
+        } else {
+          pubKeyHex = this.lastRecvPubKeyHex;
+          if (!pubKeyHex) return; // no cached key — can't process
         }
 
-        // advance loop and ratchet counter to the message's position
-        // (with ordered SCTP, skip count is always 0 — loop body never executes)
-        if (!loopStateRecv) throw new Error("No receiving loop state");
-        loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.counter);
+        // try loop-derived skipped key first (defense-in-depth; never fires with ordered SCTP).
+        let messageKey = this.takeSkippedLoopKey(skippedLoopKeys, pubKeyHex, header.counter);
+        let didDHRatchet = false;
 
-        // derive this message's key via loopStep — speculative until decrypt succeeds
-        const stepResult = await loopStep(loopStateRecv);
-        loopWipe(loopStateRecv);
-        loopStateRecv = stepResult.next;
-        messageKey = stepResult.messageKey;
-        ratchetState.nRecv++;
-      }
+        if (!messageKey) {
+          // check if this is a new DH ratchet key
+          if (pubKeyHex !== ratchetState.dhPeerHex) {
+            if (!header.pubKey) return; // DH ratchet needs the actual key bytes
+            // new DH ratchet — skip remaining messages in current receive chain
+            if (ratchetState.chainKeyRecv && loopStateRecv) {
+              loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.prevChainLen);
+            }
+            await dhRatchetStep(ratchetState, header.pubKey.slice());
+            // reinit both loop states from the new DH-derived chain keys
+            const reinit = await this.loopStatesFromRatchetState(ratchetState);
+            loopStateSend = reinit.send;
+            loopStateRecv = reinit.recv;
+            didDHRatchet = true;
+          }
 
-      const aad = complete.subarray(0, headerSize);
-      const peerDirBit = this.isOfferer ? 1 : 0;
-      const nonce = buildNonce(header.counter, peerDirBit, header.salt);
-      let compressedPayload: Uint8Array;
-      try {
-        compressedPayload = await aesGcmDecrypt(messageKey, header.ciphertext, nonce, aad);
-      } catch (decryptErr) {
+          // advance loop and ratchet counter to the message's position
+          // (with ordered SCTP, skip count is always 0 — loop body never executes)
+          if (!loopStateRecv) throw new Error("No receiving loop state");
+          loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.counter);
+
+          // derive this message's key via loopStep — speculative until decrypt succeeds
+          const stepResult = await loopStep(loopStateRecv);
+          loopWipe(loopStateRecv);
+          loopStateRecv = stepResult.next;
+          messageKey = stepResult.messageKey;
+          ratchetState.nRecv++;
+        }
+
+        const aad = complete.subarray(0, headerSize);
+        const peerDirBit = this.isOfferer ? 1 : 0;
+        const nonce = buildNonce(header.counter, peerDirBit, header.salt);
+        let compressedPayload: Uint8Array;
+        try {
+          compressedPayload = await aesGcmDecrypt(messageKey, header.ciphertext, nonce, aad);
+        } catch (decryptErr) {
+          messageKey.fill(0);
+          // if a DH ratchet step was performed and decrypt still fails, the ratchet
+          // is structurally broken (mismatched keys). deterministic — disconnect.
+          if (didDHRatchet) {
+            this.onLog("decryption failed, encryption state unrecoverable. disconnecting");
+            this.setState("error", "session got out of sync, reconnect to continue");
+            this.cleanupConnection();
+            return;
+          }
+          throw decryptErr;
+        }
         messageKey.fill(0);
-        // if a DH ratchet step was performed and decrypt still fails, the ratchet
-        // is structurally broken (mismatched keys). deterministic — disconnect.
-        if (didDHRatchet) {
-          this.onLog("decryption failed, encryption state unrecoverable. disconnecting");
-          this.setState("error", "session got out of sync, reconnect to continue");
-          this.cleanupConnection();
+
+        // decompress: first 4 bytes are decodedLen (LE uint32), rest is loop-encoded plaintext
+        if (compressedPayload.length < 4) throw new Error("ciphertext too short");
+        const decodedLen = new DataView(
+          compressedPayload.buffer, compressedPayload.byteOffset,
+        ).getUint32(0, true);
+        // Sanity bound — even with chunked reassembly, no single message should decode
+        // to more than 64 MB. Prevents a compromised peer from forcing a huge allocation.
+        if (decodedLen > 64 * 1024 * 1024) throw new Error("decodedLen exceeds safety limit");
+        const compressed = compressedPayload.subarray(4);
+
+        if (!loopStateRecv) throw new Error("No receiving loop state after step");
+        const { decoded: plaintext, next: afterDecode } = loopDecode(loopStateRecv, compressed, decodedLen);
+        loopWipe(loopStateRecv);
+        loopStateRecv = afterDecode;
+
+        if (!this.isSessionCurrent(generation)) {
+          this.wipeRatchetState(ratchetState);
+          this.wipeLoopState(loopStateSend);
+          this.wipeLoopState(loopStateRecv);
+          this.wipeSkippedLoopKeys(skippedLoopKeys);
           return;
         }
-        throw decryptErr;
-      }
-      messageKey.fill(0);
 
-      // decompress: first 4 bytes are decodedLen (LE uint32), rest is loop-encoded plaintext
-      if (compressedPayload.length < 4) throw new Error("ciphertext too short");
-      const decodedLen = new DataView(
-        compressedPayload.buffer, compressedPayload.byteOffset,
-      ).getUint32(0, true);
-      // Sanity bound — even with chunked reassembly, no single message should decode
-      // to more than 64 MB. Prevents a compromised peer from forcing a huge allocation.
-      if (decodedLen > 64 * 1024 * 1024) throw new Error("decodedLen exceeds safety limit");
-      const compressed = compressedPayload.subarray(4);
+        this.commitReceiveState(ratchetState, loopStateSend, loopStateRecv, skippedLoopKeys, pubKeyHex);
+        if (didDHRatchet) this.onLog("bond renewed");
 
-      if (!loopStateRecv) throw new Error("No receiving loop state after step");
-      const { decoded: plaintext, next: afterDecode } = loopDecode(loopStateRecv, compressed, decodedLen);
-      loopWipe(loopStateRecv);
-      loopStateRecv = afterDecode;
+        this.consecutiveDecryptFailures = 0; // reset on successful decrypt+decompress
 
-      if (!this.isSessionCurrent(generation)) {
-        this.wipeRatchetState(ratchetState);
-        this.wipeLoopState(loopStateSend);
-        this.wipeLoopState(loopStateRecv);
-        this.wipeSkippedLoopKeys(skippedLoopKeys);
-        return;
-      }
+        const msgId = this.nRecvTotal * 2 + (this.isOfferer ? 1 : 0);
+        this.nRecvTotal++;
 
-      this.commitReceiveState(ratchetState, loopStateSend, loopStateRecv, skippedLoopKeys, pubKeyHex);
-      if (didDHRatchet) this.onLog("bond renewed");
+        const ackPayload = new Uint8Array(4);
+        new DataView(ackPayload.buffer).setUint32(0, msgId, true);
+        this.sendSealed(LIVE_MSG.ACK, ackPayload);
 
-      this.consecutiveDecryptFailures = 0; // reset on successful decrypt+decompress
+        const isEdit     = (header.flags & LIVE_FLAG.EDIT) !== 0;
+        if (isEdit) {
+          if (plaintext.length < 5) return; // 4B id + at least 1B text
+          const targetId = new DataView(plaintext.buffer, plaintext.byteOffset).getUint32(0, true);
+          // Security: peer can only edit their own messages (parity check)
+          const peerParity = this.isOfferer ? 1 : 0;
+          if ((targetId & 1) !== peerParity) return;
+          this.onEdit?.(targetId, TD.decode(plaintext.subarray(4)), "peer");
+          return;
+        }
 
-      const msgId = this.nRecvTotal * 2 + (this.isOfferer ? 1 : 0);
-      this.nRecvTotal++;
+        const isCampfire = (header.flags & LIVE_FLAG.CAMPFIRE) !== 0;
+        const isFile     = (header.flags & LIVE_FLAG.FILE) !== 0;
+        const isFilePart = (header.flags & LIVE_FLAG.FILE_PART) !== 0;
 
-      const ackPayload = new Uint8Array(4);
-      new DataView(ackPayload.buffer).setUint32(0, msgId, true);
-      this.sendSealed(LIVE_MSG.ACK, ackPayload);
+        if (isCampfire && this.onRawDecrypted) {
+          this.onRawDecrypted(plaintext);
+          return;
+        }
 
-      const isEdit     = (header.flags & LIVE_FLAG.EDIT) !== 0;
-      if (isEdit) {
-        if (plaintext.length < 5) return; // 4B id + at least 1B text
-        const targetId = new DataView(plaintext.buffer, plaintext.byteOffset).getUint32(0, true);
-        // Security: peer can only edit their own messages (parity check)
-        const peerParity = this.isOfferer ? 1 : 0;
-        if ((targetId & 1) !== peerParity) return;
-        this.onEdit?.(targetId, TD.decode(plaintext.subarray(4)), "peer");
-        return;
-      }
-
-      const isCampfire = (header.flags & LIVE_FLAG.CAMPFIRE) !== 0;
-      const isFile     = (header.flags & LIVE_FLAG.FILE) !== 0;
-      const isFilePart = (header.flags & LIVE_FLAG.FILE_PART) !== 0;
-
-      if (isCampfire && this.onRawDecrypted) {
-        this.onRawDecrypted(plaintext);
-        return;
-      }
-
-      if (isFilePart) {
-        this.handleFilePartMessage(plaintext, msgId);
-      } else if (isFile) {
-        const { fileName, fileType, fileBytes } = decodeFilePlaintext(plaintext);
-        this.onMessage({
-          type: "file",
-          direction: "peer",
-          msgId,
-          fileName,
-          fileSize: fileBytes.length,
-          fileData: fileBytes,
-          fileType,
-          timestamp: Date.now(),
-        });
-      } else {
-        this.onMessage({
-          type: "text",
-          direction: "peer",
-          msgId,
-          text: TD.decode(plaintext),
-          timestamp: Date.now(),
-        });
-      }
+        if (isFilePart) {
+          this.handleFilePartMessage(plaintext, msgId);
+        } else if (isFile) {
+          const { fileName, fileType, fileBytes } = decodeFilePlaintext(plaintext);
+          this.onMessage({
+            type: "file",
+            direction: "peer",
+            msgId,
+            fileName,
+            fileSize: fileBytes.length,
+            fileData: fileBytes,
+            fileType,
+            timestamp: Date.now(),
+          });
+        } else {
+          this.onMessage({
+            type: "text",
+            direction: "peer",
+            msgId,
+            text: TD.decode(plaintext),
+            timestamp: Date.now(),
+          });
+        }
+      });
     } catch (err) {
       this.consecutiveDecryptFailures++;
       this.onLog(`decrypt failed: ${errorMessage(err)}`);
@@ -2248,76 +2266,78 @@ export class WhisperLiveSession {
   }
 
   private async encryptAndSend(plaintext: Uint8Array, flags: number): Promise<number> {
-    if (!this.ratchetState || !this.dc) return -1;
+    return this.withRatchetLock(async () => {
+      if (!this.ratchetState || !this.dc) return -1;
 
-    if (!this.loopStateSend) {
-      throw new Error("No sending loop state, ratchet not fully initialized");
-    }
-
-    if (this.ratchetState.nSend >= 0xFFFFFFFF) {
-      throw new Error("Message counter exhausted — session must be restarted");
-    }
-
-    const msgId = this.nSentTotal * 2 + (this.isOfferer ? 0 : 1);
-    this.nSentTotal++;
-
-    // derive message key via loopStep (advances chain, primes counts)
-    const { next: nextLoopSend, messageKey } = await loopStep(this.loopStateSend);
-    loopWipe(this.loopStateSend);
-    this.loopStateSend = nextLoopSend;
-
-    // compress plaintext with the loop codec (advances counts)
-    const { encoded: compressed, next: afterEncode } = loopEncode(this.loopStateSend, plaintext);
-    this.loopStateSend = afterEncode;
-
-    // prefix compressed payload with decodedLen so the receiver knows output size
-    const decodedLenBytes = new Uint8Array(4);
-    new DataView(decodedLenBytes.buffer).setUint32(0, plaintext.length, true);
-    const compressedPayload = concatBytes(decodedLenBytes, compressed);
-
-    const salt = randomBytes(4);
-    const counter = this.ratchetState.nSend;
-    const prevChainLen = this.ratchetState.prevChainLength;
-    const dirBit = this.isOfferer ? 0 : 1;
-    const nonce = buildNonce(counter, dirBit, salt);
-    const pubKeyHex = toHex(this.ratchetState.dhSelf.publicKey);
-    const sameKey = pubKeyHex === this.lastSentPubKeyHex;
-
-    const header = buildHeader(
-      sameKey ? (flags | LIVE_FLAG_SAME_KEY) : flags,
-      this.ratchetState.dhSelf.publicKey,
-      counter,
-      prevChainLen,
-      salt,
-    );
-    this.lastSentPubKeyHex = pubKeyHex;
-
-    const ciphertext = await aesGcmEncrypt(messageKey, compressedPayload, nonce, header);
-    messageKey.fill(0);
-
-    const wireMessage = concatBytes(header, ciphertext);
-
-    this.ratchetState.nSend++;
-
-    const totalBytes = estimateChunkedPrefixedSize(wireMessage.length);
-    let bytesSent = 0;
-    let lastProgressEmit = 0;
-    for (const chunk of iterateChunksPrefixed(wireMessage, LIVE_MSG.ENCRYPTED)) {
-      if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
-        try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
+      if (!this.loopStateSend) {
+        throw new Error("No sending loop state, ratchet not fully initialized");
       }
-      if (!this.dc || this.dc.readyState !== "open") return msgId;
-      this.dc.send(chunk);
-      bytesSent += chunk.byteLength;
-      if (this.onSendProgress) {
-        const now = performance.now();
-        if (bytesSent >= totalBytes || now - lastProgressEmit >= SEND_PROGRESS_INTERVAL_MS) {
-          this.onSendProgress(bytesSent, totalBytes);
-          lastProgressEmit = now;
+
+      if (this.ratchetState.nSend >= 0xFFFFFFFF) {
+        throw new Error("Message counter exhausted — session must be restarted");
+      }
+
+      const msgId = this.nSentTotal * 2 + (this.isOfferer ? 0 : 1);
+      this.nSentTotal++;
+
+      // derive message key via loopStep (advances chain, primes counts)
+      const { next: nextLoopSend, messageKey } = await loopStep(this.loopStateSend);
+      loopWipe(this.loopStateSend);
+      this.loopStateSend = nextLoopSend;
+
+      // compress plaintext with the loop codec (advances counts)
+      const { encoded: compressed, next: afterEncode } = loopEncode(this.loopStateSend, plaintext);
+      this.loopStateSend = afterEncode;
+
+      // prefix compressed payload with decodedLen so the receiver knows output size
+      const decodedLenBytes = new Uint8Array(4);
+      new DataView(decodedLenBytes.buffer).setUint32(0, plaintext.length, true);
+      const compressedPayload = concatBytes(decodedLenBytes, compressed);
+
+      const salt = randomBytes(4);
+      const counter = this.ratchetState.nSend;
+      const prevChainLen = this.ratchetState.prevChainLength;
+      const dirBit = this.isOfferer ? 0 : 1;
+      const nonce = buildNonce(counter, dirBit, salt);
+      const pubKeyHex = toHex(this.ratchetState.dhSelf.publicKey);
+      const sameKey = pubKeyHex === this.lastSentPubKeyHex;
+
+      const header = buildHeader(
+        sameKey ? (flags | LIVE_FLAG_SAME_KEY) : flags,
+        this.ratchetState.dhSelf.publicKey,
+        counter,
+        prevChainLen,
+        salt,
+      );
+      this.lastSentPubKeyHex = pubKeyHex;
+
+      const ciphertext = await aesGcmEncrypt(messageKey, compressedPayload, nonce, header);
+      messageKey.fill(0);
+
+      const wireMessage = concatBytes(header, ciphertext);
+
+      this.ratchetState.nSend++;
+
+      const totalBytes = estimateChunkedPrefixedSize(wireMessage.length);
+      let bytesSent = 0;
+      let lastProgressEmit = 0;
+      for (const chunk of iterateChunksPrefixed(wireMessage, LIVE_MSG.ENCRYPTED)) {
+        if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
+          try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
+        }
+        if (!this.dc || this.dc.readyState !== "open") return msgId;
+        this.dc.send(chunk);
+        bytesSent += chunk.byteLength;
+        if (this.onSendProgress) {
+          const now = performance.now();
+          if (bytesSent >= totalBytes || now - lastProgressEmit >= SEND_PROGRESS_INTERVAL_MS) {
+            this.onSendProgress(bytesSent, totalBytes);
+            lastProgressEmit = now;
+          }
         }
       }
-    }
-    return msgId;
+      return msgId;
+    });
   }
 
   /* ── Trust ──────────────────────────────────────────────── */
