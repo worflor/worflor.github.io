@@ -305,15 +305,7 @@ export const WHISPER_LIVE_RTC_LOCAL_ONLY: RTCConfiguration = {
   iceServers: [],
 };
 
-/**
- * Public STUN (opt-in).
- * Each entry is contacted in parallel — diverse ports and providers maximise the
- * chance of punching through whatever firewall the peer is behind.
- *   :80    — HTTP port, almost never blocked
- *   :443   — HTTPS port, passes strict firewalls
- *   :19302 — Google's dedicated STUN port, widely allowlisted
- *   :3478  — standard STUN port, universally open
- */
+/** Public STUN (opt-in). Parallel entries across three ports and four providers. */
 export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.nextcloud.com:443" },
@@ -322,9 +314,8 @@ export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
              "stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302",
              "stun:stun4.l.google.com:19302"] },
     { urls: "stun:stun.cloudflare.com:3478" },
-    { urls: "stun:stun.stunprotocol.org:3478" },
   ],
-  iceCandidatePoolSize: 2,
+  iceCandidatePoolSize: 1,
 };
 
 /**
