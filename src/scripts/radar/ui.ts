@@ -2201,12 +2201,12 @@ export function initRadar(opts: RadarUIOptions): () => void {
     if (typeof RTCPeerConnection !== "function") return;
 
     const primaryServers = [
+      { urls: "stun:stun.nextcloud.com:443" },     // port 443 first — least blocked
       { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun1.l.google.com:19302" },
       { urls: "stun:stun.cloudflare.com:3478" },
     ];
     const fallbackServers = [
-      { urls: "stun:stun.nextcloud.com:443" },
       { urls: "stun:stun.stunprotocol.org:3478" },
     ];
 

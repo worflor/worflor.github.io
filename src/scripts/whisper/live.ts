@@ -309,11 +309,14 @@ export const WHISPER_LIVE_RTC_LOCAL_ONLY: RTCConfiguration = {
   iceServers: [],
 };
 
-/** STUN config (opt-in). Multiple servers for redundancy. */
+/** STUN config (opt-in). Multiple servers for redundancy.
+ *  Port-443 servers are listed first — 443/TCP is the least-blocked port globally
+ *  and passes through most restrictive firewalls. Standard 3478 servers are fallback. */
 export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   iceServers: [
     {
       urls: [
+        "stun:stun.nextcloud.com:443",       // port 443 — passes most firewalls
         "stun:stun.l.google.com:19302",
         "stun:stun1.l.google.com:19302",
         "stun:stun.cloudflare.com:3478",
@@ -323,6 +326,20 @@ export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   // Keep pre-gathering modest to reduce load on shared STUN infra.
   // This remains a good reliability/latency balance for chat setup.
   iceCandidatePoolSize: 1,
+};
+
+/**
+ * Stealth / relay-only config.
+ * Forces ALL traffic through a TURN relay (iceTransportPolicy: "relay").
+ * No direct P2P — peer IPs are never exposed; data exits only via TURN.
+ * Requires a TURN server in turnPool using `turns:host:443?transport=tcp`
+ * so traffic is indistinguishable from HTTPS on port 443.
+ * Will fail to connect if no TURN server is reachable.
+ */
+export const WHISPER_LIVE_RTC_STEALTH: RTCConfiguration = {
+  iceTransportPolicy: "relay",
+  iceServers: [], // TURN injected at connect time from turnPool
+  iceCandidatePoolSize: 0,
 };
 
 // Timeout for ICE gathering (ms)
