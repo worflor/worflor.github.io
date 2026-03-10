@@ -261,8 +261,8 @@ describe("live-sdp hardening", () => {
   it("unsealed SDP round-trips correctly with random candidates", async () => {
     const candidates = [
       "a=candidate:1 1 udp 2130706431 10.0.0.1 9000 typ host",
-      "a=candidate:2 1 tcp 1694498815 172.16.0.5 443 typ srflx raddr 10.0.0.1 rport 9000",
-      "a=candidate:3 1 udp 100 192.0.2.1 3478 typ relay raddr 172.16.0.5 rport 443",
+      "a=candidate:2 1 tcp 1694498815 172.16.0.5 443 typ srflx raddr 10.0.0.1 rport 9000 tcptype passive",
+      "a=candidate:3 1 tcp 100 192.0.2.1 3478 typ relay raddr 172.16.0.5 rport 443 tcptype passive",
     ];
     const sdp = sampleSdp("passive", candidates);
     const code = await sdpToCode(sdp, "answer");
@@ -270,5 +270,6 @@ describe("live-sdp hardening", () => {
     assert.match(restored, /a=ice-ufrag:testUfrag/);
     assert.match(restored, /a=setup:passive/);
     assert.match(restored, /typ relay/);
+    assert.match(restored, /tcptype passive/);
   });
 });

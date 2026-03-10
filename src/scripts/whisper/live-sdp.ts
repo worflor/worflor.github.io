@@ -40,6 +40,7 @@ interface CompactCandidate {
   type: "host" | "srflx" | "prflx" | "relay";
   raddr?: string;
   rport?: number;
+  tcptype?: string;
 }
 
 function normalizeCompactSDP(compact: CompactSDP): CompactSDP {
@@ -59,6 +60,7 @@ function normalizeCompactSDP(compact: CompactSDP): CompactSDP {
         a.type.localeCompare(b.type),
         (a.raddr ?? "").localeCompare(b.raddr ?? ""),
         (a.rport ?? 0) - (b.rport ?? 0),
+        (a.tcptype ?? "").localeCompare(b.tcptype ?? ""),
       ].find((n) => n !== 0) ?? 0;
     }),
   };
@@ -137,10 +139,14 @@ function parseSDP(sdp: string): CompactSDP {
           };
           const raddrIdx = parts.indexOf("raddr");
           const rportIdx = parts.indexOf("rport");
+          const tcptypeIdx = parts.indexOf("tcptype");
           if (raddrIdx !== -1 && raddrIdx + 1 < parts.length) c.raddr = parts[raddrIdx + 1];
           if (rportIdx !== -1 && rportIdx + 1 < parts.length) {
             const rp = parseInt(parts[rportIdx + 1], 10);
             if (Number.isFinite(rp)) c.rport = rp;
+          }
+          if (protocol === "tcp" && tcptypeIdx !== -1 && tcptypeIdx + 1 < parts.length) {
+            c.tcptype = parts[tcptypeIdx + 1];
           }
           candidates.push(c);
         }
@@ -177,6 +183,7 @@ function reconstructSDP(compact: CompactSDP): string {
   for (const c of compact.candidates) {
     let line = `a=candidate:${c.foundation} 1 ${c.protocol} ${c.priority} ${c.ip} ${c.port} typ ${c.type}`;
     if (c.raddr != null && c.rport != null) line += ` raddr ${c.raddr} rport ${c.rport}`;
+    if (c.protocol === "tcp" && c.tcptype) line += ` tcptype ${c.tcptype}`;
     lines.push(line);
   }
 
@@ -242,6 +249,9 @@ function validateCompactSDP(obj: unknown): CompactSDP {
     }
     if (!Number.isFinite(cc.priority) || !Number.isFinite(cc.port)) {
       throw new Error("Candidate has non-finite numeric field");
+    }
+    if ("tcptype" in cc && cc.tcptype != null && typeof cc.tcptype !== "string") {
+      throw new Error("Candidate has invalid tcptype");
     }
   }
   return obj as CompactSDP;

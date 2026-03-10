@@ -943,8 +943,23 @@ export class WhisperLiveSession {
     this.connectingGraceDone = true;
     this.onLog("establishing connection...");
 
-    // Re-applying the remote description here restarts ICE renegotiation on the
-    // answerer, invalidating the credentials the offerer will check against.
+    // On the answerer side, ICE can enter "failed" before the offerer has applied
+    // the answer and started its own checks — an inherent race in non-trickle exchange.
+    // Re-applying the remote offer nudges the ICE agent to retry. Our local credentials
+    // are unchanged (createAnswer is never called again), so the offerer's checks remain
+    // valid. The guard on rd.type ensures this is a no-op on the offerer side.
+    this.iceRetryInterval = setInterval(() => {
+      const s = pc.iceConnectionState;
+      if (s === "connected" || s === "completed") {
+        if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
+        return;
+      }
+      const rd = pc.remoteDescription;
+      const ss = pc.signalingState;
+      if (rd?.type === "offer" && (ss === "stable" || ss === "have-remote-offer")) {
+        pc.setRemoteDescription(rd).catch(() => { /* non-fatal */ });
+      }
+    }, 8_000);
 
     this.connectingGraceTimer = setTimeout(() => {
       this.connectingGraceTimer = null;
