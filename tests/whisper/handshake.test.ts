@@ -272,4 +272,36 @@ describe("live-sdp hardening", () => {
     assert.match(restored, /typ relay/);
     assert.match(restored, /tcptype passive/);
   });
+
+  it("preserves the original SDP exactly for transport compatibility", async () => {
+    const original = [
+      "v=0",
+      "o=- 123456789 2 IN IP4 127.0.0.1",
+      "s=-",
+      "t=0 0",
+      "a=group:BUNDLE data",
+      "a=extmap-allow-mixed",
+      "m=application 9 UDP/DTLS/SCTP webrtc-datachannel",
+      "c=IN IP4 0.0.0.0",
+      "a=ice-ufrag:rawUfrag",
+      "a=ice-pwd:rawPwd1234567890",
+      "a=ice-options:trickle renomination",
+      "a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00",
+      "a=setup:actpass",
+      "a=mid:data",
+      "a=sctp-port:5000",
+      "a=max-message-size:262144",
+      "a=candidate:1 1 udp 2130706431 192.168.1.10 5000 typ host generation 0 network-id 1 network-cost 10",
+      "a=candidate:2 1 udp 1694498815 203.0.113.20 3478 typ srflx raddr 192.168.1.10 rport 5000 generation 0 network-id 1 network-cost 10",
+      "a=end-of-candidates",
+      "",
+    ].join("\r\n");
+
+    const phraseRoot = await derivePhraseRoot("exact transport sdp");
+    const code = await sdpToCode(original, "offer", phraseRoot);
+    const restored = await codeToSdp(code, "offer", phraseRoot);
+
+    assert.equal(restored, original);
+    phraseRoot.fill(0);
+  });
 });

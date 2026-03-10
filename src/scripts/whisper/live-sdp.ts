@@ -1,35 +1,21 @@
 // Whisper Live offer/answer codec.
-// Parses SDP, strips it to essentials, optionally gzip-compresses, base64url-encodes.
-// When a shared phrase is provided, the code is AES-GCM encrypted — the phrase acts
-// as a room key that hides ICE candidates, DTLS fingerprints, and all connection metadata.
+// Stores the browser-produced SDP exactly, optionally gzips it, base64url-encodes it,
+// and can seal it with the shared phrase. Transcript canonicalization still uses a
+// reduced SDP parse so session binding is stable across harmless candidate ordering.
 
 import { concatBytes, randomBytes } from "./wasm";
 import { TE, TD, aesGcmEncrypt, aesGcmDecrypt } from "./live-crypto";
 import { derivePhraseScopedKey } from "./live-handshake";
 
-/* ── SDP Sealing Constants ───────────────────────────────── */
-
 const SDP_SEAL_INFO = TE.encode("whisper-sdp-seal");
 const SDP_AAD_PREFIX = "whisper-sdp-seal-aad-v1|";
 
-/** Flag bytes for wire format */
-const FLAG_RAW  = 0x00;
+const FLAG_RAW = 0x00;
 const FLAG_GZIP = 0x01;
 const FLAG_SEALED = 0x02;
 
 const SUPPORTED_PROTOCOLS = ["udp", "tcp"] as const;
 const SUPPORTED_TYPES = ["host", "srflx", "prflx", "relay"] as const;
-
-/* ── Types ───────────────────────────────────────────────── */
-
-interface CompactSDP {
-  type: "offer" | "answer";
-  ufrag: string;
-  pwd: string;
-  fingerprint: string; // hex SHA-256
-  setup: "active" | "passive" | "actpass";
-  candidates: CompactCandidate[];
-}
 
 interface CompactCandidate {
   foundation: string;
@@ -41,6 +27,21 @@ interface CompactCandidate {
   raddr?: string;
   rport?: number;
   tcptype?: string;
+}
+
+interface CompactSDP {
+  type: "offer" | "answer";
+  ufrag: string;
+  pwd: string;
+  fingerprint: string;
+  setup: "active" | "passive" | "actpass";
+  candidates: CompactCandidate[];
+}
+
+interface EncodedSdpEnvelope {
+  v: 2;
+  type: "offer" | "answer";
+  sdp: string;
 }
 
 function normalizeCompactSDP(compact: CompactSDP): CompactSDP {
@@ -79,8 +80,6 @@ export function canonicalizeSdpForTranscript(
   return compactToBytes(compact);
 }
 
-/* ── Base64url ───────────────────────────────────────────── */
-
 function base64urlEncode(data: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]);
@@ -96,8 +95,6 @@ function base64urlDecode(str: string): Uint8Array {
   return bytes;
 }
 
-/* ── SDP Parse / Reconstruct ─────────────────────────────── */
-
 function parseSDP(sdp: string): CompactSDP {
   const lines = sdp.split("\r\n");
   let ufrag = "";
@@ -112,89 +109,46 @@ function parseSDP(sdp: string): CompactSDP {
     else if (line.startsWith("a=fingerprint:")) {
       const parts = line.slice(14).split(" ");
       if (parts.length >= 2) fingerprint = parts[1].replace(/:/g, "").toLowerCase();
-    }
-    else if (line.startsWith("a=setup:")) {
+    } else if (line.startsWith("a=setup:")) {
       const value = line.slice(8);
-      if (value === "active" || value === "passive" || value === "actpass") {
-        setup = value;
-      }
-    }
-    else if (line.startsWith("a=candidate:")) {
+      if (value === "active" || value === "passive" || value === "actpass") setup = value;
+    } else if (line.startsWith("a=candidate:")) {
       const parts = line.slice(12).split(" ");
-      if (parts.length >= 8) {
-        const protocol = parts[2].toLowerCase();
-        const candidateType = parts[7];
-        if ((SUPPORTED_PROTOCOLS as readonly string[]).includes(protocol) &&
-            (SUPPORTED_TYPES as readonly string[]).includes(candidateType)) {
-          const priority = parseInt(parts[3], 10);
-          const port = parseInt(parts[5], 10);
-          if (!Number.isFinite(priority) || !Number.isFinite(port)) continue;
-          const c: CompactCandidate = {
-            foundation: parts[0],
-            protocol: protocol as CompactCandidate["protocol"],
-            priority,
-            ip: parts[4],
-            port,
-            type: candidateType as CompactCandidate["type"],
-          };
-          const raddrIdx = parts.indexOf("raddr");
-          const rportIdx = parts.indexOf("rport");
-          const tcptypeIdx = parts.indexOf("tcptype");
-          if (raddrIdx !== -1 && raddrIdx + 1 < parts.length) c.raddr = parts[raddrIdx + 1];
-          if (rportIdx !== -1 && rportIdx + 1 < parts.length) {
-            const rp = parseInt(parts[rportIdx + 1], 10);
-            if (Number.isFinite(rp)) c.rport = rp;
-          }
-          if (protocol === "tcp" && tcptypeIdx !== -1 && tcptypeIdx + 1 < parts.length) {
-            c.tcptype = parts[tcptypeIdx + 1];
-          }
-          candidates.push(c);
-        }
+      if (parts.length < 8) continue;
+      const protocol = parts[2].toLowerCase();
+      const candidateType = parts[7];
+      if (!(SUPPORTED_PROTOCOLS as readonly string[]).includes(protocol)) continue;
+      if (!(SUPPORTED_TYPES as readonly string[]).includes(candidateType)) continue;
+      const priority = parseInt(parts[3], 10);
+      const port = parseInt(parts[5], 10);
+      if (!Number.isFinite(priority) || !Number.isFinite(port)) continue;
+
+      const candidate: CompactCandidate = {
+        foundation: parts[0],
+        protocol: protocol as CompactCandidate["protocol"],
+        priority,
+        ip: parts[4],
+        port,
+        type: candidateType as CompactCandidate["type"],
+      };
+
+      const raddrIdx = parts.indexOf("raddr");
+      const rportIdx = parts.indexOf("rport");
+      const tcptypeIdx = parts.indexOf("tcptype");
+      if (raddrIdx !== -1 && raddrIdx + 1 < parts.length) candidate.raddr = parts[raddrIdx + 1];
+      if (rportIdx !== -1 && rportIdx + 1 < parts.length) {
+        const rport = parseInt(parts[rportIdx + 1], 10);
+        if (Number.isFinite(rport)) candidate.rport = rport;
       }
+      if (protocol === "tcp" && tcptypeIdx !== -1 && tcptypeIdx + 1 < parts.length) {
+        candidate.tcptype = parts[tcptypeIdx + 1];
+      }
+      candidates.push(candidate);
     }
   }
 
-  // type is always set by callers (sdpToCode / codeToSdp)
   return { type: "offer", ufrag, pwd, fingerprint, setup, candidates };
 }
-
-function reconstructSDP(compact: CompactSDP): string {
-  const fp = compact.fingerprint.replace(/(.{2})(?!$)/g, "$1:").toUpperCase();
-
-  const lines: string[] = [
-    "v=0",
-    "o=- 0 0 IN IP4 0.0.0.0",
-    "s=-",
-    "t=0 0",
-    "a=group:BUNDLE 0",
-    "a=msid-semantic: WMS",
-    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel",
-    "c=IN IP4 0.0.0.0",
-    `a=ice-ufrag:${compact.ufrag}`,
-    `a=ice-pwd:${compact.pwd}`,
-    "a=ice-options:trickle",
-    `a=fingerprint:sha-256 ${fp}`,
-    `a=setup:${compact.setup}`,
-    "a=mid:0",
-    "a=sctp-port:5000",
-    "a=max-message-size:262144",
-  ];
-
-  for (const c of compact.candidates) {
-    let line = `a=candidate:${c.foundation} 1 ${c.protocol} ${c.priority} ${c.ip} ${c.port} typ ${c.type}`;
-    if (c.raddr != null && c.rport != null) line += ` raddr ${c.raddr} rport ${c.rport}`;
-    if (c.protocol === "tcp" && c.tcptype) line += ` tcptype ${c.tcptype}`;
-    lines.push(line);
-  }
-
-  // Signal that all candidates are included (no trickle)
-  lines.push("a=end-of-candidates");
-
-  lines.push("");
-  return lines.join("\r\n");
-}
-
-/* ── Compress / Decompress (bytes layer) ─────────────────── */
 
 async function readStream(readable: ReadableStream<Uint8Array>): Promise<Uint8Array> {
   const reader = readable.getReader();
@@ -207,9 +161,7 @@ async function readStream(readable: ReadableStream<Uint8Array>): Promise<Uint8Ar
   return concatBytes(...chunks);
 }
 
-async function compressToBytes(compact: CompactSDP): Promise<Uint8Array> {
-  const raw = compactToBytes(compact);
-
+async function compressToBytes(raw: Uint8Array): Promise<Uint8Array> {
   if (typeof CompressionStream !== "undefined") {
     const cs = new CompressionStream("gzip");
     const writer = cs.writable.getWriter();
@@ -218,46 +170,23 @@ async function compressToBytes(compact: CompactSDP): Promise<Uint8Array> {
     const gz = await readStream(cs.readable);
     if (gz.length < raw.length) return concatBytes(new Uint8Array([FLAG_GZIP]), gz);
   }
-
   return concatBytes(new Uint8Array([FLAG_RAW]), raw);
 }
 
-function validateCompactSDP(obj: unknown): CompactSDP {
+function validateEncodedSdpEnvelope(obj: unknown): EncodedSdpEnvelope {
   if (!obj || typeof obj !== "object") throw new Error("Invalid SDP structure");
   const o = obj as Record<string, unknown>;
-  if (typeof o.ufrag !== "string" || typeof o.pwd !== "string" ||
-      typeof o.fingerprint !== "string" || typeof o.setup !== "string" || typeof o.type !== "string") {
-    throw new Error("SDP missing required fields");
+  if (o.v !== 2 || (o.type !== "offer" && o.type !== "answer") || typeof o.sdp !== "string") {
+    throw new Error("Invalid SDP envelope");
   }
-  if ((o.type !== "offer" && o.type !== "answer")
-    || (o.setup !== "active" && o.setup !== "passive" && o.setup !== "actpass")) {
-    throw new Error("SDP contains invalid role or setup");
-  }
-  if (!/^[0-9a-f]{64}$/i.test(o.fingerprint)) throw new Error("SDP fingerprint must be 64 hex characters");
-  if (!Array.isArray(o.candidates)) throw new Error("SDP missing candidates");
-  for (const c of o.candidates) {
-    if (!c || typeof c !== "object") throw new Error("Invalid candidate entry");
-    const cc = c as Record<string, unknown>;
-    if (typeof cc.foundation !== "string" || typeof cc.protocol !== "string" ||
-        typeof cc.priority !== "number" || typeof cc.ip !== "string" ||
-        typeof cc.port !== "number" || typeof cc.type !== "string") {
-      throw new Error("Candidate missing required fields");
-    }
-    if (!(SUPPORTED_PROTOCOLS as readonly string[]).includes(cc.protocol)
-      || !(SUPPORTED_TYPES as readonly string[]).includes(cc.type)) {
-      throw new Error("Candidate contains unsupported protocol or type");
-    }
-    if (!Number.isFinite(cc.priority) || !Number.isFinite(cc.port)) {
-      throw new Error("Candidate has non-finite numeric field");
-    }
-    if ("tcptype" in cc && cc.tcptype != null && typeof cc.tcptype !== "string") {
-      throw new Error("Candidate has invalid tcptype");
-    }
-  }
-  return obj as CompactSDP;
+  return {
+    v: 2,
+    type: o.type,
+    sdp: o.sdp,
+  };
 }
 
-async function decompressFromBytes(data: Uint8Array): Promise<CompactSDP> {
+async function decompressFromBytes(data: Uint8Array): Promise<unknown> {
   const flag = data[0];
   const payload = data.subarray(1);
 
@@ -266,24 +195,26 @@ async function decompressFromBytes(data: Uint8Array): Promise<CompactSDP> {
     const writer = ds.writable.getWriter();
     writer.write(payload);
     writer.close();
-    return validateCompactSDP(JSON.parse(TD.decode(await readStream(ds.readable))));
+    return JSON.parse(TD.decode(await readStream(ds.readable)));
   }
 
-  return validateCompactSDP(JSON.parse(TD.decode(payload)));
+  return JSON.parse(TD.decode(payload));
 }
-
-/* ── Public API ──────────────────────────────────────────── */
 
 async function sealKeyFromRoot(phraseRoot: Uint8Array): Promise<Uint8Array> {
   return derivePhraseScopedKey(phraseRoot, "sdp-seal", 32, SDP_SEAL_INFO);
 }
 
 export async function sdpToCode(
-  sdp: string, type: "offer" | "answer", phraseRoot?: Uint8Array,
+  sdp: string,
+  type: "offer" | "answer",
+  phraseRoot?: Uint8Array,
 ): Promise<string> {
-  const compact = parseSDP(sdp);
-  compact.type = type;
-  const innerBytes = await compressToBytes(compact);
+  const innerBytes = await compressToBytes(TE.encode(JSON.stringify({
+    v: 2,
+    type,
+    sdp,
+  } satisfies EncodedSdpEnvelope)));
 
   if (phraseRoot) {
     const key = await sealKeyFromRoot(phraseRoot);
@@ -298,15 +229,17 @@ export async function sdpToCode(
 }
 
 export async function codeToSdp(
-  code: string, type: "offer" | "answer", phraseRoot?: Uint8Array,
+  code: string,
+  type: "offer" | "answer",
+  phraseRoot?: Uint8Array,
 ): Promise<string> {
   const data = base64urlDecode(code);
 
   if (data.length < 2) throw new Error("Connection code is too short");
 
   if (data[0] === FLAG_SEALED) {
-    if (!phraseRoot) throw new Error("This code is sealed with a shared phrase — enter it to connect");
-    if (data.length < 30) throw new Error("Sealed code is truncated"); // 1 flag + 12 nonce + 16 GCM tag min
+    if (!phraseRoot) throw new Error("This code is sealed with a shared phrase - enter it to connect");
+    if (data.length < 30) throw new Error("Sealed code is truncated");
     const nonce = data.subarray(1, 13);
     const ciphertext = data.subarray(13);
     const key = await sealKeyFromRoot(phraseRoot);
@@ -316,15 +249,15 @@ export async function codeToSdp(
       innerBytes = await aesGcmDecrypt(key, ciphertext, nonce, aad);
     } catch {
       key.fill(0);
-      throw new Error("Wrong shared phrase — could not unseal the connection code");
+      throw new Error("Wrong shared phrase - could not unseal the connection code");
     }
     key.fill(0);
-    const compact = await decompressFromBytes(innerBytes);
-    if (compact.type !== type) throw new Error("Connection code role mismatch");
-    return reconstructSDP(compact);
+    const envelope = validateEncodedSdpEnvelope(await decompressFromBytes(innerBytes));
+    if (envelope.type !== type) throw new Error("Connection code role mismatch");
+    return envelope.sdp;
   }
 
-  const compact = await decompressFromBytes(data);
-  if (compact.type !== type) throw new Error("Connection code role mismatch");
-  return reconstructSDP(compact);
+  const envelope = validateEncodedSdpEnvelope(await decompressFromBytes(data));
+  if (envelope.type !== type) throw new Error("Connection code role mismatch");
+  return envelope.sdp;
 }
