@@ -166,6 +166,7 @@ function reconstructSDP(compact: CompactSDP): string {
     "c=IN IP4 0.0.0.0",
     `a=ice-ufrag:${compact.ufrag}`,
     `a=ice-pwd:${compact.pwd}`,
+    "a=ice-options:trickle",
     `a=fingerprint:sha-256 ${fp}`,
     `a=setup:${compact.setup}`,
     "a=mid:0",

@@ -305,17 +305,25 @@ export const WHISPER_LIVE_RTC_LOCAL_ONLY: RTCConfiguration = {
   iceServers: [],
 };
 
-/** Public STUN (opt-in). Parallel entries across three ports and four providers. */
+/**
+ * Public STUN (opt-in). Each entry is contacted in parallel.
+ * Diverse ports (80, 443, 3478, 10000, 19302) and providers maximise the
+ * chance of punching through restrictive firewalls. All servers verified live.
+ */
 export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   iceServers: [
-    { urls: "stun:stun.nextcloud.com:443" },
-    { urls: "stun:stun.relay.metered.ca:80" },
+    { urls: "stun:stun.nextcloud.com:443" },                          // :443 — open source, privacy-focused
+    { urls: "stun:meet-jit-si-turnrelay.jitsi.net:443" },             // :443 — WebRTC-native, 8x8-backed
+    { urls: "stun:stun.relay.metered.ca:80" },                        // :80  — commercial, verified
+    { urls: "stun:stun.sipgate.net:10000" },                          // :10000 — German telco, 20yr uptime
     { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302",
              "stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302",
-             "stun:stun4.l.google.com:19302"] },
-    { urls: "stun:stun.cloudflare.com:3478" },
+             "stun:stun4.l.google.com:19302"] },                      // :19302 — Google, 5 endpoints
+    { urls: "stun:stun.cloudflare.com:3478" },                        // :3478  — Cloudflare, privacy-respecting
+    { urls: "stun:global.stun.twilio.com:3478" },                     // :3478  — Twilio, major telecom
+    { urls: "stun:turn.matrix.org:3478" },                            // :3478  — Matrix Foundation, nonprofit
   ],
-  iceCandidatePoolSize: 1,
+  iceCandidatePoolSize: 0,
 };
 
 /**
@@ -932,28 +940,12 @@ export class WhisperLiveSession {
   /** Start the grace period for setup ICE failures (both offerer and answerer). */
   private startConnectingGrace(pc: RTCPeerConnection): void {
     if (this.connectingGraceDone) return;
-    if (this.connectingGraceTimer) return; // already running
+    if (this.connectingGraceTimer) return;
     this.connectingGraceDone = true;
     this.onLog("negotiating connection, waiting for peer to finish exchange...");
 
-    // Re-apply remote description periodically to re-arm ICE agent for
-    // incoming connectivity checks from the peer.
-    this.iceRetryInterval = setInterval(() => {
-      if (!this.pc) return;
-      const s = this.pc.iceConnectionState;
-      if (s === "connected" || s === "completed") {
-        if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
-        return;
-      }
-      if (s === "failed" || s === "disconnected") {
-        const rd = this.pc.remoteDescription;
-        if (rd) {
-          this.pc.setRemoteDescription(rd).catch((e) => {
-            this.onLog(`negotiation re-arm failed: ${e instanceof Error ? e.message : "unknown"}`);
-          });
-        }
-      }
-    }, 8_000);
+    // Re-applying the remote description here restarts ICE renegotiation on the
+    // answerer, invalidating the credentials the offerer will check against.
 
     this.connectingGraceTimer = setTimeout(() => {
       this.connectingGraceTimer = null;
@@ -976,6 +968,7 @@ export class WhisperLiveSession {
 
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
+      this.onLog(`ice: ${s}`);
 
       if (s === "checking") return;
 
