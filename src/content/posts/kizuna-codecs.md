@@ -4,7 +4,7 @@ pubDate: 2026-03-03
 description: maybe the real friend was the math we made along the way
 author: "woflo"
 images:
-  - url: "/images/whisper-codecs-cover.webp"
+  - url: "/images/kizuna-codecs-cover.webp"
     alt: "Whispering in 16 Dimensions"
 ---
 

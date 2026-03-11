@@ -1,6 +1,6 @@
 # Whisper Protocol License
 
-## **version 1.0, February 28, 2026**
+## **version 1.0, March 11, 2026**
 
 this license applies to the Whisper Protocol and its components:
 
@@ -129,6 +129,7 @@ by submitting any contribution to this project, you grant the copyright holder a
 by using this software, you agree that:
 
 - you assume all risk associated with your use, deployment, and distribution
+- redistributions of this software, whether in source or binary form, must retain this entire license document and all original copyright notices
 - you are responsible for compliance with all applicable laws, including export controls, data protection, and telecommunications regulations
 - you will indemnify and defend the copyright holder against any claims, damages, or expenses arising from your use or violation of this license
 - you have no expectation of support, maintenance, updates, or services
@@ -150,6 +151,8 @@ upon termination, you must cease all use and destroy all copies. your indemnific
 
 this software is provided "as is" without warranty of any kind. the copyright holder is not liable for any damages arising from its use. you use it at your own risk.
 
+in no event shall the copyright holder or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential damages (including, but not limited to, procurement of substitute goods or services; loss of use, data, or profits; or business interruption) however caused and on any theory of liability, whether in contract, strict liability, or tort (including negligence or otherwise) arising in any way out of the use of this software, even if advised of the possibility of such damage.
+
 ---
 
 ## patent notice
@@ -163,6 +166,8 @@ this patent license is not contingent on any other relationship or dispute betwe
 ---
 
 ## general provisions
+
+**trademarks.** this license does not grant permission to use the trade names, trademarks, service marks, or product names of the copyright holder, except as required for reasonable and customary use in describing the origin of the software.
 
 **governing law.** this license is governed by the laws of Canada as applied in the Province of Ontario. disputes shall be resolved exclusively in the courts of Ontario, and you consent to their jurisdiction.
 
