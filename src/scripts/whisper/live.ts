@@ -1769,7 +1769,9 @@ export class WhisperLiveSession {
     if (complete.length < headerSize + 16) return; // header + minimum AES-GCM tag
 
     try {
+      this.onLog("recv: acquiring lock");
       await this.withRatchetLock(async () => {
+        this.onLog("recv: lock acquired");
         const header = parseHeader(complete);
         const ratchetState = this.cloneRatchetState(this.ratchetState!);
         let loopStateSend = this.loopStateSend ? this.cloneLoopState(this.loopStateSend) : null;
@@ -1862,6 +1864,7 @@ export class WhisperLiveSession {
         }
 
         this.commitReceiveState(ratchetState, loopStateSend, loopStateRecv, skippedLoopKeys, pubKeyHex);
+        this.onLog(`recv: committed, nRecv=${this.ratchetState!.nRecv}, DH=${didDHRatchet}`);
         if (didDHRatchet) this.onLog("bond renewed");
 
         this.consecutiveDecryptFailures = 0; // reset on successful decrypt+decompress
@@ -2315,7 +2318,9 @@ export class WhisperLiveSession {
   }
 
   private async encryptAndSend(plaintext: Uint8Array, flags: number): Promise<number> {
+    this.onLog(`send: acquiring lock (queue depth: ${this.nSentTotal})`);
     return this.withRatchetLock(async () => {
+      this.onLog("send: lock acquired");
       if (!this.ratchetState || !this.dc) return -1;
 
       if (!this.loopStateSend) {
@@ -2377,6 +2382,7 @@ export class WhisperLiveSession {
       messageKey.fill(0);
 
       this.ratchetState.nSend++;
+      this.onLog(`send: encrypted, nSend=${this.ratchetState.nSend}, releasing lock`);
 
       // pass [header, ciphertext] as separate parts — the iterator reads across
       // them with a cursor, avoiding a full-payload concat allocation.
