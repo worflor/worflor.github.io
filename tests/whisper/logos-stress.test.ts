@@ -63,8 +63,7 @@ describe("real corpus: round-trip + compression", () => {
     { label: "logos source TS   (~35KB)",   path: "src/scripts/whisper/live-wasm-logos.ts" },
     { label: "audio codec TS    (~20KB)",   path: "src/scripts/whisper/live-wasm-audio.ts",  cap: 20_480 },
     { label: "kizuna blog post  (~15KB)",   path: "src/content/posts/kizuna-codecs.md" },
-    { label: "logos-0d docs      (~7KB)",   path: "docs/01-logos-0d.md" },
-    { label: "dimensional tower  (~6KB)",   path: "docs/00-dimensional-tower.md" },
+    { label: "live-ratchet TS     (~7KB)",   path: "src/scripts/whisper/live-ratchet.ts" },
     { label: "benchmark JSON     (~5KB)",   path: "benchmark_results.json" },
     { label: "standards JSON     (~20KB)",  path: "standards_benchmark.json",              cap: 20_480 },
     { label: "live-ratchet TS    (~7KB)",   path: "src/scripts/whisper/live-ratchet.ts" },
@@ -478,8 +477,8 @@ describe("compression quality: structured and real data", () => {
     assert.ok(b < H, `logos ${b.toFixed(3)} should beat H0 ${H.toFixed(3)} on TypeScript source`);
   });
 
-  it("markdown docs: Logos beats H0 by exploiting phrase repetition (M-axis)", () => {
-    const data = loadFile("docs/01-logos-0d.md");
+  it("markdown blog post: Logos beats H0 by exploiting phrase repetition (M-axis)", () => {
+    const data = loadFile("src/content/posts/kizuna-codecs.md");
     const enc  = encode0D(data);
     const H    = h0(data);
     const b    = bps(enc, data.length);
@@ -520,7 +519,6 @@ describe("compression quality: structured and real data", () => {
       { label: "logos.ts",             path: "src/scripts/whisper/live-wasm-logos.ts" },
       { label: "live.ts (20KB)",       path: "src/scripts/whisper/live.ts",               cap: 20_480 },
       { label: "kizuna-codecs.md",     path: "src/content/posts/kizuna-codecs.md" },
-      { label: "logos-0d.md",          path: "docs/01-logos-0d.md" },
       { label: "benchmark_results.json", path: "benchmark_results.json" },
     ];
 

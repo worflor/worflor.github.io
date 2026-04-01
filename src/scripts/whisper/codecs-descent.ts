@@ -338,7 +338,7 @@ function initNeighborCounter(act: HTMLElement) {
     const target = Math.round(t * t * 65535);
 
     displayed += (target - displayed) * 0.15;
-    el.textContent = Math.round(displayed).toLocaleString();
+    el!.textContent = Math.round(displayed).toLocaleString();
     requestAnimationFrame(tick);
   }
 

@@ -138,7 +138,7 @@ interface LogosExports {
     init: () => void;
     set_stride: (s: number) => void;
     encode: (len: number) => number;
-    decode: (compLen: number, origLen: number) => void;
+    decode: (origLen: number) => void;
     INPUT_BUF: WebAssembly.Global;
     ENC_BUF: WebAssembly.Global;
     DEC_BUF: WebAssembly.Global;

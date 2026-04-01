@@ -7,6 +7,8 @@ interface Pt {
   y: number;
   p: number;
   t: number;
+  tilt: number;
+  azimuth: number;
 }
 
 const LOGICAL_W = 1000;
@@ -47,6 +49,8 @@ function genLine(samples: number, dtMs: number): Pt[] {
       y: 0.28,
       p: 0.5,
       t: i * dtMs,
+      tilt: 0,
+      azimuth: 0,
     });
   }
   return out;
@@ -61,6 +65,8 @@ function genCurve(samples: number): Pt[] {
       y: 0.3 + Math.sin(u * Math.PI * 2) * 0.07,
       p: 0.55 + Math.sin(u * 5) * 0.08,
       t: i * 16,
+      tilt: 0,
+      azimuth: 0,
     });
   }
   return out;
@@ -75,6 +81,8 @@ function genSlowJitterLine(samples: number): Pt[] {
       y: 0.34 + jitter,
       p: 0.5,
       t: i * 16,
+      tilt: 0,
+      azimuth: 0,
     });
   }
   return out;
@@ -85,17 +93,17 @@ describe("live-draw-stroke", () => {
     const logicalW = 1000;
     const logicalH = 800;
 
-    const slow = createStrokeSampler({ x: 0.1, y: 0.2, p: 0.5, t: 0 });
+    const slow = createStrokeSampler({ x: 0.1, y: 0.2, p: 0.5, t: 0, tilt: 0, azimuth: 0 });
     let slowKept = 1;
     for (let i = 1; i <= 120; i++) {
-      const r = sampleStrokePoint(slow, { x: 0.1 + i * 0.0016, y: 0.2, p: 0.5, t: i * 16 }, logicalW, logicalH);
+      const r = sampleStrokePoint(slow, { x: 0.1 + i * 0.0016, y: 0.2, p: 0.5, t: i * 16, tilt: 0, azimuth: 0 }, logicalW, logicalH);
       if (r.keep) slowKept++;
     }
 
-    const fast = createStrokeSampler({ x: 0.1, y: 0.2, p: 0.5, t: 0 });
+    const fast = createStrokeSampler({ x: 0.1, y: 0.2, p: 0.5, t: 0, tilt: 0, azimuth: 0 });
     let fastKept = 1;
     for (let i = 1; i <= 120; i++) {
-      const r = sampleStrokePoint(fast, { x: 0.1 + i * 0.0016, y: 0.2, p: 0.5, t: i }, logicalW, logicalH);
+      const r = sampleStrokePoint(fast, { x: 0.1 + i * 0.0016, y: 0.2, p: 0.5, t: i, tilt: 0, azimuth: 0 }, logicalW, logicalH);
       if (r.keep) fastKept++;
     }
 
@@ -105,20 +113,20 @@ describe("live-draw-stroke", () => {
   it("preserves sharp turn points", () => {
     const logicalW = 1200;
     const logicalH = 900;
-    const sampler = createStrokeSampler({ x: 0.2, y: 0.2, p: 0.5, t: 0 });
+    const sampler = createStrokeSampler({ x: 0.2, y: 0.2, p: 0.5, t: 0, tilt: 0, azimuth: 0 });
 
-    const p1 = sampleStrokePoint(sampler, { x: 0.23, y: 0.2, p: 0.5, t: 16 }, logicalW, logicalH);
+    const p1 = sampleStrokePoint(sampler, { x: 0.23, y: 0.2, p: 0.5, t: 16, tilt: 0, azimuth: 0 }, logicalW, logicalH);
     assert.equal(p1.keep, true);
 
     // Tight direction change: mostly vertical after horizontal segment.
-    const p2 = sampleStrokePoint(sampler, { x: 0.2315, y: 0.225, p: 0.5, t: 32 }, logicalW, logicalH);
+    const p2 = sampleStrokePoint(sampler, { x: 0.2315, y: 0.225, p: 0.5, t: 32, tilt: 0, azimuth: 0 }, logicalW, logicalH);
     assert.equal(p2.keep, true);
   });
 
   it("smooths pressure jitter into a stable sequence", () => {
     const logicalW = 1000;
     const logicalH = 700;
-    const sampler = createStrokeSampler({ x: 0.4, y: 0.4, p: 0.5, t: 0 });
+    const sampler = createStrokeSampler({ x: 0.4, y: 0.4, p: 0.5, t: 0, tilt: 0, azimuth: 0 });
 
     const inputs = [0.1, 0.9, 0.12, 0.88, 0.15, 0.85];
     const outputs: number[] = [];
@@ -126,7 +134,7 @@ describe("live-draw-stroke", () => {
 
     for (let i = 0; i < inputs.length; i++) {
       x += 0.01;
-      const r = sampleStrokePoint(sampler, { x, y: 0.4, p: inputs[i], t: (i + 1) * 8 }, logicalW, logicalH);
+      const r = sampleStrokePoint(sampler, { x, y: 0.4, p: inputs[i], t: (i + 1) * 8, tilt: 0, azimuth: 0 }, logicalW, logicalH);
       outputs.push(r.point.p);
     }
 
@@ -137,9 +145,9 @@ describe("live-draw-stroke", () => {
   it("quantizes points to 1/16-pixel grid deterministically", () => {
     const logicalW = 640;
     const logicalH = 480;
-    const sampler = createStrokeSampler({ x: 0.1, y: 0.1, p: 0.5, t: 0 });
+    const sampler = createStrokeSampler({ x: 0.1, y: 0.1, p: 0.5, t: 0, tilt: 0, azimuth: 0 });
 
-    const r = sampleStrokePoint(sampler, { x: 0.123456, y: 0.234567, p: 0.5, t: 16 }, logicalW, logicalH);
+    const r = sampleStrokePoint(sampler, { x: 0.123456, y: 0.234567, p: 0.5, t: 16, tilt: 0, azimuth: 0 }, logicalW, logicalH);
     const pxX16 = Math.round(r.point.x * logicalW * 16);
     const pxY16 = Math.round(r.point.y * logicalH * 16);
 
@@ -169,7 +177,7 @@ describe("live-draw-stroke", () => {
 
     for (let i = 1; i < raw.length; i++) {
       const r = sampleStrokePoint(sampler, raw[i], LOGICAL_W, LOGICAL_H);
-      if (r.keep) kept.push({ x: r.point.x, y: r.point.y, p: r.point.p, t: raw[i].t });
+      if (r.keep) kept.push({ x: r.point.x, y: r.point.y, p: r.point.p, t: raw[i].t, tilt: 0, azimuth: 0 });
     }
 
     const baseY = 0.34;

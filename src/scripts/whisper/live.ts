@@ -628,7 +628,7 @@ export class WhisperLiveSession {
       };
     }
 
-    const turn = await selectTurnServer(this.phraseRoot, this.turnPool);
+    const turn = await selectTurnServer(this.phraseRoot!, this.turnPool);
     this.turnInjected = true;
     return {
       ...this.rtcConfig,
@@ -916,9 +916,7 @@ export class WhisperLiveSession {
 
   private clearIncomingFiles(): void {
     for (const transfer of this.incomingFiles.values()) {
-      for (const chunk of transfer.chunks.values()) {
-        chunk.fill(0);
-      }
+      transfer.chunks.clear();
     }
     this.incomingFiles.clear();
   }

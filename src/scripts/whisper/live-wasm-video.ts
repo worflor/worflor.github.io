@@ -19,6 +19,14 @@ import * as simd from "./video-simd";
 import { encode0D, decode0D } from "./live-wasm-logos";
 import { LUMEN_WASM } from "./lumen-wasm-bin";
 
+// webgpu type shims for environments without @webgpu/types
+type GPUDevice = any;
+type GPUBuffer = any;
+type GPUComputePipeline = any;
+type GPUShaderModule = any;
+declare const GPUBufferUsage: Record<string, number>;
+declare const GPUMapMode: Record<string, number>;
+
 function encodeULEB(v: number): number[] {
     v = v >>> 0;
     const out: number[] = [];
@@ -1368,9 +1376,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
 async function initGPU(): Promise<boolean> {
     if (_gpuDevice) return true;
-    if (typeof navigator === 'undefined' || !navigator.gpu) return false;
+    if (typeof navigator === 'undefined' || !(navigator as any).gpu) return false;
     try {
-        const adapter = await navigator.gpu.requestAdapter();
+        const adapter = await (navigator as any).gpu.requestAdapter();
         if (!adapter) return false;
         _gpuDevice = await adapter.requestDevice();
         // compile all shaders and create pipelines in parallel via createComputePipelineAsync.

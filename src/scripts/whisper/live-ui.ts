@@ -5969,7 +5969,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         return "minimal - deep compression";                     // ternary signal
       }
 
-      function applyVisuals(q: number): void {
+      let applyVisuals = (q: number): void => {
         const pct = qToFrac(q) * 100;
         fill.style.width = `${pct}%`;
         thumb.style.left = `${pct}%`;
@@ -5984,7 +5984,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         hint.textContent = hintText(q);
         opts.alphaReset.classList.toggle("--modified", q !== AUDIO_Q_DEFAULT);
         track.setAttribute("aria-valuenow", String(q));
-      }
+      };
 
       function setSliderValue(q: number, dragging: boolean): void {
         q = Math.max(1, Math.min(100, Math.round(q)));
@@ -6011,7 +6011,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       //   - branch-free neighbor indexing (no modulo)
       //   - rotation-only frames skip the vertex loop entirely
       {
-        const orbitSvg = document.getElementById("wl-alpha-orbit") as SVGSVGElement;
+        const orbitSvg = document.getElementById("wl-alpha-orbit") as unknown as SVGSVGElement;
         const orbitContainer = opts.alphaOrbitWrap;
 
         let angle = 0;
