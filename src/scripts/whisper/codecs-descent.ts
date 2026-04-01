@@ -148,11 +148,11 @@ function initTree(act: HTMLElement) {
   const counterEl = act.querySelector<HTMLElement>(".counter-value");
 
   function draw() {
+    ctx.clearRect(0, 0, w, h);
     if (!isVisible() && !REDUCED) { requestAnimationFrame(draw); return; }
 
     const p = readProgress(act);
     const time = REDUCED ? 0 : performance.now();
-    ctx.clearRect(0, 0, w, h);
 
     // connections (behind nodes)
     for (let i = 1; i < nodes.length; i++) {
@@ -313,11 +313,11 @@ function initLattice(act: HTMLElement) {
   const unitEl = act.querySelector<HTMLElement>(".counter-unit");
 
   function draw() {
+    ctx.clearRect(0, 0, w, h);
     if (!isVisible() && !REDUCED) { requestAnimationFrame(draw); return; }
 
     const p = readProgress(act);
     const time = REDUCED ? 0 : performance.now();
-    ctx.clearRect(0, 0, w, h);
 
     const cx = w / 2;
     const cy = h / 2;
@@ -512,13 +512,14 @@ function initWaveform(act: HTMLElement) {
   const { isVisible } = observeVisibility(act);
 
   function draw() {
+    const p = readProgress(act);
+    ctx.clearRect(0, 0, w, h);
+
     if (!isVisible() && !REDUCED) { requestAnimationFrame(draw); return; }
 
-    const p = readProgress(act);
     const time = REDUCED ? 0 : performance.now() / 1000;
     const revealX = w * Math.min(1, p * 2.2);
 
-    ctx.clearRect(0, 0, w, h);
     if (revealX < 1) { requestAnimationFrame(draw); return; }
 
     const cy = h / 2;
@@ -916,11 +917,11 @@ function initParticles(act: HTMLElement) {
   const tempFill = act.querySelector<HTMLElement>(".temp-fill");
 
   function draw() {
+    ctx.clearRect(0, 0, w, h);
     if (!isVisible() && !REDUCED) { requestAnimationFrame(draw); return; }
 
     const p = readProgress(act);
     const time = REDUCED ? 0 : performance.now();
-    ctx.clearRect(0, 0, w, h);
 
     // sigmoid phase transition around p=0.45
     const crystal = 1 / (1 + Math.exp(-12 * (p - 0.45)));
@@ -1104,11 +1105,11 @@ function initRatchet(act: HTMLElement) {
   }
 
   function draw() {
+    ctx.clearRect(0, 0, w, h);
     if (!isVisible() && !REDUCED) { requestAnimationFrame(draw); return; }
 
     const p = readProgress(act);
     const time = REDUCED ? 0 : performance.now();
-    ctx.clearRect(0, 0, w, h);
 
     if (p < 0.02) { requestAnimationFrame(draw); return; }
 
