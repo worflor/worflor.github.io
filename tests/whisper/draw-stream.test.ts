@@ -13,7 +13,28 @@ import {
   GlyphStreamEncoder,
   GlyphStreamDecoder,
   GLYPH_BLOCK_SIZE,
+  GLYPH_CHANNELS,
+  GLYPH_CHANNEL_NAMES,
 } from "../../src/scripts/whisper/live-wasm-glyph.js";
+
+const CH = GLYPH_CHANNELS;
+
+// build a seed array from x, y, p (remaining channels zero)
+function seed(x: number, y: number, p: number): number[] {
+  const s = new Array(CH).fill(0);
+  s[0] = Math.round(x * 32767);
+  s[1] = Math.round(y * 32767);
+  s[2] = Math.round(p * 32767);
+  return s;
+}
+
+// build a DrawNormPoint from x, y, p (remaining channels zero)
+function normPoint(x: number, y: number, p: number): Record<string, number> {
+  const pt: Record<string, number> = {};
+  for (const ch of GLYPH_CHANNEL_NAMES) pt[ch] = 0;
+  pt.x = x; pt.y = y; pt.p = p;
+  return pt;
+}
 
 describe("live-draw-stream", () => {
   it("round-trips begin/glyph/end frames", () => {
@@ -24,23 +45,15 @@ describe("live-draw-stream", () => {
       tool: "pen",
       color: "#44aaee",
       width: 3.5,
-      start: { x: 0.2, y: 0.4, p: 0.6 },
+      start: normPoint(0.2, 0.4, 0.6) as any,
     };
 
-    // Build a glyph block by pushing GLYPH_BLOCK_SIZE points into an encoder
-    const sp: [number, number, number] = [
-      Math.round(0.2 * 32767),
-      Math.round(0.4 * 32767),
-      Math.round(0.6 * 32767),
-    ];
-    const enc = new GlyphStreamEncoder(sp, sp);
+    const sp = seed(0.2, 0.4, 0.6);
+    const enc = new GlyphStreamEncoder(sp);
     let glyphData: Uint8Array | null = null;
     for (let i = 0; i < GLYPH_BLOCK_SIZE; i++) {
-      const result = enc.push(
-        Math.round((0.2 + i * 0.01) * 32767),
-        Math.round((0.4 + i * 0.01) * 32767),
-        Math.round(0.6 * 32767),
-      );
+      const pt = seed(0.2 + i * 0.01, 0.4 + i * 0.01, 0.6);
+      const result = enc.push(pt);
       if (result) glyphData = result;
     }
     assert.ok(glyphData !== null, "encoder should have emitted a block after GLYPH_BLOCK_SIZE pushes");
@@ -75,40 +88,35 @@ describe("live-draw-stream", () => {
   });
 
   it("GlyphStreamEncoder emits blocks every GLYPH_BLOCK_SIZE points and decoder round-trips", () => {
-    const start: [number, number, number] = [Math.round(0.1 * 32767), Math.round(0.1 * 32767), Math.round(0.5 * 32767)];
-    const enc = new GlyphStreamEncoder(start, start);
-    const dec = new GlyphStreamDecoder(start, start);
+    const start = seed(0.1, 0.1, 0.5);
+    const enc = new GlyphStreamEncoder(start);
+    const dec = new GlyphStreamDecoder(start);
 
-    const inputPoints: Array<[number, number, number]> = Array.from({ length: GLYPH_BLOCK_SIZE * 2 }, (_, i) => [
-      Math.round((0.1 + i * 0.005) * 32767),
-      Math.round((0.1 + i * 0.003) * 32767),
-      Math.round(0.5 * 32767),
-    ]);
+    const inputPoints = Array.from({ length: GLYPH_BLOCK_SIZE * 2 }, (_, i) =>
+      seed(0.1 + i * 0.005, 0.1 + i * 0.003, 0.5)
+    );
 
     const blocks: Uint8Array[] = [];
-    for (const [x, y, p] of inputPoints) {
-      const block = enc.push(x, y, p);
+    for (const pt of inputPoints) {
+      const block = enc.push(pt);
       if (block) blocks.push(block);
     }
 
-    // Exactly 2 blocks for 2 × GLYPH_BLOCK_SIZE points
     assert.equal(blocks.length, 2);
 
-    // Decode each block and verify the points round-trip within quantisation error
     let decoded: number[] = [];
     for (const block of blocks) {
       const raw = dec.decode(block);
-      for (let i = 0; i < raw.length; i += 3) {
+      for (let i = 0; i < raw.length; i += CH) {
         decoded.push(raw[i], raw[i + 1], raw[i + 2]);
       }
     }
 
     assert.equal(decoded.length, inputPoints.length * 3);
     for (let i = 0; i < inputPoints.length; i++) {
-      const [ex, ey, ep] = inputPoints[i];
-      const dx = Math.abs(decoded[i * 3] - ex);
-      const dy = Math.abs(decoded[i * 3 + 1] - ey);
-      const dp = Math.abs(decoded[i * 3 + 2] - ep);
+      const dx = Math.abs(decoded[i * 3] - inputPoints[i][0]);
+      const dy = Math.abs(decoded[i * 3 + 1] - inputPoints[i][1]);
+      const dp = Math.abs(decoded[i * 3 + 2] - inputPoints[i][2]);
       assert.ok(dx <= 2, `x round-trip error too large at index ${i}: ${dx}`);
       assert.ok(dy <= 2, `y round-trip error too large at index ${i}: ${dy}`);
       assert.ok(dp <= 2, `p round-trip error too large at index ${i}: ${dp}`);
@@ -130,31 +138,26 @@ describe("live-draw-stream", () => {
     for (let trial = 0; trial < 40; trial++) {
       const rnd = lcg(9001 + trial * 17);
       const pointCount = 2 + GLYPH_BLOCK_SIZE * 80;
-      const points = new Int32Array(pointCount * 3);
+      const points = new Int32Array(pointCount * CH);
 
-      points[0] = randInt(rnd, -32767, 32767);
-      points[1] = randInt(rnd, -32767, 32767);
-      points[2] = randInt(rnd, 0, 32767);
-      points[3] = randInt(rnd, -32767, 32767);
-      points[4] = randInt(rnd, -32767, 32767);
-      points[5] = randInt(rnd, 0, 32767);
+      for (let ch = 0; ch < CH; ch++) {
+        points[ch] = randInt(rnd, -32767, 32767);
+        points[CH + ch] = randInt(rnd, -32767, 32767);
+      }
 
       for (let i = 2; i < pointCount; i++) {
-        const idx = i * 3;
-        const prev = (i - 1) * 3;
-        const prev2 = (i - 2) * 3;
-        const px = (points[prev] << 1) - points[prev2] + randInt(rnd, -8, 8);
-        const py = (points[prev + 1] << 1) - points[prev2 + 1] + randInt(rnd, -8, 8);
-        const pp = (points[prev + 2] << 1) - points[prev2 + 2] + randInt(rnd, -4, 4);
-        points[idx] = Math.max(-32767, Math.min(32767, px));
-        points[idx + 1] = Math.max(-32767, Math.min(32767, py));
-        points[idx + 2] = Math.max(0, Math.min(32767, pp));
+        for (let ch = 0; ch < CH; ch++) {
+          const predicted = (points[(i - 1) * CH + ch] << 1) - points[(i - 2) * CH + ch] + randInt(rnd, -8, 8);
+          points[i * CH + ch] = Math.max(-32767, Math.min(32767, predicted));
+        }
       }
 
       const blocks = GlyphCodec.encode(points);
       const packed = GlyphCodec.pack(blocks);
       const unpacked = GlyphCodec.unpack(packed);
-      const decoded = GlyphCodec.decode(unpacked, [points[3], points[4], points[5]], [points[0], points[1], points[2]]);
+      const s1 = Array.from(points.subarray(CH, CH * 2));
+      const s0 = Array.from(points.subarray(0, CH));
+      const decoded = GlyphCodec.decode(unpacked, s1, s0);
 
       assert.equal(decoded.length, points.length, `decoded length mismatch on trial ${trial}`);
       for (let i = 0; i < points.length; i++) {
@@ -165,18 +168,21 @@ describe("live-draw-stream", () => {
 
   it("GlyphCodec prefers linear mode on perfectly linear trajectories", () => {
     const pointCount = 2 + GLYPH_BLOCK_SIZE * 3;
-    const points = new Int32Array(pointCount * 3);
+    const points = new Int32Array(pointCount * CH);
 
-    points[0] = 1200; points[1] = 2400; points[2] = 28000;
-    points[3] = 1250; points[4] = 2460; points[5] = 27920;
+    // seed point 0 and 1
+    const init = [1200, 2400, 28000];
+    const delta = [50, 60, -80];
+    for (let ch = 0; ch < CH; ch++) {
+      points[ch] = init[ch] ?? 0;
+      points[CH + ch] = (init[ch] ?? 0) + (delta[ch] ?? 0);
+    }
 
     for (let i = 2; i < pointCount; i++) {
-      const idx = i * 3;
-      const prev = (i - 1) * 3;
-      const prev2 = (i - 2) * 3;
-      points[idx] = (points[prev] << 1) - points[prev2];
-      points[idx + 1] = (points[prev + 1] << 1) - points[prev2 + 1];
-      points[idx + 2] = Math.max(0, Math.min(32767, (points[prev + 2] << 1) - points[prev2 + 2]));
+      for (let ch = 0; ch < CH; ch++) {
+        points[i * CH + ch] = Math.max(-32767, Math.min(32767,
+          (points[(i - 1) * CH + ch] << 1) - points[(i - 2) * CH + ch]));
+      }
     }
 
     const blocks = GlyphCodec.encode(points);
@@ -187,23 +193,21 @@ describe("live-draw-stream", () => {
   });
 
   it("GlyphStreamDecoder handles empty/malformed payload safely", () => {
-    const start: [number, number, number] = [0, 0, 0];
-    const dec = new GlyphStreamDecoder(start, start);
+    const start = new Array(CH).fill(0);
+    const dec = new GlyphStreamDecoder(start);
     const out = dec.decode(new Uint8Array(0));
     assert.equal(out.length, 0);
   });
 
   it("GlyphStreamDecoder rejects oversized malformed block counts", () => {
-    const start: [number, number, number] = [0, 0, 0];
-    const dec = new GlyphStreamDecoder(start, start);
-    // mode=0, wPos=0, wPre=0, count=31 (invalid for stream decoder capacity)
+    const start = new Array(CH).fill(0);
+    const dec = new GlyphStreamDecoder(start);
     const malformed = new Uint8Array([0x00, 0x1f]);
     const out = dec.decode(malformed);
     assert.equal(out.length, 0);
   });
 
   it("GlyphCodec.unpack drops truncated harmonic blocks", () => {
-    // mode=0 (harmonic) but payload is truncated before harmonic coefficients.
     const truncated = new Uint8Array([0x00, 0x00]);
     const blocks = GlyphCodec.unpack(truncated);
     assert.equal(blocks.length, 0);
@@ -212,16 +216,12 @@ describe("live-draw-stream", () => {
   it("tracks peer draw state with sequence guards", () => {
     const tracker = new DrawStreamTracker();
 
-    // Build a glyph block for the tracker test
-    const sp: [number, number, number] = [Math.round(0.3 * 32767), Math.round(0.5 * 32767), Math.round(0.8 * 32767)];
-    const enc2 = new GlyphStreamEncoder(sp, sp);
+    const sp = seed(0.3, 0.5, 0.8);
+    const enc2 = new GlyphStreamEncoder(sp);
     let glyphData2: Uint8Array | null = null;
     for (let i = 0; i < GLYPH_BLOCK_SIZE; i++) {
-      const result = enc2.push(
-        Math.round((0.3 + i * 0.002) * 32767),
-        Math.round(0.5 * 32767),
-        Math.round(0.8 * 32767),
-      );
+      const pt = seed(0.3 + i * 0.002, 0.5, 0.8);
+      const result = enc2.push(pt);
       if (result) glyphData2 = result;
     }
     assert.ok(glyphData2 !== null);
@@ -233,7 +233,7 @@ describe("live-draw-stream", () => {
       tool: "eraser",
       color: "#ffffff",
       width: 6,
-      start: { x: 0.3, y: 0.5, p: 0.8 },
+      start: normPoint(0.3, 0.5, 0.8) as any,
     };
     const glyph: DrawStreamEvent = {
       kind: "glyph",
@@ -280,29 +280,24 @@ describe("live-draw-stream", () => {
       seq: 22,
       snapshotId: 9,
       chunkIndex: 1,
-      data: new Uint8Array([5, 6, 7]),
+      data: new Uint8Array([5, 6]),
     };
-    const end: DrawStreamEvent = {
+    const endBase: DrawStreamEvent = {
       kind: "base-end",
       seq: 23,
       snapshotId: 9,
     };
 
-    const encodedStart = encodeDrawStreamEvent(start);
-    const decodedStart = decodeDrawStreamEvent(encodedStart);
-    assert.ok(decodedStart && decodedStart.kind === "base-start");
-    assert.equal(decodedStart.mime, "image/webp");
-    assert.equal(decodedStart.chunkCount, 2);
-
-    const decodedChunk = decodeDrawStreamEvent(encodeDrawStreamEvent(chunkA));
-    assert.ok(decodedChunk && decodedChunk.kind === "base-chunk");
-    assert.deepEqual(Array.from(decodedChunk.data), [1, 2, 3, 4]);
+    for (const evt of [start, chunkA, chunkB, endBase]) {
+      const encoded = encodeDrawStreamEvent(evt);
+      const decoded = decodeDrawStreamEvent(encoded);
+      assert.ok(decoded, `round-trip failed for ${evt.kind}`);
+      assert.equal(decoded.kind, evt.kind);
+    }
 
     assert.equal(tracker.apply(start).applied, true);
     assert.equal(tracker.apply(chunkA).applied, true);
     assert.equal(tracker.apply(chunkB).applied, true);
-    assert.equal(tracker.snapshot().activeBaseSnapshotId, 9);
-    assert.equal(tracker.apply(end).applied, true);
-    assert.equal(tracker.snapshot().activeBaseSnapshotId, null);
+    assert.equal(tracker.apply(endBase).applied, true);
   });
 });

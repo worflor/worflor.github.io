@@ -13,7 +13,7 @@ import {
   type LiveState,
   type LiveMessage,
 } from "./live";
-import { encodeAdpcm, decodeAdpcm } from "./live-wasm-audio";
+import { encodeHarmonic, decodeHarmonic } from "./live-wasm-audio";
 import { dcBlock, inverseDcBlock, wavFromPcm } from "./live-audio-dsp";
 import {
   CTRL_OP, VOTE_TOPIC, VoteTopic,
@@ -46,8 +46,12 @@ import {
 } from "./seal-qr";
 import { openDrawSurface, consumeDrawPreview } from "./live-draw";
 import { type DrawStreamEvent } from "./live-draw-stream";
-import { GlyphStreamDecoder } from "./live-wasm-glyph";
-import { exchangeViaTracker, type TrackerRelayHandle } from "./live-tracker";
+import { GlyphStreamDecoder, GLYPH_CHANNELS, GLYPH_CHANNEL_NAMES, type GlyphSeed, type GlyphChannelName } from "./live-wasm-glyph";
+import {
+  runLiveRendezvous,
+  trackerErrorCode,
+  type TrackerRelayHandle,
+} from "./live-tracker";
 import {
   exportGwyphToPngBlob,
   gwyphPngName,
@@ -126,11 +130,24 @@ export interface WhisperLiveUIOptions {
   chatMediaPopover: HTMLElement;
   chatMediaFile: HTMLButtonElement;
   chatMediaDraw: HTMLButtonElement;
+  chatPasteBtn: HTMLButtonElement;
   chatMicWrap: HTMLElement;
   chatMicBtn: HTMLButtonElement;
   chatMicCancel: HTMLButtonElement;
   chatMicSend: HTMLButtonElement;
   chatMediaClear: HTMLButtonElement;
+  chatMediaAlpha: HTMLButtonElement;
+  alphaPanel: HTMLElement;
+  alphaAudioTrack: HTMLElement;
+  alphaAudioFill: HTMLElement;
+  alphaAudioThumb: HTMLElement;
+  alphaAudioQValue: HTMLElement;
+  alphaOrbitPath: SVGPathElement;
+  alphaOrbitGlow: SVGPathElement;
+  alphaOrbitGhost: SVGPathElement;
+  alphaHint: HTMLElement;
+  alphaOrbitWrap: HTMLElement;
+  alphaReset: HTMLButtonElement;
   disconnectBtn: HTMLButtonElement;
   fpChip: HTMLButtonElement;
   fpChipEmoji: HTMLElement;
@@ -210,11 +227,24 @@ const WHISPER_LIVE_IDS = {
   chatMediaPopover: "wl-media-popover",
   chatMediaFile: "wl-media-file",
   chatMediaDraw: "wl-media-draw",
+  chatPasteBtn: "wl-chat-paste-btn",
   chatMicWrap: "wl-chat-mic-wrap",
   chatMicBtn: "wl-chat-mic-btn",
   chatMicCancel: "wl-chat-mic-cancel",
   chatMicSend: "wl-chat-mic-send",
   chatMediaClear: "wl-media-clear",
+  chatMediaAlpha: "wl-media-alpha",
+  alphaPanel: "wl-alpha-panel",
+  alphaAudioTrack: "wl-alpha-audio-track",
+  alphaAudioFill: "wl-alpha-audio-fill",
+  alphaAudioThumb: "wl-alpha-audio-thumb",
+  alphaAudioQValue: "wl-alpha-audio-q-value",
+  alphaOrbitPath: "wl-alpha-orbit-path",
+  alphaOrbitGlow: "wl-alpha-orbit-glow",
+  alphaOrbitGhost: "wl-alpha-orbit-ghost",
+  alphaHint: "wl-alpha-hint",
+  alphaOrbitWrap: "wl-alpha-orbit-wrap",
+  alphaReset: "wl-alpha-reset",
   disconnectBtn: "wl-disconnect",
   fpChip: "wl-fp-chip",
   fpChipEmoji: "wl-fp-chip-emoji",
@@ -387,9 +417,22 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
     chatFileInput: inp(I.chatFileInput),
     chatMediaBtn: btn(I.chatMediaBtn), chatMediaPopover: el(I.chatMediaPopover),
     chatMediaFile: btn(I.chatMediaFile), chatMediaDraw: btn(I.chatMediaDraw),
+    chatPasteBtn: btn(I.chatPasteBtn),
     chatMicWrap: el(I.chatMicWrap),
     chatMicBtn: btn(I.chatMicBtn), chatMicCancel: btn(I.chatMicCancel), chatMicSend: btn(I.chatMicSend),
     chatMediaClear: btn(I.chatMediaClear),
+    chatMediaAlpha: btn(I.chatMediaAlpha),
+    alphaPanel: el(I.alphaPanel),
+    alphaAudioTrack: el(I.alphaAudioTrack),
+    alphaAudioFill: el(I.alphaAudioFill),
+    alphaAudioThumb: el(I.alphaAudioThumb),
+    alphaAudioQValue: el(I.alphaAudioQValue),
+    alphaOrbitPath: root.querySelector<SVGPathElement>(`#${I.alphaOrbitPath}`) as SVGPathElement,
+    alphaOrbitGlow: root.querySelector<SVGPathElement>(`#${I.alphaOrbitGlow}`) as SVGPathElement,
+    alphaOrbitGhost: root.querySelector<SVGPathElement>(`#${I.alphaOrbitGhost}`) as SVGPathElement,
+    alphaHint: el(I.alphaHint),
+    alphaOrbitWrap: el(I.alphaOrbitWrap),
+    alphaReset: btn(I.alphaReset),
     disconnectBtn: btn(I.disconnectBtn),
     fpChip: btn(I.fpChip), fpChipEmoji: el(I.fpChipEmoji), fpChipName: el(I.fpChipName),
     fpNicknameInput: inp(I.fpNicknameInput),
@@ -461,235 +504,146 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let typingSendTimer: ReturnType<typeof setTimeout> | null = null;
   let peerTypingTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // ── Floating Action Menu (Copy / Edit) ──────────────────────────
-  let actionMenuEl: HTMLDivElement | null = null;
-  let actionEditBtn: HTMLButtonElement | null = null;
-  let actionCopyBtn: HTMLButtonElement | null = null;
-  let copyMenuText = "";
-  let copyMenuTimeout: ReturnType<typeof setTimeout> | null = null;
-  let copyMenuFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
-  let copyMenuCloseTimeout: ReturnType<typeof setTimeout> | null = null;
-  let copyMenuSourceEl: HTMLElement | null = null;
-  let copyMenuAnchorX = 0;
-  let copyMenuAnchorY = 0;
-  let menuJustOpenedAt = 0;
-  let copiedPulseTimeout: ReturnType<typeof setTimeout> | null = null;
-  let copiedPulseEl: HTMLElement | null = null;
-  let activeHoldPointerId = -1;
-  let actionMenuMsgId: number | null = null;
+  // ── Internal clipboard cache ──
+  // browsers (firefox) prompt on programmatic clipboard reads. instead we
+  // silently capture text from copy/cut/paste events the user triggers
+  // naturally, then the paste button injects from our cache — zero prompts.
+  // cache holds either text or files, not both — last write wins.
+  let clipText = "";
+  let clipFiles: File[] = [];
+  let pastePending = false;
+  let pasteHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function cacheClipText(text: string | undefined | null): void {
+    if (text && text.trim()) { clipText = text.trim(); clipFiles = []; }
+  }
+
+  function cacheClipFiles(files: File[]): void {
+    if (files.length) { clipFiles = files; clipText = ""; }
+  }
+
+  // capture copy/cut — grab selected text
+  document.addEventListener("copy", () => cacheClipText(window.getSelection()?.toString()), { signal });
+  document.addEventListener("cut", () => cacheClipText(window.getSelection()?.toString()), { signal });
+
+  // capture paste — grab text and/or files
+  document.addEventListener("paste", (e) => {
+    const data = e.clipboardData;
+    if (!data) return;
+    const files: File[] = [];
+    if (data.items) {
+      for (const item of data.items) {
+        if (item.kind === "file") { const f = item.getAsFile(); if (f) files.push(f); }
+      }
+    }
+    if (files.length) cacheClipFiles(files);
+    else cacheClipText(data.getData("text/plain"));
+  }, { signal, capture: true });
+
+  function clearPasteState(): void {
+    pastePending = false;
+    opts.chatPasteBtn.removeAttribute("data-pasted");
+    if (pasteHoldTimer) { clearTimeout(pasteHoldTimer); pasteHoldTimer = null; }
+  }
+
+  function enterPastedState(): void {
+    pastePending = true;
+    opts.chatPasteBtn.setAttribute("data-pasted", "");
+    haptic("copied");
+  }
+
+  /** inject cached clipboard content into chat. text goes into the input
+   *  field, files get sent directly. falls back to readText() when the
+   *  cache is empty — chromium allows it silently, firefox prompts once. */
+  /** read clipboard via clipboard.read() — returns files and/or text. */
+  async function readClipboardItems(): Promise<{ files: File[]; text: string }> {
+    const files: File[] = [];
+    let text = "";
+    const clip = navigator.clipboard;
+    if (typeof clip?.read === "function") {
+      try {
+        const items = await clip.read();
+        for (const item of items) {
+          for (const type of item.types) {
+            if (type.startsWith("image/") || type === "application/octet-stream") {
+              const blob = await item.getType(type);
+              const ext = type.split("/")[1] ?? "bin";
+              files.push(new File([blob], `clipboard.${ext}`, { type }));
+            } else if (type === "text/plain" && !text) {
+              const blob = await item.getType(type);
+              text = (await blob.text()).trim();
+            }
+          }
+        }
+      } catch { /* denied or empty */ }
+    }
+    // fallback for text if read() didn't yield any
+    if (!files.length && !text && typeof clip?.readText === "function") {
+      try { text = (await clip.readText()).trim(); } catch { /* denied */ }
+    }
+    return { files, text };
+  }
+
+  async function pasteFromClipboard(): Promise<void> {
+    // prefer internal cache
+    if (clipFiles.length) {
+      sendFilesToChat(clipFiles, "paste");
+      return;
+    }
+    if (clipText) {
+      opts.chatInput.focus();
+      opts.chatInput.value = clipText;
+      updateControls();
+      enterPastedState();
+      return;
+    }
+
+    // no cache — read clipboard directly (prompts once on firefox)
+    const { files, text } = await readClipboardItems();
+    if (files.length) {
+      cacheClipFiles(files);
+      sendFilesToChat(files, "paste");
+    } else if (text) {
+      cacheClipText(text);
+      opts.chatInput.focus();
+      opts.chatInput.value = text;
+      updateControls();
+      enterPastedState();
+    }
+  }
 
   // ── Edit Mode ──
   let editingMsgId: number | null = null;
   let preEditInputValue = "";
   let preEditPlaceholder = "";
 
-  // Gesture State (Singleton for memory efficiency)
-  let activeHoldTimer: ReturnType<typeof setTimeout> | null = null;
-  let activeHoldVisualTimer: ReturnType<typeof setTimeout> | null = null;
-  let activeHoldEl: HTMLElement | null = null;
-  let holdStartX = 0, holdStartY = 0;
+  // ── Alpha menu state ──
+  const AUDIO_Q_DEFAULT = 24;
+  let audioQuality = AUDIO_Q_DEFAULT;
 
-  function isCopyMenuVisible(): boolean {
-    return !!actionMenuEl?.classList.contains("wl-action-menu--visible");
-  }
-
-  function armCopyMenuTimeout(ms = 4_000): void {
-    if (copyMenuTimeout) clearTimeout(copyMenuTimeout);
-    copyMenuTimeout = setTimeout(hideCopyMenu, ms);
-  }
-
-  function hasInteractiveSelectionWithin(el: HTMLElement): boolean {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
-    const range = selection.getRangeAt(0);
-    const anchorNode = selection.anchorNode;
-    const focusNode = selection.focusNode;
-    return !!(
-      (anchorNode && el.contains(anchorNode))
-      || (focusNode && el.contains(focusNode))
-      || (range.commonAncestorContainer && el.contains(range.commonAncestorContainer))
-    );
-  }
-
-  function resetCopyMenuFeedback(): void {
-    if (!actionCopyBtn) return;
-    actionCopyBtn.disabled = false;
-    actionCopyBtn.textContent = "copy";
-    actionCopyBtn.setAttribute("aria-label", "copy message");
-    actionMenuEl?.classList.remove("wl-action-menu--closing");
-  }
-
-  function positionActionMenu(x: number, y: number): void {
-    if (!actionMenuEl) return;
-    const rect = actionMenuEl.getBoundingClientRect();
-    const menuW = rect.width || 72;
-    const menuH = rect.height || 36;
-    let left = x - menuW / 2;
-    let top = y - menuH - 12;
-
-    if (top < 8) top = y + 12;
-
-    left = Math.max(8, Math.min(window.innerWidth - menuW - 8, left));
-    top = Math.max(8, Math.min(window.innerHeight - menuH - 8, top));
-
-    actionMenuEl.style.left = `${left}px`;
-    actionMenuEl.style.top = `${top}px`;
-  }
-
-  function pulseCopiedMessage(el: HTMLElement | null): void {
-    if (!el) return;
-    if (copiedPulseTimeout) {
-      clearTimeout(copiedPulseTimeout);
-      copiedPulseTimeout = null;
-    }
-    if (copiedPulseEl && copiedPulseEl !== el) copiedPulseEl.classList.remove("wl-msg--copied");
-    copiedPulseEl = el;
-    el.classList.remove("wl-msg--copied");
-    void el.offsetWidth;
-    el.classList.add("wl-msg--copied");
-    copiedPulseTimeout = setTimeout(() => {
-      el.classList.remove("wl-msg--copied");
-      if (copiedPulseEl === el) copiedPulseEl = null;
-      copiedPulseTimeout = null;
-    }, 1200);
-  }
-
-  function showActionMenu(x: number, y: number, text: string, sourceEl: HTMLElement | null = null, msgId: number | null = null, direction: "self" | "peer" | "system" = "peer"): void {
-    if (!text.trim()) return;
-    if (
-      isCopyMenuVisible()
-      && copyMenuSourceEl === sourceEl
-      && copyMenuText === text
-      && Math.abs(copyMenuAnchorX - x) < 6
-      && Math.abs(copyMenuAnchorY - y) < 6
-    ) {
-      armCopyMenuTimeout();
-      return;
-    }
-    if (!actionMenuEl) {
-      actionMenuEl = document.createElement("div");
-      actionMenuEl.className = "wl-action-menu";
-
-      actionEditBtn = document.createElement("button");
-      actionEditBtn.className = "wl-action-btn wl-action-edit";
-      actionEditBtn.type = "button";
-      actionEditBtn.textContent = "edit";
-      actionEditBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (actionMenuMsgId == null) return;
-        const srcEl = copyMenuSourceEl;
-        const targetText = srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.textContent ?? "";
-        const targetId = actionMenuMsgId;
-        hideCopyMenu();
-        // Enter edit mode — clear any active typing indicator first
-        emitCleared();
-        preEditInputValue = opts.chatInput.value;
-        preEditPlaceholder = opts.chatInput.placeholder;
-        editingMsgId = targetId;
-        opts.chatInput.value = targetText;
-        opts.chatInput.placeholder = "editing...";
-        chatCompose?.setAttribute("data-editing", "1");
-        srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.add("wl-msg--editing");
-        updateControls();
-        opts.chatInput.focus();
-      }, { signal });
-
-      actionCopyBtn = document.createElement("button");
-      actionCopyBtn.className = "wl-action-btn wl-action-copy";
-      actionCopyBtn.type = "button";
-      actionCopyBtn.textContent = "copy";
-      actionCopyBtn.setAttribute("aria-label", "copy message");
-      actionCopyBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (!copyMenuText) return;
-        const btn = actionCopyBtn;
-        if (!btn) return;
-        if (btn.disabled) return;
-        if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
-        if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
-        try {
-          btn.disabled = true;
-          await copyToClipboard(copyMenuText);
-          btn.textContent = "copied";
-          btn.setAttribute("aria-label", "message copied");
-          pulseCopiedMessage(copyMenuSourceEl);
-          haptic("reaction");
-          copyMenuFeedbackTimeout = setTimeout(hideCopyMenu, 720);
-        } catch (err) {
-          btn.disabled = false;
-          btn.textContent = "copy failed";
-          btn.setAttribute("aria-label", "copy failed");
-          haptic("send-failed");
-          appendLog(`copy failed: ${errMsg(err)}`);
-          copyMenuFeedbackTimeout = setTimeout(() => {
-            if (!actionMenuEl || !isCopyMenuVisible()) return;
-            resetCopyMenuFeedback();
-            positionActionMenu(copyMenuAnchorX, copyMenuAnchorY);
-          }, 1100);
-        }
-      }, { signal });
-
-      actionMenuEl.appendChild(actionEditBtn);
-      actionMenuEl.appendChild(actionCopyBtn);
-
-      actionMenuEl.addEventListener("pointerenter", () => {
-        if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
-      }, { signal });
-      actionMenuEl.addEventListener("pointerleave", () => {
-        if (isCopyMenuVisible()) armCopyMenuTimeout(2200);
-      }, { signal });
-      actionMenuEl.addEventListener("focusin", () => {
-        if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
-      }, { signal });
-      actionMenuEl.addEventListener("focusout", () => {
-        if (isCopyMenuVisible()) armCopyMenuTimeout(1800);
-      }, { signal });
-      document.body.appendChild(actionMenuEl);
-    }
-
-    // Show/hide edit button based on message ownership
-    const canEdit = direction === "self" && msgId != null && sourceEl?.querySelector(".wl-msg-text");
-    actionEditBtn!.style.display = canEdit ? "" : "none";
-    actionMenuMsgId = msgId;
-
-    copyMenuText = text;
-    copyMenuSourceEl = sourceEl;
-    copyMenuAnchorX = x;
-    copyMenuAnchorY = y;
-    if (copyMenuCloseTimeout) { clearTimeout(copyMenuCloseTimeout); copyMenuCloseTimeout = null; }
-    if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
-    resetCopyMenuFeedback();
-    actionMenuEl.classList.add("wl-action-menu--visible");
-    menuJustOpenedAt = Date.now();
-
-    requestAnimationFrame(() => positionActionMenu(x, y));
-    armCopyMenuTimeout();
-  }
-
-  function hideCopyMenu(): void {
-    if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
-    if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
-    if (!actionMenuEl) return;
-    if (!isCopyMenuVisible() && !actionMenuEl.classList.contains("wl-action-menu--closing")) return;
-    actionMenuEl.classList.remove("wl-action-menu--visible");
-    actionMenuEl.classList.add("wl-action-menu--closing");
-    copyMenuText = "";
-    copyMenuSourceEl = null;
-    actionMenuMsgId = null;
-    if (copyMenuCloseTimeout) clearTimeout(copyMenuCloseTimeout);
-    copyMenuCloseTimeout = setTimeout(() => {
-      if (!actionMenuEl) return;
-      resetCopyMenuFeedback();
-      copyMenuCloseTimeout = null;
-    }, 180);
-  }
+  // Action Menu SVGs
+  const CHEVRON_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 4l4 4-4 4"/></svg>`;
+  const CHECK_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 8.5l2.5 2.5 4.5-4.5"/></svg>`;
+  const COPY_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="8" height="10" rx="1.5"/><path d="M3 10V3a1 1 0 011-1h7"/></svg>`;
+  const EDIT_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 2.5a1.5 1.5 0 012 2L5 13H3v-2l8.5-8.5z"/></svg>`;
 
   function exitEditMode(): void {
     if (editingMsgId == null) return;
+    haptic("mode-switch");
     const srcEl = msgById.get(editingMsgId);
     srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.remove("wl-msg--editing");
+
+    // Revert the toggle button if it was morphed into the edit icon
+    const toggleBtn = srcEl?.querySelector<HTMLElement>(".wl-action-btn-toggle");
+    if (toggleBtn && toggleBtn.classList.contains("wl-toggle--is-editing")) {
+      toggleBtn.classList.remove("wl-toggle--is-editing");
+      toggleBtn.classList.add("wl-toggle--swapping");
+      setTimeout(() => {
+        toggleBtn.innerHTML = CHEVRON_SVG;
+        toggleBtn.classList.remove("wl-toggle--swapping");
+      }, 110);
+    }
+
     opts.chatInput.value = preEditInputValue;
     opts.chatInput.placeholder = preEditPlaceholder;
     chatCompose?.removeAttribute("data-editing");
@@ -711,51 +665,28 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
-  function cancelActiveHold(): void {
-    if (activeHoldTimer) { clearTimeout(activeHoldTimer); activeHoldTimer = null; }
-    if (activeHoldVisualTimer) { clearTimeout(activeHoldVisualTimer); activeHoldVisualTimer = null; }
-    activeHoldPointerId = -1;
-    if (activeHoldEl) {
-      activeHoldEl.classList.remove("wl-msg--holding");
-      activeHoldEl = null;
-    }
-  }
+  // Collapse an action container and sync its toggle button's aria-expanded.
+  // Used by per-message closures and the global dismiss handlers below.
+  const closeActionContainer = (c: HTMLElement) => {
+    c.removeAttribute("data-expanded");
+    c.querySelector<HTMLElement>(".wl-action-btn-toggle")?.setAttribute("aria-expanded", "false");
+  };
 
-  function disposeCopyUi(): void {
-    if (editingMsgId != null) exitEditMode();
-    if (copyMenuTimeout) { clearTimeout(copyMenuTimeout); copyMenuTimeout = null; }
-    if (copyMenuFeedbackTimeout) { clearTimeout(copyMenuFeedbackTimeout); copyMenuFeedbackTimeout = null; }
-    if (copyMenuCloseTimeout) { clearTimeout(copyMenuCloseTimeout); copyMenuCloseTimeout = null; }
-    if (copiedPulseTimeout) { clearTimeout(copiedPulseTimeout); copiedPulseTimeout = null; }
-    copiedPulseEl?.classList.remove("wl-msg--copied");
-    copiedPulseEl = null;
-    copyMenuText = "";
-    copyMenuSourceEl = null;
-    actionMenuMsgId = null;
-    cancelActiveHold();
-    if (actionMenuEl) {
-      resetCopyMenuFeedback();
-      actionMenuEl.remove();
-      actionMenuEl = null;
-      actionEditBtn = null;
-      actionCopyBtn = null;
-    }
-  }
+  const allExpanded = () =>
+    opts.chatMessages.querySelectorAll<HTMLElement>(".wl-react-action-container[data-expanded]");
 
-  // Dismiss menu/gesture on scroll or pointer elsewhere
   opts.chatMessages.addEventListener("scroll", () => {
-    hideCopyMenu();
-    cancelActiveHold();
+    allExpanded().forEach(closeActionContainer);
   }, { passive: true, signal });
 
   window.addEventListener("pointerdown", (e) => {
-    if (Date.now() - menuJustOpenedAt < 180) return;
-    if (actionMenuEl && !actionMenuEl.contains(e.target as Node)) hideCopyMenu();
+    allExpanded().forEach(c => { if (!c.contains(e.target as Node)) closeActionContainer(c); });
   }, { signal });
 
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") hideCopyMenu();
+    if (e.key === "Escape") allExpanded().forEach(closeActionContainer);
   }, { signal });
+
 
   /** Active-typing debounce scaled to current network. Reads live so it adapts
    *  if the connection shifts (e.g. wifi → cellular). */
@@ -840,7 +771,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       case CTRL_OP.REACT: {
         const r = decodeReactPayload(payload);
-        if (r) applyReaction(r.msgId, r.emoji, "peer");
+        if (r) { applyReaction(r.msgId, r.emoji, "peer"); haptic("reaction"); }
         break;
       }
       case CTRL_OP.UNREACT: {
@@ -1039,42 +970,53 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // Re-sync reduceMotion so animations stop/resume when the network shifts.
   try { env.conn?.addEventListener("change", syncMotion, { signal }); } catch { }
 
-  /** Push all animation state to CSS custom properties. One place, once per frame. */
+  /** Push all animation state to CSS custom properties. One place, once per frame.
+   *  toFixed replaced with manual rounding (10-50x faster in V8).
+   *  Math.min/max/abs replaced with ternaries. */
+  const f3 = (v: number) => String(Math.round(v * 1000) * 0.001);
+  const f4 = (v: number) => String(Math.round(v * 10000) * 0.0001);
+
   function syncCSSVars(): void {
     if (!chatCompose) return;
     const s = chatCompose.style;
     const se = send.energy;
     const ti = typing.intensity;
 
-    // Compose activity
-    s.setProperty("--wl-activity", composeActivity.toFixed(3));
-    s.setProperty("--wl-velocity", Math.min(1, Math.abs(composeActivityVelocity) * 0.18).toFixed(3));
-    s.setProperty("--wl-flow", `${(((Math.sin(composeFlow) + 1) * 0.5) * 100).toFixed(2)}%`);
+    // compose activity
+    const absVel = composeActivityVelocity < 0 ? -composeActivityVelocity : composeActivityVelocity;
+    const vel = absVel * 0.18;
+    s.setProperty("--wl-activity", f3(composeActivity));
+    s.setProperty("--wl-velocity", f3(vel < 1 ? vel : 1));
+    s.setProperty("--wl-flow", f3((Math.sin(composeFlow) + 1) * 50) + "%");
 
-    // Send energy: CSS sees 0→1, overflow handles the >1 effects separately
-    const seFill = Math.min(1, se);
-    const overflow = Math.min(1, Math.max(0, se - 1) * 3.3);
-    s.setProperty("--wl-send-energy", seFill.toFixed(3));
-    s.setProperty("--wl-send-velocity", Math.min(1, Math.abs(send.velocity) * 0.15).toFixed(3));
-    s.setProperty("--wl-send-overflow", overflow.toFixed(3));
+    // send energy
+    const seFill = se < 1 ? se : 1;
+    const rawOv = (se - 1) * 3.3;
+    const overflow = rawOv < 0 ? 0 : rawOv < 1 ? rawOv : 1;
+    const absSv = send.velocity < 0 ? -send.velocity : send.velocity;
+    const svCss = absSv * 0.15;
+    s.setProperty("--wl-send-energy", f3(seFill));
+    s.setProperty("--wl-send-velocity", f3(svCss < 1 ? svCss : 1));
+    s.setProperty("--wl-send-overflow", f3(overflow));
 
-    // Typing: position with amplitude → smoothstep
+    // typing: position → smoothstep
     const rawPos = 0.5 + typing.amplitude * 0.5 * Math.sin(typing.phase);
     const eased = rawPos * rawPos * (3 - 2 * rawPos);
-    s.setProperty("--wl-peer-typing", ti.toFixed(3));
-    s.setProperty("--wl-typing-pos", eased.toFixed(4));
+    s.setProperty("--wl-peer-typing", f3(ti));
+    s.setProperty("--wl-typing-pos", f4(eased));
 
-    // Typing: width modulation (breath at edges, stretch at center, sustain warmth)
+    // typing: width modulation
     const spd = typing.speed;
-    s.setProperty("--wl-typing-width", (1 + (1 - spd) * 0.18 + spd * 0.28 + typing.sustain * 0.06).toFixed(3));
-    s.setProperty("--wl-typing-glow", (spd * 0.5 + typing.sustain * 0.3).toFixed(3));
+    const sus = typing.sustain;
+    s.setProperty("--wl-typing-width", f3(1 + (1 - spd) * 0.18 + spd * 0.28 + sus * 0.06));
+    s.setProperty("--wl-typing-glow", f3(spd * 0.5 + sus * 0.3));
 
-    // Cross-system interaction (clamped energy for typing interaction math)
-    const seClamped = Math.min(1, se);
+    // cross-system interaction
+    const seClamped = se < 1 ? se : 1;
     const interaction = (seClamped > 0.02 && ti > 0.02) ? seClamped * ti : 0;
-    s.setProperty("--wl-energy-center", (0.5 + (eased - 0.5) * 0.12 * interaction).toFixed(4));
-    s.setProperty("--wl-typing-squeeze", (1 - seClamped * 0.45).toFixed(3));
-    s.setProperty("--wl-interaction", interaction.toFixed(3));
+    s.setProperty("--wl-energy-center", f4(0.5 + (eased - 0.5) * 0.12 * interaction));
+    s.setProperty("--wl-typing-squeeze", f3(1 - seClamped * 0.45));
+    s.setProperty("--wl-interaction", f3(interaction));
   }
 
   /** Shared spring integrator: accel = ω²(target - x) − 2ζω·v */
@@ -1083,79 +1025,100 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function stepComposeActivity(ts: number): void {
-    const rawDt = composeActivityLastTick ? (ts - composeActivityLastTick) / 1000 : 0;
-    const dt = Math.min(0.04, Math.max(0.001, rawDt || (1 / 60)));
+    const rawDt = composeActivityLastTick ? (ts - composeActivityLastTick) * 0.001 : 0;
+    const dt = rawDt < 0.001 ? (rawDt || 0.016) : (rawDt > 0.04 ? 0.04 : rawDt);
     composeActivityLastTick = ts;
 
-    // ── Compose activity spring ──
-    composeActivityTarget *= Math.exp(-dt * 2.6);
-    composeActivityVelocity += springAccel(composeActivity, composeActivityVelocity, composeActivityTarget, 13, 0.72) * dt;
-    composeActivity = Math.max(0, Math.min(1, composeActivity + composeActivityVelocity * dt));
+    // ── Compose activity spring (ω=13, ζ=0.72 → ω²=169, 2ζω=18.72) ──
+    composeActivityTarget *= 1 - 2.6 * dt; // exp(-2.6dt) linear approx
+    if (composeActivityTarget < 0) composeActivityTarget = 0;
+    composeActivityVelocity += (169 * (composeActivityTarget - composeActivity) - 18.72 * composeActivityVelocity) * dt;
+    composeActivity += composeActivityVelocity * dt;
+    if (composeActivity < 0) composeActivity = 0;
+    else if (composeActivity > 1) composeActivity = 1;
     composeFlow += dt * (2.4 + composeActivity * 6.2);
 
     // ── Send energy (RTT-derived physics) ──
-    const rttFactor = Math.max(0, Math.min(1, (send.rtt - 30) / 170));
+    const rttRaw = (send.rtt - 30) * 0.00588; // 1/170
+    const rttFactor = rttRaw < 0 ? 0 : rttRaw > 1 ? 1 : rttRaw;
 
     if (send.phase === "filling") {
       const w = 14 - rttFactor * 4, z = 0.65 + rttFactor * 0.1;
-      send.velocity += springAccel(send.energy, send.velocity, send.fillTarget, w, z) * dt;
+      send.velocity += (w * w * (send.fillTarget - send.energy) - 2 * z * w * send.velocity) * dt;
       send.energy += send.velocity * dt;
     } else if (send.phase === "in-flight") {
-      const breathPeriod = Math.max(120, send.rtt * 1.5);
-      const breath = 0.92 + 0.08 * Math.sin((Date.now() - send.inflightStart) / breathPeriod);
-      send.energy += (breath - send.energy) * Math.min(1, (10 - rttFactor * 4) * dt);
-      send.velocity *= Math.exp(-dt * (6 + rttFactor * 4));
+      const bp = send.rtt * 1.5;
+      const breathPeriod = bp > 120 ? bp : 120;
+      const breath = 0.92 + 0.08 * Math.sin((ts - send.inflightStart) / breathPeriod);
+      const rate = (10 - rttFactor * 4) * dt;
+      send.energy += (breath - send.energy) * (rate < 1 ? rate : 1);
+      const decay = 1 - (6 + rttFactor * 4) * dt;
+      send.velocity *= decay > 0 ? decay : 0;
     } else if (send.phase === "delivered") {
-      const af = Math.max(0, Math.min(1, (send.ackLatency - 50) / 250));
-      send.velocity += springAccel(send.energy, send.velocity, 0, 9 - af * 3, 0.45 + af * 0.15) * dt;
+      const afRaw = (send.ackLatency - 50) * 0.004; // 1/250
+      const af = afRaw < 0 ? 0 : afRaw > 1 ? 1 : afRaw;
+      const w = 9 - af * 3, z = 0.45 + af * 0.15;
+      send.velocity += (w * w * -send.energy - 2 * z * w * send.velocity) * dt;
       send.energy += send.velocity * dt;
-      if (send.energy < 0.005 && Math.abs(send.velocity) < 0.005) {
+      const absE = send.energy < 0 ? -send.energy : send.energy;
+      const absV = send.velocity < 0 ? -send.velocity : send.velocity;
+      if (absE < 0.005 && absV < 0.005) {
         send.energy = 0; send.velocity = 0; send.phase = "idle";
       }
     }
-    // Allow overshoot above 1.0 — heavy spam pools at the edges and compresses back.
-    send.energy = Math.max(0, Math.min(1.3, send.energy));
+    if (send.energy < 0) send.energy = 0;
+    else if (send.energy > 1.3) send.energy = 1.3;
 
     // ── Typing indicator (amplitude-modulated pendulum) ──
     const t = typing;
     const tOn = t.target > 0.5;
     const tIdle = t.idle;
 
-    // Idle composing: reduced intensity + amplitude targets for a gentle pulse
     const intensityTarget = tOn ? (tIdle ? 0.45 : 1) : 0;
     const amplitudeTarget = tOn ? (tIdle ? 0.25 : 1) : 0;
 
-    // Intensity + amplitude: independent rates so amplitude winds down before opacity fades
-    t.intensity += (intensityTarget - t.intensity) * Math.min(1, (tOn ? 4.5 : 1.8) * dt);
-    t.intensity = Math.max(0, Math.min(1, t.intensity));
-    t.amplitude += (amplitudeTarget - t.amplitude) * Math.min(1, (tOn ? 1.4 : 2.8) * dt);
-    t.amplitude = Math.max(0, Math.min(1, t.amplitude));
+    const intRate = (tOn ? 4.5 : 1.8) * dt;
+    t.intensity += (intensityTarget - t.intensity) * (intRate < 1 ? intRate : 1);
+    if (t.intensity < 0) t.intensity = 0;
+    else if (t.intensity > 1) t.intensity = 1;
 
-    // Sustain warmth — idle composing caps lower
-    t.sustain = tOn
-      ? Math.min(tIdle ? 0.3 : 1, t.sustain + dt * (tIdle ? 0.06 : 0.14))
-      : t.sustain * Math.exp(-dt * 0.5);
+    const ampRate = (tOn ? 1.4 : 2.8) * dt;
+    t.amplitude += (amplitudeTarget - t.amplitude) * (ampRate < 1 ? ampRate : 1);
+    if (t.amplitude < 0) t.amplitude = 0;
+    else if (t.amplitude > 1) t.amplitude = 1;
+
+    // sustain warmth
+    if (tOn) {
+      const cap = tIdle ? 0.3 : 1;
+      t.sustain += dt * (tIdle ? 0.06 : 0.14);
+      if (t.sustain > cap) t.sustain = cap;
+    } else {
+      t.sustain *= 1 - 0.5 * dt;
+    }
 
     if (t.intensity > 0.01) {
       const pos = 0.5 + t.amplitude * 0.5 * Math.sin(t.phase);
-      const edgeDist = 1 - Math.abs(pos - 0.5) * 2;
+      const diff = pos - 0.5;
+      const edgeDist = 1 - (diff < 0 ? -diff : diff) * 2;
       const windDown = 0.3 + t.amplitude * 0.7;
-      t.phaseVelocity *= Math.exp(-dt * 3.5);
-      // Idle composing: slower pendulum speed
+      t.phaseVelocity *= 1 - 3.5 * dt;
       const baseSpeed = tIdle ? 0.7 : 1.8;
       const edgeBoost = tIdle ? 0.4 : 1.4;
       t.phase += dt * ((baseSpeed + edgeDist * edgeBoost) * (1 - send.energy * 0.3) * windDown + t.phaseVelocity);
-      t.speed = Math.abs(Math.cos(t.phase)) * t.amplitude;
+      const cosP = Math.cos(t.phase);
+      t.speed = (cosP < 0 ? -cosP : cosP) * t.amplitude;
     } else {
       t.phaseVelocity = 0; t.amplitude = 0; t.sustain = 0; t.speed = 0;
     }
 
     syncCSSVars();
 
-    // Keep loop alive while anything is in motion
+    // keep loop alive while anything is in motion
+    const absCV = composeActivityVelocity < 0 ? -composeActivityVelocity : composeActivityVelocity;
+    const absSV = send.velocity < 0 ? -send.velocity : send.velocity;
     if (composeActivity > 0.006 || composeActivityTarget > 0.006
-      || Math.abs(composeActivityVelocity) > 0.006
-      || send.energy > 0.006 || Math.abs(send.velocity) > 0.006
+      || absCV > 0.006
+      || send.energy > 0.006 || absSV > 0.006
       || t.intensity > 0.006 || t.amplitude > 0.006) {
       composeActivityRaf = requestAnimationFrame(stepComposeActivity);
       return;
@@ -1412,6 +1375,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       setJoinQrStatus(source === "paste" ? "No offer code found." : "Offer QR not recognized.");
       return false;
     }
+    haptic("qr-detected");
     opts.joinInput.value = code;
     updateControls();
     setJoinQrStatus("Offer code loaded.");
@@ -1704,6 +1668,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const canChat = hasSession || chatVisible;       // preview mode has no session but chat is visible
     opts.chatSendBtn.disabled = busy || !canChat || !hasChatText;
     opts.chatMediaBtn.disabled = busy || !canChat;
+    opts.chatPasteBtn.disabled = busy || !canChat;
     opts.chatMicBtn.disabled = editingMsgId != null ? false : (busy || !canChat || !micSupported);
     opts.chatMicCancel.disabled = busy || !canChat || !micSupported;
     opts.chatMicSend.disabled = busy || !canChat || !micSupported;
@@ -1744,7 +1709,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return;
   }
 
-  /* ── Audio recording (WASM ADPCM pipeline) ──────────────── */
+  /* ── Audio recording (Harmonic codec pipeline) ──────────── */
 
   /** Voice constraints. Mono, 48kHz (if supported). 
    *  We explicitly disable the browser's echo cancellation, noise suppression, 
@@ -1758,20 +1723,34 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     channelCount: 1,
   };
 
-  const ADPCM_MIME = "audio/x-whisper-adpcm";
+  const HARMONIC_MIME = "audio/x-whisper-harmonic";
 
   function isWhisperAudioCodec(fileType?: string, fileName?: string): boolean {
     const t = (fileType ?? "").toLowerCase();
     const n = (fileName ?? "").toLowerCase();
-    // Accept legacy and current custom-codec markers so UI keeps rendering
-    // audio messages even if wire MIME changes across versions.
-    return t === ADPCM_MIME
+    return t === HARMONIC_MIME
       || t.includes("x-whisper")
       || t.includes("whisper-audio")
-      || n.endsWith(".wadpcm");
+      || n.endsWith(".wharm");
+  }
+
+  // unified file payload access — hides the small/chunked representation split.
+  // small files (< 4 MB) arrive as fileData: Uint8Array from single-message decryption.
+  // large chunked files arrive as fileBlob: Blob (browser-managed, off JS heap).
+  // blob.slice is a zero-copy retype — no data is copied, just a new typed view.
+
+  function hasFilePayload(msg: LiveMessage): boolean {
+    return !!(msg.fileData || msg.fileBlob);
+  }
+
+  function filePayloadBlob(msg: LiveMessage, type: string): Blob {
+    if (msg.fileBlob) return msg.fileBlob.slice(0, msg.fileBlob.size, type);
+    return new Blob([msg.fileData!], { type });
   }
 
   function isRenderableAudioMessage(msg: LiveMessage): boolean {
+    // audio codec decoding needs raw bytes — only works with fileData (small single-message files).
+    // large chunked audio files fall through to generic download.
     if (msg.type !== "file" || !msg.fileData) return false;
     if (isWhisperGlyph(msg.fileType, msg.fileName)) return false;
     const type = msg.fileType?.toLowerCase() ?? "";
@@ -1813,7 +1792,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * An onerror fallback at render time catches anything the browser can't handle.
    */
   function detectMedia(msg: LiveMessage): { kind: MediaKind; mime: string } | null {
-    if (msg.type !== "file" || !msg.fileData) return null;
+    if (msg.type !== "file" || !hasFilePayload(msg)) return null;
     if (isWhisperGlyph(msg.fileType, msg.fileName)) {
       return { kind: "glyph", mime: GLYPH_MIME };
     }
@@ -2130,20 +2109,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function renderMediaMessage(msg: LiveMessage, abortSignal: AbortSignal, drawPreview?: HTMLCanvasElement | null): HTMLElement {
     const { kind, mime } = detectMedia(msg)!;
-    const fileData = msg.fileData!;
     const fileName = msg.fileName ?? "file";
-    // Extract fileSize before closures so msg (and msg.fileData) can be GC'd
+    // extract fileSize before closures so msg (and msg.fileData) can be GC'd
     // after blob creation — prevents retaining raw file bytes for the DOM lifetime.
     const fileSize = msg.fileSize;
 
-    const blobBytes = new Uint8Array(fileData);
-
-    if (kind === "glyph") {
-      const glyphBytes = new Uint8Array(fileData.byteLength);
-      glyphBytes.set(fileData);
+    // glyph decoding needs raw bytes — only possible from fileData (always small)
+    if (kind === "glyph" && msg.fileData) {
+      const glyphBytes = new Uint8Array(msg.fileData.byteLength);
+      glyphBytes.set(msg.fileData);
       const glyph = parseGwyphPayload(glyphBytes);
       if (!glyph) {
-        const dlBlob = new Blob([blobBytes], { type: "application/octet-stream" });
+        const dlBlob = new Blob([glyphBytes], { type: "application/octet-stream" });
         const dlUrl = URL.createObjectURL(dlBlob);
         objectUrls.add(dlUrl);
         const fallback = document.createElement("div");
@@ -2166,14 +2143,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       return renderGlyphMediaMessage(fileName, fileSize, glyph, glyphBytes, abortSignal, undefined, drawPreview);
     }
 
-    // Display blob uses the resolved MIME so the browser can decode it.
-    // (SVG via <img> is sandboxed — no script execution.)
-    const displayBlob = new Blob([blobBytes], { type: mime });
+    const displayBlob = filePayloadBlob(msg, mime);
     const displayUrl = URL.createObjectURL(displayBlob);
     objectUrls.add(displayUrl);
 
-    // Download blob uses octet-stream (same convention as all other file downloads)
-    const dlBlob = new Blob([blobBytes], { type: "application/octet-stream" });
+    const dlBlob = filePayloadBlob(msg, "application/octet-stream");
     const dlUrl = URL.createObjectURL(dlBlob);
     objectUrls.add(dlUrl);
 
@@ -2224,14 +2198,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     aspectRatioHint?: string,
     previewSnapshot?: HTMLCanvasElement | null,
   ): HTMLElement | null {
-    if (msg.type !== "file" || !msg.fileData) return null;
+    if (msg.type !== "file" || !hasFilePayload(msg)) return null;
     const detected = detectMedia(msg);
     if (!detected) return null;
 
     const fileName = msg.fileName ?? "file";
     const hintedAspect = (aspectRatioHint ?? "").trim();
 
-    if (detected.kind === "glyph") {
+    if (detected.kind === "glyph" && msg.fileData) {
       const glyphBytes = new Uint8Array(msg.fileData.byteLength);
       glyphBytes.set(msg.fileData);
       const glyph = parseGwyphPayload(glyphBytes);
@@ -2241,11 +2215,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     if (detected.kind !== "image") return null;
 
-    const blobBytes = new Uint8Array(msg.fileData);
-    const displayBlob = new Blob([blobBytes], { type: detected.mime });
+    const displayBlob = filePayloadBlob(msg, detected.mime);
     const displayUrl = URL.createObjectURL(displayBlob);
     objectUrls.add(displayUrl);
-    const dlBlob = new Blob([blobBytes], { type: "application/octet-stream" });
+    const dlBlob = filePayloadBlob(msg, "application/octet-stream");
     const dlUrl = URL.createObjectURL(dlBlob);
     objectUrls.add(dlUrl);
 
@@ -2751,6 +2724,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function teardownRecordingUI(): void {
     if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
     opts.chatMicWrap.removeAttribute("data-recording");
+    opts.chatMicCancel.removeAttribute("data-armed");
     opts.chatMicCancel.tabIndex = -1;
     opts.chatMicSend.tabIndex = -1;
     opts.chatMicBtn.tabIndex = 0;
@@ -2846,24 +2820,24 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       return;
     }
 
-    const name = `audio-${Date.now()}.wadpcm`;
+    const name = `audio-${Date.now()}.wharm`;
 
     const encKey = session ? session.audioKey : undefined;
 
     dcBlock(flat); // remove mic DC bias before encryption
-    encodeAdpcm(flat, pcmSampleRate, encKey).then((adpcmBytes) => {
+    encodeHarmonic(flat, pcmSampleRate, encKey, { quality: audioQuality }).then((harmonicBytes) => {
       if (!session) {
         const previewMsgId = -(++previewSendId);
         addChatMessage({
           type: "file", direction: "self",
-          fileName: name, fileSize: adpcmBytes.length, fileType: ADPCM_MIME,
-          fileData: adpcmBytes, timestamp: Date.now(), msgId: previewMsgId,
+          fileName: name, fileSize: harmonicBytes.length, fileType: HARMONIC_MIME,
+          fileData: harmonicBytes, timestamp: Date.now(), msgId: previewMsgId,
         });
         simulateSendEnergy();
         return;
       }
       sendBeginFill();
-      session.sendAudio(name, ADPCM_MIME, adpcmBytes).then((msgId) => {
+      session.sendAudio(name, HARMONIC_MIME, harmonicBytes).then((msgId) => {
         if (msgId < 0) {
           send.phase = "delivered"; send.velocity = -4;
           haptic("send-failed");
@@ -3231,6 +3205,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function emitCleared(): void {
     stopIdleKeepAlive();
     if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
+    if (pastePending) clearPasteState();
     if (!composing) return;
     composing = false;
     if (session) session.sendTyping(COMPOSE_CLEARED);
@@ -3325,70 +3300,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       textEl.className = "wl-msg-text";
       textEl.textContent = msg.text ?? "";
 
-      // ── Unified Copy Action (Right-click or Long-press)
-      const startUnifiedCopyPop = (x: number, y: number, delayMs: number, visualDelayMs = 0) => {
-        cancelActiveHold();
-        activeHoldEl = div;
-        if (visualDelayMs > 0) {
-          activeHoldVisualTimer = setTimeout(() => {
-            if (activeHoldEl !== div) return;
-            div.classList.add("wl-msg--holding");
-          }, visualDelayMs);
-        }
-        activeHoldTimer = setTimeout(() => {
-          if (activeHoldVisualTimer) { clearTimeout(activeHoldVisualTimer); activeHoldVisualTimer = null; }
-          div.classList.remove("wl-msg--holding");
-          div.classList.add("wl-msg--copy-ready");
-          window.setTimeout(() => div.classList.remove("wl-msg--copy-ready"), 240);
-          activeHoldEl = null;
-          activeHoldTimer = null;
-          showActionMenu(x, y, msg.text!, div, msg.msgId ?? null, msg.direction);
-          haptic("reaction");
-        }, delayMs);
-      };
-
-      // ── Native Context Menu (Right-click / Mac Two-finger tap)
-      div.addEventListener("contextmenu", (e) => {
-        if (!msg.text) return;
-        if (hasInteractiveSelectionWithin(div)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        startUnifiedCopyPop(e.clientX, e.clientY, 0, 0);
-      }, { signal });
-
-      // ── Tracked Long-Press (Mouse/Touch hold)
-      div.addEventListener("pointerdown", (e) => {
-        if (!msg.text || e.button !== 0 || !e.isPrimary) return;
-        if (hasInteractiveSelectionWithin(div)) return;
-        if (isCopyMenuVisible()) {
-          hideCopyMenu();
-          return;
-        }
-        activeHoldPointerId = e.pointerId;
-        holdStartX = e.clientX; holdStartY = e.clientY;
-        const isTouchLike = e.pointerType === "touch" || e.pointerType === "pen";
-        startUnifiedCopyPop(e.clientX, e.clientY, isTouchLike ? 440 : 520, 110);
-      }, { signal });
-
-      div.addEventListener("pointerup", (e) => {
-        if (activeHoldPointerId !== -1 && e.pointerId !== activeHoldPointerId) return;
-        cancelActiveHold();
-      }, { signal });
-      div.addEventListener("pointercancel", (e) => {
-        if (activeHoldPointerId !== -1 && e.pointerId !== activeHoldPointerId) return;
-        cancelActiveHold();
-      }, { signal });
-      div.addEventListener("pointerleave", (e) => {
-        if (activeHoldPointerId !== -1 && e.pointerId !== activeHoldPointerId) return;
-        cancelActiveHold();
-      }, { signal });
-      div.addEventListener("pointermove", (e) => {
-        if (activeHoldPointerId !== -1 && e.pointerId !== activeHoldPointerId) return;
-        if (activeHoldTimer && (Math.abs(e.clientX - holdStartX) > 5 || Math.abs(e.clientY - holdStartY) > 5)) {
-          cancelActiveHold();
-        }
-      }, { signal });
-
+      // Native Context Menu fallback (can keep default behavior if simple,
+      // but we remove custom prevention logic)
       div.appendChild(textEl);
     } else if (isRenderableAudioMessage(msg)) {
       const fileData = msg.fileData;
@@ -3417,7 +3330,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       audioEl.append(playBtn, canvas, durLabel, dlBtn);
 
-      // We don't need a blob URL for custom WASM ADPCM playback
+      // we don't need a blob URL for custom Harmonic codec playback
       const isWhisperCodec = isWhisperAudioCodec(msg.fileType, msg.fileName);
       const abCopy = new ArrayBuffer(fileData.byteLength);
       new Uint8Array(abCopy).set(fileData);
@@ -3548,7 +3461,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         try {
           if (isWhisperCodec) {
             const decKey = session ? session.audioKey : undefined;
-            const decoded = await decodeAdpcm(new Uint8Array(abCopy), decKey);
+            const decoded = await decodeHarmonic(new Uint8Array(abCopy), decKey);
             if (decoded.tampered) {
               throw new Error("Audio payload failed MAC verification. Packet was tampered with.");
             }
@@ -3577,7 +3490,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
               opusBlobUrl = wavBlobUrl;
             }
           } else {
-            // Unused fallback, since we only send ADPCM now
+            // unused fallback for non-Harmonic audio formats
             const actx = createAudioContext();
             if (!actx) throw new Error("audio decode unavailable");
             const decoded = await actx.decodeAudioData(abCopy.slice(0));
@@ -3660,8 +3573,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (!isWhisperCodec || dlBtn.disabled || !wavBlobUrl) return;
         dlBtn.disabled = true;
         try {
-          const base = msg.fileName?.endsWith(".wadpcm")
-            ? msg.fileName.slice(0, -7)
+          const base = msg.fileName?.endsWith(".wharm")
+            ? msg.fileName.slice(0, -6)
             : `audio-${msg.timestamp || Date.now()}`;
           const a = document.createElement("a");
           a.style.display = "none";
@@ -3712,13 +3625,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
       fileEl.append(nameEl, sizeEl);
 
-      if (msg.fileData) {
-        const ab = new ArrayBuffer(msg.fileData.byteLength);
-        new Uint8Array(ab).set(msg.fileData);
-        // Always use octet-stream for received files — never let the browser interpret
+      if (hasFilePayload(msg)) {
+        // always use octet-stream for received files — never let the browser interpret
         // peer-declared MIME types (prevents HTML/SVG/etc. execution via blob URL).
-        // The download attribute + file extension ensure the OS opens files correctly.
-        const blob = new Blob([ab], { type: "application/octet-stream" });
+        // the download attribute + file extension ensure the OS opens files correctly.
+        const blob = filePayloadBlob(msg, "application/octet-stream");
         const url = URL.createObjectURL(blob);
         objectUrls.add(url);
 
@@ -3774,6 +3685,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       requestAnimationFrame(() => {
         opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
       });
+    } else if (msg.direction === "peer") {
+      smartScroll();
     }
 
     if (msg.msgId !== undefined) {
@@ -3822,6 +3735,245 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         });
         reactionComposers.set(div, composer);
         shelf.appendChild(composer.element);
+
+        // ── Per-message action menu (⋮ → Copy / Edit) ──────────────
+        // Only shown for text messages (not audio, file, etc.)
+        const msgText = msg.text?.trim();
+        if (msgText) {
+          const actionContainer = document.createElement("div");
+          actionContainer.className = "wl-react-action-container";
+
+          const isSelfMsg = msg.direction === "self" && msg.msgId !== undefined;
+          if (!isSelfMsg) actionContainer.dataset.copyOnly = "";
+
+          let collapseTimer: ReturnType<typeof setTimeout> | null = null;
+          let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+          let actionHoldTimer: ReturnType<typeof setTimeout> | null = null;
+          let dragAborter: AbortController | null = null;
+          let activePointerId = -1;
+          let wasHandledByDrag = false;
+
+          const cancelHoldTimer = () => {
+            if (actionHoldTimer) { clearTimeout(actionHoldTimer); actionHoldTimer = null; }
+          };
+
+          signal.addEventListener("abort", () => {
+            if (collapseTimer) { clearTimeout(collapseTimer); collapseTimer = null; }
+            if (copyFeedbackTimer) { clearTimeout(copyFeedbackTimer); copyFeedbackTimer = null; }
+            cancelHoldTimer();
+            dragAborter?.abort();
+            dragAborter = null;
+          }, { once: true });
+
+          const scheduleCollapse = (ms = 5000) => {
+            if (collapseTimer) clearTimeout(collapseTimer);
+            collapseTimer = setTimeout(() => {
+              closeActionContainer(actionContainer);
+              collapseTimer = null;
+            }, ms);
+          };
+
+          const cancelCollapse = () => {
+            if (collapseTimer) { clearTimeout(collapseTimer); collapseTimer = null; }
+          };
+
+          const collapse = () => {
+            cancelCollapse();
+            closeActionContainer(actionContainer);
+          };
+
+          // ── Toggle button (>) ──────────────────────────────────
+          const actionToggleBtn = document.createElement("button");
+          actionToggleBtn.type = "button";
+          actionToggleBtn.className = "wl-react-btn wl-action-btn-toggle";
+          actionToggleBtn.setAttribute("aria-label", "Message actions");
+          actionToggleBtn.setAttribute("aria-expanded", "false");
+          actionToggleBtn.innerHTML = CHEVRON_SVG;
+
+          const expand = () => {
+            allExpanded().forEach(c => { if (c !== actionContainer) closeActionContainer(c); });
+            actionContainer.setAttribute("data-expanded", "");
+            actionToggleBtn.setAttribute("aria-expanded", "true");
+            scheduleCollapse();
+          };
+
+          // Pause the auto-collapse timer while the pointer is inside the container
+          actionContainer.addEventListener("pointerenter", cancelCollapse, { signal });
+          actionContainer.addEventListener("pointerleave", () => {
+            if (actionContainer.hasAttribute("data-expanded")) scheduleCollapse(3000);
+          }, { signal });
+
+          const handlePointerAbort = (e: PointerEvent) => {
+            if (e.pointerId !== activePointerId) return;
+            cancelHoldTimer();
+            activePointerId = -1;
+            if (dragAborter) { dragAborter.abort(); dragAborter = null; }
+          };
+
+          actionToggleBtn.addEventListener("pointerdown", (e: PointerEvent) => {
+            if (e.button !== 0 || activePointerId !== -1) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            activePointerId = e.pointerId;
+            try { actionToggleBtn.setPointerCapture(e.pointerId); } catch { }
+
+            let isDragging = false;
+            wasHandledByDrag = false;
+
+            if (dragAborter) dragAborter.abort();
+            dragAborter = new AbortController();
+            const dragSignal = dragAborter.signal;
+
+            let dragTarget: HTMLElement | null = null;
+
+            actionHoldTimer = setTimeout(() => {
+              isDragging = true;
+              if (!actionContainer.hasAttribute("data-expanded")) expand();
+              haptic("reaction");
+              try {
+                if (actionToggleBtn.hasPointerCapture(activePointerId)) {
+                  actionToggleBtn.releasePointerCapture(activePointerId);
+                }
+              } catch { }
+            }, 250);
+
+            window.addEventListener("pointermove", (mvE: PointerEvent) => {
+              if (!isDragging) return;
+              wasHandledByDrag = true;
+
+              const el = document.elementFromPoint(mvE.clientX, mvE.clientY);
+              const btn = el?.closest(".wl-action-split") as HTMLElement | null;
+
+              if (dragTarget !== btn) {
+                dragTarget?.classList.remove("wl-action--drag-hover");
+                if (btn) {
+                  btn.classList.add("wl-action--drag-hover");
+                  haptic("reaction");
+                }
+                dragTarget = btn;
+              }
+            }, { signal: dragSignal });
+
+            const finishDrag = (upE: PointerEvent) => {
+              if (upE.pointerId !== activePointerId) return;
+              cancelHoldTimer();
+              activePointerId = -1;
+              dragAborter?.abort();
+              dragAborter = null;
+
+              if (dragTarget) {
+                dragTarget.classList.remove("wl-action--drag-hover");
+                if (isDragging) dragTarget.click();
+              } else if (isDragging) {
+                collapse();
+              }
+            };
+
+            window.addEventListener("pointerup", finishDrag, { signal: dragSignal });
+            window.addEventListener("pointercancel", handlePointerAbort, { signal: dragSignal });
+            actionToggleBtn.addEventListener("lostpointercapture", handlePointerAbort, { signal: dragSignal });
+          }, { signal });
+
+          actionToggleBtn.addEventListener("click", (e: MouseEvent) => {
+            e.stopPropagation();
+            if (wasHandledByDrag) {
+              wasHandledByDrag = false;
+              return;
+            }
+            if (actionContainer.hasAttribute("data-expanded")) {
+              collapse();
+            } else {
+              expand();
+            }
+          }, { signal });
+          // Cross-fade SVG icon swap: fade out → swap innerHTML → fade back in
+          const SWAP_MS = 110;
+          const swapIcon = (newHtml: string) => {
+            actionToggleBtn.classList.add("wl-toggle--swapping");
+            setTimeout(() => {
+              actionToggleBtn.innerHTML = newHtml;
+              actionToggleBtn.classList.remove("wl-toggle--swapping");
+            }, SWAP_MS);
+          };
+          const copyBtn = document.createElement("button");
+          copyBtn.type = "button";
+          copyBtn.className = "wl-action-split wl-action-copy-btn";
+          copyBtn.setAttribute("aria-label", "Copy message");
+          copyBtn.innerHTML = COPY_SVG;
+
+          copyBtn.addEventListener("click", async (e: MouseEvent) => {
+            e.stopPropagation();
+            if (signal.aborted) return;
+            cancelCollapse();
+
+            if (copyFeedbackTimer) { clearTimeout(copyFeedbackTimer); copyFeedbackTimer = null; }
+
+            try {
+              await copyToClipboard(msgText);
+              haptic("copied");
+
+              collapse();
+              actionToggleBtn.dataset.copied = "";
+              swapIcon(CHECK_SVG);
+
+              copyFeedbackTimer = setTimeout(() => {
+                delete actionToggleBtn.dataset.copied;
+                swapIcon(CHEVRON_SVG);
+                copyFeedbackTimer = null;
+              }, 1800);
+            } catch {
+              collapse();
+            }
+          }, { signal });
+
+          actionContainer.appendChild(copyBtn);
+          actionContainer.appendChild(actionToggleBtn);
+
+          // ── Edit button (right side, self messages only) ───────
+          if (isSelfMsg) {
+            const editBtn = document.createElement("button");
+            editBtn.type = "button";
+            editBtn.className = "wl-action-split wl-action-edit-btn";
+            editBtn.setAttribute("aria-label", "Edit message");
+            editBtn.innerHTML = EDIT_SVG;
+
+            editBtn.addEventListener("click", (e: MouseEvent) => {
+              e.stopPropagation();
+              if (signal.aborted || msg.msgId == null) return;
+              collapse();
+              haptic("reaction");
+
+              emitCleared();
+              preEditInputValue = opts.chatInput.value;
+              preEditPlaceholder = opts.chatInput.placeholder;
+              editingMsgId = msg.msgId;
+
+              const srcEl = msgById.get(msg.msgId);
+              const targetText = srcEl
+                ?.querySelector<HTMLElement>(".wl-msg-text")
+                ?.textContent
+                ?? msgText;
+
+              opts.chatInput.value = targetText;
+              opts.chatInput.placeholder = "editing...";
+              opts.chatInput.closest(".wl-chat-compose")?.setAttribute("data-editing", "1");
+              srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.add("wl-msg--editing");
+
+              // Morph the toggle button into the edit icon!
+              actionToggleBtn.classList.add("wl-toggle--is-editing");
+              swapIcon(EDIT_SVG);
+
+              updateControls();
+              opts.chatInput.focus();
+            }, { signal });
+
+            actionContainer.appendChild(editBtn);
+          }
+
+          shelf.appendChild(actionContainer);
+        }
+
         div.appendChild(shelf);
 
         // Tap the message bubble to reveal / hide the shelf.
@@ -3868,8 +4020,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /* ── Remote peer drawing overlay ─────────────────────────────── */
 
+  type PeerPoint = Record<GlyphChannelName, number>;
+
   interface PeerStrokeRecord {
-    points: Array<{ x: number; y: number; p: number }>;
+    points: PeerPoint[];
     color: string;
     width: number;
     tool: "pen" | "eraser";
@@ -3907,7 +4061,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     received: number;
   } | null = null;
   let peerActiveStroke: PeerActiveStroke | null = null;
-  let peerActivePoints: Array<{ x: number; y: number; p: number }> = [];
+  let peerActivePoints: PeerPoint[] = [];
   let peerStrokes: PeerStrokeRecord[] = [];
   let peerRedoStack: PeerStrokeRecord[] = [];
   let peerStrokeSpaceW = 0;
@@ -3994,6 +4148,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatMessages.appendChild(div);
         peerLiveMsgEl = div;
         peerLiveTimeEl = timeEl;
+        smartScroll();
       }
 
       const host = peerLiveMsgEl.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
@@ -4161,6 +4316,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const alreadyLast = list.lastElementChild === peerLiveMsgEl;
     if (!alreadyLast) {
       list.appendChild(peerLiveMsgEl);
+      smartScroll();
     }
   }
 
@@ -4207,14 +4363,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           peerLiveTimeEl.dateTime = String(ts);
           peerLiveTimeEl.textContent = formatTime(ts);
         }
-        const sp: [number, number, number] = [
-          Math.round(ev.start.x * SCALE),
-          Math.round(ev.start.y * SCALE),
-          Math.round(clamp01(ev.start.p) * SCALE),
-        ];
+        const sp: GlyphSeed = GLYPH_CHANNEL_NAMES.map(ch => Math.round(clamp01(ev.start[ch]) * SCALE));
         peerActiveStroke = {
           strokeId: ev.strokeId,
-          decoder: new GlyphStreamDecoder(sp, sp),
+          decoder: new GlyphStreamDecoder(sp),
           color: ev.color,
           width: ev.width,
           tool: ev.tool,
@@ -4225,7 +4377,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           lastMidNY: 0,
           hasLastMid: false,
         };
-        peerActivePoints = [{ x: ev.start.x, y: ev.start.y, p: clamp01(ev.start.p) }];
+        peerActivePoints = [{ ...ev.start, p: clamp01(ev.start.p) }];
         peerRedoStack = [];
         break;
       }
@@ -4235,18 +4387,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         bringPeerPreviewToBottom();
         ensurePeerCanvas();
         const raw = peerActiveStroke.decoder.decode(ev.data);
-        const limit = raw.length - (raw.length % 3);
+        const CH = GLYPH_CHANNELS;
+        const limit = raw.length - (raw.length % CH);
         let appended = false;
-        for (let i = 0; i < limit; i += 3) {
-          const qx = raw[i];
-          const qy = raw[i + 1];
-          const qp = raw[i + 2];
-          if (!Number.isFinite(qx) || !Number.isFinite(qy) || !Number.isFinite(qp)) continue;
-          const nx = raw[i] / SCALE;
-          const ny = raw[i + 1] / SCALE;
-          const np = clamp01(raw[i + 2] / SCALE);
-          if (!isFiniteNorm(nx) || !isFiniteNorm(ny) || !Number.isFinite(np)) continue;
-          peerActivePoints.push({ x: nx, y: ny, p: np });
+        for (let i = 0; i < limit; i += CH) {
+          // unpack all channels by name
+          const pt = {} as Record<string, number>;
+          let valid = true;
+          for (let c = 0; c < CH; c++) {
+            const v = raw[i + c] / SCALE;
+            if (!Number.isFinite(v)) { valid = false; break; }
+            pt[GLYPH_CHANNEL_NAMES[c]] = clamp01(v);
+          }
+          if (!valid) continue;
+          const nx = pt.x, ny = pt.y, np = pt.p;
+          if (!isFiniteNorm(nx) || !isFiniteNorm(ny)) continue;
+          peerActivePoints.push(pt as PeerPoint);
           peerActiveStroke.lastMidNX = (peerActiveStroke.lastNX + nx) * 0.5;
           peerActiveStroke.lastMidNY = (peerActiveStroke.lastNY + ny) * 0.5;
           peerActiveStroke.hasLastMid = true;
@@ -4655,8 +4811,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function clearChatArtifacts(): void {
-    hideCopyMenu();
-    cancelActiveHold();
+    if (editingMsgId != null) exitEditMode();
     msgById.clear();
     revokeObjectUrls();
     clearNode(opts.chatMessages);
@@ -4665,7 +4820,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function releaseTerminalSessionUi(): void {
     if (editingMsgId != null) exitEditMode();
-    hideCopyMenu();
     stopRecordingSilently(true);
     stopAllAudio();
     closeMediaLightbox();
@@ -4829,16 +4983,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /** Map internal error codes to friendly messages. */
   function friendlyRelayError(raw: string): string {
-    if (raw.includes("peer-not-found")) {
+    const code = trackerErrorCode(raw);
+    if (code === "peer-not-found") {
       return "couldn't find your peer. make sure you both typed the exact same phrase, then try again at the same time";
     }
-    if (raw.includes("relay-unavailable")) {
+    if (code === "relay-unavailable") {
       return "couldn't reach the relay. check your connection and try again, or use manual mode";
     }
-    if (raw.includes("handshake-failed")) {
+    if (code === "handshake-failed") {
       return "handshake failed. try again, or use a different phrase";
     }
-    if (raw.includes("flare-relay-dropped")) {
+    if (code === "flare-relay-dropped") {
       return "relay dropped during connection. try lighting the flare again";
     }
     return raw;
@@ -4867,11 +5022,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     opts.externalAssistToggle.checked = true;
     try {
-      const offerCode = await createOfferWithFreshSession(phrase);
-      if (aborted()) return;
-
-      opts.connectingStatus.textContent = "connecting to relay...";
-
       const acceptFn = createSingleFlightAcceptHandler(phrase);
 
       const callbacks = {
@@ -4886,9 +5036,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         },
       };
 
-      const result = await exchangeViaTracker(
-        phrase, offerCode, acceptFn, callbacks, relaySignal,
-      );
+      const result = await runLiveRendezvous({
+        mode: "simultaneous",
+        phrase,
+        createOfferCode: () => createOfferWithFreshSession(phrase),
+        acceptOfferCode: acceptFn,
+        callbacks,
+        signal: relaySignal,
+      });
 
       if (aborted() || !session) return;
 
@@ -5002,8 +5157,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         }
       }, 1000);
 
-      const { maintainFlare } = await import("./live-flare");
-
       const acceptFn = createSingleFlightAcceptHandler(phrase);
 
       const callbacks = {
@@ -5036,9 +5189,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         },
       };
 
-      await maintainFlare(
-        phrase, acceptFn, callbacks, flareSignal,
-      );
+      const result = await runLiveRendezvous({
+        mode: "flare-listener",
+        phrase,
+        acceptOfferCode: acceptFn,
+        callbacks,
+        signal: flareSignal,
+      });
 
       if (aborted() || !session) return;
 
@@ -5050,6 +5207,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       setFlareUiState("input");
 
       setBusy(true);
+      attachRelayHandle(result.relay);
       showPhase(opts.connectingSection);
       opts.connectingStatus.textContent = "connecting directly...";
       updateStatus("connecting...");
@@ -5216,7 +5374,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     btn.addEventListener("click", async () => {
       const code = el.textContent ?? "";
       if (!code) return;
-      try { await copyToClipboard(code); flashText(btn, "Copied"); appendLog(`${label} copied to clipboard`); }
+      try { await copyToClipboard(code); haptic("copied"); flashText(btn, "Copied"); appendLog(`${label} copied to clipboard`); }
       catch { appendLog("copy failed"); }
     }, { signal });
   };
@@ -5231,9 +5389,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       try {
         if (liveCapabilities.shareSheet) {
           await navigator.share({ text: code });
+          haptic("copied");
           appendLog(`${label} shared`);
         } else {
           await copyToClipboard(code);
+          haptic("copied");
           flashText(btn, "Copied");
           appendLog(`${label} copied to clipboard`);
         }
@@ -5309,10 +5469,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }, { signal });
 
   opts.confirmBtn.addEventListener("click", () => {
+    haptic("confirm");
     session?.confirmFingerprint();
   }, { signal });
 
   opts.rejectBtn.addEventListener("click", () => {
+    haptic("reject");
     session?.rejectFingerprint();
   }, { signal });
 
@@ -5474,6 +5636,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     try {
       const text = await navigator.clipboard.readText();
       const ok = applyJoinOfferCandidate(text, "paste");
+      if (!ok) haptic("send-failed");
       pulsePasteState(ok);
     } catch {
       pulsePasteState(false);
@@ -5512,29 +5675,62 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     btn.addEventListener("click", () => { if (!btn.disabled) setFn(!state.value); }, { signal });
   }
 
-  // ── Media button popover (file + draw + clear) ─────────────
-  // Supports: tap to toggle, tap-hold to open then drag-over option + release to pick.
+  // ── Media button popover (file + draw + clear + alpha) ──────
+  // supports: tap to toggle, tap-hold to open then drag-over option + release to pick.
+  // alpha submenu opens to the side. dragging onto it preview-opens the panel;
+  // dragging away closes it. releasing on it or inside it commits the open state.
   {
     const popover = opts.chatMediaPopover;
-    const options = [opts.chatMediaFile, opts.chatMediaDraw, opts.chatMediaClear] as const;
+    const alphaPanel = opts.alphaPanel;
+    const alphaBtn = opts.chatMediaAlpha;
+    const options = [opts.chatMediaFile, opts.chatMediaDraw, opts.chatMediaClear, alphaBtn] as const;
     let mediaPopoverOpen = false;
+    let alphaPanelOpen = false;
+    let onAlphaOpen: (() => void) | null = null;
+    let onAlphaClose: (() => void) | null = null;
     let mediaPointerId = -1;
     let mediaHoldTimer: ReturnType<typeof setTimeout> | null = null;
     let mediaDragMode = false;
     let hoveredOption: HTMLButtonElement | null = null;
 
+    function pointInEl(x: number, y: number, el: HTMLElement): boolean {
+      const r = el.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    }
+
     function openPopover(): void {
       if (mediaPopoverOpen) return;
       mediaPopoverOpen = true;
       popover.classList.add("--open");
+      haptic("mode-switch");
+    }
+
+    function closeAlphaPanel(): void {
+      if (!alphaPanelOpen) return;
+      alphaPanelOpen = false;
+      alphaPanel.classList.remove("--open");
+      alphaBtn.classList.remove("--active");
+      onAlphaClose?.();
     }
 
     function closePopover(): void {
       if (!mediaPopoverOpen) return;
+      closeAlphaPanel();
       mediaPopoverOpen = false;
       popover.classList.remove("--open");
       for (const o of options) o.classList.remove("--hover");
       hoveredOption = null;
+    }
+
+    function toggleAlphaPanel(): void {
+      if (alphaPanelOpen) { closeAlphaPanel(); return; }
+      if (!mediaPopoverOpen) openPopover();
+      alphaPanelOpen = true;
+      alphaPanel.classList.add("--open");
+      alphaBtn.classList.add("--active");
+      const jitter = -8 + Math.random() * 16;
+      alphaBtn.style.setProperty("--iris-jitter", `${jitter.toFixed(1)}deg`);
+      onAlphaOpen?.();
     }
 
     function pickFile(): void {
@@ -5552,19 +5748,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     function pickClear(): void {
       if (opts.chatMediaClear.disabled) return;
-      // .click() fires both the closePopover listener and the clear handler
       opts.chatMediaClear.click();
     }
 
     function hitTestOption(x: number, y: number): HTMLButtonElement | null {
       for (const o of options) {
-        const r = o.getBoundingClientRect();
-        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return o;
+        if (pointInEl(x, y, o)) return o;
       }
       return null;
     }
 
-    // Pointer down — start hold timer
+    // pointer down: start hold timer
     opts.chatMediaBtn.addEventListener("pointerdown", (e) => {
       if (opts.chatMediaBtn.disabled || e.button !== 0) return;
       if (mediaPointerId !== -1) return;
@@ -5578,7 +5772,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, 250);
     }, { signal });
 
-    // Pointer move — highlight option under finger during drag
+    // pointer move: highlight option under finger during drag.
+    // alpha is special: its panel preview-opens on hover so the user
+    // sees it bloom as their finger reaches it.
     opts.chatMediaBtn.addEventListener("pointermove", (e) => {
       if (e.pointerId !== mediaPointerId || !mediaDragMode) return;
       if (e.cancelable) e.preventDefault();
@@ -5587,10 +5783,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (hoveredOption) hoveredOption.classList.remove("--hover");
         hoveredOption = hit;
         if (hit) hit.classList.add("--hover");
+
+        // preview-open alpha on hover, close if dragged away
+        // (unless pointer is still inside the popover or alpha panel)
+        const inSafeZone = pointInEl(e.clientX, e.clientY, popover)
+          || (alphaPanelOpen && pointInEl(e.clientX, e.clientY, alphaPanel));
+        if (hit === alphaBtn && !alphaPanelOpen) {
+          toggleAlphaPanel();
+        } else if (hit !== alphaBtn && !inSafeZone && alphaPanelOpen) {
+          closeAlphaPanel();
+        }
       }
     }, { signal });
 
-    // Pointer up — either toggle (short tap) or pick hovered option (drag)
+    // pointer up: short tap toggles popover, drag-release picks the hovered option
     opts.chatMediaBtn.addEventListener("pointerup", (e) => {
       if (e.pointerId !== mediaPointerId) return;
       if (e.cancelable) e.preventDefault();
@@ -5598,20 +5804,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       mediaPointerId = -1;
 
       if (mediaDragMode) {
-        // Drag release — pick whatever is under the finger
         const hit = hitTestOption(e.clientX, e.clientY);
+        const overAlpha = hit === alphaBtn
+          || (alphaPanelOpen && pointInEl(e.clientX, e.clientY, alphaPanel));
         if (hit === opts.chatMediaFile) pickFile();
         else if (hit === opts.chatMediaDraw) pickDraw();
         else if (hit === opts.chatMediaClear) pickClear();
+        else if (overAlpha) { /* already open from hover preview */ }
         else closePopover();
       } else {
-        // Short tap — toggle popover
         if (mediaPopoverOpen) closePopover();
         else openPopover();
       }
     }, { signal });
 
-    // Cancel cleans up
+    // cancel cleans up
     function handleMediaPointerAbort(e: PointerEvent): void {
       if (e.pointerId !== mediaPointerId) return;
       if (mediaHoldTimer) { clearTimeout(mediaHoldTimer); mediaHoldTimer = null; }
@@ -5622,24 +5829,655 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.chatMediaBtn.addEventListener("lostpointercapture", handleMediaPointerAbort, { signal });
     opts.chatMediaBtn.addEventListener("contextmenu", (e) => e.preventDefault(), { signal });
 
-    // Option clicks (for normal tap-then-pick flow)
+    // option clicks (normal tap-then-pick flow)
     opts.chatMediaFile.addEventListener("click", () => pickFile(), { signal });
     opts.chatMediaDraw.addEventListener("click", () => pickDraw(), { signal });
     opts.chatMediaClear.addEventListener("click", () => closePopover(), { signal });
+    alphaBtn.addEventListener("click", () => toggleAlphaPanel(), { signal });
 
-    // Close popover on outside click
+    // close popover on outside click
     document.addEventListener("pointerdown", (e) => {
       if (!mediaPopoverOpen) return;
       const t = e.target as Node;
-      if (popover.contains(t) || opts.chatMediaBtn.contains(t)) return;
+      if (popover.contains(t) || opts.chatMediaBtn.contains(t) || alphaPanel.contains(t)) return;
       closePopover();
     }, { signal });
 
-    // Close on Escape
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && mediaPopoverOpen) { closePopover(); e.stopPropagation(); }
     }, { signal });
+
+    // prevent slider interaction from closing the popover
+    alphaPanel.addEventListener("pointerdown", (e) => e.stopPropagation(), { signal });
+
+    // ── Alpha panel: audio quality slider ──────────────────
+    // physical track has a magnetic detent at q99. q100 is raw/lossless,
+    // qualitatively different from q1-99. the track layout:
+    //
+    //   |---- q1 to q99 (linear) ----|-- detent --|-- q100 --|
+    //   0%                          93%          97%        100%
+    //
+    // vertical drag distance increases precision (fine control).
+    // crossing the detent fires haptic feedback.
+    // network-adaptive: transition duration scales with env.rtt.
+    {
+      const track = opts.alphaAudioTrack;
+      const fill = opts.alphaAudioFill;
+      const thumb = opts.alphaAudioThumb;
+      const qLabel = opts.alphaAudioQValue;
+      const section = track.closest(".wl-alpha-section") as HTMLElement;
+      let sliderPointerId = -1;
+      let sliderStartX = 0;
+      let sliderStartVal = 0;
+
+      // detent geometry
+      const DETENT_START = 0.93;
+      const DETENT_END = 0.97;
+
+      function fracToQ(frac: number): number {
+        if (frac >= DETENT_END) return 100;
+        if (frac >= DETENT_START) return 99;
+        return 1 + (frac / DETENT_START) * 98;
+      }
+
+      function qToFrac(q: number): number {
+        if (q >= 100) return 1;
+        return ((q - 1) / 98) * DETENT_START;
+      }
+
+      // ── Orbit (harmonic bloom) ──────────────────────────
+      // polar flower: r(θ) = 1 + Σ aₙ·cos(pₙ·θ)
+      // petal counts are prime so harmonics never align boringly.
+      // three SVG layers: ghost (skeleton), glow (halo), line (crisp + traveling gap).
+      const orbitPath = opts.alphaOrbitPath;
+      const orbitGlow = opts.alphaOrbitGlow;
+      const orbitGhost = opts.alphaOrbitGhost;
+      const hint = opts.alphaHint;
+
+      // drift speed derived from network RTT + Q value.
+      // fast network (50ms RTT) = brisk spin (~12s/rev)
+      // slow network (250ms RTT) = lazy drift (~22s/rev)
+      // high Q adds a slight boost (stiffer medium = quicker orbit)
+      function computeDrift(): number {
+        const rttNorm = Math.min(1, Math.max(0, (env.rtt - 50) * 0.005));
+        const qBoost = 1 + (audioQuality - 1) * 0.001;
+        const period = 12 + rttNorm * 10;
+        return (2 * Math.PI) / period * qBoost;
+      }
+      let driftSpeed = computeDrift();
+
+      function syncOrbitTiming(): void {
+        const morphMs = Math.round(250 + Math.min(1, (env.rtt - 50) / 200) * 400);
+        section.style.setProperty("--orbit-morph", `${morphMs}ms`);
+        driftSpeed = computeDrift();
+      }
+      syncOrbitTiming();
+      try { env.conn?.addEventListener("change", syncOrbitTiming, { signal }); } catch { }
+
+      const HARMONICS = [
+        { p: 3,  amp: 0.40, start: 1,  len: 20 },
+        { p: 5,  amp: 0.24, start: 18, len: 20 },
+        { p: 7,  amp: 0.16, start: 36, len: 20 },
+        { p: 11, amp: 0.10, start: 54, len: 20 },
+        { p: 13, amp: 0.07, start: 72, len: 27 },
+      ];
+
+      const ORBIT_N = 400;
+      const ORBIT_S = 0.82;
+
+      function buildFlowerD(q: number, maxLayer: number): string {
+        // q100: collapse to horizontal line (same point count for CSS d-path interpolation)
+        if (q >= 100) {
+          const parts = [`M${(-ORBIT_S).toFixed(3)},0.000`];
+          for (let i = 1; i <= ORBIT_N; i++) parts.push(`L${(-ORBIT_S + (2 * ORBIT_S * i) / ORBIT_N).toFixed(3)},0.000`);
+          return parts.join("") + "Z";
+        }
+
+        let maxR = 0;
+        const xs = new Float64Array(ORBIT_N + 1);
+        const ys = new Float64Array(ORBIT_N + 1);
+
+        for (let i = 0; i <= ORBIT_N; i++) {
+          const theta = (i / ORBIT_N) * Math.PI * 2;
+          let r = 1;
+          for (let h = 0; h < maxLayer && h < HARMONICS.length; h++) {
+            const fade = Math.max(0, Math.min(1, (q - HARMONICS[h].start) / HARMONICS[h].len));
+            if (fade > 0) r += HARMONICS[h].amp * fade * Math.cos(HARMONICS[h].p * theta);
+          }
+          xs[i] = r * Math.cos(theta);
+          ys[i] = r * Math.sin(theta);
+          if (r > maxR) maxR = r;
+        }
+
+        const s = ORBIT_S / maxR;
+        const parts = [`M${(xs[0] * s).toFixed(3)},${(ys[0] * s).toFixed(3)}`];
+        for (let i = 1; i <= ORBIT_N; i++) parts.push(`L${(xs[i] * s).toFixed(3)},${(ys[i] * s).toFixed(3)}`);
+        return parts.join("") + "Z";
+      }
+
+      function hintText(q: number): string {
+        //                     real measured data:
+        if (q >= 100) return "raw - uncompressed float32";       // bypasses pipeline
+        if (q >= 90) return "transparent - beats MP3 320k";      // 206 kbps, 88 dB vs 320 kbps, 28 dB
+        if (q >= 80) return "studio - full waveform detail";     // 194 kbps, 79 dB
+        if (q >= 65) return "high fidelity - rich detail";        // 176 kbps, 65 dB
+        if (q >= 50) return "high - reference quality";           // 157 kbps, 52 dB
+        if (q >= 35) return "detailed - opus 128k equivalent";   // 146 kbps, 38 dB
+        if (q >= 20) return "balanced - opus 64k equivalent";    // 87 kbps, 25 dB
+        if (q >= 10) return "lean - efficient encoding";         // 28 kbps, 12 dB
+        if (q >= 5) return "compact - phone call quality";        // 10 kbps, near GSM/AMR
+        return "minimal - deep compression";                     // ternary signal
+      }
+
+      function applyVisuals(q: number): void {
+        const pct = qToFrac(q) * 100;
+        fill.style.width = `${pct}%`;
+        thumb.style.left = `${pct}%`;
+        section.classList.toggle("--raw", q >= 100);
+        qLabel.textContent = q >= 100 ? "raw" : String(q);
+
+        const dFull = buildFlowerD(q, HARMONICS.length);
+        orbitPath.setAttribute("d", dFull);
+        orbitGlow.setAttribute("d", dFull);
+        orbitGhost.setAttribute("d", buildFlowerD(q, 2));
+
+        hint.textContent = hintText(q);
+        opts.alphaReset.classList.toggle("--modified", q !== AUDIO_Q_DEFAULT);
+        track.setAttribute("aria-valuenow", String(q));
+      }
+
+      function setSliderValue(q: number, dragging: boolean): void {
+        q = Math.max(1, Math.min(100, Math.round(q)));
+        const prev = audioQuality;
+        if (q === prev && !dragging) return;
+        audioQuality = q;
+        applyVisuals(q);
+        if (dragging && ((prev < 100 && q >= 100) || (prev >= 100 && q < 100))) {
+          haptic("detent");
+        }
+      }
+
+      applyVisuals(audioQuality);
+
+      // ── Orbit interaction (jelly physics + angular momentum) ──
+      // soft body simulation grounded in the harmonic codec's Q parameter.
+      // higher Q = stiffer springs, faster wave propagation, crisper wobble.
+      // lower Q = gooier, slower, more elastic.
+      //
+      // battery optimization:
+      //   - float32 arrays (halved memory bandwidth vs float64)
+      //   - idle detection skips physics + path write when settled
+      //   - no toFixed/string allocation in hot path (manual int rounding)
+      //   - branch-free neighbor indexing (no modulo)
+      //   - rotation-only frames skip the vertex loop entirely
+      {
+        const orbitSvg = document.getElementById("wl-alpha-orbit") as SVGSVGElement;
+        const orbitContainer = opts.alphaOrbitWrap;
+
+        let angle = 0;
+        let angularVel = driftSpeed;
+
+        const V = ORBIT_N + 1;
+        const ox = new Float32Array(V);
+        const oy = new Float32Array(V);
+        const vx = new Float32Array(V);
+        const vy = new Float32Array(V);
+
+        // cached base positions (float32 is plenty — SVG rounds to 3 decimals)
+        const bx = new Float32Array(V);
+        const by = new Float32Array(V);
+        let baseDirty = true;
+        let verticesSettled = true; // true when no deformation is active
+
+        // Q-derived spring physics (cached, recomputed with base shape)
+        let springW2 = 140;
+        let springD = 9.5;
+        let waveCoupling = 0.17;
+        let maxPull = 0.55;
+
+        // curvature-weighted speed map for the traveling dash.
+        // precomputed per Q change: speedMap[i] = local flow speed at vertex i.
+        // high curvature (petal tips) = slow (honey catching on corners).
+        // low curvature (flat stretches) = fast (fluid accelerating through open pipe).
+        const speedMap = new Float32Array(V);
+        let dashPhase = 0;
+
+        const origApplyVisuals = applyVisuals;
+        applyVisuals = (q: number) => { origApplyVisuals(q); baseDirty = true; verticesSettled = false; driftSpeed = computeDrift(); };
+        origApplyVisuals(audioQuality);
+
+        function recomputeBase(): void {
+          const q = audioQuality;
+          let maxR = 0;
+          const thetaStep = (Math.PI * 2) / ORBIT_N;
+          for (let i = 0; i < V; i++) {
+            const theta = i * thetaStep;
+            let r = 1;
+            for (let h = 0; h < HARMONICS.length; h++) {
+              const harm = HARMONICS[h];
+              const fade = (q - harm.start) / harm.len;
+              if (fade > 0) r += harm.amp * (fade < 1 ? fade : 1) * Math.cos(harm.p * theta);
+            }
+            const cos = Math.cos(theta), sin = Math.sin(theta);
+            bx[i] = r * cos;
+            by[i] = r * sin;
+            if (r > maxR) maxR = r;
+          }
+          const s = ORBIT_S / (maxR || 1);
+          for (let i = 0; i < V; i++) { bx[i] *= s; by[i] *= s; }
+
+          const qNorm = (q - 1) / 98;
+          springW2 = 80 + qNorm * 120;
+          springD = 7 + qNorm * 5;
+          waveCoupling = 0.08 + qNorm * 0.18;
+          maxPull = 0.4 + (1 - qNorm) * 0.3;
+
+          // build curvature-weighted speed map.
+          // curvature at vertex i = |cross(v[i-1]→v[i], v[i]→v[i+1])| / (len1 * len2)
+          // speed = 1 / (1 + curvature * K) → slow at sharp petal tips, fast on flat arcs
+          let totalSpeed = 0;
+          for (let i = 0; i < V; i++) {
+            const p = i === 0 ? V - 2 : i - 1; // V-1 == 0 (closed), so use V-2
+            const n = i === V - 1 ? 1 : i + 1;
+            const ax = bx[i] - bx[p], ay = by[i] - by[p];
+            const cx = bx[n] - bx[i], cy = by[n] - by[i];
+            const cross = ax * cy - ay * cx;
+            const len1 = ax * ax + ay * ay;
+            const len2 = cx * cx + cy * cy;
+            // avoid sqrt: use cross²/(len1*len2) as curvature² proxy, then sqrt once
+            const denom = len1 * len2;
+            const curv = denom > 1e-10 ? Math.sqrt((cross * cross) / denom) : 0;
+            speedMap[i] = 1 / (1 + curv * 8);
+            totalSpeed += speedMap[i];
+          }
+          // normalize so one full loop takes a consistent ~5s regardless of shape complexity
+          const norm = V / totalSpeed;
+          for (let i = 0; i < V; i++) speedMap[i] *= norm;
+
+          baseDirty = false;
+        }
+
+        let ptrX = 0, ptrY = 0, prevPtrX = 0, prevPtrY = 0;
+        let ptrDown = false, ptrInside = false;
+        let deformRaf = 0, deformLastTick = 0;
+
+        // reuse CTM inverse to avoid allocation per call — cache the 6 matrix elements
+        let ctmA = 1, ctmB = 0, ctmC = 0, ctmD = 1, ctmE = 0, ctmF = 0;
+        let ctmDirty = true;
+
+        function refreshCtm(): void {
+          try {
+            const ctm = orbitSvg.getScreenCTM();
+            if (ctm) {
+              // invert the 2x3 affine matrix inline (no DOMMatrix.inverse() allocation)
+              const det = ctm.a * ctm.d - ctm.b * ctm.c;
+              if (Math.abs(det) > 1e-6) {
+                const invDet = 1 / det;
+                ctmA = ctm.d * invDet;
+                ctmB = -ctm.b * invDet;
+                ctmC = -ctm.c * invDet;
+                ctmD = ctm.a * invDet;
+                ctmE = (ctm.c * ctm.f - ctm.d * ctm.e) * invDet;
+                ctmF = (ctm.b * ctm.e - ctm.a * ctm.f) * invDet;
+                ctmDirty = false;
+                return;
+              }
+            }
+          } catch { }
+          ctmDirty = true;
+        }
+
+        function clientToSvg(cx: number, cy: number): [number, number] {
+          if (!ctmDirty) return [ctmA * cx + ctmC * cy + ctmE, ctmB * cx + ctmD * cy + ctmF];
+          const r = orbitSvg.getBoundingClientRect();
+          return [-1.1 + ((cx - r.left) / r.width) * 2.2, -1.1 + ((cy - r.top) / r.height) * 2.2];
+        }
+
+        function writeDeformedPath(): void {
+          let d = "M" + f3(bx[0] + ox[0]) + "," + f3(by[0] + oy[0]);
+          for (let i = 1; i < V; i++) {
+            d += "L" + f3(bx[i] + ox[i]) + "," + f3(by[i] + oy[i]);
+          }
+          d += "Z";
+          orbitPath.setAttribute("d", d);
+          orbitGlow.setAttribute("d", d);
+        }
+
+        function stepDeformation(ts: number): void {
+          const rawDt = deformLastTick ? (ts - deformLastTick) * 0.001 : 0.016;
+          const dt = rawDt < 0.001 ? 0.001 : rawDt > 0.04 ? 0.04 : rawDt;
+          deformLastTick = ts;
+
+          refreshCtm();
+
+          // ── angular dynamics ──
+          const isRaw = audioQuality >= 100;
+          if (isRaw) {
+            const target = Math.round(angle / Math.PI) * Math.PI;
+            angularVel += (64 * (target - angle) - 19.2 * angularVel) * dt;
+          } else if (ptrDown) {
+            const decay = 1 - 2 * dt;
+            angularVel *= decay * decay;
+          } else {
+            const rate = 1.2 * dt;
+            angularVel += (driftSpeed - angularVel) * (rate < 1 ? rate : 1);
+          }
+          if (angularVel > 12.566) angularVel = 12.566;
+          else if (angularVel < -12.566) angularVel = -12.566;
+          angle += angularVel * dt;
+          orbitContainer.style.transform = "rotate(" + f3(angle * 57.2958) + "deg)";
+
+          // raw/reduced: rotation only, no vertex or dash work
+          if (reduceMotion || isRaw) {
+            if (!verticesSettled) {
+              ox.fill(0); oy.fill(0); vx.fill(0); vy.fill(0);
+              origApplyVisuals(audioQuality);
+              verticesSettled = true;
+            }
+            deformRaf = requestAnimationFrame(stepDeformation);
+            return;
+          }
+
+          // ensure base shape + speed map are fresh before any reads
+          if (baseDirty) recomputeBase();
+
+          // ── fluid dash (curvature + deformation adaptive) ──
+          const phase = dashPhase % 1;
+          const di = (phase * ORBIT_N) | 0;
+          const localSpeed = speedMap[di];
+
+          // deformation bias: fluid rushes toward stretched regions
+          let flowRate = localSpeed;
+          if (!verticesSettled) {
+            flowRate *= 1 + (ox[di] * ox[di] + oy[di] * oy[di]) * 12;
+          }
+          dashPhase += dt * 0.2 * flowRate;
+
+          // gap width breathes with curvature: pools at petal tips, narrows on flats
+          const gapW = 0.06 + (1 - localSpeed) * 0.12;
+          const dashLen = 1 - gapW;
+          orbitPath.style.strokeDasharray = f3(dashLen) + " " + f3(gapW);
+          orbitPath.style.strokeDashoffset = f3(phase);
+
+          // ghost opacity pulses at the fluid's leading edge
+          const leadIdx = ((phase + dashLen) * ORBIT_N) | 0;
+          orbitGhost.style.strokeOpacity = f3(0.12 + speedMap[leadIdx < V ? leadIdx : V - 1] * 0.06);
+
+          // ── vertex physics ──
+          const interacting = ptrInside || ptrDown;
+          if (verticesSettled && !interacting) {
+            deformRaf = requestAnimationFrame(stepDeformation);
+            return;
+          }
+
+          const attract = ptrDown ? 0.15 : 0.04;
+          const w2dt = springW2 * dt;
+          const ddt = springD * dt;
+          const cpl = waveCoupling;
+          let energy = 0;
+
+          for (let i = 0; i < V; i++) {
+            if (interacting) {
+              const ddx = ptrX - bx[i] - ox[i];
+              const ddy = ptrY - by[i] - oy[i];
+              const dist2 = ddx * ddx + ddy * ddy + 0.01;
+              const pull = attract / dist2;
+              const cp = pull < maxPull ? pull : maxPull;
+              vx[i] += ddx * cp;
+              vy[i] += ddy * cp;
+            }
+
+            const p = i === 0 ? V - 1 : i - 1;
+            const n = i === V - 1 ? 0 : i + 1;
+            vx[i] += (ox[p] + ox[n] - 2 * ox[i]) * cpl;
+            vy[i] += (oy[p] + oy[n] - 2 * oy[i]) * cpl;
+            vx[i] -= w2dt * ox[i] + ddt * vx[i];
+            vy[i] -= w2dt * oy[i] + ddt * vy[i];
+            ox[i] += vx[i] * dt;
+            oy[i] += vy[i] * dt;
+
+            energy += vx[i] * vx[i] + vy[i] * vy[i] + ox[i] * ox[i] + oy[i] * oy[i];
+          }
+
+          if (energy < 0.0001 && !interacting) {
+            ox.fill(0); oy.fill(0); vx.fill(0); vy.fill(0);
+            origApplyVisuals(audioQuality);
+            verticesSettled = true;
+          } else {
+            verticesSettled = false;
+            writeDeformedPath();
+          }
+
+          deformRaf = requestAnimationFrame(stepDeformation);
+        }
+
+        function ensureDeformRaf(): void {
+          if (!deformRaf) { deformLastTick = 0; deformRaf = requestAnimationFrame(stepDeformation); }
+        }
+
+        function stopDeformRaf(): void {
+          if (deformRaf) { cancelAnimationFrame(deformRaf); deformRaf = 0; }
+          ox.fill(0); oy.fill(0); vx.fill(0); vy.fill(0);
+          orbitContainer.style.transform = "";
+          orbitPath.style.strokeDasharray = "";
+          orbitPath.style.strokeDashoffset = "";
+          orbitGhost.style.strokeOpacity = "";
+        }
+
+        onAlphaOpen = ensureDeformRaf;
+        onAlphaClose = stopDeformRaf;
+        if (alphaPanelOpen) ensureDeformRaf();
+
+        orbitContainer.addEventListener("pointerleave", () => {
+          ptrInside = false;
+        }, { signal });
+
+        let orbitPointerId = -1;
+
+        orbitContainer.addEventListener("pointerdown", (e) => {
+          if (e.button !== 0 || orbitPointerId !== -1) return;
+          if (audioQuality >= 100) return; // flat line: no interaction
+          e.preventDefault();
+          orbitPointerId = e.pointerId;
+          orbitContainer.setPointerCapture(e.pointerId);
+          ptrDown = true;
+          [ptrX, ptrY] = clientToSvg(e.clientX, e.clientY);
+          prevPtrX = ptrX; prevPtrY = ptrY;
+          haptic("reaction");
+        }, { signal });
+
+        orbitContainer.addEventListener("pointermove", (e) => {
+          const [sx, sy] = clientToSvg(e.clientX, e.clientY);
+
+          if (e.pointerId === orbitPointerId && ptrDown) {
+            // update prev only during active drag — hover moves
+            // must not pollute the velocity used for flick on release
+            prevPtrX = ptrX; prevPtrY = ptrY;
+            ptrX = sx; ptrY = sy;
+
+            // torque from tangential drag (cross product of position × velocity).
+            // threshold prevents radial stretches from accumulating spin.
+            const dvx = ptrX - prevPtrX;
+            const dvy = ptrY - prevPtrY;
+            const speed = Math.sqrt(dvx * dvx + dvy * dvy);
+            if (speed > 0.003) {
+              const torque = ptrX * dvy - ptrY * dvx;
+              const dist = Math.sqrt(ptrX * ptrX + ptrY * ptrY) + 0.1;
+              angularVel += (torque / dist) * 2.5;
+            }
+            return;
+          }
+
+          // hover (not dragging): update position for soft attraction
+          ptrX = sx; ptrY = sy;
+          ptrInside = true;
+        }, { signal });
+
+        orbitContainer.addEventListener("pointerup", (e) => {
+          if (e.pointerId !== orbitPointerId) return;
+          orbitPointerId = -1;
+
+          const [upX, upY] = clientToSvg(e.clientX, e.clientY);
+          const velX = upX - prevPtrX;
+          const velY = upY - prevPtrY;
+
+          // angular flick (normalized by distance from center)
+          const dist = Math.sqrt(upX * upX + upY * upY) + 0.1;
+          angularVel += ((upX * velY - upY * velX) / dist) * 3;
+
+          // vertex flick: nearby vertices get kicked by pointer momentum
+          if ((Math.abs(velX) + Math.abs(velY) > 0.02) && !baseDirty) {
+            const fx = velX * 15, fy = velY * 15;
+            for (let i = 0; i < V; i++) {
+              const ddx = bx[i] + ox[i] - upX;
+              const ddy = by[i] + oy[i] - upY;
+              const w = 0.25 / (Math.sqrt(ddx * ddx + ddy * ddy) + 0.15);
+              vx[i] += fx * w;
+              vy[i] += fy * w;
+            }
+          }
+
+          ptrDown = false;
+        }, { signal });
+
+        orbitContainer.addEventListener("lostpointercapture", () => {
+          orbitPointerId = -1;
+          ptrDown = false;
+        }, { signal });
+
+        signal.addEventListener("abort", () => {
+          if (deformRaf) { cancelAnimationFrame(deformRaf); deformRaf = 0; }
+        }, { once: true });
+      }
+
+      track.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || sliderPointerId !== -1) return;
+        e.preventDefault();
+        e.stopPropagation();
+        sliderPointerId = e.pointerId;
+        track.setPointerCapture(e.pointerId);
+        track.classList.add("--dragging");
+        section.classList.add("--dragging");
+        qLabel.classList.add("--active");
+
+        const rect = track.getBoundingClientRect();
+        const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        setSliderValue(fracToQ(frac), true);
+        sliderStartX = e.clientX;
+        sliderStartVal = audioQuality;
+      }, { signal });
+
+      track.addEventListener("pointermove", (e) => {
+        if (e.pointerId !== sliderPointerId) return;
+        if (e.cancelable) e.preventDefault();
+
+        const rect = track.getBoundingClientRect();
+        const vertDist = Math.abs(e.clientY - (rect.top + rect.height / 2));
+        const precision = 1 / (1 + vertDist * 0.04);
+        track.classList.toggle("--fine", precision < 0.5);
+
+        const dx = e.clientX - sliderStartX;
+        const currentFrac = qToFrac(sliderStartVal) + (dx / (rect.width || 1)) * precision;
+        setSliderValue(fracToQ(currentFrac), true);
+      }, { signal });
+
+      function endSliderDrag(e: PointerEvent): void {
+        if (e.pointerId !== sliderPointerId) return;
+        sliderPointerId = -1;
+        track.classList.remove("--dragging", "--fine");
+        section.classList.remove("--dragging");
+        qLabel.classList.remove("--active");
+      }
+      track.addEventListener("pointerup", endSliderDrag, { signal });
+      track.addEventListener("pointercancel", endSliderDrag, { signal });
+      track.addEventListener("lostpointercapture", endSliderDrag, { signal });
+
+      // keyboard: arrows ±1, page ±10, home/end
+      track.tabIndex = 0;
+      track.setAttribute("role", "slider");
+      track.setAttribute("aria-label", "Audio quality");
+      track.setAttribute("aria-valuemin", "1");
+      track.setAttribute("aria-valuemax", "100");
+
+      track.addEventListener("keydown", (e) => {
+        let delta = 0;
+        if (e.key === "ArrowRight" || e.key === "ArrowUp") delta = 1;
+        else if (e.key === "ArrowLeft" || e.key === "ArrowDown") delta = -1;
+        else if (e.key === "PageUp") delta = 10;
+        else if (e.key === "PageDown") delta = -10;
+        else if (e.key === "Home") { setSliderValue(1, false); e.preventDefault(); return; }
+        else if (e.key === "End") { setSliderValue(100, false); e.preventDefault(); return; }
+        else return;
+        e.preventDefault();
+        setSliderValue(audioQuality + delta, false);
+      }, { signal });
+
+      // mic icon resets to default with smooth slide animation
+      opts.alphaReset.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (audioQuality === AUDIO_Q_DEFAULT) return;
+        track.classList.add("--resetting");
+        setSliderValue(AUDIO_Q_DEFAULT, false);
+        haptic("mode-switch");
+        thumb.addEventListener("transitionend", () => track.classList.remove("--resetting"), { once: true, signal });
+      }, { signal });
+    }
   }
+
+  // ── Clipboard paste button ──────────────────────────────────
+  // first tap: inject cached clipboard into input (text) or send files.
+  // second tap (or hold): send text. ctrl+v pastes normally (no auto-send).
+
+  // handle ctrl+v paste — files get sent, text just enters the input normally
+  opts.chatInput.addEventListener("paste", (e) => {
+    const items = e.clipboardData?.items;
+    if (items) {
+      const files: File[] = [];
+      for (const item of items) {
+        if (item.kind === "file") { const f = item.getAsFile(); if (f) files.push(f); }
+      }
+      if (files.length) {
+        e.preventDefault();
+        sendFilesToChat(files, "paste");
+      }
+    }
+    // text paste: let the browser handle it naturally, no pasted state
+  }, { signal });
+
+  // clear pasted state when user edits the input
+  opts.chatInput.addEventListener("input", () => {
+    if (pastePending) clearPasteState();
+  }, { signal });
+
+  opts.chatPasteBtn.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || opts.chatPasteBtn.disabled) return;
+    if (pastePending) {
+      // content already pasted — hold sends immediately
+      pasteHoldTimer = setTimeout(() => {
+        pasteHoldTimer = null;
+        sendMessage();
+        clearPasteState();
+      }, 300);
+    }
+  }, { signal });
+
+  opts.chatPasteBtn.addEventListener("pointerup", () => {
+    if (pasteHoldTimer) { clearTimeout(pasteHoldTimer); pasteHoldTimer = null; }
+  }, { signal });
+
+  opts.chatPasteBtn.addEventListener("click", async () => {
+    if (opts.chatPasteBtn.disabled) return;
+
+    if (pastePending) {
+      // second tap — send
+      sendMessage();
+      clearPasteState();
+      return;
+    }
+
+    // first tap — paste from internal cache or readText fallback
+    await pasteFromClipboard();
+  }, { signal });
 
   // Mic button: pointer events for click vs hold detection.
   // - Primary button only (button 0) — ignore right-click, pen eraser, etc.
@@ -5697,13 +6535,57 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // show the browser context menu, fighting the 300ms hold-to-record gesture.
   opts.chatMicBtn.addEventListener("contextmenu", (e) => { e.preventDefault(); }, { signal });
 
-  // Split button handlers
-  opts.chatMicCancel.addEventListener("click", () => cancelRecording(), { signal });
-  opts.chatMicSend.addEventListener("click", () => stopRecording(), { signal });
+  // Cancel requires confirmation: first tap arms, second tap (or hold 500ms) confirms.
+  let cancelArmed = false;
+  let cancelArmTimer: ReturnType<typeof setTimeout> | null = null;
+  let cancelHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let cancelHoldFired = false; // true when hold already cancelled — swallow the trailing click
 
-  // Escape cancels recording (any mode)
+  function disarmCancel(): void {
+    cancelArmed = false;
+    opts.chatMicCancel.removeAttribute("data-armed");
+    opts.chatMicCancel.setAttribute("aria-label", "Cancel recording");
+    if (cancelArmTimer) { clearTimeout(cancelArmTimer); cancelArmTimer = null; }
+    if (cancelHoldTimer) { clearTimeout(cancelHoldTimer); cancelHoldTimer = null; }
+  }
+
+  opts.chatMicCancel.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || opts.chatMicCancel.disabled) return;
+    cancelHoldFired = false;
+    cancelHoldTimer = setTimeout(() => {
+      cancelHoldTimer = null;
+      cancelHoldFired = true;
+      disarmCancel();
+      cancelRecording();
+    }, cancelArmed ? 300 : 500);
+  }, { signal });
+
+  opts.chatMicCancel.addEventListener("pointerup", () => {
+    if (cancelHoldTimer) { clearTimeout(cancelHoldTimer); cancelHoldTimer = null; }
+  }, { signal });
+
+  opts.chatMicCancel.addEventListener("click", () => {
+    if (cancelHoldFired) { cancelHoldFired = false; return; }
+    if (!cancelArmed) {
+      cancelArmed = true;
+      opts.chatMicCancel.setAttribute("data-armed", "");
+      opts.chatMicCancel.setAttribute("aria-label", "Tap again to discard recording");
+      cancelArmTimer = setTimeout(disarmCancel, 2000);
+      return;
+    }
+    disarmCancel();
+    cancelRecording();
+  }, { signal });
+
+  // suppress context menu on cancel button for mobile hold gesture
+  opts.chatMicCancel.addEventListener("contextmenu", (e) => { e.preventDefault(); }, { signal });
+
+  opts.chatMicSend.addEventListener("click", () => { disarmCancel(); stopRecording(); }, { signal });
+
+  // Escape cancels recording (any mode) — keyboard is intentional, no confirm needed
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && (recordingStream || micPending)) {
+      disarmCancel();
       cancelRecording();
     }
   }, { signal });
@@ -5742,6 +6624,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       sendInFlight(msgId);
     } catch (err) {
       send.phase = "delivered"; send.velocity = -4;
+      haptic("send-failed");
       appendLog(`${label} send failed: ${errMsg(err)}`);
       pulseComposeIntent("error", 1100);
     }
@@ -5777,11 +6660,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     syncComposeIntent();
     const files = Array.from((e as DragEvent).dataTransfer?.files ?? []);
     if (!files.length) return;
+    haptic("drop");
     await sendFilesToChat(files);
   }, { signal });
 
   opts.disconnectBtn.addEventListener("click", () => {
     if (session) {
+      // haptic("disconnected") fires from session state handler — no double-fire
       session.disconnect();
       return;
     }
@@ -5795,6 +6680,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!secret) return;
     try {
       await copyToClipboard(secret);
+      haptic("copied");
       flashText(opts.silentCopyBtn, "Copied");
       appendLog("shared secret copied to clipboard");
     } catch {
@@ -5897,7 +6783,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   return () => {
     ac.abort();
-    disposeCopyUi();
+    if (editingMsgId != null) exitEditMode();
     closeDrawSurface();
     resetPeerLivePreview();
     relayActive = false;
@@ -5917,6 +6803,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (peerTypingTimer) { clearTimeout(peerTypingTimer); peerTypingTimer = null; }
     if (composeIntentTimer) { clearTimeout(composeIntentTimer); composeIntentTimer = null; }
     if (composeActivityRaf) { cancelAnimationFrame(composeActivityRaf); composeActivityRaf = 0; }
+    if (pasteHoldTimer) { clearTimeout(pasteHoldTimer); pasteHoldTimer = null; }
+    if (cancelArmTimer) { clearTimeout(cancelArmTimer); cancelArmTimer = null; }
+    if (cancelHoldTimer) { clearTimeout(cancelHoldTimer); cancelHoldTimer = null; }
     stopRecordingSilently(true);
     stopAllAudio();
     closeMediaLightbox();

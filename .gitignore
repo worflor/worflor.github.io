@@ -7,6 +7,15 @@ dist/
 # claude code
 .claude/
 
+# test media cache
+.cache/
+
+# rag test outputs
+rag_tests/
+
+# engram
+engram/
+
 # dependencies
 node_modules/
 
@@ -29,6 +38,19 @@ pnpm-debug.log*
 # Windows-specific files
 Thumbs.db
 nul
+
+# dev scripts (benchmarks, diagnostics, one-off tools)
+scripts/bench-*.ts
+scripts/bench_*.ts
+scripts/diag-*.ts
+scripts/diag_*.ts
+scripts/codec-compare/
+scripts/ltp_debug.ts
+scripts/test-roundtrip.ts
+
+# loose root files
+hyperdimensional_chemistry.md
+real_audio_benchmark.json
 
 # sensitive docs
 protocol.md

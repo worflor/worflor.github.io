@@ -6,13 +6,17 @@ this license applies to the Whisper Protocol and its components:
 
 - **Whisper Protocol** - the encrypted communication system and its specification
 - **Whisper Logos** - 0D entropy codec (`live-wasm-logos.ts`)
-- **Whisper Harmonic** - 1D audio codec (`live-wasm-audio.ts`)
-- **Whisper Lumen** - 2D video codec (`live-wasm-video.ts`, `video-simd.ts`, `video-simd-bin.ts`)
+- **Whisper Harmonic** - audio codec (`live-wasm-audio.ts`)
+- **Whisper Lumen** - 3D image and video codec (`live-wasm-video.ts`, `video-simd.ts`, `video-simd-bin.ts`)
 - **Whisper Spatial** - 3D volumetric codec (`live-wasm-spatial.ts`)
 - **Whisper Akasha** - 4D spatiotemporal codec (`live-wasm-akasha.ts`)
 - **Whisper Kū** - 5D plenoptic codec (`live-wasm-ku.ts`)
+- **Whisper Glyph** - 5D vector stroke codec (`live-wasm-glyph.ts`)
 - **Whisper Loup** - 8D self codec (`live-wasm-loup.ts`)
-- **Whisper Kizuna** - 16D membrane codec (`live-wasm-16d.ts`)
+- **Whisper Kizuna** - 16D membrane codec (`live-wasm-kizuna.ts`)
+- **Whisper Engram** - 256D embedding trajectory codec (`engram/`)
+
+---
 
 - all supporting files, documentation, and protocol specifications in this directory
 

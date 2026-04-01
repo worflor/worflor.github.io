@@ -8,7 +8,7 @@
 
 import { createStrokeSampler, sampleStrokePoint, type StrokeSamplerState } from "./live-draw-stroke";
 import { type DrawBaseMime, type DrawStreamEventNoSeq, type DrawTool } from "./live-draw-stream";
-import { GlyphCodec, GlyphStreamEncoder } from "./live-wasm-glyph";
+import { GlyphCodec, GlyphStreamEncoder, GLYPH_CHANNELS, GLYPH_CHANNEL_NAMES, type GlyphSeed } from "./live-wasm-glyph";
 import { encode0D } from "./live-wasm-logos";
 import { parseGwyphPayload, renderGwyphScene, type GlyphPayload } from "./live-gwyph";
 
@@ -52,7 +52,12 @@ export interface DrawCallbacks {
   onClose: () => void;
 }
 
-interface Point { x: number; y: number; p: number }
+// point fields mirror GLYPH_CHANNEL_NAMES — the codec drives the shape
+type Point = Record<typeof GLYPH_CHANNEL_NAMES[number], number>;
+
+function pointToSeed(pt: Point): GlyphSeed {
+  return GLYPH_CHANNEL_NAMES.map(ch => Math.round(pt[ch] * 32767));
+}
 
 interface PenStroke { type: "pen"; points: Point[]; color: string; width: number; penId: string; }
 interface FillStroke { type: "fill"; seedX: number; seedY: number; color: string; tolerance: number; }
@@ -638,6 +643,34 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     return 0.5;
   }
 
+  function normalizeTilt(e: PointerEvent): number {
+    // altitudeAngle: 0 (flat) to π/2 (perpendicular), normalize to 0-1
+    if ("altitudeAngle" in e && typeof (e as any).altitudeAngle === "number") {
+      return Math.max(0, Math.min(1, (e as any).altitudeAngle / (Math.PI / 2)));
+    }
+    // fallback: compute from tiltX/tiltY (degrees -90 to 90)
+    if (e.pointerType === "pen" && (e.tiltX !== 0 || e.tiltY !== 0)) {
+      const tx = e.tiltX * Math.PI / 180;
+      const ty = e.tiltY * Math.PI / 180;
+      const alt = Math.atan(1 / Math.sqrt(Math.tan(tx) ** 2 + Math.tan(ty) ** 2));
+      return Math.max(0, Math.min(1, alt / (Math.PI / 2)));
+    }
+    return 0;
+  }
+
+  function normalizeAzimuth(e: PointerEvent): number {
+    // azimuthAngle: 0 to 2π, normalize to 0-1
+    if ("azimuthAngle" in e && typeof (e as any).azimuthAngle === "number") {
+      return Math.max(0, Math.min(1, (e as any).azimuthAngle / (2 * Math.PI)));
+    }
+    // fallback: compute from tiltX/tiltY
+    if (e.pointerType === "pen" && (e.tiltX !== 0 || e.tiltY !== 0)) {
+      const az = Math.atan2(e.tiltY, e.tiltX);
+      return Math.max(0, Math.min(1, (az + Math.PI) / (2 * Math.PI)));
+    }
+    return 0;
+  }
+
   /* ── Unified toolbar update ────────────────────────────── */
 
   function updateToolbar(): void {
@@ -707,12 +740,10 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       nextStrokeId++;
     }
 
-    const nx = lastPoint.x;
-    const ny = lastPoint.y;
-    const np = lastPoint.p;
+    const pt = { ...lastPoint };
     currentStroke = {
       type: "pen",
-      points: [{ x: nx, y: ny, p: np }],
+      points: [pt],
       color: style.color,
       width: style.width,
       penId: style.penId,
@@ -720,12 +751,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     hasLastRenderMid = false;
     pendingPoints.length = 0;
 
-    const seed: [number, number, number] = [
-      Math.round(nx * 32767),
-      Math.round(ny * 32767),
-      Math.round(np * 32767),
-    ];
-    strokeEncoder = new GlyphStreamEncoder(seed, seed);
+    const seed = pointToSeed(pt);
+    strokeEncoder = new GlyphStreamEncoder(seed);
     if (callbacks.onEvent) {
       callbacks.onEvent({
         kind: "begin",
@@ -733,7 +760,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
         tool: style.penId as DrawTool,
         color: style.color,
         width: style.width,
-        start: { x: nx, y: ny, p: np },
+        start: pt,
       });
     }
   }
@@ -1268,11 +1295,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
     for (const pt of pendingPoints) {
       if (strokeEncoder && callbacks.onEvent) {
-        const block = strokeEncoder.push(
-          Math.round(pt.x * 32767),
-          Math.round(pt.y * 32767),
-          Math.round(pt.p * 32767),
-        );
+        const block = strokeEncoder.push(pointToSeed(pt));
         if (block) {
           callbacks.onEvent({ kind: "glyph", strokeId: nextStrokeId, data: block });
         }
@@ -1409,22 +1432,23 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const pen = PEN_TYPES.get(penId)!;
     drawingCanvas.setPointerCapture(e.pointerId);
     const pressure = normalizePressure(e, e.pointerId);
+    const tilt = normalizeTilt(e);
+    const azimuth = normalizeAzimuth(e);
     const nx = cx / logicalW;
     const ny = cy / logicalH;
 
+    const startPt: Point = { x: nx, y: ny, p: pressure, tilt, azimuth };
     currentStroke = {
       type: "pen",
-      points: [{ x: nx, y: ny, p: pressure }],
+      points: [startPt],
       color: currentColor,
       width: baseWidth * pen.widthScale,
       penId,
     };
-    lastPoint = { x: nx, y: ny, p: pressure };
+    lastPoint = startPt;
     hasLastRenderMid = false;
-    strokeEncoder = new GlyphStreamEncoder(
-      [Math.round(nx * 32767), Math.round(ny * 32767), Math.round(pressure * 32767)],
-      [Math.round(nx * 32767), Math.round(ny * 32767), Math.round(pressure * 32767)]
-    );
+    const seed = pointToSeed(startPt);
+    strokeEncoder = new GlyphStreamEncoder(seed);
 
     if (callbacks.onEvent) {
       callbacks.onEvent({
@@ -1433,7 +1457,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
         tool: penId as DrawTool,
         color: currentColor,
         width: baseWidth * pen.widthScale,
-        start: { x: nx, y: ny, p: pressure },
+        start: startPt,
       });
     }
   }
@@ -1492,17 +1516,19 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     for (const sample of samples) {
       const [cx, cy] = screenToCanvasWithOrigin(sample.clientX, sample.clientY, rect.left, rect.top);
       const pressure = normalizePressure(sample, e.pointerId);
+      const tilt = normalizeTilt(sample);
+      const azimuth = normalizeAzimuth(sample);
       const nx = cx / logicalW;
       const ny = cy / logicalH;
       const ts = eventTs(sample);
 
       if (!strokeSampler) {
-        strokeSampler = createStrokeSampler({ x: nx, y: ny, p: pressure, t: ts });
+        strokeSampler = createStrokeSampler({ x: nx, y: ny, p: pressure, tilt, azimuth, t: ts });
       }
 
       const sampled = sampleStrokePoint(
         strokeSampler,
-        { x: nx, y: ny, p: pressure, t: ts },
+        { x: nx, y: ny, p: pressure, tilt, azimuth, t: ts },
         logicalW,
         logicalH,
       );
@@ -1850,21 +1876,18 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       w.varUint(pts.length);
       if (pts.length === 0) continue;
 
-      const q = new Int32Array(pts.length * 3);
+      const CH = GLYPH_CHANNELS;
+      const q = new Int32Array(pts.length * CH);
       for (let i = 0; i < pts.length; i++) {
-        q[i * 3] = quantQ15(pts[i].x);
-        q[i * 3 + 1] = quantQ15(pts[i].y);
-        q[i * 3 + 2] = quantQ15(pts[i].p);
+        for (let c = 0; c < CH; c++) q[i * CH + c] = quantQ15(pts[i][GLYPH_CHANNEL_NAMES[c]]);
       }
 
-      w.u16(q[0]);
-      w.u16(q[1]);
-      w.u16(q[2]);
+      // seed point 0
+      for (let c = 0; c < CH; c++) w.u16(q[c]);
       if (pts.length === 1) continue;
 
-      w.u16(q[3]);
-      w.u16(q[4]);
-      w.u16(q[5]);
+      // seed point 1
+      for (let c = 0; c < CH; c++) w.u16(q[CH + c]);
       if (pts.length === 2) continue;
 
       const packed = GlyphCodec.pack(GlyphCodec.encode(q));

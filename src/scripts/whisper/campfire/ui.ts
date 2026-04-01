@@ -9,6 +9,7 @@ import { CampfireNode } from "./gossip";
 import { hostCampfireViaFlare, joinCampfireViaFlare } from "./flare";
 import { type CampfireState, type CampfireMessage, ContentType } from "./types";
 import { TD } from "../live-crypto";
+import { trackerErrorCode } from "../live-tracker";
 import { toHex } from "../wasm";
 import {
   q,
@@ -402,16 +403,17 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
   }
 
   function flareFriendlyError(raw: string): string {
-    if (raw.includes("peer-not-found")) {
+    const code = trackerErrorCode(raw);
+    if (code === "peer-not-found") {
       return "couldn't find that campfire flare. check phrase and try again";
     }
-    if (raw.includes("relay-unavailable")) {
+    if (code === "relay-unavailable") {
       return "relay unavailable right now. try again in a moment";
     }
     if (raw.includes("no-offer-code")) {
       return "host flare is warming up. wait a second and try again";
     }
-    if (raw.includes("handshake-failed")) {
+    if (code === "handshake-failed") {
       return "flare handshake failed. retry with the same phrase";
     }
     return raw;

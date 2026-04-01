@@ -3,16 +3,23 @@ import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { TRACKER_URLS } from "../../src/scripts/whisper/live-tracker.js";
-import { maintainFlare } from "../../src/scripts/whisper/live-flare.js";
+import { TRACKER_URLS, runLiveRendezvous } from "../../src/scripts/whisper/live-tracker.js";
 import { hostCampfireViaFlare, joinCampfireViaFlare } from "../../src/scripts/whisper/campfire/flare.js";
 
 type FakeMessageEvent = { data: unknown };
-type Scenario = "signal-flare" | "campfire-join" | "campfire-host";
+type Scenario = "live-flare" | "live-flare-abort" | "campfire-join" | "campfire-host";
+
+function b64url(text: string): string {
+  return Buffer.from(text, "utf8").toString("base64url");
+}
+
+function encodePayload(payload: unknown): string {
+  return b64url(JSON.stringify(payload));
+}
 
 class FakeFlareWebSocket {
   static instances: FakeFlareWebSocket[] = [];
-  static scenario: Scenario = "signal-flare";
+  static scenario: Scenario = "live-flare";
   static CONNECTING = 0;
   static OPEN = 1;
   static CLOSING = 2;
@@ -27,6 +34,7 @@ class FakeFlareWebSocket {
   sent: string[] = [];
   closeCodes: number[] = [];
   private responded = false;
+  private flareIntentSent = false;
 
   constructor(url: string) {
     this.url = url;
@@ -40,38 +48,66 @@ class FakeFlareWebSocket {
 
   send(payload: string): void {
     this.sent.push(payload);
-    if (this.responded) return;
-
     const msg = JSON.parse(payload) as {
       action?: string;
       info_hash?: string;
       peer_id?: string;
-      offers?: Array<{ offer_id: string }>;
+      offer_id?: string;
+      offers?: Array<{ offer_id?: string; offer?: { type?: string; sdp?: string } }>;
+      answer?: { type?: string; sdp?: string };
     };
     if (msg.action !== "announce" || !msg.peer_id || !msg.info_hash) return;
 
-    if (FakeFlareWebSocket.scenario === "signal-flare") {
-      if (!Array.isArray(msg.offers) || msg.offers.length !== 0) return;
-      this.responded = true;
-      queueMicrotask(() => {
-        if (this.readyState !== FakeFlareWebSocket.OPEN) return;
-        this.onmessage?.call(this, {
-          data: JSON.stringify({
-            offer: { type: "offer", sdp: "A".repeat(64) },
-            offer_id: "offer-remote",
-            peer_id: "peer-remote",
-            to_peer_id: msg.peer_id,
-            info_hash: msg.info_hash,
-          }),
+    if (FakeFlareWebSocket.scenario === "live-flare" || FakeFlareWebSocket.scenario === "live-flare-abort") {
+      const announceOffer = msg.offers?.[0]?.offer;
+      if (Array.isArray(msg.offers) && msg.offers.length === 0 && !this.flareIntentSent) {
+        this.flareIntentSent = true;
+        queueMicrotask(() => {
+          if (this.readyState !== FakeFlareWebSocket.OPEN) return;
+          this.onmessage?.call(this, {
+            data: JSON.stringify({
+              offer: {
+                type: "whisper-intent",
+                sdp: encodePayload({ attemptId: "remote-attempt" }),
+              },
+              offer_id: "remote-intent",
+              peer_id: "peer-remote",
+              to_peer_id: msg.peer_id,
+              info_hash: msg.info_hash,
+            }),
+          });
         });
-      });
-      return;
+        return;
+      }
+      if (msg.answer?.type === "whisper-match-ack" && FakeFlareWebSocket.scenario === "live-flare" && !this.responded) {
+        const payloadJson = Buffer.from(String(msg.answer.sdp), "base64url").toString("utf8");
+        const matchPayload = JSON.parse(payloadJson) as { rendezvousId: string };
+        this.responded = true;
+        queueMicrotask(() => {
+          if (this.readyState !== FakeFlareWebSocket.OPEN) return;
+          this.onmessage?.call(this, {
+            data: JSON.stringify({
+              offer: {
+                type: "whisper-offer-code",
+                sdp: `${encodePayload({ rendezvousId: matchPayload.rendezvousId, code: "A".repeat(64) })}.`.padEnd(1024, "."),
+                whisper_session: matchPayload.rendezvousId,
+                to_peer_id: msg.peer_id,
+              },
+              offer_id: "remote-live-offer",
+              peer_id: "peer-remote",
+              info_hash: msg.info_hash,
+            }),
+          });
+        });
+        return;
+      }
+      if (announceOffer?.type === "whisper-offer-code") return;
     }
 
     if (FakeFlareWebSocket.scenario === "campfire-host") {
       if (!Array.isArray(msg.offers) || msg.offers.length === 0) return;
       const offerId = msg.offers[0]?.offer_id;
-      if (!offerId) return;
+      if (!offerId || this.responded) return;
       this.responded = true;
       queueMicrotask(() => {
         if (this.readyState !== FakeFlareWebSocket.OPEN) return;
@@ -88,20 +124,23 @@ class FakeFlareWebSocket {
       return;
     }
 
-    if (Array.isArray(msg.offers)) return;
-    this.responded = true;
-    queueMicrotask(() => {
-      if (this.readyState !== FakeFlareWebSocket.OPEN) return;
-      this.onmessage?.call(this, {
-        data: JSON.stringify({
-          offer: { type: "offer", sdp: "A".repeat(64) },
-          offer_id: "campfire-offer",
-          peer_id: "campfire-host",
-          to_peer_id: msg.peer_id,
-          info_hash: msg.info_hash,
-        }),
+    if (FakeFlareWebSocket.scenario === "campfire-join") {
+      if (Array.isArray(msg.offers)) return;
+      if (this.responded) return;
+      this.responded = true;
+      queueMicrotask(() => {
+        if (this.readyState !== FakeFlareWebSocket.OPEN) return;
+        this.onmessage?.call(this, {
+          data: JSON.stringify({
+            offer: { type: "offer", sdp: "A".repeat(64) },
+            offer_id: "campfire-offer",
+            peer_id: "campfire-host",
+            to_peer_id: msg.peer_id,
+            info_hash: msg.info_hash,
+          }),
+        });
       });
-    });
+    }
   }
 
   close(code = 1000): void {
@@ -147,25 +186,30 @@ afterEach(() => {
 
 describe("flare cleanup", () => {
   it("signal flare removes external abort listener and closes tracker sockets after success", async () => {
-    installFakeWebSocket("signal-flare");
+    installFakeWebSocket("live-flare");
     const ac = new AbortController();
+    let seenOfferCode = "";
 
-    const result = await withAbortTimeout(ac, () => maintainFlare(
-      "tower phrase",
-      async (peerOfferCode) => {
-        assert.equal(peerOfferCode, "A".repeat(64));
+    const result = await withAbortTimeout(ac, () => runLiveRendezvous({
+      mode: "flare-listener",
+      phrase: "tower phrase",
+      acceptOfferCode: async (peerOfferCode) => {
+        seenOfferCode = peerOfferCode;
         return "B".repeat(64);
       },
-      {
+      callbacks: {
         onStatus: () => {},
         onLog: () => {},
         onPeerArrived: async () => true,
       },
-      ac.signal,
-    ));
+      signal: ac.signal,
+    }));
 
-    assert.equal(result.peerOfferCode, "A".repeat(64));
+    assert.equal(result.role, "answerer");
+    assert.equal(seenOfferCode, "A".repeat(64));
     assert.equal(getEventListeners(ac.signal, "abort").length, 0);
+    assert.ok(result.relay);
+    result.relay.destroy();
     assert.equal(FakeFlareWebSocket.instances.length, TRACKER_URLS.length);
     for (const ws of FakeFlareWebSocket.instances) {
       assert.equal(ws.readyState, FakeFlareWebSocket.CLOSED);
@@ -229,14 +273,15 @@ describe("flare cleanup", () => {
     }
   });
 
-  it("signal flare removes abort listener and closes sockets when extinguished before a peer arrives", async () => {
-    installFakeWebSocket("signal-flare");
+  it("signal flare removes abort listener and closes sockets when extinguished before accepting a peer", async () => {
+    installFakeWebSocket("live-flare-abort");
     const ac = new AbortController();
 
-    const flarePromise = withAbortTimeout(ac, () => maintainFlare(
-      "tower phrase",
-      async () => "B".repeat(64),
-      {
+    const flarePromise = withAbortTimeout(ac, () => runLiveRendezvous({
+      mode: "flare-listener",
+      phrase: "tower phrase",
+      acceptOfferCode: async () => "B".repeat(64),
+      callbacks: {
         onStatus: () => {},
         onLog: () => {},
         onPeerArrived: async () => {
@@ -244,8 +289,8 @@ describe("flare cleanup", () => {
           return false;
         },
       },
-      ac.signal,
-    ));
+      signal: ac.signal,
+    }));
 
     await assert.rejects(flarePromise, (err: unknown) => {
       assert.ok(err instanceof DOMException);

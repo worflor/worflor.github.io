@@ -14,16 +14,18 @@
  *                                      → AES-CTR(key, 65536 zero bytes)
  *
  * adaptive compression:
- *   two parallel bit-level coders compete per message.
+ *   three parallel bit-level coders compete per message.
  *   BitM (Möbius per-bit, 512 ctx) — general purpose temporal.
  *   Bit1 (order-1 4-bit prefix, 4080 ctx) — inter-byte structure (UTF-8, structured data).
+ *   BitX (XOR derivative, 4080 ctx) — byte-stream velocity (transition patterns).
+ *     slot = (prev ^ prev2) >>> 4. inspired by Logos Z-axis (spectral derivative).
  *   Bit0 (order-0, 255 ctx) is NOT maintained separately — it's the mathematical
  *   marginal of BitM over prevBit, dominated in the membrane's priming regime.
- *   mode byte: 0x00=BitM, 0x02=Bit1, 0xFF=RAW.
+ *   mode byte: 0x00=BitM, 0x02=Bit1, 0x03=BitX, 0xFF=RAW.
  */
 
 import { hkdf, TE } from "./live-crypto";
-import { toArrayBuffer } from "./wasm";
+import { toArrayBuffer } from "./buf";
 
 // --- constants ---
 
@@ -99,7 +101,26 @@ function primeCounts1(counts: Uint32Array, data: Uint8Array): void {
     }
 }
 
-// --- arithmetic coder (same as live-wasm-logos.ts) ---
+// prime a BitX counts array (XOR derivative, 4080 contexts).
+// slot = (prev ^ prev2) >>> 4: top nibble of XOR between last two bytes.
+// captures byte-stream velocity — inspired by Logos Z-axis (spectral derivative).
+// same footprint as Bit1 (16 slots × 256 tree × 2 = 8192 uint32).
+function primeCountsX(counts: Uint32Array, data: Uint8Array): void {
+    let prev = 0, prev2 = 0;
+    for (const byte of data) {
+        const slot = (prev ^ prev2) >>> 4;
+        let ctx = 1;
+        for (let k = 7; k >= 0; k--) {
+            const bit = (byte >> k) & 1;
+            counts[(slot * 256 + ctx) * 2 + bit]++;
+            ctx = (ctx << 1) | bit;
+        }
+        prev2 = prev;
+        prev = byte;
+    }
+}
+
+// --- arithmetic coder (LZMA-style range coder, RC_TOP=16M) ---
 
 const RC_TOP = 0x1000000;
 
@@ -270,6 +291,56 @@ function decode1(counts: Uint32Array, data: Uint8Array, len: number): Uint8Array
     return out;
 }
 
+// BitX: XOR derivative (prev^prev2 upper nibble), 4080 contexts.
+// captures byte-stream velocity — the Z-axis of Logos lifted to the loop ratchet.
+// for ASCII text: similar consecutive letters have small XOR (slot 0-1),
+// space↔letter transitions have consistent XOR (slot 5), UTF-8 continuation
+// bytes cluster tightly. BitX sees the rhythm of transitions, not the bytes themselves.
+function encodeX(counts: Uint32Array, data: Uint8Array): Uint8Array {
+    const enc = new ArithEncoder();
+    let prev = 0, prev2 = 0;
+    for (const byte of data) {
+        const slot = (prev ^ prev2) >>> 4;
+        let ctx = 1;
+        for (let k = 7; k >= 0; k--) {
+            const bit = (byte >> k) & 1;
+            const idx = (slot * 256 + ctx) * 2;
+            const c0 = counts[idx], c1 = counts[idx + 1], total = c0 + c1;
+            if (bit === 0) enc.encode(0, c0, total);
+            else           enc.encode(c0, total, total);
+            counts[idx + bit]++;
+            ctx = (ctx << 1) | bit;
+        }
+        prev2 = prev;
+        prev = byte;
+    }
+    return enc.flush();
+}
+function decodeX(counts: Uint32Array, data: Uint8Array, len: number): Uint8Array {
+    const dec = new ArithDecoder(data);
+    const out = new Uint8Array(len);
+    let prev = 0, prev2 = 0;
+    for (let i = 0; i < len; i++) {
+        const slot = (prev ^ prev2) >>> 4;
+        let ctx = 1, byte = 0;
+        for (let k = 7; k >= 0; k--) {
+            const idx = (slot * 256 + ctx) * 2;
+            const c0 = counts[idx], c1 = counts[idx + 1], total = c0 + c1;
+            const offset = dec.getCDF(total);
+            const bit    = offset >= c0 ? 1 : 0;
+            if (bit === 0) dec.advance(0, c0, total);
+            else           dec.advance(c0, total, total);
+            counts[idx + bit]++;
+            byte = (byte << 1) | bit;
+            ctx  = (ctx << 1) | bit;
+        }
+        out[i] = byte;
+        prev2 = prev;
+        prev = byte;
+    }
+    return out;
+}
+
 // --- production key derivation ---
 
 // expands a 32-byte chain key to 65536 bytes.
@@ -306,15 +377,16 @@ export interface LoopState {
     // cryptographic root. all other fields derive from this + message history.
     chain:   Uint8Array;      // 32 bytes
 
-    // adaptive 0D attention models: two parallel bit-level coders.
-    // both stay trained on the full conversation history.
-    // loopEncode trial-encodes with both and picks the smallest.
+    // adaptive 0D attention models: three parallel bit-level coders.
+    // all stay trained on the full conversation history.
+    // loopEncode trial-encodes with all three and picks the smallest.
     //
     // Bit0 (order-0, 255 ctx) is NOT stored — it's the mathematical marginal
     // of BitM over prevBit. in the membrane's priming regime (512B per loopStep),
     // BitM dominates Bit0: same convergence, strictly more information.
     countsBitM:  Uint32Array;  // 1024 uint32 — Möbius per-bit (512 ctx × 2)
     countsBit1:  Uint32Array;  // 8192 uint32 — order-1, 4-bit prefix (16 × 256 ctx × 2)
+    countsBitX:  Uint32Array;  // 8192 uint32 — XOR derivative (16 × 256 ctx × 2)
 
     // ratchet step counter. monotonically increasing.
     step:    number;
@@ -342,12 +414,17 @@ export function loopInit(sharedBlock: Uint8Array): LoopState {
     for (let i = 0; i < 4096; i++) { countsBit1[i * 2] = 1; countsBit1[i * 2 + 1] = 1; }
     primeCounts1(countsBit1, primeData);
 
+    // BitX: 16 × 256 contexts × 2, Laplace prior = 1
+    const countsBitX = new Uint32Array(8192);
+    for (let i = 0; i < 4096; i++) { countsBitX[i * 2] = 1; countsBitX[i * 2 + 1] = 1; }
+    primeCountsX(countsBitX, primeData);
+
     // chain: first 32 bytes of shared block mixed with 16D residual
     const chain = new Uint8Array(32);
     for (let i = 0; i < 32; i++)
         chain[i] = sharedBlock[i] ^ ((residual >>> ((i & 3) * 8)) & 0xFF);
 
-    return { chain, countsBitM, countsBit1, step: 0 };
+    return { chain, countsBitM, countsBit1, countsBitX, step: 0 };
 }
 
 // advance the loop one step: the ratchet.
@@ -365,19 +442,22 @@ export async function loopStep(state: LoopState): Promise<{ next: LoopState; mes
         advanceChain(state.chain, residual, state.step),
     ]);
 
-    // 0D: overlay counts from expanded block for both models
+    // 0D: overlay counts from expanded block for all three models
     const primeData = expanded.subarray(0, 512);
     const newCountsBitM = state.countsBitM.slice();
     primeCountsM(newCountsBitM, primeData);
     const newCountsBit1 = state.countsBit1.slice();
     primeCounts1(newCountsBit1, primeData);
+    const newCountsBitX = state.countsBitX.slice();
+    primeCountsX(newCountsBitX, primeData);
 
     expanded.fill(0);  // wipe keystream after use
 
     return {
         next: {
             chain: newChain, countsBitM: newCountsBitM,
-            countsBit1: newCountsBit1, step: state.step + 1,
+            countsBit1: newCountsBit1, countsBitX: newCountsBitX,
+            step: state.step + 1,
         },
         messageKey,
     };
@@ -391,86 +471,100 @@ export async function loopStep(state: LoopState): Promise<{ next: LoopState; mes
 const LOOP_RAW_THRESHOLD  = 1 * 1024 * 1024; // 1 MB
 const LOOP_TRAIN_LIMIT    = 64 * 1024;        // train on at most 64 KB of large payloads
 
-// adaptive compression: trial-encode with both models, pick the smallest.
-// both count arrays evolve as a side effect of trial encoding, so both models
+// adaptive compression: trial-encode with all three models, pick the smallest.
+// all count arrays evolve as a side effect of trial encoding, so all models
 // stay trained on the full conversation history regardless of which one wins.
-// mode byte: 0x00=BitM, 0x02=Bit1, 0xFF=RAW.
-export function loopEncode(state: LoopState, data: Uint8Array): { encoded: Uint8Array; next: LoopState } {
-    // clone both count arrays — encoding (or priming) mutates them
+// mode byte: 0x00=BitM, 0x02=Bit1, 0x03=BitX, 0xFF=RAW.
+export function loopEncode(state: LoopState, data: Uint8Array): { encoded: Uint8Array; raw: boolean; next: LoopState } {
+    // clone all count arrays — encoding (or priming) mutates them
     const cM = state.countsBitM.slice();
     const c1 = state.countsBit1.slice();
+    const cX = state.countsBitX.slice();
 
-    // Large payload fast path: binary files won't compress, and trial-encoding
+    // large payload fast path: binary files won't compress, and trial-encoding
     // them would allocate O(N) memory and burn seconds of CPU for no gain.
-    // Train only on a prefix so text-message compression quality is preserved.
+    // train only on a prefix so text-message compression quality is preserved.
+    // returns raw = true with encoded = data (same reference, zero copy).
+    // the caller is responsible for prepending 0xFF when framing.
     if (data.length >= LOOP_RAW_THRESHOLD) {
         const trainSlice = data.subarray(0, LOOP_TRAIN_LIMIT);
         primeCountsM(cM, trainSlice);
         primeCounts1(c1, trainSlice);
-        const out = new Uint8Array(1 + data.length);
-        out[0] = 0xFF; out.set(data, 1);
-        return { encoded: out, next: { ...state, countsBitM: cM, countsBit1: c1 } };
+        primeCountsX(cX, trainSlice);
+        return { encoded: data, raw: true, next: { ...state, countsBitM: cM, countsBit1: c1, countsBitX: cX } };
     }
 
     // ArithEncoder.flush() always produces ≥ 4 bytes (the lo register).
-    // for data shorter than that, RAW is guaranteed to win — skip the 36KB
+    // for data shorter than that, RAW is guaranteed to win — skip the
     // trial-encode and use the lightweight primeCounts pass instead.
     if (data.length < 5) {
         primeCountsM(cM, data);
         primeCounts1(c1, data);
+        primeCountsX(cX, data);
         const out = new Uint8Array(1 + data.length);
         out[0] = 0xFF; out.set(data, 1);
-        return { encoded: out, next: { ...state, countsBitM: cM, countsBit1: c1 } };
+        return { encoded: out, raw: false, next: { ...state, countsBitM: cM, countsBit1: c1, countsBitX: cX } };
     }
 
     // trial-encode with each model (each updates its cloned counts)
     const encM = encodeM(cM, data);
     const enc1 = encode1(c1, data);
+    const encX = encodeX(cX, data);
 
     // pick smallest
     let bestMode: number, bestEncoded: Uint8Array;
-    if (enc1.length < encM.length) {
+    if (enc1.length <= encM.length && enc1.length <= encX.length) {
         bestMode = 0x02; bestEncoded = enc1;
+    } else if (encX.length <= encM.length) {
+        bestMode = 0x03; bestEncoded = encX;
     } else {
         bestMode = 0x00; bestEncoded = encM;
     }
 
-    const next: LoopState = { ...state, countsBitM: cM, countsBit1: c1 };
+    const next: LoopState = { ...state, countsBitM: cM, countsBit1: c1, countsBitX: cX };
 
     // raw fallback if no coder beats input length
     if (bestEncoded.length >= data.length) {
         const out = new Uint8Array(1 + data.length);
         out[0] = 0xFF; out.set(data, 1);
-        return { encoded: out, next };
+        return { encoded: out, raw: false, next };
     }
 
     const out = new Uint8Array(1 + bestEncoded.length);
     out[0] = bestMode; out.set(bestEncoded, 1);
-    return { encoded: out, next };
+    return { encoded: out, raw: false, next };
 }
 
 // mode-directed decompression: read mode byte, decode with the winning model,
-// then update the other model via a count-only pass on the decoded plaintext.
-// both count arrays evolve identically to the encoder's.
+// then update the other models via a count-only pass on the decoded plaintext.
+// all count arrays evolve identically to the encoder's.
 export function loopDecode(state: LoopState, data: Uint8Array, len: number): { decoded: Uint8Array; next: LoopState } {
     const mode    = data[0];
     const payload = data.subarray(1);
 
-    // clone both count arrays
+    // clone all count arrays
     const cM = state.countsBitM.slice();
     const c1 = state.countsBit1.slice();
+    const cX = state.countsBitX.slice();
 
     let decoded: Uint8Array;
     switch (mode) {
-        case 0x00: // BitM won — decode with BitM, train Bit1 from plaintext
+        case 0x00: // BitM won — decode with BitM, train others from plaintext
             decoded = decodeM(cM, payload, len);
             primeCounts1(c1, decoded);
+            primeCountsX(cX, decoded);
             break;
-        case 0x02: // Bit1 won — decode with Bit1, train BitM from plaintext
+        case 0x02: // Bit1 won — decode with Bit1, train others from plaintext
             decoded = decode1(c1, payload, len);
             primeCountsM(cM, decoded);
+            primeCountsX(cX, decoded);
             break;
-        case 0xFF: // RAW fallback — train both from plaintext
+        case 0x03: // BitX won — decode with BitX, train others from plaintext
+            decoded = decodeX(cX, payload, len);
+            primeCountsM(cM, decoded);
+            primeCounts1(c1, decoded);
+            break;
+        case 0xFF: // RAW fallback — train all from plaintext
             decoded = payload.slice(0, len);
             // Mirror encoder: for large payloads train only on a prefix so
             // both sides' model state stays identical.
@@ -478,16 +572,18 @@ export function loopDecode(state: LoopState, data: Uint8Array, len: number): { d
                 const trainSlice = decoded.subarray(0, LOOP_TRAIN_LIMIT);
                 primeCountsM(cM, trainSlice);
                 primeCounts1(c1, trainSlice);
+                primeCountsX(cX, trainSlice);
             } else {
                 primeCountsM(cM, decoded);
                 primeCounts1(c1, decoded);
+                primeCountsX(cX, decoded);
             }
             break;
         default:
             throw new Error(`loopDecode: unknown mode 0x${mode.toString(16)}`);
     }
 
-    return { decoded, next: { ...state, countsBitM: cM, countsBit1: c1 } };
+    return { decoded, next: { ...state, countsBitM: cM, countsBit1: c1, countsBitX: cX } };
 }
 
 // wipe sensitive fields from a loop state.
@@ -498,6 +594,7 @@ export function loopWipe(state: LoopState): void {
     state.chain.fill(0);
     state.countsBitM.fill(0);
     state.countsBit1.fill(0);
+    state.countsBitX.fill(0);
 }
 
 // expand a 32-byte key to 65536 bytes for use as a loopInit seed.

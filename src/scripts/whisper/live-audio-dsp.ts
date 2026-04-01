@@ -19,7 +19,7 @@ const DC_ALPHA = 0.9995;
 
 /**
  * Encode-side DC-blocking high-pass IIR filter.
- * Apply to raw PCM **before** calling encodeAdpcm.
+ * Apply to raw PCM **before** calling encodeHarmonic.
  *
  * Forward: y[n] = x[n] - x[n-1] + α·y[n-1]
  */
@@ -37,7 +37,7 @@ export function dcBlock(samples: Float32Array): Float32Array {
 
 /**
  * Decode-side inverse of dcBlock — reconstructs the original signal.
- * Apply to decoded PCM **after** calling decodeAdpcm.
+ * Apply to decoded PCM **after** calling decodeHarmonic.
  *
  * Inverse (leaky integrator): x[n] = x[n-1] + y[n] - α·y[n-1]
  */

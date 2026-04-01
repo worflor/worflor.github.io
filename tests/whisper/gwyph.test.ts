@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { GLYPH_MIME, gwyphPngName, isWhisperGlyph, parseGwyphPayload } from "../../src/scripts/whisper/live-gwyph.js";
-import { GlyphCodec } from "../../src/scripts/whisper/live-wasm-glyph.js";
+import { GlyphCodec, GLYPH_CHANNELS } from "../../src/scripts/whisper/live-wasm-glyph.js";
 import { encode0D } from "../../src/scripts/whisper/live-wasm-logos.js";
 
 class ByteWriter {
@@ -35,28 +35,6 @@ class ByteWriter {
   }
 }
 
-function buildMinimalGwyph(): Uint8Array {
-  const w = new ByteWriter();
-  w.u8(0x47); w.u8(0x57); w.u8(0x59); w.u8(0x50); // GWYP
-  w.u8(1); // version
-  w.u8(0); // mode blank
-  w.u16(320);
-  w.u16(240);
-  w.varUint(1); // stroke count
-
-  // pen stroke with one point
-  w.u8(0); // pen tag
-  w.u8(0); // tool pen
-  w.u8(0xff); w.u8(0xaa); w.u8(0x22); // rgb
-  w.u16(512); // width q8 => 2.0
-  w.varUint(1); // point count
-  w.u16(16384); // x
-  w.u16(8192);  // y
-  w.u16(32767); // p
-
-  return w.finish();
-}
-
 function buildMinimalGwyphV3(): Uint8Array {
   const raw = new ByteWriter();
   raw.u8(0); // mode blank
@@ -74,16 +52,21 @@ function buildMinimalGwyphV3(): Uint8Array {
   raw.u16(512); // width q8 => 2.0
   raw.varUint(3); // point count
 
-  // seeds
-  raw.u16(12000); raw.u16(9000); raw.u16(32767);
-  raw.u16(14000); raw.u16(9200); raw.u16(32000);
+  const CH = GLYPH_CHANNELS;
+  // seeds: x, y, p active, rest zero
+  const seed0 = [12000, 9000, 32767];
+  const seed1 = [14000, 9200, 32000];
+  for (let c = 0; c < CH; c++) raw.u16(seed0[c] ?? 0);
+  for (let c = 0; c < CH; c++) raw.u16(seed1[c] ?? 0);
 
   // packed tail from GlyphCodec (point index >= 2)
-  const q = new Int32Array([
-    12000, 9000, 32767,
-    14000, 9200, 32000,
-    17000, 9800, 30000,
-  ]);
+  const pt2 = [17000, 9800, 30000];
+  const q = new Int32Array(3 * CH);
+  for (let c = 0; c < CH; c++) {
+    q[c] = seed0[c] ?? 0;
+    q[CH + c] = seed1[c] ?? 0;
+    q[2 * CH + c] = pt2[c] ?? 0;
+  }
   const packed = GlyphCodec.pack(GlyphCodec.encode(q));
   raw.varUint(packed.length);
   raw.bytes(packed);
@@ -100,27 +83,18 @@ function buildMinimalGwyphV3(): Uint8Array {
 }
 
 describe("live-gwyph codec", () => {
-  it("parses valid gwyph payload", () => {
-    const payload = buildMinimalGwyph();
-    const parsed = parseGwyphPayload(payload);
-    assert.ok(parsed);
-    assert.equal(parsed.mode, "blank");
-    assert.equal(parsed.logicalW, 320);
-    assert.equal(parsed.logicalH, 240);
-    assert.equal(parsed.strokes.length, 1);
-    const stroke = parsed.strokes[0];
-    assert.equal(stroke.type, "pen");
-    if (stroke.type === "pen") {
-      assert.equal(stroke.tool, "pen");
-      assert.equal(stroke.points.length, 1);
-      assert.ok(stroke.points[0].x > 0 && stroke.points[0].x < 1);
-      assert.ok(stroke.points[0].y > 0 && stroke.points[0].y < 1);
-    }
-  });
-
   it("rejects malformed payload", () => {
     const bad = new Uint8Array([0, 1, 2, 3, 4]);
     assert.equal(parseGwyphPayload(bad), null);
+  });
+
+  it("rejects legacy v1 payload", () => {
+    // v1 format is no longer supported — parser should return null
+    const w = new ByteWriter();
+    w.u8(0x47); w.u8(0x57); w.u8(0x59); w.u8(0x50);
+    w.u8(1); // version 1
+    w.u8(0); w.u16(320); w.u16(240); w.varUint(0);
+    assert.equal(parseGwyphPayload(w.finish()), null);
   });
 
   it("parses valid compressed gwyph v3 payload", () => {

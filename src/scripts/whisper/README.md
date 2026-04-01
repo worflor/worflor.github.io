@@ -8,12 +8,13 @@ encrypted communication with physics-based compression. the codecs model the phy
 Whisper Protocol
 ├── Whisper Logos      - 0D entropy codec (8-bit boolean lattice entropy predictor)
 ├── Whisper Harmonic   - 1D audio codec (symmetric damped harmonic oscillator)
-├── Whisper Lumen      - 2D video codec (surface geometry model using 3-neighbour Möbius predictor)
+├── Whisper Lumen      - 3D image and video codec (spatiotemporal light field, CDF 9/7 + Möbius prediction)
 ├── Whisper Spatial    - 3D volumetric codec (7-neighbour complex Möbius predictor)
 ├── Whisper Akasha     - 4D spatiotemporal codec (15-neighbour quaternion Möbius predictor)
 ├── Whisper Kū         - 5D plenoptic codec (31-neighbour hypercube Möbius predictor)
 ├── Whisper Loup       - 8D self codec (255-neighbour octonion Möbius predictor)
-├── Whisper Kizuna     - 16D membrane codec (65535-neighbour sedenion lattice predictor + spectral witniss handshake primitive)
+├── Whisper Kizuna     - 16D membrane codec (65535-neighbour sedenion lattice predictor + spectral witness handshake primitive)
+├── Whisper Prism      - unified API facade for the codec tower
 ├── Ratcheting layer   - per-frame cryptographic forward secrecy
 ├── Async messaging    - store-and-forward encrypted messages
 └── Live + Campfire    - real-time encrypted messaging
@@ -23,30 +24,54 @@ Whisper Protocol
 
 ### Whisper Harmonic (`live-wasm-audio.ts`)
 
-models sound as a **symmetric damped harmonic oscillator**:
+models sound as a **damped harmonic oscillator** — the same second-order differential equation that governs vibrating strings, vocal tracts, and resonating columns of air:
 
 ```
-pred = (Anchor_Future + Friction × Anchor_Past) / Tension
+pred = K · x[n-1] − G · x[n-2]
+
+K = 2r·cos(ω₀)  — encodes frequency
+G = r²           — encodes damping
+stability:  K² ≤ 4G  (poles inside unit circle)
 ```
 
-- **bidirectional mesh interpolation**: 15–20% gain via future-anchored residues
-- **boundary-anchored stability**: solves the 1D entropy floor using Key C
-- 228x realtime encoding (WASM SIMD)
-- per-chunk cryptographic ratcheting
-- Mid/Side stereo decomposition
+- **AR(2) oscillator**: per 32-sample block Cramer least-squares fit in hand-written WASM
+- **Burg lattice**: adaptive-order LPC (up to order 12) per 256-sample super-block, captures formants and polyphonic structure
+- **trial encode**: both paths (Burg+AR(2) vs AR(2)-only) are evaluated, cheaper one wins
+- **harmonic topology**: Goertzel extraction of harmonics 2..N, 2D Möbius predictor on the spectral surface
+- **CDF 5/3 wavelet**: integer-to-integer lifting on aperiodic residual, per-subband cascaded K/G resonator
+- **Mid/Side stereo**: M=(L+R)/2, S=L−R, lossless, zero overhead
+- per-frame ChaCha20 encryption + SipHash-lite MAC, forward secrecy via ratchet
 
 ### Whisper Lumen (`live-wasm-video.ts`)
 
-models images as **physical surfaces via second-order Taylor expansion**:
+models video as a **3D light field** — frames are not a sequence of 2D images but slices of a continuous 3D volume where time is a true geometric dimension:
 
 ```
-pred = D + α·(L−D) + β·(A−D) + γ·(fyy + fxx + fxy)
+3D hybrid wavelet:  CDF 5/3 (integer, temporal) + CDF 9/7 (float, spatial)
+                    temporal axis decomposes into low (still) + high (motion)
+
+Möbius prediction:  P = L + A + B − DXY − DXZ − DYZ + D3
+                    7-neighbor inclusion-exclusion over the unit 3-cube
+
+quantization:       dead-zone with Laplace-optimal bias (1/4),
+                    Mannos-Sakrison CSF weighting per subband,
+                    activity masking (Stevens power law, γ=0.15)
+
+baseQ:              2^((100 − quality) / 20)   — 20 Q-points per octave
 ```
 
-- 8-25x compression (scales with resolution)
-- per-frame cryptographic ratcheting
-- SUB-delta temporal encoding
-- full Hessian curvature fitting
+- **3D CDF 9/7 biorthogonal wavelet**: float spatial (α=-1.586, β=-0.053, γ=0.883, δ=0.444, K=1.230), integer temporal
+- **GOP-pair buffering**: GOP=2 frames. temporal-low = the still, temporal-high = the motion. static content → temporal-high ≈ 0 → excellent compression (hold frames = 68 bytes, 0.4% of keyframe)
+- **4 GOP types**: INTRA (I-pair), SLIDING (P-diff vs previous reconstruction), SINGLE (fallback), KEYREF (long-term reference)
+- **per-subband 4-mode coder**: 00=zero, 01=adaptive Rice + 3D Möbius prediction, 10=block-based 8-mode, 11=Logos (context-adaptive arithmetic)
+- **adaptive step selection**: 1-bit flag per subband signals fine step (80% of base) vs base step, Lagrangian RD decision at λ=ln(2)
+- **chroma-from-luma (CfL)**: linear regression on ALL subbands (not just DC), alpha clamped ±2 (BT.601 bounds), adaptive NN vs bilinear upsampling
+- **6-parameter affine registration**: Lucas-Kanade iterative refinement for inter-frame motion compensation
+- **Mannos-Sakrison CSF**: luma sensitivity peaks at ~5.11 cpd, chroma uses Mullen 1985 chromatic CSF
+- **end-to-end encryption**: ChaCha20 + HalfSipHash-2-4 MAC per frame, forward secrecy via ratchet
+- **wire format 0x0B**: variable-length header with sparse affine params, ULEB128 channel sizes
+- competitive with WebP at matched byte counts on photographic content; Y-channel PSNR +10 dB vs WebP at matched quality
+- runs in browser with zero native dependencies (JS + WASM)
 
 ### Whisper Spatial (`live-wasm-spatial.ts`)
 
@@ -161,12 +186,15 @@ licensed under the [Whisper Protocol License](./LICENSE.md), separate from the r
 
 ## status
 
-- 360+ tests passing (audio + video)
+- 850+ tests passing (audio + video + spatial + kizuna + prism + logos + loop)
+- Whisper Lumen codec rewritten — native 3D spatiotemporal wavelet (CDF 9/7 float spatial + CDF 5/3 integer temporal), Möbius prediction, competitive with WebP
 - Whisper Spatial codec complete — binary sphere 984× at 128³
 - Whisper Akasha codec complete — SLERP 1533× at 48⁴, quat orbit 442×, binary 678×
 - Whisper Kū codec complete — binary hypersphere 1127× at 24⁵, SLERP 925.8× at 16⁵, round-trip verified
-- Whisper Kizuna complete — 16D Möbius, 99.998% free zeros, 72/72 tests (WHT identity, direct boundary theorem)
-- Whisper Loop complete — HKDF+AES-CTR KDFs, fully integrated into live.ts, 65/65 tests
+- Whisper Kizuna complete — 16D Möbius, 99.998% free zeros, WHT identity, direct boundary theorem
+- Whisper Loop complete — HKDF+AES-CTR KDFs, fully integrated into live.ts
+- Whisper Prism complete — unified API facade, WHT spectrum pre-filter (WASM SIMD), auto-routing
+- 850+ tests passing across the full codec suite
 - production-grade quality metrics
 - integrated encryption with forward secrecy — Kizuna membrane live in production
 - patent pending

@@ -1,10 +1,17 @@
 /**
- * WASM SIMD accelerator for the Whisper Video Codec.
+ * video-simd.ts — WASM SIMD accelerator for Whisper Lumen.
  *
- * All pixel-level hot-path functions run in hand-written WebAssembly
- * with v128 SIMD (where applicable). WASM is REQUIRED — no JS fallback.
+ * pixel-level hot-path functions in hand-written WebAssembly with v128 SIMD.
+ * WASM is required — no JS fallback.
  *
- * Zero external dependencies — the WASM binary is embedded in video-simd-bin.ts.
+ * active functions: color space conversion (BT.601 limited range YCbCr 4:2:0),
+ * PQ transfer tables (identity for SDR, infrastructure for HDR).
+ *
+ * the WASM binary also exports legacy functions from earlier codec iterations
+ * (delta, zigzag, block bitmap, dithering, chroma quantization) which remain
+ * in the binary but are not called by the current 3D wavelet architecture.
+ *
+ * zero external dependencies — the WASM binary is embedded in video-simd-bin.ts.
  */
 
 import { VIDEO_SIMD_WASM } from "./video-simd-bin";
@@ -22,6 +29,7 @@ interface VideoSimdExports {
     zigzag_encode(ptr: number, len: number): void;
     zigzag_decode(ptr: number, len: number): void;
     rgba_to_yuv420(rgba: number, yuv: number, w: number, h: number): void;
+    yuv420_to_rgba_nn(yuv: number, rgba: number, w: number, h: number): void;
     yuv420_to_rgba_bilinear(yuv: number, rgba: number, w: number, h: number): void;
     quantize_chroma_f(src: number, dst: number, ySamples: number, totalLen: number, yInv: number, uvInv: number): void;
     dequantize_chroma_f(src: number, dst: number, ySamples: number, totalLen: number, yStep: number, uvStep: number): void;
@@ -33,6 +41,30 @@ interface VideoSimdExports {
     dither_plane(yuv: number, off: number, stride: number, rows: number, step: number): void;
     frc_dither(yuv: number, w: number, h: number, baseStrength: number, offX: number, offY: number): void;
 }
+
+const REQUIRED_VIDEO_SIMD_EXPORTS = [
+    "mem",
+    "BUF_START",
+    "ensure_pages",
+    "pq_forward",
+    "pq_inverse",
+    "compute_delta",
+    "apply_delta",
+    "zigzag_encode",
+    "zigzag_decode",
+    "rgba_to_yuv420",
+    "yuv420_to_rgba_nn",
+    "yuv420_to_rgba_bilinear",
+    "quantize_chroma_f",
+    "dequantize_chroma_f",
+    "quantize_chroma_signed_f",
+    "dequantize_chroma_signed_f",
+    "build_block_bitmap",
+    "extract_changed_blocks",
+    "reinsert_changed_blocks",
+    "dither_plane",
+    "frc_dither",
+] as const;
 
 // ── Singleton WASM instance ──────────────────────────────────────────
 
@@ -58,6 +90,10 @@ export function initVideoSimd(): boolean {
     try {
         const mod = new WebAssembly.Module(VIDEO_SIMD_WASM);
         const inst = new WebAssembly.Instance(mod);
+        const exports = inst.exports as Record<string, unknown>;
+        for (const name of REQUIRED_VIDEO_SIMD_EXPORTS) {
+            if (!(name in exports)) throw new Error(`video-simd missing export: ${name}`);
+        }
         wasm = inst.exports as unknown as VideoSimdExports;
         wasmMem = new Uint8Array(wasm.mem.buffer);
         bufStart = wasm.BUF_START.value as number;
@@ -75,6 +111,7 @@ export function hasVideoSimd(): boolean { return wasm !== null; }
 // ── Memory helpers ───────────────────────────────────────────────────
 
 function ensure(bytesNeeded: number): void {
+    if (!wasm || !wasmMem) throw new Error("Video SIMD not initialized");
     const totalNeeded = bufStart + bytesNeeded;
     const pagesNeeded = Math.ceil(totalNeeded / 65536);
     wasm!.ensure_pages(pagesNeeded);
@@ -176,27 +213,13 @@ export function yuv420ToRgba(yuv: Uint8Array, width: number, height: number): Ui
  *  case). Slower than WASM bilinear but correct at colour transitions.
  *  Uses limited-range BT.601 (Y=16..235, studio swing) matching the WASM encoder. */
 export function yuv420ToRgbaNN(yuv: Uint8Array, width: number, height: number): Uint8Array {
-    const rgba = new Uint8Array(width * height * 4);
-    const ySize = width * height;
-    const uvW = width >> 1;
-    const uvSize = uvW * (height >> 1);
-    for (let py = 0; py < height; py++) {
-        const uvRow = (py >> 1) * uvW;
-        for (let px = 0; px < width; px++) {
-            const uvX = px >> 1;
-            const yy = yuv[py * width + px] - 16;
-            const Cb = yuv[ySize + uvRow + uvX];
-            const Cr = yuv[ySize + uvSize + uvRow + uvX];
-            const pb = Cb - 128, pr = Cr - 128;
-            // BT.601 limited-range (studio swing) — matches WASM rgba_to_yuv420 / yuv420_to_rgba_bilinear
-            const R = Math.max(0, Math.min(255, Math.round(1.164 * yy + 1.596 * pr)));
-            const G = Math.max(0, Math.min(255, Math.round(1.164 * yy - 0.391 * pb - 0.813 * pr)));
-            const B = Math.max(0, Math.min(255, Math.round(1.164 * yy + 2.018 * pb)));
-            const off = (py * width + px) * 4;
-            rgba[off] = R; rgba[off + 1] = G; rgba[off + 2] = B; rgba[off + 3] = 255;
-        }
-    }
-    return rgba;
+    const yuvSize = yuv.length;
+    const rgbaSize = width * height * 4;
+    ensure(yuvSize + rgbaSize);
+    const yp = bufStart, rp = yp + yuvSize;
+    w(yuv, yp);
+    wasm!.yuv420_to_rgba_nn(yp, rp, width, height);
+    return r(rp, rgbaSize);
 }
 
 export function quantizeChroma(data: Uint8Array, ySamples: number, yInv: number, uvInv: number): Uint8Array {

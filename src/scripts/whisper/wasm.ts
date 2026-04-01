@@ -1,5 +1,7 @@
 import { computeFingerprint } from "./seal";
 import { hkdf, aesGcmEncrypt, aesGcmDecrypt } from "./live-crypto";
+import { toArrayBuffer, toHex } from "./buf";
+export { toArrayBuffer, toHex } from "./buf";
 
 export interface WhisperInertCandidate {
   offset: number;
@@ -230,18 +232,7 @@ async function verifyEnvelopeCipher(
   }
 }
 
-export function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  // Provide an exact ArrayBuffer containing only [byteOffset, byteOffset+byteLength).
-  // This keeps runtime fast for “owning” buffers (offset=0,len=bufLen) and satisfies
-  // DOM typings that require ArrayBuffer-backed BufferSource.
-  const buf = bytes.buffer;
-  if (buf instanceof ArrayBuffer) {
-    if (bytes.byteOffset === 0 && bytes.byteLength === buf.byteLength) return buf;
-    return buf.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  }
-  const copy = new Uint8Array(bytes);
-  return copy.buffer;
-}
+// toArrayBuffer moved to buf.ts (re-exported above)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Incremental SHA-256 (in-house, no deps). Used for streaming Blob/File hashing.
@@ -872,17 +863,7 @@ function readU32(view: Uint8Array, offset: number): number {
 }
 
 // Pre-computed hex lookup: avoids Array.from + map + join per call (5-10× faster for hash-length inputs).
-const HEX_LUT = /*#__PURE__*/ (() => {
-  const t = new Array<string>(256);
-  for (let i = 0; i < 256; i++) t[i] = i.toString(16).padStart(2, "0");
-  return t;
-})();
-
-export function toHex(bytes: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < bytes.length; i++) out += HEX_LUT[bytes[i]];
-  return out;
-}
+// toHex moved to buf.ts (re-exported above)
 
 export function randomBytes(length: number): Uint8Array {
   const out = new Uint8Array(length);

@@ -9,7 +9,7 @@
  * Message keys: derived from chain, used once then discarded.
  */
 
-import { toHex, toArrayBuffer } from "./wasm";
+import { toHex, toArrayBuffer } from "./buf";
 import { hkdf, kdfChainDirect, compressP256, decompressP256 } from "./live-crypto";
 
 /** Pre-encoded constant — avoids per-call TextEncoder allocations */

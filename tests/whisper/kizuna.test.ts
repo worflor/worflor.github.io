@@ -6,6 +6,7 @@ import {
   encodeBlock16D,
   decodeBlock16D,
   handshake16D,
+  factored16D,
   encode16,
   decode16,
 } from "../../src/scripts/whisper/live-wasm-kizuna.js";
@@ -180,7 +181,10 @@ describe("live-wasm-kizuna", () => {
         const a = handshake16D(new Uint8Array(shared));
         const b = handshake16D(new Uint8Array(shared));
         assert.equal(a.residual, b.residual, `residual deterministic iter ${i}`);
-        assertBytesEqual(a.block8D, b.block8D, `block8D deterministic iter ${i}`);
+        assert.deepStrictEqual(
+          Array.from(a.rowWitnesses8D), Array.from(b.rowWitnesses8D),
+          `rowWitnesses8D deterministic iter ${i}`,
+        );
         assert.deepStrictEqual(
           Array.from(a.countsBitM), Array.from(b.countsBitM),
           `countsBitM deterministic iter ${i}`,
@@ -192,13 +196,13 @@ describe("live-wasm-kizuna", () => {
       for (let i = 0; i < 5; i++) {
         const result = handshake16D(makeBlock(0x1000 + i));
         assert.equal(typeof result.residual, "number", `residual is number iter ${i}`);
-        assert.equal(result.block8D.length, B16, `block8D is 65536B iter ${i}`);
+        assert.equal(result.rowWitnesses8D.length, 256, `rowWitnesses8D is 256 entries iter ${i}`);
         assert.equal(result.countsBitM.length, 1024, `countsBitM is 1024 uint32 iter ${i}`);
-        assert.ok(result.block8D instanceof Uint8Array, "block8D is Uint8Array");
+        assert.ok(result.rowWitnesses8D instanceof Int32Array, "rowWitnesses8D is Int32Array");
       }
     });
 
-    it("different inputs -> different residuals and block8D", () => {
+    it("different inputs -> different residuals and rowWitnesses8D", () => {
       const results = [];
       for (let i = 0; i < 10; i++) results.push(handshake16D(makeBlock(0x6000 + i)));
 
@@ -223,11 +227,34 @@ describe("live-wasm-kizuna", () => {
       }
     });
 
-    it("block8D has entropy (not all zeros)", () => {
+    it("rowWitnesses8D are non-trivial for random data", () => {
       for (let i = 0; i < 5; i++) {
         const result = handshake16D(makeBlock(0x5000 + i));
-        const unique = new Set(result.block8D);
-        assert.ok(unique.size > 100, `block8D should have entropy (${unique.size} unique bytes) iter ${i}`);
+        let nonZero = 0;
+        for (let h = 0; h < 256; h++) if (result.rowWitnesses8D[h] !== 0) nonZero++;
+        assert.ok(nonZero > 200, `sub-witnesses should be non-trivial (${nonZero}/256 non-zero) iter ${i}`);
+      }
+    });
+
+    it("factored16D residual = direct residual", () => {
+      for (let i = 0; i < 8; i++) {
+        const block = makeBlock(0x7000 + i);
+        const directR = residualAtOrigin(block);
+        const { residual: factoredR } = factored16D(block);
+        assert.equal(factoredR, directR, `factored vs direct mismatch at seed ${0x7000 + i}`);
+      }
+    });
+
+    it("single-byte corruption changes exactly one sub-witness", () => {
+      const block = makeBlock(0xF00DCAFE);
+      const { rowWitnesses: orig } = factored16D(block);
+      for (const targetRow of [0, 3, 127, 255]) {
+        const corrupted = block.slice();
+        corrupted[targetRow * 256 + 17] ^= 0x42;
+        const { rowWitnesses: corr } = factored16D(corrupted);
+        let changed = 0;
+        for (let h = 0; h < 256; h++) if (orig[h] !== corr[h]) changed++;
+        assert.equal(changed, 1, `corruption in row ${targetRow}: exactly 1 sub-witness should change`);
       }
     });
 

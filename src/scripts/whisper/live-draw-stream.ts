@@ -1,3 +1,5 @@
+import { GLYPH_CHANNELS, GLYPH_CHANNEL_NAMES, type GlyphChannelName } from "./live-wasm-glyph";
+
 export const DRAW_STREAM_VERSION = 1;
 
 export const DRAW_STREAM_KIND = {
@@ -17,11 +19,9 @@ type DrawStreamKindCode = typeof DRAW_STREAM_KIND[keyof typeof DRAW_STREAM_KIND]
 
 export type DrawTool = "pen" | "eraser";
 
-export interface DrawNormPoint {
-  x: number;
-  y: number;
-  p: number;
-}
+// shape derived from codec channel names — add a channel to the codec,
+// it appears here automatically
+export type DrawNormPoint = Record<GlyphChannelName, number>;
 
 export interface DrawStreamBeginEvent {
   kind: "begin";
@@ -184,7 +184,8 @@ function readBaseHeader(bytes: Uint8Array): { kind: number; seq: number } | null
 export function encodeDrawStreamEvent(evt: DrawStreamEvent): Uint8Array {
   switch (evt.kind) {
     case "begin": {
-      const out = new Uint8Array(20);
+      // 14 fixed bytes + 2 bytes per channel
+      const out = new Uint8Array(14 + GLYPH_CHANNELS * 2);
       const view = new DataView(out.buffer);
       writeBaseHeader(view, DRAW_STREAM_KIND.BEGIN, evt.seq);
       view.setUint16(6, evt.strokeId & 0xffff, true);
@@ -194,9 +195,9 @@ export function encodeDrawStreamEvent(evt: DrawStreamEvent): Uint8Array {
       view.setUint8(10, g);
       view.setUint8(11, b);
       view.setUint16(12, Math.round(clamp(evt.width, 0, 655.35) * 100), true);
-      view.setUint16(14, q16(evt.start.x), true);
-      view.setUint16(16, q16(evt.start.y), true);
-      view.setUint16(18, q16(evt.start.p), true);
+      for (let c = 0; c < GLYPH_CHANNELS; c++) {
+        view.setUint16(14 + c * 2, q16(evt.start[GLYPH_CHANNEL_NAMES[c]]), true);
+      }
       return out;
     }
     case "glyph": {
@@ -276,12 +277,16 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
 
   switch (kind) {
     case DRAW_STREAM_KIND.BEGIN: {
-      if (bytes.length !== 20) return null;
+      if (bytes.length !== 14 + GLYPH_CHANNELS * 2) return null;
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       const toolCode = view.getUint8(8);
       const tool: DrawTool | null = toolCode === 0 ? "pen" : (toolCode === 1 ? "eraser" : null);
       if (!tool) return null;
       const color = decodeHexColorRgb(view.getUint8(9), view.getUint8(10), view.getUint8(11));
+      const start = {} as DrawNormPoint;
+      for (let c = 0; c < GLYPH_CHANNELS; c++) {
+        start[GLYPH_CHANNEL_NAMES[c]] = uq16(view.getUint16(14 + c * 2, true));
+      }
       return {
         kind: "begin",
         seq,
@@ -289,11 +294,7 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
         tool,
         color,
         width: view.getUint16(12, true) / 100,
-        start: {
-          x: uq16(view.getUint16(14, true)),
-          y: uq16(view.getUint16(16, true)),
-          p: uq16(view.getUint16(18, true)),
-        },
+        start,
       };
     }
     case DRAW_STREAM_KIND.GLYPH: {
@@ -366,8 +367,6 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
       return null;
   }
 }
-
-// chunkDrawPoints removed as it is legacy. Use GlyphStreamEncoder for real-time.
 
 export class DrawStreamTracker {
   private state: DrawStreamTrackerState = {

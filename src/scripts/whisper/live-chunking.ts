@@ -44,40 +44,61 @@ export function estimateChunkedPrefixedSize(payloadBytes: number): number {
 
 /**
  * Iterate chunked, prefixed wire frames lazily.
- * Avoids allocating an intermediate array for large payloads.
+ *
+ * accepts a single buffer or multiple parts (virtual concatenation).
+ * multi-part avoids a full-payload concat when the caller has
+ * [header, ciphertext] as separate buffers — the cursor reads
+ * across part boundaries with zero intermediate allocation.
  */
-export function* iterateChunksPrefixed(data: Uint8Array, prefix: number): Generator<Uint8Array> {
-  if (data.length <= CHUNK_SIZE) {
-    const chunk = new Uint8Array(2 + data.length);
+export function* iterateChunksPrefixed(
+  data: Uint8Array | readonly Uint8Array[],
+  prefix: number,
+): Generator<Uint8Array> {
+  const parts = data instanceof Uint8Array ? [data] : data;
+  let totalLen = 0;
+  for (const p of parts) totalLen += p.length;
+
+  // cursor into the virtual concatenation of parts
+  let pi = 0, po = 0;
+  const fill = (dest: Uint8Array, off: number, len: number) => {
+    let n = 0;
+    while (n < len) {
+      const avail = parts[pi].length - po;
+      const take = avail < len - n ? avail : len - n;
+      dest.set(parts[pi].subarray(po, po + take), off + n);
+      n += take;
+      po += take;
+      if (po >= parts[pi].length) { pi++; po = 0; }
+    }
+  };
+
+  if (totalLen <= CHUNK_SIZE) {
+    const chunk = new Uint8Array(2 + totalLen);
     chunk[0] = prefix;
     chunk[1] = CHUNK_SINGLE;
-    chunk.set(data, 2);
+    fill(chunk, 2, totalLen);
     yield chunk;
     return;
   }
 
-  let offset = 0;
-
-  const startPayload = Math.min(CHUNK_SIZE - START_TOTAL_LENGTH_BYTES, data.length);
+  const startPayload = Math.min(CHUNK_SIZE - START_TOTAL_LENGTH_BYTES, totalLen);
   const startChunk = new Uint8Array(6 + startPayload);
   startChunk[0] = prefix;
   startChunk[1] = CHUNK_START;
-  new DataView(startChunk.buffer).setUint32(2, data.length, true);
-  startChunk.set(data.subarray(0, startPayload), 6);
+  new DataView(startChunk.buffer).setUint32(2, totalLen, true);
+  fill(startChunk, 6, startPayload);
   yield startChunk;
-  offset = startPayload;
+  let sent = startPayload;
 
-  while (offset < data.length) {
-    const remaining = data.length - offset;
-    const payloadSize = Math.min(CHUNK_SIZE, remaining);
-    const isLast = offset + payloadSize >= data.length;
-
+  while (sent < totalLen) {
+    const remaining = totalLen - sent;
+    const payloadSize = remaining < CHUNK_SIZE ? remaining : CHUNK_SIZE;
     const chunk = new Uint8Array(2 + payloadSize);
     chunk[0] = prefix;
-    chunk[1] = isLast ? CHUNK_END : CHUNK_CONTINUE;
-    chunk.set(data.subarray(offset, offset + payloadSize), 2);
+    chunk[1] = sent + payloadSize >= totalLen ? CHUNK_END : CHUNK_CONTINUE;
+    fill(chunk, 2, payloadSize);
     yield chunk;
-    offset += payloadSize;
+    sent += payloadSize;
   }
 }
 

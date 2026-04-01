@@ -130,7 +130,12 @@ export interface LiveMessage {
   text?: string;
   fileName?: string;
   fileSize?: number;
+  /** file payload for small single-message files (< 4 MB). */
   fileData?: Uint8Array;
+  /** file payload for large chunked transfers — assembled from per-chunk Blobs
+   *  so the data lives in browser blob storage (can swap to disk), not JS heap.
+   *  consumers should prefer the filePayloadBlob() helper over reading these directly. */
+  fileBlob?: Blob;
   fileType?: string;
   timestamp: number;
 }
@@ -285,15 +290,55 @@ async function selectTurnServer(phraseRoot: Uint8Array, pool: RTCIceServer[]): P
   return pool[idx];
 }
 
-async function selectStunServers(phraseRoot: Uint8Array | null, pool: RTCIceServer[]): Promise<RTCIceServer[]> {
-  const targetCount = Math.min(3, pool.length);
-  if (targetCount === pool.length) return pool;
-  if (!phraseRoot) return pool.slice(0, targetCount);
+/** Count individual URLs across an array of RTCIceServer objects. */
+function countIceUrls(servers: RTCIceServer[]): number {
+  let n = 0;
+  for (const s of servers) {
+    n += Array.isArray(s.urls) ? s.urls.length : 1;
+  }
+  return n;
+}
 
+/**
+ * Select STUN servers from the pool, keeping total URL count ≤ maxUrls.
+ * Browsers (Chrome, Firefox) warn/slow down ICE when ≥ 5 STUN/TURN URLs
+ * are configured — they count individual URLs, not RTCIceServer objects.
+ */
+async function selectStunServers(
+  phraseRoot: Uint8Array | null, pool: RTCIceServer[], maxUrls: number,
+): Promise<RTCIceServer[]> {
+  if (countIceUrls(pool) <= maxUrls) return pool;
+  if (!phraseRoot) {
+    // no phrase root — take objects from the front until we hit the limit
+    const out: RTCIceServer[] = [];
+    let urls = 0;
+    for (const s of pool) {
+      const c = Array.isArray(s.urls) ? s.urls.length : 1;
+      if (urls + c > maxUrls) continue;
+      out.push(s);
+      urls += c;
+    }
+    return out;
+  }
+
+  // deterministic shuffle seeded by phrase, then greedily fill up to maxUrls
   const seedBytes = await derivePhraseScopedKey(phraseRoot, "stun-select", 4, STUN_KDF_INFO_PHRASE);
-  const start = new DataView(seedBytes.buffer, seedBytes.byteOffset).getUint32(0, false) % pool.length;
+  const seed = new DataView(seedBytes.buffer, seedBytes.byteOffset).getUint32(0, false);
+  const indices = Array.from({ length: pool.length }, (_, i) => i);
+  // Fisher-Yates with seed-derived offsets
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = (seed + i * 2654435761) % (i + 1); // Knuth multiplicative hash mix
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
   const out: RTCIceServer[] = [];
-  for (let i = 0; i < targetCount; i++) out.push(pool[(start + i) % pool.length]);
+  let urls = 0;
+  for (const idx of indices) {
+    const s = pool[idx];
+    const c = Array.isArray(s.urls) ? s.urls.length : 1;
+    if (urls + c > maxUrls) continue;
+    out.push(s);
+    urls += c;
+  }
   return out;
 }
 
@@ -399,13 +444,16 @@ const VALID_TRANSITIONS: Record<LiveState, readonly LiveState[]> = {
   "error": ["idle"],
 };
 
-/** State for a multi-part file transfer being received. */
+/** State for a multi-part file transfer being received.
+ *  chunks are stored as Blobs so the browser can swap them to disk —
+ *  keeps JS heap bounded regardless of file size. */
 interface IncomingFileTransfer {
   fileName: string;
   fileType: string;
   totalSize: number;
   totalChunks: number;
-  chunks: Map<number, Uint8Array>;
+  chunks: Map<number, Blob>;
+  receivedBytes: number;
   firstMsgId: number;
 }
 
@@ -564,12 +612,16 @@ export class WhisperLiveSession {
   }
 
   private async buildRtcConfig(): Promise<RTCConfiguration> {
+    const hasTurn = this.turnPool.length > 0 && !!this.phraseRoot;
+    // browsers warn at ≥ 5 URLs; reserve 1 slot for TURN when applicable
+    const maxStunUrls = hasTurn ? 3 : 4;
+
     let iceServers = this.rtcConfig.iceServers ?? [];
-    if (iceServers.length > 3) {
-      iceServers = await selectStunServers(this.phraseRoot, iceServers);
+    if (countIceUrls(iceServers) > maxStunUrls) {
+      iceServers = await selectStunServers(this.phraseRoot, iceServers, maxStunUrls);
     }
 
-    if (!this.turnPool.length || !this.phraseRoot) {
+    if (!hasTurn) {
       return {
         ...this.rtcConfig,
         iceServers,
@@ -706,6 +758,7 @@ export class WhisperLiveSession {
       chain: state.chain.slice(),
       countsBitM: state.countsBitM.slice(),
       countsBit1: state.countsBit1.slice(),
+      countsBitX: state.countsBitX.slice(),
       step: state.step,
     };
   }
@@ -1902,6 +1955,7 @@ export class WhisperLiveSession {
         totalSize: totalFileSize,
         totalChunks,
         chunks: new Map(),
+        receivedBytes: 0,
         firstMsgId: msgId,
       };
       this.incomingFiles.set(transferId, transfer);
@@ -1909,30 +1963,27 @@ export class WhisperLiveSession {
 
     if (chunkIndex >= transfer.totalChunks || transfer.chunks.has(chunkIndex)) return; // out-of-range or duplicate
 
-    // chunkData is a subarray of the decrypted plaintext. Slice so the backing
-    // buffer can be freed; we only keep the ~4 MB slice, not the full allocation.
-    transfer.chunks.set(chunkIndex, chunkData.slice());
+    // store as Blob so the browser can swap to disk — keeps JS heap bounded
+    // regardless of total file size (each chunk is ~4 MB, freed after Blob wraps it).
+    transfer.chunks.set(chunkIndex, new Blob([chunkData]));
+    transfer.receivedBytes += chunkData.length;
 
     if (transfer.chunks.size < transfer.totalChunks) return; // still waiting
 
-    // All chunks received — assemble in order and emit.
+    // all chunks received — assemble into a single Blob (no JS heap copy).
     this.incomingFiles.delete(transferId);
-    let total = 0;
-    for (const c of transfer.chunks.values()) total += c.length;
-    const assembled = new Uint8Array(total);
-    let offset = 0;
-    for (let i = 0; i < transfer.totalChunks; i++) {
-      const c = transfer.chunks.get(i)!;
-      assembled.set(c, offset);
-      offset += c.length;
-    }
+    const ordered: Blob[] = [];
+    for (let i = 0; i < transfer.totalChunks; i++) ordered.push(transfer.chunks.get(i)!);
+    const assembled = new Blob(ordered, { type: transfer.fileType || "application/octet-stream" });
+    transfer.chunks.clear(); // release individual chunk Blobs
+
     this.onMessage({
       type: "file",
       direction: "peer",
       msgId: transfer.firstMsgId,
       fileName: transfer.fileName,
       fileSize: transfer.totalSize,
-      fileData: assembled,
+      fileBlob: assembled,
       fileType: transfer.fileType,
       timestamp: Date.now(),
     });
@@ -2285,14 +2336,27 @@ export class WhisperLiveSession {
       loopWipe(this.loopStateSend);
       this.loopStateSend = nextLoopSend;
 
-      // compress plaintext with the loop codec (advances counts)
-      const { encoded: compressed, next: afterEncode } = loopEncode(this.loopStateSend, plaintext);
+      // compress plaintext with the loop codec (advances counts).
+      // raw = true means encoded is the original data (zero-copy pass-through
+      // for large payloads that won't compress). the 0xFF raw marker is fused
+      // into the allocation below instead of being copied separately.
+      const { encoded, raw, next: afterEncode } = loopEncode(this.loopStateSend, plaintext);
       this.loopStateSend = afterEncode;
 
-      // prefix compressed payload with decodedLen so the receiver knows output size
-      const decodedLenBytes = new Uint8Array(4);
-      new DataView(decodedLenBytes.buffer).setUint32(0, plaintext.length, true);
-      const compressedPayload = concatBytes(decodedLenBytes, compressed);
+      // build pre-encryption payload: [decodedLen:4B LE][encoded with mode prefix]
+      let compressedPayload: Uint8Array;
+      if (raw) {
+        // fuse [decodedLen][0xFF][data] — one allocation, one memcpy
+        compressedPayload = new Uint8Array(5 + encoded.length);
+        new DataView(compressedPayload.buffer).setUint32(0, encoded.length, true);
+        compressedPayload[4] = 0xFF;
+        compressedPayload.set(encoded, 5);
+      } else {
+        // encoded already has [mode][compressedBits], prepend decodedLen
+        compressedPayload = new Uint8Array(4 + encoded.length);
+        new DataView(compressedPayload.buffer).setUint32(0, plaintext.length, true);
+        compressedPayload.set(encoded, 4);
+      }
 
       const salt = randomBytes(4);
       const counter = this.ratchetState.nSend;
@@ -2314,14 +2378,15 @@ export class WhisperLiveSession {
       const ciphertext = await aesGcmEncrypt(messageKey, compressedPayload, nonce, header);
       messageKey.fill(0);
 
-      const wireMessage = concatBytes(header, ciphertext);
-
       this.ratchetState.nSend++;
 
-      const totalBytes = estimateChunkedPrefixedSize(wireMessage.length);
+      // pass [header, ciphertext] as separate parts — the iterator reads across
+      // them with a cursor, avoiding a full-payload concat allocation.
+      const wireLen = header.length + ciphertext.length;
+      const totalBytes = estimateChunkedPrefixedSize(wireLen);
       let bytesSent = 0;
       let lastProgressEmit = 0;
-      for (const chunk of iterateChunksPrefixed(wireMessage, LIVE_MSG.ENCRYPTED)) {
+      for (const chunk of iterateChunksPrefixed([header, ciphertext], LIVE_MSG.ENCRYPTED)) {
         if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
           try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
         }

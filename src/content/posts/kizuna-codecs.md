@@ -47,16 +47,26 @@ this post covers three layers: Logos at 0D (entropy), Loup at 8D (spatial predic
 
 at zero dimensions there are no neighbors. no geometry. just a stream of bytes and the question: what comes next?
 
-Logos is an adaptive entropy coder with an ***attention*** **model** that ranks byte values by frequency and updates the ranking with every observation. it's learning the vocabulary. certain bytes show up constantly (the way your friend always says "honestly" before every opinion) and Logos starts assigning them shorter and shorter codes as it gets more confident. four coding strategies race on each block:
+Logos is a single unified adaptive entropy coder built around a six-axis predictor. one model, no competing strategies. it learns the vocabulary, the temporal patterns, and the relationship between consecutive bytes, all blended into one probability estimate per bit.
 
-- **Rice**: encodes the attention rank with an adaptive [Rice](https://en.wikipedia.org/wiki/Golomb_coding#Rice_coding) parameter. fast, simple.
-- **Bit0**: decomposes each byte into 8 binary decisions using a 255-node context tree. each node keeps its own adaptive probability with a [Laplace prior](https://doi.org/10.1515/JOS-2016-0026) of 2 (not 256), so the model converges dramatically faster on peaked distributions.
-- **Bit1**: order-1 extension. conditions on the top 4 bits of the previous byte. 4,080 contexts total. captures inter-byte correlations, which is why it crushes UTF-8.
-- **BitM**: conditions each bit on the same bit position of the previous byte. 512 contexts. this is the 0D end of the Möbius hierarchy.
+the axes, from local to global:
 
-the encoder tries all four, picks the smallest, and prepends a mode byte. if nothing beats raw, it falls back to raw. output is guaranteed $\leq \text{input} + 1$ byte.
+- **F0 (order-0 frequency)**: no context. doesn't care what byte came before. just counts how often each bit pattern has appeared, ever. 255 nodes, warms instantly. the ground-state prediction — the one still standing when every context-dependent model is staring at the wrong map.
+- **U (across bytes, per bit position)**: looks at the same bit position in the previous two bytes and asks whether the pattern there continues. alternating values, long runs of the same bit, positions that barely ever change. 4 states per bit position, 32 cells total. patterns that a context-free tree is blind to, because it never looks across byte boundaries.
+- **O2 (full previous byte)**: all 8 bits of the previous byte as context for the bit tree. 256 × 255 cells. absolute position in $\mathbb{Z}_2^8$ — sees the exact byte identity, not just its magnitude. never forgets. other axes adapt and decay; O2 just keeps accumulating.
+- **E (Engram AR(2) oscillator)**: five running dot products maintain an oscillator model $b_n \approx K \cdot p_1 - G \cdot p_2$. each byte, Cramer's rule fits $K$ and $G$ from the accumulated statistics, then predicts the next byte value (0–255). that prediction becomes a context for its own 256 × 255 bit tree. the codec learns not just where the stream *is* (O2), but where it's *going* under its own inertia. no decay needed — Cramer's rule uses ratios, so scaling the sums uniformly changes nothing.
+- **P2N (prev-prev nibble class)**: the top nibble of the byte before last. 16 coarse classes, 4,080 cells. nobody else looks two bytes back — O2 sees p1, E fits trajectory, P2N remembers p2's rough shape. warms 16× faster than a full p2 table would.
+- **M (exact match PPM)**: walks a hash chain through recent history, finds all positions where the last two bytes match, weights each candidate by context depth. exclusion: if deeper context agrees with a candidate, it amplifies; if it contradicts, it suppresses.
 
-the important detail for later: Bit0's context tree has **255 nodes**. that number comes back :P
+the correlated witnesses (F0, U, O2, E, P2N) share the same bit-tree context variable, so combining them in log-odds would double-count their shared information. instead, each axis contributes a quantum amplitude — think of five tuning forks vibrating at slightly different frequencies. when they agree, the amplitudes add constructively and the combined signal sharpens. when they disagree, destructive interference pulls the prediction back toward uncertainty. the final probability comes from squaring the superposed amplitude: **Born rule mixing**. M carries independent signal (hash-chain context), so it enters via log-odds on top. the resulting probability passes through a 3-state SSE that calibrates the final bit probability before it hits the range coder.
+
+the estimates are blended by **mass-weighted opinion**: each axis votes proportional to how far it's deviated from 50/50, scaled by how much history backs that confidence. a context that's fired 10,000 times anchors the blend far more than one that fired twice, even at equally extreme predictions. a bullet versus a glacier. evidence caps keep any single axis from drowning the others — F0 saturates at ln(2), U at ln(3), the big tables at ln(4).
+
+every 64 bytes, the U-axis counts decay at a rate that tracks the local entropy. high structure → slow decay → the model crystallizes. high entropy → fast decay → the model stays fluid and resets when the data phase-shifts. O2, E, and P2N never decay. they accumulate indefinitely because they *need* long-term statistics. the codec matches the temperature of the data.
+
+if arithmetic coding the output beats raw, a single mode byte says so. if not, raw wins with no overhead. output is guaranteed $\leq \text{input} + 1$ byte.
+
+the important detail for later: the bit-tree context has **255 nodes** ($2^8 - 1$). that number comes back :P
 
 ## Loup: the 8D predictor
 

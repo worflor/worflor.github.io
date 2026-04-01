@@ -225,7 +225,7 @@ function dualPayload(res: Float32Array): number {
 
 // ── logos entropy backend ────────────────────────────────────────────────────
 
-const RC_TOP = 1 << 24;
+const RC_TOP = 0x1000000;
 
 class LogosEncoder {
     private lo = 0; private range = 0xFFFFFFFF;
@@ -241,7 +241,7 @@ class LogosEncoder {
         this.lo = newLo;
         while (this.range < RC_TOP) {
             const b = (this.lo >>> 24) & 0xFF;
-            if (b !== 0xFF) this._emitByte(b); else this.nPend++;
+            if (b !== 0xFF) this._emit(b); else this.nPend++;
             this.lo    = ((this.lo & 0xFFFFFF) << 8) >>> 0;
             this.range = ( this.range << 8) >>> 0;
         }
@@ -255,7 +255,7 @@ class LogosEncoder {
         }
         this.cache = -1; this.nPend = 0;
     }
-    private _emitByte(b: number): void {
+    private _emit(b: number): void {
         if (this.cache >= 0) {
             this.buf.push(this.cache);
             for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF);
@@ -615,7 +615,20 @@ export function runLoupStressTest(): void {
     }
 }
 
-const loupDirectArg = typeof process !== "undefined" ? process.argv[1]?.replace(/\\/g, "/").toLowerCase() : "";
-const loupFile = import.meta.url.replace(/^file:\/\/\//, "").replace(/\\/g, "/").toLowerCase();
+function isDirectScriptExecution(fileBaseName: string): boolean {
+    const normalize = (v: string) => v.replace(/\\/g, '/').toLowerCase();
+    if (typeof process !== 'undefined' && typeof process.argv?.[1] === 'string') {
+        const e = normalize(process.argv[1]);
+        if (e.endsWith(`/${fileBaseName}.ts`) || e.endsWith(`/${fileBaseName}.js`)) return true;
+    }
+    const bun = (globalThis as { Bun?: { main?: string } }).Bun;
+    if (typeof bun?.main === 'string') {
+        const e = normalize(bun.main);
+        return e.endsWith(`/${fileBaseName}.ts`) || e.endsWith(`/${fileBaseName}.js`);
+    }
+    return false;
+}
 
-if (loupDirectArg && loupFile.endsWith(loupDirectArg)) runLoupStressTest();
+if (isDirectScriptExecution('live-wasm-loup')) {
+    runLoupStressTest();
+}

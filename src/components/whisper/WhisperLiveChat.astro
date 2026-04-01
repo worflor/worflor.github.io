@@ -168,6 +168,30 @@
         />
         <div class="wl-mic-wrap" id="wl-chat-mic-wrap">
           <button
+            id="wl-chat-paste-btn"
+            type="button"
+            class="wl-chat-paste-btn"
+            aria-label="Paste from clipboard"
+            title="paste from clipboard"
+            disabled
+          >
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              class="wl-paste-svg"
+              aria-hidden="true"
+            >
+              <!-- board body -->
+              <rect class="wl-paste-board" x="4" y="3" width="8" height="11" rx="1.2"></rect>
+              <!-- clip tab -->
+              <path class="wl-paste-clip" d="M6.2 1.5h3.6a.8.8 0 01.8.8V3H5.4v-.7a.8.8 0 01.8-.8z"></path>
+              <!-- content lines (clipboard state) / checkmark (send state) -->
+              <path class="wl-paste-glyph" d="M6.8 7L6.8 7L9.2 7M6.8 9.2L6.8 9.2L9.2 9.2" stroke-linecap="round"></path>
+            </svg>
+          </button>
+          <button
             id="wl-chat-mic-cancel"
             type="button"
             class="wl-mic-split wl-mic-cancel"
@@ -306,6 +330,50 @@
             </svg>
             file
           </button>
+          <div class="wl-media-divider"></div>
+          <button id="wl-media-alpha" type="button" class="wl-media-option wl-media-alpha">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              class="wl-alpha-iris"
+              aria-hidden="true"
+            >
+              <path class="wl-iris-blade wl-iris-1"/>
+              <path class="wl-iris-blade wl-iris-2"/>
+              <path class="wl-iris-blade wl-iris-3"/>
+            </svg>
+            alpha
+          </button>
+          <div class="wl-alpha-panel" id="wl-alpha-panel">
+            <div class="wl-alpha-section" id="wl-alpha-audio-section">
+              <div class="wl-alpha-label">
+                <span>harmonic <button type="button" class="wl-alpha-reset" id="wl-alpha-reset" title="reset to default"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" class="wl-alpha-mic-icon" aria-hidden="true"><rect x="5.5" y="1" width="5" height="8.5" rx="2.5"/><path d="M4 8.5a4 4 0 008 0" stroke-linecap="round"/><path d="M8 12.5V15" stroke-linecap="round"/></svg></button></span>
+                <span class="wl-alpha-q" id="wl-alpha-audio-q-value">24</span>
+              </div>
+              <div class="wl-alpha-status" id="wl-alpha-hint"></div>
+              <div class="wl-alpha-orbit-wrap" id="wl-alpha-orbit-wrap">
+                <svg class="wl-alpha-orbit" id="wl-alpha-orbit" viewBox="-1.1 -1.1 2.2 2.2" aria-hidden="true">
+                  <defs>
+                    <filter id="wl-orbit-glow" x="-50%" y="-50%" width="200%" height="200%">
+                      <feGaussianBlur in="SourceGraphic" stdDeviation="0.04"/>
+                    </filter>
+                  </defs>
+                  <path id="wl-alpha-orbit-glow" class="wl-orbit-glow" fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#wl-orbit-glow)"/>
+                  <path id="wl-alpha-orbit-ghost" class="wl-orbit-ghost" fill="none" stroke-linecap="round" stroke-linejoin="round" pathLength="1"/>
+                  <path id="wl-alpha-orbit-path" class="wl-orbit-line" fill="none" stroke-linecap="round" stroke-linejoin="round" pathLength="1"/>
+                </svg>
+              </div>
+              <div class="wl-alpha-track-wrap" id="wl-alpha-audio-track">
+                <div class="wl-alpha-track">
+                  <div class="wl-alpha-fill" id="wl-alpha-audio-fill"></div>
+                </div>
+                <div class="wl-alpha-thumb" id="wl-alpha-audio-thumb"></div>
+              </div>
+            </div>
+          </div>
         </div>
         <input
           id="wl-chat-file-input"
@@ -754,100 +822,6 @@
       border-color 400ms ease-out;
   }
 
-  /* Tactile feedback while holding/charging a copy action */
-  :global(.wl-chat-messages) :global(.wl-msg--holding .wl-msg-text) {
-    transform: scale(0.98);
-    filter: brightness(1.06);
-    border-color: rgb(var(--msg-accent) / 0.28);
-    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
-    cursor: wait;
-    user-select: none;
-  }
-
-  :global(.wl-chat-messages) :global(.wl-msg--copy-ready .wl-msg-text) {
-    animation: wl-msg-copy-ready 220ms cubic-bezier(0.16, 1, 0.3, 1);
-    border-color: rgb(var(--msg-accent) / 0.32);
-    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
-  }
-
-  :global(.wl-chat-messages) :global(.wl-msg--copied .wl-msg-text) {
-    animation: wl-msg-copied 900ms cubic-bezier(0.16, 1, 0.3, 1);
-    border-color: rgb(var(--msg-accent) / 0.34);
-    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.028);
-  }
-
-  /* Floating Copy Menu */
-  :global(.wl-action-menu) {
-    position: fixed;
-    z-index: 10000;
-    display: flex;
-    overflow: hidden;
-    background: rgb(10 10 10 / 0.94);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
-    border-radius: calc(var(--whisper-radius) * 0.8);
-    box-shadow:
-      0 10px 18px -18px rgb(0 0 0 / 0.9),
-      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.025);
-    opacity: 0;
-    transform: scale(0.96) translateY(4px);
-    transform-origin: 50% 100%;
-    pointer-events: none;
-    transition:
-      opacity 160ms ease-out,
-      transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
-      background 120ms ease-out,
-      border-color 120ms ease-out,
-      box-shadow 160ms ease-out;
-    cursor: default;
-    user-select: none;
-  }
-
-  :global(.wl-action-menu--visible) {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-    pointer-events: auto;
-  }
-
-  :global(.wl-action-menu--closing) {
-    pointer-events: none;
-  }
-
-  :global(.wl-action-btn) {
-    padding: 0.46rem 0.76rem;
-    font-size: var(--whisper-text-micro);
-    font-weight: 500;
-    letter-spacing: 0.01em;
-    line-height: 1;
-    background: transparent;
-    color: rgb(var(--color-text-rgb) / 0.78);
-    border: none;
-    cursor: pointer;
-    transition: background 120ms ease-out, color 120ms ease-out;
-  }
-
-  :global(.wl-action-btn + .wl-action-btn) {
-    border-left: 1px solid rgb(var(--color-text-rgb) / 0.10);
-  }
-
-  :global(.wl-action-btn:hover) {
-    background: rgb(var(--color-text-rgb) / 0.06);
-    color: rgb(var(--color-text-rgb) / 0.92);
-  }
-
-  :global(.wl-action-btn:active) {
-    background: rgb(var(--color-text-rgb) / 0.10);
-  }
-
-  :global(.wl-action-menu:hover) {
-    border-color: rgb(var(--color-text-rgb) / 0.18);
-  }
-
-  :global(.wl-action-menu:focus-within) {
-    border-color: rgb(var(--color-text-rgb) / 0.22);
-  }
-
   :global(.wl-msg-edited) {
     font-size: var(--whisper-text-micro);
     color: rgb(var(--color-text-rgb) / 0.25);
@@ -892,6 +866,10 @@
     color: rgb(var(--chromatic-red));
     border-color: rgb(var(--chromatic-red) / 0.5);
     background: rgb(var(--chromatic-red) / 0.18);
+  }
+
+  :global(.wl-chat-compose[data-editing]) :global(.wl-chat-paste-btn) {
+    display: none;
   }
 
   :global(.wl-chat-compose[data-editing]) :global(.wl-chat-text-input)::placeholder {
@@ -988,7 +966,7 @@
     margin-bottom: -0.4rem;
     max-height: 0;
     opacity: 0;
-    overflow: hidden;
+    overflow: visible;
     transform: translateY(-3px);
     transition:
       max-height 200ms cubic-bezier(0.16, 1, 0.3, 1),
@@ -1046,6 +1024,138 @@
 
   :global(.wl-chat-messages) :global(.wl-react-btn--more:hover) {
     color: rgb(var(--color-text-rgb) / 0.72);
+  }
+
+  /* ── Action split container ─────────────────────────────────── */
+  :global(.wl-chat-messages) :global(.wl-react-action-container) {
+    display: inline-flex;
+    align-items: center;
+    /* Tighter than reaction buttons to feel cohesive */
+    gap: 0.18rem;
+  }
+  /* ⋮ toggle — same look as .wl-react-btn--more; also collapses when expanded */
+  :global(.wl-chat-messages) :global(.wl-action-btn-toggle) {
+    color: rgb(var(--color-text-rgb) / 0.42);
+    transition:
+      width 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
+      opacity 160ms ease,
+      color 150ms ease,
+      background 130ms ease,
+      border-color 130ms ease,
+      transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+      padding 160ms ease,
+      border-width 160ms ease;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  /* SVG inside toggle fades + scales so icon swaps feel fluid */
+  :global(.wl-chat-messages) :global(.wl-action-btn-toggle svg) {
+    width: 1.15rem;
+    height: 1.15rem;
+    transition: opacity 110ms ease, transform 110ms ease;
+    transform-origin: center;
+  }
+  :global(.wl-chat-messages) :global(.wl-action-btn-toggle.wl-toggle--swapping svg) {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-action-btn-toggle:hover) {
+    color: rgb(var(--color-text-rgb) / 0.72);
+  }
+
+  /* When editing, the toggle becomes the edit icon and stays highlighted red */
+  :global(.wl-chat-messages) :global(.wl-action-btn-toggle.wl-toggle--is-editing) {
+    color: rgb(var(--chromatic-red) / 0.9);
+    background: rgb(var(--chromatic-red) / 0.15);
+    border-color: rgb(var(--chromatic-red) / 0.4);
+  }
+
+  /* Toggle morphs away when expanded — actions take its space */
+  :global(.wl-chat-messages) :global(.wl-react-action-container[data-expanded] .wl-action-btn-toggle) {
+    width: 0;
+    opacity: 0;
+    padding: 0;
+    border-width: 0;
+    pointer-events: none;
+    transform: scale(0.7);
+  }
+
+  /* Toggle: ✓ flash after copy (already collapsed, shows on re-appear) */
+  :global(.wl-chat-messages) :global(.wl-action-btn-toggle[data-copied]) {
+    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--chromatic-cyan) / 0.12);
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    transform: scale(1.1);
+  }
+
+  /* Split buttons — collapsed by default (width:0 overflow:hidden) */
+  :global(.wl-chat-messages) :global(.wl-action-split) {
+    width: 0;
+    overflow: hidden;
+    opacity: 0;
+    height: 1.75rem;
+    border-radius: 50%;
+    border: 1px solid transparent;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+    /* Spring easing for the expand — faster in, slower out */
+    transition:
+      width 220ms cubic-bezier(0.34, 1.56, 0.64, 1),
+      opacity 160ms ease,
+      background 130ms ease,
+      border-color 130ms ease,
+      color 130ms ease,
+      transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-action-split svg) {
+    width: 1.15rem;
+    height: 1.15rem;
+    flex-shrink: 0;
+  }
+
+  /* Expanded state */
+  :global(.wl-chat-messages) :global(.wl-react-action-container[data-expanded] .wl-action-split) {
+    width: 1.75rem;
+    opacity: 1;
+  }
+
+  /* Copy: cyan — mirrors mic send button */
+  :global(.wl-chat-messages) :global(.wl-react-action-container[data-expanded] .wl-action-copy-btn) {
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+  :global(.wl-chat-messages) :global(.wl-action-copy-btn:hover),
+  :global(.wl-chat-messages) :global(.wl-action-copy-btn.wl-action--drag-hover) {
+    background: rgb(var(--chromatic-cyan) / 0.15);
+    border-color: rgb(var(--chromatic-cyan) / 0.5);
+    color: rgb(var(--chromatic-cyan));
+  }
+
+  /* Edit: red — mirrors mic cancel button */
+  :global(.wl-chat-messages) :global(.wl-react-action-container[data-expanded] .wl-action-edit-btn) {
+    color: rgb(var(--chromatic-red) / 0.7);
+    border-color: rgb(var(--chromatic-red) / 0.3);
+    background: rgb(var(--chromatic-red) / 0.08);
+  }
+  :global(.wl-chat-messages) :global(.wl-action-edit-btn:hover),
+  :global(.wl-chat-messages) :global(.wl-action-edit-btn.wl-action--drag-hover) {
+    background: rgb(var(--chromatic-red) / 0.15);
+    border-color: rgb(var(--chromatic-red) / 0.5);
+    color: rgb(var(--chromatic-red));
+  }
+
+  /* Tap squish */
+  :global(.wl-chat-messages) :global(.wl-action-split:active) {
+    transform: scale(0.82);
   }
 
   :global(.wl-chat-messages) :global(.wl-react-custom) {
@@ -1881,7 +1991,7 @@
     min-width: 0;
     width: 100%;
     min-height: auto;
-    padding: 0.52rem 2.4rem 0.52rem 0.72rem;
+    padding: 0.52rem 4.2rem 0.52rem 0.72rem;
     border-radius: var(--whisper-radius-medium);
     border-color: rgb(var(--color-text-rgb) / 0.14);
     background: rgb(10 10 10 / 0.82);
@@ -1940,6 +2050,125 @@
     cursor: default;
   }
 
+  /* ── Paste button — mirrors mic button ──────────────────── */
+  .wl-chat-paste-btn {
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    background: rgb(var(--color-text-rgb) / 0.03);
+    color: rgb(var(--color-text-rgb) / 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition:
+      width 250ms cubic-bezier(0.34, 1.4, 0.64, 1),
+      opacity 200ms ease,
+      background 200ms ease,
+      border-color 200ms ease,
+      color 200ms ease,
+      transform 180ms cubic-bezier(0.34, 1.4, 0.64, 1);
+    touch-action: none;
+  }
+
+  .wl-chat-paste-btn:hover:not(:disabled) {
+    border-color: rgb(var(--color-text-rgb) / 0.28);
+    color: rgb(var(--color-text-rgb) / 0.7);
+    background: rgb(var(--color-text-rgb) / 0.08);
+  }
+
+  .wl-chat-paste-btn:active:not(:disabled) {
+    transform: scale(0.88);
+    transition-duration: 60ms;
+  }
+
+  .wl-chat-paste-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  .wl-paste-svg {
+    width: 0.85rem;
+    height: 0.85rem;
+    flex-shrink: 0;
+    overflow: visible;
+  }
+
+  /* board + clip dissolve upward when pasted */
+  .wl-paste-board,
+  .wl-paste-clip {
+    transition:
+      opacity 200ms ease,
+      transform 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    transform-origin: center;
+  }
+
+  .wl-chat-paste-btn[data-pasted] .wl-paste-board {
+    opacity: 0;
+    transform: translateY(-1.5px) scale(0.85);
+  }
+
+  .wl-chat-paste-btn[data-pasted] .wl-paste-clip {
+    opacity: 0;
+    transform: translateY(-2.5px) scale(0.7);
+  }
+
+  /* glyph path morphs: two lines → checkmark with draw-in */
+  .wl-paste-glyph {
+    stroke-width: 1.3;
+    transition:
+      d 300ms cubic-bezier(0.34, 1.4, 0.64, 1),
+      stroke-width 250ms ease;
+  }
+
+  .wl-chat-paste-btn[data-pasted] .wl-paste-glyph {
+    d: path("M4.5 8.2L7 10.7L11.5 5.5M4.5 8.2L7 10.7L11.5 5.5");
+    stroke-width: 1.7;
+    stroke-dasharray: 14;
+    animation: wl-paste-draw 400ms cubic-bezier(0.22, 0.61, 0.36, 1) 80ms both;
+  }
+
+  @keyframes wl-paste-draw {
+    from { stroke-dashoffset: 14; }
+    to   { stroke-dashoffset: 0; }
+  }
+
+  /* pop animation on entering pasted state */
+  @keyframes wl-paste-pop {
+    0%   { transform: scale(1); }
+    40%  { transform: scale(1.18); }
+    70%  { transform: scale(0.95); }
+    100% { transform: scale(1); }
+  }
+
+  .wl-chat-paste-btn[data-pasted] {
+    color: rgb(var(--color-text-rgb) / 0.65);
+    border-color: rgb(var(--color-text-rgb) / 0.22);
+    background: rgb(var(--color-text-rgb) / 0.06);
+    animation: wl-paste-pop 350ms cubic-bezier(0.34, 1.4, 0.64, 1);
+  }
+
+  .wl-chat-paste-btn[data-pasted]:hover {
+    color: rgb(var(--color-text-rgb) / 0.85);
+    border-color: rgb(var(--color-text-rgb) / 0.32);
+    background: rgb(var(--color-text-rgb) / 0.1);
+  }
+
+  /* collapse paste button during recording */
+  .wl-mic-wrap[data-recording="true"] .wl-chat-paste-btn {
+    width: 0;
+    opacity: 0;
+    border-color: transparent;
+    padding: 0;
+    transition:
+      width 180ms cubic-bezier(0.4, 0, 1, 1),
+      opacity 150ms ease;
+  }
+
   /* Split buttons (cancel + send) — collapsed by default */
   .wl-mic-split {
     width: 0;
@@ -1991,6 +2220,19 @@
     background: rgb(var(--chromatic-red) / 0.18);
     border-color: rgb(var(--chromatic-red) / 0.5);
     color: rgb(var(--chromatic-red));
+  }
+
+  /* armed state — confirm cancel, more urgent */
+  .wl-mic-wrap[data-recording="true"] .wl-mic-cancel[data-armed] {
+    background: rgb(var(--chromatic-red) / 0.22);
+    border-color: rgb(var(--chromatic-red) / 0.65);
+    color: rgb(var(--chromatic-red));
+    animation: wl-cancel-pulse 600ms ease-in-out infinite;
+  }
+
+  @keyframes wl-cancel-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--chromatic-red) / 0.3); }
+    50%      { box-shadow: 0 0 0 3px rgb(var(--chromatic-red) / 0); }
   }
 
   .wl-mic-wrap[data-recording="true"] .wl-mic-send {
@@ -2232,6 +2474,469 @@
     background: rgb(var(--color-text-rgb) / 0.08);
   }
 
+  /* ── Divider in popover ───────────────────────────────── */
+  :global(.wl-media-divider) {
+    height: 1px;
+    margin: 0.1rem 0.5rem;
+    background: rgb(var(--color-text-rgb) / 0.06);
+  }
+
+  /* ── Alpha menu button in popover ────────────────────── */
+  :global(.wl-media-alpha) {
+    color: rgb(var(--color-text-rgb) / 0.38);
+    font-size: var(--whisper-text-fine, calc(var(--text-sm, 0.875rem) * 0.72));
+    letter-spacing: 0.05em;
+  }
+
+  :global(.wl-alpha-iris) {
+    width: 0.85rem;
+    height: 0.85rem;
+    opacity: 0.6;
+    transition: opacity 120ms ease;
+  }
+
+  :global(.wl-media-alpha:hover) :global(.wl-alpha-iris),
+  :global(.wl-media-alpha.--hover) :global(.wl-alpha-iris),
+  :global(.wl-media-alpha.--active) :global(.wl-alpha-iris) {
+    opacity: 1;
+  }
+
+  :global(.wl-alpha-iris) {
+    transition: transform 350ms cubic-bezier(0.34, 1.4, 0.64, 1);
+  }
+
+  :global(.wl-media-alpha.--active) :global(.wl-alpha-iris) {
+    transform: rotate(var(--iris-jitter, 0deg));
+  }
+
+  :global(.wl-iris-blade) {
+    transition:
+      d 350ms cubic-bezier(0.34, 1.4, 0.64, 1),
+      opacity 250ms ease;
+    opacity: 0.8;
+  }
+
+  :global(.wl-media-alpha.--active) :global(.wl-iris-blade) {
+    opacity: 1;
+  }
+
+  /* closed: curved swirl blades wrapping around center */
+  :global(.wl-iris-1) { d: path("M7 3.2 Q11.5 4.5, 11.8 8"); }
+  :global(.wl-iris-2) { d: path("M12 9.5 Q9 13, 5 12"); }
+  :global(.wl-iris-3) { d: path("M4.2 10 Q3 6, 6.5 3.8"); }
+
+  /* open: blades unfurl into radiating lines from center */
+  :global(.wl-media-alpha.--active) :global(.wl-iris-1) { d: path("M8 8 Q9 4, 10.5 2.5"); }
+  :global(.wl-media-alpha.--active) :global(.wl-iris-2) { d: path("M8 8 Q11 10, 12.5 12"); }
+  :global(.wl-media-alpha.--active) :global(.wl-iris-3) { d: path("M8 8 Q5 10, 3 11.5"); }
+
+  :global(.wl-media-alpha:hover),
+  :global(.wl-media-alpha.--hover) {
+    color: rgb(var(--color-text-rgb) / 0.7);
+  }
+
+  :global(.wl-media-alpha.--active) {
+    color: rgb(var(--chromatic-cyan, 0 200 255) / 0.7);
+    background: rgb(var(--chromatic-cyan, 0 200 255) / 0.06);
+    border-color: rgb(var(--chromatic-cyan, 0 200 255) / 0.1);
+  }
+
+  /* ── Alpha panel (submenu) ───────────────────────────── */
+  :global(.wl-alpha-panel) {
+    display: none;
+    position: absolute;
+    bottom: 0;
+    right: calc(100% + 0.3rem);
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.55rem 0.7rem 0.6rem;
+    min-width: 10rem;
+    border-radius: var(--whisper-radius-medium, 0.325rem);
+    background: rgb(8 8 8 / 0.96);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow:
+      0 12px 28px -8px rgb(0 0 0 / 0.7),
+      0 2px 6px rgb(0 0 0 / 0.3),
+      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.03);
+    z-index: 101;
+    opacity: 0;
+    transform: translateX(3px) scale(0.98);
+    transform-origin: right bottom;
+    transition:
+      opacity 160ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
+    touch-action: none;
+    pointer-events: none;
+  }
+
+  :global(.wl-alpha-panel.--open) {
+    display: flex;
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    pointer-events: auto;
+  }
+
+  /* on narrow viewports, stack above the popover instead of beside it */
+  @media (max-width: 360px) {
+    :global(.wl-alpha-panel) {
+      right: auto;
+      left: 0;
+      bottom: calc(100% + 0.3rem);
+      transform-origin: left bottom;
+      min-width: 8rem;
+    }
+  }
+
+  :global(.wl-alpha-section) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  :global(.wl-alpha-label) {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    color: rgb(var(--color-text-rgb) / 0.4);
+    font-size: var(--whisper-text-fine, calc(var(--text-sm, 0.875rem) * 0.72));
+    letter-spacing: 0.04em;
+    user-select: none;
+  }
+
+  :global(.wl-alpha-reset) {
+    all: unset;
+    display: inline-flex;
+    cursor: pointer;
+    margin-left: 0.2em;
+    vertical-align: -0.05em;
+    border-radius: 2px;
+    transition: opacity 120ms ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-alpha-reset:hover) {
+    opacity: 1 !important;
+  }
+
+  :global(.wl-alpha-reset:active) {
+    transform: scale(0.85);
+  }
+
+  :global(.wl-alpha-mic-icon) {
+    width: 0.65em;
+    height: 0.65em;
+    display: block;
+    opacity: 0.55;
+    transition: opacity 120ms ease, filter 300ms ease;
+  }
+
+  :global(.wl-alpha-reset:hover) :global(.wl-alpha-mic-icon) {
+    opacity: 0.9;
+  }
+
+  :global(.wl-alpha-reset.--modified) {
+    position: relative;
+    overflow: hidden;
+  }
+
+  :global(.wl-alpha-reset.--modified)::after {
+    content: "";
+    position: absolute;
+    inset: -2px;
+    background: linear-gradient(
+      105deg,
+      transparent 0%,
+      transparent 40%,
+      rgb(var(--chromatic-cyan, 0 200 255) / 0.35) 50%,
+      transparent 60%,
+      transparent 100%
+    );
+    background-size: 250% 100%;
+    animation: wl-mic-shimmer 4s ease-in-out infinite;
+    pointer-events: none;
+    mix-blend-mode: screen;
+  }
+
+  :global(.wl-alpha-reset.--modified) :global(.wl-alpha-mic-icon) {
+    opacity: 0.7;
+  }
+
+  @keyframes wl-mic-shimmer {
+    0%, 100% { background-position: 100% 0; }
+    50% { background-position: 0% 0; }
+  }
+
+  :global(.wl-alpha-q) {
+    font-variant-numeric: tabular-nums;
+    font-size: var(--whisper-text-fine, calc(var(--text-sm, 0.875rem) * 0.72));
+    color: rgb(var(--color-text-rgb) / 0.6);
+    min-width: 1.6em;
+    text-align: right;
+    transition: color var(--orbit-morph, 350ms) ease;
+  }
+
+  :global(.wl-alpha-q.--active) {
+    color: rgb(var(--chromatic-cyan, 0 200 255) / 0.9);
+  }
+
+  /* ── Orbit visualizer ─────────────────────────────────── */
+  :global(.wl-alpha-orbit-wrap) {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 4.2rem;
+    cursor: grab;
+    animation: wl-orbit-breathe 5s ease-in-out infinite;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+
+  :global(.wl-alpha-orbit-wrap:active) {
+    cursor: grabbing;
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-alpha-orbit-wrap) {
+    cursor: default;
+  }
+
+  :global(.wl-alpha-orbit) {
+    width: 4.2rem;
+    height: 4.2rem;
+    will-change: transform;
+  }
+
+  @keyframes wl-orbit-breathe {
+    0%, 100% { scale: 1; }
+    50% { scale: 1.06; }
+  }
+
+  /* shared transition: --orbit-morph is set from JS based on network RTT.
+     slow connection = gooey (up to 650ms). fast = snappy (250ms). */
+  :global(.wl-orbit-line),
+  :global(.wl-orbit-ghost),
+  :global(.wl-orbit-glow) {
+    transition:
+      stroke var(--orbit-morph, 350ms) ease,
+      stroke-width var(--orbit-morph, 350ms) ease,
+      d var(--orbit-morph, 350ms) cubic-bezier(0.33, 1, 0.68, 1),
+      opacity var(--orbit-morph, 350ms) ease;
+  }
+
+  /* main line: crisp, with a traveling gap (dashoffset driven by JS curvature map) */
+  :global(.wl-orbit-line) {
+    stroke: rgb(var(--chromatic-cyan, 0 200 255) / 0.7);
+    stroke-width: 0.028;
+    stroke-dasharray: 0.88 0.12;
+    stroke-dashoffset: 0;
+  }
+
+  /* ghost: the inner simpler shape, always visible as a dim echo */
+  :global(.wl-orbit-ghost) {
+    stroke: rgb(var(--chromatic-cyan, 0 200 255) / 0.12);
+    stroke-width: 0.02;
+  }
+
+  /* glow: soft halo behind the main line */
+  :global(.wl-orbit-glow) {
+    stroke: rgb(var(--chromatic-cyan, 0 200 255) / 0.3);
+    stroke-width: 0.09;
+    animation: wl-orbit-glow-pulse 3s ease-in-out infinite;
+  }
+
+  @keyframes wl-orbit-glow-pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+  }
+
+  /* dragging: intensify the orbit */
+  :global(.wl-alpha-section.--dragging) :global(.wl-orbit-line) {
+    stroke: rgb(var(--chromatic-cyan, 0 200 255) / 0.95);
+    stroke-width: 0.036;
+  }
+
+  :global(.wl-alpha-section.--dragging) :global(.wl-orbit-glow) {
+    stroke: rgb(var(--chromatic-cyan, 0 200 255) / 0.45);
+    stroke-width: 0.11;
+  }
+
+  :global(.wl-alpha-section.--dragging) :global(.wl-orbit-ghost) {
+    stroke: rgb(var(--chromatic-cyan, 0 200 255) / 0.18);
+  }
+
+  /* raw mode: flower → flat amber line (d-path interpolation) */
+
+  :global(.wl-alpha-section.--raw) :global(.wl-orbit-line),
+  :global(.wl-alpha-section.--raw.--dragging) :global(.wl-orbit-line) {
+    stroke: rgb(255 180 90 / 0.9);
+    stroke-dasharray: 1 0;
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-orbit-ghost),
+  :global(.wl-alpha-section.--raw.--dragging) :global(.wl-orbit-ghost) {
+    stroke: rgb(255 180 90 / 0.12);
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-orbit-glow),
+  :global(.wl-alpha-section.--raw.--dragging) :global(.wl-orbit-glow) {
+    stroke: rgb(255 180 90 / 0.35);
+    animation: none;
+    opacity: 1;
+  }
+
+  /* ── Status bar (shared, bottom of panel) ─────────── */
+  :global(.wl-alpha-status) {
+    color: rgb(var(--color-text-rgb) / 0.32);
+    font-size: var(--whisper-text-hairline, calc(var(--text-sm, 0.875rem) * 0.62));
+    letter-spacing: 0.02em;
+    text-align: center;
+    user-select: none;
+    min-height: 1em;
+    transition: color var(--orbit-morph, 350ms) ease;
+  }
+
+  :global(.wl-alpha-status:empty) {
+    display: none;
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-alpha-status) {
+    color: rgb(255 180 90 / 0.4);
+  }
+
+  /* ── Custom track slider ──────────────────────────────── */
+  :global(.wl-alpha-track-wrap) {
+    position: relative;
+    height: 1.6rem;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-alpha-track) {
+    position: relative;
+    width: 100%;
+    height: 2px;
+    border-radius: 1px;
+    background: rgb(var(--color-text-rgb) / 0.08);
+    overflow: hidden;
+  }
+
+  :global(.wl-alpha-fill) {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    border-radius: 1px;
+    --fill-l: rgb(var(--chromatic-cyan, 0 200 255) / 0.35);
+    --fill-r: rgb(var(--chromatic-cyan, 0 200 255) / 0.35);
+    background: linear-gradient(90deg, var(--fill-l) 0%, var(--fill-r) 100%);
+    transition:
+      --fill-l var(--orbit-morph, 350ms) ease,
+      --fill-r var(--orbit-morph, 350ms) ease;
+    will-change: width;
+  }
+
+
+  :global(.wl-alpha-track-wrap.--resetting) :global(.wl-alpha-fill) {
+    transition:
+      --fill-l var(--orbit-morph, 350ms) ease,
+      --fill-r var(--orbit-morph, 350ms) ease,
+      width var(--orbit-morph, 350ms) cubic-bezier(0.33, 1, 0.68, 1);
+  }
+
+  :global(.wl-alpha-track-wrap.--dragging) :global(.wl-alpha-fill) {
+    --fill-l: rgb(var(--chromatic-cyan, 0 200 255) / 0.55);
+    --fill-r: rgb(var(--chromatic-cyan, 0 200 255) / 0.55);
+  }
+
+  :global(.wl-alpha-thumb) {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgb(var(--color-text-rgb) / 0.75);
+    box-shadow:
+      0 1px 3px rgb(0 0 0 / 0.5),
+      0 0 0 0 rgb(var(--chromatic-cyan, 0 200 255) / 0);
+    transform: translateX(-50%);
+    transition:
+      background var(--orbit-morph, 350ms) ease,
+      box-shadow var(--orbit-morph, 350ms) ease,
+      width 180ms cubic-bezier(0.16, 1, 0.3, 1),
+      height 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: left;
+    pointer-events: none;
+  }
+
+  :global(.wl-alpha-track-wrap.--resetting) :global(.wl-alpha-thumb) {
+    transition:
+      background var(--orbit-morph, 350ms) ease,
+      box-shadow var(--orbit-morph, 350ms) ease,
+      width 180ms cubic-bezier(0.16, 1, 0.3, 1),
+      height 180ms cubic-bezier(0.16, 1, 0.3, 1),
+      left var(--orbit-morph, 350ms) cubic-bezier(0.33, 1, 0.68, 1);
+  }
+
+  :global(.wl-alpha-track-wrap:hover) :global(.wl-alpha-thumb) {
+    background: rgb(var(--color-text-rgb) / 0.9);
+    box-shadow:
+      0 1px 4px rgb(0 0 0 / 0.6),
+      0 0 0 3px rgb(var(--chromatic-cyan, 0 200 255) / 0.08);
+  }
+
+  :global(.wl-alpha-track-wrap.--dragging) :global(.wl-alpha-thumb) {
+    width: 13px;
+    height: 13px;
+    background: rgb(var(--chromatic-cyan, 0 200 255) / 0.9);
+    box-shadow:
+      0 1px 5px rgb(0 0 0 / 0.5),
+      0 0 0 4px rgb(var(--chromatic-cyan, 0 200 255) / 0.12),
+      0 0 12px rgb(var(--chromatic-cyan, 0 200 255) / 0.15);
+  }
+
+  :global(.wl-alpha-track-wrap.--fine) :global(.wl-alpha-thumb) {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* ── Raw mode (q100) — regime shift visual ───────────── */
+  :global(.wl-alpha-section.--raw) :global(.wl-alpha-q) {
+    color: rgb(255 180 90 / 0.9);
+    letter-spacing: 0.06em;
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-alpha-fill) {
+    --fill-l: rgb(var(--chromatic-cyan, 0 200 255) / 0.3);
+    --fill-r: rgb(255 180 90 / 0.45);
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-alpha-track-wrap.--dragging) :global(.wl-alpha-fill) {
+    --fill-l: rgb(var(--chromatic-cyan, 0 200 255) / 0.45);
+    --fill-r: rgb(255 180 90 / 0.65);
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-alpha-thumb) {
+    background: rgb(255 180 90 / 0.85);
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-alpha-track-wrap.--dragging) :global(.wl-alpha-thumb) {
+    background: rgb(255 180 90);
+    box-shadow:
+      0 1px 5px rgb(0 0 0 / 0.5),
+      0 0 0 4px rgb(255 180 90 / 0.15),
+      0 0 12px rgb(255 180 90 / 0.2);
+  }
+
+  :global(.wl-alpha-section.--raw) :global(.wl-alpha-track-wrap:hover) :global(.wl-alpha-thumb) {
+    box-shadow:
+      0 1px 4px rgb(0 0 0 / 0.6),
+      0 0 0 3px rgb(255 180 90 / 0.12);
+  }
+
   /* ── Clear option in popover — state feedback ─────────── */
   :global(.wl-media-clear:disabled) {
     opacity: 0.35;
@@ -2382,32 +3087,6 @@
     }
   }
 
-  @keyframes wl-msg-copy-ready {
-    0% {
-      transform: translateY(0) scale(1);
-    }
-    45% {
-      transform: translateY(-1px) scale(1.012);
-    }
-    100% {
-      transform: translateY(0) scale(1);
-    }
-  }
-
-  @keyframes wl-msg-copied {
-    0% {
-      transform: translateY(0) scale(1);
-      filter: saturate(1);
-    }
-    22% {
-      transform: translateY(-1px) scale(1.016);
-      filter: saturate(1.08);
-    }
-    100% {
-      transform: translateY(0) scale(1);
-      filter: saturate(1);
-    }
-  }
 
   @media (prefers-reduced-motion: reduce) {
     .wl-spinner {
@@ -2434,14 +3113,20 @@
     .wl-chat-compose::after {
       display: none !important;
     }
-    :global(.wl-action-menu),
     :global(.wl-chat-messages) :global(.wl-msg-text) {
       transition: none !important;
       animation: none !important;
     }
-    .wl-chat-mic-btn {
+    .wl-chat-mic-btn,
+    .wl-chat-paste-btn {
       animation: none !important;
       transition: none !important;
+    }
+    .wl-paste-glyph,
+    .wl-paste-board,
+    .wl-paste-clip {
+      transition: none !important;
+      animation: none !important;
     }
     .wl-mic-wrap {
       animation: none !important;
@@ -3108,4 +3793,9 @@
       transition: none !important;
     }
   }
+</style>
+
+<style is:global>
+  @property --fill-l { syntax: "<color>"; inherits: false; initial-value: transparent; }
+  @property --fill-r { syntax: "<color>"; inherits: false; initial-value: transparent; }
 </style>

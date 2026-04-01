@@ -15,7 +15,7 @@ import { derivePhraseRoot, derivePhraseScopedKey } from "./live-handshake";
 
 /* ── API ──────────────────────────────────────────────────── */
 
-interface TrackerSignalResult {
+export interface LiveRendezvousResult {
   role: "offerer" | "answerer";
   peerAnswerCode?: string; // present when role === "offerer"
   relay?: TrackerRelayHandle;
@@ -24,6 +24,27 @@ interface TrackerSignalResult {
 interface TrackerSignalCallbacks {
   onStatus: (msg: string) => void;
   onLog: (msg: string) => void;
+}
+
+export type LiveRendezvousMode = "simultaneous" | "flare-listener";
+
+export type TrackerConnectErrorCode =
+  | "peer-not-found"
+  | "relay-unavailable"
+  | "handshake-failed"
+  | "flare-relay-dropped";
+
+export interface LiveRendezvousCallbacks extends TrackerSignalCallbacks {
+  onPeerArrived?: () => Promise<boolean>;
+}
+
+export interface LiveRendezvousOptions {
+  mode: LiveRendezvousMode;
+  phrase: string;
+  createOfferCode?: () => Promise<string>;
+  acceptOfferCode: (peerOfferCode: string) => Promise<string>;
+  callbacks: LiveRendezvousCallbacks;
+  signal?: AbortSignal;
 }
 
 export type TrackerRelaySignal =
@@ -38,6 +59,15 @@ export interface TrackerRelayHandle {
   setOnSignal: (cb: ((signal: TrackerRelaySignal) => void) | null) => void;
 }
 
+export function trackerErrorCode(err: unknown): TrackerConnectErrorCode | null {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  if (raw.includes("peer-not-found")) return "peer-not-found";
+  if (raw.includes("relay-unavailable")) return "relay-unavailable";
+  if (raw.includes("handshake-failed")) return "handshake-failed";
+  if (raw.includes("flare-relay-dropped")) return "flare-relay-dropped";
+  return null;
+}
+
 /* ── Constants ────────────────────────────────────────────── */
 
 export const TRACKER_URLS = [
@@ -48,7 +78,6 @@ export const TRACKER_URLS = [
 const WS_CONNECT_TIMEOUT = 5_000;
 const PEER_DISCOVERY_TIMEOUT = 30_000;
 const TOTAL_TIMEOUT = 45_000;
-const TRACKER_SECOND_ATTEMPT_DELAY = 300;
 const REANNOUNCE_INTERVAL = 10_000;
 export const EPOCH_WINDOW = 2 * 60 * 1000;
 const EPOCH_BOUNDARY_MARGIN = 15_000;
@@ -58,6 +87,10 @@ export const MIN_CODE_LEN = 40;
 export const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 export const TRACKER_MAX_MESSAGE_LEN = 8192;
 const TRACKER_SIGNAL_TYPE = "whisper-signal";
+const TRACKER_INTENT_TYPE = "whisper-intent";
+const TRACKER_MATCH_ACK_TYPE = "whisper-match-ack";
+const TRACKER_OFFER_CODE_TYPE = "whisper-offer-code";
+const TRACKER_ANSWER_CODE_TYPE = "whisper-answer-code";
 
 // Concurrent tracker socket budget (module-scoped, survives pool teardown).
 let liveSockets = 0;
@@ -216,6 +249,150 @@ function decodeTrackerRelaySignal(encoded: string): TrackerRelaySignal | null {
   }
 }
 
+interface TrackerIntentPayload {
+  attemptId: string;
+}
+
+interface TrackerMatchAckPayload {
+  rendezvousId: string;
+  fromAttemptId: string;
+}
+
+interface TrackerOfferCodePayload {
+  rendezvousId: string;
+  code: string;
+}
+
+interface TrackerAnswerCodePayload {
+  rendezvousId: string;
+  code: string;
+}
+
+function encodeTrackerPayload<T>(payload: T): string {
+  return b64url(TE.encode(JSON.stringify(payload)));
+}
+
+function decodeTrackerPayload<T>(encoded: unknown): T | null {
+  if (typeof encoded !== "string" || !encoded) return null;
+  try {
+    return JSON.parse(TD.decode(b64urlDecode(unpadCode(encoded)))) as T;
+  } catch {
+    return null;
+  }
+}
+
+function makeIntentPayloads(
+  infoHashes: string[],
+  peerId: string,
+  offerId: string,
+  attemptId: string,
+): string[] {
+  const encoded = encodeTrackerPayload<TrackerIntentPayload>({ attemptId });
+  return infoHashes.map((h) => JSON.stringify({
+    action: "announce",
+    info_hash: h,
+    peer_id: peerId,
+    numwant: 1,
+    offers: [{
+      offer_id: offerId,
+      offer: {
+        type: TRACKER_INTENT_TYPE,
+        sdp: encoded,
+      },
+    }],
+  }));
+}
+
+function makeMatchAckPayload(
+  infoHash: string,
+  peerId: string,
+  toPeerId: string,
+  offerId: string,
+  rendezvousId: string,
+  fromAttemptId: string,
+): string {
+  return JSON.stringify({
+    action: "announce",
+    info_hash: infoHash,
+    peer_id: peerId,
+    to_peer_id: toPeerId,
+    answer: {
+      type: TRACKER_MATCH_ACK_TYPE,
+      sdp: encodeTrackerPayload<TrackerMatchAckPayload>({ rendezvousId, fromAttemptId }),
+    },
+    offer_id: offerId,
+  });
+}
+
+function makeOfferCodePayload(
+  infoHash: string,
+  peerId: string,
+  toPeerId: string,
+  rendezvousId: string,
+  offerId: string,
+  offerCode: string,
+): string {
+  return JSON.stringify({
+    action: "announce",
+    info_hash: infoHash,
+    peer_id: peerId,
+    numwant: 1,
+    offers: [{
+      offer_id: offerId,
+      offer: {
+        type: TRACKER_OFFER_CODE_TYPE,
+        sdp: padCode(encodeTrackerPayload<TrackerOfferCodePayload>({ rendezvousId, code: offerCode })),
+        whisper_session: rendezvousId,
+        to_peer_id: toPeerId,
+      },
+    }],
+  });
+}
+
+function makeAnswerCodePayload(
+  infoHash: string,
+  peerId: string,
+  toPeerId: string,
+  rendezvousId: string,
+  offerId: string,
+  answerCode: string,
+): string {
+  return JSON.stringify({
+    action: "announce",
+    info_hash: infoHash,
+    peer_id: peerId,
+    to_peer_id: toPeerId,
+    answer: {
+      type: TRACKER_ANSWER_CODE_TYPE,
+      sdp: padCode(encodeTrackerPayload<TrackerAnswerCodePayload>({ rendezvousId, code: answerCode })),
+      whisper_session: rendezvousId,
+    },
+    offer_id: offerId,
+  });
+}
+
+function createRendezvousId(
+  localPeerId: string,
+  localAttemptId: string,
+  remotePeerId: string,
+  remoteAttemptId: string,
+): string {
+  const [first, second] = [
+    `${localPeerId}:${localAttemptId}`,
+    `${remotePeerId}:${remoteAttemptId}`,
+  ].sort();
+  return encodeTrackerPayload({ peers: [first, second] });
+}
+
+function compareAttemptOrder(
+  localPeerId: string,
+  localAttemptId: string,
+  remotePeerId: string,
+  remoteAttemptId: string,
+): number {
+  return `${localPeerId}:${localAttemptId}`.localeCompare(`${remotePeerId}:${remoteAttemptId}`);
+}
+
 /* ── Shared helpers ──────────────────────────────────────── */
 
 /** add key to a capped set. returns true if the key was new. */
@@ -248,6 +425,8 @@ export interface TrackerPoolCallbacks {
   onReady?: () => void;
   /** fires when all sockets are down simultaneously */
   onAllDown?: () => void;
+  /** periodic announce cadence, defaults to epoch checks only */
+  announceIntervalMs?: number;
 }
 
 export interface TrackerPoolHandle {
@@ -272,6 +451,7 @@ export function createTrackerPool(
   let currentHashes = initialHashes;
   let lastEpoch = Math.floor(Date.now() / EPOCH_WINDOW);
   let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
+  const announceIntervalMs = callbacks.announceIntervalMs ?? POOL_EPOCH_CHECK_INTERVAL;
 
   const sockets = new Map<string, WebSocket>();
   const connectTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -432,7 +612,7 @@ export function createTrackerPool(
           void refreshEpochPresence().then(() => {
             if (!destroyed) sendAll(callbacks.makeAnnounce(currentHashes));
           });
-        }, POOL_EPOCH_CHECK_INTERVAL);
+        }, announceIntervalMs);
       }
     };
 
@@ -516,147 +696,64 @@ export function createTrackerPool(
 
 /* ── Main exchange function ───────────────────────────────── */
 
-export async function exchangeViaTracker(
-  phrase: string,
-  myOfferCode: string,
-  acceptOfferFn: (peerOfferCode: string) => Promise<string>,
-  callbacks: TrackerSignalCallbacks,
-  signal?: AbortSignal,
-): Promise<TrackerSignalResult> {
-  const [hashes, orderedTrackers] = await Promise.all([
-    deriveInfoHashes(phrase),
-    deriveTrackerOrder(phrase, TRACKER_URLS),
-  ]);
+/* Unified rendezvous engine */
+
+export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<LiveRendezvousResult> {
+  if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  if (opts.mode === "simultaneous" && !opts.createOfferCode) throw new Error("handshake-failed");
+
+  const hashes = await deriveInfoHashes(opts.phrase);
   const peerId = randomBinId();
-  const offerId = randomBinId();
-  const paddedOffer = padCode(myOfferCode);
+  const attemptId = randomBinId();
+  const intentOfferId = randomBinId();
+  const seenMessages = new Set<string>();
 
-  callbacks.onLog("relay room ready");
+  opts.callbacks.onLog(opts.mode === "flare-listener" ? "flare room ready" : "relay room ready");
 
-  const totalAc = new AbortController();
-  const totalTimer = setTimeout(() => totalAc.abort(), TOTAL_TIMEOUT);
-  const onExternalAbort = (): void => totalAc.abort();
-
-  if (signal) {
-    if (signal.aborted) {
-      clearTimeout(totalTimer);
-      throw new DOMException("Aborted", "AbortError");
-    }
-    signal.addEventListener("abort", onExternalAbort, { once: true });
-  }
-
-  // Stagger tracker attempts to reduce simultaneous socket load on public relays,
-  // while retaining fast fallback when the first tracker is slow/unavailable.
-  // orderedTrackers is phrase-derived — both peers converge on the same primary,
-  // distributing the surveillance surface across the pool by session.
-  try {
-    const attempts = orderedTrackers.map((url, index) =>
-      (index === 0)
-        ? connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal)
-        : new Promise<TrackerSignalResult>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            totalAc.signal.removeEventListener("abort", onAbort);
-            connectToTracker(url, hashes, peerId, offerId, paddedOffer, acceptOfferFn, callbacks, totalAc.signal)
-              .then(resolve)
-              .catch(reject);
-          }, TRACKER_SECOND_ATTEMPT_DELAY * index);
-
-          const onAbort = () => {
-            clearTimeout(timer);
-            reject(new DOMException("Aborted", "AbortError"));
-          };
-
-          totalAc.signal.addEventListener("abort", onAbort, { once: true });
-        }),
-    );
-    return await Promise.any(attempts);
-  } catch (err) {
-    if (err instanceof AggregateError) {
-      const first = err.errors[0];
-      if (first instanceof DOMException && first.name === "AbortError") {
-        throw new Error("peer-not-found");
-      }
-      throw new Error(first?.message ?? "relay-unavailable");
-    }
-    throw err;
-  } finally {
-    clearTimeout(totalTimer);
-    if (signal) signal.removeEventListener("abort", onExternalAbort);
-    totalAc.abort();
-  }
-}
-
-/* ── Single tracker connection (multiplexed hashes) ───────── */
-
-function connectToTracker(
-  url: string,
-  infoHashes: string[],
-  peerId: string,
-  offerId: string,
-  paddedOffer: string,
-  acceptOfferFn: (peerOfferCode: string) => Promise<string>,
-  callbacks: TrackerSignalCallbacks,
-  signal: AbortSignal,
-): Promise<TrackerSignalResult> {
-  const host = new URL(url).host;
-
-  return new Promise<TrackerSignalResult>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-
-    let ws: WebSocket | null = null;
-    let done = false;
-    let resolved = false;
-    let offerAccepted = false;
+  return await new Promise<LiveRendezvousResult>((resolve, reject) => {
     let settled = false;
-    let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
-    let reannounceTimer: ReturnType<typeof setInterval> | null = null;
-    let relayDestroyed = false;
-    let relayRole: "offerer" | "answerer" | null = null;
-    let activeInfoHash = "";
-    let remotePeerId = "";
+    let ready = false;
+    let peerPromptActive = false;
+    let offerCreationStarted = false;
+    let acceptStarted = false;
     let relaySignalCb: ((signal: TrackerRelaySignal) => void) | null = null;
     const pendingSignals: TrackerRelaySignal[] = [];
 
-    // Pre-serialize announce payloads — one per hash, reused as-is
-    const announcePayloads = makeTrackerAnnouncePayloads(infoHashes, peerId, offerId, paddedOffer);
+    let lockPeerId = "";
+    let lockAttemptId = "";
+    let lockInfoHash = "";
+    let rendezvousId = "";
+    let currentOfferCode: string | null = null;
+    let realOfferId = "";
+    let role: "offerer" | "answerer" | null = null;
+    let pool: TrackerPoolHandle | null = null;
 
-    // Pre-serialize stopped payloads
-    const stoppedPayloads = makeTrackerStoppedPayloads(infoHashes, peerId);
-    const onAbort = () => {
+    const totalAc = new AbortController();
+    const onExternalAbort = (): void => totalAc.abort();
+    const totalTimer = opts.mode === "simultaneous"
+      ? setTimeout(() => finish(undefined, new Error("peer-not-found")), TOTAL_TIMEOUT)
+      : null;
+
+    const finish = (result?: LiveRendezvousResult, error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (totalTimer) clearTimeout(totalTimer);
+      totalAc.signal.removeEventListener("abort", onAbort);
+      opts.signal?.removeEventListener("abort", onExternalAbort);
+      if (result) {
+        resolve(result);
+        return;
+      }
+      pool?.destroy();
+      pool = null;
+      reject(error ?? new Error("relay-unavailable"));
+    };
+
+    const onAbort = (): void => {
       finish(undefined, new DOMException("Aborted", "AbortError"));
     };
 
-    const closeSocket = (sendStopped: boolean) => {
-      if (settled) return;
-      settled = true;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        if (sendStopped) {
-          for (const payload of stoppedPayloads) {
-            try { ws.send(payload); } catch { break; }
-          }
-        }
-        ws.onopen = null;
-        ws.onmessage = null;
-        ws.onerror = null;
-        ws.onclose = null;
-        try { ws.close(1000); } catch { /* noop */ }
-      } else {
-        if (ws) {
-          ws.onopen = null;
-          ws.onmessage = null;
-          ws.onerror = null;
-          ws.onclose = null;
-        }
-        try { ws?.close(1000); } catch { /* noop */ }
-      }
-      if (ws) liveSockets--;
-      ws = null;
-    };
-
-    const emitRelaySignal = (signal: TrackerRelaySignal) => {
+    const emitRelaySignal = (signal: TrackerRelaySignal): void => {
       if (relaySignalCb) {
         relaySignalCb(signal);
       } else {
@@ -664,51 +761,68 @@ function connectToTracker(
       }
     };
 
-    const destroyRelay = () => {
-      if (relayDestroyed) return;
-      relayDestroyed = true;
-      closeSocket(false);
+    const lockPeer = (remotePeerId: string, remoteAttemptId: string, infoHash: string): boolean => {
+      if (lockPeerId && (lockPeerId !== remotePeerId || lockAttemptId !== remoteAttemptId)) return false;
+      lockPeerId = remotePeerId;
+      lockAttemptId = remoteAttemptId;
+      lockInfoHash = infoHash || hashes[0];
+      rendezvousId = createRendezvousId(peerId, attemptId, remotePeerId, remoteAttemptId);
+      return true;
     };
 
-    const sendRelaySignal = (signal: TrackerRelaySignal) => {
-      if (relayDestroyed || !ws || ws.readyState !== WebSocket.OPEN || !relayRole || !activeInfoHash || !remotePeerId) return;
-      const encoded = encodeTrackerRelaySignal(signal);
-      if (relayRole === "answerer") {
-        ws.send(JSON.stringify({
-          action: "announce",
-          info_hash: activeInfoHash,
-          peer_id: peerId,
-          to_peer_id: remotePeerId,
-          answer: {
-            type: TRACKER_SIGNAL_TYPE,
-            sdp: encoded,
-            whisper_session: offerId,
-          },
-          offer_id: offerId,
-        }));
-        return;
+    const buildAnnouncePayloads = (announceHashes: string[]): string[] => {
+      if (opts.mode === "flare-listener") {
+        return makeTrackerPresencePayloads(announceHashes, peerId);
       }
-
-      ws.send(JSON.stringify({
-        action: "announce",
-        info_hash: activeInfoHash,
-        peer_id: peerId,
-        numwant: 1,
-        offers: [{
-          offer_id: randomBinId(),
-          offer: {
-            type: TRACKER_SIGNAL_TYPE,
-            sdp: encoded,
-            whisper_session: offerId,
-            to_peer_id: remotePeerId,
-          },
-        }],
-      }));
+      if (role === "offerer" && realOfferId && lockPeerId && rendezvousId && currentOfferCode) {
+        return announceHashes.map((infoHash) =>
+          makeOfferCodePayload(infoHash, peerId, lockPeerId, rendezvousId, realOfferId, currentOfferCode!));
+      }
+      if (role === "answerer") {
+        return makeTrackerPresencePayloads(announceHashes, peerId);
+      }
+      return makeIntentPayloads(announceHashes, peerId, intentOfferId, attemptId);
     };
 
     const buildRelayHandle = (): TrackerRelayHandle => ({
-      destroy: destroyRelay,
-      sendSignal: sendRelaySignal,
+      destroy: () => {
+        pool?.destroy();
+        pool = null;
+      },
+      sendSignal: (signal) => {
+        if (!pool || !role || !lockPeerId || !lockInfoHash || !rendezvousId || !realOfferId) return;
+        const encoded = encodeTrackerRelaySignal(signal);
+        if (role === "answerer") {
+          pool.sendAll([JSON.stringify({
+            action: "announce",
+            info_hash: lockInfoHash,
+            peer_id: peerId,
+            to_peer_id: lockPeerId,
+            answer: {
+              type: TRACKER_SIGNAL_TYPE,
+              sdp: encoded,
+              whisper_session: rendezvousId,
+            },
+            offer_id: realOfferId,
+          })]);
+          return;
+        }
+        pool.sendAll([JSON.stringify({
+          action: "announce",
+          info_hash: lockInfoHash,
+          peer_id: peerId,
+          numwant: 1,
+          offers: [{
+            offer_id: randomBinId(),
+            offer: {
+              type: TRACKER_SIGNAL_TYPE,
+              sdp: encoded,
+              whisper_session: rendezvousId,
+              to_peer_id: lockPeerId,
+            },
+          }],
+        })]);
+      },
       setOnSignal: (cb) => {
         relaySignalCb = cb;
         if (!cb) return;
@@ -716,85 +830,162 @@ function connectToTracker(
       },
     });
 
-    const finish = (result?: TrackerSignalResult, error?: Error) => {
-      if (result) {
-        if (resolved) return;
-        resolved = true;
-        signal.removeEventListener("abort", onAbort);
-        clearTimeout(connectTimer);
-        if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
-        if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
-        resolve(result);
+    const startOfferCreation = (): void => {
+      if (offerCreationStarted || !opts.createOfferCode || !lockPeerId || !lockInfoHash || !rendezvousId) return;
+      offerCreationStarted = true;
+      realOfferId = randomBinId();
+      opts.callbacks.onStatus("creating your invite...");
+      opts.callbacks.onLog("peer matched, creating live offer");
+      void opts.createOfferCode()
+        .then((offerCode) => {
+          if (settled) return;
+          currentOfferCode = offerCode;
+          if (!pool) {
+            finish(undefined, new Error("handshake-failed"));
+            return;
+          }
+          pool.sendAll(buildAnnouncePayloads(pool.hashes));
+          opts.callbacks.onStatus("waiting for your peer...");
+        })
+        .catch(() => {
+          finish(undefined, new Error("handshake-failed"));
+        });
+    };
+
+    const handleIntent = (msg: Record<string, unknown>): void => {
+      const offer = msg.offer as Record<string, unknown>;
+      if (offer.type !== TRACKER_INTENT_TYPE) return;
+      if (opts.mode === "flare-listener" && !opts.callbacks.onPeerArrived) return;
+
+      const payload = decodeTrackerPayload<TrackerIntentPayload>(offer.sdp);
+      const remotePeerId = String(msg.peer_id ?? "");
+      const toPeerId = String(offer.to_peer_id ?? msg.to_peer_id ?? "");
+      const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : hashes[0];
+      const remoteOfferId = String(msg.offer_id ?? "");
+
+      if (!payload?.attemptId || !remotePeerId || !remoteOfferId) return;
+      if (remotePeerId === peerId) return;
+      if (toPeerId && toPeerId !== peerId) return;
+      if (!rememberSeen(seenMessages, `intent|${remotePeerId}|${remoteOfferId}|${payload.attemptId}`)) return;
+      if (!lockPeer(remotePeerId, payload.attemptId, infoHash)) return;
+
+      const becomeAnswerer = (): void => {
+        role = "answerer";
+        opts.callbacks.onStatus("found your peer!");
+        opts.callbacks.onLog(opts.mode === "flare-listener" ? "flare accepted peer" : "peer matched, waiting for offer");
+        pool?.sendAll([makeMatchAckPayload(lockInfoHash, peerId, lockPeerId, remoteOfferId, rendezvousId, attemptId)]);
+      };
+
+      if (opts.mode === "flare-listener") {
+        if (peerPromptActive) return;
+        peerPromptActive = true;
+        opts.callbacks.onLog("someone found your flare");
+        void opts.callbacks.onPeerArrived!()
+          .then((accepted) => {
+            peerPromptActive = false;
+            if (settled) return;
+            if (!accepted) {
+              lockPeerId = "";
+              lockAttemptId = "";
+              lockInfoHash = "";
+              rendezvousId = "";
+              opts.callbacks.onLog("peer ignored, still listening");
+              opts.callbacks.onStatus("flare is burning");
+              return;
+            }
+            becomeAnswerer();
+          })
+          .catch(() => {
+            peerPromptActive = false;
+          });
         return;
       }
 
-      if (done) return;
-      done = true;
-      signal.removeEventListener("abort", onAbort);
-      clearTimeout(connectTimer);
-      if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = null; }
-      if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
-      closeSocket(true);
-      reject(error ?? new Error("relay-unavailable"));
-    };
-
-    if (liveSockets >= MAX_SOCKETS) {
-      reject(new Error("relay-unavailable"));
-      return;
-    }
-
-    signal.addEventListener("abort", onAbort, { once: true });
-
-    const connectTimer = setTimeout(() => {
-      finish(undefined, new Error("relay-unavailable"));
-    }, WS_CONNECT_TIMEOUT);
-
-    try {
-      ws = new WebSocket(url);
-      liveSockets++;
-    } catch {
-      clearTimeout(connectTimer);
-      signal.removeEventListener("abort", onAbort);
-      reject(new Error("relay-unavailable"));
-      return;
-    }
-
-    ws.onopen = () => {
-      clearTimeout(connectTimer);
-      callbacks.onLog(`connected to relay via ${host}`);
-      callbacks.onStatus("waiting for your peer...");
-
-      discoveryTimer = setTimeout(() => {
-        finish(undefined, new Error("peer-not-found"));
-      }, PEER_DISCOVERY_TIMEOUT);
-
-      for (const payload of announcePayloads) ws!.send(payload);
-
-      // re-announce periodically so our offer reaches peers who join the
-      // swarm after the initial announce (e.g. flares sitting with
-      // presence-only). tracker offer routing is one-shot at announce time,
-      // so without this, late joiners never see us.
-      reannounceTimer = setInterval(() => {
-        if (done || !ws || ws.readyState !== WebSocket.OPEN) return;
-        for (const payload of announcePayloads) {
-          try { ws.send(payload); } catch { break; }
-        }
-      }, REANNOUNCE_INTERVAL);
-    };
-
-    ws.onmessage = (event) => {
-      if (done) return;
-
-      // Text frames arrive as strings — no coercion needed.
-      // Binary frames (unexpected from a WebTorrent tracker) are ignored.
-      const msg = parseTrackerMessage(event.data);
-      if (!msg) return;
-
-      if (msg["failure reason"]) {
-        callbacks.onLog(`relay message: ${msg["failure reason"]}`);
+      const order = compareAttemptOrder(peerId, attemptId, remotePeerId, payload.attemptId);
+      if (order < 0) {
+        role = "offerer";
+        opts.callbacks.onStatus("found your peer!");
+        opts.callbacks.onLog("peer matched, waiting for confirmation");
         return;
       }
+      becomeAnswerer();
+    };
 
+    const handleMatchAck = (msg: Record<string, unknown>): void => {
+      const answer = msg.answer as Record<string, unknown>;
+      if (answer.type !== TRACKER_MATCH_ACK_TYPE) return;
+
+      const payload = decodeTrackerPayload<TrackerMatchAckPayload>(answer.sdp);
+      const remotePeerId = String(msg.peer_id ?? "");
+      const toPeerId = String(msg.to_peer_id ?? "");
+      const incomingOfferId = String(msg.offer_id ?? "");
+
+      if (!payload?.rendezvousId || !payload.fromAttemptId) return;
+      if (!remotePeerId || remotePeerId === peerId) return;
+      if (toPeerId && toPeerId !== peerId) return;
+      if (incomingOfferId !== intentOfferId) return;
+      if (!lockPeer(remotePeerId, payload.fromAttemptId, typeof msg.info_hash === "string" ? msg.info_hash : hashes[0])) return;
+      if (payload.rendezvousId !== rendezvousId) return;
+
+      role = "offerer";
+      startOfferCreation();
+    };
+
+    const handleOfferCode = (msg: Record<string, unknown>): void => {
+      if (role !== "answerer" || acceptStarted) return;
+      const offer = msg.offer as Record<string, unknown>;
+      if (offer.type !== TRACKER_OFFER_CODE_TYPE) return;
+
+      const payload = decodeTrackerPayload<TrackerOfferCodePayload>(offer.sdp);
+      const remotePeerId = String(msg.peer_id ?? "");
+      const toPeerId = String(offer.to_peer_id ?? msg.to_peer_id ?? "");
+      const incomingOfferId = String(msg.offer_id ?? "");
+
+      if (!payload?.rendezvousId || !payload.code) return;
+      if (!remotePeerId || remotePeerId !== lockPeerId) return;
+      if (toPeerId && toPeerId !== peerId) return;
+      if (payload.rendezvousId !== rendezvousId) return;
+      if (!BASE64URL_RE.test(payload.code) || payload.code.length < MIN_CODE_LEN) return;
+
+      acceptStarted = true;
+      realOfferId = incomingOfferId;
+      opts.callbacks.onStatus("connecting to peer...");
+      opts.callbacks.onLog("accepting live offer");
+      void opts.acceptOfferCode(payload.code)
+        .then((answerCode) => {
+          if (settled) return;
+          pool?.sendAll([makeAnswerCodePayload(lockInfoHash, peerId, lockPeerId, rendezvousId, realOfferId, answerCode)]);
+          opts.callbacks.onStatus("connecting directly...");
+          finish({ role: "answerer", relay: buildRelayHandle() });
+        })
+        .catch(() => {
+          finish(undefined, new Error("handshake-failed"));
+        });
+    };
+
+    const handleAnswerCode = (msg: Record<string, unknown>): void => {
+      if (role !== "offerer" || !realOfferId) return;
+      const answer = msg.answer as Record<string, unknown>;
+      if (answer.type !== TRACKER_ANSWER_CODE_TYPE) return;
+
+      const payload = decodeTrackerPayload<TrackerAnswerCodePayload>(answer.sdp);
+      const remotePeerId = String(msg.peer_id ?? "");
+      const toPeerId = String(msg.to_peer_id ?? "");
+      const incomingOfferId = String(msg.offer_id ?? "");
+
+      if (!payload?.rendezvousId || !payload.code) return;
+      if (!remotePeerId || remotePeerId !== lockPeerId) return;
+      if (toPeerId && toPeerId !== peerId) return;
+      if (incomingOfferId !== realOfferId) return;
+      if (payload.rendezvousId !== rendezvousId) return;
+      if (!BASE64URL_RE.test(payload.code) || payload.code.length < MIN_CODE_LEN) return;
+
+      opts.callbacks.onStatus("connecting directly...");
+      opts.callbacks.onLog("peer accepted our offer");
+      finish({ role: "offerer", peerAnswerCode: payload.code, relay: buildRelayHandle() });
+    };
+
+    const handleRelaySignalMessage = (msg: Record<string, unknown>): boolean => {
       if (msg.offer && typeof msg.offer === "object") {
         const offer = msg.offer as Record<string, unknown>;
         if (offer.type === TRACKER_SIGNAL_TYPE) {
@@ -802,10 +993,10 @@ function connectToTracker(
           const sessionId = String(offer.whisper_session ?? "");
           const toPeerId = String(offer.to_peer_id ?? "");
           const fromPeerId = String(msg.peer_id ?? "");
-          if (!encoded || sessionId !== offerId || toPeerId !== peerId || !fromPeerId || fromPeerId === peerId) return;
+          if (!encoded || sessionId !== rendezvousId || toPeerId !== peerId || fromPeerId !== lockPeerId) return true;
           const signalPayload = decodeTrackerRelaySignal(encoded);
           if (signalPayload) emitRelaySignal(signalPayload);
-          return;
+          return true;
         }
       }
 
@@ -817,123 +1008,50 @@ function connectToTracker(
           const fromPeerId = String(msg.peer_id ?? "");
           const toPeerId = String(msg.to_peer_id ?? "");
           const incomingOfferId = String(msg.offer_id ?? "");
-          if (!encoded || sessionId !== offerId || incomingOfferId !== offerId) return;
-          if (!fromPeerId || fromPeerId === peerId) return;
-          if (toPeerId && toPeerId !== peerId) return;
+          if (!encoded || sessionId !== rendezvousId || incomingOfferId !== realOfferId) return true;
+          if (fromPeerId !== lockPeerId) return true;
+          if (toPeerId && toPeerId !== peerId) return true;
           const signalPayload = decodeTrackerRelaySignal(encoded);
           if (signalPayload) emitRelaySignal(signalPayload);
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    if (opts.signal) opts.signal.addEventListener("abort", onExternalAbort, { once: true });
+    totalAc.signal.addEventListener("abort", onAbort, { once: true });
+
+    pool = createTrackerPool(opts.phrase, peerId, hashes, {
+      onLog: (msg) => opts.callbacks.onLog(opts.mode === "flare-listener" ? `flare ${msg}` : msg),
+      announceIntervalMs: REANNOUNCE_INTERVAL,
+      makeAnnounce: buildAnnouncePayloads,
+      onReady: () => {
+        ready = true;
+        opts.callbacks.onStatus(opts.mode === "flare-listener" ? "flare is burning" : "waiting for your peer...");
+      },
+      onAllDown: () => {
+        opts.callbacks.onStatus("reconnecting...");
+      },
+      onMessage: (msg) => {
+        if (settled) return;
+        if (msg["failure reason"]) {
+          opts.callbacks.onLog(`relay message: ${msg["failure reason"]}`);
           return;
         }
-      }
+        if (handleRelaySignalMessage(msg)) return;
+        if (msg.offer && typeof msg.offer === "object") handleIntent(msg);
+        if (msg.answer && typeof msg.answer === "object") handleMatchAck(msg);
+        if (msg.offer && typeof msg.offer === "object") handleOfferCode(msg);
+        if (msg.answer && typeof msg.answer === "object") handleAnswerCode(msg);
+      },
+    }, totalAc.signal);
 
-      // ── Offer received → we may become the answerer ──
-
-      if (msg.offer && typeof msg.offer === "object") {
-        const offer = msg.offer as Record<string, unknown>;
-        const peerOfferCode = unpadCode(String(offer.sdp ?? ""));
-        const peerOfferId = String(msg.offer_id ?? "");
-        const peerPeerId = String(msg.peer_id ?? "");
-        const toPeerId = String(msg.to_peer_id ?? "");
-        const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : "";
-
-        if (!peerOfferCode || peerOfferCode.length < MIN_CODE_LEN) return;
-        if (!peerOfferId) return;
-        if (!peerPeerId) return;
-        if (toPeerId && toPeerId !== peerId) return;
-        if (peerPeerId === peerId) return;
-        if (infoHash && !infoHashes.includes(infoHash)) return;
-        if (!BASE64URL_RE.test(peerOfferCode)) return;
-        if (offerAccepted) return;
-
-        // Tie-break: lower peer_id becomes answerer
-        if (peerId > peerPeerId) {
-          callbacks.onLog("resolving connection order...");
-          return;
-        }
-        offerAccepted = true;
-        if (discoveryTimer) {
-          clearTimeout(discoveryTimer);
-          discoveryTimer = null;
-        }
-        if (reannounceTimer) { clearInterval(reannounceTimer); reannounceTimer = null; }
-
-        callbacks.onStatus("found your peer!");
-        callbacks.onLog("peer found, accepting their offer");
-
-        // Determine which info_hash this offer came on — reply on the same one.
-        // The tracker routes answers by (info_hash, to_peer_id, offer_id).
-        const replyHash = typeof msg.info_hash === "string" ? msg.info_hash : infoHashes[0];
-
-        void acceptOfferFn(peerOfferCode)
-          .then((myAnswerCode) => {
-            if (done) return;
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-              // socket dropped while processing the accept, answer can't be delivered.
-              // finish() sends stopped and closes so the swarm room is cleaned up.
-              finish(undefined, new Error("handshake-failed"));
-              return;
-            }
-
-            ws.send(JSON.stringify({
-              action: "announce",
-              info_hash: replyHash,
-              peer_id: peerId,
-              to_peer_id: peerPeerId,
-              answer: { type: "answer", sdp: padCode(myAnswerCode) },
-              offer_id: peerOfferId,
-            }));
-
-            callbacks.onLog("exchange complete, connecting directly");
-            callbacks.onStatus("connecting directly...");
-            relayRole = "answerer";
-            activeInfoHash = replyHash;
-            remotePeerId = peerPeerId;
-            finish({ role: "answerer", relay: buildRelayHandle() });
-          })
-          .catch(() => {
-            finish(undefined, new Error("handshake-failed"));
-          });
-
-        return;
-      }
-
-      // ── Answer received → we stay offerer ──
-
-      if (msg.answer && typeof msg.answer === "object") {
-        const answer = msg.answer as Record<string, unknown>;
-        const peerAnswerCode = unpadCode(String(answer.sdp ?? ""));
-        const fromPeerId = String(msg.peer_id ?? "");
-        const toPeerId = String(msg.to_peer_id ?? "");
-        const incomingOfferId = String(msg.offer_id ?? "");
-        const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : "";
-        if (!peerAnswerCode || peerAnswerCode.length < MIN_CODE_LEN) return;
-        if (!fromPeerId || fromPeerId === peerId) return;
-        if (toPeerId && toPeerId !== peerId) return;
-        if (incomingOfferId && incomingOfferId !== offerId) return;
-        if (infoHash && !infoHashes.includes(infoHash)) return;
-        if (!BASE64URL_RE.test(peerAnswerCode)) return;
-
-        callbacks.onStatus("found your peer!");
-        callbacks.onLog("peer accepted our offer");
-        relayRole = "offerer";
-        activeInfoHash = infoHash || infoHashes[0];
-        remotePeerId = fromPeerId;
-        finish({ role: "offerer", peerAnswerCode, relay: buildRelayHandle() });
-        return;
-      }
-    };
-
-    ws.onerror = () => {
-      if (resolved) return;
-      finish(undefined, new Error("relay-unavailable"));
-    };
-
-    ws.onclose = () => {
-      if (resolved) {
-        destroyRelay();
-        return;
-      }
-      if (!done) finish(undefined, new Error("relay-unavailable"));
-    };
+    if (opts.mode === "simultaneous") {
+      setTimeout(() => {
+        if (!settled && !ready) finish(undefined, new Error("relay-unavailable"));
+      }, WS_CONNECT_TIMEOUT);
+    }
   });
 }

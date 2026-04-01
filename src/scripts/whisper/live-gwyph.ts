@@ -1,13 +1,10 @@
 import { decode0D } from "./live-wasm-logos";
-import { GlyphCodec } from "./live-wasm-glyph";
+import { GlyphCodec, GLYPH_CHANNELS, GLYPH_CHANNEL_NAMES, type GlyphChannelName } from "./live-wasm-glyph";
 
 export const GLYPH_MIME = "application/x-whisper-gwyph";
 
-export interface GlyphPoint {
-  x: number;
-  y: number;
-  p: number;
-}
+// shape derived from codec channel names
+export type GlyphPoint = Record<GlyphChannelName, number>;
 
 export interface GlyphStrokePen {
   type: "pen";
@@ -142,10 +139,6 @@ class GlyphReader {
   }
 }
 
-function zigZagDecode(v: number): number {
-  return (v & 1) === 0 ? (v >>> 1) : -((v >>> 1) + 1);
-}
-
 function q15ToNorm(v: number): number {
   return Math.max(0, Math.min(1, v / 32767));
 }
@@ -215,32 +208,44 @@ function parseGwyphPayloadV3Raw(raw: Uint8Array): GlyphPayload | null {
       const pointCount = r.varUint();
       const points: GlyphPoint[] = [];
       if (pointCount > 0) {
-        const x0 = r.u16();
-        const y0 = r.u16();
-        const p0 = r.u16();
+        const CH = GLYPH_CHANNELS;
+        // read a seed: CH u16 values → raw number array
+        const readSeed = (): number[] => {
+          const s: number[] = [];
+          for (let c = 0; c < CH; c++) s.push(r.u16());
+          return s;
+        };
+        // raw seed values → GlyphPoint
+        const seedToPoint = (s: number[]): GlyphPoint => {
+          const pt = {} as GlyphPoint;
+          for (let c = 0; c < CH; c++) pt[GLYPH_CHANNEL_NAMES[c]] = q15ToNorm(s[c]);
+          return pt;
+        };
+        // decoded flat array offset → GlyphPoint
+        const decodedToPoint = (arr: Int32Array, offset: number): GlyphPoint => {
+          const pt = {} as GlyphPoint;
+          for (let c = 0; c < CH; c++) pt[GLYPH_CHANNEL_NAMES[c]] = q15ToNorm(arr[offset + c]);
+          return pt;
+        };
+
+        const s0 = readSeed();
         if (pointCount === 1) {
-          points.push({ x: q15ToNorm(x0), y: q15ToNorm(y0), p: q15ToNorm(p0) });
+          points.push(seedToPoint(s0));
         } else {
-          const x1 = r.u16();
-          const y1 = r.u16();
-          const p1 = r.u16();
+          const s1 = readSeed();
           if (pointCount === 2) {
-            points.push({ x: q15ToNorm(x0), y: q15ToNorm(y0), p: q15ToNorm(p0) });
-            points.push({ x: q15ToNorm(x1), y: q15ToNorm(y1), p: q15ToNorm(p1) });
+            points.push(seedToPoint(s0));
+            points.push(seedToPoint(s1));
           } else {
             const packedLen = r.varUint();
             const packed = r.bytes(packedLen);
             const blocks = GlyphCodec.unpack(packed);
             if (blocks.length === 0) return null;
-            const decoded = GlyphCodec.decode(blocks, [x1, y1, p1], [x0, y0, p0]);
-            const n = Math.floor(decoded.length / 3);
+            const decoded = GlyphCodec.decode(blocks, s1, s0);
+            const n = Math.floor(decoded.length / CH);
             if (n !== pointCount) return null;
             for (let pi = 0; pi < n; pi++) {
-              points.push({
-                x: q15ToNorm(decoded[pi * 3]),
-                y: q15ToNorm(decoded[pi * 3 + 1]),
-                p: q15ToNorm(decoded[pi * 3 + 2]),
-              });
+              points.push(decodedToPoint(decoded, pi * CH));
             }
           }
         }
@@ -266,8 +271,7 @@ function parseGwyphPayloadV3Raw(raw: Uint8Array): GlyphPayload | null {
   }
 }
 
-function parseGwyphPayloadInner(bytes: Uint8Array, depth: number): GlyphPayload | null {
-  if (depth > 2) return null;
+export function parseGwyphPayload(bytes: Uint8Array): GlyphPayload | null {
   try {
     const r = new GlyphReader(bytes);
     const g = r.u8();
@@ -276,91 +280,15 @@ function parseGwyphPayloadInner(bytes: Uint8Array, depth: number): GlyphPayload 
     const p = r.u8();
     if (g !== 0x47 || w !== 0x57 || y !== 0x59 || p !== 0x50) return null;
     const version = r.u8();
-    if (version === 3) {
-      const rawLen = r.u32();
-      if (!Number.isFinite(rawLen) || rawLen <= 0 || rawLen > 8_388_608) return null;
-      const decoded = decode0D(r.remaining(), rawLen);
-      if (decoded.length !== rawLen) return null;
-      return parseGwyphPayloadV3Raw(decoded);
-    }
-    if (version === 2) {
-      const rawLen = r.u32();
-      if (!Number.isFinite(rawLen) || rawLen <= 0 || rawLen > 8_388_608) return null;
-      const decoded = decode0D(r.remaining(), rawLen);
-      if (decoded.length !== rawLen) return null;
-      return parseGwyphPayloadInner(decoded, depth + 1);
-    }
-    if (version !== 1) return null;
-    const modeByte = r.u8();
-    const logicalW = Math.max(1, r.u16());
-    const logicalH = Math.max(1, r.u16());
-    const strokeCount = r.varUint();
-    const strokes: GlyphStroke[] = [];
-
-    for (let i = 0; i < strokeCount; i++) {
-      const tag = r.u8();
-      if (tag === 1) {
-        const cr = r.u8();
-        const cg = r.u8();
-        const cb = r.u8();
-        const tolSq = r.u16();
-        const sx = q15ToNorm(r.u16());
-        const sy = q15ToNorm(r.u16());
-        strokes.push({
-          type: "fill",
-          color: rgbToHex(cr, cg, cb),
-          tolerance: Math.max(0, Math.min(65535, tolSq)),
-          seedX: sx,
-          seedY: sy,
-        });
-        continue;
-      }
-      if (tag !== 0) return null;
-      const tool = r.u8() === 1 ? "eraser" : "pen";
-      const cr = r.u8();
-      const cg = r.u8();
-      const cb = r.u8();
-      const width = Math.max(0.25, r.u16() / 256);
-      const pointCount = r.varUint();
-      const points: GlyphPoint[] = [];
-      if (pointCount > 0) {
-        let x = r.u16();
-        let yv = r.u16();
-        let pv = r.u16();
-        points.push({ x: q15ToNorm(x), y: q15ToNorm(yv), p: q15ToNorm(pv) });
-        for (let pi = 1; pi < pointCount; pi++) {
-          x += zigZagDecode(r.varUint());
-          yv += zigZagDecode(r.varUint());
-          pv += zigZagDecode(r.varUint());
-          points.push({
-            x: q15ToNorm(x),
-            y: q15ToNorm(yv),
-            p: q15ToNorm(pv),
-          });
-        }
-      }
-      strokes.push({
-        type: "pen",
-        tool,
-        color: rgbToHex(cr, cg, cb),
-        width,
-        points,
-      });
-    }
-
-    return {
-      mode: modeByte === 0 ? "blank" : "annotate",
-      logicalW,
-      logicalH,
-      strokes,
-    };
+    if (version !== 3) return null;
+    const rawLen = r.u32();
+    if (!Number.isFinite(rawLen) || rawLen <= 0 || rawLen > 8_388_608) return null;
+    const decoded = decode0D(r.remaining(), rawLen);
+    if (decoded.length !== rawLen) return null;
+    return parseGwyphPayloadV3Raw(decoded);
   } catch {
     return null;
   }
-}
-
-export function parseGwyphPayload(bytes: Uint8Array): GlyphPayload | null {
-  return parseGwyphPayloadInner(bytes, 0);
 }
 
 function renderGlyphStroke(

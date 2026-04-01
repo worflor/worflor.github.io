@@ -1,0 +1,1303 @@
+---
+import Layout from "../../layouts/Layout.astro";
+
+const seo = {
+  title: "The Descent | woflo",
+  description:
+    "an immersive journey through the dimensional tower of codecs. compression, encryption, and communication as one operation.",
+  image: "/images/social-card.png",
+};
+
+// 8 spatial dimensions projected into 3D CSS space
+const axisData = [
+  { ry: 0, rx: 0 },
+  { ry: 90, rx: 0 },
+  { ry: 0, rx: 90 },
+  { ry: 45, rx: 35.26 },
+  { ry: -45, rx: 35.26 },
+  { ry: 45, rx: -35.26 },
+  { ry: -45, rx: -35.26 },
+  { ry: 135, rx: 45 },
+];
+
+// loup: 8 spatial dimensions (x₁...x₈), NOT logos's prediction axes
+const axisLabels = ["x\u2081", "x\u2082", "x\u2083", "x\u2084", "x\u2085", "x\u2086", "x\u2087", "x\u2088"];
+
+// kizuna: second 8D signature at offset angles so merged structure shows 16 distinct axes
+const bondRightAxes = axisData.map(a => ({
+  ry: a.ry + 22,
+  rx: a.rx + 12,
+}));
+---
+
+<Layout seo={seo}>
+  <main class="descent" id="descent">
+    <div class="descent__bar" aria-hidden="true"></div>
+
+    <!-- ═══ Act 0 — The Surface ═══ -->
+    <section class="act act--surface" id="act-0" aria-label="The surface">
+      <div class="pin">
+        <div class="scene">
+          <div class="pulse-dot"></div>
+        </div>
+        <div class="copy copy--bottom">
+          <p class="quote fade-in">
+            what if compression, encryption,<br />and communication were the
+            same thing?
+          </p>
+        </div>
+        <div class="chevron" aria-hidden="true">
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M6 9l6 6 6-6"></path>
+          </svg>
+        </div>
+      </div>
+      <span class="sr-only"
+        >A single pulse of light in darkness. Scroll to descend through the
+        dimensional tower of codecs.</span
+      >
+    </section>
+
+    <!-- ═══ Act 1 — Logos (0D) ═══ -->
+    <section class="act act--logos" id="act-1" aria-label="Logos: the entropy floor">
+      <div class="pin">
+        <div class="scene">
+          <canvas class="tree-canvas" aria-hidden="true"></canvas>
+        </div>
+        <div class="copy copy--lower">
+          <span class="act-dim">0D</span>
+          <h2 class="act-name">Logos</h2>
+          <p class="quote">
+            before there are dimensions,<br />there is counting.
+          </p>
+          <div class="counter" aria-hidden="true">
+            <span class="counter-value">8.00</span>
+            <span class="counter-unit">bits / byte</span>
+          </div>
+        </div>
+      </div>
+      <span class="sr-only"
+        >A binary tree of 255 nodes grows from a single point, representing the
+        Logos entropy coder learning patterns in data. An entropy counter
+        decreases as the tree learns.</span
+      >
+    </section>
+
+    <!-- ═══ Act 2 — The Orthogonal Step (1D→2D) ═══ -->
+    <section class="act act--step" id="act-2" aria-label="The orthogonal step">
+      <div class="pin">
+        <div class="scene">
+          <div class="wave-wrap">
+            <canvas class="wave-canvas" aria-hidden="true"></canvas>
+          </div>
+          <div class="lumen-grid" aria-hidden="true"></div>
+        </div>
+        <div class="copy copy--lower">
+          <span class="act-dim">1D → 2D</span>
+          <p class="quote">
+            you cannot measure a dimension<br />from inside it.
+          </p>
+        </div>
+      </div>
+      <span class="sr-only"
+        >A waveform stretches across the screen, then the plane tilts into
+        perspective, revealing a second dimension. The orthogonal step: to
+        observe structure, stand in a higher dimension.</span
+      >
+    </section>
+
+    <!-- ═══ Act 3 — Loup (8D) ═══ -->
+    <section class="act act--loup" id="act-3" aria-label="Loup: the 8D predictor">
+      <div class="pin">
+        <div class="scene scene--3d">
+          <div class="octo">
+            {
+              axisData.map((a) => (
+                <div
+                  class="octo-axis"
+                  style={`--ry:${a.ry};--rx:${a.rx}`}
+                />
+              ))
+            }
+          </div>
+          <div class="axis-labels">
+            {
+              axisLabels.map((label, i) => (
+                <span
+                  class="axis-label"
+                  data-i={i}
+                  set:html={label}
+                />
+              ))
+            }
+          </div>
+        </div>
+        <div class="copy copy--lower">
+          <span class="act-dim">8D</span>
+          <h2 class="act-name">Loup</h2>
+          <p class="quote">
+            the last algebra that divides cleanly.<br />90% of the answer was already there.
+          </p>
+        </div>
+      </div>
+      <span class="sr-only"
+        >An 8-axis wireframe structure rotates in 3D space. Each axis
+        represents one of the eight predictive dimensions of the Loup codec.
+        255 neighbors surround every point.</span
+      >
+    </section>
+
+    <!-- ═══ Act 4 — Kizuna (16D) ═══ -->
+    <section class="act act--kizuna" id="act-4" aria-label="Kizuna: the bond">
+      <div class="pin">
+        <div class="scene scene--3d">
+          <div class="bond-stage">
+            <div class="bond-left">
+              {
+                axisData.map((a) => (
+                  <div
+                    class="octo-axis"
+                    style={`--ry:${a.ry};--rx:${a.rx}`}
+                  />
+                ))
+              }
+            </div>
+            <div class="bond-right">
+              {
+                bondRightAxes.map((a) => (
+                  <div
+                    class="octo-axis"
+                    style={`--ry:${a.ry};--rx:${a.rx}`}
+                  />
+                ))
+              }
+            </div>
+            <div class="mobius-ring">
+              {
+                Array.from({ length: 24 }, (_, i) => (
+                  <div class="ring-dot" style={`--i:${i}`} />
+                ))
+              }
+            </div>
+          </div>
+          <div class="bond-flash" aria-hidden="true"></div>
+        </div>
+        <div class="copy copy--lower">
+          <span class="act-dim">16D</span>
+          <h2 class="act-name">Kizuna</h2>
+          <p class="quote">
+            the secrets become geometry.<br />the geometry becomes the cipher.
+          </p>
+          <div class="counter" aria-hidden="true">
+            <span class="counter-value">0</span>
+            <span class="counter-unit">neighbors</span>
+          </div>
+        </div>
+      </div>
+      <span class="sr-only"
+        >A shared secret expands into 65,536 bytes, sealed by the 16-dimensional
+        Möbius predictor into one residual sensitive to every byte. The geometry
+        becomes the cipher. 65,535 witnesses, one seal.</span
+      >
+    </section>
+
+    <!-- ═══ Act 5 — Crystallization ═══ -->
+    <section class="act act--crystal" id="act-5" aria-label="Crystallization">
+      <div class="pin">
+        <div class="scene">
+          <canvas class="particle-canvas" aria-hidden="true"></canvas>
+        </div>
+        <div class="copy copy--lower">
+          <span class="act-dim">engram</span>
+          <p class="quote">
+            memory isn't stored.<br />it crystallizes.
+          </p>
+          <div class="temp-gauge" aria-hidden="true">
+            <div class="temp-fill"></div>
+          </div>
+        </div>
+      </div>
+      <span class="sr-only"
+        >Particles representing engram memory packets move chaotically when hot,
+        then cluster into gravity wells and crystallize as scrolling cools the
+        system. a phase transition occurs at the percolation threshold.</span
+      >
+    </section>
+
+    <!-- ═══ Act 6 — The Loop ═══ -->
+    <section class="act act--loop" id="act-6" aria-label="The loop">
+      <div class="pin">
+        <div class="scene">
+          <div class="loop-ring">
+            <!-- 0D -->
+            <div class="loop-icon" style="--i:0">
+              <svg viewBox="0 0 24 24"
+                ><circle cx="12" cy="12" r="4" fill="currentColor"
+                ></circle></svg
+              >
+            </div>
+            <!-- 1D -->
+            <div class="loop-icon" style="--i:1">
+              <svg viewBox="0 0 24 24"
+                ><path
+                  d="M2 12Q8 4 12 12Q16 20 22 12"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"></path></svg
+              >
+            </div>
+            <!-- 2D -->
+            <div class="loop-icon" style="--i:2">
+              <svg viewBox="0 0 24 24"
+                ><rect
+                  x="5"
+                  y="5"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"></rect></svg
+              >
+            </div>
+            <!-- 8D -->
+            <div class="loop-icon" style="--i:3">
+              <svg viewBox="0 0 24 24"
+                ><path
+                  d="M12 2L22 8V16L12 22L2 16V8Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"></path></svg
+              >
+            </div>
+            <!-- 16D -->
+            <div class="loop-icon" style="--i:4">
+              <svg viewBox="0 0 24 24"
+                ><circle
+                  cx="8"
+                  cy="12"
+                  r="6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"></circle><circle
+                  cx="16"
+                  cy="12"
+                  r="6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"></circle></svg
+              >
+            </div>
+            <!-- engram -->
+            <div class="loop-icon" style="--i:5">
+              <svg viewBox="0 0 24 24"
+                ><polygon
+                  points="12,2 22,9 19,20 5,20 2,9"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"></polygon></svg
+              >
+            </div>
+          </div>
+          <div class="loop-dot"></div>
+        </div>
+        <div class="copy copy--lower">
+          <p class="loop-dims">0D → 8D → 16D → 0D</p>
+          <p class="loop-insight">each message walks the tower.</p>
+          <p class="loop-ratchet">the ratchet turns. the key changes. the ladder resets.</p>
+          <p class="loop-final">
+            compression. encryption. forward secrecy.<br />one operation.
+          </p>
+        </div>
+      </div>
+      <span class="sr-only"
+        >Icons representing each codec dimension orbit in a ring, then collapse
+        inward to a single point. The whole tower is a circle. The Double
+        Ratchet is the dimensional ladder.</span
+      >
+    </section>
+
+    <!-- ═══ Coda — The Apple ═══ -->
+    <section class="act act--coda" id="act-coda" aria-label="The apple">
+      <div class="pin">
+        <p class="coda-hint">the only attack surface is the handshake.</p>
+        <button class="apple" aria-label="reveal the handshake">
+          <div class="apple-dot"></div>
+          <div class="apple-interior">
+            <svg
+              class="ecdh"
+              viewBox="0 0 280 100"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <!-- exchange lines — alice→center, center→bob -->
+              <line x1="50" y1="38" x2="126" y2="38" stroke="rgb(0,255,255)" stroke-width="0.5" stroke-dasharray="3 4" opacity="0.2"></line>
+              <line x1="154" y1="38" x2="230" y2="38" stroke="rgb(0,255,255)" stroke-width="0.5" stroke-dasharray="3 4" opacity="0.2"></line>
+
+              <!-- alice -->
+              <circle cx="40" cy="38" r="5" fill="rgb(0,255,255)" opacity="0.55"></circle>
+              <text x="40" y="60" text-anchor="middle" font-family="Inter,sans-serif" font-size="8.5" fill="rgb(245,245,245)" opacity="0.4">alice</text>
+              <text x="40" y="71" text-anchor="middle" font-family="'Cascadia Code','Fira Code',monospace" font-size="7" fill="rgb(0,255,255)" opacity="0.3">a · G</text>
+
+              <!-- bob -->
+              <circle cx="240" cy="38" r="5" fill="rgb(0,255,255)" opacity="0.55"></circle>
+              <text x="240" y="60" text-anchor="middle" font-family="Inter,sans-serif" font-size="8.5" fill="rgb(245,245,245)" opacity="0.4">bob</text>
+              <text x="240" y="71" text-anchor="middle" font-family="'Cascadia Code','Fira Code',monospace" font-size="7" fill="rgb(0,255,255)" opacity="0.3">b · G</text>
+
+              <!-- shared secret — the red dot IS the apple -->
+              <circle cx="140" cy="38" r="6" fill="rgb(255,0,0)" opacity="0.7"></circle>
+              <circle cx="140" cy="38" r="13" fill="none" stroke="rgb(255,0,0)" stroke-width="0.5" stroke-dasharray="1.5 2.5" opacity="0.25"></circle>
+              <text x="140" y="23" text-anchor="middle" font-family="'Cascadia Code','Fira Code',monospace" font-size="7.5" fill="rgb(255,0,0)" opacity="0.55">a · b · G</text>
+
+              <!-- protocol -->
+              <text x="140" y="90" text-anchor="middle" font-family="'Cascadia Code','Fira Code',monospace" font-size="6" fill="rgb(245,245,245)" opacity="0.18">X25519 + Double Ratchet</text>
+            </svg>
+            <p class="coda-quote">everything else is geometry.</p>
+          </div>
+        </button>
+      </div>
+      <span class="sr-only"
+        >A single red dot represents the only vulnerability: the handshake.
+        Clicking reveals the ECDH key exchange. Everything else is protected
+        by geometry.</span
+      >
+    </section>
+  </main>
+</Layout>
+
+<style is:global>
+  /* ============================================================
+     THE DESCENT — /whisper/codecs
+     immersive scroll experience through the codec tower
+     ============================================================ */
+
+  /* --- reset for immersion --- */
+
+  .descent {
+    background: #0a0a0a;
+    color: #f5f5f5;
+    position: relative;
+    /* kill all text selection — this is an experience, not a document */
+    -webkit-user-select: none;
+    user-select: none;
+    /* prevent overscroll bounce on ios/chrome revealing the page behind */
+    overscroll-behavior: none;
+    /* hide the text cursor everywhere */
+    cursor: default;
+  }
+
+  /* allow selection only on the actual quotes (someone might want to copy them) */
+  .descent .quote,
+  .descent .coda-quote,
+  .descent .coda-hint,
+  .descent .loop-insight,
+  .descent .loop-ratchet,
+  .descent .loop-final {
+    -webkit-user-select: text;
+    user-select: text;
+    cursor: text;
+  }
+
+  /* suppress right-click context menu on canvases and visuals */
+  .descent canvas,
+  .descent .scene,
+  .descent .apple-dot {
+    -webkit-touch-callout: none;
+  }
+
+  /* full immersion — suppress site chrome */
+  body:has(.descent) .site-header {
+    opacity: 0;
+    pointer-events: none;
+    position: fixed;
+    transition: opacity 0.4s ease-out;
+  }
+
+  body:has(.descent) #main {
+    padding-bottom: 0;
+    /* no overscroll glow/bounce */
+    overscroll-behavior: none;
+  }
+
+  body:has(.descent) #site-footer {
+    display: none !important;
+  }
+
+  /* kill scrollbar — the progress bar replaces it */
+  body:has(.descent) {
+    scrollbar-width: none;
+  }
+  body:has(.descent)::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* progress bar */
+  .descent__bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    height: 1px;
+    background: rgb(0 255 255 / 0.2);
+    width: calc(var(--scroll-progress, 0) * 100%);
+    z-index: 200;
+    pointer-events: none;
+    will-change: width;
+  }
+
+  /* ── shared act layout ────────────────────────────────── */
+
+  .act {
+    position: relative;
+    --p: 0;
+  }
+
+  .pin {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .scene {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .scene--3d {
+    perspective: 900px;
+  }
+
+  .copy {
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: var(--space-md, 1rem);
+    max-width: 38rem;
+  }
+
+  .copy--bottom {
+    position: absolute;
+    bottom: 18vh;
+    left: 50%;
+    --reveal: 0;
+    opacity: var(--reveal);
+    transform: translateX(-50%) translateY(calc((1 - var(--reveal)) * 10px));
+  }
+
+  .copy--lower {
+    position: absolute;
+    bottom: 10vh;
+    left: 50%;
+    --reveal: 0;
+    opacity: var(--reveal);
+    transform: translateX(-50%) translateY(calc((1 - var(--reveal)) * 10px));
+  }
+
+  /* --- typography --- */
+
+  .quote {
+    font-family: "Inter", sans-serif;
+    font-weight: 200;
+    font-size: clamp(1.1rem, 1rem + 1vw, 1.8rem);
+    line-height: 1.6;
+    letter-spacing: 0.01em;
+    color: rgb(245 245 245 / 0.75);
+    margin: 0;
+  }
+
+  .act-dim {
+    font-family: "Cascadia Code", "Fira Code", monospace;
+    font-size: clamp(0.7rem, 0.65rem + 0.3vw, 0.85rem);
+    color: rgb(0 255 255 / 0.45);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  .act-name {
+    font-family: "Inter", sans-serif;
+    font-weight: 700;
+    font-size: clamp(1.5rem, 1.2rem + 1.5vw, 2.4rem);
+    margin: 0;
+    letter-spacing: -0.02em;
+    text-shadow:
+      -1px 0 0 rgb(0 255 255 / 0.35),
+      1px 0 0 rgb(255 0 0 / 0.35);
+  }
+
+  .counter {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5em;
+    opacity: 0.5;
+    margin-top: 0.4rem;
+  }
+
+  .counter-value {
+    font-family: "Cascadia Code", "Fira Code", monospace;
+    font-size: clamp(1rem, 0.9rem + 0.5vw, 1.3rem);
+    color: rgb(0 255 255);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .counter-unit {
+    font-family: "Inter", sans-serif;
+    font-weight: 300;
+    font-size: clamp(0.65rem, 0.6rem + 0.25vw, 0.8rem);
+    color: rgb(245 245 245 / 0.4);
+  }
+
+  /* ── act 0 — the surface ────────────────────────────── */
+
+  .act--surface {
+    height: 160vh;
+  }
+
+  .pulse-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgb(0 255 255);
+    box-shadow:
+      0 0 20px rgb(0 255 255 / 0.4),
+      0 0 60px rgb(0 255 255 / 0.15),
+      0 0 120px rgb(0 255 255 / 0.06);
+    animation: pulse 3s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 0.7;
+    }
+    50% {
+      transform: scale(1.4);
+      opacity: 1;
+    }
+  }
+
+  .act--surface .copy {
+    --reveal: clamp(0, var(--p) * 3, 1);
+  }
+
+  .chevron {
+    position: absolute;
+    bottom: 6vh;
+    left: 50%;
+    color: rgb(0 255 255 / 0.25);
+    animation: drift 2.8s ease-in-out infinite;
+  }
+
+  @keyframes drift {
+    0%,
+    100% {
+      opacity: 0.25;
+      transform: translateX(-50%) translateY(0);
+    }
+    50% {
+      opacity: 0.5;
+      transform: translateX(-50%) translateY(6px);
+    }
+  }
+
+  /* fade chevron as user scrolls */
+  .act--surface .chevron {
+    opacity: calc(1 - var(--p) * 4);
+  }
+
+  /* ── act 1 — logos ────────────────────────────────────── */
+
+  .act--logos {
+    height: 220vh;
+  }
+
+  .tree-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .act--logos .copy {
+    --reveal: clamp(0, (var(--p) - 0.08) * 6, 1);
+  }
+
+  /* ── act 2 — the step ─────────────────────────────────── */
+
+  .act--step {
+    height: 220vh;
+  }
+
+  .wave-wrap {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* tilt into 3D in second half */
+    transform:
+      perspective(800px)
+      rotateX(calc(clamp(0, (var(--p) - 0.45) * 3.6, 1) * 55deg));
+    transform-origin: center 60%;
+    transition: transform 0.05s linear;
+  }
+
+  .wave-canvas {
+    width: min(90vw, 700px);
+    height: min(35vw, 280px);
+  }
+
+  .lumen-grid {
+    position: absolute;
+    width: min(90vw, 700px);
+    aspect-ratio: 4 / 3;
+    background-image:
+      repeating-linear-gradient(
+        0deg,
+        rgb(0 255 255 / 0.06) 0 1px,
+        transparent 1px 12.5%
+      ),
+      repeating-linear-gradient(
+        90deg,
+        rgb(0 255 255 / 0.06) 0 1px,
+        transparent 1px 12.5%
+      );
+    transform:
+      perspective(800px)
+      rotateX(calc(clamp(0, (var(--p) - 0.45) * 3.6, 1) * 55deg));
+    transform-origin: center 60%;
+    opacity: calc(clamp(0, (var(--p) - 0.5) * 4, 1));
+    pointer-events: none;
+  }
+
+  .act--step .copy {
+    --reveal: clamp(0, (var(--p) - 0.04) * 5, 1);
+  }
+
+  /* ── act 3 — loup (8D) ───────────────────────────────── */
+
+  .act--loup {
+    height: 280vh;
+  }
+
+  .octo {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+    transform:
+      rotateX(calc(var(--p) * 120deg + var(--ptr-y, 0) * 12deg))
+      rotateY(calc(var(--p) * 360deg + var(--ptr-x, 0) * 12deg));
+    will-change: transform;
+  }
+
+  .octo-axis {
+    position: absolute;
+    width: min(280px, 35vw);
+    height: 1.5px;
+    left: calc(50% - min(140px, 17.5vw));
+    top: calc(50% - 0.75px);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(0 255 255 / 0.12) 15%,
+      rgb(0 255 255 / 0.45) 50%,
+      rgb(0 255 255 / 0.12) 85%,
+      transparent 100%
+    );
+    transform-origin: center center;
+    transform-style: preserve-3d;
+    transform:
+      rotateY(calc(var(--ry) * 1deg))
+      rotateX(calc(var(--rx) * 1deg));
+  }
+
+  /* glow dots at axis tips */
+  .octo-axis::before,
+  .octo-axis::after {
+    content: "";
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: rgb(0 255 255 / 0.5);
+    top: -1.25px;
+  }
+  .octo-axis::before { left: 0; }
+  .octo-axis::after { right: 0; }
+
+  /* axis labels — positioned around the viewport */
+  .axis-labels {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .axis-label {
+    position: absolute;
+    font-family: "Cascadia Code", "Fira Code", monospace;
+    font-size: clamp(0.65rem, 0.6rem + 0.25vw, 0.8rem);
+    color: rgb(0 255 255 / 0.6);
+    /* staggered reveal based on --p */
+    opacity: calc(clamp(0, (var(--p) - 0.05 * var(--idx)) * 10, 1));
+    transition: opacity 0.3s ease-out;
+  }
+
+  .act--loup .copy {
+    --reveal: clamp(0, (var(--p) - 0.06) * 6, 1);
+  }
+
+  /* clock positions for 8 labels */
+  .axis-label[data-i="0"] { --idx: 0; top: 12%; left: 50%; transform: translateX(-50%); }
+  .axis-label[data-i="1"] { --idx: 1; top: 20%; right: 15%; }
+  .axis-label[data-i="2"] { --idx: 2; top: 40%; right: 8%; }
+  .axis-label[data-i="3"] { --idx: 3; bottom: 35%; right: 12%; }
+  .axis-label[data-i="4"] { --idx: 4; bottom: 18%; left: 50%; transform: translateX(-50%); }
+  .axis-label[data-i="5"] { --idx: 5; bottom: 35%; left: 12%; }
+  .axis-label[data-i="6"] { --idx: 6; top: 40%; left: 8%; }
+  .axis-label[data-i="7"] { --idx: 7; top: 20%; left: 15%; }
+
+  /* ── act 4 — kizuna (16D) ─────────────────────────────── */
+
+  .act--kizuna {
+    height: 190vh;
+  }
+
+  /* kizuna axes: thinner/dimmer than loup since 16 total */
+  /* --flare peaks at collision (p≈0.42), axes themselves react to impact */
+  .act--kizuna .octo-axis {
+    --flare: max(0, 1 - abs(var(--p) - 0.42) * 14);
+    width: min(220px, 28vw);
+    left: calc(50% - min(110px, 14vw));
+    height: calc(1px + var(--flare) * 1.5px);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(0 255 255 / calc(0.08 + var(--flare) * 0.5)) 15%,
+      rgb(0 255 255 / calc(0.35 + var(--flare) * 0.6)) 50%,
+      rgb(0 255 255 / calc(0.08 + var(--flare) * 0.5)) 85%,
+      transparent 100%
+    );
+  }
+
+  .act--kizuna .octo-axis::before,
+  .act--kizuna .octo-axis::after {
+    width: calc(3px + var(--flare) * 3px);
+    height: calc(3px + var(--flare) * 3px);
+    background: rgb(0 255 255 / calc(0.3 + var(--flare) * 0.6));
+    top: calc(-1px - var(--flare) * 1.5px);
+    box-shadow: 0 0 calc(var(--flare) * 8px) rgb(0 255 255 / calc(var(--flare) * 0.5));
+  }
+
+  /* post-collision: gentle scroll rotation + pointer parallax.
+     safe now that opacity lives on ring-dot, not the preserve-3d parent */
+  .bond-stage {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+    --post: clamp(0, (var(--p) - 0.5) * 2, 1);
+    transform:
+      rotateY(calc(var(--post) * 120deg + var(--ptr-x, 0) * 12deg))
+      rotateX(calc(var(--post) * 15deg + var(--ptr-y, 0) * 12deg));
+  }
+
+  .bond-left,
+  .bond-right {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+    /* pre-collision: approach + gentle rotation that eases to zero */
+    --approach: clamp(0, var(--p) * 2.5, 1);
+  }
+
+  .bond-left {
+    transform:
+      translateX(calc((var(--approach) - 1) * min(20vw, 150px)))
+      rotateY(calc((1 - var(--approach)) * 30deg));
+  }
+
+  .bond-right {
+    transform:
+      translateX(calc((1 - var(--approach)) * min(20vw, 150px)))
+      rotateY(calc((1 - var(--approach)) * -30deg));
+  }
+
+  /* collision — expanding shockwave ring from impact point */
+  .bond-flash {
+    position: absolute;
+    pointer-events: none;
+    z-index: 5;
+    /* expand: 0 at p=0.36 → full at p=0.56 */
+    --wave: clamp(0, (var(--p) - 0.36) * 5, 1);
+    /* fade: peaks at collision, gone by p=0.58 */
+    --intensity: calc(
+      clamp(0, (var(--p) - 0.35) * 12, 1) *
+      clamp(0, (0.58 - var(--p)) * 5, 1)
+    );
+    width: calc(var(--wave) * min(65vw, 460px));
+    height: calc(var(--wave) * min(65vw, 460px));
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    border: 1.5px solid rgb(0 255 255 / calc(var(--intensity) * 0.55));
+    box-shadow:
+      0 0 12px rgb(0 255 255 / calc(var(--intensity) * 0.2)),
+      inset 0 0 12px rgb(0 255 255 / calc(var(--intensity) * 0.1));
+    background: none;
+  }
+
+  /* second ring — expands faster, thinner, ghostly echo */
+  .bond-flash::after {
+    content: "";
+    position: absolute;
+    inset: -25%;
+    border-radius: 50%;
+    border: 0.5px solid rgb(0 255 255 / calc(var(--intensity) * 0.25));
+    box-shadow: 0 0 8px rgb(0 255 255 / calc(var(--intensity) * 0.08));
+  }
+
+  .mobius-ring {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+    animation: ring-orbit 10s linear infinite;
+    /* no opacity here — it would flatten children's 3D transforms (css spec) */
+    will-change: transform;
+  }
+
+  .ring-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: rgb(0 255 255 / 0.55);
+    left: calc(50% - 2px);
+    top: calc(50% - 2px);
+    transform-style: preserve-3d;
+    transform:
+      rotateY(calc(var(--i) * 15deg))
+      translateZ(min(80px, 11vw));
+    /* fade lives on each dot, not the parent, to preserve 3d context */
+    opacity: calc(clamp(0, (var(--p) - 0.48) * 5, 1));
+  }
+
+  @keyframes ring-orbit {
+    from { transform: rotateY(0deg) rotateX(25deg); }
+    to { transform: rotateY(360deg) rotateX(25deg); }
+  }
+
+  .act--kizuna .copy {
+    --reveal: clamp(0, (var(--p) - 0.04) * 4, 1);
+  }
+
+  /* ── act 5 — crystallization ──────────────────────────── */
+
+  .act--crystal {
+    height: 280vh;
+  }
+
+  .particle-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .temp-gauge {
+    width: 3px;
+    height: 60px;
+    background: rgb(255 255 255 / 0.06);
+    border-radius: 2px;
+    position: relative;
+    overflow: hidden;
+    margin-top: 0.5rem;
+  }
+
+  .temp-fill {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+    background: linear-gradient(to top, rgb(0 255 255 / 0.5), rgb(255 80 40 / 0.6));
+    border-radius: 2px;
+    transition: height 0.15s ease-out;
+  }
+
+  .act--crystal .copy {
+    --reveal: clamp(0, (var(--p) - 0.04) * 4, 1);
+  }
+
+  /* ── act 6 — the loop ─────────────────────────────────── */
+
+  .act--loop {
+    height: 260vh;
+  }
+
+  .loop-ring {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* slow ratchet rotation as icons collapse */
+    transform: rotate(calc(var(--p) * 60deg));
+  }
+
+  .loop-icon {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    color: rgb(0 255 255 / 0.55);
+    transform:
+      rotate(calc(var(--i) * 60deg))
+      translateY(calc((1 - var(--p)) * min(-18vw, -100px)))
+      rotate(calc(var(--i) * -60deg))
+      /* counter-rotate the ratchet so icons stay upright */
+      rotate(calc(var(--p) * -60deg));
+    opacity: calc(1 - var(--p) * 0.9);
+  }
+
+  .loop-icon svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .loop-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgb(0 255 255);
+    opacity: calc(clamp(0, (var(--p) - 0.3) * 3, 1));
+    box-shadow: 0 0 20px rgb(0 255 255 / calc(var(--p) * 0.4));
+  }
+
+  /* parent visible — children handle their own phased opacity */
+  .act--loop .copy {
+    --reveal: 1;
+    bottom: auto;
+    top: 12vh;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* phase 1: dimension sequence (p 0–0.25) */
+  .loop-dims {
+    font-family: "Cascadia Code", "Fira Code", monospace;
+    font-size: clamp(0.75rem, 0.7rem + 0.3vw, 0.9rem);
+    color: rgb(0 255 255 / 0.4);
+    letter-spacing: 0.08em;
+    opacity: calc(clamp(0, 1 - var(--p) * 4, 1));
+    margin: 0;
+  }
+
+  /* phase 2: the insight (p 0.15–0.5) */
+  .loop-insight {
+    font-family: "Inter", sans-serif;
+    font-weight: 300;
+    font-size: clamp(0.95rem, 0.85rem + 0.6vw, 1.25rem);
+    color: rgb(245 245 245 / 0.6);
+    margin: 0;
+    opacity: calc(
+      clamp(0, (var(--p) - 0.12) * 7, 1) *
+      clamp(0, (0.55 - var(--p)) * 5, 1)
+    );
+  }
+
+  /* phase 3: the ratchet (p 0.35–0.7) */
+  .loop-ratchet {
+    font-family: "Inter", sans-serif;
+    font-weight: 200;
+    font-size: clamp(0.85rem, 0.78rem + 0.45vw, 1.05rem);
+    color: rgb(245 245 245 / 0.45);
+    margin: 0;
+    opacity: calc(
+      clamp(0, (var(--p) - 0.32) * 6, 1) *
+      clamp(0, (0.72 - var(--p)) * 5, 1)
+    );
+  }
+
+  /* phase 4: the conclusion (p 0.6–1.0) */
+  .loop-final {
+    font-family: "Inter", sans-serif;
+    font-weight: 200;
+    font-size: clamp(1.1rem, 1rem + 0.8vw, 1.6rem);
+    color: rgb(245 245 245 / 0.8);
+    opacity: calc(clamp(0, (var(--p) - 0.55) * 3, 1));
+    margin: 0;
+    line-height: 1.7;
+  }
+
+  /* ── coda — the apple ─────────────────────────────────── */
+
+  .act--coda {
+    height: 100vh;
+  }
+
+  .act--coda .pin {
+    flex-direction: column;
+    gap: 3rem;
+  }
+
+  .coda-hint {
+    font-family: "Inter", sans-serif;
+    font-weight: 200;
+    font-size: clamp(0.85rem, 0.8rem + 0.3vw, 1rem);
+    color: rgb(245 245 245 / 0.3);
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+
+  .apple {
+    position: relative;
+    width: min(300px, 70vw);
+    height: min(220px, 50vw);
+    border: none;
+    background: none;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .apple:focus-visible {
+    outline: 1px solid rgb(255 0 0 / 0.4);
+    outline-offset: 8px;
+    border-radius: 4px;
+  }
+
+  .apple-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgb(255 0 0);
+    box-shadow:
+      0 0 20px rgb(255 0 0 / 0.3),
+      0 0 50px rgb(255 0 0 / 0.1);
+    transition:
+      transform 0.7s cubic-bezier(0.22, 0.61, 0.36, 1),
+      opacity 0.4s ease-out;
+    position: absolute;
+    z-index: 2;
+  }
+
+  .apple:hover .apple-dot {
+    box-shadow:
+      0 0 25px rgb(255 0 0 / 0.45),
+      0 0 60px rgb(255 0 0 / 0.15);
+  }
+
+  .apple.cracked .apple-dot {
+    transform: scale(30);
+    opacity: 0;
+  }
+
+  .apple-interior {
+    opacity: 0;
+    transform: scale(0.92);
+    transition:
+      opacity 0.6s ease-out 0.25s,
+      transform 0.6s cubic-bezier(0.22, 0.61, 0.36, 1) 0.25s;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.2rem;
+    pointer-events: none;
+  }
+
+  .apple.cracked .apple-interior {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+  }
+
+
+  .ecdh {
+    width: min(340px, 72vw);
+    height: auto;
+  }
+
+  .coda-quote {
+    font-family: "Comic Neue", cursive;
+    font-weight: 700;
+    font-size: clamp(0.9rem, 0.8rem + 0.5vw, 1.15rem);
+    color: rgb(245 245 245 / 0.65);
+    margin: 0;
+    letter-spacing: 0.01em;
+  }
+
+  /* ── transitions between acts (glitch dividers) ───────── */
+
+  .act + .act::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(0 255 255 / 0.15) 30%,
+      rgb(0 255 255 / 0.15) 70%,
+      transparent
+    );
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  /* ── responsive ────────────────────────────────────────── */
+
+  @media (max-width: 640px) {
+    .quote {
+      font-size: clamp(0.95rem, 0.85rem + 0.8vw, 1.3rem);
+    }
+
+    .act-name {
+      font-size: clamp(1.3rem, 1.1rem + 1vw, 1.8rem);
+    }
+
+    .copy--bottom {
+      bottom: 14vh;
+    }
+
+    .copy--lower {
+      bottom: 7vh;
+    }
+
+    .octo-axis {
+      width: min(200px, 50vw);
+      left: calc(50% - min(100px, 25vw));
+    }
+
+    .axis-label {
+      font-size: 0.6rem;
+    }
+
+    /* reduce 3D intensity on small screens */
+    .act--loup .pin,
+    .act--kizuna .pin {
+      perspective: 600px;
+    }
+  }
+
+  /* pen/stylus hover states */
+  @media (pointer: fine) and (hover: hover) {
+    .apple-dot {
+      transition:
+        transform 0.7s cubic-bezier(0.22, 0.61, 0.36, 1),
+        opacity 0.4s ease-out,
+        box-shadow 0.3s ease-out;
+    }
+
+    .octo-axis {
+      transition: background 0.2s ease-out;
+    }
+  }
+
+  /* ── reduced motion ───────────────────────────────────── */
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-dot {
+      animation: none;
+      opacity: 0.8;
+    }
+
+    .chevron {
+      animation: none;
+      opacity: 0.35;
+    }
+
+    .mobius-ring {
+      animation: none;
+    }
+
+    .octo {
+      will-change: auto;
+      transition: none;
+    }
+
+    .bond-left,
+    .bond-right {
+      will-change: auto;
+    }
+
+    .loop-icon {
+      transition: none;
+    }
+
+    .apple-dot {
+      transition: opacity 0.3s;
+    }
+
+    .apple.cracked .apple-dot {
+      transform: none;
+      opacity: 0;
+    }
+
+    .apple-interior {
+      transition: opacity 0.3s;
+      transform: none;
+    }
+
+    .apple.cracked .apple-interior {
+      transform: none;
+    }
+  }
+
+  /* ── accessibility ────────────────────────────────────── */
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* high contrast mode */
+  @media (forced-colors: active) {
+    .pulse-dot,
+    .octo-axis,
+    .ring-dot,
+    .loop-dot,
+    .apple-dot {
+      forced-color-adjust: none;
+    }
+  }
+</style>
+
+<script>
+  import "../../scripts/whisper/codecs-descent.ts";
+</script>

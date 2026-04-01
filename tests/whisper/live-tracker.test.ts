@@ -6,13 +6,33 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   TRACKER_URLS,
   createTrackerPool,
-  exchangeViaTracker,
+  runLiveRendezvous,
 } from "../../src/scripts/whisper/live-tracker.js";
 
 type FakeMessageEvent = { data: unknown };
 
+function b64url(text: string): string {
+  return Buffer.from(text, "utf8").toString("base64url");
+}
+
+function encodePayload(payload: unknown): string {
+  return b64url(JSON.stringify(payload));
+}
+
+function createRendezvousId(
+  localPeerId: string,
+  localAttemptId: string,
+  remotePeerId: string,
+  remoteAttemptId: string,
+): string {
+  const peers = [`${localPeerId}:${localAttemptId}`, `${remotePeerId}:${remoteAttemptId}`].sort();
+  return encodePayload({ peers });
+}
+
 class FakeTrackerWebSocket {
   static instances: FakeTrackerWebSocket[] = [];
+  static lastRendezvousId = "";
+  static lastLiveOfferId = "";
   static CONNECTING = 0;
   static OPEN = 1;
   static CLOSING = 2;
@@ -26,7 +46,8 @@ class FakeTrackerWebSocket {
   onclose: ((this: FakeTrackerWebSocket, ev: Event) => unknown) | null = null;
   sent: string[] = [];
   closeCodes: number[] = [];
-  private responded = false;
+  private sentMatchAck = false;
+  private sentAnswer = false;
 
   constructor(url: string) {
     this.url = url;
@@ -40,29 +61,63 @@ class FakeTrackerWebSocket {
 
   send(payload: string): void {
     this.sent.push(payload);
-    if (this.responded) return;
     const msg = JSON.parse(payload) as {
       action?: string;
       info_hash?: string;
       peer_id?: string;
-      offers?: Array<{ offer_id: string }>;
+      to_peer_id?: string;
+      offer_id?: string;
+      offers?: Array<{ offer_id?: string; offer?: { type?: string; sdp?: string } }>;
+      answer?: { type?: string; sdp?: string };
     };
-    if (msg.action !== "announce" || !msg.peer_id || !msg.info_hash || !msg.offers?.length) return;
-    const offerId = msg.offers[0]?.offer_id;
-    if (!offerId) return;
-    this.responded = true;
-    queueMicrotask(() => {
-      if (this.readyState !== FakeTrackerWebSocket.OPEN) return;
-      this.onmessage?.call(this, {
-        data: JSON.stringify({
-          answer: { type: "answer", sdp: "A".repeat(64) },
-          peer_id: "peer-remote",
-          to_peer_id: msg.peer_id,
-          offer_id: offerId,
-          info_hash: msg.info_hash,
-        }),
+    if (msg.action !== "announce" || !msg.peer_id || !msg.info_hash) return;
+
+    const announceOffer = msg.offers?.[0]?.offer;
+    if (announceOffer?.type === "whisper-intent" && !this.sentMatchAck) {
+      const attemptId = JSON.parse(Buffer.from(String(announceOffer.sdp), "base64url").toString("utf8")).attemptId as string;
+      const rendezvousId = createRendezvousId(msg.peer_id, attemptId, "peer-remote", "remote-attempt");
+      FakeTrackerWebSocket.lastRendezvousId = rendezvousId;
+      this.sentMatchAck = true;
+      queueMicrotask(() => {
+        if (this.readyState !== FakeTrackerWebSocket.OPEN) return;
+        this.onmessage?.call(this, {
+          data: JSON.stringify({
+            answer: {
+              type: "whisper-match-ack",
+              sdp: encodePayload({ rendezvousId, fromAttemptId: "remote-attempt" }),
+            },
+            peer_id: "peer-remote",
+            to_peer_id: msg.peer_id,
+            offer_id: msg.offers?.[0]?.offer_id,
+            info_hash: msg.info_hash,
+          }),
+        });
       });
-    });
+      return;
+    }
+
+    if (announceOffer?.type === "whisper-offer-code" && !this.sentAnswer) {
+      const offerPayload = JSON.parse(Buffer.from(String(announceOffer.sdp).replace(/\.+$/, ""), "base64url").toString("utf8")) as {
+        rendezvousId: string;
+      };
+      FakeTrackerWebSocket.lastLiveOfferId = String(msg.offers?.[0]?.offer_id ?? "");
+      this.sentAnswer = true;
+      queueMicrotask(() => {
+        if (this.readyState !== FakeTrackerWebSocket.OPEN) return;
+        this.onmessage?.call(this, {
+          data: JSON.stringify({
+            answer: {
+              type: "whisper-answer-code",
+              sdp: `${encodePayload({ rendezvousId: offerPayload.rendezvousId, code: "A".repeat(64) })}.`.padEnd(1024, "."),
+            },
+            peer_id: "peer-remote",
+            to_peer_id: msg.peer_id,
+            offer_id: msg.offers?.[0]?.offer_id,
+            info_hash: msg.info_hash,
+          }),
+        });
+      });
+    }
   }
 
   close(code = 1000): void {
@@ -89,6 +144,8 @@ function closeAllFakeSockets(): void {
 
 function installFakeWebSocket(): void {
   FakeTrackerWebSocket.instances = [];
+  FakeTrackerWebSocket.lastRendezvousId = "";
+  FakeTrackerWebSocket.lastLiveOfferId = "";
   globalThis.WebSocket = FakeTrackerWebSocket as unknown as typeof WebSocket;
 }
 
@@ -131,25 +188,48 @@ describe("live-tracker cleanup", () => {
     }
   });
 
-  it("relay exchange removes external abort listener and closes relay sockets after success", async () => {
+  it("simultaneous rendezvous creates only one live offer and closes relay sockets after success", async () => {
     installFakeWebSocket();
     const ac = new AbortController();
+    let offerCreates = 0;
+    let acceptCreates = 0;
 
-    const result = await exchangeViaTracker(
-      "tower phrase",
-      "B".repeat(64),
-      async () => "unused",
-      {
+    const result = await runLiveRendezvous({
+      mode: "simultaneous",
+      phrase: "tower phrase",
+      createOfferCode: async () => {
+        offerCreates += 1;
+        return "B".repeat(64);
+      },
+      acceptOfferCode: async () => {
+        acceptCreates += 1;
+        return "unused";
+      },
+      callbacks: {
         onStatus: () => {},
         onLog: () => {},
       },
-      ac.signal,
-    );
+      signal: ac.signal,
+    });
 
     assert.equal(result.role, "offerer");
+    assert.equal(result.peerAnswerCode, "A".repeat(64));
+    assert.equal(offerCreates, 1);
+    assert.equal(acceptCreates, 0);
     assert.equal(getEventListeners(ac.signal, "abort").length, 0);
     assert.ok(result.relay);
-    result.relay.destroy();
+    try {
+      const sentBeforeRelay = FakeTrackerWebSocket.instances[0]?.sent.length ?? 0;
+      result.relay.sendSignal({ kind: "answer-ack" });
+      const sentAfterRelay = FakeTrackerWebSocket.instances[0]?.sent.length ?? 0;
+      const lastSent = FakeTrackerWebSocket.instances[0]?.sent.at(-1) ?? "";
+      assert.ok(sentAfterRelay > sentBeforeRelay);
+      assert.ok(lastSent.includes("\"whisper-signal\""));
+      assert.ok(lastSent.includes(FakeTrackerWebSocket.lastRendezvousId));
+      assert.ok(lastSent.includes("\"to_peer_id\":\"peer-remote\""));
+    } finally {
+      result.relay.destroy();
+    }
     assert.ok(FakeTrackerWebSocket.instances.length >= 1);
     for (const ws of FakeTrackerWebSocket.instances) {
       assert.ok(ws.closeCodes.length <= 1);

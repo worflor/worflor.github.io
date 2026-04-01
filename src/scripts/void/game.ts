@@ -456,8 +456,16 @@ class ResidueGrid {
     const cy = Math.floor(y / this.resolution);
     if (cx < 0 || cx >= this.width || cy < 0 || cy >= this.height) return;
 
-    const idx = (cy * this.width + cx) * 2 + (type === "safety" ? 0 : 1);
-    this.cells[idx] = Math.min(1.0, this.cells[idx] + amount);
+    const safetyIdx = (cy * this.width + cx) * 2;
+    const distressIdx = (cy * this.width + cx) * 2 + 1;
+
+    if (type === "safety") {
+      this.cells[safetyIdx] = Math.min(1.0, this.cells[safetyIdx] + amount);
+      this.cells[distressIdx] = Math.max(0, this.cells[distressIdx] - amount * 0.5);
+    } else {
+      this.cells[distressIdx] = Math.min(1.0, this.cells[distressIdx] + amount);
+      this.cells[safetyIdx] = Math.max(0, this.cells[safetyIdx] - amount * 0.5);
+    }
   }
 
   // Get localized residue levels (bilinear interpolation for smoothness)
@@ -1312,7 +1320,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
           c.expressionTimer = 20 + Math.floor(hunger * 15);
           c.targetSquash = 1.1 + hunger * 0.08;
 
-          c.fear = Math.max(0, c.fear - 0.05 * (1 + hunger));
+          c.fear = Math.max(0, c.fear - 0.25 * (1 + hunger));
+          c.comforted = Math.min(1, c.comforted + 0.3);
+          residueGrid.deposit(this.x, this.y, "safety", 0.15);
 
           const trustGain = 0.006 + hunger * 0.008;
           c.trust = Math.min(1, c.trust + trustGain);
@@ -3099,7 +3109,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // Distress increases fear and stress
       if (residue.distress > 0.05) {
         // Stable creatures resist environmental panic better
-        const impact = residue.distress * (1 - this.stability * 0.6);
+        const impact = residue.distress * (1 - this.stability * 0.6) * Math.max(0, 1 - this.comforted * 2);
         this.fear = Math.min(1, this.fear + 0.006 * impact);
         this.stress = Math.min(1, this.stress + 0.004 * impact);
       }
@@ -3110,9 +3120,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
         residueGrid.deposit(this.x, this.y, "safety", 0.02 + this.extraversion * 0.02);
       }
       // If scared/stressed -> Deposit Distress
-      if (this.fear > 0.3 || this.stress > 0.5) {
+      if (this.fear > 0.6 || this.stress > 0.7) {
         // Neurotic (low stability) creatures emit more distress
-        const emission = 0.03 + (1 - this.stability) * 0.04;
+        const emission = 0.01 + (1 - this.stability) * 0.02;
         residueGrid.deposit(this.x, this.y, "distress", emission);
       }
 

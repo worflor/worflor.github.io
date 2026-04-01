@@ -20,7 +20,14 @@ export type HapticEvent =
   | "recording-cancel"  // voice note discarded: triple skip
   | "reaction"          // emoji toggled (self): crisp tap
   | "send-failed"       // message or file failed to send: error double-pulse
-  | "clear-history";    // history wiped: heavy two-step
+  | "clear-history"     // history wiped: heavy two-step
+  | "confirm"           // fingerprint confirmed: decisive commitment
+  | "reject"            // fingerprint rejected: firm warning
+  | "copied"            // clipboard write succeeded: light tick
+  | "mode-switch"       // entering/exiting a UI mode: subtle click
+  | "drop"              // file dropped into chat: soft arrival
+  | "qr-detected"       // QR code recognized by camera: ascending double
+  | "detent";            // slider crosses a regime boundary: physical notch
 
 const HAPTIC_PATTERNS: Record<HapticEvent, VibratePattern> = {
   "msg-received": [6, 50, 4],
@@ -34,6 +41,13 @@ const HAPTIC_PATTERNS: Record<HapticEvent, VibratePattern> = {
   "reaction": 10,
   "send-failed": [20, 60, 20],
   "clear-history": [15, 80, 25],
+  "confirm": 14,
+  "reject": [18, 50, 10],
+  "copied": 3,
+  "mode-switch": 5,
+  "drop": [6, 30, 8],
+  "qr-detected": [8, 40, 14],
+  "detent": 12,
 };
 
 /**

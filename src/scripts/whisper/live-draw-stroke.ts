@@ -1,8 +1,7 @@
-export interface DrawPoint {
-  x: number;
-  y: number;
-  p: number;
-}
+import { GLYPH_CHANNEL_NAMES, type GlyphChannelName } from "./live-wasm-glyph";
+
+// shape derived from codec channel names
+export type DrawPoint = Record<GlyphChannelName, number>;
 
 export interface TimedDrawPoint extends DrawPoint {
   t: number;
@@ -70,8 +69,8 @@ function isSharpTurn(prevX: number, prevY: number, nextX: number, nextY: number)
 
 export function createStrokeSampler(start: TimedDrawPoint): StrokeSamplerState {
   return {
-    lastKept: { x: start.x, y: start.y, p: start.p, t: start.t },
-    lastRaw: { x: start.x, y: start.y, p: start.p, t: start.t },
+    lastKept: { ...start },
+    lastRaw: { ...start },
     prevPressure: start.p,
     hasPrevVec: false,
     prevVecX: 0,
@@ -129,7 +128,11 @@ export function sampleStrokePoint(
   const p = smoothPressure(state.prevPressure, raw.p, speedPxPerMs);
   const qx = quantizeNormalized(state.filteredXPx / logicalW, logicalW);
   const qy = quantizeNormalized(state.filteredYPx / logicalH, logicalH);
-  const point: DrawPoint = { x: qx, y: qy, p };
+  // x, y, p are filtered/smoothed; remaining channels pass through from raw
+  const point: DrawPoint = { ...raw } as DrawPoint;
+  point.x = qx;
+  point.y = qy;
+  point.p = p;
 
   const keepDxPx = (point.x - state.lastKept.x) * logicalW;
   const keepDyPx = (point.y - state.lastKept.y) * logicalH;
@@ -143,19 +146,16 @@ export function sampleStrokePoint(
     }
   }
 
-  state.lastRaw.x = raw.x;
-  state.lastRaw.y = raw.y;
-  state.lastRaw.t = raw.t;
+  Object.assign(state.lastRaw, raw);
   state.lastRaw.p = p;
+  state.lastRaw.t = raw.t;
   state.prevPressure = p;
 
   if (keep) {
     state.hasPrevVec = true;
     state.prevVecX = keepDxPx;
     state.prevVecY = keepDyPx;
-    state.lastKept.x = point.x;
-    state.lastKept.y = point.y;
-    state.lastKept.p = point.p;
+    Object.assign(state.lastKept, point);
     state.lastKept.t = raw.t;
   }
 

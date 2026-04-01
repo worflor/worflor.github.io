@@ -52,13 +52,21 @@
  * both parties expand their ECDH shared secret to 65536 bytes, then call
  * handshake16D(sharedBlock). three values are derived independently:
  *
- *   residual   — the 16D Möbius mixing of all 65535 voxels. sensitive to
- *                every byte in the block.
- *   block8D    — the block itself, reinterpreted as an 8D Octonion block
- *                (BS=4, 4⁸=65536). seeds the 8D spatial predictor.
- *   countsBitM — BitContextModelM counts primed with 512 bytes of key material.
- *                seeds the 0D entropy model. early compressed traffic is
- *                opaque without the shared secret.
+ *   residual       — the 16D Möbius mixing of all 65535 voxels. sensitive to
+ *                    every byte in the block. used in production (live-handshake.ts)
+ *                    as the cryptographic witness for session confirmation.
+ *   rowWitnesses8D — 256 intermediate 8D sub-witnesses from the μ₁₆ = μ₈ ⊗ μ₈
+ *                    factorization. enables hierarchical integrity diagnosis:
+ *                    if the 16D residual is wrong, compare sub-witnesses to
+ *                    identify which 256-byte segment was corrupted.
+ *   countsBitM     — Möbius per-bit model counts primed with 512 bytes of key
+ *                    material. the Loop (live-loop.ts) builds its own counts in
+ *                    loopInit() using the same priming logic; this field exists
+ *                    for testing and external consumers.
+ *
+ * the 8D⊗8D factorization: the 16D residual = 8D Möbius applied to the vector
+ * of 256 row-wise 8D Möbius outputs. "Kizuna IS Loup applied to Loup."
+ * same operation count (65535 terms), but yields 256 sub-witnesses for free.
  *
  * no extra communication. both parties derive all three from the same block.
  *
@@ -66,11 +74,10 @@
  * compressed into a single residual.
  */
 
-// --- arithmetic coder (same implementation as live-wasm-logos.ts) ---
+// ── arithmetic coder ─────────────────────────────────────────────────────────
 //
-// standard range coder with carry propagation. range ≥ RC_TOP after normalization
-// guarantees step = floor(range/total) ≥ 1. carry-propagating byte emission handles
-// all 0xFF overflow cases correctly. used here for BitContextModel16.
+// LZMA-style range coder. RC_TOP=16M keeps step≥1 for total≤16M.
+// carry propagation and 0xFF pending logic. used for BitContextModel16 and block codec.
 
 const RC_TOP = 0x1000000;
 
@@ -79,7 +86,19 @@ class ArithEncoder {
     private range = 0xFFFFFFFF;
     private cache = -1;
     private nPend = 0;
-    private buf: number[] = [];
+    // Uint8Array instead of number[] — avoids 8× memory amplification.
+    // number[] stores each byte as an 8-byte JS heap number; with Uint8Array it stays at 1×.
+    private buf = new Uint8Array(256);
+    private len = 0;
+
+    private _push(b: number): void {
+        if (this.len >= this.buf.length) {
+            const next = new Uint8Array(this.buf.length * 2);
+            next.set(this.buf.subarray(0, this.len));
+            this.buf = next;
+        }
+        this.buf[this.len++] = b;
+    }
 
     encode(cumLo: number, cumHi: number, total: number): void {
         const step  = Math.floor(this.range / total);
@@ -98,37 +117,22 @@ class ArithEncoder {
     }
 
     private _carry(): void {
-        if (this.cache >= 0) {
-            this.buf.push((this.cache + 1) & 0xFF);
-            for (let i = 0; i < this.nPend; i++) this.buf.push(0x00);
-        } else {
-            for (let i = 0; i < this.nPend; i++) this.buf.push(0x00);
-        }
+        if (this.cache >= 0) { this._push((this.cache + 1) & 0xFF); for (let i = 0; i < this.nPend; i++) this._push(0x00); }
+        else { for (let i = 0; i < this.nPend; i++) this._push(0x00); }
         this.cache = -1; this.nPend = 0;
     }
 
     private _emit(b: number): void {
-        if (this.cache >= 0) {
-            this.buf.push(this.cache);
-            for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF);
-        } else {
-            for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF);
-        }
+        if (this.cache >= 0) { this._push(this.cache); for (let i = 0; i < this.nPend; i++) this._push(0xFF); }
+        else { for (let i = 0; i < this.nPend; i++) this._push(0xFF); }
         this.cache = b; this.nPend = 0;
     }
 
     flush(): Uint8Array {
-        if (this.cache >= 0) {
-            this.buf.push(this.cache);
-            for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF);
-        } else {
-            for (let i = 0; i < this.nPend; i++) this.buf.push(0xFF);
-        }
-        for (let i = 0; i < 4; i++) {
-            this.buf.push((this.lo >>> 24) & 0xFF);
-            this.lo = ((this.lo & 0xFFFFFF) << 8) >>> 0;
-        }
-        return new Uint8Array(this.buf);
+        if (this.cache >= 0) { this._push(this.cache); for (let i = 0; i < this.nPend; i++) this._push(0xFF); }
+        else { for (let i = 0; i < this.nPend; i++) this._push(0xFF); }
+        for (let i = 0; i < 4; i++) { this._push((this.lo >>> 24) & 0xFF); this.lo = ((this.lo & 0xFFFFFF) << 8) >>> 0; }
+        return this.buf.subarray(0, this.len);
     }
 }
 
@@ -163,7 +167,7 @@ class ArithDecoder {
     }
 }
 
-// --- constants ---
+// ── constants ─────────────────────────────────────────────────────────────────
 
 const B16 = 65536;  // 2^16 voxels per block
 
@@ -175,7 +179,7 @@ for (let mask = 1; mask < B16; mask++) {
     PARITY16[mask] = PARITY16[mask >> 1] ^ (mask & 1);
 }
 
-// --- 16D anti-Möbius predictor ---
+// ── 16D anti-Möbius predictor ─────────────────────────────────────────────────
 
 // compute the anti-causal 16D Möbius prediction for the origin voxel.
 // block[mask] = voxel at coordinates where bit d is set ↔ c[d] = 1.
@@ -190,7 +194,61 @@ function predAnti16D(block: Uint8Array): number {
     return P;
 }
 
-// --- single-block codec ---
+// ── 8D sub-block predictor ──────────────────────────────────────────────────
+
+// 8D anti-causal Möbius predictor for a 256-element sub-block.
+// PARITY16[mask] for mask < 256 gives the 8-bit popcount parity — no separate table needed.
+// works on any ArrayLike<number> (Uint8Array for raw blocks, Int32Array for intermediate WHT).
+function predAnti8D(data: ArrayLike<number>, offset: number): number {
+    let P = 0;
+    for (let mask = 1; mask < 256; mask++) {
+        P += PARITY16[mask] ? data[offset + mask] : -data[offset + mask];
+    }
+    return P;
+}
+
+// ── 8D⊗8D factored decomposition ───────────────────────────────────────────
+//
+// the Möbius function is multiplicative on product posets:
+//   μ₁₆ = μ₈ ⊗ μ₈
+//
+// index each voxel by (h, l) where h = mask >> 8, l = mask & 0xFF.
+// the 65536 voxels form a 256×256 grid — an 8D cube nested inside an 8D cube.
+//
+// step 1: for each row h, compute g[h] = block[h*256] - predAnti8D(block, h*256).
+//         g[h] is the 8D WHT all-ones coefficient of row h — an "8D sub-witness".
+// step 2: compute the 8D WHT of g[0..255]. the result equals the direct 16D residual.
+//
+// proof: μ₁₆(f)(0,0) = Σ_h Σ_l (-1)^(pc(h)+pc(l)) f(h,l) = Σ_h (-1)^pc(h) · μ₈(f_row_h)(0)
+//        which is μ₈ applied to the vector of row-wise μ₈ outputs. QED.
+//
+// this yields 256 intermediate 8D sub-witnesses for free. each is sensitive to
+// all 255 bytes in its row. if a byte is corrupted in row h, only g[h] changes,
+// enabling hierarchical integrity diagnosis (which 256-byte segment was corrupted).
+
+export interface Factored16DResult {
+    // the 16D Möbius residual — identical to what predAnti16D computes
+    residual: number;
+    // 256 intermediate 8D WHT all-ones coefficients, one per 256-byte row.
+    // rowWitnesses[h] = block[h*256] - predAnti8D(block, h*256).
+    // each is sensitive to all 255 bytes in row h.
+    rowWitnesses: Int32Array;
+}
+
+export function factored16D(block: Uint8Array): Factored16DResult {
+    if (block.length !== B16) throw new Error(`expected ${B16} bytes`);
+    // step 1: compute 8D WHT for each of 256 rows
+    const g = new Int32Array(256);
+    for (let h = 0; h < 256; h++) {
+        g[h] = block[h * 256] - predAnti8D(block, h * 256);
+    }
+    // step 2: compute 8D WHT of the row-witness vector
+    const outerPred = predAnti8D(g, 0);
+    const residual = (g[0] - outerPred) | 0;
+    return { residual, rowWitnesses: g };
+}
+
+// ── single-block codec ────────────────────────────────────────────────────────
 
 // encode a 16D block (65536 uint8 values).
 // format: [origin residual: int32 LE (4 bytes)] [boundary voxels: 65535 raw bytes]
@@ -223,7 +281,7 @@ export function decodeBlock16D(data: Uint8Array): Uint8Array {
     return block;
 }
 
-// --- handshake primitive ---
+// ── handshake primitive ───────────────────────────────────────────────────────
 
 export interface Handshake16DResult {
     // the single Möbius residual at origin.
@@ -231,26 +289,24 @@ export interface Handshake16DResult {
     // sensitive to all 65535 boundary voxels via full 16D inclusion-exclusion.
     residual: number;
 
-    // the 65536-byte block itself serves as an 8D Octonion context block.
-    // BS=4 → 4^8=65536 voxels — identical layout. use to pre-seed the 8D
-    // causal or anti-causal predictor state for the first compressed frames.
-    block8D: Uint8Array;
+    // 256 intermediate 8D sub-witnesses from the 8D⊗8D factorization (μ₁₆ = μ₈ ⊗ μ₈).
+    // rowWitnesses8D[h] = 8D WHT of block[h*256 .. h*256+255].
+    // enables hierarchical integrity: if residual is wrong, compare sub-witnesses
+    // to identify which 256-byte segment was corrupted.
+    rowWitnesses8D: Int32Array;
 
-    // BitContextModelM counts (1024 uint32 values) primed with 512 bytes of
-    // key material. use to pre-seed the 0D Logos Möbius entropy coder.
-    // format: counts[ctx*2]=count0, counts[ctx*2+1]=count1, ctx=0..511.
+    // Möbius per-bit model counts (1024 uint32 values) primed with 512 bytes of
+    // key material. seeds the Loop's BitM coder (encodeM/decodeM in live-loop.ts):
+    // counts[ctx*2]=c0, counts[ctx*2+1]=c1, ctx=0..511 (prevBit×256 + treeCtx).
     countsBitM: Uint32Array;
 }
 
 export function handshake16D(sharedBlock: Uint8Array): Handshake16DResult {
     if (sharedBlock.length !== B16) throw new Error(`expected ${B16} bytes`);
 
-    // compute the 16D anti-Möbius residual — the mixing output
-    const pred     = predAnti16D(sharedBlock);
-    const residual = (sharedBlock[0] - Math.round(pred)) | 0;
-
-    // the block itself is the 8D context (same 65536-byte size, same layout)
-    const block8D = sharedBlock.slice();
+    // compute the 16D residual via the 8D⊗8D factorization.
+    // this gives us both the residual and 256 intermediate 8D sub-witnesses.
+    const { residual, rowWitnesses } = factored16D(sharedBlock);
 
     // prime BitContextModelM with the first 512 bytes of the shared block.
     // simulates encoding those bytes through the model without range coding —
@@ -271,20 +327,17 @@ export function handshake16D(sharedBlock: Uint8Array): Handshake16DResult {
         prev = byte;
     }
 
-    return { residual, block8D, countsBitM };
+    return { residual, rowWitnesses8D: rowWitnesses, countsBitM };
 }
 
-// --- 16-bit Logos context model (the 0D↔16D duality made concrete) ---
+// ── 16-bit context model (0D↔16D duality made concrete) ─────────────────────
 //
 // decomposing a 16-bit symbol into 16 binary decisions uses nodes 1..65535 of
 // the binary context tree. these 65535 nodes index the same Boolean lattice
 // 2^{0,...,15} = Λ*(R¹⁶) as the 65535 Möbius neighbors.
 //
-// extends BitContextModel from logos.ts to 16-bit symbols.
 // contexts: 65536 × 2 = 131072 uint32 values (512KB).
-// laplace prior: count0=count1=1 per context, for fast convergence.
-// competitive for concentrated 16-bit distributions (e.g., Harmonic residuals,
-// 16-bit audio samples from Whisper Harmonic after sub-delta encoding).
+// Laplace prior: count0=count1=1 per context, for fast convergence.
 
 class BitContextModel16 {
     readonly counts: Uint32Array;  // 65536 contexts × 2
@@ -350,7 +403,7 @@ export function decode16(data: Uint8Array, len: number): Uint16Array {
     return out;
 }
 
-// --- test utilities ---
+// ── test utilities ────────────────────────────────────────────────────────────
 
 function lcg(seed: number): () => number {
     let s = seed;
@@ -374,7 +427,7 @@ function idealEntropy16(data: Uint16Array): number {
     return H;
 }
 
-// --- test harness ---
+// ── test harness ──────────────────────────────────────────────────────────────
 
 function runTests(): void {
     console.log('=== Whisper 16D — sedenion Möbius stress test ===\n');
@@ -566,9 +619,9 @@ function runTests(): void {
         const B = handshake16D(shared);
         ok(`deterministic: residual A=${A.residual} == B=${B.residual}`, A.residual === B.residual);
 
-        let b8dMatch = true;
-        for (let i = 0; i < B16; i++) if (A.block8D[i] !== B.block8D[i]) b8dMatch = false;
-        ok('block8D identical', b8dMatch);
+        let rwMatch = true;
+        for (let i = 0; i < 256; i++) if (A.rowWitnesses8D[i] !== B.rowWitnesses8D[i]) rwMatch = false;
+        ok('rowWitnesses8D identical', rwMatch);
 
         let cntMatch = true;
         for (let i = 0; i < 1024; i++) if (A.countsBitM[i] !== B.countsBitM[i]) cntMatch = false;
@@ -578,9 +631,9 @@ function runTests(): void {
         const C = handshake16D(makeBlock(0xDEADC0DE));
         ok(`different secret: residual ${A.residual} != ${C.residual}`, A.residual !== C.residual);
 
-        let b8dDiff = false;
-        for (let i = 0; i < B16; i++) if (A.block8D[i] !== C.block8D[i]) { b8dDiff = true; break; }
-        ok('different secret: block8D differs', b8dDiff);
+        let rwDiff = false;
+        for (let i = 0; i < 256; i++) if (A.rowWitnesses8D[i] !== C.rowWitnesses8D[i]) { rwDiff = true; break; }
+        ok('different secret: rowWitnesses8D differs', rwDiff);
 
         let cntDiff = false;
         for (let i = 0; i < 1024; i++) if (A.countsBitM[i] !== C.countsBitM[i]) { cntDiff = true; break; }
@@ -730,6 +783,43 @@ function runTests(): void {
         // constant c: Σ_m (-1)^popcount(m) = (1-1)^16 = 0
         const cb = new Uint8Array(B16).fill(99);
         ok(`constant block WHT[all-ones] = 0 (got ${whtAllOnes(cb)})`, whtAllOnes(cb) === 0);
+    }
+
+    console.log();
+
+    // ── 7b. 8D⊗8D factorization identity ────────────────────────────────────
+    console.log('8D⊗8D factorization:');
+    {
+        let identityOk = true;
+        for (const seed of [1, 42, 0xDEAD, 0xF00D, 0xBEEF, 0x7777, 0xCAFE, 0x1337]) {
+            const block = makeBlock(seed);
+            const directR = (block[0] - Math.round(predAnti16D(block))) | 0;
+            const { residual: factoredR } = factored16D(block);
+            if (directR !== factoredR) identityOk = false;
+        }
+        ok('factored16D residual = direct predAnti16D residual for 8 random blocks', identityOk);
+
+        // verify sub-witnesses are non-trivial for random data
+        const { rowWitnesses } = factored16D(makeBlock(0xABCD));
+        let nonZero = 0;
+        for (let h = 0; h < 256; h++) if (rowWitnesses[h] !== 0) nonZero++;
+        ok(`sub-witnesses non-trivial: ${nonZero}/256 non-zero`, nonZero > 200);
+
+        // verify constant block: all sub-witnesses = 0 (WHT of constant = 0)
+        const { rowWitnesses: constW } = factored16D(new Uint8Array(B16).fill(42));
+        let allZeroW = true;
+        for (let h = 0; h < 256; h++) if (constW[h] !== 0) allZeroW = false;
+        ok('constant block: all 256 sub-witnesses = 0', allZeroW);
+
+        // verify single-byte corruption changes exactly one sub-witness
+        const block = makeBlock(0xF00DCAFE);
+        const { rowWitnesses: wOrig } = factored16D(block);
+        const corrupted = block.slice();
+        corrupted[3 * 256 + 17] ^= 0x42;  // flip byte in row 3
+        const { rowWitnesses: wCorr } = factored16D(corrupted);
+        let changedRows = 0;
+        for (let h = 0; h < 256; h++) if (wOrig[h] !== wCorr[h]) changedRows++;
+        ok(`single-byte corruption in row 3: exactly ${changedRows} sub-witness changed`, changedRows === 1);
     }
 
     console.log();
@@ -899,24 +989,19 @@ function runTests(): void {
 }
 
 function isDirectScriptExecution(fileBaseName: string): boolean {
-    const normalize = (value: string): string => value.replace(/\\/g, "/").toLowerCase();
-
-    if (typeof process !== "undefined" && typeof process.argv?.[1] === "string") {
-        const entry = normalize(process.argv[1]);
-        if (entry.endsWith(`/${fileBaseName}.ts`) || entry.endsWith(`/${fileBaseName}.js`)) {
-            return true;
-        }
+    const normalize = (v: string) => v.replace(/\\/g, '/').toLowerCase();
+    if (typeof process !== 'undefined' && typeof process.argv?.[1] === 'string') {
+        const e = normalize(process.argv[1]);
+        if (e.endsWith(`/${fileBaseName}.ts`) || e.endsWith(`/${fileBaseName}.js`)) return true;
     }
-
-    const maybeBun = (globalThis as { Bun?: { main?: string } }).Bun;
-    if (typeof maybeBun?.main === "string") {
-        const entry = normalize(maybeBun.main);
-        return entry.endsWith(`/${fileBaseName}.ts`) || entry.endsWith(`/${fileBaseName}.js`);
+    const bun = (globalThis as { Bun?: { main?: string } }).Bun;
+    if (typeof bun?.main === 'string') {
+        const e = normalize(bun.main);
+        return e.endsWith(`/${fileBaseName}.ts`) || e.endsWith(`/${fileBaseName}.js`);
     }
-
     return false;
 }
 
-if (isDirectScriptExecution("live-wasm-kizuna")) {
+if (isDirectScriptExecution('live-wasm-kizuna')) {
     runTests();
 }

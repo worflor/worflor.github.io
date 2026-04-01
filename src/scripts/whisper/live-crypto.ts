@@ -1,6 +1,6 @@
 // Whisper Live crypto primitives (WebCrypto wrappers).
 
-import { toArrayBuffer } from "./wasm";
+import { toArrayBuffer } from "./buf";
 
 export const TE = new TextEncoder();
 export const TD = new TextDecoder();

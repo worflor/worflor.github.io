@@ -26,6 +26,7 @@ describe("live-loop", () => {
         assert.equal(state.chain.length, 32, "chain is 32 bytes");
         assert.equal(state.countsBitM.length, 1024, "countsBitM is 1024 uint32");
         assert.equal(state.countsBit1.length, 8192, "countsBit1 is 8192 uint32");
+        assert.equal(state.countsBitX.length, 8192, "countsBitX is 8192 uint32");
         assert.equal(state.step, 0, "step starts at 0");
         // Chain should not be all zeros (derived from key material)
         assert.ok(!state.chain.every(b => b === 0), "chain is non-trivial");
@@ -40,6 +41,7 @@ describe("live-loop", () => {
         assertBytesEqual(a.chain, b.chain, `chain iter ${i}`);
         assert.deepStrictEqual(Array.from(a.countsBitM), Array.from(b.countsBitM), `countsBitM iter ${i}`);
         assert.deepStrictEqual(Array.from(a.countsBit1), Array.from(b.countsBit1), `countsBit1 iter ${i}`);
+        assert.deepStrictEqual(Array.from(a.countsBitX), Array.from(b.countsBitX), `countsBitX iter ${i}`);
         assert.equal(a.step, b.step, `step iter ${i}`);
       }
     });
@@ -171,6 +173,10 @@ describe("live-loop", () => {
           Array.from(enc.countsBit1), Array.from(dec.countsBit1),
           `countsBit1 in sync after message ${i}`,
         );
+        assert.deepStrictEqual(
+          Array.from(enc.countsBitX), Array.from(dec.countsBitX),
+          `countsBitX in sync after message ${i}`,
+        );
         encState = enc;
         decState = dec;
       }
@@ -200,11 +206,13 @@ describe("live-loop", () => {
       assert.ok(!state.chain.every(b => b === 0), "chain non-zero before wipe");
       assert.ok(!state.countsBitM.every(v => v === 0), "countsBitM non-zero before wipe");
       assert.ok(!state.countsBit1.every(v => v === 0), "countsBit1 non-zero before wipe");
+      assert.ok(!state.countsBitX.every(v => v === 0), "countsBitX non-zero before wipe");
 
       loopWipe(state);
       assert.ok(state.chain.every(b => b === 0), "chain zeroed");
       assert.ok(state.countsBitM.every(v => v === 0), "countsBitM zeroed");
       assert.ok(state.countsBit1.every(v => v === 0), "countsBit1 zeroed");
+      assert.ok(state.countsBitX.every(v => v === 0), "countsBitX zeroed");
     });
   });
 
