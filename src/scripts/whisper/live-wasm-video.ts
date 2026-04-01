@@ -3189,6 +3189,44 @@ function encodeSubband3D(
             bayesShrink(sub, _noiseSigma, baseStep, temporalBand === 'high');
         }
 
+        // per-block Wiener filter: MMSE-optimal multiplicative denoising.
+        // unlike BayesShrink (per-coefficient threshold), Wiener SCALES entire blocks
+        // based on local signal-to-noise ratio. this captures spatial variation in
+        // noise (bright regions noisier for Poisson camera noise, σ²=μ).
+        // w_block = max(0, 1 - σ_n²/var_block): when var ≈ σ² (pure noise), w→0 (kill block).
+        // when var >> σ² (strong signal), w→1 (preserve). this is the MMSE estimator
+        // applied at block granularity — between BayesShrink (per-coefficient) and
+        // global Wiener (per-subband). encoder-only, no format change.
+        if (_noiseSigma > 0 && temporalBand === 'high') {
+            const sigma2 = _noiseSigma * _noiseSigma * 2; // ×2 for frame difference noise
+            const WB = 8; // wiener block size (matches K/G block for consistency)
+            for (let t = 0; t < d; t++) {
+                const tOff = t * sbW * sbH;
+                for (let by = 0; by < sbH; by += WB) {
+                    for (let bx = 0; bx < sbW; bx += WB) {
+                        const bw = Math.min(WB, sbW - bx);
+                        const bh2 = Math.min(WB, sbH - by);
+                        // compute local variance of this block
+                        let sumSq = 0, n2 = 0;
+                        for (let y = 0; y < bh2; y++) for (let x = 0; x < bw; x++) {
+                            const c = sub[tOff + (by + y) * sbW + bx + x];
+                            sumSq += c * c; n2++;
+                        }
+                        const varBlock = sumSq / n2;
+                        // Wiener scale: w = max(0, 1 - σ²/var)
+                        // when var < σ² (noise-dominated): kill the block
+                        // when var >> σ² (signal): preserve
+                        const w = varBlock > sigma2 ? 1 - sigma2 / varBlock : 0;
+                        if (w < 1) {
+                            for (let y = 0; y < bh2; y++) for (let x = 0; x < bw; x++) {
+                                sub[tOff + (by + y) * sbW + bx + x] *= w;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // dead-zone-only activity masking for detail subbands
         let dzMask: Float32Array | null = null;
         if (!isChroma && maskMap) {

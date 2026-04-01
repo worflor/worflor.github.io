@@ -7,24 +7,6 @@ const seo = {
     "an immersive journey through the dimensional tower of codecs. compression, encryption, and communication as one operation.",
   image: "/images/social-card.png",
 };
-
-// 8 spatial dimensions projected into 3D CSS space
-const axisData = [
-  { ry: 0, rx: 0 },
-  { ry: 90, rx: 0 },
-  { ry: 0, rx: 90 },
-  { ry: 45, rx: 35.26 },
-  { ry: -45, rx: 35.26 },
-  { ry: 45, rx: -35.26 },
-  { ry: -45, rx: -35.26 },
-  { ry: 135, rx: 45 },
-];
-
-// kizuna: second 8D signature at offset angles so merged structure shows 16 distinct axes
-const bondRightAxes = axisData.map(a => ({
-  ry: a.ry + 22,
-  rx: a.rx + 12,
-}));
 ---
 
 <Layout seo={seo}>
@@ -141,37 +123,8 @@ const bondRightAxes = axisData.map(a => ({
     <!-- ═══ Act 4 — Kizuna (16D) ═══ -->
     <section class="act act--kizuna" id="act-4" aria-label="Kizuna: the bond">
       <div class="pin">
-        <div class="scene scene--3d">
-          <div class="bond-stage">
-            <div class="bond-left">
-              {
-                axisData.map((a) => (
-                  <div
-                    class="octo-axis"
-                    style={`--ry:${a.ry};--rx:${a.rx}`}
-                  />
-                ))
-              }
-            </div>
-            <div class="bond-right">
-              {
-                bondRightAxes.map((a) => (
-                  <div
-                    class="octo-axis"
-                    style={`--ry:${a.ry};--rx:${a.rx}`}
-                  />
-                ))
-              }
-            </div>
-            <div class="mobius-ring">
-              {
-                Array.from({ length: 24 }, (_, i) => (
-                  <div class="ring-dot" style={`--i:${i}`} />
-                ))
-              }
-            </div>
-          </div>
-          <div class="bond-flash" aria-hidden="true"></div>
+        <div class="scene">
+          <canvas class="kizuna-canvas" aria-hidden="true"></canvas>
         </div>
         <div class="copy copy--lower">
           <span class="act-dim">16D</span>
@@ -186,9 +139,10 @@ const bondRightAxes = axisData.map(a => ({
         </div>
       </div>
       <span class="sr-only"
-        >A shared secret expands into 65,536 bytes, sealed by the 16-dimensional
-        Möbius predictor into one residual sensitive to every byte. The geometry
-        becomes the cipher. 65,535 witnesses, one seal.</span
+        >Two 8-dimensional lattice blooms approach and collide, merging into
+        a single 16-dimensional structure. A shockwave radiates outward. A
+        Möbius ring of witnesses orbits the merged lattice. 65,535 neighbors,
+        one seal.</span
       >
     </section>
 
@@ -219,91 +173,18 @@ const bondRightAxes = axisData.map(a => ({
     <section class="act act--loop" id="act-6" aria-label="The loop">
       <div class="pin">
         <div class="scene">
-          <div class="loop-ring">
-            <!-- 0D -->
-            <div class="loop-icon" style="--i:0">
-              <svg viewBox="0 0 24 24"
-                ><circle cx="12" cy="12" r="4" fill="currentColor"
-                ></circle></svg
-              >
-            </div>
-            <!-- 1D -->
-            <div class="loop-icon" style="--i:1">
-              <svg viewBox="0 0 24 24"
-                ><path
-                  d="M2 12Q8 4 12 12Q16 20 22 12"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"></path></svg
-              >
-            </div>
-            <!-- 2D -->
-            <div class="loop-icon" style="--i:2">
-              <svg viewBox="0 0 24 24"
-                ><rect
-                  x="5"
-                  y="5"
-                  width="14"
-                  height="14"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"></rect></svg
-              >
-            </div>
-            <!-- 8D -->
-            <div class="loop-icon" style="--i:3">
-              <svg viewBox="0 0 24 24"
-                ><path
-                  d="M12 2L22 8V16L12 22L2 16V8Z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"></path></svg
-              >
-            </div>
-            <!-- 16D -->
-            <div class="loop-icon" style="--i:4">
-              <svg viewBox="0 0 24 24"
-                ><circle
-                  cx="8"
-                  cy="12"
-                  r="6"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"></circle><circle
-                  cx="16"
-                  cy="12"
-                  r="6"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"></circle></svg
-              >
-            </div>
-            <!-- engram -->
-            <div class="loop-icon" style="--i:5">
-              <svg viewBox="0 0 24 24"
-                ><polygon
-                  points="12,2 22,9 19,20 5,20 2,9"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"></polygon></svg
-              >
-            </div>
-          </div>
-          <div class="loop-dot"></div>
+          <canvas class="ratchet-canvas" aria-hidden="true"></canvas>
         </div>
         <div class="copy copy--lower">
-          <p class="loop-dims">0D → 8D → 16D → 0D</p>
-          <p class="loop-insight">each message walks the tower.</p>
-          <p class="loop-ratchet">the ratchet turns. the key changes. the ladder resets.</p>
           <p class="loop-final">
             compression. encryption. forward secrecy.<br />one operation.
           </p>
         </div>
       </div>
       <span class="sr-only"
-        >Icons representing each codec dimension orbit in a ring, then collapse
-        inward to a single point. The whole tower is a circle. The Double
-        Ratchet is the dimensional ladder.</span
+        >Messages fall through a vertical tower of codec layers — Logos
+        compresses, Loup predicts, Kizuna seals. Each completed message
+        advances the ratchet. The key changes. The loop resets.</span
       >
     </section>
 
@@ -380,8 +261,6 @@ const bondRightAxes = axisData.map(a => ({
   .descent .quote,
   .descent .coda-quote,
   .descent .coda-hint,
-  .descent .loop-insight,
-  .descent .loop-ratchet,
   .descent .loop-final {
     -webkit-user-select: text;
     user-select: text;
@@ -444,6 +323,7 @@ const bondRightAxes = axisData.map(a => ({
   .pin {
     position: sticky;
     top: 0;
+    height: 100vh;
     height: 100dvh;
     overflow: hidden;
     display: flex;
@@ -458,10 +338,6 @@ const bondRightAxes = axisData.map(a => ({
     display: flex;
     align-items: center;
     justify-content: center;
-  }
-
-  .scene--3d {
-    perspective: 900px;
   }
 
   .copy {
@@ -693,177 +569,22 @@ const bondRightAxes = axisData.map(a => ({
     --reveal: clamp(0, (var(--p) - 0.6) * 4, 1);
   }
 
-  /* base octo-axis styles — shared with kizuna */
-  .octo-axis {
-    position: absolute;
-    width: min(280px, 35vw);
-    height: 1.5px;
-    left: calc(50% - min(140px, 17.5vw));
-    top: calc(50% - 0.75px);
-    background: linear-gradient(
-      90deg,
-      transparent 0%,
-      rgb(0 255 255 / 0.12) 15%,
-      rgb(0 255 255 / 0.45) 50%,
-      rgb(0 255 255 / 0.12) 85%,
-      transparent 100%
-    );
-    transform-origin: center center;
-    transform-style: preserve-3d;
-    transform:
-      rotateY(calc(var(--ry) * 1deg))
-      rotateX(calc(var(--rx) * 1deg));
-  }
-
-  /* glow dots at axis tips */
-  .octo-axis::before,
-  .octo-axis::after {
-    content: "";
-    position: absolute;
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: rgb(0 255 255 / 0.5);
-    top: -1.25px;
-  }
-  .octo-axis::before { left: 0; }
-  .octo-axis::after { right: 0; }
 
   /* ── act 4 — kizuna (16D) ─────────────────────────────── */
 
   .act--kizuna {
-    height: 190vh;
+    height: 280vh;
   }
 
-  /* kizuna axes: thinner/dimmer than loup since 16 total */
-  /* --flare peaks at collision (p≈0.42), axes themselves react to impact */
-  .act--kizuna .octo-axis {
-    --flare: max(0, 1 - abs(var(--p) - 0.42) * 14);
-    width: min(220px, 28vw);
-    left: calc(50% - min(110px, 14vw));
-    height: calc(1px + var(--flare) * 1.5px);
-    background: linear-gradient(
-      90deg,
-      transparent 0%,
-      rgb(0 255 255 / calc(0.08 + var(--flare) * 0.5)) 15%,
-      rgb(0 255 255 / calc(0.35 + var(--flare) * 0.6)) 50%,
-      rgb(0 255 255 / calc(0.08 + var(--flare) * 0.5)) 85%,
-      transparent 100%
-    );
-  }
-
-  .act--kizuna .octo-axis::before,
-  .act--kizuna .octo-axis::after {
-    width: calc(3px + var(--flare) * 3px);
-    height: calc(3px + var(--flare) * 3px);
-    background: rgb(0 255 255 / calc(0.3 + var(--flare) * 0.6));
-    top: calc(-1px - var(--flare) * 1.5px);
-    box-shadow: 0 0 calc(var(--flare) * 8px) rgb(0 255 255 / calc(var(--flare) * 0.5));
-  }
-
-  /* post-collision: gentle scroll rotation + pointer parallax.
-     safe now that opacity lives on ring-dot, not the preserve-3d parent */
-  .bond-stage {
+  .kizuna-canvas {
     position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    transform-style: preserve-3d;
-    --post: clamp(0, (var(--p) - 0.5) * 2, 1);
-    transform:
-      rotateY(calc(var(--post) * 120deg + var(--ptr-x, 0) * 12deg))
-      rotateX(calc(var(--post) * 15deg + var(--ptr-y, 0) * 12deg));
-  }
-
-  .bond-left,
-  .bond-right {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    transform-style: preserve-3d;
-    /* pre-collision: approach + gentle rotation that eases to zero */
-    --approach: clamp(0, var(--p) * 2.5, 1);
-  }
-
-  .bond-left {
-    transform:
-      translateX(calc((var(--approach) - 1) * min(20vw, 150px)))
-      rotateY(calc((1 - var(--approach)) * 30deg));
-  }
-
-  .bond-right {
-    transform:
-      translateX(calc((1 - var(--approach)) * min(20vw, 150px)))
-      rotateY(calc((1 - var(--approach)) * -30deg));
-  }
-
-  /* collision — expanding shockwave ring from impact point */
-  .bond-flash {
-    position: absolute;
-    pointer-events: none;
-    z-index: 5;
-    /* expand: 0 at p=0.36 → full at p=0.56 */
-    --wave: clamp(0, (var(--p) - 0.36) * 5, 1);
-    /* fade: peaks at collision, gone by p=0.58 */
-    --intensity: calc(
-      clamp(0, (var(--p) - 0.35) * 12, 1) *
-      clamp(0, (0.58 - var(--p)) * 5, 1)
-    );
-    width: calc(var(--wave) * min(65vw, 460px));
-    height: calc(var(--wave) * min(65vw, 460px));
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    border-radius: 50%;
-    border: 1.5px solid rgb(0 255 255 / calc(var(--intensity) * 0.55));
-    box-shadow:
-      0 0 12px rgb(0 255 255 / calc(var(--intensity) * 0.2)),
-      inset 0 0 12px rgb(0 255 255 / calc(var(--intensity) * 0.1));
-    background: none;
-  }
-
-  /* second ring — expands faster, thinner, ghostly echo */
-  .bond-flash::after {
-    content: "";
-    position: absolute;
-    inset: -25%;
-    border-radius: 50%;
-    border: 0.5px solid rgb(0 255 255 / calc(var(--intensity) * 0.25));
-    box-shadow: 0 0 8px rgb(0 255 255 / calc(var(--intensity) * 0.08));
-  }
-
-  .mobius-ring {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    transform-style: preserve-3d;
-    animation: ring-orbit 10s linear infinite;
-    /* no opacity here — it would flatten children's 3D transforms (css spec) */
-    will-change: transform;
-  }
-
-  .ring-dot {
-    position: absolute;
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: rgb(0 255 255 / 0.55);
-    left: calc(50% - 2px);
-    top: calc(50% - 2px);
-    transform-style: preserve-3d;
-    transform:
-      rotateY(calc(var(--i) * 15deg))
-      translateZ(min(80px, 11vw));
-    /* fade lives on each dot, not the parent, to preserve 3d context */
-    opacity: calc(clamp(0, (var(--p) - 0.48) * 5, 1));
-  }
-
-  @keyframes ring-orbit {
-    from { transform: rotateY(0deg) rotateX(25deg); }
-    to { transform: rotateY(360deg) rotateX(25deg); }
   }
 
   .act--kizuna .copy {
-    --reveal: clamp(0, (var(--p) - 0.04) * 4, 1);
+    --reveal: clamp(0, (var(--p) - 0.06) * 4, 1);
   }
 
   /* ── act 5 — crystallization ──────────────────────────── */
@@ -907,99 +628,25 @@ const bondRightAxes = axisData.map(a => ({
   /* ── act 6 — the loop ─────────────────────────────────── */
 
   .act--loop {
-    height: 260vh;
+    height: 300vh;
   }
 
-  .loop-ring {
+  .ratchet-canvas {
     position: absolute;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    /* slow ratchet rotation as icons collapse */
-    transform: rotate(calc(var(--p) * 60deg));
-  }
-
-  .loop-icon {
-    position: absolute;
-    width: 28px;
-    height: 28px;
-    color: rgb(0 255 255 / 0.55);
-    transform:
-      rotate(calc(var(--i) * 60deg))
-      translateY(calc((1 - var(--p)) * min(-18vw, -100px)))
-      rotate(calc(var(--i) * -60deg))
-      /* counter-rotate the ratchet so icons stay upright */
-      rotate(calc(var(--p) * -60deg));
-    opacity: calc(1 - var(--p) * 0.9);
-  }
-
-  .loop-icon svg {
+    inset: 0;
     width: 100%;
     height: 100%;
   }
 
-  .loop-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: rgb(0 255 255);
-    opacity: calc(clamp(0, (var(--p) - 0.3) * 3, 1));
-    box-shadow: 0 0 20px rgb(0 255 255 / calc(var(--p) * 0.4));
-  }
-
-  /* parent visible — children handle their own phased opacity */
   .act--loop .copy {
-    --reveal: 1;
-    bottom: auto;
-    top: 12vh;
-    transform: translateX(-50%) translateY(0);
+    --reveal: clamp(0, (var(--p) - 0.75) * 4, 1);
   }
 
-  /* phase 1: dimension sequence (p 0–0.25) */
-  .loop-dims {
-    font-family: "Cascadia Code", "Fira Code", monospace;
-    font-size: clamp(0.75rem, 0.7rem + 0.3vw, 0.9rem);
-    color: rgb(0 255 255 / 0.4);
-    letter-spacing: 0.08em;
-    opacity: calc(clamp(0, 1 - var(--p) * 4, 1));
-    margin: 0;
-  }
-
-  /* phase 2: the insight (p 0.15–0.5) */
-  .loop-insight {
-    font-family: "Inter", sans-serif;
-    font-weight: 300;
-    font-size: clamp(0.95rem, 0.85rem + 0.6vw, 1.25rem);
-    color: rgb(245 245 245 / 0.6);
-    margin: 0;
-    opacity: calc(
-      clamp(0, (var(--p) - 0.12) * 7, 1) *
-      clamp(0, (0.55 - var(--p)) * 5, 1)
-    );
-  }
-
-  /* phase 3: the ratchet (p 0.35–0.7) */
-  .loop-ratchet {
-    font-family: "Inter", sans-serif;
-    font-weight: 200;
-    font-size: clamp(0.85rem, 0.78rem + 0.45vw, 1.05rem);
-    color: rgb(245 245 245 / 0.45);
-    margin: 0;
-    opacity: calc(
-      clamp(0, (var(--p) - 0.32) * 6, 1) *
-      clamp(0, (0.72 - var(--p)) * 5, 1)
-    );
-  }
-
-  /* phase 4: the conclusion (p 0.6–1.0) */
   .loop-final {
     font-family: "Inter", sans-serif;
     font-weight: 200;
     font-size: clamp(1.1rem, 1rem + 0.8vw, 1.6rem);
     color: rgb(245 245 245 / 0.8);
-    opacity: calc(clamp(0, (var(--p) - 0.55) * 3, 1));
     margin: 0;
     line-height: 1.7;
   }
@@ -1143,15 +790,6 @@ const bondRightAxes = axisData.map(a => ({
       bottom: 7vh;
     }
 
-    .octo-axis {
-      width: min(200px, 50vw);
-      left: calc(50% - min(100px, 25vw));
-    }
-
-    /* reduce 3D intensity on small screens */
-    .act--kizuna .pin {
-      perspective: 600px;
-    }
   }
 
   /* pen/stylus hover states */
@@ -1161,10 +799,6 @@ const bondRightAxes = axisData.map(a => ({
         transform 0.7s cubic-bezier(0.22, 0.61, 0.36, 1),
         opacity 0.4s ease-out,
         box-shadow 0.3s ease-out;
-    }
-
-    .octo-axis {
-      transition: background 0.2s ease-out;
     }
   }
 
@@ -1179,19 +813,6 @@ const bondRightAxes = axisData.map(a => ({
     .chevron {
       animation: none;
       opacity: 0.35;
-    }
-
-    .mobius-ring {
-      animation: none;
-    }
-
-    .bond-left,
-    .bond-right {
-      will-change: auto;
-    }
-
-    .loop-icon {
-      transition: none;
     }
 
     .apple-dot {
@@ -1230,9 +851,6 @@ const bondRightAxes = axisData.map(a => ({
   /* high contrast mode */
   @media (forced-colors: active) {
     .pulse-dot,
-    .octo-axis,
-    .ring-dot,
-    .loop-dot,
     .apple-dot {
       forced-color-adjust: none;
     }
