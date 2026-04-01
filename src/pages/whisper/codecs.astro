@@ -20,9 +20,6 @@ const axisData = [
   { ry: 135, rx: 45 },
 ];
 
-// loup: 8 spatial dimensions (x₁...x₈), NOT logos's prediction axes
-const axisLabels = ["x\u2081", "x\u2082", "x\u2083", "x\u2084", "x\u2085", "x\u2086", "x\u2087", "x\u2088"];
-
 // kizuna: second 8D signature at offset angles so merged structure shows 16 distinct axes
 const bondRightAxes = axisData.map(a => ({
   ry: a.ry + 22,
@@ -118,41 +115,26 @@ const bondRightAxes = axisData.map(a => ({
     <!-- ═══ Act 3 — Loup (8D) ═══ -->
     <section class="act act--loup" id="act-3" aria-label="Loup: the 8D predictor">
       <div class="pin">
-        <div class="scene scene--3d">
-          <div class="octo">
-            {
-              axisData.map((a) => (
-                <div
-                  class="octo-axis"
-                  style={`--ry:${a.ry};--rx:${a.rx}`}
-                />
-              ))
-            }
-          </div>
-          <div class="axis-labels">
-            {
-              axisLabels.map((label, i) => (
-                <span
-                  class="axis-label"
-                  data-i={i}
-                  set:html={label}
-                />
-              ))
-            }
-          </div>
+        <div class="scene">
+          <canvas class="lattice-canvas" aria-hidden="true"></canvas>
         </div>
         <div class="copy copy--lower">
           <span class="act-dim">8D</span>
           <h2 class="act-name">Loup</h2>
           <p class="quote">
-            the last algebra that divides cleanly.<br />90% of the answer was already there.
+            255 neighbors, one for every subset.<br />most of the answer was already on the boundary.
           </p>
+          <div class="counter" aria-hidden="true">
+            <span class="counter-value"></span>
+            <span class="counter-unit">subsets</span>
+          </div>
         </div>
       </div>
       <span class="sr-only"
-        >An 8-axis wireframe structure rotates in 3D space. Each axis
-        represents one of the eight predictive dimensions of the Loup codec.
-        255 neighbors surround every point.</span
+        >A lattice of 255 nodes blooms outward in concentric rings, each ring
+        representing subsets of increasing size. Alternating colors show the
+        inclusion-exclusion formula. Most nodes fade as boundary predictions
+        prove free — 90% of the structure was already determined.</span
       >
     </section>
 
@@ -697,20 +679,21 @@ const bondRightAxes = axisData.map(a => ({
   /* ── act 3 — loup (8D) ───────────────────────────────── */
 
   .act--loup {
-    height: 280vh;
+    height: 320vh;
   }
 
-  .octo {
+  .lattice-canvas {
     position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    transform-style: preserve-3d;
-    transform:
-      rotateX(calc(var(--p) * 120deg + var(--ptr-y, 0) * 12deg))
-      rotateY(calc(var(--p) * 360deg + var(--ptr-x, 0) * 12deg));
-    will-change: transform;
   }
 
+  .act--loup .copy {
+    --reveal: clamp(0, (var(--p) - 0.6) * 4, 1);
+  }
+
+  /* base octo-axis styles — shared with kizuna */
   .octo-axis {
     position: absolute;
     width: min(280px, 35vw);
@@ -745,38 +728,6 @@ const bondRightAxes = axisData.map(a => ({
   }
   .octo-axis::before { left: 0; }
   .octo-axis::after { right: 0; }
-
-  /* axis labels — positioned around the viewport */
-  .axis-labels {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 3;
-  }
-
-  .axis-label {
-    position: absolute;
-    font-family: "Cascadia Code", "Fira Code", monospace;
-    font-size: clamp(0.65rem, 0.6rem + 0.25vw, 0.8rem);
-    color: rgb(0 255 255 / 0.6);
-    /* staggered reveal based on --p */
-    opacity: calc(clamp(0, (var(--p) - 0.05 * var(--idx)) * 10, 1));
-    transition: opacity 0.3s ease-out;
-  }
-
-  .act--loup .copy {
-    --reveal: clamp(0, (var(--p) - 0.06) * 6, 1);
-  }
-
-  /* clock positions for 8 labels */
-  .axis-label[data-i="0"] { --idx: 0; top: 12%; left: 50%; transform: translateX(-50%); }
-  .axis-label[data-i="1"] { --idx: 1; top: 20%; right: 15%; }
-  .axis-label[data-i="2"] { --idx: 2; top: 40%; right: 8%; }
-  .axis-label[data-i="3"] { --idx: 3; bottom: 35%; right: 12%; }
-  .axis-label[data-i="4"] { --idx: 4; bottom: 18%; left: 50%; transform: translateX(-50%); }
-  .axis-label[data-i="5"] { --idx: 5; bottom: 35%; left: 12%; }
-  .axis-label[data-i="6"] { --idx: 6; top: 40%; left: 8%; }
-  .axis-label[data-i="7"] { --idx: 7; top: 20%; left: 15%; }
 
   /* ── act 4 — kizuna (16D) ─────────────────────────────── */
 
@@ -1197,12 +1148,7 @@ const bondRightAxes = axisData.map(a => ({
       left: calc(50% - min(100px, 25vw));
     }
 
-    .axis-label {
-      font-size: 0.6rem;
-    }
-
     /* reduce 3D intensity on small screens */
-    .act--loup .pin,
     .act--kizuna .pin {
       perspective: 600px;
     }
@@ -1237,11 +1183,6 @@ const bondRightAxes = axisData.map(a => ({
 
     .mobius-ring {
       animation: none;
-    }
-
-    .octo {
-      will-change: auto;
-      transition: none;
     }
 
     .bond-left,

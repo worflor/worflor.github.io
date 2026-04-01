@@ -214,6 +214,261 @@ function initTree(act: HTMLElement) {
   requestAnimationFrame(draw);
 }
 
+// ── act 3: loup — 255-node lattice bloom ─────────────────────────
+// the 255 non-empty subsets of 8 dimensions, arranged in concentric
+// rings by cardinality. rings bloom outward with alternating +/−
+// inclusion-exclusion sign, then collapse to show the boundary theorem.
+
+interface LatticeNode {
+  x: number;
+  y: number;
+  ring: number;     // cardinality 1–8
+  subset: number;   // bitmask
+  positive: boolean; // odd cardinality = positive sign
+}
+
+// binomial coefficients C(8, k)
+const BINOM8 = [0, 8, 28, 56, 70, 56, 28, 8, 1];
+
+// sign labels for the counter display
+const SIGN_LABELS = [
+  "", "+8", "\u221228", "+56", "\u221270", "+56", "\u221228", "+8", "\u22121",
+];
+
+function buildLattice(w: number, h: number): { nodes: LatticeNode[]; edges: [number, number][] } {
+  const cx = w / 2;
+  const cy = h / 2;
+  const maxR = Math.min(w, h) * 0.38;
+  const nodes: LatticeNode[] = [];
+
+  // generate all 255 non-empty subsets grouped by cardinality
+  const ringStart: number[] = [0]; // ringStart[k] = first node index of ring k
+  for (let k = 1; k <= 8; k++) {
+    ringStart.push(nodes.length);
+    const r = maxR * Math.pow(k / 8, 0.72);
+    const offset = k * 0.39; // angular offset per ring to break radial lines
+    let count = 0;
+    for (let s = 1; s < 256; s++) {
+      if (popcount(s) !== k) continue;
+      const angle = (count / BINOM8[k]) * Math.PI * 2 - Math.PI / 2 + offset;
+      nodes.push({
+        x: cx + Math.cos(angle) * r,
+        y: cy + Math.sin(angle) * r,
+        ring: k,
+        subset: s,
+        positive: k % 2 === 1,
+      });
+      count++;
+    }
+  }
+  ringStart.push(nodes.length);
+
+  // edges: connect subset S of cardinality k to superset S|bit of cardinality k+1
+  // limit edges to keep it readable (~2 per node on average)
+  const edges: [number, number][] = [];
+  const edgeCount = new Map<number, number>();
+
+  for (let k = 1; k <= 7; k++) {
+    const lo = ringStart[k];
+    const hi = ringStart[k + 1];
+    const loEnd = ringStart[k + 1];
+    const hiEnd = ringStart[k + 2];
+
+    for (let i = lo; i < loEnd; i++) {
+      const s = nodes[i].subset;
+      for (let j = hi; j < hiEnd; j++) {
+        const t = nodes[j].subset;
+        // t is a superset of s with exactly one extra bit
+        if ((s & t) === s && popcount(t ^ s) === 1) {
+          const ci = edgeCount.get(i) || 0;
+          const cj = edgeCount.get(j) || 0;
+          if (ci < 2 && cj < 3) {
+            edges.push([i, j]);
+            edgeCount.set(i, ci + 1);
+            edgeCount.set(j, cj + 1);
+          }
+        }
+      }
+    }
+  }
+
+  return { nodes, edges };
+}
+
+function popcount(n: number): number {
+  n = n - ((n >> 1) & 0x55555555);
+  n = (n & 0x33333333) + ((n >> 2) & 0x33333333);
+  return (((n + (n >> 4)) & 0x0f0f0f0f) * 0x01010101) >> 24;
+}
+
+function initLattice(act: HTMLElement) {
+  const canvas = act.querySelector<HTMLCanvasElement>(".lattice-canvas");
+  if (!canvas) return;
+  const pin = act.querySelector<HTMLElement>(".pin")!;
+
+  let { ctx, w, h } = fitCanvas(canvas, pin);
+  let { nodes, edges } = buildLattice(w, h);
+  const { isVisible } = observeVisibility(act);
+  const counterEl = act.querySelector<HTMLElement>(".counter-value");
+  const unitEl = act.querySelector<HTMLElement>(".counter-unit");
+
+  function draw() {
+    if (!isVisible() && !REDUCED) { requestAnimationFrame(draw); return; }
+
+    const p = readProgress(act);
+    const time = REDUCED ? 0 : performance.now();
+    ctx.clearRect(0, 0, w, h);
+
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // pointer parallax: shift center slightly
+    const ox = ptrX * 18;
+    const oy = ptrY * 18;
+
+    // phase 3: boundary fade (p 0.55–0.75)
+    const boundaryFade = Math.max(0, Math.min(1, (p - 0.55) / 0.2));
+
+    // draw edges first (behind nodes)
+    for (const [ai, bi] of edges) {
+      const a = nodes[ai];
+      const b = nodes[bi];
+
+      // reveal: edge appears when both endpoint rings are revealed
+      const maxRing = Math.max(a.ring, b.ring);
+      const ringReveal = ringProgress(p, maxRing);
+      if (ringReveal <= 0) continue;
+
+      // boundary dimming
+      const edgeAlpha = 0.06 * ringReveal * (1 - boundaryFade * 0.92);
+
+      const ax = a.x + ox;
+      const ay = a.y + oy;
+      const bx = b.x + ox;
+      const by = b.y + oy;
+
+      // bezier pulling slightly toward center
+      const mx = (ax + bx) / 2;
+      const my = (ay + by) / 2;
+      const cpx = mx + (cx + ox - mx) * 0.15;
+      const cpy = my + (cy + oy - my) * 0.15;
+
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.quadraticCurveTo(cpx, cpy, bx, by);
+      ctx.strokeStyle = `rgba(0,255,255,${edgeAlpha})`;
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+    }
+
+    // draw nodes
+    for (let i = 0; i < nodes.length; i++) {
+      const nd = nodes[i];
+      const reveal = ringProgress(p, nd.ring);
+      if (reveal <= 0) continue;
+
+      // breathing: slight radius oscillation, staggered by index
+      const breathe = REDUCED ? 0 : Math.sin(time / 900 + i * 0.7) * 0.15;
+
+      // boundary theorem: in an 8D block of side BS, a voxel is "free"
+      // if any coordinate touches the block edge. only voxels where ALL
+      // coordinates are interior survive. for BS=4: 2 interior positions
+      // out of 4 per axis → probability = (2/4)^popcount(subset).
+      // a subset is "interior" when all its set-bit dimensions land
+      // in the interior range. we threshold at popcount ≤ 2: the small
+      // subsets (singles, pairs) form a visible nested sub-lattice,
+      // while larger subsets fade — mirroring the exponential decay
+      // of interior probability with dimension count.
+      const pc = popcount(nd.subset);
+      const interiorProb = Math.pow(0.5, pc); // (2/4)^pc for BS=4
+      const isInterior = interiorProb > 0.2; // pc ≤ 2: 8 singles + 28 pairs + 1×full = structured sub-lattice
+      const dimming = boundaryFade * (isInterior ? 0 : 0.95);
+
+      const alpha = reveal * (1 - dimming);
+      if (alpha < 0.01) continue;
+
+      const nx = nd.x + ox;
+      const ny = nd.y + oy;
+
+      // node size: ring 1 and 8 slightly larger
+      const baseSize = nd.ring === 1 ? 2.8 : nd.ring === 8 ? 3.2 : 2;
+      const size = baseSize * (0.85 + reveal * 0.15 + breathe);
+
+      // color: positive (odd cardinality) = bright cyan, negative = cooler blue
+      if (nd.positive) {
+        ctx.fillStyle = `rgba(0,255,255,${alpha * 0.7})`;
+      } else {
+        ctx.fillStyle = `rgba(120,180,255,${alpha * 0.55})`;
+      }
+
+      ctx.beginPath();
+      ctx.arc(nx, ny, size, 0, Math.PI * 2);
+      ctx.fill();
+
+      // glow halo on ring 1 and ring 8 nodes
+      if ((nd.ring === 1 || nd.ring === 8) && alpha > 0.2) {
+        const glowR = size * 4;
+        const grad = ctx.createRadialGradient(nx, ny, 0, nx, ny, glowR);
+        const gc = nd.positive ? "0,255,255" : "120,180,255";
+        grad.addColorStop(0, `rgba(${gc},${alpha * 0.08})`);
+        grad.addColorStop(1, `rgba(${gc},0)`);
+        ctx.beginPath();
+        ctx.arc(nx, ny, glowR, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+      }
+    }
+
+    // center glow: faint radial when lattice is partially revealed
+    const centerAlpha = Math.min(p * 3, 1) * (1 - boundaryFade * 0.6);
+    if (centerAlpha > 0.01) {
+      const gr = 12 + (REDUCED ? 0 : Math.sin(time / 700) * 3);
+      const cg = ctx.createRadialGradient(cx + ox, cy + oy, 0, cx + ox, cy + oy, gr);
+      cg.addColorStop(0, `rgba(0,255,255,${centerAlpha * 0.1})`);
+      cg.addColorStop(1, "rgba(0,255,255,0)");
+      ctx.beginPath();
+      ctx.arc(cx + ox, cy + oy, gr, 0, Math.PI * 2);
+      ctx.fillStyle = cg;
+      ctx.fill();
+    }
+
+    // counter updates
+    if (counterEl && unitEl) {
+      if (p < 0.08) {
+        counterEl.textContent = "";
+        unitEl.textContent = "";
+      } else if (p < 0.58) {
+        // show current ring's sign label
+        const ringIdx = Math.min(8, Math.floor(((p - 0.08) / 0.5) * 8) + 1);
+        counterEl.textContent = SIGN_LABELS[ringIdx] || "";
+        unitEl.textContent = "subsets";
+      } else if (p < 0.68) {
+        counterEl.textContent = "255";
+        unitEl.textContent = "neighbors";
+      } else {
+        counterEl.textContent = "90%";
+        unitEl.textContent = "free";
+      }
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  // per-ring reveal timing: each ring gets a slice of p 0.05–0.55
+  function ringProgress(p: number, ring: number): number {
+    const start = 0.05 + (ring - 1) * 0.055;
+    const duration = 0.08;
+    return Math.max(0, Math.min(1, (p - start) / duration));
+  }
+
+  window.addEventListener("resize", () => {
+    ({ ctx, w, h } = fitCanvas(canvas, pin));
+    ({ nodes, edges } = buildLattice(w, h));
+  });
+
+  requestAnimationFrame(draw);
+}
+
 // ── act 2: harmonic — live audio waveform ────────────────────────
 // canvas-rendered compound harmonic. two voices at 0.3% pitch offset
 // create beating that never visually repeats. the dim prediction
@@ -535,6 +790,7 @@ function init() {
 
   if (acts[1]) initTree(acts[1]);      // logos
   if (acts[2]) initWaveform(acts[2]);   // harmonic → lumen
+  if (acts[3]) initLattice(acts[3]);    // loup (8D)
   if (acts[4]) initNeighborCounter(acts[4]); // kizuna
   if (acts[5]) initParticles(acts[5]);  // engram crystallization
   if (acts[7]) initCoda(acts[7]);       // the apple

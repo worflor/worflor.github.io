@@ -281,6 +281,22 @@ function decodeTrackerPayload<T>(encoded: unknown): T | null {
   }
 }
 
+// the WebTorrent tracker protocol requires offer.type === "offer" and
+// answer.type === "answer" for routing. custom types are silently dropped.
+// encode the whisper message type as a prefix in the sdp field instead:
+// sdp = "whisper-intent:base64payload" — the tracker treats sdp as opaque.
+
+function whisperSdp(whisperType: string, payload: string): string {
+  return `${whisperType}:${payload}`;
+}
+
+function parseWhisperSdp(sdp: unknown): { whisperType: string; payload: string } | null {
+  if (typeof sdp !== "string") return null;
+  const i = sdp.indexOf(":");
+  if (i < 1) return null;
+  return { whisperType: sdp.slice(0, i), payload: sdp.slice(i + 1) };
+}
+
 function makeIntentPayloads(
   infoHashes: string[],
   peerId: string,
@@ -296,8 +312,8 @@ function makeIntentPayloads(
     offers: [{
       offer_id: offerId,
       offer: {
-        type: TRACKER_INTENT_TYPE,
-        sdp: encoded,
+        type: "offer",
+        sdp: whisperSdp(TRACKER_INTENT_TYPE, encoded),
       },
     }],
   }));
@@ -317,8 +333,8 @@ function makeMatchAckPayload(
     peer_id: peerId,
     to_peer_id: toPeerId,
     answer: {
-      type: TRACKER_MATCH_ACK_TYPE,
-      sdp: encodeTrackerPayload<TrackerMatchAckPayload>({ rendezvousId, fromAttemptId }),
+      type: "answer",
+      sdp: whisperSdp(TRACKER_MATCH_ACK_TYPE, encodeTrackerPayload<TrackerMatchAckPayload>({ rendezvousId, fromAttemptId })),
     },
     offer_id: offerId,
   });
@@ -340,8 +356,8 @@ function makeOfferCodePayload(
     offers: [{
       offer_id: offerId,
       offer: {
-        type: TRACKER_OFFER_CODE_TYPE,
-        sdp: padCode(encodeTrackerPayload<TrackerOfferCodePayload>({ rendezvousId, code: offerCode })),
+        type: "offer",
+        sdp: padCode(whisperSdp(TRACKER_OFFER_CODE_TYPE, encodeTrackerPayload<TrackerOfferCodePayload>({ rendezvousId, code: offerCode }))),
         whisper_session: rendezvousId,
         to_peer_id: toPeerId,
       },
@@ -363,8 +379,8 @@ function makeAnswerCodePayload(
     peer_id: peerId,
     to_peer_id: toPeerId,
     answer: {
-      type: TRACKER_ANSWER_CODE_TYPE,
-      sdp: padCode(encodeTrackerPayload<TrackerAnswerCodePayload>({ rendezvousId, code: answerCode })),
+      type: "answer",
+      sdp: padCode(whisperSdp(TRACKER_ANSWER_CODE_TYPE, encodeTrackerPayload<TrackerAnswerCodePayload>({ rendezvousId, code: answerCode }))),
       whisper_session: rendezvousId,
     },
     offer_id: offerId,
@@ -799,8 +815,8 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
             peer_id: peerId,
             to_peer_id: lockPeerId,
             answer: {
-              type: TRACKER_SIGNAL_TYPE,
-              sdp: encoded,
+              type: "answer",
+              sdp: whisperSdp(TRACKER_SIGNAL_TYPE, encoded),
               whisper_session: rendezvousId,
             },
             offer_id: realOfferId,
@@ -815,8 +831,8 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
           offers: [{
             offer_id: randomBinId(),
             offer: {
-              type: TRACKER_SIGNAL_TYPE,
-              sdp: encoded,
+              type: "offer",
+              sdp: whisperSdp(TRACKER_SIGNAL_TYPE, encoded),
               whisper_session: rendezvousId,
               to_peer_id: lockPeerId,
             },
@@ -854,10 +870,11 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
 
     const handleIntent = (msg: Record<string, unknown>): void => {
       const offer = msg.offer as Record<string, unknown>;
-      if (offer.type !== TRACKER_INTENT_TYPE) return;
+      const parsed = parseWhisperSdp(offer.sdp);
+      if (!parsed || parsed.whisperType !== TRACKER_INTENT_TYPE) return;
       if (opts.mode === "flare-listener" && !opts.callbacks.onPeerArrived) return;
 
-      const payload = decodeTrackerPayload<TrackerIntentPayload>(offer.sdp);
+      const payload = decodeTrackerPayload<TrackerIntentPayload>(parsed.payload);
       const remotePeerId = String(msg.peer_id ?? "");
       const toPeerId = String(offer.to_peer_id ?? msg.to_peer_id ?? "");
       const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : hashes[0];
@@ -913,9 +930,10 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
 
     const handleMatchAck = (msg: Record<string, unknown>): void => {
       const answer = msg.answer as Record<string, unknown>;
-      if (answer.type !== TRACKER_MATCH_ACK_TYPE) return;
+      const parsed = parseWhisperSdp(answer.sdp);
+      if (!parsed || parsed.whisperType !== TRACKER_MATCH_ACK_TYPE) return;
 
-      const payload = decodeTrackerPayload<TrackerMatchAckPayload>(answer.sdp);
+      const payload = decodeTrackerPayload<TrackerMatchAckPayload>(parsed.payload);
       const remotePeerId = String(msg.peer_id ?? "");
       const toPeerId = String(msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
@@ -934,9 +952,10 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
     const handleOfferCode = (msg: Record<string, unknown>): void => {
       if (role !== "answerer" || acceptStarted) return;
       const offer = msg.offer as Record<string, unknown>;
-      if (offer.type !== TRACKER_OFFER_CODE_TYPE) return;
+      const parsed = parseWhisperSdp(offer.sdp);
+      if (!parsed || parsed.whisperType !== TRACKER_OFFER_CODE_TYPE) return;
 
-      const payload = decodeTrackerPayload<TrackerOfferCodePayload>(offer.sdp);
+      const payload = decodeTrackerPayload<TrackerOfferCodePayload>(parsed.payload);
       const remotePeerId = String(msg.peer_id ?? "");
       const toPeerId = String(offer.to_peer_id ?? msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
@@ -966,9 +985,10 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
     const handleAnswerCode = (msg: Record<string, unknown>): void => {
       if (role !== "offerer" || !realOfferId) return;
       const answer = msg.answer as Record<string, unknown>;
-      if (answer.type !== TRACKER_ANSWER_CODE_TYPE) return;
+      const parsed = parseWhisperSdp(answer.sdp);
+      if (!parsed || parsed.whisperType !== TRACKER_ANSWER_CODE_TYPE) return;
 
-      const payload = decodeTrackerPayload<TrackerAnswerCodePayload>(answer.sdp);
+      const payload = decodeTrackerPayload<TrackerAnswerCodePayload>(parsed.payload);
       const remotePeerId = String(msg.peer_id ?? "");
       const toPeerId = String(msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
@@ -988,8 +1008,9 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
     const handleRelaySignalMessage = (msg: Record<string, unknown>): boolean => {
       if (msg.offer && typeof msg.offer === "object") {
         const offer = msg.offer as Record<string, unknown>;
-        if (offer.type === TRACKER_SIGNAL_TYPE) {
-          const encoded = typeof offer.sdp === "string" ? unpadCode(offer.sdp) : "";
+        const offerParsed = parseWhisperSdp(offer.sdp);
+        if (offerParsed && offerParsed.whisperType === TRACKER_SIGNAL_TYPE) {
+          const encoded = offerParsed.payload;
           const sessionId = String(offer.whisper_session ?? "");
           const toPeerId = String(offer.to_peer_id ?? "");
           const fromPeerId = String(msg.peer_id ?? "");
@@ -1002,8 +1023,9 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
 
       if (msg.answer && typeof msg.answer === "object") {
         const answer = msg.answer as Record<string, unknown>;
-        if (answer.type === TRACKER_SIGNAL_TYPE) {
-          const encoded = typeof answer.sdp === "string" ? unpadCode(answer.sdp) : "";
+        const answerParsed = parseWhisperSdp(answer.sdp);
+        if (answerParsed && answerParsed.whisperType === TRACKER_SIGNAL_TYPE) {
+          const encoded = answerParsed.payload;
           const sessionId = String(answer.whisper_session ?? "");
           const fromPeerId = String(msg.peer_id ?? "");
           const toPeerId = String(msg.to_peer_id ?? "");

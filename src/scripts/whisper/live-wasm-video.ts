@@ -1996,7 +1996,8 @@ function estimateNoiseSigma(coeffs: Float64Array, w: number, h: number,
     return minMAD / 0.6745;
 }
 
-function bayesShrink(sub: Float64Array, noiseSigma: number, step: number): void {
+function bayesShrink(sub: Float64Array, noiseSigma: number, step: number,
+    isTemporalHigh: boolean = false): void {
     if (noiseSigma <= 0) return;
     const sigma2 = noiseSigma * noiseSigma;
     // estimate subband variance
@@ -2016,9 +2017,15 @@ function bayesShrink(sub: Float64Array, noiseSigma: number, step: number): void 
     // noise floor — wasting bits on invisible detail. shrinkage removes it.
     // σ ≥ step means the MAD estimator is measuring SIGNAL, not noise
     // (e.g., checkerboards, fine city detail). no shrinkage.
-    // this guard is physics-derived: step IS the codec noise floor
-    // (CSF × synthNorm × quality), so the comparison is meaningful.
-    if (noiseSigma >= step) return;
+    //
+    // exception: for temporal-high (P-frame differences), the noise is the
+    // SUM of camera noise from two frames: σ_diff = √2 × σ_camera. this
+    // naturally exceeds the quantization step. the large σ IS genuine noise
+    // (not signal contamination), so the guard scales by √2 to account for
+    // the doubled noise in frame differences. physics-derived from the
+    // independence of temporal noise realizations.
+    const guardStep = isTemporalHigh ? step * Math.SQRT2 : step;
+    if (noiseSigma >= guardStep) return;
     const T = sigma2 / sigmaS;
     if (T <= 0) return;
     // soft thresholding: c' = sign(c) * max(0, |c| - T)
@@ -2588,7 +2595,6 @@ function localMotionRefine(
 
             // PHASE 1: integer-pixel search (coarse, ±MV_SEARCH at stride 2)
             let bestHDx = 0, bestHDy = 0, bestSAD = Infinity;
-            // center + grid
             for (let dy = -MV_SEARCH; dy <= MV_SEARCH; dy += 2)
                 for (let dx = -MV_SEARCH; dx <= MV_SEARCH; dx += 2) {
                     let sad = 0;
@@ -3180,7 +3186,7 @@ function encodeSubband3D(
         // the noise energy ABOVE the dead zone. self-derived: no magic constants.
         // encoder-only: decoder sees smaller quantized values, no format change.
         if (_noiseSigma > 0) {
-            bayesShrink(sub, _noiseSigma, baseStep);
+            bayesShrink(sub, _noiseSigma, baseStep, temporalBand === 'high');
         }
 
         // dead-zone-only activity masking for detail subbands

@@ -67,8 +67,8 @@ class FakeFlareWebSocket {
           this.onmessage?.call(this, {
             data: JSON.stringify({
               offer: {
-                type: "whisper-intent",
-                sdp: encodePayload({ attemptId: "remote-attempt" }),
+                type: "offer",
+                sdp: `whisper-intent:${encodePayload({ attemptId: "remote-attempt" })}`,
               },
               offer_id: "remote-intent",
               peer_id: "peer-remote",
@@ -79,8 +79,10 @@ class FakeFlareWebSocket {
         });
         return;
       }
-      if (msg.answer?.type === "whisper-match-ack" && FakeFlareWebSocket.scenario === "live-flare" && !this.responded) {
-        const payloadJson = Buffer.from(String(msg.answer.sdp), "base64url").toString("utf8");
+      // match-ack now uses type:"answer" with whisper type prefix in sdp
+      const answerSdp = typeof msg.answer?.sdp === "string" ? msg.answer.sdp : "";
+      if (answerSdp.startsWith("whisper-match-ack:") && FakeFlareWebSocket.scenario === "live-flare" && !this.responded) {
+        const payloadJson = Buffer.from(answerSdp.slice("whisper-match-ack:".length), "base64url").toString("utf8");
         const matchPayload = JSON.parse(payloadJson) as { rendezvousId: string };
         this.responded = true;
         queueMicrotask(() => {
@@ -88,8 +90,8 @@ class FakeFlareWebSocket {
           this.onmessage?.call(this, {
             data: JSON.stringify({
               offer: {
-                type: "whisper-offer-code",
-                sdp: `${encodePayload({ rendezvousId: matchPayload.rendezvousId, code: "A".repeat(64) })}.`.padEnd(1024, "."),
+                type: "offer",
+                sdp: `whisper-offer-code:${encodePayload({ rendezvousId: matchPayload.rendezvousId, code: "A".repeat(64) })}`.padEnd(1024, "."),
                 whisper_session: matchPayload.rendezvousId,
                 to_peer_id: msg.peer_id,
               },
@@ -101,7 +103,8 @@ class FakeFlareWebSocket {
         });
         return;
       }
-      if (announceOffer?.type === "whisper-offer-code") return;
+      const offerSdp = typeof announceOffer?.sdp === "string" ? announceOffer.sdp : "";
+      if (offerSdp.startsWith("whisper-offer-code:")) return;
     }
 
     if (FakeFlareWebSocket.scenario === "campfire-host") {

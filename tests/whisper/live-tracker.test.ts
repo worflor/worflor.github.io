@@ -73,8 +73,10 @@ class FakeTrackerWebSocket {
     if (msg.action !== "announce" || !msg.peer_id || !msg.info_hash) return;
 
     const announceOffer = msg.offers?.[0]?.offer;
-    if (announceOffer?.type === "whisper-intent" && !this.sentMatchAck) {
-      const attemptId = JSON.parse(Buffer.from(String(announceOffer.sdp), "base64url").toString("utf8")).attemptId as string;
+    const offerSdp = typeof announceOffer?.sdp === "string" ? announceOffer.sdp : "";
+    if (offerSdp.startsWith("whisper-intent:") && !this.sentMatchAck) {
+      const intentPayload = offerSdp.slice("whisper-intent:".length);
+      const attemptId = JSON.parse(Buffer.from(intentPayload, "base64url").toString("utf8")).attemptId as string;
       const rendezvousId = createRendezvousId(msg.peer_id, attemptId, "peer-remote", "remote-attempt");
       FakeTrackerWebSocket.lastRendezvousId = rendezvousId;
       this.sentMatchAck = true;
@@ -83,8 +85,8 @@ class FakeTrackerWebSocket {
         this.onmessage?.call(this, {
           data: JSON.stringify({
             answer: {
-              type: "whisper-match-ack",
-              sdp: encodePayload({ rendezvousId, fromAttemptId: "remote-attempt" }),
+              type: "answer",
+              sdp: `whisper-match-ack:${encodePayload({ rendezvousId, fromAttemptId: "remote-attempt" })}`,
             },
             peer_id: "peer-remote",
             to_peer_id: msg.peer_id,
@@ -96,8 +98,9 @@ class FakeTrackerWebSocket {
       return;
     }
 
-    if (announceOffer?.type === "whisper-offer-code" && !this.sentAnswer) {
-      const offerPayload = JSON.parse(Buffer.from(String(announceOffer.sdp).replace(/\.+$/, ""), "base64url").toString("utf8")) as {
+    if (offerSdp.startsWith("whisper-offer-code:") && !this.sentAnswer) {
+      const codePayload = offerSdp.replace(/\.+$/, "").slice("whisper-offer-code:".length);
+      const offerPayload = JSON.parse(Buffer.from(codePayload, "base64url").toString("utf8")) as {
         rendezvousId: string;
       };
       FakeTrackerWebSocket.lastLiveOfferId = String(msg.offers?.[0]?.offer_id ?? "");
@@ -107,8 +110,8 @@ class FakeTrackerWebSocket {
         this.onmessage?.call(this, {
           data: JSON.stringify({
             answer: {
-              type: "whisper-answer-code",
-              sdp: `${encodePayload({ rendezvousId: offerPayload.rendezvousId, code: "A".repeat(64) })}.`.padEnd(1024, "."),
+              type: "answer",
+              sdp: `whisper-answer-code:${encodePayload({ rendezvousId: offerPayload.rendezvousId, code: "A".repeat(64) })}`.padEnd(1024, "."),
             },
             peer_id: "peer-remote",
             to_peer_id: msg.peer_id,
@@ -224,7 +227,7 @@ describe("live-tracker cleanup", () => {
       const sentAfterRelay = FakeTrackerWebSocket.instances[0]?.sent.length ?? 0;
       const lastSent = FakeTrackerWebSocket.instances[0]?.sent.at(-1) ?? "";
       assert.ok(sentAfterRelay > sentBeforeRelay);
-      assert.ok(lastSent.includes("\"whisper-signal\""));
+      assert.ok(lastSent.includes("whisper-signal:"));
       assert.ok(lastSent.includes(FakeTrackerWebSocket.lastRendezvousId));
       assert.ok(lastSent.includes("\"to_peer_id\":\"peer-remote\""));
     } finally {
