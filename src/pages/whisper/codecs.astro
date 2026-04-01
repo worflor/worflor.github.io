@@ -512,12 +512,12 @@ const seo = {
     display: flex;
     align-items: center;
     justify-content: center;
-    /* tilt into 3D in second half */
+    /* tilt into 3D in second half — no transition, rAF drives --p at 60fps */
     transform:
       perspective(800px)
       rotateX(calc(clamp(0, (var(--p) - 0.45) * 3.6, 1) * 55deg));
     transform-origin: center 60%;
-    transition: transform 0.05s linear;
+    will-change: transform;
   }
 
   .wave-canvas {

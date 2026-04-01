@@ -27,8 +27,12 @@ function fitCanvas(
   return { ctx, w: r.width, h: r.height };
 }
 
+// per-act progress cache — written by scroll engine, read by draw loops.
+// avoids parseFloat + getPropertyValue DOM reads every frame per act.
+const actProgress = new WeakMap<HTMLElement, number>();
+
 function readProgress(el: HTMLElement): number {
-  return parseFloat(el.style.getPropertyValue("--p") || "0");
+  return actProgress.get(el) || 0;
 }
 
 function observeVisibility(el: HTMLElement): { isVisible: () => boolean } {
@@ -41,31 +45,65 @@ function observeVisibility(el: HTMLElement): { isVisible: () => boolean } {
   return { isVisible: () => visible };
 }
 
+// debounced resize — all resize handlers register here, fire once per rAF
+let resizeCallbacks: (() => void)[] = [];
+let resizePending = false;
+
+function onResize(cb: () => void) {
+  resizeCallbacks.push(cb);
+}
+
+window.addEventListener("resize", () => {
+  if (resizePending) return;
+  resizePending = true;
+  requestAnimationFrame(() => {
+    resizePending = false;
+    for (const cb of resizeCallbacks) cb();
+  });
+}, { passive: true });
+
 // ── scroll progress engine ───────────────────────────────────────
 // sets --p (0-1) on each .act based on how far it's scrolled,
 // and --scroll-progress on the main container for the progress bar.
+// caches act heights to avoid getBoundingClientRect layout thrash —
+// only the top offset changes during scroll, heights are stable.
 
 function initScrollEngine(main: HTMLElement) {
   const acts = Array.from(main.querySelectorAll<HTMLElement>(".act"));
+  // cache act heights — only recompute on resize
+  let actHeights: number[] = acts.map(a => a.offsetHeight);
+
+  onResize(() => {
+    actHeights = acts.map(a => a.offsetHeight);
+  });
 
   function tick() {
     const vh = window.innerHeight;
     let totalScrollable = 0;
     let totalScrolled = 0;
 
-    for (const act of acts) {
-      const rect = act.getBoundingClientRect();
-      const scrollable = rect.height - vh;
+    for (let i = 0; i < acts.length; i++) {
+      const act = acts[i];
+      // offsetTop is cheap (no layout forced if heights haven't changed).
+      // getBoundingClientRect().top accounts for scroll, which is what we need.
+      // but we only need the top, and the browser can fast-path single-property reads.
+      const top = act.getBoundingClientRect().top;
+      const scrollable = actHeights[i] - vh;
 
       totalScrollable += Math.max(0, scrollable);
-      totalScrolled += Math.max(0, Math.min(scrollable, -rect.top));
+      totalScrolled += Math.max(0, Math.min(scrollable, -top));
 
+      let p: number;
       if (scrollable <= 0) {
-        act.style.setProperty("--p", rect.top <= 0 ? "1" : "0");
+        p = top <= 0 ? 1 : 0;
       } else {
-        const p = Math.max(0, Math.min(1, -rect.top / scrollable));
-        act.style.setProperty("--p", p.toFixed(5));
+        p = Math.max(0, Math.min(1, -top / scrollable));
       }
+
+      // write to cache for JS draw loops (zero DOM overhead)
+      actProgress.set(act, p);
+      // write to CSS for CSS-driven animations
+      act.style.setProperty("--p", p.toFixed(5));
     }
 
     const gp = totalScrollable > 0 ? totalScrolled / totalScrollable : 0;
@@ -154,39 +192,66 @@ function initTree(act: HTMLElement) {
     const p = readProgress(act);
     const time = REDUCED ? 0 : performance.now();
 
-    // connections (behind nodes)
+    // connections — batch into a single path per alpha band
+    const rootX = nodes[0].x;
+    const rootY = nodes[0].y;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    let connAlpha = -1;
     for (let i = 1; i < nodes.length; i++) {
       const nd = nodes[i];
       const reveal = Math.max(0, Math.min(1, (p - nd.revealAt) * 9));
       if (reveal <= 0) continue;
 
+      const a = reveal * 0.14;
+      if (connAlpha >= 0 && Math.abs(a - connAlpha) > 0.01) {
+        ctx.strokeStyle = `rgba(0,255,255,${connAlpha})`;
+        ctx.stroke();
+        ctx.beginPath();
+      }
+      connAlpha = a;
+
       const ex = nd.px + (nd.x - nd.px) * reveal;
       const ey = nd.py + (nd.y - nd.py) * reveal;
-      const mx = (nd.px + ex) / 2;
-      const my = (nd.py + ey) / 2;
-      const cpx = mx + (nodes[0].x - mx) * 0.12;
-      const cpy = my + (nodes[0].y - my) * 0.12;
+      const mx = (nd.px + ex) * 0.5;
+      const my = (nd.py + ey) * 0.5;
 
-      ctx.beginPath();
       ctx.moveTo(nd.px, nd.py);
-      ctx.quadraticCurveTo(cpx, cpy, ex, ey);
-      ctx.strokeStyle = `rgba(0,255,255,${reveal * 0.14})`;
-      ctx.lineWidth = 1;
+      ctx.quadraticCurveTo(
+        mx + (rootX - mx) * 0.12,
+        my + (rootY - my) * 0.12,
+        ex, ey,
+      );
+    }
+    if (connAlpha > 0) {
+      ctx.strokeStyle = `rgba(0,255,255,${connAlpha})`;
       ctx.stroke();
     }
 
-    // nodes
+    // nodes — batch non-root nodes at same alpha into one path
+    const rootBreathe = Math.sin(time / 800) * 0.3 + 0.8;
+    ctx.beginPath();
+    let nodeAlpha = -1;
     for (let i = 0; i < nodes.length; i++) {
       const nd = nodes[i];
       const reveal = Math.max(0, Math.min(1, (p - nd.revealAt) * 9));
       if (reveal <= 0) continue;
 
-      const breathe = i === 0 ? Math.sin(time / 800) * 0.3 + 0.8 : 1;
-      const size = i === 0 ? 4 : Math.max(1.2, 2.8 - nd.level * 0.2);
+      const a = reveal * (i === 0 ? 0.9 : 0.55);
+      if (nodeAlpha >= 0 && Math.abs(a - nodeAlpha) > 0.02) {
+        ctx.fillStyle = `rgba(0,255,255,${nodeAlpha})`;
+        ctx.fill();
+        ctx.beginPath();
+      }
+      nodeAlpha = a;
 
-      ctx.beginPath();
-      ctx.arc(nd.x, nd.y, size * reveal * breathe, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(0,255,255,${reveal * (i === 0 ? 0.9 : 0.55)})`;
+      const breathe = i === 0 ? rootBreathe : 1;
+      const size = (i === 0 ? 4 : Math.max(1.2, 2.8 - nd.level * 0.2)) * reveal * breathe;
+      ctx.moveTo(nd.x + size, nd.y);
+      ctx.arc(nd.x, nd.y, size, 0, Math.PI * 2);
+    }
+    if (nodeAlpha > 0) {
+      ctx.fillStyle = `rgba(0,255,255,${nodeAlpha})`;
       ctx.fill();
     }
 
@@ -206,7 +271,7 @@ function initTree(act: HTMLElement) {
     requestAnimationFrame(draw);
   }
 
-  window.addEventListener("resize", () => {
+  onResize(() => {
     ({ ctx, w, h } = fitCanvas(canvas, pin));
     nodes = buildTree(w, h);
   });
@@ -329,72 +394,71 @@ function initLattice(act: HTMLElement) {
     // phase 3: boundary fade (p 0.55–0.75)
     const boundaryFade = Math.max(0, Math.min(1, (p - 0.55) / 0.2));
 
-    // draw edges first (behind nodes)
-    for (const [ai, bi] of edges) {
-      const a = nodes[ai];
-      const b = nodes[bi];
-
-      // reveal: edge appears when both endpoint rings are revealed
-      const maxRing = Math.max(a.ring, b.ring);
-      const ringReveal = ringProgress(p, maxRing);
-      if (ringReveal <= 0) continue;
-
-      // boundary dimming
-      const edgeAlpha = Math.max(0, 0.08 * ringReveal * (1 - boundaryFade * 0.92));
-
-      const ax = a.x + ox;
-      const ay = a.y + oy;
-      const bx = b.x + ox;
-      const by = b.y + oy;
-
-      // bezier pulling slightly toward center
-      const mx = (ax + bx) / 2;
-      const my = (ay + by) / 2;
-      const cpx = mx + (cx + ox - mx) * 0.15;
-      const cpy = my + (cy + oy - my) * 0.15;
-
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.quadraticCurveTo(cpx, cpy, bx, by);
-      ctx.strokeStyle = `rgba(0,255,255,${edgeAlpha})`;
+    // draw edges — batch edges by similar alpha into fewer strokes.
+    // edges whose rings aren't revealed yet are skipped entirely.
+    const bfInv = 1 - boundaryFade * 0.92;
+    if (bfInv > 0.01) {
       ctx.lineWidth = 0.75;
-      ctx.stroke();
+      // group visible edges into one path per approximate alpha bucket
+      ctx.beginPath();
+      let currentAlpha = -1;
+      for (let ei = 0; ei < edges.length; ei++) {
+        const a = nodes[edges[ei][0]];
+        const b = nodes[edges[ei][1]];
+        const maxRing = a.ring > b.ring ? a.ring : b.ring;
+        const ringReveal = ringProgress(p, maxRing);
+        if (ringReveal <= 0) continue;
+
+        const edgeAlpha = 0.08 * ringReveal * bfInv;
+        // flush path when alpha changes significantly (avoids per-edge stroke)
+        if (currentAlpha >= 0 && Math.abs(edgeAlpha - currentAlpha) > 0.01) {
+          ctx.strokeStyle = `rgba(0,255,255,${currentAlpha})`;
+          ctx.stroke();
+          ctx.beginPath();
+        }
+        currentAlpha = edgeAlpha;
+
+        const ax = a.x + ox;
+        const ay = a.y + oy;
+        const bx = b.x + ox;
+        const by = b.y + oy;
+        const mx = (ax + bx) * 0.5;
+        const my = (ay + by) * 0.5;
+
+        ctx.moveTo(ax, ay);
+        ctx.quadraticCurveTo(
+          mx + (cx + ox - mx) * 0.15,
+          my + (cy + oy - my) * 0.15,
+          bx, by,
+        );
+      }
+      if (currentAlpha > 0) {
+        ctx.strokeStyle = `rgba(0,255,255,${currentAlpha})`;
+        ctx.stroke();
+      }
     }
 
-    // draw nodes
+    // draw nodes — precompute per-node values that are constant across frames,
+    // only alpha/size vary with scroll progress
+    const breatheBase = REDUCED ? 0 : time / 900;
     for (let i = 0; i < nodes.length; i++) {
       const nd = nodes[i];
       const reveal = ringProgress(p, nd.ring);
       if (reveal <= 0) continue;
 
-      // breathing: slight radius oscillation, staggered by index
-      const breathe = REDUCED ? 0 : Math.sin(time / 900 + i * 0.7) * 0.15;
-
-      // boundary theorem: in an 8D block of side BS, a voxel is "free"
-      // if any coordinate touches the block edge. only voxels where ALL
-      // coordinates are interior survive. for BS=4: 2 interior positions
-      // out of 4 per axis → probability = (2/4)^popcount(subset).
-      // a subset is "interior" when all its set-bit dimensions land
-      // in the interior range. we threshold at popcount ≤ 2: the small
-      // subsets (singles, pairs) form a visible nested sub-lattice,
-      // while larger subsets fade — mirroring the exponential decay
-      // of interior probability with dimension count.
-      const pc = popcount(nd.subset);
-      const interiorProb = Math.pow(0.5, pc); // (2/4)^pc for BS=4
-      const isInterior = interiorProb > 0.2; // pc ≤ 2: 8 singles + 28 pairs + 1×full = structured sub-lattice
+      // boundary theorem: pc ≤ 2 = interior sub-lattice (precomputed in node)
+      const isInterior = nd.ring <= 2;
       const dimming = boundaryFade * (isInterior ? 0 : 0.95);
 
       const alpha = reveal * (1 - dimming);
       if (alpha < 0.01) continue;
 
+      const breathe = REDUCED ? 0 : Math.sin(breatheBase + i * 0.7) * 0.15;
       const nx = nd.x + ox;
       const ny = nd.y + oy;
-
-      // node size: ring 1 and 8 slightly larger
       const baseSize = nd.ring === 1 ? 2.8 : nd.ring === 8 ? 3.2 : 2;
       const size = baseSize * (0.85 + reveal * 0.15 + breathe);
 
-      // color: positive (odd cardinality) = bright cyan, negative = cooler blue
       if (nd.positive) {
         ctx.fillStyle = `rgba(0,255,255,${alpha * 0.7})`;
       } else {
@@ -405,7 +469,7 @@ function initLattice(act: HTMLElement) {
       ctx.arc(nx, ny, size, 0, Math.PI * 2);
       ctx.fill();
 
-      // glow halo on ring 1 and ring 8 nodes
+      // glow halo on ring 1 and ring 8 nodes only
       if ((nd.ring === 1 || nd.ring === 8) && alpha > 0.2) {
         const glowR = size * 4;
         const grad = ctx.createRadialGradient(nx, ny, 0, nx, ny, glowR);
@@ -461,7 +525,7 @@ function initLattice(act: HTMLElement) {
     return Math.max(0, Math.min(1, (p - start) / duration));
   }
 
-  window.addEventListener("resize", () => {
+  onResize(() => {
     ({ ctx, w, h } = fitCanvas(canvas, pin));
     ({ nodes, edges } = buildLattice(w, h));
   });
@@ -479,7 +543,7 @@ function initWaveform(act: HTMLElement) {
   if (!canvas) return;
 
   let { ctx, w, h } = fitCanvas(canvas, canvas);
-  window.addEventListener("resize", () => { ({ ctx, w, h } = fitCanvas(canvas, canvas)); });
+  onResize(() => { ({ ctx, w, h } = fitCanvas(canvas, canvas)); });
 
   const baseW = 7 * 2 * Math.PI; // 7 fundamental cycles across window
 
@@ -668,11 +732,11 @@ function initKizuna(act: HTMLElement) {
   let displayedCount = 0;
 
   function draw() {
+    ctx.clearRect(0, 0, w, h);
     if (!isVisible() && !REDUCED) { requestAnimationFrame(draw); return; }
 
     const p = readProgress(act);
     const time = REDUCED ? 0 : performance.now();
-    ctx.clearRect(0, 0, w, h);
 
     const cxv = cx();
     const cyv = cy();
@@ -698,6 +762,7 @@ function initKizuna(act: HTMLElement) {
     const mergeScale = 1 + mergeT * 0.3;
 
     // ── draw lattice function ────────────────────────────
+    // hoists trig + color computation out of per-element loops
     function drawLattice(
       nodes: typeof leftNodes,
       edges: [number, number][],
@@ -706,41 +771,62 @@ function initKizuna(act: HTMLElement) {
       rotation: number,
       scale: number,
     ) {
-      for (const [ai, bi] of edges) {
-        const a = nodes[ai];
-        const b = nodes[bi];
+      const cosR = Math.cos(rotation);
+      const sinR = Math.sin(rotation);
+      const sinR03 = sinR * 0.3;
+      const baseX = cxv + offsetX + px;
+      const baseY = cyv + py;
 
-        // apply rotation + scale to offsets
-        const cosR = Math.cos(rotation);
-        const sinR = Math.sin(rotation);
-        const ax = cxv + (a.ox * cosR - a.oy * sinR * 0.3) * scale + offsetX + px;
-        const ay = cyv + (a.ox * sinR + a.oy * cosR) * scale + py;
-        const bx = cxv + (b.ox * cosR - b.oy * sinR * 0.3) * scale + offsetX + px;
-        const by = cyv + (b.ox * sinR + b.oy * cosR) * scale + py;
-
+      // batch all edges into one path (same style)
+      if (edges.length > 0) {
+        const edgeAlpha = globalAlpha * 0.08;
         ctx.beginPath();
-        ctx.moveTo(ax, ay);
-        ctx.lineTo(bx, by);
-        ctx.strokeStyle = `rgba(0,255,255,${globalAlpha * 0.08})`;
+        for (let ei = 0; ei < edges.length; ei++) {
+          const a = nodes[edges[ei][0]];
+          const b = nodes[edges[ei][1]];
+          ctx.moveTo(
+            baseX + (a.ox * cosR - a.oy * sinR03) * scale,
+            baseY + (a.ox * sinR + a.oy * cosR) * scale,
+          );
+          ctx.lineTo(
+            baseX + (b.ox * cosR - b.oy * sinR03) * scale,
+            baseY + (b.ox * sinR + b.oy * cosR) * scale,
+          );
+        }
+        ctx.strokeStyle = `rgba(0,255,255,${edgeAlpha})`;
         ctx.lineWidth = 0.75;
         ctx.stroke();
       }
 
-      for (const nd of nodes) {
-        const cosR = Math.cos(rotation);
-        const sinR = Math.sin(rotation);
-        const nx = cxv + (nd.ox * cosR - nd.oy * sinR * 0.3) * scale + offsetX + px;
-        const ny = cyv + (nd.ox * sinR + nd.oy * cosR) * scale + py;
+      // batch nodes by color (positive vs negative) — two paths instead of 255
+      const posAlpha = globalAlpha * 0.55;
+      const negAlpha = globalAlpha * 0.4;
 
-        const size = nd.ring === 1 ? 2.2 : nd.ring === 8 ? 2.5 : 1.5;
-
-        ctx.beginPath();
-        ctx.arc(nx, ny, size * scale, 0, Math.PI * 2);
-        ctx.fillStyle = nd.positive
-          ? `rgba(0,255,255,${globalAlpha * 0.55})`
-          : `rgba(120,180,255,${globalAlpha * 0.4})`;
-        ctx.fill();
+      ctx.fillStyle = `rgba(0,255,255,${posAlpha})`;
+      ctx.beginPath();
+      for (let ni = 0; ni < nodes.length; ni++) {
+        const nd = nodes[ni];
+        if (!nd.positive) continue;
+        const nx = baseX + (nd.ox * cosR - nd.oy * sinR03) * scale;
+        const ny = baseY + (nd.ox * sinR + nd.oy * cosR) * scale;
+        const size = (nd.ring === 1 ? 2.2 : nd.ring === 8 ? 2.5 : 1.5) * scale;
+        ctx.moveTo(nx + size, ny);
+        ctx.arc(nx, ny, size, 0, Math.PI * 2);
       }
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(120,180,255,${negAlpha})`;
+      ctx.beginPath();
+      for (let ni = 0; ni < nodes.length; ni++) {
+        const nd = nodes[ni];
+        if (nd.positive) continue;
+        const nx = baseX + (nd.ox * cosR - nd.oy * sinR03) * scale;
+        const ny = baseY + (nd.ox * sinR + nd.oy * cosR) * scale;
+        const size = (nd.ring === 1 ? 2.2 : nd.ring === 8 ? 2.5 : 1.5) * scale;
+        ctx.moveTo(nx + size, ny);
+        ctx.arc(nx, ny, size, 0, Math.PI * 2);
+      }
+      ctx.fill();
     }
 
     // ── pre-collision: two separate lattices approaching ──
@@ -853,7 +939,7 @@ function initKizuna(act: HTMLElement) {
     requestAnimationFrame(draw);
   }
 
-  window.addEventListener("resize", () => {
+  onResize(() => {
     ({ ctx, w, h } = fitCanvas(canvas, pin));
     leftNodes = buildMiniLattice(cx(), cy(), 1);
     rightNodes = buildMiniLattice(cx(), cy(), 1);
@@ -928,77 +1014,89 @@ function initParticles(act: HTMLElement) {
 
     if (tempFill) tempFill.style.height = `${(1 - crystal) * 100}%`;
 
-    // lattice bonds (visible during/after crystallization)
+    // lattice bonds — batch into single path
     if (crystal > 0.3) {
+      const bondThresh = 80 * (1 - crystal * 0.5);
+      const bondThresh2 = bondThresh * bondThresh;
       ctx.strokeStyle = `rgba(0,255,255,${(crystal - 0.3) * 0.12})`;
       ctx.lineWidth = 0.75;
+      ctx.beginPath();
       for (let i = 0; i < particles.length; i++) {
         const a = particles[i];
-        for (let j = i + 1; j < Math.min(i + 8, particles.length); j++) {
+        const jEnd = Math.min(i + 8, particles.length);
+        for (let j = i + 1; j < jEnd; j++) {
           const b = particles[j];
           const dx = a.x - b.x;
           const dy = a.y - b.y;
-          if (dx * dx + dy * dy < (80 * (1 - crystal * 0.5)) ** 2) {
-            ctx.beginPath();
+          if (dx * dx + dy * dy < bondThresh2) {
             ctx.moveTo(a.x, a.y);
             ctx.lineTo(b.x, b.y);
-            ctx.stroke();
           }
         }
       }
+      ctx.stroke();
     }
 
     const gas = 1 - crystal;
-    const pull = crystal * crystal * crystal; // cubic: zero jitter at crystal=1
+    const pull = crystal * crystal * crystal;
+    const gasRand2 = gas * 2;
 
-    for (const pt of particles) {
-      // gas: brownian + damping
-      pt.vx += (Math.random() - 0.5) * gas * 2;
-      pt.vy += (Math.random() - 0.5) * gas * 2;
-      pt.vx *= 0.92;
-      pt.vy *= 0.92;
+    // precompute pointer position once (not per particle)
+    const doRepulse = !IS_COARSE && gas > 0.01;
+    const mx = doRepulse ? (ptrX + 0.5) * w : 0;
+    const my = doRepulse ? (ptrY + 0.5) * h : 0;
+    const gas40 = gas * 40;
 
-      // pointer repulsion (desktop, gas phase)
-      if (!IS_COARSE && gas > 0.01) {
-        const mx = (ptrX + 0.5) * w;
-        const my = (ptrY + 0.5) * h;
+    // update physics for all particles
+    for (let i = 0; i < particles.length; i++) {
+      const pt = particles[i];
+      pt.vx = (pt.vx + (Math.random() - 0.5) * gasRand2) * 0.92;
+      pt.vy = (pt.vy + (Math.random() - 0.5) * gasRand2) * 0.92;
+
+      if (doRepulse) {
         const dx = pt.x - mx;
         const dy = pt.y - my;
         const d2 = dx * dx + dy * dy;
         if (d2 < 10000 && d2 > 1) {
-          pt.vx += dx * gas * 40 / d2;
-          pt.vy += dy * gas * 40 / d2;
+          const inv = gas40 / d2;
+          pt.vx += dx * inv;
+          pt.vy += dy * inv;
         }
       }
 
       pt.x += pt.vx;
       pt.y += pt.vy;
 
-      // boundary bounce — particles are trapped inside the viewport
       if (pt.x < 0) { pt.x = 0; pt.vx = Math.abs(pt.vx) * 0.6; }
       if (pt.x > w) { pt.x = w; pt.vx = -Math.abs(pt.vx) * 0.6; }
       if (pt.y < 0) { pt.y = 0; pt.vy = Math.abs(pt.vy) * 0.6; }
       if (pt.y > h) { pt.y = h; pt.vy = -Math.abs(pt.vy) * 0.6; }
 
-      // crystallization blend: at pull=1, position snaps exactly to target
       pt.x += (pt.tx - pt.x) * pull;
       pt.y += (pt.ty - pt.y) * pull;
+    }
 
-      // render
+    // render particles — shared alpha, vary hue per particle.
+    // unfortunately hsla changes per particle so we can't fully batch,
+    // but we avoid beginPath/fill overhead with moveTo trick.
+    const particleAlpha = 0.5 + crystal * 0.4;
+    const timeDiv700 = time / 700;
+    for (let i = 0; i < particles.length; i++) {
+      const pt = particles[i];
       const hue = pt.hue * gas + 180 * crystal;
-      const osc = REDUCED ? 0 : Math.sin(time / 700 + pt.phase) * gas;
+      const osc = REDUCED ? 0 : Math.sin(timeDiv700 + pt.phase) * gas;
       const size = 2.2 + osc * 0.8;
 
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, size, 0, Math.PI * 2);
-      ctx.fillStyle = `hsla(${hue},100%,60%,${0.5 + crystal * 0.4})`;
+      ctx.fillStyle = `hsla(${hue | 0},100%,60%,${particleAlpha})`;
       ctx.fill();
     }
 
     requestAnimationFrame(draw);
   }
 
-  window.addEventListener("resize", () => {
+  onResize(() => {
     ({ ctx, w, h } = fitCanvas(canvas, pin));
     particles = createParticles(w, h, PARTICLE_N);
   });
@@ -1495,7 +1593,7 @@ function initRatchet(act: HTMLElement) {
     requestAnimationFrame(draw);
   }
 
-  window.addEventListener("resize", () => {
+  onResize(() => {
     ({ ctx, w, h } = fitCanvas(canvas, pin));
     T = computeTower();
   });

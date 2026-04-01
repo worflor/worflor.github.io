@@ -3197,8 +3197,11 @@ function encodeSubband3D(
         // when var >> σ² (strong signal), w→1 (preserve). this is the MMSE estimator
         // applied at block granularity — between BayesShrink (per-coefficient) and
         // global Wiener (per-subband). encoder-only, no format change.
-        if (_noiseSigma > 0 && temporalBand === 'high') {
-            const sigma2 = _noiseSigma * _noiseSigma * 2; // ×2 for frame difference noise
+        if (_noiseSigma > 0) {
+            // for temporal-high (P-frame differences): noise is sum of two independent
+            // frames, σ²_diff = 2σ²_camera. for temporal-low (keyframes): single-frame
+            // noise, σ²_key = σ²_camera. the physics automatically selects the right model.
+            const sigma2 = _noiseSigma * _noiseSigma * (temporalBand === 'high' ? 2 : 1);
             const WB = 8; // wiener block size (matches K/G block for consistency)
             for (let t = 0; t < d; t++) {
                 const tOff = t * sbW * sbH;
