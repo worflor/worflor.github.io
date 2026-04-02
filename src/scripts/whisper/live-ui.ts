@@ -804,7 +804,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const scroller = opts.chatMessages;
     const scrollerRect = scroller.getBoundingClientRect();
     const shelfRect = shelf.getBoundingClientRect();
-    const pad = 12;
+    // Keep a little extra breathing room so the shelf doesn't hug the bottom edge.
+    const pad = 18;
 
     let deltaY = 0;
     if (shelfRect.bottom > scrollerRect.bottom - pad) {
