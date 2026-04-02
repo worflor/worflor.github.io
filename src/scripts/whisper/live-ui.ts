@@ -3615,8 +3615,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         }
       }, { signal });
 
-      // Click on canvas to seek
+      // Click on waveform canvas to seek (and keep the event from toggling
+      // the reaction shelf on the parent message bubble).
       canvas.addEventListener("click", (e) => {
+        e.stopPropagation();
         if (!pcmData || !durationSeconds || !audioElement) return;
         const rect = canvas.getBoundingClientRect();
         const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
