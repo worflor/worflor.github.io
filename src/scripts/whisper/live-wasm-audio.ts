@@ -2944,15 +2944,28 @@ export async function encodeHarmonic(
     //
     // for bit-exact lossless mode (effectiveBitDepth > 0), noise shaping
     // is skipped because there's no quantization error to shape.
+    // first-order noise shaping: pushes quantization noise to high frequencies.
+    // the error from each sample biases the next sample's rounding, creating a
+    // highpass on the noise spectrum. at 48kHz this moves noise above ~12kHz
+    // where the ear is 20-40 dB less sensitive. the integers are unchanged —
+    // the IIR-2 sees the same values on encode and decode. no drift.
+    //
+    // only active when scalar >= 64 (Q ≥ ~40). below that, the quantization
+    // step is too coarse for error feedback to be stable. also disabled for
+    // bit-exact lossless mode (no quantization error to shape).
     const invPeak = scalar / framePeak;
+    const shapeNoise = effectiveBitDepth === 0 && scalar >= 64;
     const channels: Int32Array[] = [];
     const channelEnergy: number[] = [];
     for (let ch = 0; ch < numChannels; ch++) {
         const q = new Int32Array(numSamples);
         let energy = 0;
+        let err = 0; // error feedback accumulator
         for (let i = 0; i < numSamples; i++) {
-            const s = samples[i * numChannels + ch] * invPeak;
+            const raw = samples[i * numChannels + ch] * invPeak;
+            const s = shapeNoise ? raw + err : raw;
             const qi = s >= 0 ? (s + 0.5) | 0 : (s - 0.5) | 0;
+            if (shapeNoise) err = s - qi;
             q[i] = qi;
             energy += qi * qi;
         }

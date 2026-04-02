@@ -491,7 +491,7 @@ export function loopEncode(state: LoopState, data: Uint8Array): { encoded: Uint8
         primeCountsM(cM, trainSlice);
         primeCounts1(c1, trainSlice);
         primeCountsX(cX, trainSlice);
-        return { encoded: data, raw: true, next: { ...state, countsBitM: cM, countsBit1: c1, countsBitX: cX } };
+        return { encoded: data, raw: true, next: { chain: state.chain.slice(), countsBitM: cM, countsBit1: c1, countsBitX: cX, step: state.step } };
     }
 
     // ArithEncoder.flush() always produces ≥ 4 bytes (the lo register).
@@ -503,7 +503,7 @@ export function loopEncode(state: LoopState, data: Uint8Array): { encoded: Uint8
         primeCountsX(cX, data);
         const out = new Uint8Array(1 + data.length);
         out[0] = 0xFF; out.set(data, 1);
-        return { encoded: out, raw: false, next: { ...state, countsBitM: cM, countsBit1: c1, countsBitX: cX } };
+        return { encoded: out, raw: false, next: { chain: state.chain.slice(), countsBitM: cM, countsBit1: c1, countsBitX: cX, step: state.step } };
     }
 
     // trial-encode with each model (each updates its cloned counts)
@@ -521,7 +521,8 @@ export function loopEncode(state: LoopState, data: Uint8Array): { encoded: Uint8
         bestMode = 0x00; bestEncoded = encM;
     }
 
-    const next: LoopState = { ...state, countsBitM: cM, countsBit1: c1, countsBitX: cX };
+    // clone chain so the returned state is independent — callers can safely wipe the input
+    const next: LoopState = { chain: state.chain.slice(), countsBitM: cM, countsBit1: c1, countsBitX: cX, step: state.step };
 
     // raw fallback if no coder beats input length
     if (bestEncoded.length >= data.length) {
@@ -583,7 +584,7 @@ export function loopDecode(state: LoopState, data: Uint8Array, len: number): { d
             throw new Error(`loopDecode: unknown mode 0x${mode.toString(16)}`);
     }
 
-    return { decoded, next: { ...state, countsBitM: cM, countsBit1: c1, countsBitX: cX } };
+    return { decoded, next: { chain: state.chain.slice(), countsBitM: cM, countsBit1: c1, countsBitX: cX, step: state.step } };
 }
 
 // wipe sensitive fields from a loop state.

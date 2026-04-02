@@ -1852,7 +1852,9 @@ export class WhisperLiveSession {
 
         if (!loopStateRecv) throw new Error("No receiving loop state after step");
         const { decoded: plaintext, next: afterDecode } = loopDecode(loopStateRecv, compressed, decodedLen);
-        loopWipe(loopStateRecv);
+        // note: loopDecode's `next` shares state.chain by reference (spread copy).
+        // wiping loopStateRecv here would zero afterDecode.chain — skip the wipe.
+        // the old state is local and will be garbage collected.
         loopStateRecv = afterDecode;
 
         if (!this.isSessionCurrent(generation)) {
