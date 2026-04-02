@@ -2923,48 +2923,105 @@ export async function encodeHarmonic(
     }
 
     const scalar = Math.max(qScalar, depthScalar);
-    // noise shaping: the quantization error is spectrally flat, but the
-    // cochlea's sensitivity peaks at 2-5 kHz and rolls off at ~12 dB/oct
-    // above ~4 kHz. shaping exploits this by feeding quantization error
-    // back into subsequent samples, creating a highpass on the noise.
+    // ear canal harmonic noise shaping — 4th-order NTF with two conjugate
+    // pairs of zeros, one at each audible standing-wave resonance of the
+    // human ear canal.
     //
-    // the order of the shaping filter is derived from the sample rate:
-    // the cochlea is a resonant tube (~35mm, fluid speed ~1500 m/s) with
-    // a fundamental resonance at ~20 kHz. above this, no hair cells
-    // respond. when Nyquist exceeds 20 kHz, there is bandwidth above
-    // hearing to dump noise into, and second-order shaping (12 dB/oct)
-    // matches the cochlear rolloff. when Nyquist <= 20 kHz, all bandwidth
-    // is audible, so only first-order (6 dB/oct) is beneficial.
+    // the ear canal is a half-open tube (open at pinna, closed at eardrum):
+    //   length L ≈ 0.026 m (average adult)
+    //   speed of sound at body temperature v = 353 m/s
+    //   resonances at odd harmonics: f_n = n·v/(4L), n = 1, 3, 5, ...
     //
-    // second-order NTF: (1-z^-1)^2 = 1 - 2z^-1 + z^-2
-    //   feedback: s = raw + 2*e1 - e2, giving 12 dB/oct noise slope
-    //   at 48 kHz: speech band (1-4 kHz) gets ~12 dB noise reduction
-    //   vs flat, with noise pushed to 18-24 kHz (inaudible)
+    //   f₁ = 353/(4×0.026) ≈ 3394 Hz  (quarter-wave, primary sensitivity peak)
+    //   f₃ = 3×f₁           ≈ 10183 Hz (three-quarter-wave, secondary peak)
     //
-    // each error e[n] = s[n] - round(s[n]) is bounded to [-0.5, 0.5].
-    // second-order deviation: |2*e1 - e2| <= 1.5 quantization steps.
-    // the integers are unchanged on decode — shaping is a property of
-    // the quantizer, not the predictor. no drift, no divergence.
+    // the equal-loudness contours (ISO 226) confirm both peaks. the current
+    // single-null at f₁ dumps noise toward Nyquist, but the noise must pass
+    // through the secondary peak at f₃ on the way up. adding a second null
+    // at f₃ forces noise into the gaps: DC (below 100 Hz, inaudible) and
+    // above f₃ (above 12 kHz, rapidly falling sensitivity).
     //
-    // disabled when scalar <= 1 (rounding bias >= signal magnitude)
-    // or in lossless mode (no quantization error to shape).
-    const COCHLEAR_LIMIT = 20000;
+    // NTF(z) = (1 - A₁z⁻¹ + B₁z⁻²)(1 - A₂z⁻¹ + B₂z⁻²)
+    //   Aₖ = 2r·cos(ωₖ), Bₖ = r², ωₖ = 2π·fₖ/sampleRate
+    //
+    // expanded to 4th-order feedback coefficients:
+    //   c₁ = A₁+A₂, c₂ = -(B₁+B₂+A₁A₂), c₃ = A₁B₂+A₂B₁, c₄ = -B₁B₂
+    //
+    // the shared pole radius r is derived from the max-deviation constraint:
+    //   (|c₁|+|c₂|+|c₃|+|c₄|)×0.5 ≤ 1.5 quantization steps
+    // solved via Newton iteration on the 4th-degree polynomial.
+    //
+    // all coefficients derive from three physical constants:
+    //   v = 353 m/s — speed of sound at 37°C
+    //   L = 0.026 m — ear canal length
+    //   sampleRate  — UV cutoff
+    // encoder-side only. decoder unchanged. zero bits in the stream.
     const invPeak = scalar / framePeak;
     const shapeNoise = effectiveBitDepth === 0 && scalar > 1;
-    const secondOrder = sampleRate > 2 * COCHLEAR_LIMIT;
+    let nc1 = 0, nc2 = 0, nc3 = 0, nc4 = 0;
+    if (shapeNoise) {
+        const V_BODY = 353;    // speed of sound at 37°C (m/s)
+        const L_CANAL = 0.026; // ear canal length (m)
+        const f1 = V_BODY / (4 * L_CANAL);       // quarter-wave: ~3394 Hz
+        const f3 = 3 * f1;                        // three-quarter-wave: ~10183 Hz
+        const w1 = 2 * Math.PI * f1 / sampleRate;
+        const w3 = 2 * Math.PI * f3 / sampleRate;
+        const cos1 = Math.cos(w1);
+        const cos3 = Math.cos(w3);
+
+        // find max r via Newton iteration on constraint:
+        // f(r) = |c₁|+|c₂|+|c₃|+|c₄| - 3 ≤ 0  (for max dev ≤ 1.5)
+        let r = 0.5;
+        for (let iter = 0; iter < 6; iter++) {
+            const r2 = r * r, r3 = r2 * r, r4 = r2 * r2;
+            const A1 = 2 * r * cos1, A2 = 2 * r * cos3;
+            const B = r2; // B1 = B2 = r²
+            const s1 = A1 + A2;
+            const s2 = 2 * B + A1 * A2;
+            const s3 = (A1 + A2) * B; // A1*B2 + A2*B1 = (A1+A2)*r²
+            const s4 = B * B;
+            const absSum = (s1 < 0 ? -s1 : s1) + (s2 < 0 ? -s2 : s2)
+                         + (s3 < 0 ? -s3 : s3) + s4;
+            const f = absSum - 3;
+            if (f < 0.001) { r += 0.02; continue; } // room to grow
+            if (f < 0.01) break; // close enough
+            // numerical derivative
+            const dr = 0.001;
+            const rp = r + dr, rp2 = rp * rp;
+            const A1p = 2 * rp * cos1, A2p = 2 * rp * cos3;
+            const Bp = rp2;
+            const t1 = A1p + A2p;
+            const t2 = 2 * Bp + A1p * A2p;
+            const t3 = (A1p + A2p) * Bp;
+            const t4 = Bp * Bp;
+            const absSumP = (t1 < 0 ? -t1 : t1) + (t2 < 0 ? -t2 : t2)
+                          + (t3 < 0 ? -t3 : t3) + t4;
+            const fp = (absSumP - 3 - f) / dr;
+            if (fp > 0) r -= f / fp;
+            if (r < 0.1) { r = 0.1; break; }
+            if (r > 0.95) r = 0.95;
+        }
+
+        const A1 = 2 * r * cos1, A2 = 2 * r * cos3;
+        const B = r * r;
+        nc1 = A1 + A2;
+        nc2 = -(2 * B + A1 * A2);
+        nc3 = (A1 + A2) * B;
+        nc4 = -(B * B);
+    }
     const channels: Int32Array[] = [];
     const channelEnergy: number[] = [];
     for (let ch = 0; ch < numChannels; ch++) {
         const q = new Int32Array(numSamples);
         let energy = 0;
-        let e1 = 0, e2 = 0;
+        let e1 = 0, e2 = 0, e3 = 0, e4 = 0;
         for (let i = 0; i < numSamples; i++) {
             const raw = samples[i * numChannels + ch] * invPeak;
             const s = shapeNoise
-                ? (secondOrder ? raw + 2 * e1 - e2 : raw + e1)
+                ? raw + nc1 * e1 + nc2 * e2 + nc3 * e3 + nc4 * e4
                 : raw;
             const qi = s >= 0 ? (s + 0.5) | 0 : (s - 0.5) | 0;
-            if (shapeNoise) { e2 = e1; e1 = s - qi; }
+            if (shapeNoise) { e4 = e3; e3 = e2; e2 = e1; e1 = s - qi; }
             q[i] = qi;
             energy += qi * qi;
         }
