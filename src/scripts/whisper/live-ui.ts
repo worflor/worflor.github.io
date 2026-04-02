@@ -618,7 +618,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let preEditPlaceholder = "";
 
   // ── Alpha menu state ──
-  const AUDIO_Q_DEFAULT = 24;
+  const AUDIO_Q_DEFAULT = 55;
   let audioQuality = AUDIO_Q_DEFAULT;
 
   // Action Menu SVGs

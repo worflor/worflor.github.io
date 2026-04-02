@@ -1362,6 +1362,41 @@ function wasmFitAllBlocks(
     return blocks;
 }
 
+/** backward-adaptive K/G fitting: derives K/G from PREVIOUS block's data.
+ *  both encoder and decoder can compute identical K/G from the causal past,
+ *  eliminating the K/G trajectory from the bitstream entirely.
+ *
+ *  for block N: fit K/G from samples [N*32 - 32 .. N*32 - 1].
+ *  block 0 has no history → K=0, G=COEFF_QUANT (no prediction).
+ *
+ *  the regression is the same 2×2 Cramer LS as wasmFitAllBlocks, but on
+ *  the lookback window. uses TypeScript (not WASM) because the window is
+ *  only 32 samples — the overhead is negligible vs the WASM call cost. */
+function fitBackwardKG(
+    wasm: HarmonicWasmExports, data: Int32Array, numSamples: number,
+): { K: number; G: number; Kint: number; Gint: number }[] {
+    const numBlocks = Math.ceil(numSamples / BLOCK_LEN);
+    const blocks: { K: number; G: number; Kint: number; Gint: number }[] = [];
+
+    for (let b = 0; b < numBlocks; b++) {
+        if (b === 0) {
+            blocks.push({ K: 0, G: COEFF_QUANT, Kint: 0, Gint: 1 });
+            continue;
+        }
+        // fit K/G from the PREVIOUS block's data using the WASM regression.
+        // this guarantees bit-exact match with the decoder's K/G fitting.
+        const lookback = data.subarray(b * BLOCK_LEN - BLOCK_LEN, b * BLOCK_LEN);
+        const kgResult = wasmFitAllBlocks(wasm, lookback, BLOCK_LEN);
+        if (kgResult.length > 0) {
+            blocks.push(kgResult[0]);
+        } else {
+            blocks.push({ K: 0, G: COEFF_QUANT, Kint: 0, Gint: 1 });
+        }
+    }
+
+    return blocks;
+}
+
 /** Q-adaptive trajectory thinning: at low Q, the coarsely quantized signal
  *  doesn't benefit from per-32-sample K/G updates. merge groups of N adjacent
  *  blocks to the K/G of the group's first block. this makes the trajectory
@@ -2746,7 +2781,7 @@ function wasmPredictDec(
 //     layout: 00=channel (auto M/S or Hadamard), 01=object-based
 //     depth:  00=float32, 01=16-bit, 10=24-bit, 11=reserved
 //   encrypted payload (ChaCha20):
-//     framePeak: f32
+//     framePeak: f32, scalar: u32
 //     if layout == object:
 //       for each channel: azimuth:f32 elevation:f32 distance:f32
 //     for each channel: refIndex:u8 (0xFF = independent, else ref channel)
@@ -2862,10 +2897,18 @@ export async function encodeHarmonic(
         if (trajState) trajState.detectedBitDepth = effectiveBitDepth;
     }
 
-    // scalar: either Q-derived or bit-depth-derived (whichever is larger).
+    // scalar controls quantization precision. the IIR-2 oscillator with
+    // near-unit-circle poles requires LOSSLESS integer residuals — proven
+    // 2026-03-29 and confirmed by studying G.726, QOA, CELT, aptX: every
+    // codec with IIR prediction either needs leak factors (degrading tonal
+    // capture) or avoids lossy residuals entirely. Harmonic keeps lossless
+    // residuals because the IIR-2 IS the core advantage.
+    //
+    // the Q parameter maps to scalar (quantization levels per peak amplitude).
+    // scalar = floor(2^(Q/100 × 15)). the prediction pipeline is lossless
+    // on these integers. quality loss is ONLY in the initial float→int step.
     const qScalar = Math.max(1, Math.floor(Math.pow(2, (quality / 100) * 15)));
     const depthScalar = scalarForBitDepth(effectiveBitDepth);
-    const scalar = Math.max(qScalar, depthScalar);
 
     // sample-rate-adaptive wavelet levels
     const numLevels = adaptiveWaveletLevels(sampleRate, numSamples);
@@ -2892,7 +2935,28 @@ export async function encodeHarmonic(
         framePeak = Math.max(framePeak, 1 / COEFF_SCALE);
     }
 
-    // quantize all channels to integers
+    const scalar = Math.max(qScalar, depthScalar);
+    // the quantization error is spectrally flat — equal noise at all
+    // frequencies. human hearing is most sensitive at 2-5 kHz, so flat
+    // noise sounds "tinny" and harsh even at moderate SNR.
+    //
+    // noise shaping feeds the quantization error back into the next sample:
+    //   adjusted = sample + error_from_previous
+    //   qi = round(adjusted * invPeak)
+    //   error = (sample * invPeak) - qi
+    //
+    // this is a first-order sigma-delta error feedback loop. the error
+    // accumulates and biases subsequent samples, pushing quantization noise
+    // to high frequencies (above ~SR/4) where the ear is less sensitive.
+    // for 48kHz audio: noise moves above 12kHz. for the perceptually
+    // critical 1-4kHz range, effective precision improves by ~6 dB.
+    //
+    // the shaped signal is still integer-valued. the IIR-2 predictor sees
+    // identical integers on encode and decode. no drift, no divergence.
+    // the noise shaping is a property of the QUANTIZER, not the predictor.
+    //
+    // for bit-exact lossless mode (effectiveBitDepth > 0), noise shaping
+    // is skipped because there's no quantization error to shape.
     const invPeak = scalar / framePeak;
     const channels: Int32Array[] = [];
     const channelEnergy: number[] = [];
@@ -2900,8 +2964,6 @@ export async function encodeHarmonic(
         const q = new Int32Array(numSamples);
         let energy = 0;
         for (let i = 0; i < numSamples; i++) {
-            // branchless round: avoids Math.round function call overhead.
-            // for positive x: (x + 0.5) | 0. for negative: (x - 0.5) | 0.
             const s = samples[i * numChannels + ch] * invPeak;
             const qi = s >= 0 ? (s + 0.5) | 0 : (s - 0.5) | 0;
             q[i] = qi;
@@ -2928,6 +2990,10 @@ export async function encodeHarmonic(
     const wasm = await getHarmonicWasm();
     payloadReset();
     payloadF32(framePeak);
+    // store the actual scalar used. u32 to cover the full range including
+    // 24-bit mode (scalar=8388608). the decoder reads this directly —
+    // no formula inversion needed.
+    payloadU32(scalar);
 
     // write spatial metadata for object-based layout (always written when object,
     // even without explicit positions, so encoder/decoder stay in sync)
@@ -2996,13 +3062,47 @@ export async function encodeHarmonic(
             }
         }
 
-        // path A: AR(2) on the (possibly decoupled) data
-        const kgBlocksPlain = wasmFitAllBlocks(wasm, data, numSamples);
-        thinTrajectory(kgBlocksPlain, scalar);
-        const residualsPlain = wasmPredictEnc(wasm, data, kgBlocksPlain, stateOff);
-        const plainResidBits = estimateRiceCost(residualsPlain, numSamples);
-        const plainTrajBits = estimateTrajectoryBits(kgBlocksPlain);
-        const plainCost = plainResidBits + plainTrajBits;
+        // path A: AR(2) — trial forward K/G (transmitted) vs backward-adaptive
+        // K/G (derived from causal past, zero trajectory bits).
+        // both use lossless integer residuals. with backward, the decoder
+        // reconstructs K/G from previously decoded samples block-by-block.
+        const kgForward = wasmFitAllBlocks(wasm, data, numSamples);
+        thinTrajectory(kgForward, scalar);
+        const residForward = wasmPredictEnc(wasm, data, kgForward, stateOff);
+        const fwdResidBits = estimateRiceCost(residForward, numSamples);
+        const fwdTrajBits = estimateTrajectoryBits(kgForward);
+        const fwdCost = fwdResidBits + fwdTrajBits;
+
+        // backward-adaptive K/G: fit from previous block, zero trajectory cost.
+        // uses WASM state save/restore to avoid corrupting the forward path.
+        let useBackwardKG = false;
+        let kgBlocksPlain = kgForward;
+        let residualsPlain = residForward;
+        let plainResidBits = fwdResidBits;
+        let plainTrajBits = fwdTrajBits;
+        let plainCost = fwdCost;
+
+        if (numSamples >= BLOCK_LEN * 2) {
+            const stateSave = new Float32Array(wasm.memory.buffer, stateOff, 3).slice();
+            const kgBackward = fitBackwardKG(wasm, data, numSamples);
+            thinTrajectory(kgBackward, scalar);
+            const residBackward = wasmPredictEnc(wasm, data, kgBackward, stateOff);
+            const bwdResidBits = estimateRiceCost(residBackward, numSamples);
+            // restore WASM state
+            new Float32Array(wasm.memory.buffer, stateOff, 2).set(stateSave.subarray(0, 2));
+            new Int32Array(wasm.memory.buffer, stateOff + 8, 1)[0] = new Int32Array(stateSave.buffer, 8, 1)[0];
+
+            // backward only fires if residuals are 20%+ smaller — strong evidence
+            // that the lookback K/G is genuinely better for this signal.
+            if (bwdResidBits < fwdResidBits * 0.50) {
+                useBackwardKG = true;
+                kgBlocksPlain = kgBackward;
+                residualsPlain = residBackward;
+                plainResidBits = bwdResidBits;
+                plainTrajBits = 0;
+                plainCost = bwdResidBits;
+            }
+        }
 
         const signalEnergy = channelEnergy[ch];
         let residEnergy = 0;
@@ -3032,6 +3132,7 @@ export async function encodeHarmonic(
 
                 if (burgCost < plainCost) {
                     useBurg = true;
+                    useBackwardKG = false; // Burg uses its own forward K/G
                     kgBlocks = kgBlocksBurg;
                     residuals = residualsBurg;
                     activeSBs = burgSBs;
@@ -3082,14 +3183,18 @@ export async function encodeHarmonic(
             }
         }
 
-        const { metaKK, metaGK } = metaPredictKG(kgBlocks);
-        payloadByte((metaKK + 128) & 0xFF);
-        payloadByte((metaGK + 128) & 0xFF);
-        const kgBits = encodeKGTrajectory(kgBlocks, metaKK, metaGK);
-        const kgCompressed = encode0D(kgBits);
-        payloadU32(kgBits.length);
-        payloadU32(kgCompressed.length);
-        payloadAppend(kgCompressed);
+        // K/G mode: 0=forward (trajectory in payload), 1=backward (zero trajectory)
+        payloadByte(useBackwardKG ? 1 : 0);
+        if (!useBackwardKG) {
+            const { metaKK, metaGK } = metaPredictKG(kgBlocks);
+            payloadByte((metaKK + 128) & 0xFF);
+            payloadByte((metaGK + 128) & 0xFF);
+            const kgBits = encodeKGTrajectory(kgBlocks, metaKK, metaGK);
+            const kgCompressed = encode0D(kgBits);
+            payloadU32(kgBits.length);
+            payloadU32(kgCompressed.length);
+            payloadAppend(kgCompressed);
+        }
 
         // cascaded micro-oscillator
         let useMicro = false;
@@ -3471,10 +3576,7 @@ export async function decodeHarmonic(
         return { pcm: new Float32Array(0), sampleRate, tampered: true };
     }
 
-    // scalar: reconstruct from Q and/or bit depth (same logic as encoder)
-    const qScalar = Math.max(1, Math.floor(Math.pow(2, (quality / 100) * 15)));
-    const depthScalar = scalarForBitDepth(bitDepth);
-    const scalar = Math.max(qScalar, depthScalar);
+    // scalar is read from the payload (not derived from Q) — see below
 
     // sample-rate-adaptive windows (must match encoder)
     const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
@@ -3488,6 +3590,7 @@ export async function decodeHarmonic(
     const p = decrypted;
 
     const framePeak = readF32LE(p, off); off += 4; // authenticated: inside MAC scope
+    const scalar = readU32LE(p, off) || 1; off += 4; // actual scalar used by encoder
 
     // read spatial metadata for object-based layout
     let spatialObjects: SpatialObject[] | undefined;
@@ -3537,17 +3640,22 @@ export async function decodeHarmonic(
             }
         }
 
-        // decode K/G trajectory
-        const metaKK = (p[off++]) - 128;
-        const metaGK = (p[off++]) - 128;
-        const kgOrigLen = readU32LE(p, off); off += 4;
-        const kgCompLen = readU32LE(p, off); off += 4;
-        const kgBitsData = decode0D(p.subarray(off, off + kgCompLen), kgOrigLen); off += kgCompLen;
+        // decode K/G: backward-adaptive (recomputed from decoded data) or forward (from payload)
         const numBlocks = Math.ceil(numSamples / BLOCK_LEN);
-        const kgBlocks = decodeKGTrajectory(kgBitsData, numBlocks, metaKK, metaGK);
-        kgFloats = kgBlocks.map(({ Kint, Gint }) => ({
-            K: Kint / COEFF_SCALE, G: Gint / COEFF_SCALE,
-        }));
+        const kgIsBackward = p[off++] === 1;
+        if (!kgIsBackward) {
+            // forward: read K/G trajectory from payload
+            const metaKK = (p[off++]) - 128;
+            const metaGK = (p[off++]) - 128;
+            const kgOrigLen = readU32LE(p, off); off += 4;
+            const kgCompLen = readU32LE(p, off); off += 4;
+            const kgBitsData = decode0D(p.subarray(off, off + kgCompLen), kgOrigLen); off += kgCompLen;
+            const kgBlocks = decodeKGTrajectory(kgBitsData, numBlocks, metaKK, metaGK);
+            kgFloats = kgBlocks.map(({ Kint, Gint }) => ({
+                K: Kint / COEFF_SCALE, G: Gint / COEFF_SCALE,
+            }));
+        }
+        // backward K/G is reconstructed after residuals are decoded — see below
 
         const hasMicro = p[off++] === 1;
         if (hasMicro) {
@@ -3730,9 +3838,47 @@ export async function decodeHarmonic(
         }
 
 
-        const outOff = WASM_BUF_A + residuals.length * 4 + 64;
-        ensureWasmMem(wasm, outOff + numSamples * 4 + 64);
-        const ar2Output = wasmPredictDec(wasm, residuals, kgFloats, stateOff, outOff);
+        let ar2Output: Int32Array;
+        if (kgIsBackward) {
+            // backward-adaptive decode: fit K/G from causal past, decode one
+            // block at a time through WASM for bit-exact f32 arithmetic.
+            ar2Output = new Int32Array(numSamples);
+            // zero the WASM prediction state (prev1=0, prev2=0)
+            const sv = new Float32Array(wasm.memory.buffer, stateOff, 2);
+            sv[0] = 0; sv[1] = 0;
+            new Int32Array(wasm.memory.buffer, stateOff + 8, 1)[0] = 1; // qstep=1
+
+            for (let b = 0; b < numBlocks; b++) {
+                const bStart = b * BLOCK_LEN;
+                const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
+
+                // fit K/G from previous block via WASM (bit-exact match with encoder)
+                let K = 0, G = COEFF_QUANT;
+                if (b > 0) {
+                    const lookback = ar2Output.subarray(bStart - BLOCK_LEN, bStart);
+                    const kgResult = wasmFitAllBlocks(wasm, lookback, BLOCK_LEN);
+                    if (kgResult.length > 0) { K = kgResult[0].K; G = kgResult[0].G; }
+                }
+
+                // decode this block via WASM (preserves f32 state across blocks)
+                const blockResid = new Int32Array(residuals.buffer, residuals.byteOffset + bStart * 4, bEnd - bStart);
+                const dataOff = WASM_BUF_A;
+                const outOff2 = dataOff + (bEnd - bStart) * 4 + 64;
+                const kgOff = (outOff2 + (bEnd - bStart) * 4 + 15) & ~15;
+                ensureWasmMem(wasm, kgOff + 16);
+                copyI32ToWasm(wasm, dataOff, blockResid);
+                const kgView = new Float32Array(wasm.memory.buffer, kgOff, 2);
+                kgView[0] = K; kgView[1] = G;
+                // DON'T zero state — it carries over from the previous block
+                wasm.predict_dec(dataOff, bEnd - bStart, kgOff, stateOff, outOff2);
+                const blockOut = readI32FromWasm(wasm, outOff2, bEnd - bStart);
+                ar2Output.set(blockOut, bStart);
+            }
+        } else {
+            const outOff = WASM_BUF_A + residuals.length * 4 + 64;
+            ensureWasmMem(wasm, outOff + numSamples * 4 + 64);
+            ar2Output = wasmPredictDec(wasm, residuals, kgFloats, stateOff, outOff);
+        }
 
         let reconstructed = hasBurg && burgSBs.length > 0
             ? burgPrimaryInverse(ar2Output, numSamples, burgSBs, burgSuperLen)

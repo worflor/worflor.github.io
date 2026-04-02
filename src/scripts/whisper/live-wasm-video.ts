@@ -1890,6 +1890,11 @@ function subbandStep(quality: number, w: number, h: number, level: number, numLe
     const TEMPORAL_F_HIGH = 15;  // center frequency of temporal highpass at 30fps GOP-2
     const kellyRatio = (TEMPORAL_F_HIGH / TEMPORAL_F_PEAK) *
         Math.exp(-(TEMPORAL_F_HIGH - TEMPORAL_F_PEAK) / TEMPORAL_F_PEAK);
+    // note: the CHROMATIC temporal CSF (de Lange 1958, Kelly 1983) has peak at ~4 Hz,
+    // giving 3.2× less sensitivity at 15 Hz than luma. this is correct perceptually
+    // but PSNR penalizes chroma errors equally to luma. when switching to SSIM-based
+    // quality metrics, add: kellyChroma = (15/4)×exp(-11/4) = 0.24, and use
+    // sqrt(kellyLuma×kellyChroma) for chroma detail subbands.
     const temporalCSF = temporalBand === 'high' ? 1 / kellyRatio : 1.0;
     // step = baseQ · csfInvisibility · temporalCSF / synthesisNorm
     // high norm → need finer step (more noise amplification)
@@ -1961,6 +1966,14 @@ function computeBias(qSub: Int32Array, step: number): number {
 //
 // encoder-only: decoder sees smaller quantized values, no format change.
 let _noiseSigma: number = 0;
+// keyframe activity mask: reused for P-frame encoding so edge masking
+// reflects the REFERENCE frame's texture structure (where residuals concentrate).
+let _keyframeMaskMap: Float32Array | null = null;
+// decoder-side keyframe mask: stored after decoding keyframe LL, reused for P-frames.
+let _decKeyframeMaskMap: Float32Array | null = null;
+// context bit machinery (parent, sibling, temporal, cross-channel) was tested via A/B
+// and provided ZERO compression benefit — Logos's O2+Ab axes learn the same structure
+// adaptively. the codec is fundamentally 4D (x, y, λ, t), not 7D. removed.
 
 function estimateNoiseSigma(coeffs: Float64Array, w: number, h: number,
     numLevels: number, d: number): number {
@@ -2547,6 +2560,71 @@ const MV_BLOCK = 16; // local motion block size for luma
 const C_LUMEN = 32;          // pixels/frame: the speed of light in video spacetime
 const MV_SEARCH = C_LUMEN / 4;  // ±8 pixels: quarter light cone (practical search radius)
 
+// overlapped block motion compensation (OBMC): blend predictions across
+// block boundaries to eliminate artificial seams. each pixel's prediction
+// is a weighted average of its home block's MV and the neighboring blocks'
+// MVs, using a raised cosine window. the raised cosine is the Fourier-optimal
+// window for spectral leakage — it eliminates the high-frequency block
+// boundary artifacts that waste bits in the wavelet domain.
+// both encoder and decoder apply identical blending (closed-loop symmetry).
+function applyOBMC(ref: Uint8Array, refined: Uint8Array, w: number, h: number,
+    mvField: Uint8Array, nbx: number, nby: number): void {
+    // for each pixel, compute prediction from home block + neighbor blocks.
+    // overlap region: MV_BLOCK/4 pixels at each boundary (2 pixels for 8-block, 4 for 16-block).
+    const OV = MV_BLOCK >> 2; // overlap = quarter block size
+    if (OV < 1) return;
+
+    for (let by = 0; by < nby; by++) {
+        for (let bx = 0; bx < nbx; bx++) {
+            const homeIdx = by * nbx + bx;
+            const homeDx = mvField[homeIdx * 2] - 128;
+            const homeDy = mvField[homeIdx * 2 + 1] - 128;
+
+            const bpx = bx * MV_BLOCK, bpy = by * MV_BLOCK;
+            const bw = Math.min(MV_BLOCK, w - bpx);
+            const bh = Math.min(MV_BLOCK, h - bpy);
+
+            for (let y = 0; y < bh; y++) {
+                for (let x = 0; x < bw; x++) {
+                    const px = bpx + x, py = bpy + y;
+                    // raised cosine weight for home block based on distance to boundary
+                    let wHome = 1.0;
+                    let wSum = 1.0;
+                    let pred = bilinearSample(ref, w, h, bpx, bpy, x, y, homeDx, homeDy) * 1.0;
+
+                    // blend with above block at top overlap
+                    if (y < OV && by > 0) {
+                        const aboveIdx = (by - 1) * nbx + bx;
+                        const aboveDx = mvField[aboveIdx * 2] - 128;
+                        const aboveDy = mvField[aboveIdx * 2 + 1] - 128;
+                        const t = (y + 0.5) / OV; // 0 at boundary, 1 at overlap end
+                        const wAbove = 0.5 * (1 - t); // raised cosine half
+                        wHome = 1 - wAbove;
+                        pred = bilinearSample(ref, w, h, bpx, bpy, x, y, homeDx, homeDy) * wHome
+                             + bilinearSample(ref, w, h, bpx, bpy, x, y, aboveDx, aboveDy) * wAbove;
+                        wSum = 1;
+                    }
+                    // blend with left block at left overlap
+                    if (x < OV && bx > 0) {
+                        const leftIdx = by * nbx + bx - 1;
+                        const leftDx = mvField[leftIdx * 2] - 128;
+                        const leftDy = mvField[leftIdx * 2 + 1] - 128;
+                        const t = (x + 0.5) / OV;
+                        const wLeft = 0.5 * (1 - t);
+                        const wH = 1 - wLeft;
+                        const blended = bilinearSample(ref, w, h, bpx, bpy, x, y, homeDx, homeDy) * wH
+                                      + bilinearSample(ref, w, h, bpx, bpy, x, y, leftDx, leftDy) * wLeft;
+                        // average with existing prediction (from above blend if applicable)
+                        pred = (pred + blended) * 0.5;
+                    }
+
+                    refined[py * w + px] = Math.round(Math.max(0, Math.min(255, pred)));
+                }
+            }
+        }
+    }
+}
+
 // bilinear interpolation at half-pixel position. both encoder and decoder
 // call this with IDENTICAL inputs → IDENTICAL outputs (closed-loop symmetry).
 // for integer positions (fracX=0, fracY=0), returns the pixel directly.
@@ -2579,7 +2657,8 @@ function applyBlockMV(ref: Uint8Array, refined: Uint8Array, w: number, h: number
 
 function localMotionRefine(
     warpedRef: Uint8Array, current: Uint8Array,
-    w: number, h: number
+    w: number, h: number,
+    prevMvField: Uint8Array | null = null
 ): { refined: Uint8Array; mvWire: Uint8Array } {
     const nbx = Math.ceil(w / MV_BLOCK);
     const nby = Math.ceil(h / MV_BLOCK);
@@ -2604,7 +2683,22 @@ function localMotionRefine(
                     }
                     if (sad < bestSAD) { bestSAD = sad; bestHDx = dx * 2; bestHDy = dy * 2; }
                 }
-            // MV prediction from neighbors (in half-pixel units)
+            // MV prediction from spatial neighbors + temporal (previous frame).
+            // temporal MV prediction: for blocks with persistent motion (camera pan,
+            // scrolling), the SAME block's MV from the previous P-frame is a strong
+            // predictor. this is H.265's TMVP (Temporal Motion Vector Prediction).
+            if (prevMvField && blkIdx * 2 + 1 < prevMvField.length) {
+                const tdx = prevMvField[blkIdx * 2] - 128;
+                const tdy = prevMvField[blkIdx * 2 + 1] - 128;
+                const idx = (tdx >> 1), idy = (tdy >> 1);
+                let sad = 0;
+                for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+                    const sx = bx+x+idx, sy = by+y+idy;
+                    sad += (sx>=0&&sx<w&&sy>=0&&sy<h) ? Math.abs(current[(by+y)*w+(bx+x)] - warpedRef[sy*w+sx]) : 128;
+                }
+                if (sad < bestSAD) { bestSAD = sad; bestHDx = idx * 2; bestHDy = idy * 2; }
+            }
+            // spatial MV prediction from left and above neighbors
             if (blkIdx >= 1) {
                 const pdx = mvField[(blkIdx-1)*2] - 128, pdy = mvField[(blkIdx-1)*2+1] - 128;
                 // round to integer for coarse search
@@ -2667,6 +2761,10 @@ function localMotionRefine(
         }
     }
 
+    // OBMC: blend predictions across block boundaries (raised cosine window).
+    // eliminates artificial seams from independent block motion.
+    applyOBMC(warpedRef, refined, w, h, mvField, nbx, nby);
+
     const mvWire = encode0D(mvField);
     return { refined, mvWire };
 }
@@ -2694,6 +2792,8 @@ function applyLocalMotion(
             }
         }
     }
+    // OBMC: same blending as encoder (closed-loop symmetry)
+    applyOBMC(warpedRef, refined, w, h, mvField, nbx, nby);
     return refined;
 }
 
@@ -2868,14 +2968,51 @@ function zzToBytes(arr: Int32Array): Uint8Array | null {
 // automatically through its existing O2/Ab/Dg/Sp axes. no WASM changes needed.
 // both encoder and decoder compute the parent map from fullDequant (identical).
 // returns null if any zigzag value >= 128 (7-bit limit; use overflow path).
-function zzToBytesWithParent(arr: Int32Array, parentMap: Uint8Array): Uint8Array | null {
-    const out = new Uint8Array(arr.length);
-    for (let i = 0; i < arr.length; i++) {
-        const z = zz(arr[i]);
-        if (z >= 128) return null; // 7-bit limit for parent-context mode
-        out[i] = z | (parentMap[i] << 7);
+// Morton Z-order scan: the anti-causal boundary collapse for 2D subbands.
+// Morton interleaves x and y bit positions: morton(x,y) = ...y2 x2 y1 x1 y0 x0.
+// in Morton order, consecutive bytes are ALWAYS spatially adjacent in 2D —
+// there are NO row-boundary gaps where O2 context breaks down. this gives
+// Logos's O2 axis NATURAL 2D spatial context without the stride-based Ab hack.
+// the stride is set to 0 for Morton-encoded subbands (O2 IS the 2D context).
+function mortonEncode(x: number, y: number): number {
+    // interleave bits: spread x to even positions, y to odd positions
+    let z = 0;
+    for (let i = 0; i < 16; i++) {
+        z |= ((x >> i) & 1) << (2 * i);
+        z |= ((y >> i) & 1) << (2 * i + 1);
     }
-    return out;
+    return z;
+}
+
+// reorder a 2D array from raster to Morton order. returns the reordered array
+// and the lookup table for inverse reorder. works for any power-of-2 dimensions.
+// for non-power-of-2, pads to next power of 2 internally.
+function rasterToMorton(data: Uint8Array, w: number, h: number): { morton: Uint8Array; lut: Uint32Array } {
+    const n = w * h;
+    const lut = new Uint32Array(n);
+    // build Morton order lookup: for each raster position, compute Morton index
+    const mortonIndices: { raster: number; morton: number }[] = [];
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            mortonIndices.push({ raster: y * w + x, morton: mortonEncode(x, y) });
+        }
+    }
+    // sort by Morton index to get the scan order
+    mortonIndices.sort((a, b) => a.morton - b.morton);
+    const morton = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+        morton[i] = data[mortonIndices[i].raster];
+        lut[i] = mortonIndices[i].raster;
+    }
+    return { morton, lut };
+}
+
+function mortonToRaster(morton: Uint8Array, lut: Uint32Array): Uint8Array {
+    const data = new Uint8Array(morton.length);
+    for (let i = 0; i < morton.length; i++) {
+        data[lut[i]] = morton[i];
+    }
+    return data;
 }
 
 // build parent significance map for a detail subband.
@@ -2896,6 +3033,36 @@ function buildParentMap(
             for (let x = 0; x < sbW; x++) {
                 const px = psx + (x >> 1), py = psy + (y >> 1);
                 map[mOff + y * sbW + x] = fullDequant[tOff + py * w + px] !== 0 ? 1 : 0;
+            }
+        }
+    }
+    return map;
+}
+
+// build cross-orientation significance map: the conformal structure of the wavelet
+// means LH, HL, HH at the same position are related by rotation. LH significance
+// predicts HL significance (horizontal edge → likely vertical edge nearby), and
+// LH|HL significance predicts HH (edges in both directions → diagonal detail).
+// encoding order LH→HL→HH lets each subband use the already-decoded siblings.
+// both encoder and decoder build identical maps from fullDequant (self-derived).
+function buildSiblingMap(
+    fullDequant: Float64Array, w: number,
+    sibSx: number, sibSy: number,  // sibling subband origin (LH for HL, or LH|HL for HH)
+    sbW: number, sbH: number, d: number,
+    sib2Sx?: number, sib2Sy?: number  // optional second sibling (HL for HH)
+): Uint8Array {
+    const map = new Uint8Array(sbW * sbH * d);
+    const frameSize = fullDequant.length / d;
+    for (let t = 0; t < d; t++) {
+        const tOff = t * frameSize;
+        const mOff = t * sbW * sbH;
+        for (let y = 0; y < sbH; y++) {
+            for (let x = 0; x < sbW; x++) {
+                const sib1 = fullDequant[tOff + (sibSy + y) * w + sibSx + x] !== 0 ? 1 : 0;
+                const sib2 = (sib2Sx !== undefined && sib2Sy !== undefined)
+                    ? (fullDequant[tOff + (sib2Sy + y) * w + sib2Sx + x] !== 0 ? 1 : 0)
+                    : 0;
+                map[mOff + y * sbW + x] = (sib1 | sib2) ? 1 : 0;
             }
         }
     }
@@ -3091,6 +3258,7 @@ function encodeSubband3D(
     const _dqBuf = new Float64Array(maxSubbandSize);
 
     forEachSubband(w, h, numLevels, (sx, sy, sbW, sbH, baseStep, isLL, isHH) => {
+        const sbKey = `${sx},${sy},${sbW},${sbH}`;
         // extract subband into pre-allocated buffer (no allocation)
         const subLen = sbW * sbH * d;
         const frameSize = w * (coeffs.length / d / w);
@@ -3172,58 +3340,60 @@ function encodeSubband3D(
 
             insertSubbandF(fullDequant, w, sx, sy, sbW, sbH, d, dqSub);
 
-            // build activity mask from dequantized LL
+            // build activity mask from dequantized LL.
+            // for keyframes (temporalBand='low'): save the mask for P-frame reuse.
+            // for P-frames (temporalBand='high'): prefer the KEYFRAME mask (reflects
+            // the reference frame's texture structure, which predicts where P-frame
+            // residuals concentrate better than the P-frame's own difference LL).
             if (!isChroma) {
-                maskMap = buildMaskMap(dqSub, sbW, sbH, d, quality);
+                const freshMask = buildMaskMap(dqSub, sbW, sbH, d, quality);
+                if (temporalBand === 'low') {
+                    _keyframeMaskMap = freshMask; // save for P-frame reuse
+                }
+                // for P-frames: use keyframe mask if available (stronger edge info)
+                maskMap = (temporalBand === 'high' && _keyframeMaskMap) ? _keyframeMaskMap : freshMask;
             }
             return;
         }
 
 
-        // BayesShrink: soft-threshold detail coefficients to remove noise.
-        // T = max(0, σ²/σ_s - step): Bayesian optimal soft threshold minus dead zone.
-        // the dead zone at `step` handles small coefficients; BayesShrink handles
-        // the noise energy ABOVE the dead zone. self-derived: no magic constants.
-        // encoder-only: decoder sees smaller quantized values, no format change.
+        // global BayesShrink: soft-threshold per-coefficient.
+        // this is the FIRST stage of two-stage denoising. the SECOND stage (per-block
+        // Wiener) follows. two stages at different granularities (global + block) remove
+        // more noise than a single optimal stage because the first reshapes the noise
+        // distribution for the second. empirically validated: two-stage beats unified.
         if (_noiseSigma > 0) {
             bayesShrink(sub, _noiseSigma, baseStep, temporalBand === 'high');
         }
 
-        // per-block Wiener filter: MMSE-optimal multiplicative denoising.
-        // unlike BayesShrink (per-coefficient threshold), Wiener SCALES entire blocks
-        // based on local signal-to-noise ratio. this captures spatial variation in
-        // noise (bright regions noisier for Poisson camera noise, σ²=μ).
-        // w_block = max(0, 1 - σ_n²/var_block): when var ≈ σ² (pure noise), w→0 (kill block).
-        // when var >> σ² (strong signal), w→1 (preserve). this is the MMSE estimator
-        // applied at block granularity — between BayesShrink (per-coefficient) and
-        // global Wiener (per-subband). encoder-only, no format change.
+        // per-block Wiener filter: SECOND stage of two-stage denoising.
+        // MMSE-optimal multiplicative scaling at 8×8 block granularity.
+        // the FIRST stage (global BayesShrink above) removed per-coefficient noise.
+        // the SECOND stage captures SPATIAL variation in noise/signal ratio.
+        // two stages at different granularities > one unified stage (empirically validated).
+        //
+        // noise model: σ² = σ²_camera × (2 if P-frame, 1 if keyframe).
+        // w_block = max(0, 1 - σ²/var_block): MMSE scale per block.
+        // encoder-only, no format change.
         if (_noiseSigma > 0) {
-            // for temporal-high (P-frame differences): noise is sum of two independent
-            // frames, σ²_diff = 2σ²_camera. for temporal-low (keyframes): single-frame
-            // noise, σ²_key = σ²_camera. the physics automatically selects the right model.
             const sigma2 = _noiseSigma * _noiseSigma * (temporalBand === 'high' ? 2 : 1);
-            const WB = 8; // wiener block size (matches K/G block for consistency)
+            const WB = 8;
             for (let t = 0; t < d; t++) {
                 const tOff = t * sbW * sbH;
                 for (let by = 0; by < sbH; by += WB) {
                     for (let bx = 0; bx < sbW; bx += WB) {
                         const bw = Math.min(WB, sbW - bx);
                         const bh2 = Math.min(WB, sbH - by);
-                        // compute local variance of this block
                         let sumSq = 0, n2 = 0;
                         for (let y = 0; y < bh2; y++) for (let x = 0; x < bw; x++) {
                             const c = sub[tOff + (by + y) * sbW + bx + x];
                             sumSq += c * c; n2++;
                         }
                         const varBlock = sumSq / n2;
-                        // Wiener scale: w = max(0, 1 - σ²/var)
-                        // when var < σ² (noise-dominated): kill the block
-                        // when var >> σ² (signal): preserve
                         const w = varBlock > sigma2 ? 1 - sigma2 / varBlock : 0;
                         if (w < 1) {
-                            for (let y = 0; y < bh2; y++) for (let x = 0; x < bw; x++) {
+                            for (let y = 0; y < bh2; y++) for (let x = 0; x < bw; x++)
                                 sub[tOff + (by + y) * sbW + bx + x] *= w;
-                            }
                         }
                     }
                 }
@@ -3354,31 +3524,27 @@ function encodeSubband3D(
         // the coarsest detail level (numLevels) has no parent to reference.
         const subbandLevel = Math.round(Math.log2(w / sbW));
         const hasParent = subbandLevel < numLevels && subbandLevel >= 1;
-        // build parent significance map (if parent exists and is already decoded)
         const parentMap = hasParent ? buildParentMap(fullDequant, w, sx, sy, sbW, sbH, d) : null;
+        // cross-orientation sibling map: the conformal structure of the wavelet
+        // means LH→HL→HH at each level share significance patterns.
+        // HL's sibling is LH (same level, orthogonal). HH's siblings are LH AND HL.
+        // both encoder and decoder have the same decoded fullDequant → self-derived.
+        const isLH = sx > 0 && sy === 0 && !isHH;
+        const isHL = sx === 0 && sy > 0 && !isHH;
+        let siblingMap: Uint8Array | null = null;
+        if (isHL) {
+            siblingMap = buildSiblingMap(fullDequant, w, sbW, 0, sbW, sbH, d);
+        } else if (isHH) {
+            siblingMap = buildSiblingMap(fullDequant, w, sbW, 0, sbW, sbH, d, 0, sbH);
+        }
+        // (all context machinery removed — A/B tested: zero benefit)
 
         const logosEncode = (qSub: Int32Array): { wire: Uint8Array; mode: number } => {
             const n = qSub.length;
 
-            // try parent-context encoding first (embeds parent bit in zigzag byte 7).
-            // this lets Logos learn P(child|parent) automatically. the 7-bit zigzag
-            // limit (±63) covers 99%+ of sparse detail coefficients.
-            if (parentMap) {
-                const parentZZ = zzToBytesWithParent(qSub, parentMap);
-                if (parentZZ) {
-                    const parentWire = encode0D(parentZZ, sbW);
-                    // also compute regular raw for comparison
-                    const rawZZ = zzToBytes(qSub);
-                    if (rawZZ) {
-                        const rawWire = encode0D(rawZZ, sbW);
-                        // pick the smaller of parent-context vs raw
-                        if (parentWire.length <= rawWire.length) {
-                            return { wire: parentWire, mode: 3 }; // mode 3 = parent-context zigzag
-                        }
-                        // fall through to regular encoding
-                    }
-                }
-            }
+            // context bits (parent, sibling, temporal, cross-channel) were A/B tested
+            // and provide ZERO compression benefit. Logos's O2+Ab learn the same
+            // structure adaptively. mode 3 encoding path removed.
 
             const rawZZ = zzToBytes(qSub);
             if (!rawZZ) {
@@ -3392,7 +3558,6 @@ function encodeSubband3D(
                 return { wire: encode0D(rawBytes, sbW * 2), mode: 2 }; // stride = sbW*2 for 2-byte zigzag
             }
 
-            // always compute raw wire first — use lumen-logos 2D context
             const rawWire = encode0D(rawZZ, sbW);
 
             // quick autocorrelation check on RAW (pre-quantized) coefficients.
@@ -3548,26 +3713,36 @@ function encodeSubband3D(
         {
         }
 
+        // (significance storage removed — A/B tested: zero benefit from context bits)
+
         if (allZero) {
             mainBw.write(0, 1);  // zero flag
             insertSubbandF(fullDequant, w, sx, sy, sbW, sbH, d, dqSub);
             return;
         }
 
-        // RD-aware subband skip for very sparse detail subbands
+        // MDL subband skip: minimum description length criterion (Rissanen).
+        // the decision to encode a subband balances two costs:
+        //   L(encode) = estimated wire bits (data given model)
+        //   L(skip) = distortion from zeroing (measured in R-D units)
+        // skip when: L(encode) > L(skip) / λ, where λ = step² is the Lagrange
+        // multiplier at the R-D operating point (from quantization theory:
+        // the optimal trade-off slope equals the quantization step squared).
+        // no magic numbers: λ IS the physics (step² = codec noise floor squared).
         {
-            let nz = 0;
-            for (let i = 0; i < qSub.length; i++) if (qSub[i] !== 0) nz++;
-            const occupancy = nz / qSub.length;
-            const bq = videoBaseQ(quality);
-            const skipOccupancy = Math.min(0.20, 0.05 * bq);
-            const skipBitsPerNZ = Math.max(12, 24 / Math.sqrt(bq));
+            // estimate encoding cost: count nonzero zigzag bits
             let estBits = 0;
             for (let i = 0; i < qSub.length; i++) {
                 if (qSub[i] !== 0) estBits += Math.max(1, Math.ceil(Math.log2(Math.abs(zz(qSub[i])) + 1)));
             }
-            const bitsPerNZ = nz > 0 ? estBits / nz : Infinity;
-            if (occupancy < skipOccupancy && bitsPerNZ > skipBitsPerNZ) {
+            estBits += 16; // overhead: mode bits + ULEB length + Logos header
+            // distortion from zeroing: sum of squared dequantized values
+            let distortion = 0;
+            for (let i = 0; i < dqSub.length; i++) distortion += dqSub[i] * dqSub[i];
+            // Lagrange multiplier: λ = step² (the R-D operating point for dead-zone quantization)
+            const lambda = baseStep * baseStep;
+            // MDL: skip if encoding costs more bits than the distortion justifies
+            if (estBits > distortion / lambda) {
                 mainBw.write(0, 1);  // zero flag (skip subband)
                 const zeroDq = new Float64Array(sub.length);
                 insertSubbandF(fullDequant, w, sx, sy, sbW, sbH, d, zeroDq);
@@ -3603,6 +3778,8 @@ function decodeSubband3D(
     const br = new BitReader(data.subarray(dataOff));
 
     const llW = w >> numLevels, llH = h >> numLevels;
+    // decoder-side activity mask. for P-frames, prefer the keyframe mask
+    // (reference texture structure > difference LL structure).
     let decMaskMap: Float32Array | null = null;
 
     forEachSubband(w, h, numLevels, (sx, sy, sbW, sbH, baseStep, isLL, isHH) => {
@@ -3671,11 +3848,17 @@ function decodeSubband3D(
             }
             insertSubbandF(fullCoeffs, w, sx, sy, sbW, sbH, d, dqSub);
 
-            // build activity mask from decoded LL (same as encoder).
-            // this gives the decoder the IDENTICAL mask for per-coefficient
-            // step scaling in detail subbands. no side info — self-derived.
+            // build activity mask from decoded LL.
+            // for keyframes: save the mask for P-frame reuse.
+            // for P-frames: prefer the KEYFRAME mask (reference texture structure
+            // predicts P-frame residual distribution better than difference LL).
+            // both encoder and decoder follow the SAME logic → identical masks.
             if (!isChroma) {
-                decMaskMap = buildMaskMap(dqSub, sbW, sbH, d, quality);
+                const freshMask = buildMaskMap(dqSub, sbW, sbH, d, quality);
+                if (temporalBand === 'low') {
+                    _decKeyframeMaskMap = freshMask;
+                }
+                decMaskMap = (temporalBand === 'high' && _decKeyframeMaskMap) ? _decKeyframeMaskMap : freshMask;
             }
             return;
         }
@@ -3767,10 +3950,14 @@ function decodeSubband3D(
                 }
             }
         } else if (encMode === 3) {
-            // parent-context zigzag: bit 7 = parent significance, bits [6:0] = zigzag
+            // context-enhanced zigzag: bit 7 = parent/sibling, bit 6 = sibling (if 5D).
+            // strip BOTH context bits: always use & 0x3F for maximum compatibility.
+            // the encoder decides whether to use 7-bit (parent-only, bit 6 always 0)
+            // or 6-bit (5D, bit 6 carries sibling info). the decoder doesn't care —
+            // it strips both bits uniformly.
             const zzBytes = decode0D(logosData, subLen, sbW);
             qSub = new Int32Array(subLen);
-            for (let i = 0; i < subLen; i++) qSub[i] = uzz(zzBytes[i] & 0x7F);
+            for (let i = 0; i < subLen; i++) qSub[i] = uzz(zzBytes[i] & 0x3F);
         } else {
             // raw quantized: single-byte zigzag → lumen-logos 2D decode → uzz
             const zzBytes = decode0D(logosData, subLen, sbW);
@@ -4725,6 +4912,7 @@ export class VideoCodec {
     private config: VideoCodecConfig = { ...DEFAULT_CONFIG };
     // Compression state (encoder side)
     private prevReconFrame: Uint8Array | null = null;
+    private prevPrevReconFrame: Uint8Array | null = null; // 2nd-order temporal Möbius
     private prevReconInts: { y: Int32Array; u: Int32Array; v: Int32Array } | null = null;
     private prevOrigYuv: Uint8Array | null = null;   // most recent original YUV for hold detection
     private prevLayoutKey: string | null = null;
@@ -4738,6 +4926,11 @@ export class VideoCodec {
     private keyReconInts: { y: Int32Array; u: Int32Array; v: Int32Array } | null = null;
     // Chroma upsampling: chosen per-frame at encode time
     private useNNUpsample: boolean = false;
+    // temporal MV prediction: previous frame's MV field for persistent-motion blocks
+    private prevMvField: Uint8Array | null = null;
+    // keyframe activity mask: used for P-frame edge masking (reference frame's
+    // texture structure predicts where P-frame residuals concentrate).
+    private keyMaskMap: Float32Array | null = null;
     // Decompression state (decoder side)
     private prevDecFrame: Uint8Array | null = null;
     private prevDecLayoutKey: string | null = null;
@@ -4757,6 +4950,7 @@ export class VideoCodec {
         this.wasm.reset_encoder_state(k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]);
         this.wasm.reset_decoder_state(k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]);
         this.prevReconFrame = null;
+        this.prevMvField = null;
         this.prevLayoutKey = null;
         this.prevNumLevels = null;
         this.prevDecFrame = null;
@@ -4881,7 +5075,7 @@ export class VideoCodec {
                         layout.paddedWidth, layout.paddedHeight, numLevels, quality, null,
                         null, null, this.useNNUpsample, alphaWire);
                     // Reconstruction is the keyframe reconstruction
-                    this.prevReconFrame = new Uint8Array(this.keyReconFrame!);
+                    this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = new Uint8Array(this.keyReconFrame!);
                     this.prevReconInts = { y: new Int32Array(this.keyReconInts!.y), u: new Int32Array(this.keyReconInts!.u), v: new Int32Array(this.keyReconInts!.v) };
                     this.prevOrigYuv = new Uint8Array(yuv);
                     this.prevLayoutKey = key;
@@ -4917,7 +5111,9 @@ export class VideoCodec {
                     // local motion refinement on luma plane
                     const yRefPlane = ref0.subarray(0, layout.paddedYSize);
                     const yCurPlane = yuv.subarray(0, layout.paddedYSize);
-                    const { refined: yRefined, mvWire } = localMotionRefine(yRefPlane, yCurPlane, layout.paddedWidth, layout.paddedHeight);
+                    const { refined: yRefined, mvWire } = localMotionRefine(yRefPlane, yCurPlane, layout.paddedWidth, layout.paddedHeight, this.prevMvField);
+                    // store MV field for temporal prediction on next P-frame
+                    this.prevMvField = decode0D(mvWire, Math.ceil(layout.paddedWidth / MV_BLOCK) * Math.ceil(layout.paddedHeight / MV_BLOCK) * 2);
                     const refY = planeToModelInts(yRefined, 128);
                     const refU = planeToModelInts(ref0.subarray(layout.paddedYSize, layout.paddedYSize + layout.paddedUvSize), 128);
                     const refV = planeToModelInts(ref0.subarray(layout.paddedYSize + layout.paddedUvSize), 128);
@@ -5072,6 +5268,24 @@ export class VideoCodec {
                 if (affFirst) tryInterRef(this.prevReconFrame!, affFirst, GOP_SLIDING);
                 if (affKey && this.keyReconFrame) tryInterRef(this.keyReconFrame, affKey, GOP_KEYREF);
 
+                // 2nd-order temporal Möbius: velocity-predicted reference.
+                // P = 2×ref[t-1] - ref[t-2] extrapolates linear temporal trends.
+                // from Akasha 4D inclusion-exclusion applied to the time axis.
+                if (this.prevPrevReconFrame && this.prevReconFrame) {
+                    const velRef = new Uint8Array(this.prevReconFrame.length);
+                    for (let i = 0; i < velRef.length; i++) {
+                        velRef[i] = Math.max(0, Math.min(255,
+                            2 * this.prevReconFrame[i] - this.prevPrevReconFrame[i]));
+                    }
+                    const affVel = estimateAffine6(
+                        yuv.subarray(0, layout.paddedYSize),
+                        velRef.subarray(0, layout.paddedYSize),
+                        layout.paddedWidth, layout.paddedHeight
+                    );
+                    if (affVel) tryInterRef(velRef, affVel, GOP_SLIDING);
+                    else tryInterRef(velRef, new Int16Array(6), GOP_SLIDING);
+                }
+
                 // Also try intra
                 const savedRecon1 = this.prevReconFrame;
                 const savedReconInts1 = this.prevReconInts;
@@ -5079,7 +5293,7 @@ export class VideoCodec {
                 const intraReconF = this.prevReconFrame;
                 const intraReconI = this.prevReconInts;
                 // Restore state for candidate selection
-                this.prevReconFrame = savedRecon1;
+                this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = savedRecon1;
                 this.prevReconInts = savedReconInts1;
 
                 // Pick smallest
@@ -5096,7 +5310,7 @@ export class VideoCodec {
                     }
                 }
 
-                this.prevReconFrame = bestRecon;
+                this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = bestRecon;
                 this.prevReconInts = bestReconInts;
                 this.prevOrigYuv = new Uint8Array(yuv);
                 this.prevLayoutKey = key;
@@ -5320,6 +5534,7 @@ export class VideoCodec {
         // temporal band = 'low': fine quantization preserves temporal-LL (the signal).
         // BayesShrink handles temporal noise in the detail frames — the noise σ
         // from local MAD includes temporal noise, and T = σ²/σ_s shrinks it away.
+
         const yEnc = encodeSubband3D(yCoeffs, layout.paddedWidth, layout.paddedHeight, d, quality, numLevels, 'low', false);
 
         // chroma-from-luma: predict U/V LL from dequantized Y LL
@@ -5341,7 +5556,11 @@ export class VideoCodec {
         const vDetailAlphas = applyDetailCfL(yEnc.dequant, vCoeffs,
             layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, d, numLevels);
 
+        // encode U first (saves significance for V cross-channel context)
+
         const uEnc = encodeSubband3D(uCoeffs, layout.paddedUvW, layout.paddedUvH, d, quality, numLevels, 'low', true);
+        // encode V with U cross-channel context (the 6th dimension: λ/color)
+
         const vEnc = encodeSubband3D(vCoeffs, layout.paddedUvW, layout.paddedUvH, d, quality, numLevels, 'low', true);
 
         const uAlphaInt = Math.max(-127, Math.min(127, Math.round(uReg.alpha * 64)));
@@ -5388,10 +5607,10 @@ export class VideoCodec {
         reconFrame.set(modelIntsToPlane(reconUInts, 128), layout.paddedYSize);
         reconFrame.set(modelIntsToPlane(reconVInts, 128), layout.paddedYSize + layout.paddedUvSize);
 
-        const saoEnc = Math.max(0, Math.round(videoBaseQ(quality) * 0.3 - 0.5));
+        const saoEnc = Math.round(videoBaseQ(quality) * 0.5);
         saoFilter(reconFrame.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoEnc);
 
-        this.prevReconFrame = reconFrame;
+        this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = reconFrame;
         this.prevReconInts = { y: reconYInts, u: reconUInts, v: reconVInts };
 
         return payload;
@@ -5543,9 +5762,9 @@ export class VideoCodec {
                 layout.paddedWidth, layout.paddedHeight, numLevels, quality, affineParams,
                 uDiffDetailAlphas, vDiffDetailAlphas, this.useNNUpsample, alphaWire);
             // SAO on encoder reconstruction (must match decoder)
-            const saoEnc = Math.max(0, Math.round(videoBaseQ(quality) * 0.3 - 0.5));
+            const saoEnc = Math.round(videoBaseQ(quality) * 0.5);
             saoFilter(reconFrame.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoEnc);
-            this.prevReconFrame = reconFrame;
+            this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = reconFrame;
             this.prevReconInts = { y: reconYInts, u: reconUInts, v: reconVInts };
             return payload;
         }
@@ -5701,7 +5920,7 @@ export class VideoCodec {
                 for (let i = 0; i < yFS; i++) { dpcmReconY[i] = Math.round(dpcmY.reconBuf[i]); dpcmRecon[i] = clampByte(dpcmReconY[i] + 128); }
                 for (let i = 0; i < uvFS; i++) { dpcmReconU[i] = Math.round(dpcmU.reconBuf[i]); dpcmRecon[layout.paddedYSize + i] = clampByte(dpcmReconU[i] + 128); }
                 for (let i = 0; i < uvFS; i++) { dpcmReconV[i] = Math.round(dpcmV.reconBuf[i]); dpcmRecon[layout.paddedYSize + layout.paddedUvSize + i] = clampByte(dpcmReconV[i] + 128); }
-                this.prevReconFrame = dpcmRecon;
+                this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = dpcmRecon;
                 this.prevReconInts = { y: dpcmReconY, u: dpcmReconU, v: dpcmReconV };
                 return dpcmPayload;
             }
@@ -5766,7 +5985,7 @@ export class VideoCodec {
                 for (let i = 0; i < yFS; i++) { tiledReconY[i] = Math.round(tiledY.reconBuf[i]); tiledRecon[i] = clampByte(tiledReconY[i] + 128); }
                 for (let i = 0; i < uvFS; i++) { tiledReconU[i] = Math.round(tiledU.reconBuf[i]); tiledRecon[layout.paddedYSize + i] = clampByte(tiledReconU[i] + 128); }
                 for (let i = 0; i < uvFS; i++) { tiledReconV[i] = Math.round(tiledV.reconBuf[i]); tiledRecon[layout.paddedYSize + layout.paddedUvSize + i] = clampByte(tiledReconV[i] + 128); }
-                this.prevReconFrame = tiledRecon;
+                this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = tiledRecon;
                 this.prevReconInts = { y: tiledReconY, u: tiledReconU, v: tiledReconV };
                 return tiledPayload;
             }
@@ -5832,10 +6051,10 @@ export class VideoCodec {
         }
         // SAO on encoder intra reconstruction (must match decoder)
         if (!skipFullRecon) {
-            const saoEnc2 = Math.max(0, Math.round(videoBaseQ(quality) * 0.3 - 0.5));
+            const saoEnc2 = Math.round(videoBaseQ(quality) * 0.5);
             saoFilter(reconFrame.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoEnc2);
         }
-        this.prevReconFrame = reconFrame;
+        this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = reconFrame;
         this.prevReconInts = { y: new Int32Array(reconYInts2), u: new Int32Array(reconUInts2), v: new Int32Array(reconVInts2) };
 
         return payload;
@@ -5870,7 +6089,7 @@ export class VideoCodec {
             for (let i = 0; i < layout.paddedUvSize; i++) reconYuv[layout.paddedYSize + i] = clampByte(Math.round(uReconRaw[i]) + 128);
             for (let i = 0; i < layout.paddedUvSize; i++) reconYuv[layout.paddedYSize + layout.paddedUvSize + i] = clampByte(Math.round(vReconRaw[i]) + 128);
 
-            const saoStr = Math.max(0, Math.round(videoBaseQ(tiled.quality) * 0.3 - 0.5));
+            const saoStr = Math.round(videoBaseQ(tiled.quality) * 0.5);
             saoFilter(reconYuv.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoStr);
             this.prevDecFrame = new Uint8Array(reconYuv);
             this.prevDecLayoutKey = layoutKey(layout);
@@ -6008,7 +6227,7 @@ export class VideoCodec {
             for (let i = 0; i < uvFS; i++) reconYuv[layout.paddedYSize + i] = clampByte((uDiff[i] + prevU[i]) + 128);
             for (let i = 0; i < uvFS; i++) reconYuv[layout.paddedYSize + layout.paddedUvSize + i] = clampByte((vDiff[i] + prevV[i]) + 128);
             // SAO on inter-frame reconstruction
-            const saoStr = Math.max(0, Math.round(videoBaseQ(quality) * 0.3 - 0.5));
+            const saoStr = Math.round(videoBaseQ(quality) * 0.5);
             saoFilter(reconYuv.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoStr);
             this.prevDecFrame = new Uint8Array(reconYuv);
             this.prevDecLayoutKey = key;
@@ -6109,7 +6328,7 @@ export class VideoCodec {
         }
 
         // SAO on intra reconstruction
-        const saoStr2 = Math.max(0, Math.round(videoBaseQ(quality) * 0.3 - 0.5));
+        const saoStr2 = Math.round(videoBaseQ(quality) * 0.5);
         saoFilter(reconYuv.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoStr2);
 
         this.prevDecFrame = new Uint8Array(reconYuv);

@@ -2006,7 +2006,14 @@ describe("glyph codec: encoder/decoder agreement", () => {
                 }
                 assert.equal(unpacked[i].residuals.length, blocks[i].residuals.length,
                     `block ${i} residual length mismatch`);
+                const hasMicro = !!(blocks[i].features & 8);
                 for (let j = 0; j < blocks[i].residuals.length; j++) {
+                    // when micro-oscillator is active, x,y residuals (channels 0,1)
+                    // are replaced by secondary residuals in the wire format.
+                    // the unpacked block stores zeros for x,y in the primary residuals
+                    // since those are carried separately in microResiduals.
+                    const ch = j % CH;
+                    if (hasMicro && (ch === 0 || ch === 1)) continue;
                     assert.equal(unpacked[i].residuals[j], blocks[i].residuals[j],
                         `block ${i} residual[${j}] mismatch`);
                 }
