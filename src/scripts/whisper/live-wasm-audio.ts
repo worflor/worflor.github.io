@@ -1564,9 +1564,6 @@ export interface HarmonicState {
     trajWindow: Int32Array;
     /** how many valid samples are in the window */
     trajFill: number;
-    /** cached auto-detected bit depth (0 = not yet detected, 16/24 = confirmed).
-     *  avoids re-scanning every frame during streaming. */
-    detectedBitDepth?: number;
 }
 
 /** create a fresh codec state (cold start). */
@@ -1574,7 +1571,6 @@ export function createHarmonicState(): HarmonicState {
     return {
         trajWindow: new Int32Array(TRAJ_WINDOW),
         trajFill: 0,
-        detectedBitDepth: 0,
     };
 }
 
@@ -2873,29 +2869,20 @@ export async function encodeHarmonic(
         return encodeRawMode(samples, numSamples, sampleRate, numChannels, encryptionKey);
     }
 
-    // auto-detect integer bit depth from the samples. if every value is an
-    // exact multiple of 1/2^(bd-1), the source is bd-bit integer audio and
-    // the codec can silently use bit-exact lossless mode. no user action
-    // needed — just pass float32 from a WAV file and get perfect round-trip.
-    // auto-detect integer bit depth. checks whether every sample is an exact
-    // multiple of 1/2^15 (16-bit) or 1/2^23 (24-bit). cached in state to avoid
-    // re-scanning on every frame during streaming (~48000 comparisons saved/frame).
-    let effectiveBitDepth = bitDepth;
-    if (effectiveBitDepth === 0 && trajState?.detectedBitDepth) {
-        effectiveBitDepth = trajState.detectedBitDepth;
-    }
-    if (effectiveBitDepth === 0 && samples.length > 0) {
-        let is16 = true, is24 = true;
-        for (let i = 0; i < samples.length; i++) {
-            const v = samples[i];
-            if (is16) { const s = v * 32768; if (s !== (s | 0)) is16 = false; }
-            if (is24) { const s = v * 8388608; if (s !== (s | 0)) is24 = false; }
-            if (!is16 && !is24) break;
-        }
-        if (is16) effectiveBitDepth = 16;
-        else if (is24) effectiveBitDepth = 24;
-        if (trajState) trajState.detectedBitDepth = effectiveBitDepth;
-    }
+    // bit depth is explicit only. when the caller passes bitDepth: 16 or 24,
+    // the codec forces the scalar high enough for bit-exact lossless and sets
+    // framePeak = 1.0 (no peak normalization). when bitDepth is not set, Q
+    // controls the scalar — no auto-detection, no magic, no surprises.
+    //
+    // the previous auto-detect feature (scanning samples for integer alignment)
+    // was removed because it caused a real bug: live mic input from a 16-bit
+    // ADC produces float32 values that are exact multiples of 1/32768. the
+    // auto-detect triggered lossless mode on every mic recording, ignoring
+    // the user's Q choice. file sizes were identical regardless of Q.
+    //
+    // for WAV file import: detect bit depth from the WAV header and pass
+    // bitDepth explicitly. for live mic: pass only quality.
+    const effectiveBitDepth = bitDepth;
 
     // scalar controls quantization precision. the IIR-2 oscillator with
     // near-unit-circle poles requires LOSSLESS integer residuals — proven
