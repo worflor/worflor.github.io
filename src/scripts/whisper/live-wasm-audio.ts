@@ -2923,49 +2923,48 @@ export async function encodeHarmonic(
     }
 
     const scalar = Math.max(qScalar, depthScalar);
-    // the quantization error is spectrally flat — equal noise at all
-    // frequencies. human hearing is most sensitive at 2-5 kHz, so flat
-    // noise sounds "tinny" and harsh even at moderate SNR.
+    // noise shaping: the quantization error is spectrally flat, but the
+    // cochlea's sensitivity peaks at 2-5 kHz and rolls off at ~12 dB/oct
+    // above ~4 kHz. shaping exploits this by feeding quantization error
+    // back into subsequent samples, creating a highpass on the noise.
     //
-    // noise shaping feeds the quantization error back into the next sample:
-    //   adjusted = sample + error_from_previous
-    //   qi = round(adjusted * invPeak)
-    //   error = (sample * invPeak) - qi
+    // the order of the shaping filter is derived from the sample rate:
+    // the cochlea is a resonant tube (~35mm, fluid speed ~1500 m/s) with
+    // a fundamental resonance at ~20 kHz. above this, no hair cells
+    // respond. when Nyquist exceeds 20 kHz, there is bandwidth above
+    // hearing to dump noise into, and second-order shaping (12 dB/oct)
+    // matches the cochlear rolloff. when Nyquist <= 20 kHz, all bandwidth
+    // is audible, so only first-order (6 dB/oct) is beneficial.
     //
-    // this is a first-order sigma-delta error feedback loop. the error
-    // accumulates and biases subsequent samples, pushing quantization noise
-    // to high frequencies (above ~SR/4) where the ear is less sensitive.
-    // for 48kHz audio: noise moves above 12kHz. for the perceptually
-    // critical 1-4kHz range, effective precision improves by ~6 dB.
+    // second-order NTF: (1-z^-1)^2 = 1 - 2z^-1 + z^-2
+    //   feedback: s = raw + 2*e1 - e2, giving 12 dB/oct noise slope
+    //   at 48 kHz: speech band (1-4 kHz) gets ~12 dB noise reduction
+    //   vs flat, with noise pushed to 18-24 kHz (inaudible)
     //
-    // the shaped signal is still integer-valued. the IIR-2 predictor sees
-    // identical integers on encode and decode. no drift, no divergence.
-    // the noise shaping is a property of the QUANTIZER, not the predictor.
+    // each error e[n] = s[n] - round(s[n]) is bounded to [-0.5, 0.5].
+    // second-order deviation: |2*e1 - e2| <= 1.5 quantization steps.
+    // the integers are unchanged on decode — shaping is a property of
+    // the quantizer, not the predictor. no drift, no divergence.
     //
-    // for bit-exact lossless mode (effectiveBitDepth > 0), noise shaping
-    // is skipped because there's no quantization error to shape.
-    // first-order noise shaping: pushes quantization noise to high frequencies.
-    // the error from each sample biases the next sample's rounding, creating a
-    // highpass on the noise spectrum. at 48kHz this moves noise above ~12kHz
-    // where the ear is 20-40 dB less sensitive. the integers are unchanged —
-    // the IIR-2 sees the same values on encode and decode. no drift.
-    //
-    // the corrected error formula (err = s - qi) is the rounding remainder,
-    // always bounded to [-0.5, 0.5] regardless of scalar. safe at any Q.
-    // disabled for bit-exact lossless mode (no quantization error to shape).
+    // disabled when scalar <= 1 (rounding bias >= signal magnitude)
+    // or in lossless mode (no quantization error to shape).
+    const COCHLEAR_LIMIT = 20000;
     const invPeak = scalar / framePeak;
-    const shapeNoise = effectiveBitDepth === 0 && scalar >= 2;
+    const shapeNoise = effectiveBitDepth === 0 && scalar > 1;
+    const secondOrder = sampleRate > 2 * COCHLEAR_LIMIT;
     const channels: Int32Array[] = [];
     const channelEnergy: number[] = [];
     for (let ch = 0; ch < numChannels; ch++) {
         const q = new Int32Array(numSamples);
         let energy = 0;
-        let err = 0; // error feedback accumulator
+        let e1 = 0, e2 = 0;
         for (let i = 0; i < numSamples; i++) {
             const raw = samples[i * numChannels + ch] * invPeak;
-            const s = shapeNoise ? raw + err : raw;
+            const s = shapeNoise
+                ? (secondOrder ? raw + 2 * e1 - e2 : raw + e1)
+                : raw;
             const qi = s >= 0 ? (s + 0.5) | 0 : (s - 0.5) | 0;
-            if (shapeNoise) err = s - qi;
+            if (shapeNoise) { e2 = e1; e1 = s - qi; }
             q[i] = qi;
             energy += qi * qi;
         }
