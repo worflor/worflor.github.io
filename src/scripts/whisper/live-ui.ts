@@ -798,6 +798,33 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     el.removeAttribute("data-shelf-open");
   }
 
+  function scrollReactionShelfIntoView(msgEl: HTMLElement): void {
+    const shelf = msgEl.querySelector<HTMLElement>(".wl-react-shelf");
+    if (!shelf) return;
+    const scroller = opts.chatMessages;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const shelfRect = shelf.getBoundingClientRect();
+    // Slightly roomier than before so the shelf settles a touch more in-view,
+    // matching the "comfortable" feel of other chat auto-scroll behaviors.
+    const pad = 18;
+
+    let deltaY = 0;
+    if (shelfRect.bottom > scrollerRect.bottom - pad) {
+      deltaY = shelfRect.bottom - (scrollerRect.bottom - pad);
+    } else if (shelfRect.top < scrollerRect.top + pad) {
+      deltaY = shelfRect.top - (scrollerRect.top + pad);
+    }
+    if (Math.abs(deltaY) < 1) return;
+    scroller.scrollBy({ top: deltaY, behavior: "smooth" });
+  }
+
+  function openReactionShelf(msgEl: HTMLElement): void {
+    msgEl.setAttribute("data-shelf-open", "");
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => scrollReactionShelfIntoView(msgEl));
+    });
+  }
+
   function isTransientDrawPreviewMessage(el: HTMLElement | null | undefined): boolean {
     if (!el) return false;
     if (el.classList.contains("wl-msg--peer-draw-live")) return true;
@@ -3590,8 +3617,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         }
       }, { signal });
 
-      // Click on canvas to seek
+      // Click on waveform canvas to seek (and keep the event from toggling
+      // the reaction shelf on the parent message bubble).
       canvas.addEventListener("click", (e) => {
+        e.stopPropagation();
         if (!pcmData || !durationSeconds || !audioElement) return;
         const rect = canvas.getBoundingClientRect();
         const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -3979,25 +4008,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         // Tap the message bubble to reveal / hide the shelf.
         // One shelf at a time: close the previously open one first.
         div.addEventListener("click", (e) => {
+          const target = e.target as HTMLElement;
           // Ignore clicks on shelf buttons themselves (handled above)
-          if ((e.target as HTMLElement).closest(".wl-react-shelf")) return;
+          if (target.closest(".wl-react-shelf")) return;
           // Ignore clicks on reaction pills
-          if ((e.target as HTMLElement).closest(".wl-reaction")) return;
-          // Ignore clicks on audio player (play button, download button, waveform)
-          if ((e.target as HTMLElement).closest(".wl-msg-audio")) return;
-          // Ignore clicks on file attachments
-          if ((e.target as HTMLElement).closest(".wl-msg-file")) return;
+          if (target.closest(".wl-reaction")) return;
+          // Keep media/audio controls interactive; non-control regions should open shelf.
+          if (target.closest(".wl-audio-play-btn")) return;
+          if (target.closest(".wl-audio-dl-btn")) return;
+          if (target.closest(".wl-msg-file-download")) return;
           // Ignore lightbox/download controls, but allow media info-bar taps
           // (including finalized draw cards) to toggle the reaction shelf.
-          if ((e.target as HTMLElement).closest(".wl-media-thumb")) return;
-          if ((e.target as HTMLElement).closest(".wl-media-dl")) return;
+          if (target.closest(".wl-media-thumb")) return;
+          if (target.closest(".wl-media-dl")) return;
           // Ignore clicks on timestamps (which toggle time format)
-          if ((e.target as HTMLElement).closest(".wl-msg-time")) return;
+          if (target.closest(".wl-msg-time")) return;
           const isOpen = div.hasAttribute("data-shelf-open");
           // Close any globally open shelf
           const prev = opts.chatMessages.querySelector("[data-shelf-open]");
           if (prev) closeReactionShelf(prev);
-          if (!isOpen) div.setAttribute("data-shelf-open", "");
+          if (!isOpen) openReactionShelf(div);
         }, { signal });
       } else {
         div.dataset.reactionsDisabled = "true";
