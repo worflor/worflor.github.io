@@ -2950,11 +2950,11 @@ export async function encodeHarmonic(
     // where the ear is 20-40 dB less sensitive. the integers are unchanged —
     // the IIR-2 sees the same values on encode and decode. no drift.
     //
-    // only active when scalar >= 64 (Q ≥ ~40). below that, the quantization
-    // step is too coarse for error feedback to be stable. also disabled for
-    // bit-exact lossless mode (no quantization error to shape).
+    // the corrected error formula (err = s - qi) is the rounding remainder,
+    // always bounded to [-0.5, 0.5] regardless of scalar. safe at any Q.
+    // disabled for bit-exact lossless mode (no quantization error to shape).
     const invPeak = scalar / framePeak;
-    const shapeNoise = effectiveBitDepth === 0 && scalar >= 64;
+    const shapeNoise = effectiveBitDepth === 0 && scalar >= 2;
     const channels: Int32Array[] = [];
     const channelEnergy: number[] = [];
     for (let ch = 0; ch < numChannels; ch++) {
