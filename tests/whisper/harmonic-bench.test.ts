@@ -6,6 +6,11 @@ import {
 import type { SpatialObject } from "../../src/scripts/whisper/live-wasm-audio.ts";
 
 const SR = 48000;
+const BENCH_VERBOSE = process.env.WHISPER_BENCH_VERBOSE === "1";
+
+function benchLog(line = ""): void {
+  if (BENCH_VERBOSE) console.log(line);
+}
 
 function snr(orig: Float32Array, dec: Float32Array, numCh: number, ch: number): number {
   let sig = 0, noise = 0;
@@ -51,9 +56,9 @@ function interleave(channels: Float32Array[]): Float32Array {
 describe("harmonic benchmark: mono Q sweep", () => {
   it("mono speech Q sweep with bitrate and SNR", async () => {
     const pcm = makeSpeech(SR); // 1 second
-    console.log("\n  ── mono speech (1s, 48kHz) ──");
-    console.log("    Q   bytes   kbps   SNR(dB)  enc(ms)  dec(ms)");
-    console.log("    " + "─".repeat(52));
+    benchLog("\n  ── mono speech (1s, 48kHz) ──");
+    benchLog("    Q   bytes   kbps   SNR(dB)  enc(ms)  dec(ms)");
+    benchLog("    " + "─".repeat(52));
     for (const q of [10, 20, 30, 40, 50, 60, 70, 80, 90, 95]) {
       const t0 = performance.now();
       const enc = await encodeHarmonic(pcm, SR, undefined, { quality: q });
@@ -62,7 +67,7 @@ describe("harmonic benchmark: mono Q sweep", () => {
       const t2 = performance.now();
       const kbps = enc.length * 8 / 1000;
       const s = snr(pcm, dec, 1, 0);
-      console.log(`    ${q.toString().padStart(2)}  ${enc.length.toString().padStart(6)}  ${kbps.toFixed(0).padStart(5)}  ${s.toFixed(1).padStart(7)}  ${(t1-t0).toFixed(1).padStart(7)}  ${(t2-t1).toFixed(1).padStart(7)}`);
+      benchLog(`    ${q.toString().padStart(2)}  ${enc.length.toString().padStart(6)}  ${kbps.toFixed(0).padStart(5)}  ${s.toFixed(1).padStart(7)}  ${(t1-t0).toFixed(1).padStart(7)}  ${(t2-t1).toFixed(1).padStart(7)}`);
     }
   });
 });
@@ -72,9 +77,9 @@ describe("harmonic benchmark: stereo coupling efficiency", () => {
     const speech = makeSpeech(SR);
     const noise = makeNoise(SR, 0.4, 0xABCD);
 
-    console.log("\n  ── stereo coupling (1s, 48kHz, Q=80) ──");
-    console.log("    signal           channel(B)  object(B)  saving   SNR_L   SNR_R");
-    console.log("    " + "─".repeat(65));
+    benchLog("\n  ── stereo coupling (1s, 48kHz, Q=80) ──");
+    benchLog("    signal           channel(B)  object(B)  saving   SNR_L   SNR_R");
+    benchLog("    " + "─".repeat(65));
 
     // identical L=R
     const identical = interleave([speech, speech]);
@@ -82,7 +87,7 @@ describe("harmonic benchmark: stereo coupling efficiency", () => {
     const idOb = await encodeHarmonic(identical, SR, undefined, { quality: 80, numChannels: 2, layout: "object" });
     const idDec = await decodeHarmonic(idCh);
     const saving1 = ((1 - idCh.length / idOb.length) * 100).toFixed(1);
-    console.log(`    identical L=R    ${idCh.length.toString().padStart(9)}  ${idOb.length.toString().padStart(9)}  ${saving1.padStart(5)}%  ${snr(identical, idDec.pcm, 2, 0).toFixed(1).padStart(5)}  ${snr(identical, idDec.pcm, 2, 1).toFixed(1).padStart(5)}`);
+    benchLog(`    identical L=R    ${idCh.length.toString().padStart(9)}  ${idOb.length.toString().padStart(9)}  ${saving1.padStart(5)}%  ${snr(identical, idDec.pcm, 2, 0).toFixed(1).padStart(5)}  ${snr(identical, idDec.pcm, 2, 1).toFixed(1).padStart(5)}`);
 
     // similar (L ≈ R + small noise)
     const noiseSmall = makeNoise(SR, 0.05, 0x9999);
@@ -93,7 +98,7 @@ describe("harmonic benchmark: stereo coupling efficiency", () => {
     const simOb = await encodeHarmonic(similar, SR, undefined, { quality: 80, numChannels: 2, layout: "object" });
     const simDec = await decodeHarmonic(simCh);
     const saving2 = ((1 - simCh.length / simOb.length) * 100).toFixed(1);
-    console.log(`    similar L≈R      ${simCh.length.toString().padStart(9)}  ${simOb.length.toString().padStart(9)}  ${saving2.padStart(5)}%  ${snr(similar, simDec.pcm, 2, 0).toFixed(1).padStart(5)}  ${snr(similar, simDec.pcm, 2, 1).toFixed(1).padStart(5)}`);
+    benchLog(`    similar L≈R      ${simCh.length.toString().padStart(9)}  ${simOb.length.toString().padStart(9)}  ${saving2.padStart(5)}%  ${snr(similar, simDec.pcm, 2, 0).toFixed(1).padStart(5)}  ${snr(similar, simDec.pcm, 2, 1).toFixed(1).padStart(5)}`);
 
     // uncorrelated
     const uncorr = interleave([speech, noise]);
@@ -101,7 +106,7 @@ describe("harmonic benchmark: stereo coupling efficiency", () => {
     const unOb = await encodeHarmonic(uncorr, SR, undefined, { quality: 80, numChannels: 2, layout: "object" });
     const unDec = await decodeHarmonic(unCh);
     const saving3 = ((1 - unCh.length / unOb.length) * 100).toFixed(1);
-    console.log(`    uncorrelated     ${unCh.length.toString().padStart(9)}  ${unOb.length.toString().padStart(9)}  ${saving3.padStart(5)}%  ${snr(uncorr, unDec.pcm, 2, 0).toFixed(1).padStart(5)}  ${snr(uncorr, unDec.pcm, 2, 1).toFixed(1).padStart(5)}`);
+    benchLog(`    uncorrelated     ${unCh.length.toString().padStart(9)}  ${unOb.length.toString().padStart(9)}  ${saving3.padStart(5)}%  ${snr(uncorr, unDec.pcm, 2, 0).toFixed(1).padStart(5)}  ${snr(uncorr, unDec.pcm, 2, 1).toFixed(1).padStart(5)}`);
   });
 });
 
@@ -128,9 +133,9 @@ describe("harmonic benchmark: 5.1 surround", () => {
 
     const pcm = interleave([L, R, narrator, lfe, Ls, Rs]);
 
-    console.log("\n  ── 5.1 film surround (1s, 48kHz) ──");
-    console.log("    Q   ch(B)   obj(B)  saving  kbps(ch)  SNR_avg");
-    console.log("    " + "─".repeat(55));
+    benchLog("\n  ── 5.1 film surround (1s, 48kHz) ──");
+    benchLog("    Q   ch(B)   obj(B)  saving  kbps(ch)  SNR_avg");
+    benchLog("    " + "─".repeat(55));
 
     for (const q of [30, 50, 60, 70, 80, 90]) {
       const chEnc = await encodeHarmonic(pcm, SR, undefined, { quality: q, numChannels: 6, layout: "channel" });
@@ -144,7 +149,7 @@ describe("harmonic benchmark: 5.1 surround", () => {
       const saving = ((1 - chEnc.length / obEnc.length) * 100).toFixed(1);
       const kbps = chEnc.length * 8 / 1000;
 
-      console.log(`    ${q.toString().padStart(2)}  ${chEnc.length.toString().padStart(6)}  ${obEnc.length.toString().padStart(6)}  ${saving.padStart(5)}%  ${kbps.toFixed(0).padStart(7)}  ${avgSnr.toFixed(1).padStart(7)}`);
+      benchLog(`    ${q.toString().padStart(2)}  ${chEnc.length.toString().padStart(6)}  ${obEnc.length.toString().padStart(6)}  ${saving.padStart(5)}%  ${kbps.toFixed(0).padStart(7)}  ${avgSnr.toFixed(1).padStart(7)}`);
     }
   });
 });
@@ -154,9 +159,9 @@ describe("harmonic benchmark: channel count scaling", () => {
     const len = SR;
     const mono = makeSpeech(len, 0.5);
 
-    console.log("\n  ── channel scaling (identical signal, Q=80) ──");
-    console.log("    ch   bytes    kbps   ratio_vs_mono  enc(ms)");
-    console.log("    " + "─".repeat(50));
+    benchLog("\n  ── channel scaling (identical signal, Q=80) ──");
+    benchLog("    ch   bytes    kbps   ratio_vs_mono  enc(ms)");
+    benchLog("    " + "─".repeat(50));
 
     let monoSize = 0;
     for (const nch of [1, 2, 4, 6, 8, 12]) {
@@ -172,16 +177,16 @@ describe("harmonic benchmark: channel count scaling", () => {
       const ratio = (enc.length / monoSize).toFixed(2);
       const kbps = enc.length * 8 / 1000;
 
-      console.log(`    ${nch.toString().padStart(2)}  ${enc.length.toString().padStart(7)}  ${kbps.toFixed(0).padStart(6)}  ${ratio.padStart(13)}×  ${(t1-t0).toFixed(1).padStart(6)}`);
+      benchLog(`    ${nch.toString().padStart(2)}  ${enc.length.toString().padStart(7)}  ${kbps.toFixed(0).padStart(6)}  ${ratio.padStart(13)}×  ${(t1-t0).toFixed(1).padStart(6)}`);
     }
   });
 });
 
 describe("harmonic benchmark: sample rate comparison", () => {
   it("mono speech across sample rates at Q80", async () => {
-    console.log("\n  ── sample rate scaling (mono speech, Q=80) ──");
-    console.log("    rate     samples  bytes   kbps   SNR(dB)  enc(ms)");
-    console.log("    " + "─".repeat(55));
+    benchLog("\n  ── sample rate scaling (mono speech, Q=80) ──");
+    benchLog("    rate     samples  bytes   kbps   SNR(dB)  enc(ms)");
+    benchLog("    " + "─".repeat(55));
 
     for (const sr of [8000, 22050, 44100, 48000, 96000, 192000]) {
       const len = sr; // 1 second
@@ -201,7 +206,7 @@ describe("harmonic benchmark: sample rate comparison", () => {
       const kbps = enc.length * 8 / 1000;
       const s = snr(pcm, dec, 1, 0);
 
-      console.log(`    ${sr.toString().padStart(6)}  ${len.toString().padStart(7)}  ${enc.length.toString().padStart(6)}  ${kbps.toFixed(0).padStart(5)}  ${s.toFixed(1).padStart(7)}  ${(t1-t0).toFixed(1).padStart(6)}`);
+      benchLog(`    ${sr.toString().padStart(6)}  ${len.toString().padStart(7)}  ${enc.length.toString().padStart(6)}  ${kbps.toFixed(0).padStart(5)}  ${s.toFixed(1).padStart(7)}  ${(t1-t0).toFixed(1).padStart(6)}`);
     }
   });
 });
@@ -216,9 +221,9 @@ describe("harmonic benchmark: bitDepth precision", () => {
       sine24[i] = Math.round(Math.sin(2 * Math.PI * 440 * i / SR) * 8388607) / 8388608;
     }
 
-    console.log("\n  ── bit depth precision (1s sine, 48kHz) ──");
-    console.log("    depth  Q   bytes   kbps    SNR(dB)    maxErr");
-    console.log("    " + "─".repeat(55));
+    benchLog("\n  ── bit depth precision (1s sine, 48kHz) ──");
+    benchLog("    depth  Q   bytes   kbps    SNR(dB)    maxErr");
+    benchLog("    " + "─".repeat(55));
 
     for (const [depth, pcm] of [[16, sine16], [24, sine24]] as const) {
       for (const q of [30, 50, 80]) {
@@ -231,7 +236,7 @@ describe("harmonic benchmark: bitDepth precision", () => {
           const e = Math.abs(pcm[i] - dec[i]);
           if (e > maxErr) maxErr = e;
         }
-        console.log(`    ${depth.toString().padStart(5)}  ${q.toString().padStart(2)}  ${enc.length.toString().padStart(6)}  ${kbps.toFixed(0).padStart(5)}  ${s.toFixed(1).padStart(9)}  ${maxErr.toExponential(2).padStart(10)}`);
+        benchLog(`    ${depth.toString().padStart(5)}  ${q.toString().padStart(2)}  ${enc.length.toString().padStart(6)}  ${kbps.toFixed(0).padStart(5)}  ${s.toFixed(1).padStart(9)}  ${maxErr.toExponential(2).padStart(10)}`);
       }
     }
   });
