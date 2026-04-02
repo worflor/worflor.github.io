@@ -2923,105 +2923,54 @@ export async function encodeHarmonic(
     }
 
     const scalar = Math.max(qScalar, depthScalar);
-    // ear canal harmonic noise shaping — 4th-order NTF with two conjugate
-    // pairs of zeros, one at each audible standing-wave resonance of the
-    // human ear canal.
+    // cochlear-null noise shaping: places a spectral null in the quantization
+    // noise at the ear canal's quarter-wave resonance frequency.
     //
     // the ear canal is a half-open tube (open at pinna, closed at eardrum):
-    //   length L ≈ 0.026 m (average adult)
-    //   speed of sound at body temperature v = 353 m/s
-    //   resonances at odd harmonics: f_n = n·v/(4L), n = 1, 3, 5, ...
+    //   length L ≈ 0.026 m, speed of sound at 37°C v ≈ 353 m/s
+    //   quarter-wave resonance f₁ = v/(4L) ≈ 3394 Hz
     //
-    //   f₁ = 353/(4×0.026) ≈ 3394 Hz  (quarter-wave, primary sensitivity peak)
-    //   f₃ = 3×f₁           ≈ 10183 Hz (three-quarter-wave, secondary peak)
+    // NTF(z) = 1 - K·z⁻¹ + G·z⁻² with zeros at z = r·e^{±jω₀}
+    //   ω₀ = 2π·f₁/sampleRate, K = 2r·cos(ω₀), G = r²
     //
-    // the equal-loudness contours (ISO 226) confirm both peaks. the current
-    // single-null at f₁ dumps noise toward Nyquist, but the noise must pass
-    // through the secondary peak at f₃ on the way up. adding a second null
-    // at f₃ forces noise into the gaps: DC (below 100 Hz, inaudible) and
-    // above f₃ (above 12 kHz, rapidly falling sensitivity).
+    // pole radius r from max-deviation constraint (|K|+G ≤ 2, |e| ≤ 0.5):
+    //   r = -|cos ω₀| + √(cos²ω₀ + 2)
     //
-    // NTF(z) = (1 - A₁z⁻¹ + B₁z⁻²)(1 - A₂z⁻¹ + B₂z⁻²)
-    //   Aₖ = 2r·cos(ωₖ), Bₖ = r², ωₖ = 2π·fₖ/sampleRate
+    // at 48 kHz: r ≈ 0.77, noise at 3.4 kHz drops ~16 dB vs flat.
+    // the notch covers 1.5-5 kHz (the cochlea's full sensitive band).
+    // excess noise goes to DC and Nyquist — both inaudible.
     //
-    // expanded to 4th-order feedback coefficients:
-    //   c₁ = A₁+A₂, c₂ = -(B₁+B₂+A₁A₂), c₃ = A₁B₂+A₂B₁, c₄ = -B₁B₂
+    // a 4th-order dual-null (adding the ear canal's third harmonic at 10.2 kHz)
+    // was tested and rejected: the resonant feedback creates content-dependent
+    // ringing artifacts at low Q, causing inconsistent quality across levels.
+    // the 2nd-order single null is the stable optimum.
     //
-    // the shared pole radius r is derived from the max-deviation constraint:
-    //   (|c₁|+|c₂|+|c₃|+|c₄|)×0.5 ≤ 1.5 quantization steps
-    // solved via Newton iteration on the 4th-degree polynomial.
-    //
-    // all coefficients derive from three physical constants:
-    //   v = 353 m/s — speed of sound at 37°C
-    //   L = 0.026 m — ear canal length
-    //   sampleRate  — UV cutoff
-    // encoder-side only. decoder unchanged. zero bits in the stream.
+    // derived from: v=353 m/s, L=0.026 m, sampleRate. encoder-side only.
     const invPeak = scalar / framePeak;
     const shapeNoise = effectiveBitDepth === 0 && scalar > 1;
-    let nc1 = 0, nc2 = 0, nc3 = 0, nc4 = 0;
+    let nsK = 0, nsG = 0;
     if (shapeNoise) {
         const V_BODY = 353;    // speed of sound at 37°C (m/s)
         const L_CANAL = 0.026; // ear canal length (m)
-        const f1 = V_BODY / (4 * L_CANAL);       // quarter-wave: ~3394 Hz
-        const f3 = 3 * f1;                        // three-quarter-wave: ~10183 Hz
-        const w1 = 2 * Math.PI * f1 / sampleRate;
-        const w3 = 2 * Math.PI * f3 / sampleRate;
-        const cos1 = Math.cos(w1);
-        const cos3 = Math.cos(w3);
-
-        // find max r via Newton iteration on constraint:
-        // f(r) = |c₁|+|c₂|+|c₃|+|c₄| - 3 ≤ 0  (for max dev ≤ 1.5)
-        let r = 0.5;
-        for (let iter = 0; iter < 6; iter++) {
-            const r2 = r * r, r3 = r2 * r, r4 = r2 * r2;
-            const A1 = 2 * r * cos1, A2 = 2 * r * cos3;
-            const B = r2; // B1 = B2 = r²
-            const s1 = A1 + A2;
-            const s2 = 2 * B + A1 * A2;
-            const s3 = (A1 + A2) * B; // A1*B2 + A2*B1 = (A1+A2)*r²
-            const s4 = B * B;
-            const absSum = (s1 < 0 ? -s1 : s1) + (s2 < 0 ? -s2 : s2)
-                         + (s3 < 0 ? -s3 : s3) + s4;
-            const f = absSum - 3;
-            if (f < 0.001) { r += 0.02; continue; } // room to grow
-            if (f < 0.01) break; // close enough
-            // numerical derivative
-            const dr = 0.001;
-            const rp = r + dr, rp2 = rp * rp;
-            const A1p = 2 * rp * cos1, A2p = 2 * rp * cos3;
-            const Bp = rp2;
-            const t1 = A1p + A2p;
-            const t2 = 2 * Bp + A1p * A2p;
-            const t3 = (A1p + A2p) * Bp;
-            const t4 = Bp * Bp;
-            const absSumP = (t1 < 0 ? -t1 : t1) + (t2 < 0 ? -t2 : t2)
-                          + (t3 < 0 ? -t3 : t3) + t4;
-            const fp = (absSumP - 3 - f) / dr;
-            if (fp > 0) r -= f / fp;
-            if (r < 0.1) { r = 0.1; break; }
-            if (r > 0.95) r = 0.95;
-        }
-
-        const A1 = 2 * r * cos1, A2 = 2 * r * cos3;
-        const B = r * r;
-        nc1 = A1 + A2;
-        nc2 = -(2 * B + A1 * A2);
-        nc3 = (A1 + A2) * B;
-        nc4 = -(B * B);
+        const f1 = V_BODY / (4 * L_CANAL); // quarter-wave: ~3394 Hz
+        const omega0 = 2 * Math.PI * f1 / sampleRate;
+        const cosW = Math.cos(omega0);
+        const absCosW = cosW < 0 ? -cosW : cosW;
+        const r = -absCosW + Math.sqrt(absCosW * absCosW + 2);
+        nsK = 2 * r * cosW;
+        nsG = r * r;
     }
     const channels: Int32Array[] = [];
     const channelEnergy: number[] = [];
     for (let ch = 0; ch < numChannels; ch++) {
         const q = new Int32Array(numSamples);
         let energy = 0;
-        let e1 = 0, e2 = 0, e3 = 0, e4 = 0;
+        let e1 = 0, e2 = 0;
         for (let i = 0; i < numSamples; i++) {
             const raw = samples[i * numChannels + ch] * invPeak;
-            const s = shapeNoise
-                ? raw + nc1 * e1 + nc2 * e2 + nc3 * e3 + nc4 * e4
-                : raw;
+            const s = shapeNoise ? raw + nsK * e1 - nsG * e2 : raw;
             const qi = s >= 0 ? (s + 0.5) | 0 : (s - 0.5) | 0;
-            if (shapeNoise) { e4 = e3; e3 = e2; e2 = e1; e1 = s - qi; }
+            if (shapeNoise) { e2 = e1; e1 = s - qi; }
             q[i] = qi;
             energy += qi * qi;
         }
