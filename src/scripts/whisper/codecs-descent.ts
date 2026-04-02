@@ -335,14 +335,23 @@ function fitCanvas(
   canvas: HTMLCanvasElement,
   sizeRef: HTMLElement,
 ): { ctx: CanvasRenderingContext2D; w: number; h: number } {
-  const r = sizeRef.getBoundingClientRect();
-  canvas.width = r.width * DPR;
-  canvas.height = r.height * DPR;
-  canvas.style.width = r.width + "px";
-  canvas.style.height = r.height + "px";
+  // Use layout-space metrics only (offset/client), never transformed visual
+  // rects. This prevents perspective/rotate transitions from feeding back into
+  // canvas size math on WebKit during interrupted scroll reversals.
+  const ow = sizeRef.offsetWidth;
+  const oh = sizeRef.offsetHeight;
+  const cw = sizeRef.clientWidth;
+  const ch = sizeRef.clientHeight;
+  const w = Math.max(1, ow || cw || 0);
+  const h = Math.max(1, oh || ch || 0);
+
+  // Only update backing store; CSS remains the source of truth for display
+  // size. This avoids cumulative inline style drift.
+  canvas.width = Math.round(w * DPR);
+  canvas.height = Math.round(h * DPR);
   const ctx = canvas.getContext("2d")!;
   ctx.scale(DPR, DPR);
-  return { ctx, w: r.width, h: r.height };
+  return { ctx, w, h };
 }
 
 // per-act progress cache — written by scroll engine, read by draw loops.
@@ -1981,7 +1990,12 @@ function initCoda(act: HTMLElement) {
 
 function init() {
   const main = document.getElementById("descent");
-  if (!main) return;
+  if (!main) {
+    document.body.classList.remove("descent-mode");
+    return;
+  }
+
+  document.body.classList.add("descent-mode");
 
   const acts = Array.from(main.querySelectorAll<HTMLElement>(".act"));
 
@@ -2015,3 +2029,10 @@ if (document.readyState === "loading") {
 }
 
 document.addEventListener("astro:page-load", init);
+
+function teardownDescentMode() {
+  document.body.classList.remove("descent-mode");
+}
+
+window.addEventListener("pagehide", teardownDescentMode);
+document.addEventListener("astro:before-swap", teardownDescentMode as EventListener);
