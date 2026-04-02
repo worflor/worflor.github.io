@@ -627,8 +627,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const COPY_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="8" height="10" rx="1.5"/><path d="M3 10V3a1 1 0 011-1h7"/></svg>`;
   const EDIT_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 2.5a1.5 1.5 0 012 2L5 13H3v-2l8.5-8.5z"/></svg>`;
 
-  function exitEditMode(): void {
+  function exitEditMode(optsMode: { restoreDraft?: boolean } = {}): void {
     if (editingMsgId == null) return;
+    const { restoreDraft = true } = optsMode;
     haptic("mode-switch");
     const srcEl = msgById.get(editingMsgId);
     srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.remove("wl-msg--editing");
@@ -644,8 +645,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, 110);
     }
 
-    opts.chatInput.value = preEditInputValue;
-    opts.chatInput.placeholder = preEditPlaceholder;
+    if (restoreDraft) {
+      opts.chatInput.value = preEditInputValue;
+      opts.chatInput.placeholder = preEditPlaceholder;
+    } else {
+      opts.chatInput.value = "";
+      opts.chatInput.placeholder = preEditPlaceholder || "whisper something...";
+    }
     chatCompose?.removeAttribute("data-editing");
     editingMsgId = null;
     updateControls();
@@ -3972,6 +3978,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
               collapse();
               haptic("reaction");
 
+              if (editingMsgId != null) exitEditMode();
+
               emitCleared();
               preEditInputValue = opts.chatInput.value;
               preEditPlaceholder = opts.chatInput.placeholder;
@@ -5543,7 +5551,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // ── Edit mode: send edit instead of new message
     if (editingMsgId != null) {
       const targetId = editingMsgId;
-      exitEditMode();               // restores pre-edit input + calls updateControls
+      exitEditMode({ restoreDraft: false }); // submitted edits should leave compose clean
       if (!session) {
         handleEdit(targetId, text);
         simulateSendEnergy();
