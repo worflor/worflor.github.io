@@ -3117,25 +3117,43 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const bw = Math.max(2, step - WAVE_GAP);
     const maxH = h - 2;
     const r = bw / 2;
-    const headIdx = Math.floor(progress * n);
-    const hasHead = progress > 0.001 && progress < 0.999;
+    const clampedProgress = Math.max(0, Math.min(1, progress));
+    const headX = clampedProgress * w;
+    const hasHead = clampedProgress > 0.001 && clampedProgress < 0.999;
 
     for (let i = 0; i < n; i++) {
       const x = i * step + (step - bw) / 2;
       const barH = Math.max(WAVE_MIN_H, barHeights[i] * maxH);
       const y = (h - barH) / 2;
-      const isPlayed = (i + 0.5) / n <= progress;
+      const playedWidth = Math.max(0, Math.min(bw, headX - x));
 
       // Playhead proximity glow — falls off over ~3 bars
-      const dist = Math.abs(i - headIdx);
-      const g = hasHead && dist < 4 ? (1 - dist / 4) * 0.65 : 0;
+      const barCenterX = x + bw / 2;
+      const dist = Math.abs(barCenterX - headX) / Math.max(step, 1);
+      const g = hasHead && dist < 3.5 ? (1 - dist / 3.5) * 0.65 : 0;
       if (g > 0) { ctx.shadowColor = glowColor; ctx.shadowBlur = 6 * g; }
       else { ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; }
 
-      ctx.fillStyle = isPlayed ? played : unplayed;
+      ctx.fillStyle = unplayed;
       ctx.beginPath();
       ctx.roundRect(x, y, bw, barH, r);
       ctx.fill();
+      if (playedWidth >= bw) {
+        ctx.fillStyle = played;
+        ctx.beginPath();
+        ctx.roundRect(x, y, bw, barH, r);
+        ctx.fill();
+      } else if (playedWidth > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, playedWidth, barH);
+        ctx.clip();
+        ctx.fillStyle = played;
+        ctx.beginPath();
+        ctx.roundRect(x, y, bw, barH, r);
+        ctx.fill();
+        ctx.restore();
+      }
     }
     ctx.shadowColor = "transparent";
     ctx.shadowBlur = 0;

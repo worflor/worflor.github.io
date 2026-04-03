@@ -500,7 +500,11 @@ const seo = {
     border-radius: calc(var(--radar-radius) - var(--radius-xs));
     background: rgb(var(--color-text-rgb) / 0.015);
     cursor: default;
-    touch-action: manipulation;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   /* ── Borderless Stat Readout Strip ───────────────────────────── */

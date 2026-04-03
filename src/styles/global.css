@@ -289,10 +289,25 @@
   cursor: pointer;
   white-space: nowrap;
   touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
   -webkit-tap-highlight-color: transparent;
   transition:
     background var(--duration-normal) var(--ease-out),
     color var(--duration-normal) var(--ease-out);
+}
+
+button,
+[role="button"],
+summary,
+input[type="button"],
+input[type="submit"],
+input[type="reset"] {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Input-modality baseline for shared tool actions. */

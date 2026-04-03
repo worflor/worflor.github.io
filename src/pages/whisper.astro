@@ -1631,6 +1631,11 @@ const seo = {
     font-family: var(--font-body);
     font-size: var(--text-sm);
     cursor: pointer;
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
     transition:
       border-color var(--duration-normal) var(--ease-out),
       background var(--duration-normal) var(--ease-out),
@@ -2764,6 +2769,11 @@ const seo = {
     font-size: calc(var(--text-sm) * 0.78);
     color: rgb(var(--color-text-rgb) / 0.34);
     cursor: pointer;
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
     letter-spacing: 0.01em;
     transition: color var(--duration-normal) var(--ease-out);
   }
