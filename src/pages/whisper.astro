@@ -999,8 +999,9 @@ const seo = {
       return modulePromiseCache.get(key)!;
     }
 
-    let activeCleanup: (() => void) | null = null;
-    let activeModuleKey: WhisperModuleKey | null = null;
+    let baseWhisperCleanup: (() => void) | null = null;
+    let activeEnhancementCleanup: (() => void) | null = null;
+    let activeEnhancementKey: Exclude<WhisperModuleKey, "whisper"> | null = null;
     let moduleLoadToken = 0;
     let modeObserver: MutationObserver | null = null;
     let submodeAbort: AbortController | null = null;
@@ -1058,18 +1059,48 @@ const seo = {
       return "whisper";
     }
 
-    function teardownActiveModule(): void {
-      activeCleanup?.();
-      activeCleanup = null;
-      activeModuleKey = null;
+    function teardownEnhancementModule(): void {
+      activeEnhancementCleanup?.();
+      activeEnhancementCleanup = null;
+      activeEnhancementKey = null;
+    }
+
+    function teardownBaseWhisperModule(): void {
+      baseWhisperCleanup?.();
+      baseWhisperCleanup = null;
+    }
+
+    async function ensureBaseWhisperModule(mode: WhisperRuntimeMode, token: number): Promise<void> {
+      if (baseWhisperCleanup) return;
+      const firstLoad = !modulePromiseCache.has("whisper");
+      if (firstLoad) setModuleLoading(true, mode);
+      try {
+        const loader = await loadWhisperModule("whisper");
+        if (token !== moduleLoadToken) return;
+        const options = loader.resolveOptions(document);
+        if (!options) return;
+        const cleanup = loader.init(options);
+        baseWhisperCleanup = typeof cleanup === "function" ? cleanup : null;
+      } finally {
+        if (firstLoad && token === moduleLoadToken) {
+          setModuleLoading(false);
+        }
+      }
     }
 
     async function ensureRuntimeModule(mode: WhisperRuntimeMode): Promise<void> {
-      const key = moduleForMode(mode);
-      if (activeModuleKey === key && activeCleanup) return;
-
-      teardownActiveModule();
       const token = ++moduleLoadToken;
+      await ensureBaseWhisperModule(mode, token);
+      if (token !== moduleLoadToken) return;
+
+      const key = moduleForMode(mode);
+      if (key === "whisper") {
+        teardownEnhancementModule();
+        return;
+      }
+      if (activeEnhancementKey === key && activeEnhancementCleanup) return;
+
+      teardownEnhancementModule();
       const firstLoad = !modulePromiseCache.has(key);
       if (firstLoad) setModuleLoading(true, mode);
 
@@ -1079,8 +1110,8 @@ const seo = {
         const options = loader.resolveOptions(document);
         if (!options) return;
         const cleanup = loader.init(options);
-        activeCleanup = typeof cleanup === "function" ? cleanup : null;
-        activeModuleKey = key;
+        activeEnhancementCleanup = typeof cleanup === "function" ? cleanup : null;
+        activeEnhancementKey = key;
       } finally {
         if (firstLoad && token === moduleLoadToken) {
           setModuleLoading(false);
@@ -1261,7 +1292,8 @@ const seo = {
     function teardown() {
       moduleLoadToken += 1;
       setModuleLoading(false);
-      teardownActiveModule();
+      teardownEnhancementModule();
+      teardownBaseWhisperModule();
       submodeAbort?.abort();
       submodeAbort = null;
       modeObserver?.disconnect();
@@ -3619,4 +3651,3 @@ const seo = {
     });
   })();
 </script>
-
