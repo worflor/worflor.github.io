@@ -929,23 +929,6 @@ const seo = {
   </div>
 
   <script>
-    import {
-      initWhisper,
-      resolveWhisperUIOptions,
-    } from "../scripts/whisper/ui";
-    import {
-      initWhisperLive,
-      resolveWhisperLiveUIOptions,
-    } from "../scripts/whisper/live-ui";
-    import {
-      initWhisperSeal,
-      resolveWhisperSealUIOptions,
-    } from "../scripts/whisper/seal-ui";
-    import {
-      initCampfire,
-      resolveCampfireUIOptions,
-    } from "../scripts/whisper/campfire/ui";
-
     const WHISPER_LIFECYCLE_KEY = "__whisperLifecycle";
     type WhisperLifecycle = {
       boot: () => void;
@@ -953,10 +936,73 @@ const seo = {
       detach?: () => void;
     };
 
-    let cleanupWhisper: (() => void) | null = null;
-    let cleanupLive: (() => void) | null = null;
-    let cleanupSeal: (() => void) | null = null;
-    let cleanupCampfire: (() => void) | null = null;
+    type WhisperRuntimeMode =
+      | "embed"
+      | "extract"
+      | "hunt"
+      | "live"
+      | "seal"
+      | "campfire";
+    type WhisperModuleKey = "whisper" | "live" | "seal" | "campfire";
+    type WhisperModuleLoader = {
+      resolveOptions: (root: ParentNode) => unknown | null;
+      init: (options: unknown) => (() => void) | void;
+    };
+
+    const MODE_LABELS: Record<WhisperRuntimeMode, string> = {
+      embed: "embed",
+      extract: "extract",
+      hunt: "hunt",
+      live: "live",
+      seal: "seal",
+      campfire: "campfire",
+    };
+
+    const modulePromiseCache = new Map<WhisperModuleKey, Promise<WhisperModuleLoader>>();
+
+    function loadWhisperModule(key: WhisperModuleKey): Promise<WhisperModuleLoader> {
+      if (!modulePromiseCache.has(key)) {
+        if (key === "whisper") {
+          modulePromiseCache.set(
+            key,
+            import("../scripts/whisper/ui").then((mod) => ({
+              resolveOptions: (root: ParentNode) => mod.resolveWhisperUIOptions(root),
+              init: (options: unknown) => mod.initWhisper(options as Parameters<typeof mod.initWhisper>[0]),
+            })),
+          );
+        } else if (key === "live") {
+          modulePromiseCache.set(
+            key,
+            import("../scripts/whisper/live-ui").then((mod) => ({
+              resolveOptions: (root: ParentNode) => mod.resolveWhisperLiveUIOptions(root),
+              init: (options: unknown) => mod.initWhisperLive(options as Parameters<typeof mod.initWhisperLive>[0]),
+            })),
+          );
+        } else if (key === "seal") {
+          modulePromiseCache.set(
+            key,
+            import("../scripts/whisper/seal-ui").then((mod) => ({
+              resolveOptions: (root: ParentNode) => mod.resolveWhisperSealUIOptions(root),
+              init: (options: unknown) => mod.initWhisperSeal(options as Parameters<typeof mod.initWhisperSeal>[0]),
+            })),
+          );
+        } else {
+          modulePromiseCache.set(
+            key,
+            import("../scripts/whisper/campfire/ui").then((mod) => ({
+              resolveOptions: (root: ParentNode) => mod.resolveCampfireUIOptions(root),
+              init: (options: unknown) => mod.initCampfire(options as Parameters<typeof mod.initCampfire>[0]),
+            })),
+          );
+        }
+      }
+      return modulePromiseCache.get(key)!;
+    }
+
+    let activeCleanup: (() => void) | null = null;
+    let activeModuleKey: WhisperModuleKey | null = null;
+    let moduleLoadToken = 0;
+    let modeObserver: MutationObserver | null = null;
     let submodeAbort: AbortController | null = null;
     const whisperWindow = window as unknown as Record<
       string,
@@ -969,6 +1015,86 @@ const seo = {
       "whats on your mind - but more importantly... how do you communicate it?",
     ];
 
+    function setModuleLoading(isLoading: boolean, mode?: WhisperRuntimeMode): void {
+      const page = document.getElementById("whisper-page") as HTMLElement | null;
+      const statusLine = document.getElementById("whisper-status-line") as HTMLElement | null;
+      if (!page) return;
+
+      page.dataset.moduleLoading = isLoading ? "1" : "0";
+      if (!statusLine) return;
+
+      if (isLoading) {
+        if (!statusLine.dataset.prevStatusLine) {
+          statusLine.dataset.prevStatusLine = statusLine.textContent ?? "";
+        }
+        statusLine.textContent = `loading ${MODE_LABELS[mode ?? "embed"]} module...`;
+        return;
+      }
+
+      if (statusLine.dataset.prevStatusLine !== undefined) {
+        statusLine.textContent = statusLine.dataset.prevStatusLine;
+        delete statusLine.dataset.prevStatusLine;
+      }
+    }
+
+    function resolveRuntimeMode(page: HTMLElement): WhisperRuntimeMode {
+      const mode = page.dataset.mode;
+      if (mode === "seal" || mode === "campfire") return mode;
+      if (mode === "live") {
+        const selected = document.querySelector<HTMLInputElement>(
+          'input[name="wl-live-submode"]:checked',
+        )?.value;
+        return selected === "campfire" ? "campfire" : "live";
+      }
+      if (mode === "embed" && page.dataset.carrier === "url") return "seal";
+      if (mode === "extract" || mode === "hunt") return mode;
+      return "embed";
+    }
+
+    function moduleForMode(mode: WhisperRuntimeMode): WhisperModuleKey {
+      if (mode === "live") return "live";
+      if (mode === "seal") return "seal";
+      if (mode === "campfire") return "campfire";
+      return "whisper";
+    }
+
+    function teardownActiveModule(): void {
+      activeCleanup?.();
+      activeCleanup = null;
+      activeModuleKey = null;
+    }
+
+    async function ensureRuntimeModule(mode: WhisperRuntimeMode): Promise<void> {
+      const key = moduleForMode(mode);
+      if (activeModuleKey === key && activeCleanup) return;
+
+      teardownActiveModule();
+      const token = ++moduleLoadToken;
+      const firstLoad = !modulePromiseCache.has(key);
+      if (firstLoad) setModuleLoading(true, mode);
+
+      try {
+        const loader = await loadWhisperModule(key);
+        if (token !== moduleLoadToken) return;
+        const options = loader.resolveOptions(document);
+        if (!options) return;
+        const cleanup = loader.init(options);
+        activeCleanup = typeof cleanup === "function" ? cleanup : null;
+        activeModuleKey = key;
+      } finally {
+        if (firstLoad && token === moduleLoadToken) {
+          setModuleLoading(false);
+        }
+      }
+    }
+
+    function syncRuntimeMode(): void {
+      const page = document.getElementById("whisper-page") as HTMLElement | null;
+      if (!page) return;
+      const mode = resolveRuntimeMode(page);
+      void ensureRuntimeModule(mode);
+    }
+
     function boot() {
       teardown();
       const msgArea =
@@ -978,14 +1104,6 @@ const seo = {
           MESSAGE_PLACEHOLDERS[
             Math.floor(Math.random() * MESSAGE_PLACEHOLDERS.length)
           ];
-      const whisperOptions = resolveWhisperUIOptions(document);
-      if (whisperOptions) cleanupWhisper = initWhisper(whisperOptions);
-      const liveOptions = resolveWhisperLiveUIOptions(document);
-      if (liveOptions) cleanupLive = initWhisperLive(liveOptions);
-      const sealOptions = resolveWhisperSealUIOptions(document);
-      if (sealOptions) cleanupSeal = initWhisperSeal(sealOptions);
-      const campfireOptions = resolveCampfireUIOptions(document);
-      if (campfireOptions) cleanupCampfire = initCampfire(campfireOptions);
 
       // Wire up collapsible runtime log
       const logWrap = document.getElementById("whisper-log-wrap");
@@ -1077,6 +1195,7 @@ const seo = {
             const mode = radio.value === "campfire" ? "campfire" : "1:1";
             sessionStorage.setItem("whisper-live-submode", mode);
             syncLiveSubmode(mode);
+            syncRuntimeMode();
           },
           { signal: submodeSignal },
         );
@@ -1092,6 +1211,7 @@ const seo = {
           const mode = custom.detail?.mode === "campfire" ? "campfire" : "1:1";
           sessionStorage.setItem("whisper-live-submode", mode);
           syncLiveSubmode(mode);
+          syncRuntimeMode();
 
           if (mode === "campfire" && custom.detail?.bootstrap) {
             window.dispatchEvent(
@@ -1123,19 +1243,29 @@ const seo = {
         (r) => r.checked,
       )?.value;
       syncLiveSubmode(checkedMode === "campfire" ? "campfire" : "1:1");
+
+      const page = document.getElementById("whisper-page") as HTMLElement | null;
+      if (page) {
+        modeObserver = new MutationObserver(() => {
+          syncRuntimeMode();
+        });
+        modeObserver.observe(page, {
+          attributes: true,
+          attributeFilter: ["data-mode", "data-carrier"],
+        });
+      }
+
+      syncRuntimeMode();
     }
 
     function teardown() {
-      cleanupWhisper?.();
-      cleanupWhisper = null;
-      cleanupLive?.();
-      cleanupLive = null;
-      cleanupSeal?.();
-      cleanupSeal = null;
-      cleanupCampfire?.();
-      cleanupCampfire = null;
+      moduleLoadToken += 1;
+      setModuleLoading(false);
+      teardownActiveModule();
       submodeAbort?.abort();
       submodeAbort = null;
+      modeObserver?.disconnect();
+      modeObserver = null;
     }
 
     function detachLifecycle() {
