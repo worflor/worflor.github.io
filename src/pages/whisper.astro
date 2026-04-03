@@ -1040,6 +1040,7 @@ const seo = {
 
     function resolveRuntimeMode(page: HTMLElement): WhisperRuntimeMode {
       const mode = page.dataset.mode;
+      if (window.location.hash.startsWith("#ws2:")) return "seal";
       if (mode === "seal" || mode === "campfire") return mode;
       if (mode === "live") {
         const selected = document.querySelector<HTMLInputElement>(
@@ -1047,7 +1048,6 @@ const seo = {
         )?.value;
         return selected === "campfire" ? "campfire" : "live";
       }
-      if (window.location.hash.startsWith("#ws2:")) return "seal";
       if (mode === "embed" && page.dataset.carrier === "url") return "seal";
       if (mode === "extract" || mode === "hunt") return mode;
       return "embed";
@@ -1245,7 +1245,9 @@ const seo = {
           syncLiveSubmode(mode);
           const page = document.getElementById("whisper-page");
           if (page instanceof HTMLElement) {
-            await ensureRuntimeModule(resolveRuntimeMode(page));
+            const funnelRuntimeMode =
+              mode === "campfire" ? "campfire" : resolveRuntimeMode(page);
+            await ensureRuntimeModule(funnelRuntimeMode);
           }
 
           if (mode === "campfire" && custom.detail?.bootstrap) {
