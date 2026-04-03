@@ -4232,10 +4232,14 @@ export async function encodeHarmonic(
         nsG = r * r;
     }
     const wasm = await getHarmonicWasm();
+    const baselineChannels: Int32Array[] = [];
+    const baselineEnergy: number[] = [];
     const channels: Int32Array[] = [];
     const channelEnergy: number[] = [];
     const channelEnvelopes: (Int16Array | null)[] = [];
+    const amplitudeCandidates: ({ data: Int32Array; energy: number; envLog: Int16Array; envCurve: Float32Array; extraBits: number } | null)[] = [];
     const envelopeBlockLen = envelopeBlockLenFromBurgSuperLen(burgSuperLen);
+    const oneLevelDb = 20 * Math.log10((scalar + 1) / scalar);
     for (let ch = 0; ch < numChannels; ch++) {
         const baseline = quantizeChannelWithOrbitalGuide(
             wasm,
@@ -4250,46 +4254,30 @@ export async function encodeHarmonic(
             numLevels,
             scalar,
         );
-        let data = baseline.data;
-        let energy = baseline.energy;
-        let envelope: Int16Array | null = null;
-        const oneLevelDb = 20 * Math.log10((scalar + 1) / scalar);
-        if (shapeNoise && oneLevelDb >= 0.5 && numSamples >= envelopeBlockLen * 2) {
-            const baselineRecon = new Float32Array(numSamples);
-            for (let i = 0; i < numSamples; i++) baselineRecon[i] = baseline.data[i] * (framePeak / scalar);
-            const baselineScore = analyzeQuantizedChannel(
-                wasm,
-                baseline.data,
-                baselineRecon,
-                samples,
-                ch,
-                numChannels,
-                scalar,
-            );
-            const amplitude = quantizeChannelWithAmplitudeAxis(
-                wasm,
-                samples,
-                ch,
-                numChannels,
-                numSamples,
-                framePeak,
-                scalar,
-                envelopeBlockLen,
-                baseline.data,
-                shapeNoise,
-                nsK,
-                nsG,
-                numLevels,
-            );
-            if (amplitude && amplitude.objective < baselineScore.objective) {
-                data = amplitude.data;
-                energy = amplitude.energy;
-                envelope = amplitude.envLog;
-            }
-        }
-        channels.push(data);
-        channelEnergy.push(energy);
-        channelEnvelopes.push(envelope);
+        baselineChannels.push(baseline.data);
+        baselineEnergy.push(baseline.energy);
+        channels.push(baseline.data);
+        channelEnergy.push(baseline.energy);
+        channelEnvelopes.push(null);
+        amplitudeCandidates.push(
+            shapeNoise && oneLevelDb >= 0.5 && numSamples >= envelopeBlockLen * 2
+                ? quantizeChannelWithAmplitudeAxis(
+                    wasm,
+                    samples,
+                    ch,
+                    numChannels,
+                    numSamples,
+                    framePeak,
+                    scalar,
+                    envelopeBlockLen,
+                    baseline.data,
+                    shapeNoise,
+                    nsK,
+                    nsG,
+                    numLevels,
+                )
+                : null,
+        );
     }
     const effectiveChannels = numChannels;
 
@@ -4299,7 +4287,75 @@ export async function encodeHarmonic(
     let couplingRefs: number[] = [];
     let couplingOrder: number[] = [];
 
-    // coupling requires enough samples for meaningful correlation (at least 1 block)
+    const axisPasses = layout !== "object" && numChannels > 1 ? 3 : 1;
+    for (let pass = 0; pass < axisPasses; pass++) {
+        if (layout !== "object" && numChannels > 1 && numSamples >= BLOCK_LEN) {
+            const { refIndex, order } = assignReferences(channels, numSamples);
+            couplingRefs = refIndex;
+            couplingOrder = order;
+        } else {
+            couplingRefs = new Array(numChannels).fill(NO_REF);
+            couplingOrder = Array.from({ length: numChannels }, (_, i) => i);
+        }
+
+        for (let ch = 0; ch < numChannels; ch++) {
+            const amplitude = amplitudeCandidates[ch];
+            const baselineData = baselineChannels[ch];
+            channels[ch] = baselineData;
+            channelEnergy[ch] = baselineEnergy[ch];
+            channelEnvelopes[ch] = null;
+            if (!amplitude) continue;
+
+            const refIdx = couplingRefs[ch] ?? NO_REF;
+            const refData = refIdx !== NO_REF ? channels[refIdx] : undefined;
+
+            const baselineRecon = new Float32Array(numSamples);
+            for (let i = 0; i < numSamples; i++) baselineRecon[i] = baselineData[i] * (framePeak / scalar);
+            const baselineScore = scoreQuantizedChannel(
+                wasm,
+                baselineData,
+                baselineRecon,
+                samples,
+                ch,
+                numChannels,
+                quality,
+                scalar,
+                numLevels,
+                burgSuperLen,
+                goertzelLen,
+                blocksPerGoertzel,
+                trajState,
+                refData,
+            );
+
+            const amplitudeRecon = new Float32Array(numSamples);
+            for (let i = 0; i < numSamples; i++) amplitudeRecon[i] = amplitude.data[i] * (amplitude.envCurve[i] / scalar);
+            const amplitudeScore = scoreQuantizedChannel(
+                wasm,
+                amplitude.data,
+                amplitudeRecon,
+                samples,
+                ch,
+                numChannels,
+                quality,
+                scalar,
+                numLevels,
+                burgSuperLen,
+                goertzelLen,
+                blocksPerGoertzel,
+                trajState,
+                refData,
+                amplitude.extraBits,
+            );
+
+            if (amplitudeScore.objective < baselineScore.objective) {
+                channels[ch] = amplitude.data;
+                channelEnergy[ch] = amplitude.energy;
+                channelEnvelopes[ch] = amplitude.envLog;
+            }
+        }
+    }
+
     if (layout !== "object" && numChannels > 1 && numSamples >= BLOCK_LEN) {
         const { refIndex, order } = assignReferences(channels, numSamples);
         couplingRefs = refIndex;
