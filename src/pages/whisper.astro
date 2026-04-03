@@ -962,33 +962,38 @@ const seo = {
 
     function loadWhisperModule(key: WhisperModuleKey): Promise<WhisperModuleLoader> {
       if (!modulePromiseCache.has(key)) {
-        if (key === "whisper") {
+        const cacheWithRetry = (promise: Promise<WhisperModuleLoader>): void => {
           modulePromiseCache.set(
             key,
+            promise.catch((error) => {
+              modulePromiseCache.delete(key);
+              throw error;
+            }),
+          );
+        };
+        if (key === "whisper") {
+          cacheWithRetry(
             import("../scripts/whisper/ui").then((mod) => ({
               resolveOptions: (root: ParentNode) => mod.resolveWhisperUIOptions(root),
               init: (options: unknown) => mod.initWhisper(options as Parameters<typeof mod.initWhisper>[0]),
             })),
           );
         } else if (key === "live") {
-          modulePromiseCache.set(
-            key,
+          cacheWithRetry(
             import("../scripts/whisper/live-ui").then((mod) => ({
               resolveOptions: (root: ParentNode) => mod.resolveWhisperLiveUIOptions(root),
               init: (options: unknown) => mod.initWhisperLive(options as Parameters<typeof mod.initWhisperLive>[0]),
             })),
           );
         } else if (key === "seal") {
-          modulePromiseCache.set(
-            key,
+          cacheWithRetry(
             import("../scripts/whisper/seal-ui").then((mod) => ({
               resolveOptions: (root: ParentNode) => mod.resolveWhisperSealUIOptions(root),
               init: (options: unknown) => mod.initWhisperSeal(options as Parameters<typeof mod.initWhisperSeal>[0]),
             })),
           );
         } else {
-          modulePromiseCache.set(
-            key,
+          cacheWithRetry(
             import("../scripts/whisper/campfire/ui").then((mod) => ({
               resolveOptions: (root: ParentNode) => mod.resolveCampfireUIOptions(root),
               init: (options: unknown) => mod.initCampfire(options as Parameters<typeof mod.initCampfire>[0]),
