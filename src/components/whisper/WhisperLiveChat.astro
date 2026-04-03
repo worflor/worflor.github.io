@@ -691,6 +691,8 @@
     );
     transition: background var(--duration-normal) var(--ease-out);
     background: rgb(10 10 10 / 0.86);
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   /* Custom scrollbar only for pointer devices — touch keeps native overlay */
@@ -790,6 +792,8 @@
     box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018);
     will-change: transform, filter, background-color, box-shadow;
     touch-action: manipulation;
+    -webkit-user-select: text;
+    user-select: text;
   }
 
   :global(.wl-chat-messages) :global(.wl-msg--self .wl-msg-text),
