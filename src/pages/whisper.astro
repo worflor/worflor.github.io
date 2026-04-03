@@ -1047,6 +1047,7 @@ const seo = {
         )?.value;
         return selected === "campfire" ? "campfire" : "live";
       }
+      if (window.location.hash.startsWith("#ws2:")) return "seal";
       if (mode === "embed" && page.dataset.carrier === "url") return "seal";
       if (mode === "extract" || mode === "hunt") return mode;
       return "embed";
@@ -1234,7 +1235,7 @@ const seo = {
 
       window.addEventListener(
         "whisper-live-funnel",
-        (event: Event) => {
+        async (event: Event) => {
           const custom = event as CustomEvent<{
             mode?: "1:1" | "campfire";
             bootstrap?: boolean;
@@ -1242,7 +1243,10 @@ const seo = {
           const mode = custom.detail?.mode === "campfire" ? "campfire" : "1:1";
           sessionStorage.setItem("whisper-live-submode", mode);
           syncLiveSubmode(mode);
-          syncRuntimeMode();
+          const page = document.getElementById("whisper-page");
+          if (page instanceof HTMLElement) {
+            await ensureRuntimeModule(resolveRuntimeMode(page));
+          }
 
           if (mode === "campfire" && custom.detail?.bootstrap) {
             window.dispatchEvent(
@@ -1259,6 +1263,14 @@ const seo = {
               }),
             );
           }
+        },
+        { signal: submodeSignal },
+      );
+
+      window.addEventListener(
+        "hashchange",
+        () => {
+          syncRuntimeMode();
         },
         { signal: submodeSignal },
       );
