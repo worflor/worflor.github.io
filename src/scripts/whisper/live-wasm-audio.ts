@@ -1,149 +1,78 @@
 /**
- * live-wasm-audio.ts — Whisper Harmonic Audio Codec (Woflo / MB)
+ * live-wasm-audio.ts - Whisper Harmonic Audio Codec (Woflo / MB)
  *
- * waveform-accurate audio codec. transmits the raw physics of the signal,
- * not a perceptual approximation. supports N-channel surround (Hadamard
- * decorrelation), object-based spatial audio (3D positions per object),
- * variable source bit depth (16/24-bit), and any sample rate.
+ * waveform-accurate audio codec. it trades bitrate against lattice precision,
+ * not against the waveform itself. supports N-channel surround, object-based
+ * spatial audio, variable source bit depth, and any sample rate the f32/i32
+ * predictor geometry can represent safely.
  *
- * the prediction hierarchy is a renormalization group that integrates out
- * modes from slow to fast:
+ * the prediction hierarchy integrates structure from coarse to fine:
  *
- *   1. peak normalization + scalar quantization (float32 → int32)
- *   2. N-channel Hadamard decorrelation (generalizes Mid/Side to any count)
- *   3. Burg adaptive-order LPC (up to order 12, per 256-sample super-block):
- *      captures spectral envelope (formants). trial-compared against AR(2)-only
- *      via trajectory-aware Rice cost estimate. activated when ar2Captures < AR2_SKIP_BURG.
- *   4. IIR-2 damped oscillator prediction at full sample rate:
- *      pred = K·prev₁ − G·prev₂, fitted per 32-sample block via 2×2 Cramer LS.
- *      poles λ = r·e^{±iω₀}: K = 2r·cos(ω₀), G = r². stability: K² ≤ 4G.
- *      transient detection zeros K/G for blocks with >18 dB energy asymmetry.
- *   5. cascaded micro-oscillator: second AR(2) on residual captures higher
- *      harmonics the first AR(2) missed. trial-encoded (10% margin).
- *   6. delta pre-filter: first-difference whitens correlated residuals.
- *      trial-encoded (5% margin).
- *   7. trajectory prediction (Farmer-Sidorowich 1987): nonlinear closure.
- *      the residual traces a trajectory on a low-dimensional manifold in
- *      delay-embedding space (Takens' theorem). a local weighted kNN predictor
- *      in the causal window captures this nonlinear structure. zero side
- *      information — encoder and decoder compute identical predictions.
- *      trial-encoded (5% margin). measured: 4-5% compression gain on real audio.
- *   8. harmonic topology (Goertzel with Hann window → 2D Möbius field):
- *      extracts harmonics 2..N as A(harmonic, time), compressed with
- *      P(h,b) = A(h-1,b) + A(h,b-1) - A(h-1,b-1). trial-encoded.
- *   9. CDF 5/3 biorthogonal wavelet (3 levels → 4 subbands)
- *  10. cochlea masking: zeroes negligible-energy subbands (guarded by
- *      ar2Captures and disabled when delta is active to prevent cumulative
- *      sum amplification through IIR-2 feedback)
- *  11. batched byte-plane encoding: all subbands' zigzag lo/mid/top planes
- *      concatenated into single Logos streams (fewer calls, better context)
- *  12. Logos-compressed K/G and Burg trajectories
- *  13. ChaCha20 stream cipher + SipHash-lite 64-bit MAC
+ *   1. peak normalization + scalar quantization (float32 -> int32)
+ *   2. cross-channel coupling W on the channel axis
+ *   3. Burg adaptive-order LPC on 256-sample super-blocks
+ *   4. AR(2) damped oscillator prediction on 32-sample blocks
+ *   5. optional micro-oscillator on the residual
+ *   6. optional delta whitening
+ *   7. trajectory prediction in delay-embedding space
+ *   8. harmonic topology on voiced content
+ *   9. CDF 5/3 wavelet decomposition
+ *  10. guarded subband masking
+ *  11. Logos entropy coding for residual planes and trajectories
+ *  12. ChaCha20 stream cipher + SipHash-lite MAC
  *
- * the IIR-2 IS Newton's second law in discrete time. the poles are the
- * eigenvalues of the signal's generating dynamical system. the residual
- * after prediction has the statistics of quantum vacuum fluctuations.
- * the Burg→AR(2)→trajectory→wavelet→Logos hierarchy is a Wilson-Kadanoff
- * renormalization group: each layer integrates out the dominant mode at its
- * scale. the linear prediction chain (Burg, AR(2), micro-osc, delta) captures
- * oscillatory structure. the trajectory predictor captures the nonlinear
- * residual manifold. the wavelet separates frequency bands. Logos compresses
- * the remainder.
+ * the core dynamical law is the AR(2) oscillator:
  *
- * fundamental constraint: IIR-2 with undamped poles (G≈1) has infinite gain
- * at resonance. residuals MUST be lossless (the Q parameter controls initial
- * quantization precision, not residual precision). proven 2026-03-29.
+ *   pred = K * prev1 - G * prev2
  *
- * the Q parameter (1-100):
- *   scalar = floor(2^(Q/100 × 15)). this is the number of integer quantization
- *   levels per peak amplitude. every Q value from 1 to 100 works.
- *   below Q≈30, the scalar is small enough that multiple Q values map to the
- *   same integer (e.g. Q=1 through Q=6 all give scalar=1, a ternary signal).
- *   above Q≈30 the curve is smooth: each Q unit adds roughly 0.9 dB and 3 kbps.
- *   at Q≥95, every sample's error fits within a 16-bit LSB.
- *   Q=100 bypasses the entire pipeline and stores raw float32 (bit-exact).
+ * with poles lambda = r * exp(+/- i * omega0), so:
  *
- *   at low Q the K/G trajectory is thinned: adjacent blocks share the same
- *   coefficients because a coarsely quantized signal doesn't change pitch fast
- *   enough to justify per-block updates. this halves the bitstream at Q=20.
+ *   K = 2r cos(omega0)
+ *   G = r^2
+ *   stability requires K^2 <= 4G
  *
- * bit depth mode (optional):
- *   when bitDepth is set (16, 24, or 32), the scalar is forced to the
- *   minimum needed to preserve every source integer value. this overrides Q
- *   if the depth-derived scalar exceeds the Q-derived one. at bitDepth=16,
- *   scalar ≥ 32768; at 24, scalar ≥ 8388608. the prediction pipeline still
- *   runs — the codec still compresses, just at higher precision.
+ * fundamental constraint:
+ *   near-unit-circle poles have unbounded resonant gain. residuals therefore
+ *   must remain lossless at the chosen integer lattice. Q controls the initial
+ *   scalar precision, not a lossy residual stage.
  *
- * channel handling (any count from 1 to 64):
- *   the cross-channel coupling coefficient W captures inter-channel
- *   correlation as an orthogonal renormalization layer. for each channel,
- *   W·ref is subtracted from the raw signal before K/G fitting. this is
- *   the 2D Möbius predictor on the (channel × time) plane, factored into
- *   two orthogonal axes: W for the channel axis, K/G for the time axis.
- *   trial-gated: only fires when the decoupled path is cheaper including
- *   trajectory cost. for identical channels: 50% savings. for partially
- *   correlated: 1-4% savings. for uncorrelated: 0% overhead.
- *   object-based layout skips coupling (each object is an independent
- *   mono stream + 3D spatial position).
+ * low-Q quality is stabilized by three coupled pieces:
+ *   1. cochlear-null noise shaping derived from ear-canal resonance
+ *   2. waveform-aware scalar search on the nearby integer lattice
+ *   3. a stochastic-only penalty when the full structure stack is absent
  *
- * sample rate:
- *   the sample rate is the UV cutoff of the theory — the coupling constant
- *   between the discrete z-plane and continuous physical frequency. the
- *   prediction physics is dimensionless (K/G adapt automatically), but
- *   analysis windows (Burg, Goertzel, wavelet levels) scale with sample
- *   rate to maintain consistent time duration. any rate from 8000 to 192000+
- *   works without special casing.
+ * the amplitude axis is first-class. it models the oscillator radius as a
+ * slow multiscale field, carried explicitly on the wire with its block length,
+ * and it is selected by the same downstream objective as the carrier lattice.
  *
- * how different signals compress (100 real audio files, Q=80):
- *   quiet  (near-silence, soft ambience):   ~200 kbps,  47 dB SNR
- *   medium (speech, solo instrument):       ~170 kbps,  67 dB SNR
- *   loud   (dense music, layered voices):   ~215 kbps,  70 dB SNR
- *   no signal tested produced NaN, divergence, or a bitrate outlier.
+ * current measured position on this branch:
+ *   synthetic 48 kHz mono speech
+ *     q10  130.6 kbps   24.5 dB
+ *     q20  166.8 kbps   33.4 dB
+ *     q40  183.1 kbps   48.8 dB
+ *     q80  232.0 kbps   80.5 dB
+ *     q95  256.4 kbps   92.8 dB
  *
- * where Harmonic sits among other codecs (sorted by bitrate):
+ *   cached 15 s mono real-audio clip
+ *     Harmonic Q60   251 kbps   37.5 dB
+ *     Harmonic Q70   313 kbps   45.6 dB
+ *     Harmonic Q80   366 kbps   53.7 dB
+ *     Harmonic Q90   426 kbps   61.8 dB
+ *     Vorbis 192k    193 kbps   34.2 dB
+ *     MP3 320k       321 kbps   27.3 dB
+ *     FLAC           675 kbps   inf dB
  *
- *   Codec2       2 kbps         telephony (parametric, not waveform)
- *   Harm Q26    53 kbps  17 dB  waveform — 17% smaller than Opus 64k
- *   Opus 64k    64 kbps  22 dB  perceptual — waveform discarded, sounds clean
- *   Harm Q32    95 kbps  22 dB  waveform — same SNR as Opus 64k, waveform intact
- *   OGG 96k     96 kbps  22 dB  perceptual
- *   AAC 96k     96 kbps  21 dB  perceptual
- *   Harm Q40   122 kbps  29 dB  waveform — same SNR as Opus 128k, 5% smaller
- *   MP3 128k   128 kbps  23 dB  perceptual
- *   Opus 128k  128 kbps  28 dB  perceptual
- *   Harm Q60   197 kbps  46 dB  waveform — 12 dB above any perceptual codec
- *   Opus 256k  256 kbps  34 dB  perceptual (practical ceiling for Opus)
- *   Harm Q80   281 kbps  64 dB  waveform — 37% of WAV, 3× smaller than FLAC
- *   MP3 320k   320 kbps  28 dB  perceptual
- *   Harm Q90   338 kbps  73 dB  waveform — every sample within a 16-bit LSB
- *   FLAC       900 kbps   ∞ dB  lossless
- *   WAV 16-bit 768 kbps   ∞ dB  uncompressed
+ * lossless modes:
+ *   bitDepth=16 and bitDepth=24 remain exact. q=100 is raw float32 passthrough.
  *
- * feature comparison vs other codecs:
- *
- *                    Harm    Opus   AAC    MP3    FLAC   Dolby Atmos
- *   waveform         yes     no     no     no     yes    no
- *   N-channel        1-256   1-255  1-48   1-2    1-8    128 objects
- *   surround         yes     yes    yes    no     yes    yes
- *   object-based     yes     no     no     no     no     yes
- *   3D positions     yes     no     no     no     no     yes
- *   bit depth        16/24   n/a    n/a    n/a    16/24  n/a
- *   any sample rate  yes     yes    yes    no     yes    yes
- *   encryption       yes     no     no     no     no     DRM
- *   streaming        yes     yes    yes    yes    no     yes
- *   browser-native   yes     no     yes    yes    no     no
- *   open/free        yes     yes    yes    patents yes   no
- *
- * core DSP (wavelet, IIR-2 prediction, K/G regression) is hand-written WASM
- * bytecode. entropy coding, crypto, and wire format are TypeScript.
- *
- * speed:   7.7× realtime encode, 17× realtime decode (20ms frames).
- * latency: 6.1ms glass-to-glass at 128-sample frames on a local network.
+ * comments in this file should stay descriptive, lowercase, and tied to the
+ * implemented math. if a benchmark or architectural note changes, update this
+ * block together with docs/02-harmonic.md and public/images/harmonic-benchmark.svg.
  */
 
 import { encode0D, decode0D } from "./live-wasm-logos";
 
-// ── WASM opcode infrastructure ──────────────────────────────────────────────
+// â”€â”€ WASM opcode infrastructure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function encodeULEB(v: number): number[] {
     v = v >>> 0;
@@ -254,10 +183,10 @@ const F32_CONVERT_I32_S = [0xb2];
 const F64_CONVERT_I32_S = [0xb7];
 const F32_DEMOTE_F64    = [0xb6];
 
-// ── WASM memory layout ──────────────────────────────────────────────────────
+// â”€â”€ WASM memory layout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-//   0x0000 .. 0x0FFF  encoder prediction states (up to 256 ch × 16 B)
-//   0x1000 .. 0x1FFF  decoder prediction states (up to 256 ch × 16 B)
+//   0x0000 .. 0x0FFF  encoder prediction states (up to 256 ch Ã— 16 B)
+//   0x1000 .. 0x1FFF  decoder prediction states (up to 256 ch Ã— 16 B)
 //   0x2000 .. 0x5FFFF K/G inspection buffer + fit_all_blocks output
 //   0x60000 ..        data/residual scratch buffers
 //
@@ -278,16 +207,16 @@ const KG_BUF = 0x2000;
 // data/residual scratch. past all K/G data for any reasonable frame size.
 const WASM_BUF_A = 0x60000;
 
-// ── WASM function body builders ─────────────────────────────────────────────
+// â”€â”€ WASM function body builders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
- * wavelet_fwd(srcPtr:i32, n:i32, dstPtr:i32) → nlp:i32
+ * wavelet_fwd(srcPtr:i32, n:i32, dstPtr:i32) â†’ nlp:i32
  *
- * CDF 5/3 forward transform (one level). Assumes n ≥ 2.
+ * CDF 5/3 forward transform (one level). Assumes n â‰¥ 2.
  * Writes LL[0..nlp-1] then HH[nlp..n-1] to dstPtr (all i32, 4 bytes each).
  *
- * predict:  d[k] = x[2k+1] − ⌊(x[2k] + x[2k+2]) / 2⌋   (symmetric ext.)
- * update:   s[k] = x[2k]   + ⌊(d[k−1] + d[k] + 2) / 4⌋
+ * predict:  d[k] = x[2k+1] âˆ’ âŒŠ(x[2k] + x[2k+2]) / 2âŒ‹   (symmetric ext.)
+ * update:   s[k] = x[2k]   + âŒŠ(d[kâˆ’1] + d[k] + 2) / 4âŒ‹
  */
 function buildWaveletFwdBody(): number[] {
     // params: 0=srcPtr, 1=n, 2=dstPtr
@@ -298,7 +227,7 @@ function buildWaveletFwdBody(): number[] {
         ...GET(1), ...CI32(1), ...SHR_u, ...SET(4),
         ...GET(1), ...GET(4), ...SUB, ...SET(5),
 
-        // ── predict step: write HH to dst[ln..ln+hn-1] ──
+        // â”€â”€ predict step: write HH to dst[ln..ln+hn-1] â”€â”€
         ...CI32(0), ...SET(3),
         ...BLOCK, ...LOOP,
             ...GET(3), ...GET(4), ...GE_s, ...BRIF(1),
@@ -333,7 +262,7 @@ function buildWaveletFwdBody(): number[] {
             ...BR(0),
         ...END, ...END,
 
-        // ── update step: write LL to dst[0..ln-1] ──
+        // â”€â”€ update step: write LL to dst[0..ln-1] â”€â”€
         ...CI32(0), ...SET(3),
         ...BLOCK, ...LOOP,
             ...GET(3), ...GET(5), ...GE_s, ...BRIF(1),
@@ -378,12 +307,12 @@ function buildWaveletFwdBody(): number[] {
 }
 
 /**
- * wavelet_inv(llPtr:i32, nlp:i32, hhPtr:i32, nhp:i32, dstPtr:i32) → n:i32
+ * wavelet_inv(llPtr:i32, nlp:i32, hhPtr:i32, nhp:i32, dstPtr:i32) â†’ n:i32
  *
  * CDF 5/3 inverse transform (one level). Returns nlp + nhp.
  *
- * undo update:  x[2k]   = ll[k] − ⌊(d[k−1] + d[k] + 2) / 4⌋
- * undo predict: x[2k+1] = hh[k] + ⌊(x[2k] + x[2k+2]) / 2⌋
+ * undo update:  x[2k]   = ll[k] âˆ’ âŒŠ(d[kâˆ’1] + d[k] + 2) / 4âŒ‹
+ * undo predict: x[2k+1] = hh[k] + âŒŠ(x[2k] + x[2k+2]) / 2âŒ‹
  */
 function buildWaveletInvBody(): number[] {
     // params: 0=llPtr, 1=nlp, 2=hhPtr, 3=nhp, 4=dstPtr
@@ -392,7 +321,7 @@ function buildWaveletInvBody(): number[] {
     return funcBody([{ count: 7, type: I32 }], [
         ...GET(1), ...GET(3), ...ADD, ...SET(6), // n = nlp + nhp
 
-        // ── undo update: x[2k] = ll[k] - ((d[k-1]+d[k]+2)>>2) ──
+        // â”€â”€ undo update: x[2k] = ll[k] - ((d[k-1]+d[k]+2)>>2) â”€â”€
         ...CI32(0), ...SET(5),
         ...BLOCK, ...LOOP,
             ...GET(5), ...GET(1), ...GE_s, ...BRIF(1),
@@ -429,7 +358,7 @@ function buildWaveletInvBody(): number[] {
             ...BR(0),
         ...END, ...END,
 
-        // ── undo predict: x[2k+1] = hh[k] + ((x[2k]+x[2k+2])>>1) ──
+        // â”€â”€ undo predict: x[2k+1] = hh[k] + ((x[2k]+x[2k+2])>>1) â”€â”€
         ...CI32(0), ...SET(5),
         ...BLOCK, ...LOOP,
             ...GET(5), ...GET(3), ...GE_s, ...BRIF(1),
@@ -467,18 +396,18 @@ function buildWaveletInvBody(): number[] {
 }
 
 /**
- * predict_enc(dataPtr:i32, nSamples:i32, kgPtr:i32, statePtr:i32, residPtr:i32) → void
+ * predict_enc(dataPtr:i32, nSamples:i32, kgPtr:i32, statePtr:i32, residPtr:i32) â†’ void
  *
  * IIR-2 prediction encode:
  *   for each 32-sample block b:
  *     K = f32(kgPtr[b*8+0]),  G = f32(kgPtr[b*8+4])
  *     for each sample i in block:
- *       pred    = K*prev1 − G*prev2
- *       residual[i] = data[i] − round(pred)
+ *       pred    = K*prev1 âˆ’ G*prev2
+ *       residual[i] = data[i] âˆ’ round(pred)
  *       prev2 = prev1;  prev1 = float(data[i])
  *
  * cross-channel coupling (W) is a renormalization step that operates OUTSIDE
- * this loop — it subtracts W·ref before prediction, and the decoder adds it
+ * this loop â€” it subtracts WÂ·ref before prediction, and the decoder adds it
  * back after. this separation is correct because W integrates out the
  * inter-channel mode while K/G integrate out the temporal mode. they are
  * orthogonal layers in the renormalization group, not joint terms.
@@ -558,10 +487,10 @@ function buildPredictEncBody(): number[] {
 }
 
 /**
- * predict_dec(residPtr:i32, nSamples:i32, kgPtr:i32, statePtr:i32, outPtr:i32) → void
+ * predict_dec(residPtr:i32, nSamples:i32, kgPtr:i32, statePtr:i32, outPtr:i32) â†’ void
  *
  * Inverse of predict_enc:
- *   val[i] = round(K*prev1 − G*prev2) + residual[i]
+ *   val[i] = round(K*prev1 âˆ’ G*prev2) + residual[i]
  */
 function buildPredictDecBody(): number[] {
     // params: 0=residPtr, 1=nSamples, 2=kgPtr, 3=statePtr, 4=outPtr
@@ -636,7 +565,7 @@ function buildPredictDecBody(): number[] {
 }
 
 /**
- * fit_all_blocks(dataPtr:i32, numSamples:i32, outPtr:i32, gCeilScaled:i32) → numBlocks:i32
+ * fit_all_blocks(dataPtr:i32, numSamples:i32, outPtr:i32, gCeilScaled:i32) â†’ numBlocks:i32
  *
  * WASM implementation of the K/G regression. processes all 32-sample blocks,
  * writing [Kint:i32, Gint:i32] per block to outPtr. uses f64 accumulators
@@ -678,7 +607,7 @@ function buildFitAllBlocksBody(): number[] {
         // b = 0
         ...CI32(0), ...SET(4),
 
-        // ── outer block loop ──
+        // â”€â”€ outer block loop â”€â”€
         ...BLOCK, ...LOOP,
             ...GET(4), ...GET(5), ...GE_s, ...BRIF(1),
 
@@ -692,11 +621,11 @@ function buildFitAllBlocksBody(): number[] {
             // reg = blockLen * (1/12)
             ...GET(17), ...F64_CONVERT_I32_S, ...CF64(QUANT_NOISE), ...F64_MUL, ...SET(26),
 
-            // ── transient detection ──
+            // â”€â”€ transient detection â”€â”€
             // halfLen = blockLen >> 1
             ...GET(17), ...CI32(1), ...SHR_u, ...SET(10),
 
-            // e1 = sum data[blockStart..+halfLen]² → sumP1P1 (reused)
+            // e1 = sum data[blockStart..+halfLen]Â² â†’ sumP1P1 (reused)
             ...CF64(0), ...SET(18),
             ...GET(6), ...SET(8),
             ...BLOCK, ...LOOP,
@@ -707,7 +636,7 @@ function buildFitAllBlocksBody(): number[] {
                 ...BR(0),
             ...END, ...END,
 
-            // e2 = sum data[blockStart+halfLen..blockEnd]² → sumP2P2 (reused)
+            // e2 = sum data[blockStart+halfLen..blockEnd]Â² â†’ sumP2P2 (reused)
             ...CF64(0), ...SET(19),
             ...GET(6), ...GET(10), ...ADD, ...SET(8),
             ...BLOCK, ...LOOP,
@@ -719,22 +648,22 @@ function buildFitAllBlocksBody(): number[] {
             ...END, ...END,
 
             // isTransient = blockLen>=16 && maxE>blockLen*256 && minE*64<maxE
-            // maxE → K(27), minE → G(28) (reused temporarily as f64)
+            // maxE â†’ K(27), minE â†’ G(28) (reused temporarily as f64)
             ...GET(18), ...GET(19), ...F64_MAX, ...SET(27),
             ...GET(18), ...GET(19), ...F64_MIN, ...SET(28),
 
             ...GET(17), ...CI32(16), ...GE_s,
             ...GET(27), ...GET(17), ...CI32(256), ...MUL, ...F64_CONVERT_I32_S, ...F64_LT,
-            // need F64_GT but we only have F64_LT. swap: maxE > thresh ↔ thresh < maxE
+            // need F64_GT but we only have F64_LT. swap: maxE > thresh â†” thresh < maxE
             // actually: we need maxE > blockLen*256. use: NOT (maxE < blockLen*256) but that includes ==.
-            // alternative: blockLen*256 < maxE → use F64_LT with args swapped on stack.
+            // alternative: blockLen*256 < maxE â†’ use F64_LT with args swapped on stack.
             // the stack currently has: (blockLen>=16):i32, then we need to push the comparison.
             // let me restructure: compute isTransient as a single i32 flag
 
             // restart: compute flag step by step
             // flag = blockLen >= 16
             ...GET(17), ...CI32(16), ...GE_s,
-            // flag &= (blockLen*256 as f64) < maxE    → use F64_LT
+            // flag &= (blockLen*256 as f64) < maxE    â†’ use F64_LT
             ...GET(17), ...CI32(256), ...MUL, ...F64_CONVERT_I32_S, ...GET(27), ...F64_LT,
             ...AND,
             // flag &= minE*64 < maxE
@@ -744,13 +673,13 @@ function buildFitAllBlocksBody(): number[] {
 
             ...GET(9),
             ...IF,
-                // ── transient: Kint=0, Gint=1 ──
+                // â”€â”€ transient: Kint=0, Gint=1 â”€â”€
                 ...GET(2), ...GET(4), ...CI32(3), ...SHL, ...ADD, ...CI32(0), ...STORE32(2, 0),
                 ...GET(2), ...GET(4), ...CI32(3), ...SHL, ...ADD, ...CI32(1), ...STORE32(2, 4),
                 ...CI32(0), ...SET(11),
                 ...CI32(1), ...SET(12),
             ...ELSE,
-                // ── normal: Cramer LS regression ──
+                // â”€â”€ normal: Cramer LS regression â”€â”€
                 ...CF64(0), ...SET(18), // sumP1P1
                 ...CF64(0), ...SET(19), // sumP2P2
                 ...CF64(0), ...SET(20), // sumW
@@ -851,7 +780,7 @@ function buildFitAllBlocksBody(): number[] {
                 // Gint = round(G * SCALE)
                 ...GET(28), ...CF64(SCALE), ...F64_MUL, ...F64_NEAREST, ...I32_TRUNC_F64_S, ...SET(14),
 
-                // dead zone: |drift| <= 2 → keep previous
+                // dead zone: |drift| <= 2 â†’ keep previous
                 // driftK = Kint - prevKint
                 ...GET(13), ...GET(11), ...SUB, ...SET(9),
                 ...GET(9), ...CI32(2), ...GT_s, ...GET(9), ...CI32(-2), ...LT_s, ...OR,
@@ -885,17 +814,17 @@ function buildFitAllBlocksBody(): number[] {
     ]);
 }
 
-// ── WASM module assembly ─────────────────────────────────────────────────────
+// â”€â”€ WASM module assembly â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function buildHarmonicWasmBytes(): Uint8Array {
     const magic = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
     // Type section: 5 function signatures
-    // Type 0: (i32,i32,i32) → i32              [wavelet_fwd]
-    // Type 1: (i32,i32,i32,i32,i32) → i32      [wavelet_inv]
-    // Type 2: (i32,i32,i32,i32,i32) → void     [predict_enc, predict_dec]
-    // Type 3: (i32,i32,i32,i32) → void         [reset_enc, reset_dec]
-    // Type 4: (i32,i32,i32,i32) → i32          [fit_all_blocks]
+    // Type 0: (i32,i32,i32) â†’ i32              [wavelet_fwd]
+    // Type 1: (i32,i32,i32,i32,i32) â†’ i32      [wavelet_inv]
+    // Type 2: (i32,i32,i32,i32,i32) â†’ void     [predict_enc, predict_dec]
+    // Type 3: (i32,i32,i32,i32) â†’ void         [reset_enc, reset_dec]
+    // Type 4: (i32,i32,i32,i32) â†’ i32          [fit_all_blocks]
     const typeSection = section(1, [
         ...encodeULEB(5),
         0x60, ...encodeULEB(3), I32, I32, I32, ...encodeULEB(1), I32,               // T0
@@ -982,31 +911,33 @@ export function getHarmonicWasmSync(): HarmonicWasmExports | null {
 // regression and CDF 5/3 wavelet. profiling shows the bottleneck is Logos
 // entropy coding (~40% of encode time), which is inherently sequential.
 // the arithmetic operations (wavelet + regression) total ~0.25ms per 20ms
-// frame — a separate SIMD WASM module would need its own memory (can't share
+// frame â€” a separate SIMD WASM module would need its own memory (can't share
 // with the main module), so data copy overhead would eat the ~0.17ms SIMD
 // gain. Lumen benefits from SIMD because 2D images have millions of pixels;
 // 1D audio at 960 samples doesn't have enough parallel work to amortize the
-// dispatch cost. the codec is already 5× realtime at 20ms frames.
+// dispatch cost. the codec is already 5Ã— realtime at 20ms frames.
 
-// ── codec constants ──────────────────────────────────────────────────────────
+// â”€â”€ codec constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // every constant below traces to either:
 //   (a) the physics of the IIR-2 oscillator (discriminant, stability manifold)
 //   (b) the information theory of quantization (noise variance, entropy)
 //   (c) the sample rate and word size of the platform (48kHz, 16-bit)
 
-// K ∈ [-2, 2] → Kint ∈ [-2^15, 2^15] fits signed 16-bit. scale = 2^15 / 2 = 2^14.
+// K âˆˆ [-2, 2] â†’ Kint âˆˆ [-2^15, 2^15] fits signed 16-bit. scale = 2^15 / 2 = 2^14.
 const COEFF_SCALE   = 1 << 14;            // 16384
 const COEFF_QUANT   = 1 / COEFF_SCALE;    // minimum resolvable K/G step
 const G_FLOOR       = COEFF_QUANT;         // minimum G: one step above zero
 const G_CEIL        = 1.0 - COEFF_QUANT;   // maximum G: one step below undamped (r=1)
 const K_CEIL        = 2.0 - COEFF_QUANT;   // maximum |K|: one step below Nyquist
+const PLATFORM_I32_BITS = 32;
+const PLATFORM_I32_MAX = Math.pow(2, PLATFORM_I32_BITS - 1) - 1;
 
-// discriminant of λ²−Kλ+G = 0: stability requires K²−4G ≤ 0 → G ≥ K²/4.
+// discriminant of Î»Â²âˆ’KÎ»+G = 0: stability requires KÂ²âˆ’4G â‰¤ 0 â†’ G â‰¥ KÂ²/4.
 // the 1/4 is exact from the quadratic formula.
 const PARABOLA_FACTOR = 1 / 4;
 
-// uniform quantization noise variance = Δ²/12 where Δ=1 (integer step).
+// uniform quantization noise variance = Î”Â²/12 where Î”=1 (integer step).
 // used to regularize the Cramer LS regression against ill-conditioning.
 const QUANT_NOISE_REG = 1 / 12;
 const QUALITY_BITS_MAX = 15;
@@ -1016,8 +947,8 @@ const QUALITY_BITS_MAX = 15;
 // half-cycle, giving the Cramer LS enough phase diversity to resolve K and G.
 const BLOCK_LEN = 32;
 
-// dead-zone: suppress K/G jitter ≤ 2 steps = 2σ of quantization noise.
-// (quantization step = 1/COEFF_SCALE; RMS noise = step/√12 ≈ 0.29 steps; 2σ ≈ 2 steps.)
+// dead-zone: suppress K/G jitter â‰¤ 2 steps = 2Ïƒ of quantization noise.
+// (quantization step = 1/COEFF_SCALE; RMS noise = step/âˆš12 â‰ˆ 0.29 steps; 2Ïƒ â‰ˆ 2 steps.)
 // both encoder and decoder use the committed (dead-zoned) values for prediction.
 const DEAD_K = 2;
 const DEAD_G = 2;
@@ -1025,9 +956,9 @@ const DEAD_G = 2;
 const HEADER_SIZE = 12;  // numSamples:u32 + sampleRate:u32 + flags:u16 + numCh:u8 + numLevels:u8
 const MAC_SIZE    = 8;   // SipHash-lite 64-bit MAC (mac0:u32 + mac1:u32)
 
-// harmonic topology: Goertzel extraction of voiced harmonics → 2D Möbius field.
+// harmonic topology: Goertzel extraction of voiced harmonics â†’ 2D MÃ¶bius field.
 const MAX_HARMONICS = 24;       // harmonics 2..25 (covers formant range at any f0)
-const VOICED_GAIN_DB = 3.0;     // minimum prediction gain for voiced (signal > 2× residual)
+const VOICED_GAIN_DB = 3.0;     // minimum prediction gain for voiced (signal > 2Ã— residual)
 const VOICED_CEILING_DB = 40.0;  // above 40 dB: AR(2) captured everything, no harmonics left
 const HARMONIC_FLAG = 0x02;      // bit 1 of header flags
 
@@ -1036,10 +967,36 @@ const HARMONIC_FLAG = 0x02;      // bit 1 of header flags
 //   01 = object-based (each channel = independent mono object + 3D position)
 const LAYOUT_MASK  = 0x18;       // bits 4-3
 
-function qualityToScalar(quality: number): number {
+function qualityToScalarIdeal(quality: number): number {
     const q01 = Math.max(0, Math.min(1, quality / 100));
     const bits = QUALITY_BITS_MAX * Math.pow(q01, 0.9);
-    const ideal = Math.pow(2, bits);
+    return Math.pow(2, bits);
+}
+
+function qualityScalarCandidates(quality: number): number[] {
+    const lattice: number[] = [];
+    for (let dq = -1; dq <= 1; dq++) {
+        const ideal = qualityToScalarIdeal(Math.max(0, Math.min(100, quality + dq)));
+        lattice.push(
+            Math.max(1, Math.floor(ideal)),
+            Math.max(1, Math.round(ideal)),
+            Math.max(1, Math.ceil(ideal)),
+        );
+    }
+    const deduped = [...new Set(lattice)].sort((a, b) => a - b);
+    const floorScalar = Math.max(1, Math.floor(qualityToScalarIdeal(quality)));
+    if (floorScalar >= 18 || deduped.length === 0) return deduped;
+    // below 4 levels the lattice is effectively ternary/quaternary and the
+    // scalar objective becomes too discontinuous to trust broad downward
+    // exploration. extend only a small number of lower shells, and never
+    // below the first stable multi-level regime.
+    const extraLow = Math.max(4, deduped[0] - 2);
+    for (let scalar = deduped[0] - 1; scalar >= extraLow; scalar--) lattice.push(scalar);
+    return [...new Set(lattice)].sort((a, b) => a - b);
+}
+
+function qualityToScalar(quality: number): number {
+    const ideal = qualityToScalarIdeal(quality);
     const floorScalar = Math.max(1, Math.floor(ideal));
     // the scalar law is continuous, but the implemented quantizer lives on an
     // integer lattice. at very low scalar, flooring creates a real downward
@@ -1050,6 +1007,15 @@ function qualityToScalar(quality: number): number {
     // old floor rule to preserve bitrate stability.
     const oneLevelDb = 20 * Math.log10((floorScalar + 1) / floorScalar);
     return oneLevelDb >= 0.5 ? Math.max(1, Math.round(ideal)) : floorScalar;
+}
+
+function predictorCarrierLimit(): number {
+    // predict_enc computes round(K*prev1 - G*prev2) in a signed i32. the
+    // oscillator manifold gives the exact worst-case gain bound:
+    //   |pred| â‰¤ |K|Â·|prev1| + |G|Â·|prev2|
+    //        â‰¤ (K_CEIL + G_CEIL) Â· max|x|
+    // keep half a unit of headroom for the round-to-nearest step.
+    return Math.floor((PLATFORM_I32_MAX - 0.5) / (K_CEIL + G_CEIL));
 }
 const LAYOUT_CHANNEL = 0x00;
 const LAYOUT_OBJECT  = 0x08;
@@ -1070,7 +1036,7 @@ function lossyFramePeak(samples: Float32Array, scalar: number): number {
     const rms = Math.max(Math.sqrt(energy / Math.max(count, 1)), 1 / COEFF_SCALE);
     const alpha = 1 / (1 + 2 * Math.log2(1 + Math.max(1, scalar)));
     // the quantizer trades two norms against each other:
-    //   L∞ controls rare transients
+    //   Lâˆž controls rare transients
     //   L2 controls mean-square waveform error
     // the lower the scalar, the shallower the lattice and the more precision
     // should follow the signal's bulk energy instead of its rare extremes.
@@ -1088,28 +1054,233 @@ function envelopeBlockLenFromBurgSuperLen(burgSuperLen: number): number {
     return Math.max(low, Math.min(high, len));
 }
 
-function encodeI16Delta(data: Int16Array): Uint8Array {
-    const out = new Uint8Array(data.length * 2);
-    let prev = 0;
-    for (let i = 0; i < data.length; i++) {
-        const delta = data[i] - prev;
-        prev = data[i];
-        out[i * 2] = delta & 0xFF;
-        out[i * 2 + 1] = (delta >> 8) & 0xFF;
+function envelopeBlockLenCandidates(baseLen: number, numSamples: number): number[] {
+    const candidates: number[] = [];
+    for (let len = Math.max(BLOCK_LEN, baseLen); len * 2 <= numSamples; len <<= 1) {
+        candidates.push(len);
+    }
+    return candidates.length > 0 ? candidates : [Math.max(BLOCK_LEN, Math.min(baseLen, numSamples))];
+}
+
+function adaptiveEnvelopeLevels(count: number): number {
+    let levels = 0;
+    let cur = count;
+    while (cur >= 4) {
+        levels++;
+        cur = (cur + 1) >> 1;
+    }
+    return levels;
+}
+
+function waveletSubbandLengths(n: number, levels: number): number[] {
+    if (n < 4 || levels === 0) return [n];
+    const hh: number[] = [];
+    let curLen = n;
+    for (let l = 0; l < levels; l++) {
+        if (curLen < 4) break;
+        const nlp = (curLen + 1) >> 1;
+        const nhp = curLen - nlp;
+        hh.push(nhp);
+        curLen = nlp;
+    }
+    const subbands: number[] = [curLen];
+    for (let i = hh.length - 1; i >= 0; i--) subbands.push(hh[i]);
+    return subbands;
+}
+
+function encodeEnvelopeTrajectory(
+    wasm: HarmonicWasmExports,
+    logEnv: Int16Array,
+): Uint8Array {
+    const levels = adaptiveEnvelopeLevels(logEnv.length);
+    const envData = new Int32Array(logEnv.length);
+    for (let i = 0; i < logEnv.length; i++) envData[i] = logEnv[i];
+    const subbands = waveletDecompose(wasm, envData, levels);
+
+    const sbPlaneCount: number[] = [];
+    let globalMaxPlane = 0;
+    for (let sb = 0; sb < subbands.length; sb++) {
+        let maxZZ = 0;
+        const d = subbands[sb];
+        for (let i = 0; i < d.length; i++) {
+            const v = d[i];
+            const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
+            if (zz > maxZZ) maxZZ = zz;
+        }
+        const pc = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
+        sbPlaneCount.push(pc);
+        if (pc > globalMaxPlane) globalMaxPlane = pc;
+    }
+
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    const push = (chunk: Uint8Array) => {
+        chunks.push(chunk);
+        total += chunk.length;
+    };
+    const pushByte = (v: number) => push(Uint8Array.of(v & 0xFF));
+    const pushU32 = (v: number) => push(Uint8Array.of(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF));
+
+    pushByte(levels);
+    pushByte(globalMaxPlane);
+    for (let sb = 0; sb < sbPlaneCount.length; sb++) pushByte(sbPlaneCount[sb]);
+
+    for (let plane = 0; plane < globalMaxPlane; plane++) {
+        let totalBytes = 0;
+        for (let sb = 0; sb < subbands.length; sb++) totalBytes += subbands[sb].length;
+        const concat = new Uint8Array(totalBytes);
+        let off = 0;
+        for (let sb = 0; sb < subbands.length; sb++) {
+            const d = subbands[sb];
+            const shift = plane * 8;
+            for (let i = 0; i < d.length; i++) {
+                const v = d[i];
+                const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
+                concat[off++] = (zz >>> shift) & 0xFF;
+            }
+        }
+        const encoded = encode0D(concat);
+        pushU32(encoded.length);
+        push(encoded);
+    }
+
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, off);
+        off += chunk.length;
     }
     return out;
 }
 
-function decodeI16Delta(data: Uint8Array, count: number): Int16Array {
-    const out = new Int16Array(count);
-    let acc = 0;
-    for (let i = 0; i < count; i++) {
-        const delta = (data[i * 2] | (data[i * 2 + 1] << 8)) << 16 >> 16;
-        acc += delta;
-        out[i] = acc;
+function decodeEnvelopeTrajectory(
+    wasm: HarmonicWasmExports,
+    wire: Uint8Array,
+    count: number,
+): Int16Array {
+    if (count === 0) return new Int16Array(0);
+    let off = 0;
+    const levels = wire[off++] ?? 0;
+    const globalMaxPlane = wire[off++] ?? 1;
+    const subbandLens = waveletSubbandLengths(count, levels);
+    const sbPlaneCount = new Uint8Array(subbandLens.length);
+    for (let sb = 0; sb < sbPlaneCount.length; sb++) sbPlaneCount[sb] = wire[off++] ?? 1;
+
+    const planeData: Uint8Array[] = [];
+    for (let plane = 0; plane < globalMaxPlane; plane++) {
+        const encLen = readU32LE(wire, off); off += 4;
+        let totalBytes = 0;
+        for (let sb = 0; sb < subbandLens.length; sb++) totalBytes += subbandLens[sb];
+        planeData.push(decode0D(wire.subarray(off, off + encLen), totalBytes));
+        off += encLen;
     }
-    return out;
+
+    const subbands: Int32Array[] = [];
+    let planeOff = 0;
+    for (let sb = 0; sb < subbandLens.length; sb++) {
+        const n = subbandLens[sb];
+        const out = new Int32Array(n);
+        if (globalMaxPlane === 1) {
+            const lo = planeData[0];
+            for (let i = 0; i < n; i++) out[i] = zigzagDec(lo[planeOff + i]);
+        } else if (globalMaxPlane === 2) {
+            const lo = planeData[0], mid = planeData[1];
+            for (let i = 0; i < n; i++) out[i] = zigzagDec(((mid[planeOff + i] << 8) | lo[planeOff + i]) >>> 0);
+        } else {
+            const lo = planeData[0], mid = planeData[1], top = planeData[2];
+            for (let i = 0; i < n; i++) {
+                out[i] = zigzagDec(((top[planeOff + i] << 16) | (mid[planeOff + i] << 8) | lo[planeOff + i]) >>> 0);
+            }
+        }
+        planeOff += n;
+        subbands.push(out);
+    }
+
+    const recon = waveletReconstruct(wasm, subbands);
+    const logEnv = new Int16Array(count);
+    for (let i = 0; i < count; i++) {
+        logEnv[i] = Math.max(-0x8000, Math.min(0x7FFF, recon[i] | 0));
+    }
+    return logEnv;
 }
+
+function envelopeLogQuantStep(scalar: number): number {
+    if (scalar <= 0) return 0;
+    return COEFF_SCALE * Math.log2((scalar + 1) / scalar);
+}
+
+function buildFractalEnvelopeLogCandidates(
+    wasm: HarmonicWasmExports,
+    logEnv: Int16Array,
+    scalar: number,
+): Int16Array[] {
+    if (logEnv.length === 0) return [];
+    if (logEnv.length < 4) {
+        for (let i = 0; i < logEnv.length; i++) {
+            if (logEnv[i] !== 0) return [logEnv.slice()];
+        }
+        return [];
+    }
+
+    const levels = adaptiveEnvelopeLevels(logEnv.length);
+    if (levels === 0) {
+        for (let i = 0; i < logEnv.length; i++) {
+            if (logEnv[i] !== 0) return [logEnv.slice()];
+        }
+        return [];
+    }
+
+    const coeffs = new Int32Array(logEnv.length);
+    for (let i = 0; i < logEnv.length; i++) coeffs[i] = logEnv[i];
+    const subbands = waveletDecompose(wasm, coeffs, levels);
+    const detailFloor = Math.max(1, Math.round(envelopeLogQuantStep(scalar)));
+
+    for (let sb = 1; sb < subbands.length; sb++) {
+        const band = subbands[sb];
+        for (let i = 0; i < band.length; i++) {
+            if (Math.abs(band[i]) <= detailFloor) band[i] = 0;
+        }
+    }
+
+    const candidates: Int16Array[] = [];
+    const pushCandidate = (env: Int16Array) => {
+        let nonzero = false;
+        for (let i = 0; i < env.length; i++) {
+            if (env[i] !== 0) {
+                nonzero = true;
+                break;
+            }
+        }
+        if (!nonzero) return;
+        const prev = candidates[candidates.length - 1];
+        if (prev && prev.length === env.length) {
+            let same = true;
+            for (let i = 0; i < env.length; i++) {
+                if (prev[i] !== env[i]) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) return;
+        }
+        candidates.push(env);
+    };
+
+    for (let keep = 0; keep < subbands.length; keep++) {
+        const candidateBands = subbands.map((band, idx) => {
+            if (idx === 0 || idx <= keep) return band.slice();
+            return new Int32Array(band.length);
+        });
+        const recon = waveletReconstruct(wasm, candidateBands);
+        const out = new Int16Array(logEnv.length);
+        for (let i = 0; i < logEnv.length; i++) {
+            out[i] = Math.max(-0x8000, Math.min(0x7FFF, recon[i] | 0));
+        }
+        pushCandidate(out);
+    }
+    return candidates;
+}
+
 
 // source bit depth (flags bits 6-5):
 //   00 = float32 (default, any precision)
@@ -1122,20 +1293,20 @@ const DEPTH_16    = 0x20;
 const DEPTH_24    = 0x40;
 const DEPTH_32    = 0x60;
 
-// bit depth → minimum scalar to preserve all source bits losslessly.
+// bit depth â†’ minimum scalar to preserve all source bits losslessly.
 // scalar must exceed the max integer value at that depth so that
 // round(val * scalar / peak) never aliases two distinct source values.
 // capped at 24-bit (scalar = 2^23 = 8388608). 32-bit integer audio is
 // virtually nonexistent; 32-bit sources are float32 (use Q instead).
 // going higher risks i32 overflow in the WASM IIR-2 prediction loop
-// (K*prev near ±2^31 traps i32.trunc_f32_s).
+// (K*prev near Â±2^31 traps i32.trunc_f32_s).
 function scalarForBitDepth(depth: number): number {
     if (depth === 16) return 32768;   // 2^15
     if (depth === 24) return 8388608; // 2^23
     return 0; // float32 or unsupported: use Q-derived scalar
 }
 
-// depth flag → bit depth value
+// depth flag â†’ bit depth value
 function depthFromFlags(flags: number): number {
     const d = flags & DEPTH_MASK;
     if (d === DEPTH_16) return 16;
@@ -1144,23 +1315,23 @@ function depthFromFlags(flags: number): number {
     return 0; // float32
 }
 
-// ── cross-channel coupling ──────────────────────────────────────────────────
+// â”€â”€ cross-channel coupling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // the natural extension of the 1D prediction to multichannel audio.
 // instead of a separate decorrelation transform (Hadamard, M/S, pairing
 // trees), the inter-channel correlation is captured INSIDE the prediction
 // itself via a coupling coefficient W:
 //
-//   pred(ch, t) = K · ch[t-1] − G · ch[t-2] + W · ref[t]
+//   pred(ch, t) = K Â· ch[t-1] âˆ’ G Â· ch[t-2] + W Â· ref[t]
 //
 // W is the cross-channel coupling: how much of a reference channel's
 // current sample predicts the current channel's current sample. K and G
 // capture the temporal oscillation (same as before). W captures the
 // spatial correlation.
 //
-// for correlated stereo (L ≈ R): W ≈ 1 on the R channel, meaning R is
+// for correlated stereo (L â‰ˆ R): W â‰ˆ 1 on the R channel, meaning R is
 // almost entirely predicted from L. the residual is the difference signal.
-// for uncorrelated channels: W ≈ 0, and the predictor degenerates to the
+// for uncorrelated channels: W â‰ˆ 0, and the predictor degenerates to the
 // normal temporal-only IIR-2. zero cost, zero waste.
 //
 // this works because the prediction pipeline is lossless on integers:
@@ -1169,7 +1340,7 @@ function depthFromFlags(flags: number): number {
 //
 // the coupling replaces Hadamard, M/S, and pairing trees with ONE
 // mechanism that works for any channel count and adapts to the actual
-// content. it's the 2D Möbius predictor collapsed onto the (channel × time)
+// content. it's the 2D MÃ¶bius predictor collapsed onto the (channel Ã— time)
 // plane: K/G for the time axis, W for the channel axis.
 //
 // per-channel payload: refIndex:u8 (0xFF = independent) + W trajectory
@@ -1180,13 +1351,13 @@ const W_SCALE = COEFF_SCALE; // same quantization as K/G
 
 // find the best reference channel for each channel. returns an array of
 // refIndex per channel (NO_REF for the anchor and uncorrelated channels).
-// channels are ordered by decreasing total energy — the loudest channel
+// channels are ordered by decreasing total energy â€” the loudest channel
 // is the anchor (encoded first, referenced by others).
 function assignReferences(
     channels: Int32Array[], numSamples: number,
-): { refIndex: number[]; order: number[] } {
+) : number[] {
     const N = channels.length;
-    if (N < 2) return { refIndex: [NO_REF], order: [0] };
+    if (N < 2) return [NO_REF];
 
     // compute energy per channel
     const energy = new Float64Array(N);
@@ -1196,7 +1367,7 @@ function assignReferences(
         energy[i] = e;
     }
 
-    // sort channels by energy descending — the loudest is the anchor
+    // sort channels by energy descending â€” the loudest is the anchor
     const order = Array.from({ length: N }, (_, i) => i);
     order.sort((a, b) => energy[b] - energy[a]);
 
@@ -1229,11 +1400,11 @@ function assignReferences(
         if (bestCorr >= 0.3) refIndex[ch] = bestRef;
     }
 
-    return { refIndex, order };
+    return refIndex;
 }
 
 // fit a single coupling coefficient W over the entire channel.
-// W = Σ(data · ref) / Σ(ref · ref) — scalar projection of data onto ref.
+// W = Î£(data Â· ref) / Î£(ref Â· ref) â€” scalar projection of data onto ref.
 // one value per channel, not per block. the coupling is a DC-level
 // relationship (how much of channel A appears in channel B). the
 // per-block K/G prediction handles the time-varying part.
@@ -1252,11 +1423,11 @@ function fitCouplingW(
 }
 
 
-// ── object-based audio spatial metadata ─────────────────────────────────────
+// â”€â”€ object-based audio spatial metadata â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // each audio object has a 3D position in spherical coordinates:
-//   azimuth:   radians, −π to π (0 = front, π/2 = left, −π/2 = right)
-//   elevation: radians, −π/2 to π/2 (0 = ear level, π/2 = zenith)
+//   azimuth:   radians, âˆ’Ï€ to Ï€ (0 = front, Ï€/2 = left, âˆ’Ï€/2 = right)
+//   elevation: radians, âˆ’Ï€/2 to Ï€/2 (0 = ear level, Ï€/2 = zenith)
 //   distance:  normalized, 0 = origin, 1 = unit sphere
 //
 // the codec transmits raw physics (position + waveform), not a speaker
@@ -1275,8 +1446,8 @@ export interface SpatialObject {
 export const SURROUND_LAYOUTS: Record<string, SpatialObject[]> = {
     // ITU-R BS.775 stereo
     stereo: [
-        { azimuth:  Math.PI / 6, elevation: 0, distance: 1 },  // L  (+30°)
-        { azimuth: -Math.PI / 6, elevation: 0, distance: 1 },  // R  (−30°)
+        { azimuth:  Math.PI / 6, elevation: 0, distance: 1 },  // L  (+30Â°)
+        { azimuth: -Math.PI / 6, elevation: 0, distance: 1 },  // R  (âˆ’30Â°)
     ],
     // ITU-R BS.775-1 5.1
     "5.1": [
@@ -1284,8 +1455,8 @@ export const SURROUND_LAYOUTS: Record<string, SpatialObject[]> = {
         { azimuth: -Math.PI / 6, elevation: 0, distance: 1 },  // R
         { azimuth:  0,           elevation: 0, distance: 1 },  // C
         { azimuth:  0,           elevation: 0, distance: 0 },  // LFE (omnidirectional)
-        { azimuth:  2 * Math.PI / 3, elevation: 0, distance: 1 }, // Ls (+120°)
-        { azimuth: -2 * Math.PI / 3, elevation: 0, distance: 1 }, // Rs (−120°)
+        { azimuth:  2 * Math.PI / 3, elevation: 0, distance: 1 }, // Ls (+120Â°)
+        { azimuth: -2 * Math.PI / 3, elevation: 0, distance: 1 }, // Rs (âˆ’120Â°)
     ],
     // ITU-R BS.2051 7.1
     "7.1": [
@@ -1295,8 +1466,8 @@ export const SURROUND_LAYOUTS: Record<string, SpatialObject[]> = {
         { azimuth:  0,           elevation: 0, distance: 0 },  // LFE
         { azimuth:  2 * Math.PI / 3, elevation: 0, distance: 1 }, // Ls
         { azimuth: -2 * Math.PI / 3, elevation: 0, distance: 1 }, // Rs
-        { azimuth:  5 * Math.PI / 6, elevation: 0, distance: 1 }, // Lrs (+150°)
-        { azimuth: -5 * Math.PI / 6, elevation: 0, distance: 1 }, // Rrs (−150°)
+        { azimuth:  5 * Math.PI / 6, elevation: 0, distance: 1 }, // Lrs (+150Â°)
+        { azimuth: -5 * Math.PI / 6, elevation: 0, distance: 1 }, // Rrs (âˆ’150Â°)
     ],
     // 7.1.4 immersive (Atmos-style with height layer)
     "7.1.4": [
@@ -1315,20 +1486,20 @@ export const SURROUND_LAYOUTS: Record<string, SpatialObject[]> = {
     ],
 };
 
-// ── sample-rate-adaptive window sizing ──────────────────────────────────────
+// â”€â”€ sample-rate-adaptive window sizing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // fundamental insight: the sample rate is the UV cutoff of the theory.
 // it is the coupling constant between the discrete dynamical system
 // (the codec's IIR-2 prediction) and the continuous physical signal.
-// in normalized frequency space, ω_digital = ω_physical / fs.
+// in normalized frequency space, Ï‰_digital = Ï‰_physical / fs.
 //
 // the K/G coefficients are cos/radius of poles in the z-plane. when
 // the sample rate changes, the same physical frequency maps to a
-// different angle. the codec adapts automatically — but the analysis
+// different angle. the codec adapts automatically â€” but the analysis
 // windows must maintain consistent TIME duration regardless of rate.
 //
-// the Nyquist-Shannon theorem says: fs ≥ 2·fmax. but deeper:
-// fs = 2π / dt, where dt is the temporal resolution of the measurement.
+// the Nyquist-Shannon theorem says: fs â‰¥ 2Â·fmax. but deeper:
+// fs = 2Ï€ / dt, where dt is the temporal resolution of the measurement.
 // this is the inverse of the Planck-scale for the signal's universe.
 // every sample is a measurement. the sample rate is how often the
 // universe of the signal is observed. between observations, the signal
@@ -1337,7 +1508,7 @@ export const SURROUND_LAYOUTS: Record<string, SpatialObject[]> = {
 //
 // for the codec: changing fs is equivalent to rescaling the time axis
 // of the ODE that generates the signal. the prediction physics is
-// dimensionless — only the analysis window lengths need to track
+// dimensionless â€” only the analysis window lengths need to track
 // physical time.
 
 function adaptiveBurgSuperLen(sampleRate: number): number {
@@ -1364,34 +1535,34 @@ function adaptiveWaveletLevels(sampleRate: number, numSamples: number): number {
 }
 
 // prediction gain thresholds (in power ratio, not dB):
-// AR2_SKIP_BURG: 30 dB = 10^3 → residual < 0.1% of signal. above this,
+// AR2_SKIP_BURG: 30 dB = 10^3 â†’ residual < 0.1% of signal. above this,
 // Burg's higher-order LP can't improve over AR(2) enough to justify its cost.
 const AR2_SKIP_BURG = 1 - 1e-3;     // 0.999
-// AR2_SKIP_MASKING: 15 dB = 10^1.5 → residual < 3% of signal. above this,
-// residuals are reconstruction-critical quantization noise — don't zero subbands.
+// AR2_SKIP_MASKING: 15 dB = 10^1.5 â†’ residual < 3% of signal. above this,
+// residuals are reconstruction-critical quantization noise â€” don't zero subbands.
 const AR2_SKIP_MASKING = 1 - Math.pow(10, -1.5);  // ~0.968
 
 
-// ── IIR-2 K/G regression ─────────────────────────────────────────────────────
+// â”€â”€ IIR-2 K/G regression â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-// Damped oscillator: λ² − K·λ + G = 0,  roots λ = r·e^{±iω₀}
-//   K = 2r·cos(ω₀)  — encodes both frequency and damping
-//   G = r²           — square of pole radius; G=1 ↔ undamped (r=1)
+// Damped oscillator: Î»Â² âˆ’ KÂ·Î» + G = 0,  roots Î» = rÂ·e^{Â±iÏ‰â‚€}
+//   K = 2rÂ·cos(Ï‰â‚€)  â€” encodes both frequency and damping
+//   G = rÂ²           â€” square of pole radius; G=1 â†” undamped (r=1)
 //
-// For a pure sinusoid x[n] = cos(n·ω₀):
-//   K·x[n-1] − G·x[n-2] = 2cos(ω₀)·cos((n-1)ω₀) − cos((n-2)ω₀) = cos(n·ω₀)
-// → exact cancellation, residual = 0.
+// For a pure sinusoid x[n] = cos(nÂ·Ï‰â‚€):
+//   KÂ·x[n-1] âˆ’ GÂ·x[n-2] = 2cos(Ï‰â‚€)Â·cos((n-1)Ï‰â‚€) âˆ’ cos((n-2)Ï‰â‚€) = cos(nÂ·Ï‰â‚€)
+// â†’ exact cancellation, residual = 0.
 //
-// LS normal equations for model x[n] ≈ K·x[n-1] − G·x[n-2]:
-//   [sumP1P1  −sumW  ] [K]   [sumP1Val]
-//   [sumW   −sumP2P2 ] [G] = [sumP2Val]
-// Cramer: K = (sumP1Val·sumP2P2 − sumP2Val·sumW) / det
-//         G = (K·sumW − sumP2Val) / sumP2P2          (note sign: positive for oscillators)
+// LS normal equations for model x[n] â‰ˆ KÂ·x[n-1] âˆ’ GÂ·x[n-2]:
+//   [sumP1P1  âˆ’sumW  ] [K]   [sumP1Val]
+//   [sumW   âˆ’sumP2P2 ] [G] = [sumP2Val]
+// Cramer: K = (sumP1ValÂ·sumP2P2 âˆ’ sumP2ValÂ·sumW) / det
+//         G = (KÂ·sumW âˆ’ sumP2Val) / sumP2P2          (note sign: positive for oscillators)
 //
 // implementation: buildFitAllBlocksBody() in WASM bytecode (f64 accumulators,
 // includes transient detection, dead zone, stability clamping, and blend).
 
-// ── WASM memory helpers ──────────────────────────────────────────────────────
+// â”€â”€ WASM memory helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function ensureWasmMem(wasm: HarmonicWasmExports, minBytes: number): void {
     const cur = wasm.memory.buffer.byteLength;
@@ -1408,7 +1579,7 @@ function readI32FromWasm(wasm: HarmonicWasmExports, offset: number, n: number): 
     return new Int32Array(wasm.memory.buffer, offset, n).slice();
 }
 
-/** WASM-backed K/G regression — replaces TypeScript fitAllBlocks.
+/** WASM-backed K/G regression â€” replaces TypeScript fitAllBlocks.
  *  data must already be at dataOff in WASM memory. writes [Kint, Gint]
  *  pairs to KG_BUF, then converts to the { K, G, Kint, Gint } format. */
 function wasmFitAllBlocks(
@@ -1441,11 +1612,11 @@ function wasmFitAllBlocks(
  *  eliminating the K/G trajectory from the bitstream entirely.
  *
  *  for block N: fit K/G from samples [N*32 - 32 .. N*32 - 1].
- *  block 0 has no history → K=0, G=COEFF_QUANT (no prediction).
+ *  block 0 has no history â†’ K=0, G=COEFF_QUANT (no prediction).
  *
- *  the regression is the same 2×2 Cramer LS as wasmFitAllBlocks, but on
+ *  the regression is the same 2Ã—2 Cramer LS as wasmFitAllBlocks, but on
  *  the lookback window. uses TypeScript (not WASM) because the window is
- *  only 32 samples — the overhead is negligible vs the WASM call cost. */
+ *  only 32 samples â€” the overhead is negligible vs the WASM call cost. */
 function fitBackwardKG(
     wasm: HarmonicWasmExports, data: Int32Array, numSamples: number,
 ): { K: number; G: number; Kint: number; Gint: number }[] {
@@ -1475,7 +1646,7 @@ function fitBackwardKG(
  *  doesn't benefit from per-32-sample K/G updates. merge groups of N adjacent
  *  blocks to the K/G of the group's first block. this makes the trajectory
  *  delta-stream highly compressible (runs of zeros). the grouping factor
- *  scales inversely with scalar: low Q → large groups → fewer trajectory changes.
+ *  scales inversely with scalar: low Q â†’ large groups â†’ fewer trajectory changes.
  *  at Q=80+ (scalar >= 4096), grouping=1 (no thinning). */
 function thinTrajectory(
     blocks: { K: number; G: number; Kint: number; Gint: number }[],
@@ -1506,11 +1677,11 @@ function thinTrajectory(
  *  convert distortion into "equivalent bits" via the Gaussian
  *  rate-distortion law:
  *
- *    R(D) = 1/2 · log2(σ² / D)
+ *    R(D) = 1/2 Â· log2(ÏƒÂ² / D)
  *
- *  σ² is shared by both candidates, so minimizing
+ *  ÏƒÂ² is shared by both candidates, so minimizing
  *
- *    rateBits + n/2 · log2(D)
+ *    rateBits + n/2 Â· log2(D)
  *
  *  is the same variational choice with no tuned constants.
  */
@@ -1530,6 +1701,16 @@ function quantizerFreeEnergy(
     return rateBits + 0.5 * n * Math.log2(mse);
 }
 
+function stochasticWaveformPenaltyBits(
+    mse: number,
+    signal: number,
+    n: number,
+    targetScalar: number,
+): number {
+    if (n <= 0 || signal <= 1e-20) return 0;
+    return (0.5 * n / Math.LN2) * (targetScalar * targetScalar * mse / signal);
+}
+
 interface QuantBeamState {
     cost: number;
     q1: number;
@@ -1539,9 +1720,18 @@ interface QuantBeamState {
     seq: Int32Array;
 }
 
+function quantizeToInt(x: number): number {
+    return x >= 0 ? (x + 0.5) | 0 : (x - 0.5) | 0;
+}
+
+function clampToWaveformNeighborhood(q: number, raw: number): number {
+    const center = quantizeToInt(raw);
+    return Math.max(center - 1, Math.min(center + 1, q));
+}
+
 /** blockwise beam search on the AR(2) integer lattice.
  *  Harmonic's primary manifold is 2-dimensional: (q[n-1], q[n-2]).
- *  the smallest self-derived nontrivial beam is therefore 2² = 4 paths.
+ *  the smallest self-derived nontrivial beam is therefore 2Â² = 4 paths.
  *  each step searches the posterior lattice point and its nearest neighbors.
  */
 function trellisQuantizeBlock(
@@ -1571,10 +1761,10 @@ function trellisQuantizeBlock(
             const target = hasBackward
                 ? (s + w * pred + backwardWeight * predBack) / (1 + w + backwardWeight)
                 : (s + w * pred) / (1 + w);
-            const center = target >= 0 ? (target + 0.5) | 0 : (target - 0.5) | 0;
+            const center = clampToWaveformNeighborhood(quantizeToInt(target), s);
 
             for (let dc = -1; dc <= 1; dc++) {
-                const qi = center + dc;
+                const qi = clampToWaveformNeighborhood(center + dc, s);
                 const err = s - qi;
                 const seq = state.seq.slice();
                 seq[t] = qi;
@@ -1603,11 +1793,11 @@ function trellisQuantizeBlock(
  *  lattice, then run a second pass that solves the same cell problem the
  *  decoder sees:
  *
- *    choose q near s, but pull toward q̂ = K·q[n-1] - G·q[n-2]
+ *    choose q near s, but pull toward qÌ‚ = KÂ·q[n-1] - GÂ·q[n-2]
  *
  *  the trust in the orbital prior is fully derived from physics:
  *    uniform quantization cell variance = 1/12
- *    block innovation variance = mean((x - q̂)²)
+ *    block innovation variance = mean((x - qÌ‚)Â²)
  *
  *  so the blend weight is (1/12) / innovationVariance. tonal blocks with a
  *  clean orbital manifold get nudged onto that manifold. noisy blocks collapse
@@ -1726,7 +1916,7 @@ function quantizeScaledWithOrbitalGuide(
                 const target = wb > 0
                     ? (s + w * pred + wb * predBack) / (1 + w + wb)
                     : (s + w * pred) / (1 + w);
-                const qi = target >= 0 ? (target + 0.5) | 0 : (target - 0.5) | 0;
+                const qi = clampToWaveformNeighborhood(quantizeToInt(target), s);
                 const err = s - qi;
                 if (shapeNoise) { e2 = e1; e1 = err; }
                 orbital[i] = qi;
@@ -1823,7 +2013,7 @@ function quantizeScaledWithOrbitalGuide(
             const target = wf > 0
                 ? (s + w * pred + fractalSum[i]) / (1 + w + wf)
                 : (s + w * pred) / (1 + w);
-            const qi = target >= 0 ? (target + 0.5) | 0 : (target - 0.5) | 0;
+            const qi = clampToWaveformNeighborhood(quantizeToInt(target), s);
             const err = s - qi;
             if (shapeNoise) { e2 = e1; e1 = s - qi; }
             q[i] = qi;
@@ -1892,6 +2082,39 @@ function buildAmplitudeActionTrajectory(
     return varied ? logEnv : null;
 }
 
+function envelopeResidualBits(
+    rawEnvLog: Int16Array,
+    envLog: Int16Array | null,
+): number {
+    const n = rawEnvLog.length;
+    if (n === 0) return 0;
+    const floorVar = QUANT_NOISE_REG;
+    let err = 0;
+    if (envLog) {
+        for (let i = 0; i < n; i++) {
+            const d = rawEnvLog[i] - envLog[i];
+            err += d * d;
+        }
+    } else {
+        for (let i = 0; i < n; i++) {
+            const d = rawEnvLog[i];
+            err += d * d;
+        }
+    }
+    return 0.5 * n * Math.log2(Math.max(err / (n * floorVar), 1e-12));
+}
+
+interface AmplitudeCandidate {
+    data: Int32Array;
+    energy: number;
+    envBlockLen: number;
+    envLog: Int16Array;
+    envCurve: Float32Array;
+    envWire: Uint8Array;
+    extraBits: number;
+    fitBits: number;
+}
+
 function reconstructEnvelopeCurve(
     logEnv: Int16Array,
     numSamples: number,
@@ -1929,20 +2152,54 @@ function quantizeChannelWithAmplitudeAxis(
     nsK: number,
     nsG: number,
     numLevels: number,
-): { data: Int32Array; energy: number; envLog: Int16Array; envCurve: Float32Array; extraBits: number } | null {
+): {
+    candidates: AmplitudeCandidate[];
+    baselineFitBits: number;
+} {
     const guide = wasmFitAllBlocks(wasm, baseline, numSamples);
     const sourceScaled = new Float32Array(numSamples);
     for (let i = 0; i < numSamples; i++) sourceScaled[i] = samples[i * numChannels + ch] * (scalar / framePeak);
-    const envLog = buildAmplitudeActionTrajectory(sourceScaled, guide, numSamples, envBlockLen, scalar);
-    if (!envLog) return null;
-    const envCurve = reconstructEnvelopeCurve(envLog, numSamples, envBlockLen, framePeak);
-    const carrierScaled = new Float32Array(numSamples);
-    for (let i = 0; i < numSamples; i++) carrierScaled[i] = samples[i * numChannels + ch] * (scalar / envCurve[i]);
-    const quantized = quantizeScaledWithOrbitalGuide(wasm, carrierScaled, numLevels, scalar, shapeNoise, nsK, nsG);
-    const envBits = encodeI16Delta(envLog);
-    const envComp = encode0D(envBits);
-    const extraBits = envComp.length * 8 + 64 + 1;
-    return { ...quantized, envLog, envCurve, extraBits };
+    const candidates: AmplitudeCandidate[] = [];
+    let baselineFitBits = Number.POSITIVE_INFINITY;
+    const carrierLimit = predictorCarrierLimit();
+    for (const blockLen of envelopeBlockLenCandidates(envBlockLen, numSamples)) {
+        const rawEnvLog = buildAmplitudeActionTrajectory(sourceScaled, guide, numSamples, blockLen, scalar);
+        if (!rawEnvLog) continue;
+        baselineFitBits = Math.min(baselineFitBits, envelopeResidualBits(rawEnvLog, null));
+        const envLogs = buildFractalEnvelopeLogCandidates(wasm, rawEnvLog, scalar);
+        let meanLog = 0;
+        for (let i = 0; i < rawEnvLog.length; i++) meanLog += rawEnvLog[i];
+        meanLog /= rawEnvLog.length;
+        for (const envLog of envLogs) {
+            let residualEnergy = 0;
+            let modelEnergy = 0;
+            for (let i = 0; i < rawEnvLog.length; i++) {
+                const model = envLog[i] - meanLog;
+                const residual = rawEnvLog[i] - envLog[i];
+                modelEnergy += model * model;
+                residualEnergy += residual * residual;
+            }
+            if (!(modelEnergy > residualEnergy)) continue;
+            const envCurve = reconstructEnvelopeCurve(envLog, numSamples, blockLen, framePeak);
+            const carrierScaled = new Float32Array(numSamples);
+            let valid = true;
+            for (let i = 0; i < numSamples; i++) {
+                const x = samples[i * numChannels + ch] * (scalar / envCurve[i]);
+                if (!Number.isFinite(x) || Math.abs(x) > carrierLimit) {
+                    valid = false;
+                    break;
+                }
+                carrierScaled[i] = x;
+            }
+            if (!valid) continue;
+            const quantized = quantizeScaledWithOrbitalGuide(wasm, carrierScaled, numLevels, scalar, shapeNoise, nsK, nsG);
+            const envWire = encodeEnvelopeTrajectory(wasm, envLog);
+            const extraBits = envWire.length * 8 + 96 + 1;
+            const fitBits = envelopeResidualBits(rawEnvLog, envLog);
+            candidates.push({ ...quantized, envBlockLen: blockLen, envLog, envCurve, envWire, extraBits, fitBits });
+        }
+    }
+    return { candidates, baselineFitBits: Number.isFinite(baselineFitBits) ? baselineFitBits : 0 };
 }
 
 function cloneHarmonicState(state?: HarmonicState): HarmonicState | undefined {
@@ -1956,35 +2213,34 @@ function cloneHarmonicState(state?: HarmonicState): HarmonicState | undefined {
 function scoreQuantizedChannel(
     wasm: HarmonicWasmExports,
     data: Int32Array,
-    recon: Float32Array,
     samples: Float32Array,
     ch: number,
     numChannels: number,
-    quality: number,
     scalar: number,
+    framePeak: number,
+    targetScalar: number,
+    envCurve: Float32Array | null,
     numLevels: number,
     burgSuperLen: number,
     goertzelLen: number,
     blocksPerGoertzel: number,
     trajState?: HarmonicState,
     refData?: Int32Array,
+    refProjected?: Float32Array,
     extraBits: number = 0,
-): { rateBits: number; objective: number } {
+) : { rateBits: number; objective: number; projectedCarrier: Float32Array } {
     const n = data.length;
-    let mse = 0;
-    for (let i = 0; i < n; i++) {
-        const diff = samples[i * numChannels + ch] - recon[i];
-        mse += diff * diff;
-    }
     if (n === 0) {
         return {
             rateBits: extraBits,
-            objective: extraBits,
-        };
+        objective: extraBits,
+        projectedCarrier: new Float32Array(0),
+    };
     }
 
     let rateBits = extraBits;
     let working = data;
+    let couplingW: number | undefined;
     let signalEnergy = 0;
     for (let i = 0; i < n; i++) signalEnergy += working[i] * working[i];
 
@@ -2010,6 +2266,7 @@ function scoreQuantizedChannel(
 
             if (costDec + 2 < costOrig) {
                 working = decoupled;
+                couplingW = wFit.W;
                 signalEnergy = 0;
                 for (let i = 0; i < n; i++) signalEnergy += working[i] * working[i];
                 rateBits += 24;
@@ -2081,8 +2338,7 @@ function scoreQuantizedChannel(
     rateBits += 8;
     if (!useBackwardKG) {
         const { metaKK, metaGK } = metaPredictKG(kgBlocks);
-        const kgBits = encodeKGTrajectory(kgBlocks, metaKK, metaGK);
-        const kgComp = encode0D(kgBits);
+        const { compressed: kgComp } = buildKGTrajectoryPayload(kgBlocks, metaKK, metaGK);
         rateBits += 16 + 64 + kgComp.length * 8;
     }
 
@@ -2103,8 +2359,7 @@ function scoreQuantizedChannel(
     rateBits += 8;
     if (useMicro) {
         const { metaKK: mk2, metaGK: mg2 } = metaPredictKG(kg2Blocks!);
-        const kg2Bits = encodeKGTrajectory(kg2Blocks!, mk2, mg2);
-        const kg2Comp = encode0D(kg2Bits);
+        const { compressed: kg2Comp } = buildKGTrajectoryPayload(kg2Blocks!, mk2, mg2);
         rateBits += 16 + 64 + kg2Comp.length * 8;
         activeResiduals = residuals2!;
     } else {
@@ -2125,6 +2380,7 @@ function scoreQuantizedChannel(
 
     let useTrajectory = false;
     const scoreState = cloneHarmonicState(trajState);
+    const trajDecodeState = cloneHarmonicState(trajState);
     const preTrajResiduals = activeResiduals;
     if (ar2Captures < AR2_SKIP_BURG && n >= TRAJ_WINDOW * 2) {
         const peekSlice = new Int32Array(activeResiduals.buffer,
@@ -2178,6 +2434,8 @@ function scoreQuantizedChannel(
     }
 
     let subbands: Int32Array[];
+    let harmonicResidualPath = false;
+    let harmonicSynthsSelected: Map<number, Int32Array> | null = null;
     rateBits += 24;
     if (voicedSuper.length >= 2 && numH >= 2) {
         const nV = voicedSuper.length;
@@ -2232,6 +2490,24 @@ function scoreQuantizedChannel(
             rateBits += 32 + sinPl.loEnc.length * 8;
 
             subbands = apSb;
+            harmonicResidualPath = true;
+            harmonicSynthsSelected = new Map<number, Int32Array>();
+            for (let vi = 0; vi < nV; vi++) {
+                const si = voicedSuper[vi];
+                const sStart = si * goertzelLen;
+                const sEnd = Math.min(sStart + goertzelLen, n);
+                const sLen = sEnd - sStart;
+                const fb = si * blocksPerGoertzel;
+                const lb = Math.min(fb + blocksPerGoertzel, numBlks);
+                const w = superOmega(kgBlocks, fb, lb);
+                const cosQ = new Int32Array(numH);
+                const sinQ = new Int32Array(numH);
+                for (let h = 0; h < numH; h++) {
+                    cosQ[h] = cosF[h * nV + vi];
+                    sinQ[h] = sinF[h * nV + vi];
+                }
+                harmonicSynthsSelected.set(si, harmonicSynth(w, cosQ, sinQ, numH, sLen));
+            }
         } else {
             subbands = fullSb;
         }
@@ -2249,16 +2525,14 @@ function scoreQuantizedChannel(
         for (let i = 0; i < d.length; i++) energy += d[i] * d[i];
         sbEnergies.push(energy);
     }
-    const totalEnergy = sbEnergies.reduce((a, b) => a + b, 0);
     const numSb = subbands.length;
-    const zeroThreshold = quality >= 95 ? 0 : Math.pow(10, -1 - quality / 50);
     const sbPlaneCount: number[] = [];
     let globalMaxPlane = 0;
 
     for (let sb = 0; sb < numSb; sb++) {
         const isLL = sb === 0;
-        const frac = totalEnergy > 0 ? sbEnergies[sb] / totalEnergy : 1 / numSb;
-        const skip = !isLL && !useDelta && frac < zeroThreshold && ar2Captures < AR2_SKIP_MASKING;
+        const noiseFloor = subbands[sb].length * QUANT_NOISE_REG;
+        const skip = !isLL && !useDelta && sbEnergies[sb] <= noiseFloor && ar2Captures < AR2_SKIP_MASKING;
         if (skip) {
             sbPlaneCount.push(0);
         } else {
@@ -2298,9 +2572,117 @@ function scoreQuantizedChannel(
         rateBits += 32 + encoded.length * 8;
     }
 
+    const scoredSubbands = subbands.map((sb, idx) => sbPlaneCount[idx] === 0 ? new Int32Array(sb.length) : sb.slice());
+    let scoredResiduals = waveletReconstruct(wasm, scoredSubbands);
+    if (harmonicResidualPath && harmonicSynthsSelected) {
+        for (const [si, synth] of harmonicSynthsSelected) {
+            const sStart = si * goertzelLen;
+            for (let t = 0; t < synth.length; t++) scoredResiduals[sStart + t] += synth[t];
+        }
+    }
+    if (useTrajectory) {
+        scoredResiduals = trajectoryDecode(scoredResiduals, trajDecodeState);
+    }
+    if (useDelta) {
+        for (let i = 1; i < scoredResiduals.length; i++) scoredResiduals[i] += scoredResiduals[i - 1];
+    }
+
+    let reconstructedForScore: Int32Array;
+    if (useMicro && kg2Blocks) {
+        const microOutOff = WASM_BUF_A + scoredResiduals.length * 4 + 64;
+        ensureWasmMem(wasm, microOutOff + n * 4 + 64);
+        scoredResiduals = wasmPredictDec(wasm, scoredResiduals, kg2Blocks, wasmDecState(255), microOutOff);
+    }
+    if (useBackwardKG) {
+        reconstructedForScore = new Int32Array(n);
+        const stateOff = wasmDecState(254);
+        const sv = new Float32Array(wasm.memory.buffer, stateOff, 2);
+        sv[0] = 0; sv[1] = 0;
+        new Int32Array(wasm.memory.buffer, stateOff + 8, 1)[0] = 1;
+        for (let b = 0; b < kgBlocks.length; b++) {
+            const bStart = b * BLOCK_LEN;
+            const bEnd = Math.min(bStart + BLOCK_LEN, n);
+            let K = 0, G = COEFF_QUANT;
+            if (b > 0) {
+                const lookback = reconstructedForScore.subarray(bStart - BLOCK_LEN, bStart);
+                const kgResult = wasmFitAllBlocks(wasm, lookback, BLOCK_LEN);
+                if (kgResult.length > 0) { K = kgResult[0].K; G = kgResult[0].G; }
+            }
+            const blockResid = new Int32Array(scoredResiduals.buffer, scoredResiduals.byteOffset + bStart * 4, bEnd - bStart);
+            const dataOff = WASM_BUF_A;
+            const outOff2 = dataOff + (bEnd - bStart) * 4 + 64;
+            const kgOff = (outOff2 + (bEnd - bStart) * 4 + 15) & ~15;
+            ensureWasmMem(wasm, kgOff + 16);
+            copyI32ToWasm(wasm, dataOff, blockResid);
+            const kgView = new Float32Array(wasm.memory.buffer, kgOff, 2);
+            kgView[0] = K; kgView[1] = G;
+            wasm.predict_dec(dataOff, bEnd - bStart, kgOff, stateOff, outOff2);
+            reconstructedForScore.set(readI32FromWasm(wasm, outOff2, bEnd - bStart), bStart);
+        }
+    } else {
+        const outOff = WASM_BUF_A + scoredResiduals.length * 4 + 64;
+        ensureWasmMem(wasm, outOff + n * 4 + 64);
+        reconstructedForScore = wasmPredictDec(wasm, scoredResiduals, kgBlocks, wasmDecState(253), outOff);
+    }
+    if (activeSBs.length > 0) {
+        reconstructedForScore = burgPrimaryInverse(reconstructedForScore, n, activeSBs, burgSuperLen);
+    }
+    if (couplingW !== undefined && refData) {
+        for (let i = 0; i < n; i++) {
+            const wr = couplingW * refData[i];
+            reconstructedForScore[i] += wr >= 0 ? (wr + 0.5) | 0 : (wr - 0.5) | 0;
+        }
+    }
+
+    const ar2ProjectionBlocks = useBackwardKG
+        ? fitBackwardKG(wasm, reconstructedForScore, n).map(({ K, G }) => ({ K, G }))
+        : kgBlocks.map(({ K, G }) => ({ K, G }));
+    let projectedCarrier = activeSBs.length > 0
+        ? burgCellProject(reconstructedForScore, n, activeSBs, burgSuperLen)
+        : Float32Array.from(reconstructedForScore);
+    sanitizeProjectionToCell(projectedCarrier, reconstructedForScore);
+    ar2CellProject(projectedCarrier, reconstructedForScore, ar2ProjectionBlocks, activeSBs, burgSuperLen);
+    sanitizeProjectionToCell(projectedCarrier, reconstructedForScore);
+    if (couplingW !== undefined && refData && refProjected) {
+        couplingCellProject(projectedCarrier, reconstructedForScore, refProjected, refData, couplingW);
+        sanitizeProjectionToCell(projectedCarrier, reconstructedForScore);
+    }
+    fractalCellProject(projectedCarrier, reconstructedForScore, numLevels);
+    sanitizeProjectionToCell(projectedCarrier, reconstructedForScore);
+
+    let mse = 0;
+    let signal = 0;
+    if (envCurve) {
+        for (let i = 0; i < n; i++) {
+            const ref = samples[i * numChannels + ch];
+            const diff = ref - projectedCarrier[i] * (envCurve[i] / scalar);
+            signal += ref * ref;
+            mse += diff * diff;
+        }
+    } else {
+        const scale = framePeak / scalar;
+        for (let i = 0; i < n; i++) {
+            const ref = samples[i * numChannels + ch];
+            const diff = ref - projectedCarrier[i] * scale;
+            signal += ref * ref;
+            mse += diff * diff;
+        }
+    }
+    const modelAxes =
+        (envCurve ? 1 : 0) +
+        (couplingW !== undefined ? 1 : 0) +
+        (activeSBs.some(sb => sb.order > 0) ? 1 : 0) +
+        (useMicro ? 1 : 0) +
+        (useDelta ? 1 : 0) +
+        (useTrajectory ? 1 : 0) +
+        (harmonicResidualPath ? 1 : 0);
+    const stochasticPenalty = modelAxes === 0
+        ? stochasticWaveformPenaltyBits(mse, signal, n, targetScalar)
+        : 0;
     return {
         rateBits,
-        objective: rateBits + 0.5 * n * Math.log2(Math.max(mse / n, 1e-12)),
+        objective: rateBits + 0.5 * n * Math.log2(Math.max(mse / n, 1e-12)) + stochasticPenalty,
+        projectedCarrier,
     };
 }
 
@@ -2314,7 +2696,7 @@ function sanitizeProjectionToCell(projected: Float32Array, data: Int32Array): vo
     }
 }
 
-// ── CDF 5/3 wavelet — TypeScript orchestration (calls WASM kernels) ──────────
+// â”€â”€ CDF 5/3 wavelet â€” TypeScript orchestration (calls WASM kernels) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function wasmWaveletFwd(wasm: HarmonicWasmExports, data: Int32Array): { ll: Int32Array; hh: Int32Array } {
     const n = data.length;
@@ -2346,7 +2728,7 @@ function wasmWaveletInv(wasm: HarmonicWasmExports, ll: Int32Array, hh: Int32Arra
 
 /** Multi-level CDF 5/3 decomposition. Returns [LL_deepest, HH_deepest, ..., HH_1].
  *  runs all levels in WASM memory with a single copy-in, avoiding the per-level
- *  JS↔WASM round-trip of the naive approach. HH subbands are copied out after
+ *  JSâ†”WASM round-trip of the naive approach. HH subbands are copied out after
  *  each level (they're final); LL stays in WASM for the next level. */
 function waveletDecompose(wasm: HarmonicWasmExports, data: Int32Array, levels: number): Int32Array[] {
     const n = data.length;
@@ -2367,7 +2749,7 @@ function waveletDecompose(wasm: HarmonicWasmExports, data: Int32Array, levels: n
         const nlp = (curLen + 1) >> 1;
         const nhp = curLen - nlp;
 
-        // HH is final — copy out now before dstOff is reused next level
+        // HH is final â€” copy out now before dstOff is reused next level
         hhArrays.push(readI32FromWasm(wasm, dstOff + nlp * 4, nhp));
 
         // move LL from dstOff to srcOff for next level (safe: dstOff > srcOff)
@@ -2384,7 +2766,7 @@ function waveletDecompose(wasm: HarmonicWasmExports, data: Int32Array, levels: n
 }
 
 /** Multi-level CDF 5/3 reconstruction. Input order: [LL, HH_deepest, ..., HH_1].
- *  runs all levels in WASM memory with minimal JS↔WASM copies. */
+ *  runs all levels in WASM memory with minimal JSâ†”WASM copies. */
 function waveletReconstruct(wasm: HarmonicWasmExports, subbands: Int32Array[]): Int32Array {
     if (subbands.length <= 1) return subbands[0].slice();
 
@@ -2411,22 +2793,24 @@ function waveletReconstruct(wasm: HarmonicWasmExports, subbands: Int32Array[]): 
     return readI32FromWasm(wasm, llOff, nlp);
 }
 
-// ── trajectory prediction ────────────────────────────────────────────────────
+
+
+// â”€â”€ trajectory prediction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // nonlinear closure of the prediction chain. after the linear hierarchy
 // (Burg, AR(2), micro-osc, delta) removes oscillatory structure, the residual
 // traces a trajectory on a low-dimensional manifold in delay-embedding space
 // (Takens 1981). three interlocking techniques exploit this:
 //
-// 1. Mañé mixed embedding (Mañé 1981, Deyle & Sugihara 2011):
+// 1. MaÃ±Ã© mixed embedding (MaÃ±Ã© 1981, Deyle & Sugihara 2011):
 //    instead of pure time delays, embed using position + velocity +
 //    acceleration + amplitude. these decorrelated features capture different
 //    dynamics aspects, producing better neighbors than raw delays.
 //
 // 2. recurrence diagonal tracking (Eckmann 1987):
-//    trajectories are continuous — if neighbor m was good at time t, then
+//    trajectories are continuous â€” if neighbor m was good at time t, then
 //    m+1 is likely good at t+1. check the previous diagonal first (O(d)),
-//    fall back to full kNN search (O(W×d)) only when the diagonal breaks.
+//    fall back to full kNN search (O(WÃ—d)) only when the diagonal breaks.
 //
 // 3. local Lyapunov confidence (Abarbanel 1992):
 //    the weighted variance of neighbor continuations measures local
@@ -2469,7 +2853,7 @@ function trajStateAppend(state: HarmonicState, residuals: Int32Array): void {
     const W = TRAJ_WINDOW;
     const n = residuals.length;
     if (n >= W) {
-        // residuals longer than window — just keep the last W samples
+        // residuals longer than window â€” just keep the last W samples
         state.trajWindow.set(residuals.subarray(n - W));
         state.trajFill = W;
     } else if (state.trajFill + n <= W) {
@@ -2485,18 +2869,18 @@ function trajStateAppend(state: HarmonicState, residuals: Int32Array): void {
     }
 }
 
-/** trajectory prediction core: Mañé embedding + diagonal tracking.
+/** trajectory prediction core: MaÃ±Ã© embedding + diagonal tracking.
  *
- *  Mañé mixed embedding: instead of pure delays [r(n-1)..r(n-4)], use
- *  [position, velocity, acceleration, amplitude] — decorrelated features
- *  that capture different dynamics aspects (Mañé 1981, Deyle & Sugihara 2011).
+ *  MaÃ±Ã© mixed embedding: instead of pure delays [r(n-1)..r(n-4)], use
+ *  [position, velocity, acceleration, amplitude] â€” decorrelated features
+ *  that capture different dynamics aspects (MaÃ±Ã© 1981, Deyle & Sugihara 2011).
  *
  *  diagonal tracking: trajectories are continuous, so if neighbor m was best
  *  at time t, check m+1 first at time t+1. full search only when diagonal
- *  breaks (Eckmann 1987). amortized cost: O(d) per sample instead of O(W×d).
+ *  breaks (Eckmann 1987). amortized cost: O(d) per sample instead of O(WÃ—d).
  *
  *  the `encode` flag controls direction:
- *  encode → out[i] = input[i] - pred,  decode → out[i] = input[i] + pred. */
+ *  encode â†’ out[i] = input[i] - pred,  decode â†’ out[i] = input[i] + pred. */
 function trajProcess(input: Int32Array, out: Int32Array, encode: boolean, startIdx: number = 0): void {
     const n = input.length, k = TRAJ_K, W = TRAJ_WINDOW;
     const data = encode ? input : out;
@@ -2507,19 +2891,19 @@ function trajProcess(input: Int32Array, out: Int32Array, encode: boolean, startI
     let diagIdx = -1;
     let prevBestDist = Infinity;
 
-    // samples before startIdx are warm window — already set in out[], skip processing
+    // samples before startIdx are warm window â€” already set in out[], skip processing
     const begin = Math.max(3, startIdx);
     for (let i = startIdx; i < begin && i < n; i++) out[i] = input[i];
 
     for (let i = begin; i < n; i++) {
         const wStart = Math.max(3, i - W);
 
-        // inline Mañé features for query point
+        // inline MaÃ±Ã© features for query point
         const qr0 = data[i - 1], qr1 = data[i - 2], qr2 = data[i - 3];
         const qPos = qr0, qVel = qr0 - qr1, qAcc = qr0 - 2 * qr1 + qr2;
         const qAmp = qr0 >= 0 ? qr0 : -qr0;
 
-        // ── diagonal tracking: check previous best neighbor's successor ──
+        // â”€â”€ diagonal tracking: check previous best neighbor's successor â”€â”€
         let diagHit = false;
         let diagDist = Infinity;
         const nextDiag = diagIdx + 1;
@@ -2537,7 +2921,7 @@ function trajProcess(input: Int32Array, out: Int32Array, encode: boolean, startI
         if (diagHit) {
             bestDists[0] = diagDist;
             bestIdxs[0] = nextDiag;
-            // local search ±16 around diagonal for more neighbors
+            // local search Â±16 around diagonal for more neighbors
             const ls = Math.max(wStart, nextDiag - 16);
             const le = Math.min(i, nextDiag + 16);
             for (let m = ls; m < le; m++) {
@@ -2575,9 +2959,9 @@ function trajProcess(input: Int32Array, out: Int32Array, encode: boolean, startI
 
         // count valid neighbors and compute Gaussian-weighted prediction.
         // optimization: cache sqrt(dist) from the count pass and precompute
-        // 1/dMean to replace k divisions with k multiplications (~6× faster).
+        // 1/dMean to replace k divisions with k multiplications (~6Ã— faster).
         // the Schraudolph exp(-x) bit-hack (reinterpret integer as float64)
-        // replaces Math.exp, avoiding the JS→C++ boundary: ~15 cycles vs ~100.
+        // replaces Math.exp, avoiding the JSâ†’C++ boundary: ~15 cycles vs ~100.
         let actual = 0, dSum = 0;
         for (let j = 0; j < k; j++) {
             if (bestIdxs[j] < 0) break;
@@ -2612,7 +2996,7 @@ function trajProcess(input: Int32Array, out: Int32Array, encode: boolean, startI
 
 /** Farmer-Sidorowich encode with optional warm window from previous frames.
  *  if state is provided, prepends the warm window to extend the causal past.
- *  IMPORTANT: state is NOT updated here — the caller must call trajStateUpdate
+ *  IMPORTANT: state is NOT updated here â€” the caller must call trajStateUpdate
  *  with the final residuals (whether trajectory was used or not) to keep
  *  encoder and decoder states in sync. */
 function trajectoryEncode(residuals: Int32Array, state?: HarmonicState): Int32Array {
@@ -2650,7 +3034,7 @@ function trajectoryDecode(errors: Int32Array, state?: HarmonicState): Int32Array
     return residuals;
 }
 
-// ── zigzag / byte-plane split ─────────────────────────────────────────────────
+// â”€â”€ zigzag / byte-plane split â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function zigzagEnc(v: number): number { return (v << 1) ^ (v >> 31); }
 function zigzagDec(z: number): number { return (z >>> 1) ^ -(z & 1); }
@@ -2682,7 +3066,7 @@ function encodeResidualPlanes(residuals: Int32Array): {
     const empty = new Uint8Array(0);
 
     if (planeCount === 1) {
-        // lo plane only — skip top and mid entirely
+        // lo plane only â€” skip top and mid entirely
         const lo = new Uint8Array(n);
         for (let i = 0; i < n; i++) {
             const v = residuals[i];
@@ -2692,7 +3076,7 @@ function encodeResidualPlanes(residuals: Int32Array): {
     }
 
     if (planeCount === 2) {
-        // mid + lo planes — skip top
+        // mid + lo planes â€” skip top
         const mid = new Uint8Array(n), lo = new Uint8Array(n);
         for (let i = 0; i < n; i++) {
             const v = residuals[i];
@@ -2748,14 +3132,14 @@ function decodeResidualPlanes(
     return out;
 }
 
-// ── harmonic topology layer ─────────────────────────────────────────────────
+// â”€â”€ harmonic topology layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-// The harmonic amplitude surface A(n, t) — Goertzel cos/sin coefficients for
-// harmonics n = 2,3,... at each voiced block t — is the time-frequency topology
+// The harmonic amplitude surface A(n, t) â€” Goertzel cos/sin coefficients for
+// harmonics n = 2,3,... at each voiced block t â€” is the time-frequency topology
 // layer for 1D audio.  Analogous to Spatial's xmid(y,z) surface, it captures
-// the spectral envelope as a smooth 2D field.  Compressed with 2D Möbius:
-//   P(h,b) = A(h−1,b) + A(h,b−1) − A(h−1,b−1)
-// Error = Δh·Δb·A — zero for bilinear spectral envelopes.
+// the spectral envelope as a smooth 2D field.  Compressed with 2D MÃ¶bius:
+//   P(h,b) = A(hâˆ’1,b) + A(h,bâˆ’1) âˆ’ A(hâˆ’1,bâˆ’1)
+// Error = Î”hÂ·Î”bÂ·A â€” zero for bilinear spectral envelopes.
 //
 // After extraction, the aperiodic residual (harmonics subtracted) passes
 // through the existing wavelet + Logos pipeline.  For voiced signals the
@@ -2786,7 +3170,7 @@ function blockVoiced(
     if (sp < BLOCK_LEN) return false; // silence
     const gain = 10 * Math.log10(sp / Math.max(np, 1));
     // Voiced = meaningful prediction gain but residual still has energy
-    // (pure tones have gain > 40 dB — AR(2) already captured everything,
+    // (pure tones have gain > 40 dB â€” AR(2) already captured everything,
     //  no harmonics left to extract)
     return gain >= VOICED_GAIN_DB && gain < VOICED_CEILING_DB;
 }
@@ -2871,25 +3255,25 @@ function mobiusDec2D(r: Int32Array, H: number, W: number): Int32Array {
     return f;
 }
 
-// ── Burg lattice prediction (primary stage on original signal) ────────────────
+// â”€â”€ Burg lattice prediction (primary stage on original signal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Adaptive-order LPC via Burg's method on the original quantized signal.
 // Operates per 256-sample super-block. Order > 2 captures formants and
-// higher harmonics that AR(2) can't reach. Order ≤ 2 falls back to identity
+// higher harmonics that AR(2) can't reach. Order â‰¤ 2 falls back to identity
 // (AR(2) already handles single-peak signals optimally).
 //
-// Pipeline: Burg primary → AR(2) refinement → wavelet → entropy coding.
-// Decoder: wavelet → AR(2) inverse → Burg inverse.
+// Pipeline: Burg primary â†’ AR(2) refinement â†’ wavelet â†’ entropy coding.
+// Decoder: wavelet â†’ AR(2) inverse â†’ Burg inverse.
 
-// 256 samples @ 48kHz = 5.3ms ≈ one pitch period at 188Hz.
+// 256 samples @ 48kHz = 5.3ms â‰ˆ one pitch period at 188Hz.
 // long enough for Burg to capture the spectral envelope,
 // short enough to track formant transitions in running speech.
 const BURG_SUPER_LEN = 256;
 // LP order 12: captures a 6-formant vocal tract (2 poles per formant).
 // the vocal tract has 4-5 formants in the 0-5kHz range, plus spectral tilt.
 const BURG_MAX_ORDER = 12;
-// reflection coefficient threshold: |kₘ|² < 0.15² = 0.0225 = 2.25% energy.
+// reflection coefficient threshold: |kâ‚˜|Â² < 0.15Â² = 0.0225 = 2.25% energy.
 // each additional LP order must explain at least 2.25% of remaining variance.
-// this is conservative — prevents overfitting to quantization artifacts.
+// this is conservative â€” prevents overfitting to quantization artifacts.
 const BURG_K_THRESH  = 0.15;
 // Burg must reduce energy by at least 10% (1 dB) to justify its trajectory cost.
 // each super-block costs ~7 bytes; 10% of even a small signal saves more.
@@ -2943,7 +3327,7 @@ function burgAnalysis(
     return refCoeffs;
 }
 
-/** Select optimal order: stop when |kₘ| < threshold. */
+/** Select optimal order: stop when |kâ‚˜| < threshold. */
 function burgSelectOrder(refCoeffs: Float64Array): number {
     for (let m = 0; m < refCoeffs.length; m++) {
         if (Math.abs(refCoeffs[m]) < BURG_K_THRESH) return m;
@@ -2951,7 +3335,7 @@ function burgSelectOrder(refCoeffs: Float64Array): number {
     return refCoeffs.length;
 }
 
-/** Levinson recursion: reflection coefficients → LP coefficients.
+/** Levinson recursion: reflection coefficients â†’ LP coefficients.
  *  Returns a[0..order-1] where pred = sum(a[m] * x[n-1-m], m=0..P-1). */
 function reflToLP(k: Float64Array, order: number): Float64Array {
     const a = new Float64Array(order);
@@ -2973,7 +3357,7 @@ function reflToLP(k: Float64Array, order: number): Float64Array {
 }
 
 /** Primary Burg forward prediction on original signal (encoder).
- *  For order > 2: produces LP residuals. For order ≤ 2: identity (passthrough).
+ *  For order > 2: produces LP residuals. For order â‰¤ 2: identity (passthrough).
  *  State tracks original data values (reconstructed = data[i] exactly). */
 function burgPrimaryForward(
     data: Int32Array, numSamples: number, superLen: number = BURG_SUPER_LEN,
@@ -3031,7 +3415,7 @@ function burgPrimaryForward(
                 superBlocks.push({ order: 0, quantK: new Int8Array(0), a: new Float64Array(0) });
             }
         } else {
-            // order ≤ 2: identity passthrough (AR(2) handles this)
+            // order â‰¤ 2: identity passthrough (AR(2) handles this)
             for (let i = 0; i < sLen; i++) output[sStart + i] = data[sStart + i];
             superBlocks.push({ order: 0, quantK: new Int8Array(0), a: new Float64Array(0) });
         }
@@ -3089,7 +3473,7 @@ function burgPrimaryInverse(
  *  directions: causal (past -> future) and anti-causal (future -> past).
  *
  *  this creates a tiny boolean lattice of constraints:
- *    quantization cell ∧ forward Burg prior ∧ backward Burg prior
+ *    quantization cell âˆ§ forward Burg prior âˆ§ backward Burg prior
  *
  *  each Burg prior is projected into the cell, then blended against the cell
  *  midpoint q with precision weight (quantization variance / innovation
@@ -3224,11 +3608,11 @@ function burgCellProject(
  *  orbit is exactly 2-dimensional, so the reverse-time prior is available in
  *  closed form from the inverse state transition:
  *
- *    x[n+2] = K·x[n+1] - G·x[n]
- *    x[n]   = (K·x[n+1] - x[n+2]) / G
+ *    x[n+2] = KÂ·x[n+1] - GÂ·x[n]
+ *    x[n]   = (KÂ·x[n+1] - x[n+2]) / G
  *
  *  run the same boolean-lattice meet as Burg:
- *    quantization cell ∧ forward AR(2) prior ∧ backward AR(2) prior
+ *    quantization cell âˆ§ forward AR(2) prior âˆ§ backward AR(2) prior
  *
  *  only samples in Burg-inactive superblocks are moved. Burg-active regions
  *  already have the stronger LP prior and are left alone here.
@@ -3381,10 +3765,10 @@ function ar2CellProject(
  *    2. K/G + Burg on the time axis
  *
  *  if the reference channel moved inside its quantization cell during
- *  reconstruction, the coupled channel should move with it by W·Δref. project
+ *  reconstruction, the coupled channel should move with it by WÂ·Î”ref. project
  *  that channel-axis prior into the current channel's cell and blend it with
- *  the time-axis estimate. the precision weight W²/(1+W²) is the normalized
- *  energy share of the channel axis in x ≈ u + W·r.
+ *  the time-axis estimate. the precision weight WÂ²/(1+WÂ²) is the normalized
+ *  energy share of the channel axis in x â‰ˆ u + WÂ·r.
  */
 function couplingCellProject(
     projected: Float32Array, data: Int32Array,
@@ -3409,12 +3793,12 @@ function couplingCellProject(
  *  octaves. for a locally linear waveform, x[i] should sit near the midpoint of
  *  its dyadic neighbors:
  *
- *    x[i] ≈ (x[i-h] + x[i+h]) / 2,  h = 1, 2, 4, ...
+ *    x[i] â‰ˆ (x[i-h] + x[i+h]) / 2,  h = 1, 2, 4, ...
  *
  *  under independent uniform quantization noise, the midpoint residual
  *    x[i] - (x[i-h]+x[i+h])/2
  *  has exact variance:
- *    (1² + (1/2)² + (1/2)²) / 12 = 1/8.
+ *    (1Â² + (1/2)Â² + (1/2)Â²) / 12 = 1/8.
  *
  *  use that as the physical floor. when the observed curvature at a dyadic
  *  scale is at or below this floor, the self-similar prior is trustworthy and
@@ -3523,19 +3907,90 @@ function estimateRiceCost(residuals: Int32Array, n: number): number {
  *  Counts per-block change flags and approximates Rice-coded deltas.
  *  Used by the trial encoder to fairly compare paths that produce
  *  different K/G trajectories (e.g., plain AR(2) vs Burg+AR(2)). */
-function estimateTrajectoryBits(blocks: { Kint: number; Gint: number }[]): number {
+const KG_TRAJ_WIRE_LEGACY = 0;
+const KG_TRAJ_WIRE_RUN_AWARE = 1;
+
+function estimateTrajectoryBitsLegacy(
+    blocks: { Kint: number; Gint: number }[],
+    metaKK: number, metaGK: number,
+): number {
     let bits = 0;
     let prevK = 0, prevG = 0;
+    let prev2K = 0, prev2G = 0;
+    let runK = 0, runG = 0;
     for (const { Kint, Gint } of blocks) {
-        const dkAbs = Math.abs(Kint - prevK);
-        const dgAbs = Math.abs(Gint - prevG);
-        const kChanged = dkAbs > DEAD_K;
-        const gChanged = dgAbs > DEAD_G;
-        bits += 3; // reset(1) + kChanged(1) + gChanged(1)
-        if (kChanged) { bits += 4 + Math.max(1, Math.ceil(Math.log2(dkAbs + 1))); prevK = Kint; }
-        if (gChanged) { bits += 4 + Math.max(1, Math.ceil(Math.log2(dgAbs + 1))); prevG = Gint; }
+        const predK = prevK + ((metaKK * (prevK - prev2K) + 32) >> 6);
+        const predG = prevG + ((metaGK * (prevG - prev2G) + 32) >> 6);
+        const dk = Kint - predK;
+        const dg = Gint - predG;
+        const zk = zigzagEnc(dk) >>> 0;
+        const zg = zigzagEnc(dg) >>> 0;
+        if (zk > 0x7FFF || zg > 0x7FFF) {
+            bits += 33;
+            runK = 0; runG = 0;
+        } else {
+            bits += 1; // reset bit
+            const kChanged = zk !== 0;
+            const gChanged = zg !== 0;
+            bits += 2; // changed flags
+            if (kChanged) {
+                const mK = runK === 0 ? 0 : Math.min(14, 31 - Math.clz32(runK));
+                bits += 4 + (zk >>> mK) + 1 + mK;
+                runK = (runK + zk) >>> 1;
+            }
+            if (gChanged) {
+                const mG = runG === 0 ? 0 : Math.min(14, 31 - Math.clz32(runG));
+                bits += 4 + (zg >>> mG) + 1 + mG;
+                runG = (runG + zg) >>> 1;
+            }
+        }
+        prev2K = prevK; prev2G = prevG;
+        prevK = Kint; prevG = Gint;
     }
     return bits;
+}
+
+function estimateTrajectoryBitsRunAware(
+    blocks: { Kint: number; Gint: number }[],
+    metaKK: number, metaGK: number,
+): number {
+    let bits = 0;
+    let prevK = 0, prevG = 0;
+    let prev2K = 0, prev2G = 0;
+    let runZeros = 0;
+    let runAvg = 0;
+    for (const { Kint, Gint } of blocks) {
+        const predK = prevK + ((metaKK * (prevK - prev2K) + 32) >> 6);
+        const predG = prevG + ((metaGK * (prevG - prev2G) + 32) >> 6);
+        const dk = Kint - predK;
+        const dg = Gint - predG;
+        if (dk === 0 && dg === 0) {
+            runZeros++;
+        } else {
+            bits += estimateZeroRunBits(runZeros, runAvg);
+            if (runZeros > 1) runAvg = (runAvg + (runZeros - 2)) >>> 1;
+            runZeros = 0;
+            const dkAbs = Math.abs(dk);
+            const dgAbs = Math.abs(dg);
+            bits += 2; // tag
+            const kChanged = dkAbs > DEAD_K;
+            const gChanged = dgAbs > DEAD_G;
+            bits += 2; // changed flags
+            if (kChanged) bits += 4 + Math.max(1, Math.ceil(Math.log2(dkAbs + 1)));
+            if (gChanged) bits += 4 + Math.max(1, Math.ceil(Math.log2(dgAbs + 1)));
+        }
+        prev2K = prevK; prev2G = prevG;
+        prevK = Kint; prevG = Gint;
+    }
+    bits += estimateZeroRunBits(runZeros, runAvg);
+    return bits;
+}
+
+function estimateTrajectoryBits(blocks: { Kint: number; Gint: number }[]): number {
+    const { metaKK, metaGK } = metaPredictKG(blocks);
+    const legacyBits = estimateTrajectoryBitsLegacy(blocks, metaKK, metaGK);
+    const runAwareBits = estimateTrajectoryBitsRunAware(blocks, metaKK, metaGK);
+    return 8 + Math.min(legacyBits, runAwareBits);
 }
 
 // reusable entropy count buffer (avoids allocation per call)
@@ -3544,7 +3999,7 @@ function estimateTrajectoryBits(blocks: { Kint: number; Gint: number }[]): numbe
 /** byte-plane cost estimate (bytes) for subband residuals.
  *  uses the MINIMUM of order-0 entropy and XOR-derivative entropy on the
  *  low plane. the XOR derivative (byte[i] ^ byte[i-1]) is exactly what
- *  Logos's Z-axis models — it captures byte-to-byte correlation that the
+ *  Logos's Z-axis models â€” it captures byte-to-byte correlation that the
  *  trajectory predictor creates. taking the min of both estimates ensures
  *  the trial comparison sees whichever structure the data actually has:
  *  order-0 for independent bytes, Z-axis for correlated bytes. */
@@ -3601,7 +4056,7 @@ function estimatePlaneCost(residuals: Int32Array): number {
     return Math.max(3, Math.ceil(totalBits / 8));
 }
 
-// ── bit I/O ───────────────────────────────────────────────────────────────────
+// â”€â”€ bit I/O â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class BitWriter {
     private buf: number[] = [];
@@ -3657,13 +4112,22 @@ function riceDecode(br: BitReader, m: number): number {
     return (q << m) | (m > 0 ? br.read(m) : 0);
 }
 
-// ── K/G trajectory encoding ──────────────────────────────────────────────────
+function estimateZeroRunBits(runLen: number, runAvg: number): number {
+    if (runLen <= 0) return 0;
+    if (runLen === 1) return 2;
+    const mRun = runAvg === 0 ? 0 : Math.min(14, 31 - Math.clz32(runAvg));
+    const code = runLen - 2;
+    return 2 + 4 + (code >>> mRun) + 1 + mRun;
+}
+
+// â”€â”€ K/G trajectory encoding â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-// K (frequency) and G (damping r²) have distinct physical statistics:
+// K (frequency) and G (damping rÂ²) have distinct physical statistics:
 //   K tracks pitch, stable for pure tones and slowly drifting during vibrato.
 //   G stays near 1 for tonal signals and rarely changes at all.
 // Change-flags let each coefficient be omitted entirely when it hasn't moved.
-// When a change fires, an EMA-based Rice parameter (runK / runG) adapts to its variance.
+// The residual itself is predicted from second-order motion, so smooth K/G
+// glides collapse toward zero without changing the decoded trajectory.
 //
 // Wire format per block:
 //   non-reset: [reset:1=0][kChanged:1][gChanged:1] + if kChanged: [mK:4b+Rice(zk,mK)] + if gChanged: [mG:4b+Rice(zg,mG)]
@@ -3673,54 +4137,60 @@ function riceDecode(br: BitReader, m: number): number {
 // Dead-zone upstream in fitAllBlocks ensures Kint/Gint are already committed values,
 // so the flags stay zero for stable signals without any extra logic here.
 /** Meta-prediction: fit AR(1) to the K and G trajectories themselves.
- *  the prediction parameters trace orbits in parameter space — vibrato
+ *  the prediction parameters trace orbits in parameter space â€” vibrato
  *  produces oscillating K, pitch glides produce drifting K, sustained
  *  tones produce constant K. the meta-oscillator captures this dynamics,
  *  reducing trajectory entropy by 40-100% across real audio.
  *  returns the meta-coefficients and replaces each Kint/Gint with its
- *  meta-residual (smaller values → shorter Rice codes → fewer bits). */
+ *  meta-residual (smaller values â†’ shorter Rice codes â†’ fewer bits). */
 function metaPredictKG(blocks: { Kint: number; Gint: number }[]): {
     metaKK: number; metaGK: number;
 } {
     const n = blocks.length;
     if (n < 3) return { metaKK: 0, metaGK: 0 };
 
-    // fit AR(1) to Kint trajectory: Kint[b] ≈ α·Kint[b-1]
-    // scale 64: α ∈ [-2, 2) maps to [-128, 127] (signed 8-bit safe)
+    // fit AR(1) to Kint trajectory: Kint[b] â‰ˆ Î±Â·Kint[b-1]
+    // scale 64: Î± âˆˆ [-2, 2) maps to [-128, 127] (signed 8-bit safe)
     let sxx = 0, sxv = 0;
-    for (let b = 1; b < n; b++) {
-        sxx += blocks[b - 1].Kint * blocks[b - 1].Kint;
-        sxv += blocks[b - 1].Kint * blocks[b].Kint;
+    for (let b = 2; b < n; b++) {
+        const dvPrev = blocks[b - 1].Kint - blocks[b - 2].Kint;
+        const dvNext = blocks[b].Kint - blocks[b - 1].Kint;
+        sxx += dvPrev * dvPrev;
+        sxv += dvPrev * dvNext;
     }
     const metaKK = sxx > 0 ? Math.max(-128, Math.min(127, Math.round(sxv / sxx * 64))) : 0;
 
     sxx = 0; sxv = 0;
-    for (let b = 1; b < n; b++) {
-        sxx += blocks[b - 1].Gint * blocks[b - 1].Gint;
-        sxv += blocks[b - 1].Gint * blocks[b].Gint;
+    for (let b = 2; b < n; b++) {
+        const dvPrev = blocks[b - 1].Gint - blocks[b - 2].Gint;
+        const dvNext = blocks[b].Gint - blocks[b - 1].Gint;
+        sxx += dvPrev * dvPrev;
+        sxv += dvPrev * dvNext;
     }
     const metaGK = sxx > 0 ? Math.max(-128, Math.min(127, Math.round(sxv / sxx * 64))) : 0;
 
     return { metaKK, metaGK };
 }
 
-function encodeKGTrajectory(
+function encodeKGTrajectoryLegacy(
     blocks: { Kint: number; Gint: number }[],
     metaKK: number = 0, metaGK: number = 0,
 ): Uint8Array {
     const bw = new BitWriter();
-    let decKint = 0, decGint = 0; // mirrors decoder's current Kint, Gint
+    let decKint = 0, decGint = 0;
+    let prevKint = 0, prevGint = 0;
     let runK = 0, runG = 0;
     for (const { Kint, Gint } of blocks) {
-        // meta-prediction replaces simple delta: dk = Kint - metaPred(decKint)
-        // when metaKK=0: identity (dk = Kint - decKint = simple delta as before)
-        const predK = (metaKK * decKint + 32) >> 6;
-        const predG = (metaGK * decGint + 32) >> 6;
+        const velK = decKint - prevKint;
+        const velG = decGint - prevGint;
+        const predK = decKint + ((metaKK * velK + 32) >> 6);
+        const predG = decGint + ((metaGK * velG + 32) >> 6);
         const dk = Kint - predK, dg = Gint - predG;
         const zk = zigzagEnc(dk) >>> 0, zg = zigzagEnc(dg) >>> 0;
         if (zk > 0x7FFF || zg > 0x7FFF) {
             bw.write(1, 1);
             bw.write(Kint & 0xFFFF, 16); bw.write(Gint & 0xFFFF, 16);
+            prevKint = decKint; prevGint = decGint;
             decKint = Kint; decGint = Gint;
             runK = 0; runG = 0;
         } else {
@@ -3739,7 +4209,8 @@ function encodeKGTrajectory(
                 bw.write(mG, 4);
                 riceEncode(bw, zg, mG);
             }
-            decKint = predK + dk; // reconstruct from meta-prediction + residual
+            prevKint = decKint; prevGint = decGint;
+            decKint = predK + dk;
             decGint = predG + dg;
             runK = (runK + zk) >>> 1;
             runG = (runG + zg) >>> 1;
@@ -3748,17 +4219,115 @@ function encodeKGTrajectory(
     return bw.flush();
 }
 
-function decodeKGTrajectory(
+function encodeKGTrajectoryRunAware(
+    blocks: { Kint: number; Gint: number }[],
+    metaKK: number = 0, metaGK: number = 0,
+): Uint8Array {
+    const bw = new BitWriter();
+    let decKint = 0, decGint = 0;
+    let prevKint = 0, prevGint = 0;
+    let runK = 0, runG = 0;
+    let zeroRun = 0;
+    let runZ = 0;
+    const flushZeroRun = (): void => {
+        if (zeroRun <= 0) return;
+        if (zeroRun === 1) {
+            bw.write(0, 2);
+        } else {
+            bw.write(1, 2);
+            const code = zeroRun - 2;
+            const mRun = runZ === 0 ? 0 : Math.min(14, 31 - Math.clz32(runZ));
+            bw.write(mRun, 4);
+            riceEncode(bw, code, mRun);
+            runZ = (runZ + code) >>> 1;
+        }
+        zeroRun = 0;
+    };
+    for (const { Kint, Gint } of blocks) {
+        const velK = decKint - prevKint;
+        const velG = decGint - prevGint;
+        const predK = decKint + ((metaKK * velK + 32) >> 6);
+        const predG = decGint + ((metaGK * velG + 32) >> 6);
+        const dk = Kint - predK, dg = Gint - predG;
+        const zk = zigzagEnc(dk) >>> 0, zg = zigzagEnc(dg) >>> 0;
+        if (zk === 0 && zg === 0) {
+            zeroRun++;
+            prevKint = decKint; prevGint = decGint;
+            decKint = Kint; decGint = Gint;
+            continue;
+        }
+        flushZeroRun();
+        if (zk > 0x7FFF || zg > 0x7FFF) {
+            bw.write(3, 2);
+            bw.write(Kint & 0xFFFF, 16); bw.write(Gint & 0xFFFF, 16);
+            prevKint = decKint; prevGint = decGint;
+            decKint = Kint; decGint = Gint;
+            runK = 0; runG = 0;
+        } else {
+            bw.write(2, 2);
+            const kChanged = zk !== 0 ? 1 : 0;
+            const gChanged = zg !== 0 ? 1 : 0;
+            bw.write(kChanged, 1);
+            bw.write(gChanged, 1);
+            if (kChanged) {
+                const mK = runK === 0 ? 0 : Math.min(14, 31 - Math.clz32(runK));
+                bw.write(mK, 4);
+                riceEncode(bw, zk, mK);
+            }
+            if (gChanged) {
+                const mG = runG === 0 ? 0 : Math.min(14, 31 - Math.clz32(runG));
+                bw.write(mG, 4);
+                riceEncode(bw, zg, mG);
+            }
+            prevKint = decKint; prevGint = decGint;
+            decKint = predK + dk;
+            decGint = predG + dg;
+            runK = (runK + zk) >>> 1;
+            runG = (runG + zg) >>> 1;
+        }
+    }
+    flushZeroRun();
+    return bw.flush();
+}
+
+function buildKGTrajectoryPayload(
+    blocks: { Kint: number; Gint: number }[],
+    metaKK: number = 0, metaGK: number = 0,
+): { raw: Uint8Array; compressed: Uint8Array } {
+    const legacyBody = encodeKGTrajectoryLegacy(blocks, metaKK, metaGK);
+    const legacy = new Uint8Array(legacyBody.length + 1);
+    legacy[0] = KG_TRAJ_WIRE_LEGACY;
+    legacy.set(legacyBody, 1);
+
+    const runAwareBody = encodeKGTrajectoryRunAware(blocks, metaKK, metaGK);
+    const runAware = new Uint8Array(runAwareBody.length + 1);
+    runAware[0] = KG_TRAJ_WIRE_RUN_AWARE;
+    runAware.set(runAwareBody, 1);
+
+    const legacyCompressed = encode0D(legacy);
+    const runAwareCompressed = encode0D(runAware);
+    if (runAwareCompressed.length < legacyCompressed.length) {
+        return { raw: runAware, compressed: runAwareCompressed };
+    }
+    if (legacyCompressed.length < runAwareCompressed.length) {
+        return { raw: legacy, compressed: legacyCompressed };
+    }
+    const useRunAware = runAware.length < legacy.length;
+    if (useRunAware) return { raw: runAware, compressed: runAwareCompressed };
+    return { raw: legacy, compressed: legacyCompressed };
+}
+
+function decodeKGTrajectoryLegacy(
     kgBitsData: Uint8Array, numBlocks: number,
     metaKK: number = 0, metaGK: number = 0,
 ): { Kint: number; Gint: number }[] {
     const br = new BitReader(kgBitsData);
     const blocks: { Kint: number; Gint: number }[] = [];
     let prevKint = 0, prevGint = 0, runK = 0, runG = 0;
+    let prev2Kint = 0, prev2Gint = 0;
     for (let b = 0; b < numBlocks; b++) {
-        const reset = br.read(1);
         let Kint: number, Gint: number;
-        if (reset) {
+        if (br.read(1) !== 0) {
             Kint = (br.read(16) << 16) >> 16;
             Gint = (br.read(16) << 16) >> 16;
             runK = 0; runG = 0;
@@ -3774,21 +4343,97 @@ function decodeKGTrajectory(
                 const mG = br.read(4);
                 zg = riceDecode(br, mG);
             }
-            // meta-prediction: reconstruct from predicted + residual
-            const predK = (metaKK * prevKint + 32) >> 6;
-            const predG = (metaGK * prevGint + 32) >> 6;
+            const velK = prevKint - prev2Kint;
+            const velG = prevGint - prev2Gint;
+            const predK = prevKint + ((metaKK * velK + 32) >> 6);
+            const predG = prevGint + ((metaGK * velG + 32) >> 6);
             Kint = predK + zigzagDec(zk);
             Gint = predG + zigzagDec(zg);
             runK = (runK + zk) >>> 1;
             runG = (runG + zg) >>> 1;
         }
         blocks.push({ Kint, Gint });
+        prev2Kint = prevKint; prev2Gint = prevGint;
         prevKint = Kint; prevGint = Gint;
     }
     return blocks;
 }
 
-// ── ChaCha20 + SipHash-lite ───────────────────────────────────────────────────
+function decodeKGTrajectoryRunAware(
+    kgBitsData: Uint8Array, numBlocks: number,
+    metaKK: number = 0, metaGK: number = 0,
+): { Kint: number; Gint: number }[] {
+    const br = new BitReader(kgBitsData);
+    const blocks: { Kint: number; Gint: number }[] = [];
+    let prevKint = 0, prevGint = 0, runK = 0, runG = 0;
+    let prev2Kint = 0, prev2Gint = 0;
+    let runZ = 0;
+    for (let b = 0; b < numBlocks; ) {
+        const tag = br.read(2);
+        if (tag === 0 || tag === 1) {
+            const zeroRun = tag === 0 ? 1 : (() => {
+                const mRun = br.read(4);
+                const code = riceDecode(br, mRun);
+                runZ = (runZ + code) >>> 1;
+                return code + 2;
+            })();
+            for (let r = 0; r < zeroRun && b < numBlocks; r++, b++) {
+                const velK = prevKint - prev2Kint;
+                const velG = prevGint - prev2Gint;
+                const Kint = prevKint + ((metaKK * velK + 32) >> 6);
+                const Gint = prevGint + ((metaGK * velG + 32) >> 6);
+                blocks.push({ Kint, Gint });
+                prev2Kint = prevKint; prev2Gint = prevGint;
+                prevKint = Kint; prevGint = Gint;
+            }
+            continue;
+        }
+        let Kint: number, Gint: number;
+        if (tag === 3) {
+            Kint = (br.read(16) << 16) >> 16;
+            Gint = (br.read(16) << 16) >> 16;
+            runK = 0; runG = 0;
+        } else {
+            const kChanged = br.read(1);
+            const gChanged = br.read(1);
+            let zk = 0, zg = 0;
+            if (kChanged) {
+                const mK = br.read(4);
+                zk = riceDecode(br, mK);
+            }
+            if (gChanged) {
+                const mG = br.read(4);
+                zg = riceDecode(br, mG);
+            }
+            const velK = prevKint - prev2Kint;
+            const velG = prevGint - prev2Gint;
+            const predK = prevKint + ((metaKK * velK + 32) >> 6);
+            const predG = prevGint + ((metaGK * velG + 32) >> 6);
+            Kint = predK + zigzagDec(zk);
+            Gint = predG + zigzagDec(zg);
+            runK = (runK + zk) >>> 1;
+            runG = (runG + zg) >>> 1;
+        }
+        blocks.push({ Kint, Gint });
+        prev2Kint = prevKint; prev2Gint = prevGint;
+        prevKint = Kint; prevGint = Gint;
+        b++;
+    }
+    return blocks;
+}
+
+function decodeKGTrajectory(
+    kgBitsData: Uint8Array, numBlocks: number,
+    metaKK: number = 0, metaGK: number = 0,
+): { Kint: number; Gint: number }[] {
+    if (kgBitsData.length === 0) return [];
+    const mode = kgBitsData[0];
+    const body = kgBitsData.subarray(1);
+    if (mode === KG_TRAJ_WIRE_RUN_AWARE) return decodeKGTrajectoryRunAware(body, numBlocks, metaKK, metaGK);
+    return decodeKGTrajectoryLegacy(body, numBlocks, metaKK, metaGK);
+}
+
+// â”€â”€ ChaCha20 + SipHash-lite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function qround(s: Uint32Array, a: number, b: number, c: number, d: number): void {
     s[a] = (s[a] + s[b]) >>> 0; s[d] = (s[d] ^ s[a]) >>> 0;
@@ -3875,15 +4520,15 @@ function decryptPayload(data: Uint8Array, key: Uint32Array): { decrypted: Uint8A
     return { decrypted: buf, mac0: cs.mac0, mac1: cs.mac1 };
 }
 
-// ── wire format helpers ───────────────────────────────────────────────────────
+// â”€â”€ wire format helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// ── codec context (reentrant) ────────────────────────────────────────────────
+// â”€â”€ codec context (reentrant) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // all mutable scratch buffers are owned by a context object, not globals.
 // this makes the codec fully reentrant: multiple concurrent encode/decode
 // calls (different streams, Web Workers, Promise interleaving) cannot
 // corrupt each other's state. the context is created per-call and
-// discarded after — zero risk of stale state leaking between frames.
+// discarded after â€” zero risk of stale state leaking between frames.
 
 interface CodecCtx {
     buf: Uint8Array;
@@ -3952,11 +4597,11 @@ function readF32LE(data: Uint8Array, off: number): number {
     return new Float32Array(b)[0];
 }
 
-// ── write K/G trajectory to WASM memory for test inspection ──────────────────
+// â”€â”€ write K/G trajectory to WASM memory for test inspection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Tests read KG_BUF as Int32Array [Kint, Gint, Kint, Gint, ...] per block.
 // numBlocks = ceil(numSamples/32) * numChannels (channels interleaved by block).
-// Synchronous — called with an already-resolved wasm instance so the view
+// Synchronous â€” called with an already-resolved wasm instance so the view
 // is never detached by a concurrent memory.grow.
 
 function writeKGToWasmSync(
@@ -3985,7 +4630,7 @@ function writeKGToWasmSync(
     }
 }
 
-// ── prediction via WASM ───────────────────────────────────────────────────────
+// â”€â”€ prediction via WASM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function wasmPredictEnc(
     wasm: HarmonicWasmExports,
@@ -4045,7 +4690,7 @@ function wasmPredictDec(
     return readI32FromWasm(wasm, outOffset, n);
 }
 
-// ── public encode ────────────────────────────────────────────────────────────
+// â”€â”€ public encode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // wire format:
 //   header (12 B, cleartext):
@@ -4059,13 +4704,16 @@ function wasmPredictDec(
 //     if layout == object:
 //       for each channel: azimuth:f32 elevation:f32 distance:f32
 //     for each channel: refIndex:u8 (0xFF = independent, else ref channel)
+//     envelopeMask: bytes
 //     for each coupled channel (refIndex != 0xFF): W:i16 (coupling coefficient)
 //     effectiveChannels: u8
 //     for each effective channel:
+//       if envelopeMask bit set:
+//         envBlockLen:u32 envCount:u32 envWireLen:u32 envWire
 //       burgOrigLen:u32                      (0 = no Burg for this channel)
 //       if burgOrigLen > 0:
 //         burgCompLen:u32  burgData          (Logos-compressed Burg trajectory)
-//       metaKK:u8  metaGK:u8                (meta-prediction AR(1) coefficients, signed+128)
+//       metaKK:u8  metaGK:u8                (trajectory velocity-carry coefficients, signed+128)
 //       kgOrigLen:u32  kgCompLen:u32         (Logos-compressed Rice-coded K/G trajectory)
 //       kgData: bytes
 //       useMicro:u8                          (1 = micro-oscillator active)
@@ -4077,7 +4725,7 @@ function wasmPredictDec(
 //       useTrajectory:u8                     (1 = Farmer-Sidorowich active)
 //       harmonicHeader: u16(numVoiced) u8(maxH)  (0,0,0 = no harmonics)
 //       if numVoiced > 0:
-//         voicedMask + cos/sin fields        (2D Möbius + per-field plane encoding)
+//         voicedMask + cos/sin fields        (2D MÃ¶bius + per-field plane encoding)
 //       numSubbands: u8                      (1 if wavelet skipped, 4 if active)
 //       for each subband:
 //         sbLen:u32  planeCount:u8           (0=zeroed, 1=lo, 2=mid+lo, 3=all)
@@ -4104,6 +4752,203 @@ export interface HarmonicOptions {
     spatialObjects?: SpatialObject[];
 }
 
+function prepareHarmonicChannels(
+    wasm: HarmonicWasmExports,
+    samples: Float32Array,
+    sampleRate: number,
+    numChannels: number,
+    numSamples: number,
+    scalar: number,
+    framePeak: number,
+    targetScalar: number,
+    effectiveBitDepth: number,
+    numLevels: number,
+    burgSuperLen: number,
+    goertzelLen: number,
+    blocksPerGoertzel: number,
+    layout: "channel" | "object",
+    trajState?: HarmonicState,
+): {
+    channels: Int32Array[];
+    channelEnergy: number[];
+    channelEnvelopes: (Int16Array | null)[];
+    channelEnvelopeBlockLens: number[];
+    channelEnvelopeWire: (Uint8Array | null)[];
+    couplingRefs: number[];
+    effectiveChannels: number;
+    totalObjective: number;
+} {
+    const invPeak = scalar / framePeak;
+    const shapeNoise = effectiveBitDepth === 0 && scalar > 1;
+    let nsK = 0, nsG = 0;
+    if (shapeNoise) {
+        const V_BODY = 353;
+        const L_CANAL = 0.026;
+        const f1 = V_BODY / (4 * L_CANAL);
+        const omega0 = 2 * Math.PI * f1 / sampleRate;
+        const cosW = Math.cos(omega0);
+        const absCosW = cosW < 0 ? -cosW : cosW;
+        const r = -absCosW + Math.sqrt(absCosW * absCosW + 2);
+        nsK = 2 * r * cosW;
+        nsG = r * r;
+    }
+
+    const baselineChannels: Int32Array[] = [];
+    const baselineEnergy: number[] = [];
+    const channels: Int32Array[] = [];
+    const channelEnergy: number[] = [];
+    const channelEnvelopes: (Int16Array | null)[] = [];
+    const channelEnvelopeBlockLens: number[] = [];
+    const channelEnvelopeWire: (Uint8Array | null)[] = [];
+    const channelProjected: (Float32Array | null)[] = [];
+    const amplitudeBaselineFitBits: number[] = [];
+    const amplitudeCandidates: AmplitudeCandidate[][] = [];
+    const envelopeBlockLen = envelopeBlockLenFromBurgSuperLen(burgSuperLen);
+    for (let ch = 0; ch < numChannels; ch++) {
+        const baseline = quantizeChannelWithOrbitalGuide(
+            wasm,
+            samples,
+            ch,
+            numChannels,
+            numSamples,
+            invPeak,
+            shapeNoise,
+            nsK,
+            nsG,
+            numLevels,
+            scalar,
+        );
+        baselineChannels.push(baseline.data);
+        baselineEnergy.push(baseline.energy);
+        channels.push(baseline.data);
+        channelEnergy.push(baseline.energy);
+        channelEnvelopes.push(null);
+        channelEnvelopeBlockLens.push(0);
+        channelEnvelopeWire.push(null);
+        channelProjected.push(null);
+        const amplitudeAxis = shapeNoise && numSamples >= envelopeBlockLen * 2
+            ? quantizeChannelWithAmplitudeAxis(
+                    wasm,
+                    samples,
+                    ch,
+                    numChannels,
+                    numSamples,
+                    framePeak,
+                    scalar,
+                    envelopeBlockLen,
+                    baseline.data,
+                    shapeNoise,
+                    nsK,
+                    nsG,
+                    numLevels,
+                )
+            : { candidates: [], baselineFitBits: 0 };
+        amplitudeBaselineFitBits.push(amplitudeAxis.baselineFitBits);
+        amplitudeCandidates.push(amplitudeAxis.candidates);
+    }
+    const effectiveChannels = numChannels;
+    let couplingRefs: number[] = [];
+    let totalObjective = 0;
+    const axisPasses = layout !== "object" && numChannels > 1 ? 3 : 1;
+    for (let pass = 0; pass < axisPasses; pass++) {
+        totalObjective = 0;
+        if (layout !== "object" && numChannels > 1 && numSamples >= BLOCK_LEN) {
+            couplingRefs = assignReferences(channels, numSamples);
+        } else {
+            couplingRefs = new Array(numChannels).fill(NO_REF);
+        }
+
+        for (let ch = 0; ch < numChannels; ch++) {
+            const amplitudeSet = amplitudeCandidates[ch];
+            const baselineData = baselineChannels[ch];
+            channels[ch] = baselineData;
+            channelEnergy[ch] = baselineEnergy[ch];
+            channelEnvelopes[ch] = null;
+            channelEnvelopeBlockLens[ch] = 0;
+            channelEnvelopeWire[ch] = null;
+
+            const refIdx = couplingRefs[ch] ?? NO_REF;
+            const refData = refIdx !== NO_REF ? channels[refIdx] : undefined;
+            const refProjected = refIdx !== NO_REF ? channelProjected[refIdx] ?? undefined : undefined;
+
+            const baselineScore = scoreQuantizedChannel(
+                wasm,
+                baselineData,
+                samples,
+                ch,
+                numChannels,
+                scalar,
+                framePeak,
+                targetScalar,
+                null,
+                numLevels,
+                burgSuperLen,
+                goertzelLen,
+                blocksPerGoertzel,
+                trajState,
+                refData,
+                refProjected,
+            );
+
+            let bestObjective = baselineScore.objective + amplitudeBaselineFitBits[ch];
+            let bestProjected = baselineScore.projectedCarrier;
+            let bestAmplitude: AmplitudeCandidate | null = null;
+            for (const amplitude of amplitudeSet) {
+                const amplitudeScore = scoreQuantizedChannel(
+                    wasm,
+                    amplitude.data,
+                    samples,
+                    ch,
+                    numChannels,
+                    scalar,
+                    framePeak,
+                    targetScalar,
+                    amplitude.envCurve,
+                    numLevels,
+                    burgSuperLen,
+                    goertzelLen,
+                    blocksPerGoertzel,
+                    trajState,
+                    refData,
+                    refProjected,
+                    amplitude.extraBits,
+                );
+                const amplitudeObjective = amplitudeScore.objective + amplitude.fitBits;
+                if (amplitudeObjective < bestObjective) {
+                    bestObjective = amplitudeObjective;
+                    bestAmplitude = amplitude;
+                    bestProjected = amplitudeScore.projectedCarrier;
+                }
+            }
+
+            if (bestAmplitude) {
+                channels[ch] = bestAmplitude.data;
+                channelEnergy[ch] = bestAmplitude.energy;
+                channelEnvelopes[ch] = bestAmplitude.envLog;
+                channelEnvelopeBlockLens[ch] = bestAmplitude.envBlockLen;
+                channelEnvelopeWire[ch] = bestAmplitude.envWire;
+            }
+            channelProjected[ch] = bestProjected;
+            totalObjective += bestObjective;
+        }
+    }
+
+    if (layout !== "object" && numChannels > 1 && numSamples >= BLOCK_LEN) {
+        couplingRefs = assignReferences(channels, numSamples);
+    }
+
+    return {
+        channels,
+        channelEnergy,
+        channelEnvelopes,
+        channelEnvelopeBlockLens,
+        channelEnvelopeWire,
+        couplingRefs,
+        effectiveChannels,
+        totalObjective,
+    };
+}
+
 export async function encodeHarmonic(
     float32Samples: Float32Array | Float32Array[],
     sampleRate: number,
@@ -4112,7 +4957,7 @@ export async function encodeHarmonic(
 ): Promise<Uint8Array> {
     // accept planar input (Float32Array[] from Web Audio AudioBuffer.getChannelData())
     // or interleaved input (single Float32Array). planar is converted to interleaved
-    // in-place — zero copy for mono, one pass for multichannel.
+    // in-place â€” zero copy for mono, one pass for multichannel.
     let samples: Float32Array;
     let inferredChannels: number;
     if (Array.isArray(float32Samples)) {
@@ -4150,7 +4995,7 @@ export async function encodeHarmonic(
     // bit depth is explicit only. when the caller passes bitDepth: 16 or 24,
     // the codec forces the scalar high enough for bit-exact lossless and sets
     // framePeak = 1.0 (no peak normalization). when bitDepth is not set, Q
-    // controls the scalar — no auto-detection, no magic, no surprises.
+    // controls the scalar â€” no auto-detection, no magic, no surprises.
     //
     // the previous auto-detect feature (scanning samples for integer alignment)
     // was removed because it caused a real bug: live mic input from a 16-bit
@@ -4163,209 +5008,93 @@ export async function encodeHarmonic(
     const effectiveBitDepth = bitDepth;
 
     // scalar controls quantization precision. the IIR-2 oscillator with
-    // near-unit-circle poles requires LOSSLESS integer residuals — proven
+    // near-unit-circle poles requires LOSSLESS integer residuals â€” proven
     // 2026-03-29 and confirmed by studying G.726, QOA, CELT, aptX: every
     // codec with IIR prediction either needs leak factors (degrading tonal
     // capture) or avoids lossy residuals entirely. Harmonic keeps lossless
     // residuals because the IIR-2 IS the core advantage.
     //
     // the Q parameter maps to scalar (quantization levels per peak amplitude).
-    // scalar = floor(2^(Q/100 × 15)). the prediction pipeline is lossless
-    // on these integers. quality loss is ONLY in the initial float→int step.
+    // scalar = floor(2^(Q/100 Ã— 15)). the prediction pipeline is lossless
+    // on these integers. quality loss is ONLY in the initial floatâ†’int step.
     const qScalar = qualityToScalar(quality);
     const depthScalar = scalarForBitDepth(effectiveBitDepth);
 
     // sample-rate-adaptive wavelet levels
     const numLevels = adaptiveWaveletLevels(sampleRate, numSamples);
 
-    // sample-rate-adaptive Burg and Goertzel windows
-    const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
-    const goertzelLen  = adaptiveGoertzelLen(sampleRate);
-    const blocksPerGoertzel = goertzelLen / BLOCK_LEN;
-
-    // peak normalization. when bitDepth is set, fix peak=1.0 — the scalar
+    // peak normalization. when bitDepth is set, fix peak=1.0 â€” the scalar
     // is already sized for the source's integer range, and skipping peak
     // normalization makes the quantization bit-exact for integer sources:
     //   qi = round(intSample / 2^(bd-1) * 2^(bd-1)) = intSample (exact)
-    let framePeak: number;
-    if (effectiveBitDepth > 0) {
-        framePeak = 1.0;
-    } else {
-        framePeak = lossyFramePeak(samples, qScalar);
-    }
-
-    // cochlear-null noise shaping: places a spectral null in the quantization
-    // noise at the ear canal's quarter-wave resonance frequency.
-    //
-    // the ear canal is a half-open tube (open at pinna, closed at eardrum):
-    //   length L ≈ 0.026 m, speed of sound at 37°C v ≈ 353 m/s
-    //   quarter-wave resonance f₁ = v/(4L) ≈ 3394 Hz
-    //
-    // NTF(z) = 1 - K·z⁻¹ + G·z⁻² with zeros at z = r·e^{±jω₀}
-    //   ω₀ = 2π·f₁/sampleRate, K = 2r·cos(ω₀), G = r²
-    //
-    // pole radius r from max-deviation constraint (|K|+G ≤ 2, |e| ≤ 0.5):
-    //   r = -|cos ω₀| + √(cos²ω₀ + 2)
-    //
-    // at 48 kHz: r ≈ 0.77, noise at 3.4 kHz drops ~16 dB vs flat.
-    // the notch covers 1.5-5 kHz (the cochlea's full sensitive band).
-    // excess noise goes to DC and Nyquist — both inaudible.
-    // a 4th-order dual-null (adding the ear canal's third harmonic at 10.2 kHz)
-    // was tested and rejected: the resonant feedback creates content-dependent
-    // ringing artifacts at low Q, causing inconsistent quality across levels.
-    // the 2nd-order single null is the stable optimum.
-    //
-    // derived from: v=353 m/s, L=0.026 m, sampleRate. encoder-side only.
-    const scalar = Math.max(qScalar, depthScalar);
-    const invPeak = scalar / framePeak;
-    const shapeNoise = effectiveBitDepth === 0 && scalar > 1;
-    let nsK = 0, nsG = 0;
-    if (shapeNoise) {
-        const V_BODY = 353;    // speed of sound at 37°C (m/s)
-        const L_CANAL = 0.026; // ear canal length (m)
-        const f1 = V_BODY / (4 * L_CANAL); // quarter-wave: ~3394 Hz
-        const omega0 = 2 * Math.PI * f1 / sampleRate;
-        const cosW = Math.cos(omega0);
-        const absCosW = cosW < 0 ? -cosW : cosW;
-        const r = -absCosW + Math.sqrt(absCosW * absCosW + 2);
-        nsK = 2 * r * cosW;
-        nsG = r * r;
-    }
     const wasm = await getHarmonicWasm();
-    const baselineChannels: Int32Array[] = [];
-    const baselineEnergy: number[] = [];
-    const channels: Int32Array[] = [];
-    const channelEnergy: number[] = [];
-    const channelEnvelopes: (Int16Array | null)[] = [];
-    const amplitudeCandidates: ({ data: Int32Array; energy: number; envLog: Int16Array; envCurve: Float32Array; extraBits: number } | null)[] = [];
-    const envelopeBlockLen = envelopeBlockLenFromBurgSuperLen(burgSuperLen);
-    const oneLevelDb = 20 * Math.log10((scalar + 1) / scalar);
-    for (let ch = 0; ch < numChannels; ch++) {
-        const baseline = quantizeChannelWithOrbitalGuide(
+    const scalarCandidates = effectiveBitDepth > 0
+        ? [depthScalar]
+        : qualityScalarCandidates(quality);
+    const targetScalar = Math.max(qScalar, depthScalar);
+    let scalar = Math.max(qScalar, depthScalar);
+    const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
+    const goertzelLen  = adaptiveGoertzelLen(sampleRate);
+    const blocksPerGoertzel = goertzelLen / BLOCK_LEN;
+    let framePeak = effectiveBitDepth > 0 ? 1.0 : lossyFramePeak(samples, scalar);
+    let prepared = prepareHarmonicChannels(
+        wasm,
+        samples,
+        sampleRate,
+        numChannels,
+        numSamples,
+        scalar,
+        framePeak,
+        targetScalar,
+        effectiveBitDepth,
+        numLevels,
+        burgSuperLen,
+        goertzelLen,
+        blocksPerGoertzel,
+        layout,
+        trajState,
+    );
+    const seenScalars = new Set<number>([scalar]);
+    for (const cand of scalarCandidates) {
+        const candidateScalar = Math.max(cand, depthScalar);
+        if (seenScalars.has(candidateScalar)) continue;
+        seenScalars.add(candidateScalar);
+        const candidatePeak = effectiveBitDepth > 0 ? 1.0 : lossyFramePeak(samples, candidateScalar);
+        const candidatePrepared = prepareHarmonicChannels(
             wasm,
             samples,
-            ch,
+            sampleRate,
             numChannels,
             numSamples,
-            invPeak,
-            shapeNoise,
-            nsK,
-            nsG,
+            candidateScalar,
+            candidatePeak,
+            targetScalar,
+            effectiveBitDepth,
             numLevels,
-            scalar,
+            burgSuperLen,
+            goertzelLen,
+            blocksPerGoertzel,
+            layout,
+            trajState,
         );
-        baselineChannels.push(baseline.data);
-        baselineEnergy.push(baseline.energy);
-        channels.push(baseline.data);
-        channelEnergy.push(baseline.energy);
-        channelEnvelopes.push(null);
-        amplitudeCandidates.push(
-            shapeNoise && oneLevelDb >= 0.5 && numSamples >= envelopeBlockLen * 2
-                ? quantizeChannelWithAmplitudeAxis(
-                    wasm,
-                    samples,
-                    ch,
-                    numChannels,
-                    numSamples,
-                    framePeak,
-                    scalar,
-                    envelopeBlockLen,
-                    baseline.data,
-                    shapeNoise,
-                    nsK,
-                    nsG,
-                    numLevels,
-                )
-                : null,
-        );
-    }
-    const effectiveChannels = numChannels;
-
-    // cross-channel coupling: assign reference channels based on correlation.
-    // W is fitted per-block INSIDE the WASM prediction loop alongside K/G.
-    // no pre-subtraction — K, G, and W cooperate in one joint prediction.
-    let couplingRefs: number[] = [];
-    let couplingOrder: number[] = [];
-
-    const axisPasses = layout !== "object" && numChannels > 1 ? 3 : 1;
-    for (let pass = 0; pass < axisPasses; pass++) {
-        if (layout !== "object" && numChannels > 1 && numSamples >= BLOCK_LEN) {
-            const { refIndex, order } = assignReferences(channels, numSamples);
-            couplingRefs = refIndex;
-            couplingOrder = order;
-        } else {
-            couplingRefs = new Array(numChannels).fill(NO_REF);
-            couplingOrder = Array.from({ length: numChannels }, (_, i) => i);
-        }
-
-        for (let ch = 0; ch < numChannels; ch++) {
-            const amplitude = amplitudeCandidates[ch];
-            const baselineData = baselineChannels[ch];
-            channels[ch] = baselineData;
-            channelEnergy[ch] = baselineEnergy[ch];
-            channelEnvelopes[ch] = null;
-            if (!amplitude) continue;
-
-            const refIdx = couplingRefs[ch] ?? NO_REF;
-            const refData = refIdx !== NO_REF ? channels[refIdx] : undefined;
-
-            const baselineRecon = new Float32Array(numSamples);
-            for (let i = 0; i < numSamples; i++) baselineRecon[i] = baselineData[i] * (framePeak / scalar);
-            const baselineScore = scoreQuantizedChannel(
-                wasm,
-                baselineData,
-                baselineRecon,
-                samples,
-                ch,
-                numChannels,
-                quality,
-                scalar,
-                numLevels,
-                burgSuperLen,
-                goertzelLen,
-                blocksPerGoertzel,
-                trajState,
-                refData,
-            );
-
-            const amplitudeRecon = new Float32Array(numSamples);
-            for (let i = 0; i < numSamples; i++) amplitudeRecon[i] = amplitude.data[i] * (amplitude.envCurve[i] / scalar);
-            const amplitudeScore = scoreQuantizedChannel(
-                wasm,
-                amplitude.data,
-                amplitudeRecon,
-                samples,
-                ch,
-                numChannels,
-                quality,
-                scalar,
-                numLevels,
-                burgSuperLen,
-                goertzelLen,
-                blocksPerGoertzel,
-                trajState,
-                refData,
-                amplitude.extraBits,
-            );
-
-            if (amplitudeScore.objective < baselineScore.objective) {
-                channels[ch] = amplitude.data;
-                channelEnergy[ch] = amplitude.energy;
-                channelEnvelopes[ch] = amplitude.envLog;
-            }
+        if (candidatePrepared.totalObjective < prepared.totalObjective) {
+            scalar = candidateScalar;
+            framePeak = candidatePeak;
+            prepared = candidatePrepared;
         }
     }
-
-    if (layout !== "object" && numChannels > 1 && numSamples >= BLOCK_LEN) {
-        const { refIndex, order } = assignReferences(channels, numSamples);
-        couplingRefs = refIndex;
-        couplingOrder = order;
-    }
+    const channels = prepared.channels;
+    const channelEnergy = prepared.channelEnergy;
+    const channelEnvelopes = prepared.channelEnvelopes;
+    const channelEnvelopeBlockLens = prepared.channelEnvelopeBlockLens;
+    const channelEnvelopeWire = prepared.channelEnvelopeWire;
+    const effectiveChannels = prepared.effectiveChannels;
+    let couplingRefs = prepared.couplingRefs;
 
     payloadReset();
     payloadF32(framePeak);
     // store the actual scalar used. u32 to cover the full range including
-    // 24-bit mode (scalar=8388608). the decoder reads this directly —
+    // 24-bit mode (scalar=8388608). the decoder reads this directly â€”
     // no formula inversion needed.
     payloadU32(scalar);
 
@@ -4404,12 +5133,13 @@ export async function encodeHarmonic(
         let data = channels[ch];
         const stateOff = wasmEncState(ch);
         const envLog = channelEnvelopes[ch];
+        const envWire = channelEnvelopeWire[ch];
 
         // determine cross-channel reference for this channel
         const refIdx = couplingRefs[ch] ?? NO_REF;
         const refData = refIdx !== NO_REF ? channels[refIdx] : undefined;
 
-        // cross-channel coupling: subtract W·ref from the raw signal before
+        // cross-channel coupling: subtract WÂ·ref from the raw signal before
         // K/G fitting. for identical channels this zeroes the data, giving
         // flat K/G trajectories AND zero residuals. trial-gated: only fires
         // when the decoupled path is genuinely cheaper including trajectory cost.
@@ -4446,7 +5176,7 @@ export async function encodeHarmonic(
             }
         }
 
-        // path A: AR(2) — trial forward K/G (transmitted) vs backward-adaptive
+        // path A: AR(2) â€” trial forward K/G (transmitted) vs backward-adaptive
         // K/G (derived from causal past, zero trajectory bits).
         // both use lossless integer residuals. with backward, the decoder
         // reconstructs K/G from previously decoded samples block-by-block.
@@ -4476,7 +5206,7 @@ export async function encodeHarmonic(
             new Float32Array(wasm.memory.buffer, stateOff, 2).set(stateSave.subarray(0, 2));
             new Int32Array(wasm.memory.buffer, stateOff + 8, 1)[0] = new Int32Array(stateSave.buffer, 8, 1)[0];
 
-            // backward only fires if residuals are 20%+ smaller — strong evidence
+            // backward only fires if residuals are 20%+ smaller â€” strong evidence
             // that the lookback K/G is genuinely better for this signal.
             if (bwdResidBits < fwdResidBits * 0.50) {
                 useBackwardKG = true;
@@ -4499,7 +5229,7 @@ export async function encodeHarmonic(
         let activeSBs: BurgSuperBlock[] = [];
 
         if (ar2Captures < AR2_SKIP_BURG && numSamples >= burgSuperLen) {
-            // path B: Burg primary → AR(2)
+            // path B: Burg primary â†’ AR(2)
             const { output: burgOutput, superBlocks: burgSBs } = burgPrimaryForward(data, numSamples, burgSuperLen);
             const anyBurgActive = burgSBs.some(sb => sb.order > 0);
 
@@ -4527,25 +5257,24 @@ export async function encodeHarmonic(
         allBurgSBs.push(activeSBs);
         allKG.push(kgBlocks);
 
-        // ── 2D Möbius residual coupling ──────────────────────────────────────
+        // â”€â”€ 2D MÃ¶bius residual coupling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // couple the K/G RESIDUALS (what time couldn't predict) across channels.
-        // this captures the mixed partial ∂²f/∂ch∂t: the component that is
+        // this captures the mixed partial âˆ‚Â²f/âˆ‚châˆ‚t: the component that is
         // BOTH unpredictable in time AND shared across channels (correlated
         // noise floor, shared room reverb, etc).
         //
         // the coupling sits BETWEEN K/G prediction and micro-osc. all stages
         // downstream (micro-osc, delta, trajectory, wavelet, Logos) are lossless
         // on integers, guaranteeing perfect round-trip:
-        //   encode: residuals -= W·refResid → pipeline_forward → bytes
-        //   decode: bytes → pipeline_inverse → residuals += W·refResid
+        //   encode: residuals -= WÂ·refResid â†’ pipeline_forward â†’ bytes
+        //   decode: bytes â†’ pipeline_inverse â†’ residuals += WÂ·refResid
         //
         // save the UNCOUPLED residuals for reference by later channels.
-        if (envLog) {
-            const envBits = encodeI16Delta(envLog);
-            const envComp = encode0D(envBits);
-            payloadU32(envBits.length);
-            payloadU32(envComp.length);
-            payloadAppend(envComp);
+        if (envLog && envWire) {
+            payloadU32(channelEnvelopeBlockLens[ch] || 0);
+            payloadU32(envLog.length);
+            payloadU32(envWire.length);
+            payloadAppend(envWire);
         }
 
         // encode Burg trajectory
@@ -4580,8 +5309,7 @@ export async function encodeHarmonic(
             const { metaKK, metaGK } = metaPredictKG(kgBlocks);
             payloadByte((metaKK + 128) & 0xFF);
             payloadByte((metaGK + 128) & 0xFF);
-            const kgBits = encodeKGTrajectory(kgBlocks, metaKK, metaGK);
-            const kgCompressed = encode0D(kgBits);
+            const { raw: kgBits, compressed: kgCompressed } = buildKGTrajectoryPayload(kgBlocks, metaKK, metaGK);
             payloadU32(kgBits.length);
             payloadU32(kgCompressed.length);
             payloadAppend(kgCompressed);
@@ -4607,8 +5335,7 @@ export async function encodeHarmonic(
             payloadByte(1);
             payloadByte((mk2 + 128) & 0xFF);
             payloadByte((mg2 + 128) & 0xFF);
-            const kg2Bits = encodeKGTrajectory(kg2Blocks!, mk2, mg2);
-            const kg2Comp = encode0D(kg2Bits);
+            const { raw: kg2Bits, compressed: kg2Comp } = buildKGTrajectoryPayload(kg2Blocks!, mk2, mg2);
             payloadU32(kg2Bits.length);
             payloadU32(kg2Comp.length);
             payloadAppend(kg2Comp);
@@ -4635,10 +5362,10 @@ export async function encodeHarmonic(
 
         // trajectory prediction (Farmer-Sidorowich 1987): nonlinear closure.
         // the kNN search is the most expensive trial (~1.5ms for 960 samples).
-        // optimization: "peek before you leap" — test trajectory on the last
+        // optimization: "peek before you leap" â€” test trajectory on the last
         // TRAJ_WINDOW samples (where the kNN window is fullest). if the peek
         // doesn't show 5% improvement, skip the full search. this turns the
-        // common "not worth it" case from O(n×W) to O(W×W) — 4× cheaper.
+        // common "not worth it" case from O(nÃ—W) to O(WÃ—W) â€” 4Ã— cheaper.
         let useTrajectory = false;
         const preTrajResiduals = activeResiduals;
         if (ar2Captures < AR2_SKIP_BURG && numSamples >= TRAJ_WINDOW * 2) {
@@ -4650,7 +5377,7 @@ export async function encodeHarmonic(
             const peekAfter = estimatePlaneCost(peekErrors);
 
             if (peekAfter < peekBefore * 0.95) {
-                // peek passed — run full trajectory
+                // peek passed â€” run full trajectory
                 const trajErrors = trajectoryEncode(activeResiduals, trajState);
                 const costBefore = estimatePlaneCost(activeResiduals);
                 const costAfter = estimatePlaneCost(trajErrors);
@@ -4663,7 +5390,7 @@ export async function encodeHarmonic(
         if (trajState) trajStateAppend(trajState, preTrajResiduals);
         payloadByte(useTrajectory ? 1 : 0);
 
-        // 4. Harmonic topology layer: superblock Goertzel → 2D Möbius
+        // 4. Harmonic topology layer: superblock Goertzel â†’ 2D MÃ¶bius
         //    Superblock = 1024 samples (32 blocks). Enough cycles for Goertzel
         //    even at 120Hz fundamental (~2.5 periods). The 2D field A(harmonic, super)
         //    captures the spectral envelope evolving over time.
@@ -4700,7 +5427,6 @@ export async function encodeHarmonic(
                 numH = Math.min(numH, countUsableH(superOmega(kgBlocks, fb, lb)));
             }
         }
-
         let subbands: Int32Array[];
 
         if (voicedSuper.length >= 2 && numH >= 2) {
@@ -4740,12 +5466,12 @@ export async function encodeHarmonic(
             const sinR = mobiusEnc2D(sinF, numH, nV);
             const maskLen = Math.ceil(numSuper / 8);
 
-            // overhead: nV(2) + numH(1) + mask + 2×planeCount(1) + length headers (up to 6×4B)
+            // overhead: nV(2) + numH(1) + mask + 2Ã—planeCount(1) + length headers (up to 6Ã—4B)
             let apCost = 3 + maskLen + 26 + estimatePlaneCost(cosR) + estimatePlaneCost(sinR);
             for (const sb of apSb) apCost += estimatePlaneCost(sb);
 
             if (apCost < fullCost) {
-                // Harmonic path wins — encode fields with Logos and write
+                // Harmonic path wins â€” encode fields with Logos and write
                 const cosPl = encodeResidualPlanes(cosR);
                 const sinPl = encodeResidualPlanes(sinR);
 
@@ -4783,7 +5509,7 @@ export async function encodeHarmonic(
 
                 subbands = apSb;
             } else {
-                // Full-residual path wins — skip harmonics
+                // Full-residual path wins â€” skip harmonics
                 payloadByte(0); payloadByte(0); payloadByte(0);
                 subbands = fullSb;
             }
@@ -4796,7 +5522,7 @@ export async function encodeHarmonic(
             }
         }
 
-        // 7. subband encoding: wavelet residuals → batched Logos.
+        // 7. subband encoding: wavelet residuals â†’ batched Logos.
         // cochlea masking zeros negligible-energy subbands (saves Logos calls).
         // all active subbands' byte planes are concatenated into single Logos
         // streams for fewer calls and better context modeling.
@@ -4808,37 +5534,34 @@ export async function encodeHarmonic(
             for (let i = 0; i < d.length; i++) energy += d[i] * d[i];
             sbEnergies.push(energy);
         }
-        const totalEnergy = sbEnergies.reduce((a, b) => a + b, 0);
         const numSb = subbands.length;
 
         // batched subband encoding: concatenate all byte planes across subbands
         // into single Logos streams. this reduces 4+ Logos calls to 1-3, giving
-        // ~2× speedup for 20ms frames and ~5-10% better compression (Logos gets
+        // ~2Ã— speedup for 20ms frames and ~5-10% better compression (Logos gets
         // more context from the concatenated stream).
 
         // pass 1: determine per-subband planeCount and cochlea masking
         //
         // note: per-subband quantization (qstep > 1 for HH subbands) was attempted
         // and reverted. the AR(2) inverse gain IS bounded at high frequencies
-        // (|H(ω)| ≈ 0.25 at Nyquist), but the CDF 5/3 wavelet has -12 dB spectral
-        // leakage. quantization noise in HH₁ leaks through the wavelet inverse into
+        // (|H(Ï‰)| â‰ˆ 0.25 at Nyquist), but the CDF 5/3 wavelet has -12 dB spectral
+        // leakage. quantization noise in HHâ‚ leaks through the wavelet inverse into
         // the resonance band, where the AR(2) amplifies it infinitely. perfect
         // bandpass would fix this, but CDF 5/3 sidelobes defeat the frequency
         // selectivity. the IIR-2 lossless constraint holds across ALL subbands.
-        const zeroThreshold = quality >= 95 ? 0 :
-            Math.pow(10, -1 - quality / 50);
         const sbPlaneCount: number[] = [];
         let globalMaxPlane = 0;
 
         for (let sb = 0; sb < numSb; sb++) {
             const isLL = sb === 0;
-            const frac = totalEnergy > 0 ? sbEnergies[sb] / totalEnergy : 1 / numSb;
+            const noiseFloor = subbands[sb].length * QUANT_NOISE_REG;
             // when delta pre-filter is active, the residuals are first-differences.
             // zeroing a subband introduces loss in the delta domain, and the
             // cumulative sum inverse propagates that loss to all subsequent samples.
             // the IIR-2 then amplifies it without bound. masking is only safe
             // when the data is NOT delta-coded.
-            const skip = !isLL && !useDelta && frac < zeroThreshold && ar2Captures < AR2_SKIP_MASKING;
+            const skip = !isLL && !useDelta && sbEnergies[sb] <= noiseFloor && ar2Captures < AR2_SKIP_MASKING;
 
             if (skip) {
                 sbPlaneCount.push(0);
@@ -4922,7 +5645,7 @@ export async function encodeHarmonic(
     return out;
 }
 
-// ── public decode ─────────────────────────────────────────────────────────────
+// â”€â”€ public decode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function decodeHarmonic(
     encoded: Uint8Array,
@@ -4967,14 +5690,6 @@ export async function decodeHarmonic(
         return { pcm: new Float32Array(0), sampleRate, tampered: true };
     }
 
-    // scalar is read from the payload (not derived from Q) — see below
-
-    // sample-rate-adaptive windows (must match encoder)
-    const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
-    const envelopeBlockLen = envelopeBlockLenFromBurgSuperLen(burgSuperLen);
-    const goertzelLen  = adaptiveGoertzelLen(sampleRate);
-    const blocksPerGoertzel = goertzelLen / BLOCK_LEN;
-
     const wasm = await getHarmonicWasm();
     const allChannelData: Int32Array[] = [];
     const allChannelProjected: (Float32Array | null)[] = [];
@@ -4985,6 +5700,9 @@ export async function decodeHarmonic(
 
     const framePeak = readF32LE(p, off); off += 4; // authenticated: inside MAC scope
     const scalar = readU32LE(p, off) || 1; off += 4; // actual scalar used by encoder
+    const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
+    const goertzelLen  = adaptiveGoertzelLen(sampleRate);
+    const blocksPerGoertzel = goertzelLen / BLOCK_LEN;
 
     // read spatial metadata for object-based layout
     let spatialObjects: SpatialObject[] | undefined;
@@ -5017,11 +5735,11 @@ export async function decodeHarmonic(
         let envCurve: Float32Array | null = null;
         const hasEnvelope = ((envelopeMask[ch >> 3] >> (ch & 7)) & 1) !== 0;
         if (hasEnvelope) {
-            const envOrigLen = readU32LE(p, off); off += 4;
-            const envCompLen = readU32LE(p, off); off += 4;
-            const envBits = decode0D(p.subarray(off, off + envCompLen), envOrigLen); off += envCompLen;
-            const envLog = decodeI16Delta(envBits, envOrigLen >> 1);
-            envCurve = reconstructEnvelopeCurve(envLog, numSamples, envelopeBlockLen, framePeak);
+            const envBlockLen = readU32LE(p, off); off += 4;
+            const envCount = readU32LE(p, off); off += 4;
+            const envWireLen = readU32LE(p, off); off += 4;
+            const envLog = decodeEnvelopeTrajectory(wasm, p.subarray(off, off + envWireLen), envCount); off += envWireLen;
+            envCurve = reconstructEnvelopeCurve(envLog, numSamples, Math.max(BLOCK_LEN, envBlockLen), framePeak);
         }
         if (hasBurg) {
             const burgOrigLen = readU32LE(p, off); off += 4;
@@ -5060,7 +5778,7 @@ export async function decodeHarmonic(
                 K: Kint / COEFF_SCALE, G: Gint / COEFF_SCALE,
             }));
         }
-        // backward K/G is reconstructed after residuals are decoded — see below
+        // backward K/G is reconstructed after residuals are decoded â€” see below
 
         const hasMicro = p[off++] === 1;
         if (hasMicro) {
@@ -5220,12 +5938,12 @@ export async function decodeHarmonic(
 
         // trajectory inverse: undo Farmer-Sidorowich prediction (reconstruct
         // original residuals from trajectory prediction errors). symmetric with
-        // the encoder — same causal kNN search from decoded samples.
+        // the encoder â€” same causal kNN search from decoded samples.
         if (hasTrajectory) {
             residuals = trajectoryDecode(residuals, state);
         }
         // always update trajectory state with the reconstructed residuals
-        // (must mirror the encoder's state update — same data, same timing)
+        // (must mirror the encoder's state update â€” same data, same timing)
         if (state) trajStateAppend(state, residuals);
 
         // delta inverse: undo the first-difference pre-filter (running sum).
@@ -5233,7 +5951,7 @@ export async function decodeHarmonic(
             for (let i = 1; i < residuals.length; i++) residuals[i] += residuals[i - 1];
         }
 
-        // reconstruct signal: micro-osc inverse → coupling inverse → AR(2) inverse → Burg inverse
+        // reconstruct signal: micro-osc inverse â†’ coupling inverse â†’ AR(2) inverse â†’ Burg inverse
         const stateOff = wasmDecState(ch);
 
         if (kg2Floats) {
@@ -5274,7 +5992,7 @@ export async function decodeHarmonic(
                 copyI32ToWasm(wasm, dataOff, blockResid);
                 const kgView = new Float32Array(wasm.memory.buffer, kgOff, 2);
                 kgView[0] = K; kgView[1] = G;
-                // DON'T zero state — it carries over from the previous block
+                // DON'T zero state â€” it carries over from the previous block
                 wasm.predict_dec(dataOff, bEnd - bStart, kgOff, stateOff, outOff2);
                 const blockOut = readI32FromWasm(wasm, outOff2, bEnd - bStart);
                 ar2Output.set(blockOut, bStart);
@@ -5292,7 +6010,7 @@ export async function decodeHarmonic(
             ? fitBackwardKG(wasm, ar2Output, numSamples).map(({ K, G }) => ({ K, G }))
             : kgFloats;
 
-        // signal-level coupling inverse: add W·ref_data back
+        // signal-level coupling inverse: add WÂ·ref_data back
         if (signalCouplingActive && decCouplingW[ch] !== undefined) {
             const W = decCouplingW[ch];
             const refData = allChannelData[chRefIdx];
@@ -5344,7 +6062,7 @@ export async function decodeHarmonic(
     return { pcm, sampleRate, tampered: false, spatialObjects };
 }
 
-// ── raw passthrough (Q=100) ───────────────────────────────────────────────────
+// â”€â”€ raw passthrough (Q=100) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function encodeRawMode(
     float32Samples: Float32Array, numSamples: number, sampleRate: number,
@@ -5358,7 +6076,7 @@ function encodeRawMode(
     const out = new Uint8Array(HEADER_SIZE + dataBytes + MAC_SIZE);
     const ov  = new DataView(out.buffer);
     ov.setUint32(0, numSamples, true); ov.setUint32(4, sampleRate, true);
-    ov.setUint16(8, 0, true); // flags bit0=0 → raw
+    ov.setUint16(8, 0, true); // flags bit0=0 â†’ raw
     out[10] = numChannels - 1; out[11] = 0;
 
     const sampleBytes = new Uint8Array(float32Samples.buffer, float32Samples.byteOffset, dataBytes);
