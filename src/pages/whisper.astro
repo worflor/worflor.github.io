@@ -30,10 +30,6 @@ const seo = {
       <p class="whisper-tagline">
         carrier-bound encryption and sealed messaging
       </p>
-      <p class="whisper-privacy-badge">
-        <span class="privacy-dot"></span>
-        local to this browser
-      </p>
     </section>
 
     <!-- ── Mode Selector ────────────────────────────────────── -->
@@ -1432,35 +1428,6 @@ const seo = {
     color: var(--whisper-muted);
   }
 
-  .whisper-privacy-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5em;
-    font-size: var(--text-sm);
-    color: rgb(var(--color-text-rgb) / 0.28);
-    margin-top: calc(var(--space-xs) * 0.3);
-  }
-
-  .privacy-dot {
-    width: 5px;
-    height: 5px;
-    border-radius: var(--radius-full);
-    background: rgb(var(--tool-status-success));
-    box-shadow: 0 0 6px rgb(var(--tool-status-success) / 0.35);
-    flex-shrink: 0;
-    animation: privacy-pulse 4s ease-in-out infinite;
-  }
-
-  @keyframes privacy-pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 5px rgb(var(--tool-status-success) / 0.3);
-    }
-    50% {
-      box-shadow: 0 0 10px rgb(var(--tool-status-success) / 0.5);
-    }
-  }
-
   /* ── Mode Bar ──────────────────────────────────────────── */
   .whisper-mode-bar {
     display: inline-flex;
@@ -2495,10 +2462,6 @@ const seo = {
 
   /* ── Reduced motion ────────────────────────────────────── */
   @media (prefers-reduced-motion: reduce) {
-    .privacy-dot {
-      animation: none;
-    }
-
     :global(.wl-spinner) {
       animation: none;
     }
