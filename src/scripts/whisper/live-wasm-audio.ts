@@ -945,7 +945,7 @@ const QUALITY_BITS_MAX = 15;
 // 32 samples @ 48kHz = 0.67ms = half-period at 750Hz.
 // this is the highest frequency where the regression window spans a full
 // half-cycle, giving the Cramer LS enough phase diversity to resolve K and G.
-const BLOCK_LEN = 32;
+export const BLOCK_LEN = 32;
 
 // dead-zone: suppress K/G jitter â‰¤ 2 steps = 2Ïƒ of quantization noise.
 // (quantization step = 1/COEFF_SCALE; RMS noise = step/âˆš12 â‰ˆ 0.29 steps; 2Ïƒ â‰ˆ 2 steps.)
@@ -995,7 +995,7 @@ function qualityScalarCandidates(quality: number): number[] {
     return [...new Set(lattice)].sort((a, b) => a - b);
 }
 
-function qualityToScalar(quality: number): number {
+export function qualityToScalar(quality: number): number {
     const ideal = qualityToScalarIdeal(quality);
     const floorScalar = Math.max(1, Math.floor(ideal));
     // the scalar law is continuous, but the implemented quantizer lives on an
@@ -1020,7 +1020,7 @@ function predictorCarrierLimit(): number {
 const LAYOUT_CHANNEL = 0x00;
 const LAYOUT_OBJECT  = 0x08;
 
-function lossyFramePeak(samples: Float32Array, scalar: number): number {
+export function lossyFramePeak(samples: Float32Array, scalar: number): number {
     let peak = 0;
     let energy = 0;
     let count = 0;
@@ -1525,7 +1525,7 @@ function adaptiveGoertzelLen(sampleRate: number): number {
     return blocks * BLOCK_LEN;
 }
 
-function adaptiveWaveletLevels(sampleRate: number, numSamples: number): number {
+export function adaptiveWaveletLevels(sampleRate: number, numSamples: number): number {
     // target: LL subband at ~6kHz. levels = floor(log2(sr / 6000)).
     // clamped by minimum sample count (need 2^(levels+2) samples).
     const maxByRate = Math.max(1, Math.min(6, Math.floor(Math.log2(sampleRate / 6000))));
@@ -2210,6 +2210,8 @@ function cloneHarmonicState(state?: HarmonicState): HarmonicState | undefined {
     };
 }
 
+/** unified scorer: coupling → variable-order Burg → wavelet → Logos.
+ *  no trial gates, no stacking. one prediction stage, one residual path. */
 function scoreQuantizedChannel(
     wasm: HarmonicWasmExports,
     data: Int32Array,
@@ -2221,31 +2223,20 @@ function scoreQuantizedChannel(
     targetScalar: number,
     envCurve: Float32Array | null,
     numLevels: number,
-    burgSuperLen: number,
-    goertzelLen: number,
-    blocksPerGoertzel: number,
-    trajState?: HarmonicState,
     refData?: Int32Array,
     refProjected?: Float32Array,
     extraBits: number = 0,
 ) : { rateBits: number; objective: number; projectedCarrier: Float32Array } {
     const n = data.length;
     if (n === 0) {
-        return {
-            rateBits: extraBits,
-        objective: extraBits,
-        projectedCarrier: new Float32Array(0),
-    };
+        return { rateBits: extraBits, objective: extraBits, projectedCarrier: new Float32Array(0) };
     }
 
     let rateBits = extraBits;
     let working = data;
     let couplingW: number | undefined;
-    let signalEnergy = 0;
-    for (let i = 0; i < n; i++) signalEnergy += working[i] * working[i];
 
-    const scratchState = wasmEncState(255);
-
+    // cross-channel coupling trial
     if (refData && n >= BLOCK_LEN) {
         const wFit = fitCouplingW(working, refData, n);
         if (Math.abs(wFit.W) > 0.01) {
@@ -2254,290 +2245,47 @@ function scoreQuantizedChannel(
                 const wr = wFit.W * refData[i];
                 decoupled[i] = working[i] - (wr >= 0 ? (wr + 0.5) | 0 : (wr - 0.5) | 0);
             }
-            const kgDec = wasmFitAllBlocks(wasm, decoupled, n);
-            thinTrajectory(kgDec, scalar);
-            const residDec = wasmPredictEnc(wasm, decoupled, kgDec, scratchState);
-            const costDec = estimatePlaneCost(residDec) + estimateTrajectoryBits(kgDec) / 8;
-
-            const kgOrig = wasmFitAllBlocks(wasm, working, n);
-            thinTrajectory(kgOrig, scalar);
-            const residOrig = wasmPredictEnc(wasm, working, kgOrig, scratchState);
-            const costOrig = estimatePlaneCost(residOrig) + estimateTrajectoryBits(kgOrig) / 8;
-
+            // quick cost comparison
+            const blocksOrig = varOrderFitAllBlocks(working, n);
+            const residOrig = varOrderPredictEnc(working, n, blocksOrig);
+            const blocksDec = varOrderFitAllBlocks(decoupled, n);
+            const residDec = varOrderPredictEnc(decoupled, n, blocksDec);
+            const costOrig = estimatePlaneCost(residOrig) + estimateCoeffBits(blocksOrig) / 8;
+            const costDec = estimatePlaneCost(residDec) + estimateCoeffBits(blocksDec) / 8;
             if (costDec + 2 < costOrig) {
                 working = decoupled;
                 couplingW = wFit.W;
-                signalEnergy = 0;
-                for (let i = 0; i < n; i++) signalEnergy += working[i] * working[i];
-                rateBits += 24;
+                rateBits += 24; // W encoding
             }
         }
     }
 
-    const kgForward = wasmFitAllBlocks(wasm, working, n);
-    thinTrajectory(kgForward, scalar);
-    const residForward = wasmPredictEnc(wasm, working, kgForward, scratchState);
-    const fwdResidBits = estimateRiceCost(residForward, n);
-    const fwdTrajBits = estimateTrajectoryBits(kgForward);
-    const fwdCost = fwdResidBits + fwdTrajBits;
+    // unified variable-order prediction
+    const varBlocks = varOrderFitAllBlocks(working, n);
+    const residuals = varOrderPredictEnc(working, n, varBlocks);
 
-    let useBackwardKG = false;
-    let kgBlocksPlain = kgForward;
-    let residualsPlain = residForward;
-    let plainCost = fwdCost;
+    // coefficient stream cost
+    const { compressed: coeffComp } = encodeCoeffStream(varBlocks);
+    rateBits += 64 + coeffComp.length * 8; // origLen + compLen + data
 
-    if (n >= BLOCK_LEN * 2) {
-        const kgBackward = fitBackwardKG(wasm, working, n);
-        thinTrajectory(kgBackward, scalar);
-        const residBackward = wasmPredictEnc(wasm, working, kgBackward, scratchState);
-        const bwdResidBits = estimateRiceCost(residBackward, n);
-        if (bwdResidBits < fwdResidBits * 0.50) {
-            useBackwardKG = true;
-            kgBlocksPlain = kgBackward;
-            residualsPlain = residBackward;
-            plainCost = bwdResidBits;
-        }
-    }
+    // wavelet decomposition
+    const subbands = waveletDecompose(wasm, residuals, numLevels);
 
-    let residEnergy = 0;
-    for (let i = 0; i < n; i++) residEnergy += residualsPlain[i] * residualsPlain[i];
-    const ar2Captures = signalEnergy > 0 ? 1 - residEnergy / signalEnergy : 1;
-
-    let kgBlocks = kgBlocksPlain;
-    let residuals = residualsPlain;
-    let activeSBs: BurgSuperBlock[] = [];
-
-    if (ar2Captures < AR2_SKIP_BURG && n >= burgSuperLen) {
-        const { output: burgOutput, superBlocks: burgSBs } = burgPrimaryForward(working, n, burgSuperLen);
-        const anyBurgActive = burgSBs.some(sb => sb.order > 0);
-        if (anyBurgActive) {
-            const kgBlocksBurg = wasmFitAllBlocks(wasm, burgOutput, n);
-            thinTrajectory(kgBlocksBurg, scalar);
-            const residualsBurg = wasmPredictEnc(wasm, burgOutput, kgBlocksBurg, scratchState);
-            let burgLpcBits = 0;
-            for (const sb of burgSBs) burgLpcBits += (1 + sb.order) * 8;
-            const burgTrajBits = estimateTrajectoryBits(kgBlocksBurg);
-            const burgCost = estimateRiceCost(residualsBurg, n) + burgLpcBits + burgTrajBits;
-            if (burgCost < plainCost) {
-                useBackwardKG = false;
-                kgBlocks = kgBlocksBurg;
-                residuals = residualsBurg;
-                activeSBs = burgSBs;
-            }
-        }
-    }
-
-    if (activeSBs.some(sb => sb.order > 0)) {
-        const burgBits = encodeBurgTrajectory(activeSBs);
-        const burgComp = encode0D(burgBits);
-        rateBits += 64 + burgComp.length * 8;
-    } else {
-        rateBits += 32;
-    }
-
-    rateBits += 8;
-    if (!useBackwardKG) {
-        const { metaKK, metaGK } = metaPredictKG(kgBlocks);
-        const { compressed: kgComp } = buildKGTrajectoryPayload(kgBlocks, metaKK, metaGK);
-        rateBits += 16 + 64 + kgComp.length * 8;
-    }
-
-    let useMicro = false;
-    let activeResiduals: Int32Array;
-    let kg2Blocks: { K: number; G: number; Kint: number; Gint: number }[] | null = null;
-    let residuals2: Int32Array | null = null;
-
-    if (ar2Captures < AR2_SKIP_BURG) {
-        kg2Blocks = wasmFitAllBlocks(wasm, residuals, n);
-        residuals2 = wasmPredictEnc(wasm, residuals, kg2Blocks, scratchState);
-        const planeCost1 = estimatePlaneCost(residuals);
-        const planeCost2 = estimatePlaneCost(residuals2);
-        const kg2TrajCost = Math.ceil(estimateTrajectoryBits(kg2Blocks) / 8) + 11;
-        useMicro = planeCost2 + kg2TrajCost < planeCost1 * 0.9;
-    }
-
-    rateBits += 8;
-    if (useMicro) {
-        const { metaKK: mk2, metaGK: mg2 } = metaPredictKG(kg2Blocks!);
-        const { compressed: kg2Comp } = buildKGTrajectoryPayload(kg2Blocks!, mk2, mg2);
-        rateBits += 16 + 64 + kg2Comp.length * 8;
-        activeResiduals = residuals2!;
-    } else {
-        activeResiduals = residuals;
-    }
-
-    let useDelta = false;
-    if (ar2Captures < AR2_SKIP_BURG) {
-        const deltaResid = new Int32Array(activeResiduals.length);
-        deltaResid[0] = activeResiduals[0];
-        for (let i = 1; i < activeResiduals.length; i++) {
-            deltaResid[i] = activeResiduals[i] - activeResiduals[i - 1];
-        }
-        useDelta = estimatePlaneCost(deltaResid) < estimatePlaneCost(activeResiduals) * 0.95;
-        if (useDelta) activeResiduals = deltaResid;
-    }
-    rateBits += 8;
-
-    let useTrajectory = false;
-    const scoreState = cloneHarmonicState(trajState);
-    const trajDecodeState = cloneHarmonicState(trajState);
-    const preTrajResiduals = activeResiduals;
-    if (ar2Captures < AR2_SKIP_BURG && n >= TRAJ_WINDOW * 2) {
-        const peekSlice = new Int32Array(activeResiduals.buffer,
-            activeResiduals.byteOffset + (n - TRAJ_WINDOW) * 4, TRAJ_WINDOW);
-        const peekErrors = trajectoryEncode(peekSlice, scoreState);
-        const peekBefore = estimatePlaneCost(peekSlice);
-        const peekAfter = estimatePlaneCost(peekErrors);
-
-        if (peekAfter < peekBefore * 0.95) {
-            const trajErrors = trajectoryEncode(activeResiduals, scoreState);
-            const costBefore = estimatePlaneCost(activeResiduals);
-            const costAfter = estimatePlaneCost(trajErrors);
-            useTrajectory = costAfter < costBefore * 0.95;
-            if (useTrajectory) activeResiduals = trajErrors;
-        }
-    }
-    if (scoreState) trajStateAppend(scoreState, preTrajResiduals);
-    rateBits += 8;
-
-    const numBlks = kgBlocks.length;
-    const numSuper = Math.ceil(n / goertzelLen);
-    const voicedSuper: number[] = [];
-    if (ar2Captures < AR2_SKIP_BURG) {
-        for (let si = 0; si < numSuper; si++) {
-            const sStart = si * goertzelLen;
-            const sEnd = Math.min(sStart + goertzelLen, n);
-            let voicedCount = 0;
-            let totalBlks = 0;
-            for (let s = sStart; s < sEnd; s += BLOCK_LEN) {
-                const e = Math.min(s + BLOCK_LEN, sEnd);
-                if (blockVoiced(working, activeResiduals, s, e)) voicedCount++;
-                totalBlks++;
-            }
-            if (voicedCount > totalBlks / 2) {
-                const fb = si * blocksPerGoertzel;
-                const lb = Math.min(fb + blocksPerGoertzel, numBlks);
-                const w = superOmega(kgBlocks, fb, lb);
-                if (countUsableH(w) >= 4) voicedSuper.push(si);
-            }
-        }
-    }
-
-    let numH = 0;
-    if (voicedSuper.length >= 2) {
-        numH = MAX_HARMONICS;
-        for (const si of voicedSuper) {
-            const fb = si * blocksPerGoertzel;
-            const lb = Math.min(fb + blocksPerGoertzel, numBlks);
-            numH = Math.min(numH, countUsableH(superOmega(kgBlocks, fb, lb)));
-        }
-    }
-
-    let subbands: Int32Array[];
-    let harmonicResidualPath = false;
-    let harmonicSynthsSelected: Map<number, Int32Array> | null = null;
-    rateBits += 24;
-    if (voicedSuper.length >= 2 && numH >= 2) {
-        const nV = voicedSuper.length;
-        const cosF = new Int32Array(numH * nV);
-        const sinF = new Int32Array(numH * nV);
-        const aperiodicRes = activeResiduals.slice();
-
-        for (let vi = 0; vi < nV; vi++) {
-            const si = voicedSuper[vi];
-            const sStart = si * goertzelLen;
-            const sEnd = Math.min(sStart + goertzelLen, n);
-            const sLen = sEnd - sStart;
-            const fb = si * blocksPerGoertzel;
-            const lb = Math.min(fb + blocksPerGoertzel, numBlks);
-            const w = superOmega(kgBlocks, fb, lb);
-
-            const { cosQ, sinQ } = goertzelExtract(activeResiduals, sStart, sLen, w, numH);
-            for (let h = 0; h < numH; h++) {
-                cosF[h * nV + vi] = cosQ[h];
-                sinF[h * nV + vi] = sinQ[h];
-            }
-            const syn = harmonicSynth(w, cosQ, sinQ, numH, sLen);
-            for (let t = 0; t < sLen; t++) aperiodicRes[sStart + t] -= syn[t];
-        }
-
-        const fullSb = waveletDecompose(wasm, activeResiduals, numLevels);
-        const apSb = waveletDecompose(wasm, aperiodicRes, numLevels);
-
-        let fullCost = 0;
-        for (const sb of fullSb) fullCost += estimatePlaneCost(sb);
-
-        const cosR = mobiusEnc2D(cosF, numH, nV);
-        const sinR = mobiusEnc2D(sinF, numH, nV);
-        const maskLen = Math.ceil(numSuper / 8);
-
-        let apCost = 3 + maskLen + 26 + estimatePlaneCost(cosR) + estimatePlaneCost(sinR);
-        for (const sb of apSb) apCost += estimatePlaneCost(sb);
-
-        if (apCost < fullCost) {
-            const cosPl = encodeResidualPlanes(cosR);
-            const sinPl = encodeResidualPlanes(sinR);
-            rateBits += maskLen * 8;
-
-            rateBits += 8;
-            if (cosPl.planeCount >= 3) rateBits += 32 + cosPl.topEnc.length * 8;
-            if (cosPl.planeCount >= 2) rateBits += 32 + cosPl.midEnc.length * 8;
-            rateBits += 32 + cosPl.loEnc.length * 8;
-
-            rateBits += 8;
-            if (sinPl.planeCount >= 3) rateBits += 32 + sinPl.topEnc.length * 8;
-            if (sinPl.planeCount >= 2) rateBits += 32 + sinPl.midEnc.length * 8;
-            rateBits += 32 + sinPl.loEnc.length * 8;
-
-            subbands = apSb;
-            harmonicResidualPath = true;
-            harmonicSynthsSelected = new Map<number, Int32Array>();
-            for (let vi = 0; vi < nV; vi++) {
-                const si = voicedSuper[vi];
-                const sStart = si * goertzelLen;
-                const sEnd = Math.min(sStart + goertzelLen, n);
-                const sLen = sEnd - sStart;
-                const fb = si * blocksPerGoertzel;
-                const lb = Math.min(fb + blocksPerGoertzel, numBlks);
-                const w = superOmega(kgBlocks, fb, lb);
-                const cosQ = new Int32Array(numH);
-                const sinQ = new Int32Array(numH);
-                for (let h = 0; h < numH; h++) {
-                    cosQ[h] = cosF[h * nV + vi];
-                    sinQ[h] = sinF[h * nV + vi];
-                }
-                harmonicSynthsSelected.set(si, harmonicSynth(w, cosQ, sinQ, numH, sLen));
-            }
-        } else {
-            subbands = fullSb;
-        }
-    } else {
-        subbands = ar2Captures >= AR2_SKIP_BURG
-            ? [activeResiduals]
-            : waveletDecompose(wasm, activeResiduals, numLevels);
-    }
-
-    rateBits += 8;
-    const sbEnergies: number[] = [];
-    for (let sb = 0; sb < subbands.length; sb++) {
-        let energy = 0;
-        const d = subbands[sb];
-        for (let i = 0; i < d.length; i++) energy += d[i] * d[i];
-        sbEnergies.push(energy);
-    }
+    // subband masking + plane count
+    rateBits += 8; // numSubbands
     const numSb = subbands.length;
     const sbPlaneCount: number[] = [];
     let globalMaxPlane = 0;
-
     for (let sb = 0; sb < numSb; sb++) {
         const isLL = sb === 0;
-        const noiseFloor = subbands[sb].length * QUANT_NOISE_REG;
-        const skip = !isLL && !useDelta && sbEnergies[sb] <= noiseFloor && ar2Captures < AR2_SKIP_MASKING;
-        if (skip) {
+        let energy = 0;
+        const d = subbands[sb];
+        for (let i = 0; i < d.length; i++) energy += d[i] * d[i];
+        const noiseFloor = d.length * QUANT_NOISE_REG;
+        if (!isLL && energy <= noiseFloor) {
             sbPlaneCount.push(0);
         } else {
             let maxZZ = 0;
-            const d = subbands[sb];
             for (let i = 0; i < d.length; i++) {
                 const v = d[i];
                 const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
@@ -2547,10 +2295,11 @@ function scoreQuantizedChannel(
             sbPlaneCount.push(pc);
             if (pc > globalMaxPlane) globalMaxPlane = pc;
         }
-        rateBits += 40;
+        rateBits += 40; // sbLen + planeCount
     }
-    rateBits += 8;
+    rateBits += 8; // globalMaxPlane
 
+    // entropy coding simulation (actual Logos encode for accurate cost)
     for (let plane = 0; plane < globalMaxPlane; plane++) {
         let totalBytes = 0;
         for (let sb = 0; sb < numSb; sb++) {
@@ -2572,86 +2321,31 @@ function scoreQuantizedChannel(
         rateBits += 32 + encoded.length * 8;
     }
 
-    const scoredSubbands = subbands.map((sb, idx) => sbPlaneCount[idx] === 0 ? new Int32Array(sb.length) : sb.slice());
-    let scoredResiduals = waveletReconstruct(wasm, scoredSubbands);
-    if (harmonicResidualPath && harmonicSynthsSelected) {
-        for (const [si, synth] of harmonicSynthsSelected) {
-            const sStart = si * goertzelLen;
-            for (let t = 0; t < synth.length; t++) scoredResiduals[sStart + t] += synth[t];
-        }
-    }
-    if (useTrajectory) {
-        scoredResiduals = trajectoryDecode(scoredResiduals, trajDecodeState);
-    }
-    if (useDelta) {
-        for (let i = 1; i < scoredResiduals.length; i++) scoredResiduals[i] += scoredResiduals[i - 1];
-    }
+    // reconstruction for distortion measurement
+    const scoredSubbands = subbands.map((sb, idx) =>
+        sbPlaneCount[idx] === 0 ? new Int32Array(sb.length) : sb.slice());
+    const scoredResiduals = waveletReconstruct(wasm, scoredSubbands);
+    const reconstructed = varOrderPredictDec(scoredResiduals, n, varBlocks);
 
-    let reconstructedForScore: Int32Array;
-    if (useMicro && kg2Blocks) {
-        const microOutOff = WASM_BUF_A + scoredResiduals.length * 4 + 64;
-        ensureWasmMem(wasm, microOutOff + n * 4 + 64);
-        scoredResiduals = wasmPredictDec(wasm, scoredResiduals, kg2Blocks, wasmDecState(255), microOutOff);
-    }
-    if (useBackwardKG) {
-        reconstructedForScore = new Int32Array(n);
-        const stateOff = wasmDecState(254);
-        const sv = new Float32Array(wasm.memory.buffer, stateOff, 2);
-        sv[0] = 0; sv[1] = 0;
-        new Int32Array(wasm.memory.buffer, stateOff + 8, 1)[0] = 1;
-        for (let b = 0; b < kgBlocks.length; b++) {
-            const bStart = b * BLOCK_LEN;
-            const bEnd = Math.min(bStart + BLOCK_LEN, n);
-            let K = 0, G = COEFF_QUANT;
-            if (b > 0) {
-                const lookback = reconstructedForScore.subarray(bStart - BLOCK_LEN, bStart);
-                const kgResult = wasmFitAllBlocks(wasm, lookback, BLOCK_LEN);
-                if (kgResult.length > 0) { K = kgResult[0].K; G = kgResult[0].G; }
-            }
-            const blockResid = new Int32Array(scoredResiduals.buffer, scoredResiduals.byteOffset + bStart * 4, bEnd - bStart);
-            const dataOff = WASM_BUF_A;
-            const outOff2 = dataOff + (bEnd - bStart) * 4 + 64;
-            const kgOff = (outOff2 + (bEnd - bStart) * 4 + 15) & ~15;
-            ensureWasmMem(wasm, kgOff + 16);
-            copyI32ToWasm(wasm, dataOff, blockResid);
-            const kgView = new Float32Array(wasm.memory.buffer, kgOff, 2);
-            kgView[0] = K; kgView[1] = G;
-            wasm.predict_dec(dataOff, bEnd - bStart, kgOff, stateOff, outOff2);
-            reconstructedForScore.set(readI32FromWasm(wasm, outOff2, bEnd - bStart), bStart);
-        }
-    } else {
-        const outOff = WASM_BUF_A + scoredResiduals.length * 4 + 64;
-        ensureWasmMem(wasm, outOff + n * 4 + 64);
-        reconstructedForScore = wasmPredictDec(wasm, scoredResiduals, kgBlocks, wasmDecState(253), outOff);
-    }
-    if (activeSBs.length > 0) {
-        reconstructedForScore = burgPrimaryInverse(reconstructedForScore, n, activeSBs, burgSuperLen);
-    }
     if (couplingW !== undefined && refData) {
         for (let i = 0; i < n; i++) {
             const wr = couplingW * refData[i];
-            reconstructedForScore[i] += wr >= 0 ? (wr + 0.5) | 0 : (wr - 0.5) | 0;
+            reconstructed[i] += wr >= 0 ? (wr + 0.5) | 0 : (wr - 0.5) | 0;
         }
     }
 
-    const ar2ProjectionBlocks = useBackwardKG
-        ? fitBackwardKG(wasm, reconstructedForScore, n).map(({ K, G }) => ({ K, G }))
-        : kgBlocks.map(({ K, G }) => ({ K, G }));
-    let projectedCarrier = activeSBs.length > 0
-        ? burgCellProject(reconstructedForScore, n, activeSBs, burgSuperLen)
-        : Float32Array.from(reconstructedForScore);
-    sanitizeProjectionToCell(projectedCarrier, reconstructedForScore);
-    ar2CellProject(projectedCarrier, reconstructedForScore, ar2ProjectionBlocks, activeSBs, burgSuperLen);
-    sanitizeProjectionToCell(projectedCarrier, reconstructedForScore);
+    // projection: refine decoded integers within quantization cells
+    const projectedCarrier = Float32Array.from(reconstructed);
+    sanitizeProjectionToCell(projectedCarrier, reconstructed);
+    varOrderCellProject(projectedCarrier, reconstructed, varBlocks);
+    sanitizeProjectionToCell(projectedCarrier, reconstructed);
     if (couplingW !== undefined && refData && refProjected) {
-        couplingCellProject(projectedCarrier, reconstructedForScore, refProjected, refData, couplingW);
-        sanitizeProjectionToCell(projectedCarrier, reconstructedForScore);
+        couplingCellProject(projectedCarrier, reconstructed, refProjected, refData, couplingW);
+        sanitizeProjectionToCell(projectedCarrier, reconstructed);
     }
-    fractalCellProject(projectedCarrier, reconstructedForScore, numLevels);
-    sanitizeProjectionToCell(projectedCarrier, reconstructedForScore);
 
-    let mse = 0;
-    let signal = 0;
+    // distortion
+    let mse = 0, signal = 0;
     if (envCurve) {
         for (let i = 0; i < n; i++) {
             const ref = samples[i * numChannels + ch];
@@ -2668,20 +2362,10 @@ function scoreQuantizedChannel(
             mse += diff * diff;
         }
     }
-    const modelAxes =
-        (envCurve ? 1 : 0) +
-        (couplingW !== undefined ? 1 : 0) +
-        (activeSBs.some(sb => sb.order > 0) ? 1 : 0) +
-        (useMicro ? 1 : 0) +
-        (useDelta ? 1 : 0) +
-        (useTrajectory ? 1 : 0) +
-        (harmonicResidualPath ? 1 : 0);
-    const stochasticPenalty = modelAxes === 0
-        ? stochasticWaveformPenaltyBits(mse, signal, n, targetScalar)
-        : 0;
+
     return {
         rateBits,
-        objective: rateBits + 0.5 * n * Math.log2(Math.max(mse / n, 1e-12)) + stochasticPenalty,
+        objective: rateBits + 0.5 * n * Math.log2(Math.max(mse / n, 1e-12)),
         projectedCarrier,
     };
 }
@@ -2730,7 +2414,7 @@ function wasmWaveletInv(wasm: HarmonicWasmExports, ll: Int32Array, hh: Int32Arra
  *  runs all levels in WASM memory with a single copy-in, avoiding the per-level
  *  JSâ†”WASM round-trip of the naive approach. HH subbands are copied out after
  *  each level (they're final); LL stays in WASM for the next level. */
-function waveletDecompose(wasm: HarmonicWasmExports, data: Int32Array, levels: number): Int32Array[] {
+export function waveletDecompose(wasm: HarmonicWasmExports, data: Int32Array, levels: number): Int32Array[] {
     const n = data.length;
     if (n < 4 || levels === 0) return [data.slice()];
 
@@ -3464,6 +3148,280 @@ function burgPrimaryInverse(
     }
 
     return data;
+}
+
+// ── unified variable-order prediction ──────────────────────────────────
+//
+// replaces the 3-stage pipeline (Burg-superblock + AR(2)-block + micro)
+// with a single adaptive-order Burg predictor per 32-sample block.
+//
+// for each block, Burg analysis produces reflection coefficients at orders
+// 2, 4, 6, 8. the encoder picks the order that minimizes:
+//   cost(p) = p * 8 (coefficient bits) + n * log2(errorVariance_p)
+// this is the MDL criterion: model complexity + data surprise.
+//
+// the prediction is causal, deterministic, and integer-exact:
+//   pred = round(a[0]*state[0] + a[1]*state[1] + ... + a[p-1]*state[p-1])
+//   residual = sample - pred
+// state tracks reconstructed values, so encoder and decoder agree exactly.
+
+const VAR_MAX_ORDER = 8;
+const VAR_ORDERS = [0, 2, 4, 6, 8];
+
+interface VarBlock {
+    order: number;
+    quantK: Int8Array;      // quantized reflection coefficients
+    a: Float64Array;        // LP coefficients (from quantized reflections)
+}
+
+/** fit variable-order Burg on all 32-sample blocks.
+ *  returns one VarBlock per block with the optimal order and coefficients.
+ *  state carries across blocks (prediction is continuous). */
+export function varOrderFitAllBlocks(
+    data: Int32Array, numSamples: number,
+): VarBlock[] {
+    const numBlocks = Math.ceil(numSamples / BLOCK_LEN);
+    const blocks: VarBlock[] = [];
+    const state = new Float64Array(VAR_MAX_ORDER);
+
+    for (let b = 0; b < numBlocks; b++) {
+        const bStart = b * BLOCK_LEN;
+        const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
+        const bLen = bEnd - bStart;
+
+        // fit Burg at maximum feasible order
+        const maxOrd = Math.min(VAR_MAX_ORDER, Math.floor(bLen / 3));
+        const rawK = maxOrd >= 2 ? burgAnalysis(data, bStart, bEnd, maxOrd) : new Float64Array(0);
+
+        // evaluate each candidate order via MDL
+        let bestOrder = 0;
+        let bestCost = Infinity;
+        let bestQuantK = new Int8Array(0);
+        let bestA = new Float64Array(0);
+
+        // order 0 baseline: cost = n * log2(signal variance)
+        {
+            let energy = 0;
+            for (let i = bStart; i < bEnd; i++) {
+                const val = data[i];
+                let pred = 0;
+                // no prediction at order 0, but we still measure residual = val
+                energy += val * val;
+            }
+            const errVar = Math.max(1, energy / bLen);
+            bestCost = bLen * Math.log2(errVar);
+            bestOrder = 0;
+        }
+
+        // try orders 2, 4, 6, 8
+        for (const tryOrder of VAR_ORDERS) {
+            if (tryOrder === 0 || tryOrder > maxOrd) continue;
+
+            // quantize reflection coefficients at this order
+            const qk = new Int8Array(tryOrder);
+            const dqk = new Float64Array(tryOrder);
+            for (let m = 0; m < tryOrder; m++) {
+                qk[m] = quantRC(rawK[m]);
+                dqk[m] = dequantRC(qk[m]);
+            }
+            const a = reflToLP(dqk, tryOrder);
+
+            // compute prediction error with encoder-decoder state tracking
+            const savedState = new Float64Array(state);
+            let errEnergy = 0;
+            for (let i = 0; i < bLen; i++) {
+                const val = data[bStart + i];
+                let pred = 0;
+                for (let m = 0; m < tryOrder; m++) pred += a[m] * savedState[m];
+                const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+                const res = val - roundPred;
+                errEnergy += res * res;
+                for (let m = tryOrder - 1; m > 0; m--) savedState[m] = savedState[m - 1];
+                savedState[0] = val; // encoder tracks original (lossless)
+            }
+
+            const errVar = Math.max(1, errEnergy / bLen);
+            const cost = tryOrder * 8 + bLen * Math.log2(errVar);
+
+            if (cost < bestCost) {
+                bestCost = cost;
+                bestOrder = tryOrder;
+                bestQuantK = qk;
+                bestA = a;
+            }
+        }
+
+        blocks.push({ order: bestOrder, quantK: bestQuantK, a: bestA });
+
+        // advance state: always track original data
+        for (let i = 0; i < bLen; i++) {
+            for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
+            state[0] = data[bStart + i];
+        }
+    }
+
+    return blocks;
+}
+
+/** estimate coefficient stream cost (bits) before Logos compression.
+ *  counts order bytes + reflection coefficient bytes per block. */
+export function estimateCoeffBits(blocks: VarBlock[]): number {
+    let bits = 0;
+    for (const b of blocks) {
+        bits += 8; // order byte
+        bits += b.order * 8; // reflection coefficients
+    }
+    return bits;
+}
+
+/** encode prediction: data → residuals using fitted VarBlocks. */
+export function varOrderPredictEnc(
+    data: Int32Array, numSamples: number, blocks: VarBlock[],
+): Int32Array {
+    const residuals = new Int32Array(numSamples);
+    const state = new Float64Array(VAR_MAX_ORDER);
+
+    for (let b = 0; b < blocks.length; b++) {
+        const bStart = b * BLOCK_LEN;
+        const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
+        const { a, order } = blocks[b];
+
+        for (let i = bStart; i < bEnd; i++) {
+            const val = data[i];
+            if (order > 0) {
+                let pred = 0;
+                for (let m = 0; m < order; m++) pred += a[m] * state[m];
+                const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+                residuals[i] = val - roundPred;
+            } else {
+                residuals[i] = val;
+            }
+            for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
+            state[0] = val; // track original (encoder side)
+        }
+    }
+
+    return residuals;
+}
+
+/** decode prediction: residuals → data using fitted VarBlocks. */
+function varOrderPredictDec(
+    residuals: Int32Array, numSamples: number, blocks: VarBlock[],
+): Int32Array {
+    const data = new Int32Array(numSamples);
+    const state = new Float64Array(VAR_MAX_ORDER);
+
+    for (let b = 0; b < blocks.length; b++) {
+        const bStart = b * BLOCK_LEN;
+        const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
+        const { a, order } = blocks[b];
+
+        for (let i = bStart; i < bEnd; i++) {
+            if (order > 0) {
+                let pred = 0;
+                for (let m = 0; m < order; m++) pred += a[m] * state[m];
+                const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+                data[i] = residuals[i] + roundPred;
+            } else {
+                data[i] = residuals[i];
+            }
+            for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
+            state[0] = data[i]; // track reconstructed (decoder side)
+        }
+    }
+
+    return data;
+}
+
+/** encode coefficient stream: [order_byte][k1][k2]...[kp] per block.
+ *  Logos-compressed for transmission. */
+export function encodeCoeffStream(blocks: VarBlock[]): { raw: Uint8Array; compressed: Uint8Array } {
+    // compute total size
+    let totalBytes = 0;
+    for (const b of blocks) totalBytes += 1 + b.order;
+    const raw = new Uint8Array(totalBytes);
+    let off = 0;
+    for (const b of blocks) {
+        raw[off++] = b.order;
+        for (let m = 0; m < b.order; m++) raw[off++] = (b.quantK[m] + 128) & 0xFF;
+    }
+    const compressed = encode0D(raw);
+    return { raw, compressed };
+}
+
+/** decode coefficient stream back to VarBlock array. */
+function decodeCoeffStream(data: Uint8Array, numBlocks: number): VarBlock[] {
+    const blocks: VarBlock[] = [];
+    let off = 0;
+    for (let b = 0; b < numBlocks; b++) {
+        const order = data[off++];
+        const quantK = new Int8Array(order);
+        for (let m = 0; m < order; m++) quantK[m] = (data[off++] - 128) << 24 >> 24;
+        const dequantK = new Float64Array(order);
+        for (let m = 0; m < order; m++) dequantK[m] = dequantRC(quantK[m]);
+        const a = order > 0 ? reflToLP(dequantK, order) : new Float64Array(0);
+        blocks.push({ order, quantK, a });
+    }
+    return blocks;
+}
+
+/** dequantization refinement: project decoded integers onto the prediction
+ *  manifold within each quantization cell. forward + backward Burg priors
+ *  constrained to [q-0.5, q+0.5]. */
+function varOrderCellProject(
+    projected: Float32Array, data: Int32Array, blocks: VarBlock[],
+): void {
+    const n = data.length;
+    const numBlocks = blocks.length;
+
+    // forward pass
+    const state = new Float64Array(VAR_MAX_ORDER);
+    for (let b = 0; b < numBlocks; b++) {
+        const bStart = b * BLOCK_LEN;
+        const bEnd = Math.min(bStart + BLOCK_LEN, n);
+        const { a, order } = blocks[b];
+
+        if (order > 0) {
+            // measure prediction quality on this block
+            let obsEnergy = 0, count = 0;
+            const anaState = new Float64Array(state);
+            for (let i = bStart; i < bEnd; i++) {
+                let pred = 0;
+                for (let m = 0; m < order; m++) pred += a[m] * anaState[m];
+                const d = projected[i] - pred;
+                obsEnergy += d * d;
+                count++;
+                for (let m = order - 1; m > 0; m--) anaState[m] = anaState[m - 1];
+                anaState[0] = projected[i];
+            }
+            const obsVar = count > 0 ? obsEnergy / count : 0;
+            const weight = obsVar > 0 ? Math.min(1, QUANT_NOISE_REG / obsVar) : 1;
+
+            if (weight > 0) {
+                for (let i = bStart; i < bEnd; i++) {
+                    let pred = 0;
+                    for (let m = 0; m < order; m++) pred += a[m] * state[m];
+                    const q = data[i];
+                    const lo = q - 0.5;
+                    const hi = q + 0.5;
+                    const clamped = pred < lo ? lo : pred > hi ? hi : pred;
+                    projected[i] = projected[i] + weight * (clamped - projected[i]);
+                    for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
+                    state[0] = projected[i];
+                }
+            } else {
+                for (let i = bStart; i < bEnd; i++) {
+                    for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
+                    state[0] = projected[i];
+                }
+            }
+        } else {
+            for (let i = bStart; i < bEnd; i++) {
+                for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
+                state[0] = projected[i];
+            }
+        }
+    }
 }
 
 /** decoder-side dequantization refinement.
@@ -4763,11 +4721,7 @@ function prepareHarmonicChannels(
     targetScalar: number,
     effectiveBitDepth: number,
     numLevels: number,
-    burgSuperLen: number,
-    goertzelLen: number,
-    blocksPerGoertzel: number,
     layout: "channel" | "object",
-    trajState?: HarmonicState,
 ): {
     channels: Int32Array[];
     channelEnergy: number[];
@@ -4803,6 +4757,7 @@ function prepareHarmonicChannels(
     const channelProjected: (Float32Array | null)[] = [];
     const amplitudeBaselineFitBits: number[] = [];
     const amplitudeCandidates: AmplitudeCandidate[][] = [];
+    const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
     const envelopeBlockLen = envelopeBlockLenFromBurgSuperLen(burgSuperLen);
     for (let ch = 0; ch < numChannels; ch++) {
         const baseline = quantizeChannelWithOrbitalGuide(
@@ -4882,10 +4837,6 @@ function prepareHarmonicChannels(
                 targetScalar,
                 null,
                 numLevels,
-                burgSuperLen,
-                goertzelLen,
-                blocksPerGoertzel,
-                trajState,
                 refData,
                 refProjected,
             );
@@ -4905,10 +4856,6 @@ function prepareHarmonicChannels(
                     targetScalar,
                     amplitude.envCurve,
                     numLevels,
-                    burgSuperLen,
-                    goertzelLen,
-                    blocksPerGoertzel,
-                    trajState,
                     refData,
                     refProjected,
                     amplitude.extraBits,
@@ -4977,7 +4924,6 @@ export async function encodeHarmonic(
     }
 
     const quality     = options?.quality      ?? 80;
-    const trajState   = options?.state;
     const numChannels = inferredChannels || (options?.numChannels ?? 1);
     const numSamples  = (samples.length / numChannels) | 0;
     const bitDepth    = options?.bitDepth     ?? 0;
@@ -5033,26 +4979,10 @@ export async function encodeHarmonic(
         : qualityScalarCandidates(quality);
     const targetScalar = Math.max(qScalar, depthScalar);
     let scalar = Math.max(qScalar, depthScalar);
-    const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
-    const goertzelLen  = adaptiveGoertzelLen(sampleRate);
-    const blocksPerGoertzel = goertzelLen / BLOCK_LEN;
     let framePeak = effectiveBitDepth > 0 ? 1.0 : lossyFramePeak(samples, scalar);
     let prepared = prepareHarmonicChannels(
-        wasm,
-        samples,
-        sampleRate,
-        numChannels,
-        numSamples,
-        scalar,
-        framePeak,
-        targetScalar,
-        effectiveBitDepth,
-        numLevels,
-        burgSuperLen,
-        goertzelLen,
-        blocksPerGoertzel,
-        layout,
-        trajState,
+        wasm, samples, sampleRate, numChannels, numSamples,
+        scalar, framePeak, targetScalar, effectiveBitDepth, numLevels, layout,
     );
     const seenScalars = new Set<number>([scalar]);
     for (const cand of scalarCandidates) {
@@ -5061,21 +4991,8 @@ export async function encodeHarmonic(
         seenScalars.add(candidateScalar);
         const candidatePeak = effectiveBitDepth > 0 ? 1.0 : lossyFramePeak(samples, candidateScalar);
         const candidatePrepared = prepareHarmonicChannels(
-            wasm,
-            samples,
-            sampleRate,
-            numChannels,
-            numSamples,
-            candidateScalar,
-            candidatePeak,
-            targetScalar,
-            effectiveBitDepth,
-            numLevels,
-            burgSuperLen,
-            goertzelLen,
-            blocksPerGoertzel,
-            layout,
-            trajState,
+            wasm, samples, sampleRate, numChannels, numSamples,
+            candidateScalar, candidatePeak, targetScalar, effectiveBitDepth, numLevels, layout,
         );
         if (candidatePrepared.totalObjective < prepared.totalObjective) {
             scalar = candidateScalar;
@@ -5124,25 +5041,16 @@ export async function encodeHarmonic(
         payloadByte(maskByte);
     }
 
-    const allKG: { Kint: number; Gint: number }[][] = [];
-    const allBurgSBs: BurgSuperBlock[][] = [];
-
     payloadByte(effectiveChannels);
 
     for (let ch = 0; ch < effectiveChannels; ch++) {
         let data = channels[ch];
-        const stateOff = wasmEncState(ch);
         const envLog = channelEnvelopes[ch];
         const envWire = channelEnvelopeWire[ch];
 
-        // determine cross-channel reference for this channel
+        // cross-channel coupling: subtract W·ref, trial-gated via varOrder cost
         const refIdx = couplingRefs[ch] ?? NO_REF;
         const refData = refIdx !== NO_REF ? channels[refIdx] : undefined;
-
-        // cross-channel coupling: subtract WÂ·ref from the raw signal before
-        // K/G fitting. for identical channels this zeroes the data, giving
-        // flat K/G trajectories AND zero residuals. trial-gated: only fires
-        // when the decoupled path is genuinely cheaper including trajectory cost.
         let channelW: { Wint: number; W: number } | undefined;
         if (refData && numSamples >= BLOCK_LEN) {
             const wFit = fitCouplingW(data, refData, numSamples);
@@ -5152,22 +5060,15 @@ export async function encodeHarmonic(
                     const wr = wFit.W * refData[i];
                     decoupled[i] = data[i] - (wr >= 0 ? (wr + 0.5) | 0 : (wr - 0.5) | 0);
                 }
-                const kgDec = wasmFitAllBlocks(wasm, decoupled, numSamples);
-                thinTrajectory(kgDec, scalar);
-                const residDec = wasmPredictEnc(wasm, decoupled, kgDec, stateOff);
-                const costDec = estimatePlaneCost(residDec) + estimateTrajectoryBits(kgDec) / 8;
-
-                const kgOrig = wasmFitAllBlocks(wasm, data, numSamples);
-                thinTrajectory(kgOrig, scalar);
-                const residOrig = wasmPredictEnc(wasm, data, kgOrig, stateOff);
-                const costOrig = estimatePlaneCost(residOrig) + estimateTrajectoryBits(kgOrig) / 8;
-
+                const blocksOrig = varOrderFitAllBlocks(data, numSamples);
+                const residOrig = varOrderPredictEnc(data, numSamples, blocksOrig);
+                const blocksDec = varOrderFitAllBlocks(decoupled, numSamples);
+                const residDec = varOrderPredictEnc(decoupled, numSamples, blocksDec);
+                const costOrig = estimatePlaneCost(residOrig) + estimateCoeffBits(blocksOrig) / 8;
+                const costDec = estimatePlaneCost(residDec) + estimateCoeffBits(blocksDec) / 8;
                 if (costDec + 2 < costOrig) {
                     data = decoupled;
                     channelW = wFit;
-                    let e = 0;
-                    for (let s = 0; s < numSamples; s++) e += data[s] * data[s];
-                    channelEnergy[ch] = e;
                 } else {
                     couplingRefs[ch] = NO_REF;
                 }
@@ -5176,100 +5077,7 @@ export async function encodeHarmonic(
             }
         }
 
-        // path A: AR(2) â€” trial forward K/G (transmitted) vs backward-adaptive
-        // K/G (derived from causal past, zero trajectory bits).
-        // both use lossless integer residuals. with backward, the decoder
-        // reconstructs K/G from previously decoded samples block-by-block.
-        const kgForward = wasmFitAllBlocks(wasm, data, numSamples);
-        thinTrajectory(kgForward, scalar);
-        const residForward = wasmPredictEnc(wasm, data, kgForward, stateOff);
-        const fwdResidBits = estimateRiceCost(residForward, numSamples);
-        const fwdTrajBits = estimateTrajectoryBits(kgForward);
-        const fwdCost = fwdResidBits + fwdTrajBits;
-
-        // backward-adaptive K/G: fit from previous block, zero trajectory cost.
-        // uses WASM state save/restore to avoid corrupting the forward path.
-        let useBackwardKG = false;
-        let kgBlocksPlain = kgForward;
-        let residualsPlain = residForward;
-        let plainResidBits = fwdResidBits;
-        let plainTrajBits = fwdTrajBits;
-        let plainCost = fwdCost;
-
-        if (numSamples >= BLOCK_LEN * 2) {
-            const stateSave = new Float32Array(wasm.memory.buffer, stateOff, 3).slice();
-            const kgBackward = fitBackwardKG(wasm, data, numSamples);
-            thinTrajectory(kgBackward, scalar);
-            const residBackward = wasmPredictEnc(wasm, data, kgBackward, stateOff);
-            const bwdResidBits = estimateRiceCost(residBackward, numSamples);
-            // restore WASM state
-            new Float32Array(wasm.memory.buffer, stateOff, 2).set(stateSave.subarray(0, 2));
-            new Int32Array(wasm.memory.buffer, stateOff + 8, 1)[0] = new Int32Array(stateSave.buffer, 8, 1)[0];
-
-            // backward only fires if residuals are 20%+ smaller â€” strong evidence
-            // that the lookback K/G is genuinely better for this signal.
-            if (bwdResidBits < fwdResidBits * 0.50) {
-                useBackwardKG = true;
-                kgBlocksPlain = kgBackward;
-                residualsPlain = residBackward;
-                plainResidBits = bwdResidBits;
-                plainTrajBits = 0;
-                plainCost = bwdResidBits;
-            }
-        }
-
-        const signalEnergy = channelEnergy[ch];
-        let residEnergy = 0;
-        for (let i = 0; i < numSamples; i++) residEnergy += residualsPlain[i] * residualsPlain[i];
-        const ar2Captures = signalEnergy > 0 ? 1 - residEnergy / signalEnergy : 1;
-
-        let useBurg = false;
-        let kgBlocks: { K: number; G: number; Kint: number; Gint: number }[] = kgBlocksPlain;
-        let residuals: Int32Array = residualsPlain;
-        let activeSBs: BurgSuperBlock[] = [];
-
-        if (ar2Captures < AR2_SKIP_BURG && numSamples >= burgSuperLen) {
-            // path B: Burg primary â†’ AR(2)
-            const { output: burgOutput, superBlocks: burgSBs } = burgPrimaryForward(data, numSamples, burgSuperLen);
-            const anyBurgActive = burgSBs.some(sb => sb.order > 0);
-
-            if (anyBurgActive) {
-                const kgBlocksBurg = wasmFitAllBlocks(wasm, burgOutput, numSamples);
-                thinTrajectory(kgBlocksBurg, scalar);
-                // burgOutput already at WASM_BUF_A from wasmFitAllBlocks
-                const residualsBurg = wasmPredictEnc(wasm, burgOutput, kgBlocksBurg, stateOff);
-                // estimate Burg trajectory cost without encoding (avoid allocation)
-                let burgLpcBits = 0;
-                for (const sb of burgSBs) burgLpcBits += (1 + sb.order) * 8;
-                const burgTrajBits = estimateTrajectoryBits(kgBlocksBurg);
-                const burgCost = estimateRiceCost(residualsBurg, numSamples) + burgLpcBits + burgTrajBits;
-
-                if (burgCost < plainCost) {
-                    useBurg = true;
-                    useBackwardKG = false; // Burg uses its own forward K/G
-                    kgBlocks = kgBlocksBurg;
-                    residuals = residualsBurg;
-                    activeSBs = burgSBs;
-                }
-            }
-        }
-
-        allBurgSBs.push(activeSBs);
-        allKG.push(kgBlocks);
-
-        // â”€â”€ 2D MÃ¶bius residual coupling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        // couple the K/G RESIDUALS (what time couldn't predict) across channels.
-        // this captures the mixed partial âˆ‚Â²f/âˆ‚châˆ‚t: the component that is
-        // BOTH unpredictable in time AND shared across channels (correlated
-        // noise floor, shared room reverb, etc).
-        //
-        // the coupling sits BETWEEN K/G prediction and micro-osc. all stages
-        // downstream (micro-osc, delta, trajectory, wavelet, Logos) are lossless
-        // on integers, guaranteeing perfect round-trip:
-        //   encode: residuals -= WÂ·refResid â†’ pipeline_forward â†’ bytes
-        //   decode: bytes â†’ pipeline_inverse â†’ residuals += WÂ·refResid
-        //
-        // save the UNCOUPLED residuals for reference by later channels.
+        // envelope (amplitude axis)
         if (envLog && envWire) {
             payloadU32(channelEnvelopeBlockLens[ch] || 0);
             payloadU32(envLog.length);
@@ -5277,298 +5085,46 @@ export async function encodeHarmonic(
             payloadAppend(envWire);
         }
 
-        // encode Burg trajectory
-        const hasChannelBurg = activeSBs.some(sb => sb.order > 0);
-        if (hasChannelBurg) {
-            const burgBits = encodeBurgTrajectory(activeSBs);
-            const burgComp = encode0D(burgBits);
-            payloadU32(burgBits.length);
-            payloadU32(burgComp.length);
-            payloadAppend(burgComp);
-        } else {
-            payloadU32(0);
-        }
-
-        // write signal coupling W BEFORE K/G (decoder needs to know which
-        // coupling type to apply when decoding the K/G trajectory).
-        // write coupling metadata: W for residual coupling, trajectory delta for K/G
-        // write coupling W for referenced channels
+        // coupling W
         if ((couplingRefs[ch] ?? NO_REF) !== NO_REF) {
             if (channelW) {
-                payloadByte(1); // coupling active
+                payloadByte(1);
                 payloadByte(channelW.Wint & 0xFF);
                 payloadByte((channelW.Wint >> 8) & 0xFF);
             } else {
-                payloadByte(0); // no coupling
+                payloadByte(0);
             }
         }
 
-        // K/G mode: 0=forward (trajectory in payload), 1=backward (zero trajectory)
-        payloadByte(useBackwardKG ? 1 : 0);
-        if (!useBackwardKG) {
-            const { metaKK, metaGK } = metaPredictKG(kgBlocks);
-            payloadByte((metaKK + 128) & 0xFF);
-            payloadByte((metaGK + 128) & 0xFF);
-            const { raw: kgBits, compressed: kgCompressed } = buildKGTrajectoryPayload(kgBlocks, metaKK, metaGK);
-            payloadU32(kgBits.length);
-            payloadU32(kgCompressed.length);
-            payloadAppend(kgCompressed);
-        }
+        // unified variable-order prediction
+        const varBlocks = varOrderFitAllBlocks(data, numSamples);
+        const residuals = varOrderPredictEnc(data, numSamples, varBlocks);
 
-        // cascaded micro-oscillator
-        let useMicro = false;
-        let activeResiduals: Int32Array;
-        let kg2Blocks: { K: number; G: number; Kint: number; Gint: number }[] | null = null;
-        let residuals2: Int32Array | null = null;
+        // coefficient stream
+        const { raw: coeffRaw, compressed: coeffComp } = encodeCoeffStream(varBlocks);
+        payloadU32(coeffRaw.length);
+        payloadU32(coeffComp.length);
+        payloadAppend(coeffComp);
 
-        if (ar2Captures < AR2_SKIP_BURG) {
-            kg2Blocks = wasmFitAllBlocks(wasm, residuals, numSamples);
-            residuals2 = wasmPredictEnc(wasm, residuals, kg2Blocks, stateOff);
-            const planeCost1 = estimatePlaneCost(residuals);
-            const planeCost2 = estimatePlaneCost(residuals2);
-            const kg2TrajCost = Math.ceil(estimateTrajectoryBits(kg2Blocks) / 8) + 11;
-            useMicro = planeCost2 + kg2TrajCost < planeCost1 * 0.9;
-        }
+        // wavelet decomposition
+        const subbands = waveletDecompose(wasm, residuals, numLevels);
 
-        if (useMicro) {
-            const { metaKK: mk2, metaGK: mg2 } = metaPredictKG(kg2Blocks!);
-            payloadByte(1);
-            payloadByte((mk2 + 128) & 0xFF);
-            payloadByte((mg2 + 128) & 0xFF);
-            const { raw: kg2Bits, compressed: kg2Comp } = buildKGTrajectoryPayload(kg2Blocks!, mk2, mg2);
-            payloadU32(kg2Bits.length);
-            payloadU32(kg2Comp.length);
-            payloadAppend(kg2Comp);
-            activeResiduals = residuals2!;
-        } else {
-            payloadByte(0);
-            activeResiduals = residuals;
-        }
+        // subband encoding: zigzag + byte planes + batched Logos
+        const numSb = subbands.length;
+        payloadByte(numSb);
 
-        // delta pre-filter: first-difference whitens correlated residuals.
-        // skipped when ar2Captures >= 0.999 (residual is quantization noise,
-        // no temporal correlation to remove). saves an O(n) copy + 2 estimatePlaneCost calls.
-        let useDelta = false;
-        if (ar2Captures < AR2_SKIP_BURG) {
-            const deltaResid = new Int32Array(activeResiduals.length);
-            deltaResid[0] = activeResiduals[0];
-            for (let i = 1; i < activeResiduals.length; i++) {
-                deltaResid[i] = activeResiduals[i] - activeResiduals[i - 1];
-            }
-            useDelta = estimatePlaneCost(deltaResid) < estimatePlaneCost(activeResiduals) * 0.95;
-            if (useDelta) activeResiduals = deltaResid;
-        }
-        payloadByte(useDelta ? 1 : 0);
-
-        // trajectory prediction (Farmer-Sidorowich 1987): nonlinear closure.
-        // the kNN search is the most expensive trial (~1.5ms for 960 samples).
-        // optimization: "peek before you leap" â€” test trajectory on the last
-        // TRAJ_WINDOW samples (where the kNN window is fullest). if the peek
-        // doesn't show 5% improvement, skip the full search. this turns the
-        // common "not worth it" case from O(nÃ—W) to O(WÃ—W) â€” 4Ã— cheaper.
-        let useTrajectory = false;
-        const preTrajResiduals = activeResiduals;
-        if (ar2Captures < AR2_SKIP_BURG && numSamples >= TRAJ_WINDOW * 2) {
-            // quick peek: trajectory on the last W samples only
-            const peekSlice = new Int32Array(activeResiduals.buffer,
-                activeResiduals.byteOffset + (numSamples - TRAJ_WINDOW) * 4, TRAJ_WINDOW);
-            const peekErrors = trajectoryEncode(peekSlice);
-            const peekBefore = estimatePlaneCost(peekSlice);
-            const peekAfter = estimatePlaneCost(peekErrors);
-
-            if (peekAfter < peekBefore * 0.95) {
-                // peek passed â€” run full trajectory
-                const trajErrors = trajectoryEncode(activeResiduals, trajState);
-                const costBefore = estimatePlaneCost(activeResiduals);
-                const costAfter = estimatePlaneCost(trajErrors);
-                useTrajectory = costAfter < costBefore * 0.95;
-                if (useTrajectory) activeResiduals = trajErrors;
-            }
-        }
-        // always update trajectory state with the pre-trajectory residuals.
-        // both encode and decode store the same data at the same point.
-        if (trajState) trajStateAppend(trajState, preTrajResiduals);
-        payloadByte(useTrajectory ? 1 : 0);
-
-        // 4. Harmonic topology layer: superblock Goertzel â†’ 2D MÃ¶bius
-        //    Superblock = 1024 samples (32 blocks). Enough cycles for Goertzel
-        //    even at 120Hz fundamental (~2.5 periods). The 2D field A(harmonic, super)
-        //    captures the spectral envelope evolving over time.
-        //    Trial-encodes BOTH paths (with/without harmonics) and picks the cheaper one.
-        const numBlks = kgBlocks.length;
-        const numSuper = Math.ceil(numSamples / goertzelLen);
-        const voicedSuper: number[] = [];
-
-        // skip harmonic topology when prediction gain exceeds 40 dB
-        if (ar2Captures < AR2_SKIP_BURG)
-        for (let si = 0; si < numSuper; si++) {
-            const sStart = si * goertzelLen;
-            const sEnd = Math.min(sStart + goertzelLen, numSamples);
-            let voicedCount = 0, totalBlks = 0;
-            for (let s = sStart; s < sEnd; s += BLOCK_LEN) {
-                const e = Math.min(s + BLOCK_LEN, sEnd);
-                if (blockVoiced(data, activeResiduals, s, e)) voicedCount++;
-                totalBlks++;
-            }
-            if (voicedCount > totalBlks / 2) {
-                const fb = si * blocksPerGoertzel;
-                const lb = Math.min(fb + blocksPerGoertzel, numBlks);
-                const w = superOmega(kgBlocks, fb, lb);
-                if (countUsableH(w) >= 4) voicedSuper.push(si);
-            }
-        }
-
-        let numH = 0;
-        if (voicedSuper.length >= 2) {
-            numH = MAX_HARMONICS;
-            for (const si of voicedSuper) {
-                const fb = si * blocksPerGoertzel;
-                const lb = Math.min(fb + blocksPerGoertzel, numBlks);
-                numH = Math.min(numH, countUsableH(superOmega(kgBlocks, fb, lb)));
-            }
-        }
-        let subbands: Int32Array[];
-
-        if (voicedSuper.length >= 2 && numH >= 2) {
-            const nV = voicedSuper.length;
-            const cosF = new Int32Array(numH * nV);
-            const sinF = new Int32Array(numH * nV);
-            const aperiodicRes = activeResiduals.slice();
-
-            for (let vi = 0; vi < nV; vi++) {
-                const si = voicedSuper[vi];
-                const sStart = si * goertzelLen;
-                const sEnd = Math.min(sStart + goertzelLen, numSamples);
-                const sLen = sEnd - sStart;
-                const fb = si * blocksPerGoertzel;
-                const lb = Math.min(fb + blocksPerGoertzel, numBlks);
-                const w = superOmega(kgBlocks, fb, lb);
-
-                const { cosQ, sinQ } = goertzelExtract(activeResiduals, sStart, sLen, w, numH);
-                for (let h = 0; h < numH; h++) {
-                    cosF[h * nV + vi] = cosQ[h];
-                    sinF[h * nV + vi] = sinQ[h];
-                }
-                const syn = harmonicSynth(w, cosQ, sinQ, numH, sLen);
-                for (let t = 0; t < sLen; t++) aperiodicRes[sStart + t] -= syn[t];
-            }
-
-            // Trial encode: compare wavelet plane costs using fast entropy
-            // estimate (no Logos calls). Only the winning path gets Logos-encoded
-            // later in the subband loop.
-            const fullSb = waveletDecompose(wasm, activeResiduals, numLevels);
-            const apSb   = waveletDecompose(wasm, aperiodicRes, numLevels);
-
-            let fullCost = 0;
-            for (const sb of fullSb) fullCost += estimatePlaneCost(sb);
-
-            const cosR = mobiusEnc2D(cosF, numH, nV);
-            const sinR = mobiusEnc2D(sinF, numH, nV);
-            const maskLen = Math.ceil(numSuper / 8);
-
-            // overhead: nV(2) + numH(1) + mask + 2Ã—planeCount(1) + length headers (up to 6Ã—4B)
-            let apCost = 3 + maskLen + 26 + estimatePlaneCost(cosR) + estimatePlaneCost(sinR);
-            for (const sb of apSb) apCost += estimatePlaneCost(sb);
-
-            if (apCost < fullCost) {
-                // Harmonic path wins â€” encode fields with Logos and write
-                const cosPl = encodeResidualPlanes(cosR);
-                const sinPl = encodeResidualPlanes(sinR);
-
-                payloadByte(nV & 0xFF); payloadByte((nV >> 8) & 0xFF); // numVoicedSuper: u16
-                payloadByte(numH);                          // maxHarmonics: u8
-                const mask = new Uint8Array(maskLen);
-                for (const si of voicedSuper) mask[si >> 3] |= 1 << (si & 7);
-                payloadAppend(mask);
-
-                // cos field planes (adaptive count)
-                payloadByte(cosPl.planeCount);
-                if (cosPl.planeCount >= 3) {
-                    payloadU32(cosPl.topEnc.length);
-                    payloadAppend(cosPl.topEnc);
-                }
-                if (cosPl.planeCount >= 2) {
-                    payloadU32(cosPl.midEnc.length);
-                    payloadAppend(cosPl.midEnc);
-                }
-                payloadU32(cosPl.loEnc.length);
-                payloadAppend(cosPl.loEnc);
-
-                // sin field planes (adaptive count)
-                payloadByte(sinPl.planeCount);
-                if (sinPl.planeCount >= 3) {
-                    payloadU32(sinPl.topEnc.length);
-                    payloadAppend(sinPl.topEnc);
-                }
-                if (sinPl.planeCount >= 2) {
-                    payloadU32(sinPl.midEnc.length);
-                    payloadAppend(sinPl.midEnc);
-                }
-                payloadU32(sinPl.loEnc.length);
-                payloadAppend(sinPl.loEnc);
-
-                subbands = apSb;
-            } else {
-                // Full-residual path wins â€” skip harmonics
-                payloadByte(0); payloadByte(0); payloadByte(0);
-                subbands = fullSb;
-            }
-        } else {
-            payloadByte(0); payloadByte(0); payloadByte(0);
-            if (ar2Captures >= AR2_SKIP_BURG) {
-                subbands = [activeResiduals];
-            } else {
-                subbands = waveletDecompose(wasm, activeResiduals, numLevels);
-            }
-        }
-
-        // 7. subband encoding: wavelet residuals â†’ batched Logos.
-        // cochlea masking zeros negligible-energy subbands (saves Logos calls).
-        // all active subbands' byte planes are concatenated into single Logos
-        // streams for fewer calls and better context modeling.
-        payloadByte(subbands.length); // numSubbands
-        const sbEnergies: number[] = [];
-        for (let sb = 0; sb < subbands.length; sb++) {
+        const sbPlaneCount: number[] = [];
+        let globalMaxPlane = 0;
+        for (let sb = 0; sb < numSb; sb++) {
+            const isLL = sb === 0;
             let energy = 0;
             const d = subbands[sb];
             for (let i = 0; i < d.length; i++) energy += d[i] * d[i];
-            sbEnergies.push(energy);
-        }
-        const numSb = subbands.length;
-
-        // batched subband encoding: concatenate all byte planes across subbands
-        // into single Logos streams. this reduces 4+ Logos calls to 1-3, giving
-        // ~2Ã— speedup for 20ms frames and ~5-10% better compression (Logos gets
-        // more context from the concatenated stream).
-
-        // pass 1: determine per-subband planeCount and cochlea masking
-        //
-        // note: per-subband quantization (qstep > 1 for HH subbands) was attempted
-        // and reverted. the AR(2) inverse gain IS bounded at high frequencies
-        // (|H(Ï‰)| â‰ˆ 0.25 at Nyquist), but the CDF 5/3 wavelet has -12 dB spectral
-        // leakage. quantization noise in HHâ‚ leaks through the wavelet inverse into
-        // the resonance band, where the AR(2) amplifies it infinitely. perfect
-        // bandpass would fix this, but CDF 5/3 sidelobes defeat the frequency
-        // selectivity. the IIR-2 lossless constraint holds across ALL subbands.
-        const sbPlaneCount: number[] = [];
-        let globalMaxPlane = 0;
-
-        for (let sb = 0; sb < numSb; sb++) {
-            const isLL = sb === 0;
-            const noiseFloor = subbands[sb].length * QUANT_NOISE_REG;
-            // when delta pre-filter is active, the residuals are first-differences.
-            // zeroing a subband introduces loss in the delta domain, and the
-            // cumulative sum inverse propagates that loss to all subsequent samples.
-            // the IIR-2 then amplifies it without bound. masking is only safe
-            // when the data is NOT delta-coded.
-            const skip = !isLL && !useDelta && sbEnergies[sb] <= noiseFloor && ar2Captures < AR2_SKIP_MASKING;
-
-            if (skip) {
+            const noiseFloor = d.length * QUANT_NOISE_REG;
+            if (!isLL && energy <= noiseFloor) {
                 sbPlaneCount.push(0);
             } else {
-                // determine plane count from max zigzag value
                 let maxZZ = 0;
-                const d = subbands[sb];
                 for (let i = 0; i < d.length; i++) {
                     const v = d[i];
                     const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
@@ -5587,9 +5143,8 @@ export async function encodeHarmonic(
         }
         payloadByte(globalMaxPlane);
 
-        // pass 2: build concatenated plane streams and encode each with one Logos call
+        // build concatenated plane streams and encode each with one Logos call
         for (let plane = 0; plane < globalMaxPlane; plane++) {
-            // plane 0 = lo, 1 = mid, 2 = top
             let totalBytes = 0;
             for (let sb = 0; sb < numSb; sb++) {
                 if (sbPlaneCount[sb] > 0) totalBytes += subbands[sb].length;
@@ -5617,10 +5172,6 @@ export async function encodeHarmonic(
         _ctx.buf[couplingRefPayloadOff + ch] = couplingRefs[ch] ?? NO_REF;
     }
 
-    // Write K/G trajectory to WASM memory for test inspection (synchronous,
-    // must happen before any memory.grow that would detach our view).
-    writeKGToWasmSync(wasm, allKG, numSamples);
-
     // Encrypt
     const key = encryptionKey && encryptionKey.length >= 4
         ? new Uint32Array([encryptionKey[0], encryptionKey[1], encryptionKey[2], encryptionKey[3]])
@@ -5634,7 +5185,7 @@ export async function encodeHarmonic(
     ov.setUint32(4, sampleRate, true);
     const layoutFlag = layout === "object" ? LAYOUT_OBJECT : LAYOUT_CHANNEL;
     const depthFlag  = effectiveBitDepth === 16 ? DEPTH_16 : effectiveBitDepth === 24 ? DEPTH_24 : DEPTH_F32;
-    ov.setUint16(8, ((quality & 0xFF) << 8) | 1 | HARMONIC_FLAG | BURG_FLAG | layoutFlag | depthFlag, true);
+    ov.setUint16(8, ((quality & 0xFF) << 8) | 1 | layoutFlag | depthFlag, true);
     out[10] = numChannels - 1; out[11] = numLevels; // numChannels stored as 0-based (0=1ch, 255=256ch)
 
     out.set(encrypted, HEADER_SIZE);
@@ -5650,7 +5201,6 @@ export async function encodeHarmonic(
 export async function decodeHarmonic(
     encoded: Uint8Array,
     encryptionKey?: Uint32Array,
-    state?: HarmonicState,
 ): Promise<{
     pcm: Float32Array; sampleRate: number; tampered: boolean;
     spatialObjects?: SpatialObject[];
@@ -5667,8 +5217,6 @@ export async function decodeHarmonic(
     const quality     = (flags >> 8) & 0xFF;
     const numChannels = (encoded[10] + 1); // 0-based: 0=1ch, 255=256ch
     const numLevels   = encoded[11] || 0;
-    const hasHarmonic = (flags & HARMONIC_FLAG) !== 0;
-    const hasBurg     = (flags & BURG_FLAG) !== 0;
     const layoutFlag  = flags & LAYOUT_MASK;
     const isObject    = layoutFlag === LAYOUT_OBJECT;
     const bitDepth    = depthFromFlags(flags);
@@ -5700,9 +5248,6 @@ export async function decodeHarmonic(
 
     const framePeak = readF32LE(p, off); off += 4; // authenticated: inside MAC scope
     const scalar = readU32LE(p, off) || 1; off += 4; // actual scalar used by encoder
-    const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
-    const goertzelLen  = adaptiveGoertzelLen(sampleRate);
-    const blocksPerGoertzel = goertzelLen / BLOCK_LEN;
 
     // read spatial metadata for object-based layout
     let spatialObjects: SpatialObject[] | undefined;
@@ -5728,10 +5273,6 @@ export async function decodeHarmonic(
     const effectiveChannels = p[off++];
 
     for (let ch = 0; ch < effectiveChannels; ch++) {
-        // decode explicit model (Burg + K/G + micro-osc)
-        let burgSBs: BurgSuperBlock[] = [];
-        let kgFloats: { K: number; G: number }[] = [];
-        let kg2Floats: { K: number; G: number }[] | null = null;
         let envCurve: Float32Array | null = null;
         const hasEnvelope = ((envelopeMask[ch >> 3] >> (ch & 7)) & 1) !== 0;
         if (hasEnvelope) {
@@ -5741,17 +5282,8 @@ export async function decodeHarmonic(
             const envLog = decodeEnvelopeTrajectory(wasm, p.subarray(off, off + envWireLen), envCount); off += envWireLen;
             envCurve = reconstructEnvelopeCurve(envLog, numSamples, Math.max(BLOCK_LEN, envBlockLen), framePeak);
         }
-        if (hasBurg) {
-            const burgOrigLen = readU32LE(p, off); off += 4;
-            if (burgOrigLen > 0) {
-                const burgCompLen = readU32LE(p, off); off += 4;
-                const burgBitsData = decode0D(p.subarray(off, off + burgCompLen), burgOrigLen); off += burgCompLen;
-                const numBurgSuper = Math.ceil(numSamples / burgSuperLen);
-                burgSBs = decodeBurgTrajectory(burgBitsData, numBurgSuper);
-            }
-        }
 
-        // read coupling type + W (before K/G so we know trajectory mode)
+        // coupling W
         const chRefIdx = decCouplingRefs[ch] ?? NO_REF;
         let signalCouplingActive = false;
         if (chRefIdx !== NO_REF) {
@@ -5763,112 +5295,14 @@ export async function decodeHarmonic(
             }
         }
 
-        // decode K/G: backward-adaptive (recomputed from decoded data) or forward (from payload)
+        // decode coefficient stream
         const numBlocks = Math.ceil(numSamples / BLOCK_LEN);
-        const kgIsBackward = p[off++] === 1;
-        if (!kgIsBackward) {
-            // forward: read K/G trajectory from payload
-            const metaKK = (p[off++]) - 128;
-            const metaGK = (p[off++]) - 128;
-            const kgOrigLen = readU32LE(p, off); off += 4;
-            const kgCompLen = readU32LE(p, off); off += 4;
-            const kgBitsData = decode0D(p.subarray(off, off + kgCompLen), kgOrigLen); off += kgCompLen;
-            const kgBlocks = decodeKGTrajectory(kgBitsData, numBlocks, metaKK, metaGK);
-            kgFloats = kgBlocks.map(({ Kint, Gint }) => ({
-                K: Kint / COEFF_SCALE, G: Gint / COEFF_SCALE,
-            }));
-        }
-        // backward K/G is reconstructed after residuals are decoded â€” see below
+        const coeffOrigLen = readU32LE(p, off); off += 4;
+        const coeffCompLen = readU32LE(p, off); off += 4;
+        const coeffRaw = decode0D(p.subarray(off, off + coeffCompLen), coeffOrigLen); off += coeffCompLen;
+        const varBlocks = decodeCoeffStream(coeffRaw, numBlocks);
 
-        const hasMicro = p[off++] === 1;
-        if (hasMicro) {
-            const mk2 = (p[off++]) - 128;
-            const mg2 = (p[off++]) - 128;
-            const kg2OrigLen = readU32LE(p, off); off += 4;
-            const kg2CompLen = readU32LE(p, off); off += 4;
-            const kg2BitsData = decode0D(p.subarray(off, off + kg2CompLen), kg2OrigLen); off += kg2CompLen;
-            const kg2Blocks = decodeKGTrajectory(kg2BitsData, numBlocks, mk2, mg2);
-            kg2Floats = kg2Blocks.map(({ Kint, Gint }) => ({
-                K: Kint / COEFF_SCALE, G: Gint / COEFF_SCALE,
-            }));
-        }
-
-        // Read delta pre-filter flag
-        const hasDelta = p[off++] === 1;
-
-        // Read trajectory prediction flag
-        const hasTrajectory = p[off++] === 1;
-
-        // Decode harmonic topology layer (superblock-based)
-        let harmonicSynths: Map<number, Int32Array> | null = null;
-        if (hasHarmonic) {
-            const numVoiced = p[off] | (p[off + 1] << 8); off += 2;
-            const maxH = p[off++];
-            if (numVoiced > 0 && maxH > 0) {
-                const numSuper = Math.ceil(numSamples / goertzelLen);
-                const maskLen = Math.ceil(numSuper / 8);
-                const mask = p.subarray(off, off + maskLen); off += maskLen;
-                const voicedSuper: number[] = [];
-                for (let si = 0; si < numSuper; si++) {
-                    if ((mask[si >> 3] >> (si & 7)) & 1) voicedSuper.push(si);
-                }
-
-                const origLen = maxH * numVoiced;
-                const emptyPlane: Uint8Array = new Uint8Array(0);
-
-                // Decode cos field (adaptive plane count)
-                const cosPC = p[off++];
-                let cTE: Uint8Array = emptyPlane, cME: Uint8Array = emptyPlane, cLE: Uint8Array;
-                if (cosPC >= 3) {
-                    const cTL = readU32LE(p, off); off += 4;
-                    cTE = p.subarray(off, off + cTL); off += cTL;
-                }
-                if (cosPC >= 2) {
-                    const cML = readU32LE(p, off); off += 4;
-                    cME = p.subarray(off, off + cML); off += cML;
-                }
-                { const cLL = readU32LE(p, off); off += 4;
-                  cLE = p.subarray(off, off + cLL); off += cLL; }
-                const cosF = mobiusDec2D(
-                    decodeResidualPlanes(cTE, cME, cLE, origLen, cosPC), maxH, numVoiced);
-
-                // Decode sin field (adaptive plane count)
-                const sinPC = p[off++];
-                let sTE: Uint8Array = emptyPlane, sME: Uint8Array = emptyPlane, sLE: Uint8Array;
-                if (sinPC >= 3) {
-                    const sTL = readU32LE(p, off); off += 4;
-                    sTE = p.subarray(off, off + sTL); off += sTL;
-                }
-                if (sinPC >= 2) {
-                    const sML = readU32LE(p, off); off += 4;
-                    sME = p.subarray(off, off + sML); off += sML;
-                }
-                { const sLL = readU32LE(p, off); off += 4;
-                  sLE = p.subarray(off, off + sLL); off += sLL; }
-                const sinF = mobiusDec2D(
-                    decodeResidualPlanes(sTE, sME, sLE, origLen, sinPC), maxH, numVoiced);
-
-                // Synthesize harmonics per voiced superblock
-                harmonicSynths = new Map();
-                for (let vi = 0; vi < voicedSuper.length; vi++) {
-                    const si = voicedSuper[vi];
-                    const sStart = si * goertzelLen;
-                    const sEnd = Math.min(sStart + goertzelLen, numSamples);
-                    const sLen = sEnd - sStart;
-                    const fb = si * blocksPerGoertzel;
-                    const lb = Math.min(fb + blocksPerGoertzel, numBlocks);
-                    const w = superOmega(kgFloats, fb, lb);
-                    const cosQ = new Int32Array(maxH), sinQ = new Int32Array(maxH);
-                    for (let h = 0; h < maxH; h++) {
-                        cosQ[h] = cosF[h * numVoiced + vi];
-                        sinQ[h] = sinF[h * numVoiced + vi];
-                    }
-                    harmonicSynths.set(si, harmonicSynth(w, cosQ, sinQ, maxH, sLen));
-                }
-            }
-        }
-
-        // Decode subbands (batched plane streams)
+        // decode subbands (batched plane streams)
         const numSubbands = p[off++];
         const sbLens: number[] = [];
         const sbPlanes: number[] = [];
@@ -5878,7 +5312,6 @@ export async function decodeHarmonic(
         }
         const globalMaxPlane = p[off++];
 
-        // decode each concatenated plane stream
         const planeData: Uint8Array[] = [];
         for (let plane = 0; plane < globalMaxPlane; plane++) {
             let totalBytes = 0;
@@ -5890,20 +5323,15 @@ export async function decodeHarmonic(
             off += compLen;
         }
 
-        // reconstruct each subband from its plane slices.
-        // every active subband (planeCount > 0) has bytes in ALL plane streams,
-        // even if its individual zigzag values don't need the higher planes (they
-        // simply contribute zeros). the decoder uses globalMaxPlane to combine.
+        // reconstruct subbands from plane slices
         const subbands: Int32Array[] = [];
-        let planeOff = 0; // single offset into each plane (all subbands share)
-
+        let planeOff = 0;
         for (let sb = 0; sb < numSubbands; sb++) {
             const n = sbLens[sb];
             if (sbPlanes[sb] === 0) {
                 subbands.push(new Int32Array(n));
                 continue;
             }
-
             const out = new Int32Array(n);
             if (globalMaxPlane === 1) {
                 const lo = planeData[0];
@@ -5923,94 +5351,11 @@ export async function decodeHarmonic(
             subbands.push(out);
         }
 
-        // Wavelet reconstruct aperiodic residuals
-        let residuals = waveletReconstruct(wasm, subbands);
+        // wavelet reconstruct -> varOrder prediction inverse
+        const waveletResiduals = waveletReconstruct(wasm, subbands);
+        let reconstructed = varOrderPredictDec(waveletResiduals, numSamples, varBlocks);
 
-        // Add harmonics back to residuals (before AR(2) reconstruction).
-        // residuals is already a fresh array (from waveletReconstruct/zigzagDec),
-        // safe to modify in place without copying.
-        if (harmonicSynths && harmonicSynths.size > 0) {
-            for (const [si, synth] of harmonicSynths) {
-                const sStart = si * goertzelLen;
-                for (let t = 0; t < synth.length; t++) residuals[sStart + t] += synth[t];
-            }
-        }
-
-        // trajectory inverse: undo Farmer-Sidorowich prediction (reconstruct
-        // original residuals from trajectory prediction errors). symmetric with
-        // the encoder â€” same causal kNN search from decoded samples.
-        if (hasTrajectory) {
-            residuals = trajectoryDecode(residuals, state);
-        }
-        // always update trajectory state with the reconstructed residuals
-        // (must mirror the encoder's state update â€” same data, same timing)
-        if (state) trajStateAppend(state, residuals);
-
-        // delta inverse: undo the first-difference pre-filter (running sum).
-        if (hasDelta) {
-            for (let i = 1; i < residuals.length; i++) residuals[i] += residuals[i - 1];
-        }
-
-        // reconstruct signal: micro-osc inverse â†’ coupling inverse â†’ AR(2) inverse â†’ Burg inverse
-        const stateOff = wasmDecState(ch);
-
-        if (kg2Floats) {
-            const microOutOff = WASM_BUF_A + residuals.length * 4 + 64;
-            ensureWasmMem(wasm, microOutOff + numSamples * 4 + 64);
-            residuals = wasmPredictDec(wasm, residuals, kg2Floats, stateOff, microOutOff);
-        }
-
-
-        let ar2Output: Int32Array;
-        if (kgIsBackward) {
-            // backward-adaptive decode: fit K/G from causal past, decode one
-            // block at a time through WASM for bit-exact f32 arithmetic.
-            ar2Output = new Int32Array(numSamples);
-            // zero the WASM prediction state (prev1=0, prev2=0)
-            const sv = new Float32Array(wasm.memory.buffer, stateOff, 2);
-            sv[0] = 0; sv[1] = 0;
-            new Int32Array(wasm.memory.buffer, stateOff + 8, 1)[0] = 1; // qstep=1
-
-            for (let b = 0; b < numBlocks; b++) {
-                const bStart = b * BLOCK_LEN;
-                const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
-
-                // fit K/G from previous block via WASM (bit-exact match with encoder)
-                let K = 0, G = COEFF_QUANT;
-                if (b > 0) {
-                    const lookback = ar2Output.subarray(bStart - BLOCK_LEN, bStart);
-                    const kgResult = wasmFitAllBlocks(wasm, lookback, BLOCK_LEN);
-                    if (kgResult.length > 0) { K = kgResult[0].K; G = kgResult[0].G; }
-                }
-
-                // decode this block via WASM (preserves f32 state across blocks)
-                const blockResid = new Int32Array(residuals.buffer, residuals.byteOffset + bStart * 4, bEnd - bStart);
-                const dataOff = WASM_BUF_A;
-                const outOff2 = dataOff + (bEnd - bStart) * 4 + 64;
-                const kgOff = (outOff2 + (bEnd - bStart) * 4 + 15) & ~15;
-                ensureWasmMem(wasm, kgOff + 16);
-                copyI32ToWasm(wasm, dataOff, blockResid);
-                const kgView = new Float32Array(wasm.memory.buffer, kgOff, 2);
-                kgView[0] = K; kgView[1] = G;
-                // DON'T zero state â€” it carries over from the previous block
-                wasm.predict_dec(dataOff, bEnd - bStart, kgOff, stateOff, outOff2);
-                const blockOut = readI32FromWasm(wasm, outOff2, bEnd - bStart);
-                ar2Output.set(blockOut, bStart);
-            }
-        } else {
-            const outOff = WASM_BUF_A + residuals.length * 4 + 64;
-            ensureWasmMem(wasm, outOff + numSamples * 4 + 64);
-            ar2Output = wasmPredictDec(wasm, residuals, kgFloats, stateOff, outOff);
-        }
-
-        let reconstructed = hasBurg && burgSBs.length > 0
-            ? burgPrimaryInverse(ar2Output, numSamples, burgSBs, burgSuperLen)
-            : ar2Output;
-        const ar2ProjectionBlocks = kgIsBackward
-            ? fitBackwardKG(wasm, ar2Output, numSamples).map(({ K, G }) => ({ K, G }))
-            : kgFloats;
-
-        // signal-level coupling inverse: add WÂ·ref_data back
+        // signal-level coupling inverse: add W·ref_data back
         if (signalCouplingActive && decCouplingW[ch] !== undefined) {
             const W = decCouplingW[ch];
             const refData = allChannelData[chRefIdx];
@@ -6025,11 +5370,9 @@ export async function decodeHarmonic(
         allChannelData.push(reconstructed);
         let projected: Float32Array | null = null;
         if (bitDepth === 0 && scalar > 1) {
-            projected = burgSBs.length > 0
-                ? burgCellProject(reconstructed, numSamples, burgSBs, burgSuperLen)
-                : Float32Array.from(reconstructed);
+            projected = Float32Array.from(reconstructed);
             sanitizeProjectionToCell(projected, reconstructed);
-            ar2CellProject(projected, reconstructed, ar2ProjectionBlocks, burgSBs, burgSuperLen);
+            varOrderCellProject(projected, reconstructed, varBlocks);
             sanitizeProjectionToCell(projected, reconstructed);
             if (signalCouplingActive && decCouplingW[ch] !== undefined) {
                 const refProjected = allChannelProjected[chRefIdx];
