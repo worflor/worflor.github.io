@@ -4,29 +4,94 @@ import type { ResumeItem } from "../types/config";
 
 type Props = ResumeItem;
 
-const { title, company, date } = Astro.props;
+const { title, company, date, summary, tags = [] } = Astro.props;
+const isCurrent = /present/i.test(date);
+const tagLine = tags.join(" • ");
+
+const currentYear = new Date().getUTCFullYear();
+const years = [...date.matchAll(/\d{4}/g)].map(([year]) => Number(year));
+const startYear = years[0] ?? currentYear;
+const endYear = isCurrent ? currentYear : years.at(-1) ?? startYear;
+const spanYears = Math.max(1, endYear - startYear + 1);
+const yearDigitSeed = (years.length > 0 ? years : [startYear]).reduce(
+  (total, year) => total + String(year).split("").reduce((sum, digit) => sum + Number(digit), 0),
+  0,
+);
+const normalizedSeed = (((yearDigitSeed % 9) + 1) / 10);
+const baseOpacity = Math.min(0.74, 0.42 + normalizedSeed * 0.16 + Math.min(0.1, spanYears / 40));
+const hoverOpacity = Math.min(0.9, baseOpacity + 0.14);
+const glowOpacity = Math.min(0.24, 0.05 + normalizedSeed * 0.1);
+const dotStyle = `--resume-dot-opacity:${baseOpacity.toFixed(3)}; --resume-dot-hover-opacity:${hoverOpacity.toFixed(3)}; --resume-dot-glow:${glowOpacity.toFixed(3)};`;
 ---
 
 <a
   href={company.url}
   target="_blank"
   rel="noopener noreferrer"
-  class="interactive py-3 flex items-center justify-between gap-4"
+  class="interactive block py-3.5 @xs:py-4 transition-[opacity,transform] duration-180 ease-out"
 >
-  <div class="flex items-center gap-3 @xs:gap-4">
-    <Image
-      src={company.image}
-      alt={company.name}
-      width={40}
-      height={40}
-      loading="lazy"
-      decoding="async"
-      class="size-(--size-avatar-sm) rounded-full object-cover shrink-0"
-    />
+  <div class="grid gap-3 @md:grid-cols-[minmax(0,1fr)_auto] @md:items-start">
     <div class="min-w-0">
-      <p class="font-medium truncate">{title}</p>
-      <p class="text-[length:var(--text-sm)] opacity-60 truncate">{company.name}</p>
+      <div class="flex items-start gap-3">
+        <div class="relative z-10 shrink-0 rounded-full bg-[var(--color-bg)] p-[3px]">
+          <Image
+            src={company.image}
+            alt={company.name}
+            width={48}
+            height={48}
+            loading="lazy"
+            decoding="async"
+            class="size-12 rounded-full border border-[rgb(var(--color-text-rgb)/0.08)] object-cover"
+          />
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-col gap-0.5 @xs:flex-row @xs:items-baseline @xs:justify-between">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <p class="font-medium leading-tight">{title}</p>
+                <span class="text-[rgb(var(--color-text-rgb)/0.22)]">/</span>
+                <span class="truncate text-[rgb(var(--color-text-rgb)/0.62)]">{company.name}</span>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 @md:hidden pt-0.5">
+              {isCurrent && <span class="resume-current-dot size-1.5 shrink-0 rounded-full bg-[rgb(var(--chromatic-cyan)/0.65)]" style={dotStyle} aria-hidden="true"></span>}
+              <p class="text-[length:var(--text-sm)] opacity-60 tabular-nums shrink-0">{date}</p>
+            </div>
+          </div>
+          {summary && (
+            <p class="mt-2.5 max-w-[39rem] text-[length:var(--text-sm)] leading-[1.55] text-[rgb(var(--color-text-rgb)/0.54)]">
+              {summary}
+            </p>
+          )}
+          {tags.length > 0 && (
+            <p class="mt-2.5 text-[length:var(--text-sm)] leading-[1.55] text-[rgb(var(--color-text-rgb)/0.4)]">
+              {tagLine}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+    <div class="hidden @md:flex @md:items-center @md:gap-2 @md:self-start @md:pt-0.5 @md:pl-2">
+      {isCurrent && <span class="resume-current-dot size-1.5 shrink-0 rounded-full bg-[rgb(var(--chromatic-cyan)/0.65)]" style={dotStyle} aria-hidden="true"></span>}
+      <p class="text-[length:var(--text-sm)] opacity-60 tabular-nums whitespace-nowrap">{date}</p>
     </div>
   </div>
-  <p class="text-[length:var(--text-sm)] opacity-60 tabular-nums shrink-0">{date}</p>
 </a>
+
+<style>
+  .resume-current-dot {
+    opacity: var(--resume-dot-opacity);
+    filter: brightness(calc(0.9 + var(--resume-dot-opacity) * 0.45));
+    box-shadow: 0 0 0.3rem rgb(var(--chromatic-cyan) / var(--resume-dot-glow));
+    transition:
+      opacity var(--duration-normal) var(--ease-out),
+      filter var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out);
+  }
+
+  .interactive:hover .resume-current-dot {
+    opacity: var(--resume-dot-hover-opacity);
+    filter: brightness(calc(1 + var(--resume-dot-hover-opacity) * 0.45));
+    box-shadow: 0 0 0.45rem rgb(var(--chromatic-cyan) / calc(var(--resume-dot-glow) * 1.25));
+  }
+</style>

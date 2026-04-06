@@ -45,6 +45,13 @@ export type ResumeItem = {
     url: string;
   };
   date: string;
+  summary?: string;
+  tags?: string[];
+};
+
+export type AboutWorkContent = {
+  description: string;
+  items: ResumeItem[];
 };
 
 export type AboutPrinciple = {
@@ -73,18 +80,7 @@ export type AboutPageContent = {
     description: string;
     images: GalleryImage[];
   };
-  build: {
-    description: string;
-    principles: AboutPrinciple[];
-  };
-  highlights: {
-    description: string;
-    items: AboutHighlight[];
-  };
-  path: {
-    description: string;
-    items: AboutPathItem[];
-  };
+  work: AboutWorkContent;
   connect: {
     description: string;
     links: SocialLink[];
