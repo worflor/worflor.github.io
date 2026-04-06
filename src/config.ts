@@ -137,9 +137,19 @@ Oh, *knowledge*. <3`,
     description: ``,
     links: [
       {
+        title: "Projects",
+        url: "/projects",
+        icon: "woflo:projects",
+      },
+      {
+        title: "Blog",
+        url: "/blog",
+        icon: "woflo:blog",
+      },
+      {
         title: "Contact Me",
         url: "/contact",
-        icon: "mdi:message-outline",
+        icon: "woflo:contact",
       },
       {
         title: "Mail",

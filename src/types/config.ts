@@ -47,6 +47,25 @@ export type ResumeItem = {
   date: string;
 };
 
+export type AboutPrinciple = {
+  title: string;
+  description: string;
+};
+
+export type AboutHighlight = {
+  eyebrow: string;
+  title: string;
+  description: string;
+  url: string;
+  external?: boolean;
+};
+
+export type AboutPathItem = {
+  era: string;
+  title: string;
+  description: string;
+};
+
 export type AboutPageContent = {
   seo: SEOInfo;
   subtitle: string;
@@ -54,9 +73,17 @@ export type AboutPageContent = {
     description: string;
     images: GalleryImage[];
   };
-  work: {
+  build: {
     description: string;
-    items: ResumeItem[];
+    principles: AboutPrinciple[];
+  };
+  highlights: {
+    description: string;
+    items: AboutHighlight[];
+  };
+  path: {
+    description: string;
+    items: AboutPathItem[];
   };
   connect: {
     description: string;

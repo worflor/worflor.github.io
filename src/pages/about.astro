@@ -9,6 +9,8 @@ import { parseMarkdown } from "../utils/helpers";
 const pageDescription = parseMarkdown(aboutPageContent.about.description);
 const workDescription = parseMarkdown(aboutPageContent.work.description);
 const connectDescription = parseMarkdown(aboutPageContent.connect.description);
+const featuredConnectLinks = aboutPageContent.connect.links.slice(0, 3);
+const remainingConnectLinks = aboutPageContent.connect.links.slice(3);
 ---
 
 <Layout seo={aboutPageContent.seo}>
@@ -45,13 +47,22 @@ const connectDescription = parseMarkdown(aboutPageContent.connect.description);
       <div class="mb-[var(--space-md)]">
         <Fragment set:html={connectDescription} />
       </div>
-      <div class="grid grid-cols-2 gap-[var(--space-xs)] group">
+      <div class="grid grid-cols-1 @xs:grid-cols-3 gap-[var(--space-xs)] group">
         {
-          aboutPageContent.connect.links.map((item) => (
+          featuredConnectLinks.map((item) => (
             <SocialLink {...item} variant="box" />
           ))
         }
       </div>
+      {remainingConnectLinks.length > 0 && (
+        <div class="grid grid-cols-1 @xs:grid-cols-2 gap-[var(--space-xs)] group mt-[var(--space-xs)]">
+          {
+            remainingConnectLinks.map((item) => (
+              <SocialLink {...item} variant="box" />
+            ))
+          }
+        </div>
+      )}
     </div>
   </section>
 </Layout>
