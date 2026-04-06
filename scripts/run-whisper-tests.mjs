@@ -7,9 +7,15 @@ const ROOT = process.cwd();
 const WHISPER_TEST_ROOT = resolve(ROOT, "tests", "whisper");
 const require = createRequire(import.meta.url);
 const TSX_CLI = require.resolve("tsx/cli");
+const SKIP_WHISPER_TESTS = /^(1|true|yes)$/i.test(process.env.SKIP_WHISPER_TESTS ?? "");
 
 const VERBOSE = process.env.WHISPER_TEST_VERBOSE === "1";
 const REPORTER = process.env.WHISPER_TEST_REPORTER ?? (VERBOSE ? "spec" : "dot");
+
+if (SKIP_WHISPER_TESTS) {
+  console.log("Skipping Whisper tests because SKIP_WHISPER_TESTS is enabled.");
+  process.exit(0);
+}
 
 function collectWhisperTests(dir, out) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
