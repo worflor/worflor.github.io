@@ -2210,6 +2210,130 @@ function cloneHarmonicState(state?: HarmonicState): HarmonicState | undefined {
     };
 }
 
+/** estimate encoding cost for a set of subbands (bits). */
+function scoreSubbandCost(subbands: Int32Array[]): number {
+    let bits = 8; // numSubbands
+    const numSb = subbands.length;
+    let globalMaxPlane = 0;
+    const sbPlaneCount: number[] = [];
+    for (let sb = 0; sb < numSb; sb++) {
+        const isLL = sb === 0;
+        let energy = 0;
+        const d = subbands[sb];
+        for (let i = 0; i < d.length; i++) energy += d[i] * d[i];
+        const noiseFloor = d.length * QUANT_NOISE_REG;
+        if (!isLL && energy <= noiseFloor) {
+            sbPlaneCount.push(0);
+        } else {
+            let maxZZ = 0;
+            for (let i = 0; i < d.length; i++) {
+                const v = d[i];
+                const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
+                if (zz > maxZZ) maxZZ = zz;
+            }
+            const pc = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
+            sbPlaneCount.push(pc);
+            if (pc > globalMaxPlane) globalMaxPlane = pc;
+        }
+        bits += 40; // sbLen + planeCount
+    }
+    bits += 8; // globalMaxPlane
+    for (let plane = 0; plane < globalMaxPlane; plane++) {
+        let totalBytes = 0;
+        for (let sb = 0; sb < numSb; sb++) {
+            if (sbPlaneCount[sb] > 0) totalBytes += subbands[sb].length;
+        }
+        const concat = new Uint8Array(totalBytes);
+        let off = 0;
+        for (let sb = 0; sb < numSb; sb++) {
+            if (sbPlaneCount[sb] === 0) continue;
+            const d = subbands[sb];
+            const shift = plane * 8;
+            for (let i = 0; i < d.length; i++) {
+                const v = d[i];
+                const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
+                concat[off++] = (zz >>> shift) & 0xFF;
+            }
+        }
+        const encoded = encode0D(concat.subarray(0, off));
+        bits += 32 + encoded.length * 8;
+    }
+    return bits;
+}
+
+/** fast entropy estimate for subband path selection (no Logos calls). */
+function estimateSubbandBits(subbands: Int32Array[]): number {
+    let bits = 8 + 8; // numSubbands + globalMaxPlane
+    for (const sb of subbands) {
+        bits += 40; // sbLen + planeCount header
+        bits += estimatePlaneCost(sb) * 8;
+    }
+    return bits;
+}
+
+/** choose wavelet decomposition or bypass (direct single subband).
+ *  compares concatenated entropy estimates: the per-subband estimate was
+ *  inaccurate because it doesn't reflect how the encoder actually batches
+ *  all subbands into one Logos call per plane. */
+function scoreSubbandPath(wasm: HarmonicWasmExports, residuals: Int32Array, numLevels: number): Int32Array[] {
+    if (numLevels === 0) return [residuals];
+    const waveletSb = waveletDecompose(wasm, residuals, numLevels);
+
+    // compare as the encoder encodes: concatenated into one stream
+    const bypassCost = estimatePlaneCost(residuals);
+
+    const wavTotal = waveletSb.reduce((s, d) => s + d.length, 0);
+    const wavConcat = new Int32Array(wavTotal);
+    let off = 0;
+    for (const d of waveletSb) { wavConcat.set(d, off); off += d.length; }
+    const waveletCost = estimatePlaneCost(wavConcat);
+
+    // bypass also saves subband header overhead (3 extra sb headers for 4-sb wavelet)
+    return bypassCost <= waveletCost ? [residuals] : waveletSb;
+}
+
+/** encode subbands through the actual plane+Logos pipeline and return total bytes.
+ *  used by trial gates (lag filter, bypass) for accurate cost comparison. */
+function trialLogosSize(subbands: Int32Array[]): number {
+    const numSb = subbands.length;
+    let globalMaxPlane = 0;
+    const sbPlaneCount: number[] = [];
+    for (let sb = 0; sb < numSb; sb++) {
+        let maxZZ = 0;
+        const d = subbands[sb];
+        for (let i = 0; i < d.length; i++) {
+            const v = d[i];
+            const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
+            if (zz > maxZZ) maxZZ = zz;
+        }
+        const pc = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
+        sbPlaneCount.push(pc);
+        if (pc > globalMaxPlane) globalMaxPlane = pc;
+    }
+    let total = 1 + 5 * numSb + 1; // numSb + sb headers + globalMaxPlane
+    for (let plane = 0; plane < globalMaxPlane; plane++) {
+        let totalBytes = 0;
+        for (let sb = 0; sb < numSb; sb++) {
+            if (sbPlaneCount[sb] > 0) totalBytes += subbands[sb].length;
+        }
+        const concat = new Uint8Array(totalBytes);
+        let off = 0;
+        for (let sb = 0; sb < numSb; sb++) {
+            if (sbPlaneCount[sb] === 0) continue;
+            const d = subbands[sb];
+            const shift = plane * 8;
+            for (let i = 0; i < d.length; i++) {
+                const v = d[i];
+                const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
+                concat[off++] = (zz >>> shift) & 0xFF;
+            }
+        }
+        const encoded = encode0D(concat.subarray(0, off));
+        total += 4 + encoded.length;
+    }
+    return total;
+}
+
 /** unified scorer: coupling → variable-order Burg → wavelet → Logos.
  *  no trial gates, no stacking. one prediction stage, one residual path. */
 function scoreQuantizedChannel(
@@ -2268,63 +2392,14 @@ function scoreQuantizedChannel(
     const { compressed: coeffComp } = encodeCoeffStream(varBlocks);
     rateBits += 64 + coeffComp.length * 8; // origLen + compLen + data
 
-    // wavelet decomposition
-    const subbands = waveletDecompose(wasm, residuals, numLevels);
-
-    // subband masking + plane count
-    rateBits += 8; // numSubbands
-    const numSb = subbands.length;
-    const sbPlaneCount: number[] = [];
-    let globalMaxPlane = 0;
-    for (let sb = 0; sb < numSb; sb++) {
-        const isLL = sb === 0;
-        let energy = 0;
-        const d = subbands[sb];
-        for (let i = 0; i < d.length; i++) energy += d[i] * d[i];
-        const noiseFloor = d.length * QUANT_NOISE_REG;
-        if (!isLL && energy <= noiseFloor) {
-            sbPlaneCount.push(0);
-        } else {
-            let maxZZ = 0;
-            for (let i = 0; i < d.length; i++) {
-                const v = d[i];
-                const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
-                if (zz > maxZZ) maxZZ = zz;
-            }
-            const pc = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
-            sbPlaneCount.push(pc);
-            if (pc > globalMaxPlane) globalMaxPlane = pc;
-        }
-        rateBits += 40; // sbLen + planeCount
-    }
-    rateBits += 8; // globalMaxPlane
-
-    // entropy coding simulation (actual Logos encode for accurate cost)
-    for (let plane = 0; plane < globalMaxPlane; plane++) {
-        let totalBytes = 0;
-        for (let sb = 0; sb < numSb; sb++) {
-            if (sbPlaneCount[sb] > 0) totalBytes += subbands[sb].length;
-        }
-        const concat = new Uint8Array(totalBytes);
-        let off = 0;
-        for (let sb = 0; sb < numSb; sb++) {
-            if (sbPlaneCount[sb] === 0) continue;
-            const d = subbands[sb];
-            const shift = plane * 8;
-            for (let i = 0; i < d.length; i++) {
-                const v = d[i];
-                const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
-                concat[off++] = (zz >>> shift) & 0xFF;
-            }
-        }
-        const encoded = encode0D(concat.subarray(0, off));
-        rateBits += 32 + encoded.length * 8;
-    }
+    // wavelet vs bypass trial: compare cost of wavelet decomposition vs direct encoding.
+    // for well-predicted (nearly white) residuals, wavelet adds subband overhead
+    // without decorrelation benefit. trial both and pick the cheaper path.
+    const subbands = scoreSubbandPath(wasm, residuals, numLevels);
+    rateBits += scoreSubbandCost(subbands);
 
     // reconstruction for distortion measurement
-    const scoredSubbands = subbands.map((sb, idx) =>
-        sbPlaneCount[idx] === 0 ? new Int32Array(sb.length) : sb.slice());
-    const scoredResiduals = waveletReconstruct(wasm, scoredSubbands);
+    const scoredResiduals = waveletReconstruct(wasm, subbands);
     const reconstructed = varOrderPredictDec(scoredResiduals, n, varBlocks);
 
     if (couplingW !== undefined && refData) {
@@ -3165,8 +3240,9 @@ function burgPrimaryInverse(
 //   residual = sample - pred
 // state tracks reconstructed values, so encoder and decoder agree exactly.
 
-const VAR_MAX_ORDER = 8;
-const VAR_ORDERS = [0, 2, 4, 6, 8];
+const VAR_MAX_ORDER = 10;
+const VAR_ORDERS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const VAR_REUSE_ORDER = 0xFF; // marker: reuse previous block's coefficients
 
 interface VarBlock {
     order: number;
@@ -3191,33 +3267,26 @@ export function varOrderFitAllBlocks(
 
         // fit Burg at maximum feasible order
         const maxOrd = Math.min(VAR_MAX_ORDER, Math.floor(bLen / 3));
-        const rawK = maxOrd >= 2 ? burgAnalysis(data, bStart, bEnd, maxOrd) : new Float64Array(0);
+        const rawK = maxOrd >= 1 ? burgAnalysis(data, bStart, bEnd, maxOrd) : new Float64Array(0);
 
         // evaluate each candidate order via MDL
         let bestOrder = 0;
         let bestCost = Infinity;
         let bestQuantK = new Int8Array(0);
         let bestA = new Float64Array(0);
+        let bestReuse = false;
 
         // order 0 baseline: cost = n * log2(signal variance)
         {
             let energy = 0;
-            for (let i = bStart; i < bEnd; i++) {
-                const val = data[i];
-                let pred = 0;
-                // no prediction at order 0, but we still measure residual = val
-                energy += val * val;
-            }
+            for (let i = bStart; i < bEnd; i++) energy += data[i] * data[i];
             const errVar = Math.max(1, energy / bLen);
             bestCost = bLen * Math.log2(errVar);
-            bestOrder = 0;
         }
 
-        // try orders 2, 4, 6, 8
+        // try all candidate orders
         for (const tryOrder of VAR_ORDERS) {
             if (tryOrder === 0 || tryOrder > maxOrd) continue;
-
-            // quantize reflection coefficients at this order
             const qk = new Int8Array(tryOrder);
             const dqk = new Float64Array(tryOrder);
             for (let m = 0; m < tryOrder; m++) {
@@ -3225,8 +3294,6 @@ export function varOrderFitAllBlocks(
                 dqk[m] = dequantRC(qk[m]);
             }
             const a = reflToLP(dqk, tryOrder);
-
-            // compute prediction error with encoder-decoder state tracking
             const savedState = new Float64Array(state);
             let errEnergy = 0;
             for (let i = 0; i < bLen; i++) {
@@ -3234,24 +3301,51 @@ export function varOrderFitAllBlocks(
                 let pred = 0;
                 for (let m = 0; m < tryOrder; m++) pred += a[m] * savedState[m];
                 const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
-                const res = val - roundPred;
-                errEnergy += res * res;
+                errEnergy += (val - roundPred) * (val - roundPred);
                 for (let m = tryOrder - 1; m > 0; m--) savedState[m] = savedState[m - 1];
-                savedState[0] = val; // encoder tracks original (lossless)
+                savedState[0] = val;
             }
-
             const errVar = Math.max(1, errEnergy / bLen);
             const cost = tryOrder * 8 + bLen * Math.log2(errVar);
-
             if (cost < bestCost) {
                 bestCost = cost;
                 bestOrder = tryOrder;
                 bestQuantK = qk;
                 bestA = a;
+                bestReuse = false;
             }
         }
 
-        blocks.push({ order: bestOrder, quantK: bestQuantK, a: bestA });
+        // try reusing previous block's coefficients (zero coefficient overhead).
+        // for slowly varying signals, the spectral trajectory changes so little
+        // between blocks that the previous coefficients predict just as well.
+        if (b > 0 && blocks[b - 1].order > 0) {
+            const prev = blocks[b - 1];
+            const savedState = new Float64Array(state);
+            let reuseEnergy = 0;
+            for (let i = 0; i < bLen; i++) {
+                const val = data[bStart + i];
+                let pred = 0;
+                for (let m = 0; m < prev.order; m++) pred += prev.a[m] * savedState[m];
+                const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+                reuseEnergy += (val - roundPred) * (val - roundPred);
+                for (let m = prev.order - 1; m > 0; m--) savedState[m] = savedState[m - 1];
+                savedState[0] = val;
+            }
+            const reuseVar = Math.max(1, reuseEnergy / bLen);
+            // zero coefficient cost — only the order byte (255 marker) which is
+            // in the always-present order stream anyway
+            const reuseCost = bLen * Math.log2(reuseVar);
+            if (reuseCost < bestCost) {
+                bestCost = reuseCost;
+                bestOrder = prev.order;
+                bestQuantK = prev.quantK;
+                bestA = prev.a;
+                bestReuse = true;
+            }
+        }
+
+        blocks.push({ order: bestReuse ? VAR_REUSE_ORDER : bestOrder, quantK: bestQuantK, a: bestA });
 
         // advance state: always track original data
         for (let i = 0; i < bLen; i++) {
@@ -3264,17 +3358,18 @@ export function varOrderFitAllBlocks(
 }
 
 /** estimate coefficient stream cost (bits) before Logos compression.
- *  counts order bytes + reflection coefficient bytes per block. */
+ *  reuse blocks (order=0xFF) contribute only the order byte, no coefficients. */
 export function estimateCoeffBits(blocks: VarBlock[]): number {
     let bits = 0;
     for (const b of blocks) {
-        bits += 8; // order byte
-        bits += b.order * 8; // reflection coefficients
+        bits += 8; // order byte (always)
+        if (b.order !== VAR_REUSE_ORDER) bits += b.order * 8; // coefficients (fresh blocks only)
     }
     return bits;
 }
 
-/** encode prediction: data → residuals using fitted VarBlocks. */
+/** encode prediction: data → residuals using fitted VarBlocks.
+ *  uses a.length for prediction order (handles reuse blocks transparently). */
 export function varOrderPredictEnc(
     data: Int32Array, numSamples: number, blocks: VarBlock[],
 ): Int32Array {
@@ -3284,27 +3379,29 @@ export function varOrderPredictEnc(
     for (let b = 0; b < blocks.length; b++) {
         const bStart = b * BLOCK_LEN;
         const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
-        const { a, order } = blocks[b];
+        const { a } = blocks[b];
+        const p = a.length;
 
         for (let i = bStart; i < bEnd; i++) {
             const val = data[i];
-            if (order > 0) {
+            if (p > 0) {
                 let pred = 0;
-                for (let m = 0; m < order; m++) pred += a[m] * state[m];
+                for (let m = 0; m < p; m++) pred += a[m] * state[m];
                 const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
                 residuals[i] = val - roundPred;
             } else {
                 residuals[i] = val;
             }
             for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
-            state[0] = val; // track original (encoder side)
+            state[0] = val;
         }
     }
 
     return residuals;
 }
 
-/** decode prediction: residuals → data using fitted VarBlocks. */
+/** decode prediction: residuals → data using fitted VarBlocks.
+ *  uses a.length for prediction order (handles reuse blocks transparently). */
 function varOrderPredictDec(
     residuals: Int32Array, numSamples: number, blocks: VarBlock[],
 ): Int32Array {
@@ -3314,53 +3411,195 @@ function varOrderPredictDec(
     for (let b = 0; b < blocks.length; b++) {
         const bStart = b * BLOCK_LEN;
         const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
-        const { a, order } = blocks[b];
+        const { a } = blocks[b];
+        const p = a.length;
 
         for (let i = bStart; i < bEnd; i++) {
-            if (order > 0) {
+            if (p > 0) {
                 let pred = 0;
-                for (let m = 0; m < order; m++) pred += a[m] * state[m];
+                for (let m = 0; m < p; m++) pred += a[m] * state[m];
                 const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
                 data[i] = residuals[i] + roundPred;
             } else {
                 data[i] = residuals[i];
             }
             for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
-            state[0] = data[i]; // track reconstructed (decoder side)
+            state[0] = data[i];
         }
     }
 
     return data;
 }
 
-/** encode coefficient stream: [order_byte][k1][k2]...[kp] per block.
- *  Logos-compressed for transmission. */
+/** global post-filter: second-stage prediction on Burg residuals.
+ *  per-block Burg captures within-block correlation, but cross-block patterns
+ *  (harmonic beating, FM modulation) survive as autocorrelation at lags 2-8.
+ *
+ *  generates candidates:
+ *  - single-lag: best autocorrelation lag, one coefficient
+ *  - multi-lag Burg: global Burg fit, order 1-4
+ *  the encoder picks whichever candidate saves the most through the full
+ *  subband pipeline trial.
+ *
+ *  wire format: order byte (0 = no filter) + order LP coefficient bytes (8-bit).
+ *  decoder applies the LP coefficients directly. */
+const POST_FILTER_MAX_ORDER = 4;
+
+interface PostFilterCandidate {
+    order: number;
+    quantLP: Int8Array; // quantized LP coefficients
+}
+
+function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFilterCandidate[] {
+    if (n < 16) return [];
+    const candidates: PostFilterCandidate[] = [];
+
+    // candidate 1: single-lag at best autocorrelation lag
+    let r0 = 0;
+    for (let i = 0; i < n; i++) r0 += residuals[i] * residuals[i];
+    if (r0 > 0) {
+        let bestLag = 0, bestGain = 0, bestAlpha = 0;
+        for (let lag = 1; lag <= 4; lag++) {
+            let rk = 0;
+            for (let i = lag; i < n; i++) rk += residuals[i] * residuals[i - lag];
+            const alpha = rk / r0;
+            if (alpha * alpha > bestGain) {
+                bestGain = alpha * alpha;
+                bestAlpha = alpha;
+                bestLag = lag;
+            }
+        }
+        if (bestGain > 0.02 && bestLag > 0) {
+            const alpha8 = Math.max(-127, Math.min(127, Math.round(bestAlpha * 127)));
+            if (alpha8 !== 0) {
+                // encode as LP: order = lag, coefficients [0, ..., 0, alpha]
+                const quantLP = new Int8Array(bestLag);
+                quantLP[bestLag - 1] = alpha8;
+                candidates.push({ order: bestLag, quantLP });
+            }
+        }
+    }
+
+    // candidate 2: global Burg (order 1-4)
+    const refCoeffs = burgAnalysis(residuals, 0, n, POST_FILTER_MAX_ORDER);
+    if (refCoeffs.length > 0) {
+        const burgOrder = burgSelectOrder(refCoeffs);
+        if (burgOrder > 0) {
+            // quantize reflection coefficients, convert to LP
+            const kFloat = new Float64Array(burgOrder);
+            for (let m = 0; m < burgOrder; m++) {
+                kFloat[m] = Math.max(-127, Math.min(127, Math.round(refCoeffs[m] * 127))) / 127;
+            }
+            const lpFloat = reflToLP(kFloat, burgOrder);
+            const quantLP = new Int8Array(burgOrder);
+            for (let m = 0; m < burgOrder; m++) {
+                quantLP[m] = Math.max(-127, Math.min(127, Math.round(lpFloat[m] * 127)));
+            }
+            candidates.push({ order: burgOrder, quantLP });
+        }
+    }
+
+    return candidates;
+}
+
+function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, quantLP: Int8Array): Int32Array {
+    const a = new Float64Array(order);
+    for (let m = 0; m < order; m++) a[m] = quantLP[m] / 127;
+
+    const out = new Int32Array(n);
+    const state = new Float64Array(order);
+    for (let i = 0; i < n; i++) {
+        let pred = 0;
+        for (let m = 0; m < order; m++) pred += a[m] * state[m];
+        const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+        out[i] = residuals[i] - roundPred;
+        for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
+        state[0] = residuals[i]; // use original for prediction
+    }
+    return out;
+}
+
+function applyPostFilterDec(filtered: Int32Array, n: number, order: number, quantLP: Int8Array): Int32Array {
+    const a = new Float64Array(order);
+    for (let m = 0; m < order; m++) a[m] = quantLP[m] / 127;
+
+    const out = new Int32Array(n);
+    const state = new Float64Array(order);
+    for (let i = 0; i < n; i++) {
+        let pred = 0;
+        for (let m = 0; m < order; m++) pred += a[m] * state[m];
+        const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+        out[i] = filtered[i] + roundPred;
+        for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
+        state[0] = out[i]; // use reconstructed for prediction
+    }
+    return out;
+}
+
+/** encode coefficient stream in transposed layout for better Logos compression.
+ *  layout: [orders...][level-0 coefficients...][level-1 coefficients...]...
+ *  reuse blocks (order=0xFF) don't contribute coefficients — they inherit
+ *  from the previous block, saving coefficient bytes for stationary segments. */
 export function encodeCoeffStream(blocks: VarBlock[]): { raw: Uint8Array; compressed: Uint8Array } {
-    // compute total size
-    let totalBytes = 0;
-    for (const b of blocks) totalBytes += 1 + b.order;
+    const n = blocks.length;
+    let totalBytes = n; // order bytes
+    let maxOrder = 0;
+    for (const b of blocks) {
+        const ord = b.order === VAR_REUSE_ORDER ? 0 : b.order; // reuse blocks contribute 0 coefficients
+        totalBytes += ord;
+        if (ord > maxOrder) maxOrder = ord;
+    }
     const raw = new Uint8Array(totalBytes);
     let off = 0;
-    for (const b of blocks) {
-        raw[off++] = b.order;
-        for (let m = 0; m < b.order; m++) raw[off++] = (b.quantK[m] + 128) & 0xFF;
+    for (let i = 0; i < n; i++) raw[off++] = blocks[i].order;
+    for (let k = 0; k < maxOrder; k++) {
+        for (let i = 0; i < n; i++) {
+            if (blocks[i].order !== VAR_REUSE_ORDER && blocks[i].order > k) {
+                raw[off++] = (blocks[i].quantK[k] + 128) & 0xFF;
+            }
+        }
     }
     const compressed = encode0D(raw);
     return { raw, compressed };
 }
 
-/** decode coefficient stream back to VarBlock array. */
+/** decode transposed coefficient stream back to VarBlock array.
+ *  reuse blocks (order=0xFF) inherit coefficients from the previous block. */
 function decodeCoeffStream(data: Uint8Array, numBlocks: number): VarBlock[] {
-    const blocks: VarBlock[] = [];
     let off = 0;
-    for (let b = 0; b < numBlocks; b++) {
-        const order = data[off++];
-        const quantK = new Int8Array(order);
-        for (let m = 0; m < order; m++) quantK[m] = (data[off++] - 128) << 24 >> 24;
-        const dequantK = new Float64Array(order);
-        for (let m = 0; m < order; m++) dequantK[m] = dequantRC(quantK[m]);
-        const a = order > 0 ? reflToLP(dequantK, order) : new Float64Array(0);
-        blocks.push({ order, quantK, a });
+    const orders: number[] = [];
+    let maxOrder = 0;
+    for (let i = 0; i < numBlocks; i++) {
+        const o = data[off++];
+        orders.push(o);
+        if (o !== VAR_REUSE_ORDER && o > maxOrder) maxOrder = o;
+    }
+    // read transposed coefficients (reuse blocks don't contribute)
+    const quantKArrays: Int8Array[] = [];
+    for (let i = 0; i < numBlocks; i++) {
+        const ord = orders[i] === VAR_REUSE_ORDER ? 0 : orders[i];
+        quantKArrays.push(new Int8Array(ord));
+    }
+    for (let k = 0; k < maxOrder; k++) {
+        for (let i = 0; i < numBlocks; i++) {
+            if (orders[i] !== VAR_REUSE_ORDER && orders[i] > k) {
+                quantKArrays[i][k] = (data[off++] - 128) << 24 >> 24;
+            }
+        }
+    }
+    // build VarBlock array, resolving reuse references
+    const blocks: VarBlock[] = [];
+    for (let i = 0; i < numBlocks; i++) {
+        if (orders[i] === VAR_REUSE_ORDER && i > 0) {
+            blocks.push(blocks[i - 1]); // share reference with previous block
+        } else {
+            const order = orders[i];
+            const quantK = quantKArrays[i];
+            const dqk = new Float64Array(order);
+            for (let m = 0; m < order; m++) dqk[m] = dequantRC(quantK[m]);
+            const a = order > 0 ? reflToLP(dqk, order) : new Float64Array(0);
+            blocks.push({ order, quantK, a });
+        }
     }
     return blocks;
 }
@@ -3379,19 +3618,20 @@ function varOrderCellProject(
     for (let b = 0; b < numBlocks; b++) {
         const bStart = b * BLOCK_LEN;
         const bEnd = Math.min(bStart + BLOCK_LEN, n);
-        const { a, order } = blocks[b];
+        const { a } = blocks[b];
+        const p = a.length;
 
-        if (order > 0) {
+        if (p > 0) {
             // measure prediction quality on this block
             let obsEnergy = 0, count = 0;
             const anaState = new Float64Array(state);
             for (let i = bStart; i < bEnd; i++) {
                 let pred = 0;
-                for (let m = 0; m < order; m++) pred += a[m] * anaState[m];
+                for (let m = 0; m < p; m++) pred += a[m] * anaState[m];
                 const d = projected[i] - pred;
                 obsEnergy += d * d;
                 count++;
-                for (let m = order - 1; m > 0; m--) anaState[m] = anaState[m - 1];
+                for (let m = p - 1; m > 0; m--) anaState[m] = anaState[m - 1];
                 anaState[0] = projected[i];
             }
             const obsVar = count > 0 ? obsEnergy / count : 0;
@@ -3400,18 +3640,18 @@ function varOrderCellProject(
             if (weight > 0) {
                 for (let i = bStart; i < bEnd; i++) {
                     let pred = 0;
-                    for (let m = 0; m < order; m++) pred += a[m] * state[m];
+                    for (let m = 0; m < p; m++) pred += a[m] * state[m];
                     const q = data[i];
                     const lo = q - 0.5;
                     const hi = q + 0.5;
                     const clamped = pred < lo ? lo : pred > hi ? hi : pred;
                     projected[i] = projected[i] + weight * (clamped - projected[i]);
-                    for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
+                    for (let m = p - 1; m > 0; m--) state[m] = state[m - 1];
                     state[0] = projected[i];
                 }
             } else {
                 for (let i = bStart; i < bEnd; i++) {
-                    for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
+                    for (let m = p - 1; m > 0; m--) state[m] = state[m - 1];
                     state[0] = projected[i];
                 }
             }
@@ -5098,7 +5338,40 @@ export async function encodeHarmonic(
 
         // unified variable-order prediction
         const varBlocks = varOrderFitAllBlocks(data, numSamples);
-        const residuals = varOrderPredictEnc(data, numSamples, varBlocks);
+        let residuals = varOrderPredictEnc(data, numSamples, varBlocks);
+
+        // global post-filter: second-stage prediction on Burg residuals.
+        // tries single-lag and multi-lag Burg candidates, picks the best.
+        const sbNoFilter = scoreSubbandPath(wasm, residuals, numLevels);
+        const costNoFilter = trialLogosSize(sbNoFilter);
+
+        let bestPostOrder = 0;
+        let bestPostQuantLP: Int8Array | null = null;
+        let bestPostResiduals = residuals;
+        let bestCost = costNoFilter;
+
+        const postCandidates = generatePostFilterCandidates(residuals, numSamples);
+        for (const cand of postCandidates) {
+            const filtered = applyPostFilterEnc(residuals, numSamples, cand.order, cand.quantLP);
+            const sbAfter = scoreSubbandPath(wasm, filtered, numLevels);
+            const costAfter = trialLogosSize(sbAfter) + 1 + cand.order; // 1 byte order + N coeff bytes
+            if (costAfter < bestCost) {
+                bestCost = costAfter;
+                bestPostOrder = cand.order;
+                bestPostQuantLP = cand.quantLP;
+                bestPostResiduals = filtered;
+            }
+        }
+
+        residuals = bestPostResiduals;
+        if (bestPostOrder > 0) {
+            payloadByte(bestPostOrder);
+            for (let m = 0; m < bestPostOrder; m++) {
+                payloadByte((bestPostQuantLP![m] + 128) & 0xFF);
+            }
+        } else {
+            payloadByte(0); // no post-filter
+        }
 
         // coefficient stream
         const { raw: coeffRaw, compressed: coeffComp } = encodeCoeffStream(varBlocks);
@@ -5106,8 +5379,8 @@ export async function encodeHarmonic(
         payloadU32(coeffComp.length);
         payloadAppend(coeffComp);
 
-        // wavelet decomposition
-        const subbands = waveletDecompose(wasm, residuals, numLevels);
+        // wavelet vs bypass: pick the cheaper path
+        const subbands = scoreSubbandPath(wasm, residuals, numLevels);
 
         // subband encoding: zigzag + byte planes + batched Logos
         const numSb = subbands.length;
@@ -5295,6 +5568,13 @@ export async function decodeHarmonic(
             }
         }
 
+        // decode post-filter params (LP coefficients)
+        const postFilterOrder = p[off++];
+        const postFilterQuantLP = new Int8Array(postFilterOrder);
+        for (let m = 0; m < postFilterOrder; m++) {
+            postFilterQuantLP[m] = p[off++] - 128;
+        }
+
         // decode coefficient stream
         const numBlocks = Math.ceil(numSamples / BLOCK_LEN);
         const coeffOrigLen = readU32LE(p, off); off += 4;
@@ -5351,8 +5631,11 @@ export async function decodeHarmonic(
             subbands.push(out);
         }
 
-        // wavelet reconstruct -> varOrder prediction inverse
-        const waveletResiduals = waveletReconstruct(wasm, subbands);
+        // wavelet reconstruct -> post-filter inverse -> varOrder prediction inverse
+        let waveletResiduals = waveletReconstruct(wasm, subbands);
+        if (postFilterOrder > 0) {
+            waveletResiduals = applyPostFilterDec(waveletResiduals, numSamples, postFilterOrder, postFilterQuantLP);
+        }
         let reconstructed = varOrderPredictDec(waveletResiduals, numSamples, varBlocks);
 
         // signal-level coupling inverse: add W·ref_data back
