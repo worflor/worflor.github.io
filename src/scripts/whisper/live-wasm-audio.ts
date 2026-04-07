@@ -3437,7 +3437,10 @@ function varOrderPredictDec(
  *
  *  generates candidates:
  *  - single-lag: best autocorrelation lag, one coefficient
- *  - multi-lag Burg: global Burg fit, order 1-4
+ *  - sparse Yule-Walker: pairs and triples of peak-autocorrelation lags,
+ *    placing nonzero LP coefficients only where correlation is strongest.
+ *    captures multi-lag cross-block beating patterns that Burg misses
+ *    (Burg smears coefficients across all positions including dead zones).
  *  the encoder picks whichever candidate saves the most through the full
  *  subband pipeline trial.
  *
@@ -3454,48 +3457,70 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
     if (n < 16) return [];
     const candidates: PostFilterCandidate[] = [];
 
-    // candidate 1: single-lag at best autocorrelation lag
+    // compute normalized autocorrelation at lags 1-4
     let r0 = 0;
     for (let i = 0; i < n; i++) r0 += residuals[i] * residuals[i];
-    if (r0 > 0) {
-        let bestLag = 0, bestGain = 0, bestAlpha = 0;
-        for (let lag = 1; lag <= 4; lag++) {
-            let rk = 0;
-            for (let i = lag; i < n; i++) rk += residuals[i] * residuals[i - lag];
-            const alpha = rk / r0;
-            if (alpha * alpha > bestGain) {
-                bestGain = alpha * alpha;
-                bestAlpha = alpha;
-                bestLag = lag;
-            }
-        }
-        if (bestGain > 0.02 && bestLag > 0) {
-            const alpha8 = Math.max(-127, Math.min(127, Math.round(bestAlpha * 127)));
-            if (alpha8 !== 0) {
-                // encode as LP: order = lag, coefficients [0, ..., 0, alpha]
-                const quantLP = new Int8Array(bestLag);
-                quantLP[bestLag - 1] = alpha8;
-                candidates.push({ order: bestLag, quantLP });
+    if (r0 <= 0) return [];
+    const r = new Float64Array(POST_FILTER_MAX_ORDER + 1);
+    for (let lag = 1; lag <= POST_FILTER_MAX_ORDER; lag++) {
+        let rk = 0;
+        for (let i = lag; i < n; i++) rk += residuals[i] * residuals[i - lag];
+        r[lag] = rk / r0;
+    }
+
+    // rank lags by |autocorrelation|
+    const lagScores: { lag: number; ac: number }[] = [];
+    for (let lag = 1; lag <= POST_FILTER_MAX_ORDER; lag++) {
+        lagScores.push({ lag, ac: r[lag] < 0 ? -r[lag] : r[lag] });
+    }
+    lagScores.sort((a, b) => b.ac - a.ac);
+
+    // candidate: single-lag at each of top-2 lags
+    for (let rank = 0; rank < Math.min(2, lagScores.length); rank++) {
+        const { lag, ac } = lagScores[rank];
+        if (ac < 0.14) continue; // threshold: ac² > 0.02
+        const alpha8 = Math.max(-127, Math.min(127, Math.round(r[lag] * 127)));
+        if (alpha8 === 0) continue;
+        const quantLP = new Int8Array(lag);
+        quantLP[lag - 1] = alpha8;
+        candidates.push({ order: lag, quantLP });
+    }
+
+    // candidate: sparse pair via Yule-Walker (top-2 lags)
+    if (lagScores.length >= 2 && lagScores[0].ac > 0.14 && lagScores[1].ac > 0.14) {
+        const j = lagScores[0].lag;
+        const k = lagScores[1].lag;
+        const rjk = r[j > k ? j - k : k - j];
+        const det = 1 - rjk * rjk;
+        if (det > 1e-6) {
+            const a_j = (r[j] - r[k] * rjk) / det;
+            const a_k = (r[k] - r[j] * rjk) / det;
+            const maxLag = j > k ? j : k;
+            const quantLP = new Int8Array(maxLag);
+            quantLP[j - 1] = Math.max(-127, Math.min(127, Math.round(a_j * 127)));
+            quantLP[k - 1] = Math.max(-127, Math.min(127, Math.round(a_k * 127)));
+            if (quantLP[j - 1] !== 0 || quantLP[k - 1] !== 0) {
+                candidates.push({ order: maxLag, quantLP });
             }
         }
     }
 
-    // candidate 2: global Burg (order 1-4)
-    const refCoeffs = burgAnalysis(residuals, 0, n, POST_FILTER_MAX_ORDER);
-    if (refCoeffs.length > 0) {
-        const burgOrder = burgSelectOrder(refCoeffs);
-        if (burgOrder > 0) {
-            // quantize reflection coefficients, convert to LP
-            const kFloat = new Float64Array(burgOrder);
-            for (let m = 0; m < burgOrder; m++) {
-                kFloat[m] = Math.max(-127, Math.min(127, Math.round(refCoeffs[m] * 127))) / 127;
-            }
-            const lpFloat = reflToLP(kFloat, burgOrder);
-            const quantLP = new Int8Array(burgOrder);
-            for (let m = 0; m < burgOrder; m++) {
-                quantLP[m] = Math.max(-127, Math.min(127, Math.round(lpFloat[m] * 127)));
-            }
-            candidates.push({ order: burgOrder, quantLP });
+    // candidate: sparse triple via Yule-Walker (top-3 lags)
+    if (lagScores.length >= 3 && lagScores[0].ac > 0.14 && lagScores[1].ac > 0.14 && lagScores[2].ac > 0.14) {
+        const lags = lagScores.slice(0, 3).map(l => l.lag).sort((a, b) => a - b);
+        const [j, k, l] = lags;
+        const r_jk = r[k - j], r_jl = r[l - j], r_kl = r[l - k];
+        const det = 1 - r_jk * r_jk - r_jl * r_jl - r_kl * r_kl + 2 * r_jk * r_jl * r_kl;
+        if (det > 1e-6) {
+            const a_j = (r[j] * (1 - r_kl * r_kl) + r[k] * (r_jl * r_kl - r_jk) + r[l] * (r_jk * r_kl - r_jl)) / det;
+            const a_k = (r[j] * (r_jl * r_kl - r_jk) + r[k] * (1 - r_jl * r_jl) + r[l] * (r_jk * r_jl - r_kl)) / det; // note: (r_jk * r_jl - r_kl) via Cramer
+            const a_l = (r[j] * (r_jk * r_kl - r_jl) + r[k] * (r_jk * r_jl - r_kl) + r[l] * (1 - r_jk * r_jk)) / det;
+            const maxLag = l;
+            const quantLP = new Int8Array(maxLag);
+            quantLP[j - 1] = Math.max(-127, Math.min(127, Math.round(a_j * 127)));
+            quantLP[k - 1] = Math.max(-127, Math.min(127, Math.round(a_k * 127)));
+            quantLP[l - 1] = Math.max(-127, Math.min(127, Math.round(a_l * 127)));
+            candidates.push({ order: maxLag, quantLP });
         }
     }
 
