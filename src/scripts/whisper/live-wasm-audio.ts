@@ -6,20 +6,15 @@
  * spatial audio, variable source bit depth, and any sample rate the f32/i32
  * predictor geometry can represent safely.
  *
- * the prediction hierarchy integrates structure from coarse to fine:
+ * pipeline:
  *
  *   1. peak normalization + scalar quantization (float32 -> int32)
  *   2. cross-channel coupling W on the channel axis
- *   3. Burg adaptive-order LPC on 256-sample super-blocks
- *   4. AR(2) damped oscillator prediction on 32-sample blocks
- *   5. optional micro-oscillator on the residual
- *   6. optional delta whitening
- *   7. trajectory prediction in delay-embedding space
- *   8. harmonic topology on voiced content
- *   9. CDF 5/3 wavelet decomposition
- *  10. guarded subband masking
- *  11. Logos entropy coding for residual planes and trajectories
- *  12. ChaCha20 stream cipher + SipHash-lite MAC
+ *   3. variable-order Burg LPC on 32-sample blocks (orders 0-10, MDL)
+ *   4. sparse Yule-Walker post-filter on Burg residuals (lags 1-8)
+ *   5. CDF 5/3 wavelet decomposition + guarded subband masking
+ *   6. Logos entropy coding (zigzag byte planes)
+ *   7. ChaCha20 stream cipher + SipHash-lite MAC
  *
  * the core dynamical law is the AR(2) oscillator:
  *
@@ -45,22 +40,12 @@
  * slow multiscale field, carried explicitly on the wire with its block length,
  * and it is selected by the same downstream objective as the carrier lattice.
  *
- * current measured position on this branch:
- *   synthetic 48 kHz mono speech
- *     q10  130.6 kbps   24.5 dB
- *     q20  166.8 kbps   33.4 dB
- *     q40  183.1 kbps   48.8 dB
- *     q80  232.0 kbps   80.5 dB
- *     q95  256.4 kbps   92.8 dB
- *
- *   cached 15 s mono real-audio clip
- *     Harmonic Q60   251 kbps   37.5 dB
- *     Harmonic Q70   313 kbps   45.6 dB
- *     Harmonic Q80   366 kbps   53.7 dB
- *     Harmonic Q90   426 kbps   61.8 dB
- *     Vorbis 192k    193 kbps   34.2 dB
- *     MP3 320k       321 kbps   27.3 dB
- *     FLAC           675 kbps   inf dB
+ * measured position (FM chirp 1s mono @ 48kHz, 2026-04-07):
+ *     q5    1.5 KB   10.6 dB
+ *     q25  14.5 KB   35.9 dB
+ *     q50  19.5 KB   57.1 dB
+ *     q80  27.7 KB   82.4 dB
+ *     q95  32.0 KB   94.5 dB
  *
  * lossless modes:
  *   bitDepth=16 and bitDepth=24 remain exact. q=100 is raw float32 passthrough.
@@ -201,7 +186,6 @@ function wasmEncState(ch: number): number { return ch * WASM_STATE_STRIDE; }
 function wasmDecState(ch: number): number { return 0x1000 + ch * WASM_STATE_STRIDE; }
 
 // K/G inspection buffer: fit_all_blocks writes Int32 [Kint, Gint] pairs here.
-// also used by writeKGToWasmSync for test inspection.
 const KG_BUF = 0x2000;
 
 // data/residual scratch. past all K/G data for any reasonable frame size.
@@ -940,6 +924,15 @@ const PARABOLA_FACTOR = 1 / 4;
 // uniform quantization noise variance = Î”Â²/12 where Î”=1 (integer step).
 // used to regularize the Cramer LS regression against ill-conditioning.
 const QUANT_NOISE_REG = 1 / 12;
+
+// fractal dyadic prior floor: variance of x[i] - (x[i-h] + x[i+h])/2
+// under independent uniform quantization noise. the 3/2 is the CDF 5/3
+// lifting structure: self-noise (1^2) + two neighbor noises ((1/2)^2) each.
+// = (1 + 2*(1/2)^2) * (1/12) = (3/2) * (1/12) = 1/8.
+// the (1/2)^2 factor is PARABOLA_FACTOR — the wavelet lifting coefficient
+// squared equals the AR(2) stability denominator. same 1/4.
+const DYADIC_NOISE_FLOOR = QUANT_NOISE_REG * (1 + 2 * PARABOLA_FACTOR);  // = 1/8
+
 const QUALITY_BITS_MAX = 15;
 
 // 32 samples @ 48kHz = 0.67ms = half-period at 750Hz.
@@ -956,11 +949,6 @@ const DEAD_G = 2;
 const HEADER_SIZE = 12;  // numSamples:u32 + sampleRate:u32 + flags:u16 + numCh:u8 + numLevels:u8
 const MAC_SIZE    = 8;   // SipHash-lite 64-bit MAC (mac0:u32 + mac1:u32)
 
-// harmonic topology: Goertzel extraction of voiced harmonics â†’ 2D MÃ¶bius field.
-const MAX_HARMONICS = 24;       // harmonics 2..25 (covers formant range at any f0)
-const VOICED_GAIN_DB = 3.0;     // minimum prediction gain for voiced (signal > 2Ã— residual)
-const VOICED_CEILING_DB = 40.0;  // above 40 dB: AR(2) captured everything, no harmonics left
-const HARMONIC_FLAG = 0x02;      // bit 1 of header flags
 
 // channel layout (flags bits 4-3):
 //   00 = channel (auto: mono, stereo M/S, or Hadamard for N>2)
@@ -1343,8 +1331,7 @@ function depthFromFlags(flags: number): number {
 // content. it's the 2D MÃ¶bius predictor collapsed onto the (channel Ã— time)
 // plane: K/G for the time axis, W for the channel axis.
 //
-// per-channel payload: refIndex:u8 (0xFF = independent) + W trajectory
-// (quantized i16, Rice-coded, Logos-compressed alongside K/G).
+// per-channel payload: refIndex:u8 (0xFF = independent) + W:i16.
 
 const NO_REF = 0xFF;
 const W_SCALE = COEFF_SCALE; // same quantization as K/G
@@ -1607,40 +1594,6 @@ function wasmFitAllBlocks(
     return blocks;
 }
 
-/** backward-adaptive K/G fitting: derives K/G from PREVIOUS block's data.
- *  both encoder and decoder can compute identical K/G from the causal past,
- *  eliminating the K/G trajectory from the bitstream entirely.
- *
- *  for block N: fit K/G from samples [N*32 - 32 .. N*32 - 1].
- *  block 0 has no history â†’ K=0, G=COEFF_QUANT (no prediction).
- *
- *  the regression is the same 2Ã—2 Cramer LS as wasmFitAllBlocks, but on
- *  the lookback window. uses TypeScript (not WASM) because the window is
- *  only 32 samples â€” the overhead is negligible vs the WASM call cost. */
-function fitBackwardKG(
-    wasm: HarmonicWasmExports, data: Int32Array, numSamples: number,
-): { K: number; G: number; Kint: number; Gint: number }[] {
-    const numBlocks = Math.ceil(numSamples / BLOCK_LEN);
-    const blocks: { K: number; G: number; Kint: number; Gint: number }[] = [];
-
-    for (let b = 0; b < numBlocks; b++) {
-        if (b === 0) {
-            blocks.push({ K: 0, G: COEFF_QUANT, Kint: 0, Gint: 1 });
-            continue;
-        }
-        // fit K/G from the PREVIOUS block's data using the WASM regression.
-        // this guarantees bit-exact match with the decoder's K/G fitting.
-        const lookback = data.subarray(b * BLOCK_LEN - BLOCK_LEN, b * BLOCK_LEN);
-        const kgResult = wasmFitAllBlocks(wasm, lookback, BLOCK_LEN);
-        if (kgResult.length > 0) {
-            blocks.push(kgResult[0]);
-        } else {
-            blocks.push({ K: 0, G: COEFF_QUANT, Kint: 0, Gint: 1 });
-        }
-    }
-
-    return blocks;
-}
 
 /** Q-adaptive trajectory thinning: at low Q, the coarsely quantized signal
  *  doesn't benefit from per-32-sample K/G updates. merge groups of N adjacent
@@ -1701,15 +1654,6 @@ function quantizerFreeEnergy(
     return rateBits + 0.5 * n * Math.log2(mse);
 }
 
-function stochasticWaveformPenaltyBits(
-    mse: number,
-    signal: number,
-    n: number,
-    targetScalar: number,
-): number {
-    if (n <= 0 || signal <= 1e-20) return 0;
-    return (0.5 * n / Math.LN2) * (targetScalar * targetScalar * mse / signal);
-}
 
 interface QuantBeamState {
     cost: number;
@@ -1981,7 +1925,7 @@ function quantizeScaledWithOrbitalGuide(
         }
         if (count === 0) continue;
         const obsVar = obsEnergy / count;
-        const wBase = obsVar > 0 ? Math.min(1, (1 / 8) / obsVar) : 1;
+        const wBase = obsVar > 0 ? Math.min(1, DYADIC_NOISE_FLOOR / obsVar) : 1;
         if (!(wBase > 0)) continue;
         let any = false;
         for (let i = h; i + h < n; i++) {
@@ -2202,13 +2146,6 @@ function quantizeChannelWithAmplitudeAxis(
     return { candidates, baselineFitBits: Number.isFinite(baselineFitBits) ? baselineFitBits : 0 };
 }
 
-function cloneHarmonicState(state?: HarmonicState): HarmonicState | undefined {
-    if (!state) return undefined;
-    return {
-        trajWindow: new Int32Array(state.trajWindow),
-        trajFill: state.trajFill,
-    };
-}
 
 /** estimate encoding cost for a set of subbands (bits). */
 function scoreSubbandCost(subbands: Int32Array[]): number {
@@ -2277,19 +2214,28 @@ function estimateSubbandBits(subbands: Int32Array[]): number {
  *  all subbands into one Logos call per plane. */
 function scoreSubbandPath(wasm: HarmonicWasmExports, residuals: Int32Array, numLevels: number): Int32Array[] {
     if (numLevels === 0) return [residuals];
-    const waveletSb = waveletDecompose(wasm, residuals, numLevels);
 
-    // compare as the encoder encodes: concatenated into one stream
-    const bypassCost = estimatePlaneCost(residuals);
+    // trial all level counts from 0 (bypass) to numLevels.
+    // intermediate levels can be cheaper: e.g. for well-predicted residuals
+    // where only 1-2 levels of decorrelation help, the extra subbands from
+    // deeper decomposition add overhead without benefit.
+    let bestCost = estimatePlaneCost(residuals); // bypass baseline
+    let bestSb: Int32Array[] = [residuals];
 
-    const wavTotal = waveletSb.reduce((s, d) => s + d.length, 0);
-    const wavConcat = new Int32Array(wavTotal);
-    let off = 0;
-    for (const d of waveletSb) { wavConcat.set(d, off); off += d.length; }
-    const waveletCost = estimatePlaneCost(wavConcat);
+    for (let lev = 1; lev <= numLevels; lev++) {
+        const sb = waveletDecompose(wasm, residuals, lev);
+        const total = sb.reduce((s, d) => s + d.length, 0);
+        const concat = new Int32Array(total);
+        let off = 0;
+        for (const d of sb) { concat.set(d, off); off += d.length; }
+        const cost = estimatePlaneCost(concat);
+        if (cost < bestCost) {
+            bestCost = cost;
+            bestSb = sb;
+        }
+    }
 
-    // bypass also saves subband header overhead (3 extra sb headers for 4-sb wavelet)
-    return bypassCost <= waveletCost ? [residuals] : waveletSb;
+    return bestSb;
 }
 
 /** encode subbands through the actual plane+Logos pipeline and return total bytes.
@@ -2553,246 +2499,6 @@ function waveletReconstruct(wasm: HarmonicWasmExports, subbands: Int32Array[]): 
 }
 
 
-
-// â”€â”€ trajectory prediction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-//
-// nonlinear closure of the prediction chain. after the linear hierarchy
-// (Burg, AR(2), micro-osc, delta) removes oscillatory structure, the residual
-// traces a trajectory on a low-dimensional manifold in delay-embedding space
-// (Takens 1981). three interlocking techniques exploit this:
-//
-// 1. MaÃ±Ã© mixed embedding (MaÃ±Ã© 1981, Deyle & Sugihara 2011):
-//    instead of pure time delays, embed using position + velocity +
-//    acceleration + amplitude. these decorrelated features capture different
-//    dynamics aspects, producing better neighbors than raw delays.
-//
-// 2. recurrence diagonal tracking (Eckmann 1987):
-//    trajectories are continuous â€” if neighbor m was good at time t, then
-//    m+1 is likely good at t+1. check the previous diagonal first (O(d)),
-//    fall back to full kNN search (O(WÃ—d)) only when the diagonal breaks.
-//
-// 3. local Lyapunov confidence (Abarbanel 1992):
-//    the weighted variance of neighbor continuations measures local
-//    predictability. high variance = chaotic region = skip prediction.
-//    computed from the kNN data at zero extra search cost.
-//
-// the predictor is SYMMETRIC: encoder and decoder compute identical
-// predictions from the causal past. zero side information transmitted.
-
-const TRAJ_K       = 6;     // nearest neighbors for simplex projection
-const TRAJ_WINDOW  = 256;   // causal window size
-
-// pre-allocated buffer for the kNN kernel (zero per-sample allocation).
-// safe as module-level: channels are processed sequentially, not concurrently.
-// in Web Workers, each worker gets its own copy of this module-level const.
-const _sqrtCache = new Float64Array(TRAJ_K);
-
-/** cross-frame trajectory state. the encoder and decoder both maintain this
- *  across frames. the warm window gives the trajectory predictor history from
- *  previous frames, so the kNN search starts with a full window immediately
- *  (no cold-start penalty). measured: 15-25% compression improvement over
- *  cold-start on 1-second signals. */
-export interface HarmonicState {
-    /** residual history from previous frames (circular, most recent at end) */
-    trajWindow: Int32Array;
-    /** how many valid samples are in the window */
-    trajFill: number;
-}
-
-/** create a fresh codec state (cold start). */
-export function createHarmonicState(): HarmonicState {
-    return {
-        trajWindow: new Int32Array(TRAJ_WINDOW),
-        trajFill: 0,
-    };
-}
-
-/** append residuals to the state's trajectory window (circular). */
-function trajStateAppend(state: HarmonicState, residuals: Int32Array): void {
-    const W = TRAJ_WINDOW;
-    const n = residuals.length;
-    if (n >= W) {
-        // residuals longer than window â€” just keep the last W samples
-        state.trajWindow.set(residuals.subarray(n - W));
-        state.trajFill = W;
-    } else if (state.trajFill + n <= W) {
-        // fits without wrapping
-        state.trajWindow.set(residuals, state.trajFill);
-        state.trajFill += n;
-    } else {
-        // shift old data left, append new
-        const keep = W - n;
-        state.trajWindow.copyWithin(0, state.trajFill - keep, state.trajFill);
-        state.trajWindow.set(residuals, keep);
-        state.trajFill = W;
-    }
-}
-
-/** trajectory prediction core: MaÃ±Ã© embedding + diagonal tracking.
- *
- *  MaÃ±Ã© mixed embedding: instead of pure delays [r(n-1)..r(n-4)], use
- *  [position, velocity, acceleration, amplitude] â€” decorrelated features
- *  that capture different dynamics aspects (MaÃ±Ã© 1981, Deyle & Sugihara 2011).
- *
- *  diagonal tracking: trajectories are continuous, so if neighbor m was best
- *  at time t, check m+1 first at time t+1. full search only when diagonal
- *  breaks (Eckmann 1987). amortized cost: O(d) per sample instead of O(WÃ—d).
- *
- *  the `encode` flag controls direction:
- *  encode â†’ out[i] = input[i] - pred,  decode â†’ out[i] = input[i] + pred. */
-function trajProcess(input: Int32Array, out: Int32Array, encode: boolean, startIdx: number = 0): void {
-    const n = input.length, k = TRAJ_K, W = TRAJ_WINDOW;
-    const data = encode ? input : out;
-
-    const bestDists = new Float64Array(k);
-    const bestIdxs = new Int32Array(k);
-
-    let diagIdx = -1;
-    let prevBestDist = Infinity;
-
-    // samples before startIdx are warm window â€” already set in out[], skip processing
-    const begin = Math.max(3, startIdx);
-    for (let i = startIdx; i < begin && i < n; i++) out[i] = input[i];
-
-    for (let i = begin; i < n; i++) {
-        const wStart = Math.max(3, i - W);
-
-        // inline MaÃ±Ã© features for query point
-        const qr0 = data[i - 1], qr1 = data[i - 2], qr2 = data[i - 3];
-        const qPos = qr0, qVel = qr0 - qr1, qAcc = qr0 - 2 * qr1 + qr2;
-        const qAmp = qr0 >= 0 ? qr0 : -qr0;
-
-        // â”€â”€ diagonal tracking: check previous best neighbor's successor â”€â”€
-        let diagHit = false;
-        let diagDist = Infinity;
-        const nextDiag = diagIdx + 1;
-        if (diagIdx >= wStart && nextDiag >= wStart && nextDiag < i) {
-            const mr0 = data[nextDiag - 1], mr1 = data[nextDiag - 2], mr2 = data[nextDiag - 3];
-            const d0 = qPos - mr0, d1 = qVel - (mr0 - mr1);
-            const d2 = qAcc - (mr0 - 2 * mr1 + mr2), d3 = qAmp - (mr0 >= 0 ? mr0 : -mr0);
-            diagDist = d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
-            diagHit = diagDist <= prevBestDist * 4.0;
-        }
-
-        bestDists.fill(Infinity);
-        bestIdxs.fill(-1);
-
-        if (diagHit) {
-            bestDists[0] = diagDist;
-            bestIdxs[0] = nextDiag;
-            // local search Â±16 around diagonal for more neighbors
-            const ls = Math.max(wStart, nextDiag - 16);
-            const le = Math.min(i, nextDiag + 16);
-            for (let m = ls; m < le; m++) {
-                if (m === nextDiag) continue;
-                const mr0 = data[m - 1], mr1 = data[m - 2], mr2 = data[m - 3];
-                const d0 = qPos - mr0, d1 = qVel - (mr0 - mr1);
-                const d2 = qAcc - (mr0 - 2 * mr1 + mr2), d3 = qAmp - (mr0 >= 0 ? mr0 : -mr0);
-                const dist = d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
-                if (dist < bestDists[k - 1]) {
-                    bestDists[k - 1] = dist;
-                    bestIdxs[k - 1] = m;
-                    for (let s = k - 1; s > 0 && bestDists[s] < bestDists[s - 1]; s--) {
-                        const td = bestDists[s]; bestDists[s] = bestDists[s - 1]; bestDists[s - 1] = td;
-                        const ti = bestIdxs[s]; bestIdxs[s] = bestIdxs[s - 1]; bestIdxs[s - 1] = ti;
-                    }
-                }
-            }
-        } else {
-            // full search
-            for (let m = wStart; m < i; m++) {
-                const mr0 = data[m - 1], mr1 = data[m - 2], mr2 = data[m - 3];
-                const d0 = qPos - mr0, d1 = qVel - (mr0 - mr1);
-                const d2 = qAcc - (mr0 - 2 * mr1 + mr2), d3 = qAmp - (mr0 >= 0 ? mr0 : -mr0);
-                const dist = d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
-                if (dist < bestDists[k - 1]) {
-                    bestDists[k - 1] = dist;
-                    bestIdxs[k - 1] = m;
-                    for (let s = k - 1; s > 0 && bestDists[s] < bestDists[s - 1]; s--) {
-                        const td = bestDists[s]; bestDists[s] = bestDists[s - 1]; bestDists[s - 1] = td;
-                        const ti = bestIdxs[s]; bestIdxs[s] = bestIdxs[s - 1]; bestIdxs[s - 1] = ti;
-                    }
-                }
-            }
-        }
-
-        // count valid neighbors and compute Gaussian-weighted prediction.
-        // optimization: cache sqrt(dist) from the count pass and precompute
-        // 1/dMean to replace k divisions with k multiplications (~6Ã— faster).
-        // the Schraudolph exp(-x) bit-hack (reinterpret integer as float64)
-        // replaces Math.exp, avoiding the JSâ†’C++ boundary: ~15 cycles vs ~100.
-        let actual = 0, dSum = 0;
-        for (let j = 0; j < k; j++) {
-            if (bestIdxs[j] < 0) break;
-            const sd = Math.sqrt(bestDists[j]);
-            _sqrtCache[j] = sd;
-            dSum += sd;
-            actual++;
-        }
-
-        if (actual < 2) {
-            out[i] = input[i];
-            diagIdx = -1;
-            prevBestDist = Infinity;
-            continue;
-        }
-
-        const invDMean = actual / (dSum || 1);
-        let wSum = 0, predSum = 0;
-        for (let j = 0; j < actual; j++) {
-            const w = Math.exp(-_sqrtCache[j] * invDMean);
-            wSum += w;
-            predSum += w * data[bestIdxs[j]];
-        }
-        const pr = predSum / wSum;
-        const pred = pr >= 0 ? (pr + 0.5) | 0 : (pr - 0.5) | 0;
-
-        out[i] = encode ? (input[i] - pred) : (input[i] + pred);
-        diagIdx = bestIdxs[0];
-        prevBestDist = bestDists[0];
-    }
-}
-
-/** Farmer-Sidorowich encode with optional warm window from previous frames.
- *  if state is provided, prepends the warm window to extend the causal past.
- *  IMPORTANT: state is NOT updated here â€” the caller must call trajStateUpdate
- *  with the final residuals (whether trajectory was used or not) to keep
- *  encoder and decoder states in sync. */
-function trajectoryEncode(residuals: Int32Array, state?: HarmonicState): Int32Array {
-    const errors = new Int32Array(residuals.length);
-    if (state && state.trajFill >= 3) {
-        const warm = state.trajWindow.subarray(0, state.trajFill);
-        const extended = new Int32Array(warm.length + residuals.length);
-        extended.set(warm);
-        extended.set(residuals, warm.length);
-        const extOut = new Int32Array(extended.length);
-        extOut.set(warm);
-        trajProcess(extended, extOut, true, warm.length);
-        errors.set(extOut.subarray(warm.length));
-    } else {
-        trajProcess(residuals, errors, true, 0);
-    }
-    return errors;
-}
-
-/** Farmer-Sidorowich decode with optional warm window from previous frames. */
-function trajectoryDecode(errors: Int32Array, state?: HarmonicState): Int32Array {
-    const residuals = new Int32Array(errors.length);
-    if (state && state.trajFill >= 3) {
-        const warm = state.trajWindow.subarray(0, state.trajFill);
-        const extended = new Int32Array(warm.length + errors.length);
-        extended.set(warm);
-        extended.set(errors, warm.length);
-        const extOut = new Int32Array(extended.length);
-        extOut.set(warm);
-        trajProcess(extended, extOut, false, warm.length);
-        residuals.set(extOut.subarray(warm.length));
-    } else {
-        trajProcess(errors, residuals, false, 0);
-    }
-    return residuals;
-}
-
 // â”€â”€ zigzag / byte-plane split â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function zigzagEnc(v: number): number { return (v << 1) ^ (v >> 31); }
@@ -2891,159 +2597,9 @@ function decodeResidualPlanes(
     return out;
 }
 
-// â”€â”€ harmonic topology layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-//
-// The harmonic amplitude surface A(n, t) â€” Goertzel cos/sin coefficients for
-// harmonics n = 2,3,... at each voiced block t â€” is the time-frequency topology
-// layer for 1D audio.  Analogous to Spatial's xmid(y,z) surface, it captures
-// the spectral envelope as a smooth 2D field.  Compressed with 2D MÃ¶bius:
-//   P(h,b) = A(hâˆ’1,b) + A(h,bâˆ’1) âˆ’ A(hâˆ’1,bâˆ’1)
-// Error = Î”hÂ·Î”bÂ·A â€” zero for bilinear spectral envelopes.
-//
-// After extraction, the aperiodic residual (harmonics subtracted) passes
-// through the existing wavelet + Logos pipeline.  For voiced signals the
-// aperiodic energy drops sharply, collapsing the subband encoding cost.
-// The fundamental (harmonic 1) is already removed by the AR(2) predictor;
-// the topology layer captures harmonics 2, 3, ... up to Nyquist.
 
-function omega0FromKG(K: number, G: number): number {
-    const r = Math.sqrt(Math.max(G_FLOOR, G));
-    const cosW = K / (2 * r);
-    return cosW >= 1 ? 0 : cosW <= -1 ? Math.PI : Math.acos(cosW);
-}
 
-function countUsableH(omega0: number): number {
-    if (omega0 < 0.001) return 0;
-    return Math.min(MAX_HARMONICS, Math.max(0, Math.floor(Math.PI / omega0) - 1));
-}
-
-function blockVoiced(
-    signal: Int32Array, residual: Int32Array,
-    start: number, end: number,
-): boolean {
-    let sp = 0, np = 0;
-    for (let i = start; i < end; i++) {
-        sp += signal[i] * signal[i];
-        np += residual[i] * residual[i];
-    }
-    if (sp < BLOCK_LEN) return false; // silence
-    const gain = 10 * Math.log10(sp / Math.max(np, 1));
-    // Voiced = meaningful prediction gain but residual still has energy
-    // (pure tones have gain > 40 dB â€” AR(2) already captured everything,
-    //  no harmonics left to extract)
-    return gain >= VOICED_GAIN_DB && gain < VOICED_CEILING_DB;
-}
-
-function goertzelExtract(
-    residual: Int32Array, start: number, blockLen: number,
-    omega0: number, numH: number,
-): { cosQ: Int32Array; sinQ: Int32Array } {
-    const cosQ = new Int32Array(numH);
-    const sinQ = new Int32Array(numH);
-    // hann window: -31 dB sidelobes (vs -13 dB rectangular) reduces
-    // cross-harmonic leakage in the Goertzel analysis. coherent gain
-    // is 0.5, compensated by doubling the normalization factor.
-    const norm = 4 / blockLen;
-    const twoPiOverN = 2 * Math.PI / blockLen;
-    for (let h = 0; h < numH; h++) {
-        const freq = (h + 2) * omega0;
-        if (freq >= Math.PI) break;
-        let cc = 0, ss = 0;
-        for (let t = 0; t < blockLen; t++) {
-            const w = 0.5 - 0.5 * Math.cos(twoPiOverN * t);
-            const v = residual[start + t] * w;
-            cc += v * Math.cos(freq * t);
-            ss += v * Math.sin(freq * t);
-        }
-        cosQ[h] = Math.round(cc * norm);
-        sinQ[h] = Math.round(ss * norm);
-    }
-    return { cosQ, sinQ };
-}
-
-function harmonicSynth(
-    omega0: number, cosQ: Int32Array, sinQ: Int32Array,
-    numH: number, blockLen: number,
-): Int32Array {
-    const out = new Int32Array(blockLen);
-    for (let h = 0; h < numH; h++) {
-        const freq = (h + 2) * omega0;
-        if (freq >= Math.PI) break;
-        const c = cosQ[h], s = sinQ[h];
-        if (c === 0 && s === 0) continue;
-        for (let t = 0; t < blockLen; t++) {
-            const hv = c * Math.cos(freq * t) + s * Math.sin(freq * t);
-            out[t] += hv >= 0 ? (hv + 0.5) | 0 : (hv - 0.5) | 0;
-        }
-    }
-    return out;
-}
-
-function superOmega(
-    kgBlocks: { K: number; G: number }[],
-    firstBlock: number, lastBlock: number,
-): number {
-    const omegas: number[] = [];
-    for (let b = firstBlock; b < lastBlock; b++) {
-        omegas.push(omega0FromKG(kgBlocks[b].K, kgBlocks[b].G));
-    }
-    omegas.sort((a, b) => a - b);
-    return omegas[Math.floor(omegas.length / 2)];
-}
-
-function mobiusEnc2D(field: Int32Array, H: number, W: number): Int32Array {
-    const r = new Int32Array(H * W);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        const v = field[y * W + x];
-        const L = x > 0 ? field[y * W + x - 1] : 0;
-        const A = y > 0 ? field[(y - 1) * W + x] : 0;
-        const D = (x > 0 && y > 0) ? field[(y - 1) * W + x - 1] : 0;
-        r[y * W + x] = v - (L + A - D);
-    }
-    return r;
-}
-
-function mobiusDec2D(r: Int32Array, H: number, W: number): Int32Array {
-    const f = new Int32Array(H * W);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        const L = x > 0 ? f[y * W + x - 1] : 0;
-        const A = y > 0 ? f[(y - 1) * W + x] : 0;
-        const D = (x > 0 && y > 0) ? f[(y - 1) * W + x - 1] : 0;
-        f[y * W + x] = r[y * W + x] + (L + A - D);
-    }
-    return f;
-}
-
-// â”€â”€ Burg lattice prediction (primary stage on original signal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Adaptive-order LPC via Burg's method on the original quantized signal.
-// Operates per 256-sample super-block. Order > 2 captures formants and
-// higher harmonics that AR(2) can't reach. Order â‰¤ 2 falls back to identity
-// (AR(2) already handles single-peak signals optimally).
-//
-// Pipeline: Burg primary â†’ AR(2) refinement â†’ wavelet â†’ entropy coding.
-// Decoder: wavelet â†’ AR(2) inverse â†’ Burg inverse.
-
-// 256 samples @ 48kHz = 5.3ms â‰ˆ one pitch period at 188Hz.
-// long enough for Burg to capture the spectral envelope,
-// short enough to track formant transitions in running speech.
-const BURG_SUPER_LEN = 256;
-// LP order 12: captures a 6-formant vocal tract (2 poles per formant).
-// the vocal tract has 4-5 formants in the 0-5kHz range, plus spectral tilt.
-const BURG_MAX_ORDER = 12;
-// reflection coefficient threshold: |kâ‚˜|Â² < 0.15Â² = 0.0225 = 2.25% energy.
-// each additional LP order must explain at least 2.25% of remaining variance.
-// this is conservative â€” prevents overfitting to quantization artifacts.
-const BURG_K_THRESH  = 0.15;
-// Burg must reduce energy by at least 10% (1 dB) to justify its trajectory cost.
-// each super-block costs ~7 bytes; 10% of even a small signal saves more.
-const BURG_ENERGY_THRESHOLD = 0.90;
-const BURG_FLAG      = 0x04;   // bit 2 of header flags
-
-interface BurgSuperBlock {
-    order: number;
-    quantK: Int8Array;
-    a: Float64Array;
-}
+// ── Burg analysis primitives ──────────────────────────────────────────
 
 function quantRC(k: number): number {
     return Math.max(-127, Math.min(127, Math.round(k * 127)));
@@ -3086,16 +2642,7 @@ function burgAnalysis(
     return refCoeffs;
 }
 
-/** Select optimal order: stop when |kâ‚˜| < threshold. */
-function burgSelectOrder(refCoeffs: Float64Array): number {
-    for (let m = 0; m < refCoeffs.length; m++) {
-        if (Math.abs(refCoeffs[m]) < BURG_K_THRESH) return m;
-    }
-    return refCoeffs.length;
-}
-
-/** Levinson recursion: reflection coefficients â†’ LP coefficients.
- *  Returns a[0..order-1] where pred = sum(a[m] * x[n-1-m], m=0..P-1). */
+/** Levinson recursion: reflection coefficients to LP coefficients. */
 function reflToLP(k: Float64Array, order: number): Float64Array {
     const a = new Float64Array(order);
     if (order === 0) return a;
@@ -3115,123 +2662,12 @@ function reflToLP(k: Float64Array, order: number): Float64Array {
     return a;
 }
 
-/** Primary Burg forward prediction on original signal (encoder).
- *  For order > 2: produces LP residuals. For order â‰¤ 2: identity (passthrough).
- *  State tracks original data values (reconstructed = data[i] exactly). */
-function burgPrimaryForward(
-    data: Int32Array, numSamples: number, superLen: number = BURG_SUPER_LEN,
-): { output: Int32Array; superBlocks: BurgSuperBlock[] } {
-    const numSuper = Math.ceil(numSamples / superLen);
-    const superBlocks: BurgSuperBlock[] = [];
-    const output = new Int32Array(numSamples);
-    const state = new Float64Array(BURG_MAX_ORDER);
-
-    for (let si = 0; si < numSuper; si++) {
-        const sStart = si * superLen;
-        const sEnd = Math.min(sStart + superLen, numSamples);
-        const sLen = sEnd - sStart;
-
-        // burg analysis on original signal
-        const rawK = burgAnalysis(data, sStart, sEnd,
-            Math.min(BURG_MAX_ORDER, Math.floor(sLen / 3)));
-        const order = burgSelectOrder(rawK);
-
-        if (order > 2) {
-            // quantize reflection coefficients
-            const quantK = new Int8Array(order);
-            for (let m = 0; m < order; m++) quantK[m] = quantRC(rawK[m]);
-            const dequantK = new Float64Array(order);
-            for (let m = 0; m < order; m++) dequantK[m] = dequantRC(quantK[m]);
-            const a = reflToLP(dequantK, order);
-
-            // LP forward prediction with encoder-tracks-decoder state
-            let origEnergy = 0, burgEnergy = 0;
-            const savedState = new Float64Array(state);
-            for (let i = 0; i < sLen; i++) {
-                const val = data[sStart + i];
-                origEnergy += val * val;
-                let pred = 0;
-                for (let m = 0; m < order; m++) pred += a[m] * state[m];
-                const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
-                const res = val - roundPred;
-                burgEnergy += res * res;
-                output[sStart + i] = res;
-                // reconstructed = res + roundPred = val exactly
-                for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
-                state[0] = val;
-            }
-
-            // energy safety: only use Burg if it actually reduces energy
-            // accept Burg if it captures at least 10% of the signal energy.
-            // each super-block costs ~7 bytes (order + coefficients). even a
-            // 10% energy reduction saves more than that in residual encoding.
-            if (origEnergy > 0 && burgEnergy < origEnergy * BURG_ENERGY_THRESHOLD) {
-                superBlocks.push({ order, quantK, a });
-            } else {
-                // rollback: Burg didn't help, use identity
-                for (let i = 0; i < sLen; i++) output[sStart + i] = data[sStart + i];
-                // state already tracks data[i] values from the loop, no change needed
-                superBlocks.push({ order: 0, quantK: new Int8Array(0), a: new Float64Array(0) });
-            }
-        } else {
-            // order â‰¤ 2: identity passthrough (AR(2) handles this)
-            for (let i = 0; i < sLen; i++) output[sStart + i] = data[sStart + i];
-            superBlocks.push({ order: 0, quantK: new Int8Array(0), a: new Float64Array(0) });
-        }
-
-        // state always tracks original data values
-        for (let j = 0; j < Math.min(BURG_MAX_ORDER, sLen); j++) {
-            state[j] = data[sStart + sLen - 1 - j];
-        }
-    }
-
-    return { output, superBlocks };
-}
-
-/** Primary Burg inverse prediction (decoder). */
-function burgPrimaryInverse(
-    residuals: Int32Array, numSamples: number, superBlocks: BurgSuperBlock[],
-    superLen: number = BURG_SUPER_LEN,
-): Int32Array {
-    const data = new Int32Array(numSamples);
-    const state = new Float64Array(BURG_MAX_ORDER);
-
-    for (let si = 0; si < superBlocks.length; si++) {
-        const sStart = si * superLen;
-        const sEnd = Math.min(sStart + superLen, numSamples);
-        const sLen = sEnd - sStart;
-        const { a, order } = superBlocks[si];
-
-        if (order > 0) {
-            for (let i = 0; i < sLen; i++) {
-                let pred = 0;
-                for (let m = 0; m < order; m++) pred += a[m] * state[m];
-                const reconstructed = residuals[sStart + i] + (pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0);
-                data[sStart + i] = reconstructed;
-                for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
-                state[0] = reconstructed;
-            }
-        } else {
-            // identity
-            for (let i = 0; i < sLen; i++) data[sStart + i] = residuals[sStart + i];
-        }
-
-        // state tracks reconstructed data
-        for (let j = 0; j < Math.min(BURG_MAX_ORDER, sLen); j++) {
-            state[j] = data[sStart + sLen - 1 - j];
-        }
-    }
-
-    return data;
-}
-
 // ── unified variable-order prediction ──────────────────────────────────
 //
-// replaces the 3-stage pipeline (Burg-superblock + AR(2)-block + micro)
-// with a single adaptive-order Burg predictor per 32-sample block.
+// single adaptive-order Burg predictor per 32-sample block.
 //
 // for each block, Burg analysis produces reflection coefficients at orders
-// 2, 4, 6, 8. the encoder picks the order that minimizes:
+// 0-10. the encoder picks the order that minimizes:
 //   cost(p) = p * 8 (coefficient bits) + n * log2(errorVariance_p)
 // this is the MDL criterion: model complexity + data surprise.
 //
@@ -3435,18 +2871,26 @@ function varOrderPredictDec(
  *  per-block Burg captures within-block correlation, but cross-block patterns
  *  (harmonic beating, FM modulation) survive as autocorrelation at lags 2-8.
  *
- *  generates candidates:
- *  - single-lag: best autocorrelation lag, one coefficient
- *  - sparse Yule-Walker: pairs and triples of peak-autocorrelation lags,
- *    placing nonzero LP coefficients only where correlation is strongest.
- *    captures multi-lag cross-block beating patterns that Burg misses
- *    (Burg smears coefficients across all positions including dead zones).
+ *  generates candidates via sparse Yule-Walker at peak-autocorrelation lags:
+ *  - single-lag at top-3 lags (one nonzero LP coefficient)
+ *  - pair: 2x2 Yule-Walker at top-2 lags
+ *  - triple: 3x3 Cramer's rule at top-3 lags
+ *  - quadruple: 4x4 Gaussian elimination at top-4 lags
+ *  key insight: Burg smears coefficients across ALL positions including dead
+ *  zones (lag 1 often near zero); sparse Yule-Walker targets only correlation
+ *  peaks. the filter's benefit comes through the wavelet (reducing coefficient
+ *  magnitudes and plane counts), not through Logos directly.
+ *
  *  the encoder picks whichever candidate saves the most through the full
- *  subband pipeline trial.
+ *  subband pipeline trial (wavelet + Logos).
  *
  *  wire format: order byte (0 = no filter) + order LP coefficient bytes (8-bit).
- *  decoder applies the LP coefficients directly. */
-const POST_FILTER_MAX_ORDER = 4;
+ *  decoder applies the LP coefficients directly.
+ *
+ *  limitation: at low Q (scalar < ~100), the integer rounding in the prediction
+ *  step dominates the prediction gain. the filter only helps at Q70+ where
+ *  residuals have enough dynamic range for integer prediction to be meaningful. */
+const POST_FILTER_MAX_ORDER = 8;
 
 interface PostFilterCandidate {
     order: number;
@@ -3457,7 +2901,7 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
     if (n < 16) return [];
     const candidates: PostFilterCandidate[] = [];
 
-    // compute normalized autocorrelation at lags 1-4
+    // compute normalized autocorrelation at lags 1-8
     let r0 = 0;
     for (let i = 0; i < n; i++) r0 += residuals[i] * residuals[i];
     if (r0 <= 0) return [];
@@ -3475,8 +2919,8 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
     }
     lagScores.sort((a, b) => b.ac - a.ac);
 
-    // candidate: single-lag at each of top-2 lags
-    for (let rank = 0; rank < Math.min(2, lagScores.length); rank++) {
+    // candidate: single-lag at each of top-3 lags
+    for (let rank = 0; rank < Math.min(3, lagScores.length); rank++) {
         const { lag, ac } = lagScores[rank];
         if (ac < 0.14) continue; // threshold: ac² > 0.02
         const alpha8 = Math.max(-127, Math.min(127, Math.round(r[lag] * 127)));
@@ -3521,6 +2965,68 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
             quantLP[k - 1] = Math.max(-127, Math.min(127, Math.round(a_k * 127)));
             quantLP[l - 1] = Math.max(-127, Math.min(127, Math.round(a_l * 127)));
             candidates.push({ order: maxLag, quantLP });
+        }
+    }
+
+    // candidate: sparse quadruple via 4x4 Yule-Walker (top-4 lags)
+    if (lagScores.length >= 4 && lagScores[0].ac > 0.14 && lagScores[1].ac > 0.14 &&
+        lagScores[2].ac > 0.14 && lagScores[3].ac > 0.14) {
+        const lags = lagScores.slice(0, 4).map(ls => ls.lag).sort((a, b) => a - b);
+        // build 4x4 autocorrelation matrix and solve via Gaussian elimination
+        const R: number[][] = [];
+        const rhs: number[] = [];
+        let valid = true;
+        for (let i = 0; i < 4; i++) {
+            rhs.push(r[lags[i]]);
+            const row: number[] = [];
+            for (let j = 0; j < 4; j++) {
+                const diff = lags[i] > lags[j] ? lags[i] - lags[j] : lags[j] - lags[i];
+                if (diff > POST_FILTER_MAX_ORDER) { valid = false; break; }
+                row.push(diff === 0 ? 1 : r[diff]);
+            }
+            if (!valid) break;
+            R.push(row);
+        }
+        if (valid) {
+            // Gaussian elimination with partial pivoting
+            const A = R.map(row => [...row]);
+            const b = [...rhs];
+            let singular = false;
+            for (let col = 0; col < 4 && !singular; col++) {
+                let maxRow = col, maxVal = A[col][col] < 0 ? -A[col][col] : A[col][col];
+                for (let row = col + 1; row < 4; row++) {
+                    const v = A[row][col] < 0 ? -A[row][col] : A[row][col];
+                    if (v > maxVal) { maxVal = v; maxRow = row; }
+                }
+                if (maxVal < 1e-8) { singular = true; break; }
+                if (maxRow !== col) {
+                    const tmpR = A[col]; A[col] = A[maxRow]; A[maxRow] = tmpR;
+                    const tmpB = b[col]; b[col] = b[maxRow]; b[maxRow] = tmpB;
+                }
+                for (let row = col + 1; row < 4; row++) {
+                    const factor = A[row][col] / A[col][col];
+                    for (let jj = col; jj < 4; jj++) A[row][jj] -= factor * A[col][jj];
+                    b[row] -= factor * b[col];
+                }
+            }
+            if (!singular) {
+                const x = new Float64Array(4);
+                for (let i = 3; i >= 0; i--) {
+                    let sum = b[i];
+                    for (let jj = i + 1; jj < 4; jj++) sum -= A[i][jj] * x[jj];
+                    x[i] = sum / A[i][i];
+                }
+                const maxLag = lags[3];
+                const quantLP = new Int8Array(maxLag);
+                let anyNonZero = false;
+                for (let idx = 0; idx < 4; idx++) {
+                    quantLP[lags[idx] - 1] = Math.max(-127, Math.min(127, Math.round(x[idx] * 127)));
+                    if (quantLP[lags[idx] - 1] !== 0) anyNonZero = true;
+                }
+                if (anyNonZero) {
+                    candidates.push({ order: maxLag, quantLP });
+                }
+            }
         }
     }
 
@@ -3689,303 +3195,11 @@ function varOrderCellProject(
     }
 }
 
-/** decoder-side dequantization refinement.
- *  each decoded integer sample only tells us that the true sample lies in the
- *  quantization cell [q-0.5, q+0.5]. Burg already gives a local physical prior
- *  for where the waveform should be inside that cell. run that prior in both
- *  directions: causal (past -> future) and anti-causal (future -> past).
- *
- *  this creates a tiny boolean lattice of constraints:
- *    quantization cell âˆ§ forward Burg prior âˆ§ backward Burg prior
- *
- *  each Burg prior is projected into the cell, then blended against the cell
- *  midpoint q with precision weight (quantization variance / innovation
- *  variance). when the model is strong, it pulls the sample toward the more
- *  physically plausible point inside the same committed cell. when the model is
- *  weak, the midpoint wins and this collapses back to normal dequantization.
- */
-function burgCellProject(
-    data: Int32Array, numSamples: number, superBlocks: BurgSuperBlock[],
-    superLen: number = BURG_SUPER_LEN,
-): Float32Array {
-    const current = new Float32Array(numSamples);
-    const forward = new Float32Array(numSamples);
-    const backward = new Float32Array(numSamples);
-    const wForward = new Float32Array(superBlocks.length);
-    const wBackward = new Float32Array(superBlocks.length);
-    for (let i = 0; i < numSamples; i++) current[i] = data[i];
-
-    // two symmetric relaxation cycles: the first moves off the midpoint, the
-    // second lets neighboring refined samples influence each other once.
-    for (let iter = 0; iter < 2; iter++) {
-        {
-            const state = new Float64Array(BURG_MAX_ORDER);
-            const anaState = new Float64Array(BURG_MAX_ORDER);
-            for (let si = 0; si < superBlocks.length; si++) {
-                const sStart = si * superLen;
-                const sEnd = Math.min(sStart + superLen, numSamples);
-                const sLen = sEnd - sStart;
-                const { a, order } = superBlocks[si];
-
-                if (order > 0) {
-                    let obsEnergy = 0;
-                    for (let i = 0; i < sLen; i++) {
-                        let pred = 0;
-                        for (let m = 0; m < order; m++) pred += a[m] * anaState[m];
-                        const x = current[sStart + i];
-                        const err = x - pred;
-                        obsEnergy += err * err;
-                        for (let m = order - 1; m > 0; m--) anaState[m] = anaState[m - 1];
-                        anaState[0] = x;
-                    }
-                    wForward[si] = obsEnergy > 0 ? QUANT_NOISE_REG / (obsEnergy / sLen) : 1024;
-
-                    for (let i = 0; i < sLen; i++) {
-                        let pred = 0;
-                        for (let m = 0; m < order; m++) pred += a[m] * state[m];
-                        const q = data[sStart + i];
-                        const lo = q - 0.5;
-                        const hi = q + 0.5;
-                        const projected = pred < lo ? lo : pred > hi ? hi : pred;
-                        forward[sStart + i] = projected;
-                        for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
-                        state[0] = projected;
-                    }
-                } else {
-                    for (let i = 0; i < sLen; i++) {
-                        forward[sStart + i] = data[sStart + i];
-                        for (let m = BURG_MAX_ORDER - 1; m > 0; m--) anaState[m] = anaState[m - 1];
-                        anaState[0] = current[sStart + i];
-                    }
-                    wForward[si] = 0;
-                }
-
-                for (let j = 0; j < Math.min(BURG_MAX_ORDER, sLen); j++) {
-                    state[j] = forward[sStart + sLen - 1 - j];
-                }
-            }
-        }
-
-        {
-            const state = new Float64Array(BURG_MAX_ORDER);
-            const anaState = new Float64Array(BURG_MAX_ORDER);
-            for (let si = superBlocks.length - 1; si >= 0; si--) {
-                const sStart = si * superLen;
-                const sEnd = Math.min(sStart + superLen, numSamples);
-                const sLen = sEnd - sStart;
-                const { a, order } = superBlocks[si];
-
-                if (order > 0) {
-                    let obsEnergy = 0;
-                    for (let i = sEnd - 1; i >= sStart; i--) {
-                        let pred = 0;
-                        for (let m = 0; m < order; m++) pred += a[m] * anaState[m];
-                        const x = current[i];
-                        const err = x - pred;
-                        obsEnergy += err * err;
-                        for (let m = order - 1; m > 0; m--) anaState[m] = anaState[m - 1];
-                        anaState[0] = x;
-                    }
-                    wBackward[si] = obsEnergy > 0 ? QUANT_NOISE_REG / (obsEnergy / sLen) : 1024;
-
-                    for (let i = sEnd - 1; i >= sStart; i--) {
-                        let pred = 0;
-                        for (let m = 0; m < order; m++) pred += a[m] * state[m];
-                        const q = data[i];
-                        const lo = q - 0.5;
-                        const hi = q + 0.5;
-                        const projected = pred < lo ? lo : pred > hi ? hi : pred;
-                        backward[i] = projected;
-                        for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
-                        state[0] = projected;
-                    }
-                } else {
-                    for (let i = sEnd - 1; i >= sStart; i--) {
-                        backward[i] = data[i];
-                        for (let m = BURG_MAX_ORDER - 1; m > 0; m--) anaState[m] = anaState[m - 1];
-                        anaState[0] = current[i];
-                    }
-                    wBackward[si] = 0;
-                }
-            }
-        }
-
-        for (let si = 0; si < superBlocks.length; si++) {
-            const sStart = si * superLen;
-            const sEnd = Math.min(sStart + superLen, numSamples);
-            const wf = wForward[si];
-            const wb = wBackward[si];
-            for (let i = sStart; i < sEnd; i++) {
-                const q = data[i];
-                current[i] = q + (wf * (forward[i] - q) + wb * (backward[i] - q)) / (1 + wf + wb);
-            }
-        }
-    }
-
-    return current;
-}
-
-/** ar(2) cell projection for regions where Burg is inactive.
- *  when Burg is off, the committed raw waveform still lives on the AR(2)
- *  orbital manifold already carried by the K/G trajectory. unlike Burg, the
- *  orbit is exactly 2-dimensional, so the reverse-time prior is available in
- *  closed form from the inverse state transition:
- *
- *    x[n+2] = KÂ·x[n+1] - GÂ·x[n]
- *    x[n]   = (KÂ·x[n+1] - x[n+2]) / G
- *
- *  run the same boolean-lattice meet as Burg:
- *    quantization cell âˆ§ forward AR(2) prior âˆ§ backward AR(2) prior
- *
- *  only samples in Burg-inactive superblocks are moved. Burg-active regions
- *  already have the stronger LP prior and are left alone here.
- */
-function ar2CellProject(
-    projected: Float32Array, data: Int32Array,
-    kgBlocks: { K: number; G: number }[],
-    burgSuperBlocks?: BurgSuperBlock[], burgSuperLen: number = BURG_SUPER_LEN,
-): void {
-    const n = data.length;
-    if (n === 0 || kgBlocks.length === 0) return;
-
-    const active = new Uint8Array(n);
-    if (burgSuperBlocks && burgSuperBlocks.length > 0) {
-        for (let si = 0; si < burgSuperBlocks.length; si++) {
-            if (burgSuperBlocks[si].order > 0) continue;
-            const sStart = si * burgSuperLen;
-            const sEnd = Math.min(sStart + burgSuperLen, n);
-            active.fill(1, sStart, sEnd);
-        }
-    } else {
-        active.fill(1);
-    }
-
-    let anyActive = false;
-    for (let i = 0; i < n; i++) {
-        if (active[i]) { anyActive = true; break; }
-    }
-    if (!anyActive) return;
-
-    const numBlocks = kgBlocks.length;
-    const current = projected.slice();
-    const forward = new Float32Array(n);
-    const backward = new Float32Array(n);
-    const wForward = new Float32Array(numBlocks);
-    const wBackward = new Float32Array(numBlocks);
-
-    for (let iter = 0; iter < 2; iter++) {
-        {
-            let ana1 = 0, ana2 = 0;
-            let state1 = 0, state2 = 0;
-            for (let b = 0; b < numBlocks; b++) {
-                const { K, G } = kgBlocks[b];
-                const start = b * BLOCK_LEN;
-                const end = Math.min(start + BLOCK_LEN, n);
-                let obsEnergy = 0;
-                let count = 0;
-                for (let i = start; i < end; i++) {
-                    const pred = K * ana1 - G * ana2;
-                    const x = current[i];
-                    if (active[i]) {
-                        const err = x - pred;
-                        obsEnergy += err * err;
-                        count++;
-                    }
-                    ana2 = ana1;
-                    ana1 = x;
-                }
-                wForward[b] = count > 0
-                    ? (obsEnergy > 0 ? QUANT_NOISE_REG / (obsEnergy / count) : 1024)
-                    : 0;
-
-                for (let i = start; i < end; i++) {
-                    const pred = K * state1 - G * state2;
-                    let x = current[i];
-                    if (active[i]) {
-                        const q = data[i];
-                        const lo = q - 0.5;
-                        const hi = q + 0.5;
-                        x = pred < lo ? lo : pred > hi ? hi : pred;
-                    }
-                    forward[i] = x;
-                    state2 = state1;
-                    state1 = x;
-                }
-            }
-        }
-
-        {
-            let ana1 = 0, ana2 = 0;
-            let state1 = 0, state2 = 0;
-            for (let b = numBlocks - 1; b >= 0; b--) {
-                const { K, G } = kgBlocks[b];
-                const start = b * BLOCK_LEN;
-                const end = Math.min(start + BLOCK_LEN, n);
-                if (G <= G_FLOOR) {
-                    wBackward[b] = 0;
-                    for (let i = end - 1; i >= start; i--) {
-                        backward[i] = current[i];
-                        ana2 = ana1;
-                        ana1 = current[i];
-                        state2 = state1;
-                        state1 = current[i];
-                    }
-                    continue;
-                }
-
-                let obsEnergy = 0;
-                let count = 0;
-                for (let i = end - 1; i >= start; i--) {
-                    const pred = (K * ana1 - ana2) / G;
-                    const x = current[i];
-                    if (active[i]) {
-                        const err = x - pred;
-                        obsEnergy += err * err;
-                        count++;
-                    }
-                    ana2 = ana1;
-                    ana1 = x;
-                }
-                wBackward[b] = count > 0
-                    ? (obsEnergy > 0 ? QUANT_NOISE_REG / (obsEnergy / count) : 1024)
-                    : 0;
-
-                for (let i = end - 1; i >= start; i--) {
-                    const pred = (K * state1 - state2) / G;
-                    let x = current[i];
-                    if (active[i]) {
-                        const q = data[i];
-                        const lo = q - 0.5;
-                        const hi = q + 0.5;
-                        x = pred < lo ? lo : pred > hi ? hi : pred;
-                    }
-                    backward[i] = x;
-                    state2 = state1;
-                    state1 = x;
-                }
-            }
-        }
-
-        for (let b = 0; b < numBlocks; b++) {
-            const start = b * BLOCK_LEN;
-            const end = Math.min(start + BLOCK_LEN, n);
-            const wf = wForward[b];
-            const wb = wBackward[b];
-            for (let i = start; i < end; i++) {
-                if (!active[i]) continue;
-                const q = data[i];
-                current[i] = q + (wf * (forward[i] - q) + wb * (backward[i] - q)) / (1 + wf + wb);
-            }
-        }
-    }
-
-    projected.set(current);
-}
 
 /** channel-axis dequantization refinement.
  *  Harmonic factors multichannel prediction into two orthogonal layers:
  *    1. W on the channel axis
- *    2. K/G + Burg on the time axis
+ *    2. K/G on the time axis
  *
  *  if the reference channel moved inside its quantization cell during
  *  reconstruction, the coupled channel should move with it by WÂ·Î”ref. project
@@ -4058,7 +3272,7 @@ function fractalCellProject(
         }
         if (count === 0) continue;
         const obsVar = obsEnergy / count;
-        const weight = obsVar > 0 ? Math.min(1, (1 / 8) / obsVar) : 1;
+        const weight = obsVar > 0 ? Math.min(1, DYADIC_NOISE_FLOOR / obsVar) : 1;
         if (!(weight > 0)) continue;
 
         if (!scratch || scratch.length !== n) scratch = new Float32Array(n);
@@ -4077,37 +3291,9 @@ function fractalCellProject(
     if (current !== projected) projected.set(current);
 }
 
-/** Encode Burg super-blocks to bytes. */
-function encodeBurgTrajectory(superBlocks: BurgSuperBlock[]): Uint8Array {
-    let totalBytes = 0;
-    for (const sb of superBlocks) totalBytes += 1 + sb.order;
-    const out = new Uint8Array(totalBytes);
-    let off = 0;
-    for (const sb of superBlocks) {
-        out[off++] = sb.order;
-        for (let m = 0; m < sb.order; m++) out[off++] = sb.quantK[m] & 0xFF;
-    }
-    return out;
-}
-
-/** Decode Burg super-blocks from bytes. */
-function decodeBurgTrajectory(data: Uint8Array, numSuperBlocks: number): BurgSuperBlock[] {
-    const superBlocks: BurgSuperBlock[] = [];
-    let off = 0;
-    for (let si = 0; si < numSuperBlocks; si++) {
-        const order = data[off++];
-        const quantK = new Int8Array(order);
-        for (let m = 0; m < order; m++) quantK[m] = (data[off++] << 24) >> 24;
-        const dequantK = new Float64Array(order);
-        for (let m = 0; m < order; m++) dequantK[m] = dequantRC(quantK[m]);
-        const a = reflToLP(dequantK, order);
-        superBlocks.push({ order, quantK, a });
-    }
-    return superBlocks;
-}
 
 /** Estimate Rice coding cost (bits) for a residual array.
- *  Used by the Burg trial to compare Burg+AR(2) vs plain AR(2) paths. */
+ *  used by quantizerFreeEnergy to estimate the rate term. */
 function estimateRiceCost(residuals: Int32Array, n: number): number {
     let sumAbs = 0;
     for (let i = 0; i < n; i++) {
@@ -4126,10 +3312,9 @@ function estimateRiceCost(residuals: Int32Array, n: number): number {
     return bits;
 }
 
-/** Estimate K/G trajectory encoding cost (bits).
- *  Counts per-block change flags and approximates Rice-coded deltas.
- *  Used by the trial encoder to fairly compare paths that produce
- *  different K/G trajectories (e.g., plain AR(2) vs Burg+AR(2)). */
+/** estimate K/G trajectory encoding cost (bits).
+ *  counts per-block change flags and approximates Rice-coded deltas.
+ *  used by quantizerFreeEnergy for the orbital/fractal scoring path. */
 const KG_TRAJ_WIRE_LEGACY = 0;
 const KG_TRAJ_WIRE_RUN_AWARE = 1;
 
@@ -4223,7 +3408,7 @@ function estimateTrajectoryBits(blocks: { Kint: number; Gint: number }[]): numbe
  *  uses the MINIMUM of order-0 entropy and XOR-derivative entropy on the
  *  low plane. the XOR derivative (byte[i] ^ byte[i-1]) is exactly what
  *  Logos's Z-axis models â€” it captures byte-to-byte correlation that the
- *  trajectory predictor creates. taking the min of both estimates ensures
+ *  prediction pipeline creates. taking the min of both estimates ensures
  *  the trial comparison sees whichever structure the data actually has:
  *  order-0 for independent bytes, Z-axis for correlated bytes. */
 function estimatePlaneCost(residuals: Int32Array): number {
@@ -4343,22 +3528,6 @@ function estimateZeroRunBits(runLen: number, runAvg: number): number {
     return 2 + 4 + (code >>> mRun) + 1 + mRun;
 }
 
-// â”€â”€ K/G trajectory encoding â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-//
-// K (frequency) and G (damping rÂ²) have distinct physical statistics:
-//   K tracks pitch, stable for pure tones and slowly drifting during vibrato.
-//   G stays near 1 for tonal signals and rarely changes at all.
-// Change-flags let each coefficient be omitted entirely when it hasn't moved.
-// The residual itself is predicted from second-order motion, so smooth K/G
-// glides collapse toward zero without changing the decoded trajectory.
-//
-// Wire format per block:
-//   non-reset: [reset:1=0][kChanged:1][gChanged:1] + if kChanged: [mK:4b+Rice(zk,mK)] + if gChanged: [mG:4b+Rice(zg,mG)]
-//   reset path (zigzag > 0x7FFF): [reset:1=1][K:16b][G:16b]
-//
-// Minimum cost when both are stable: 3 bits/block = 0.094 bps.
-// Dead-zone upstream in fitAllBlocks ensures Kint/Gint are already committed values,
-// so the flags stay zero for stable signals without any extra logic here.
 /** Meta-prediction: fit AR(1) to the K and G trajectories themselves.
  *  the prediction parameters trace orbits in parameter space â€” vibrato
  *  produces oscillating K, pitch glides produce drifting K, sustained
@@ -4395,266 +3564,6 @@ function metaPredictKG(blocks: { Kint: number; Gint: number }[]): {
     return { metaKK, metaGK };
 }
 
-function encodeKGTrajectoryLegacy(
-    blocks: { Kint: number; Gint: number }[],
-    metaKK: number = 0, metaGK: number = 0,
-): Uint8Array {
-    const bw = new BitWriter();
-    let decKint = 0, decGint = 0;
-    let prevKint = 0, prevGint = 0;
-    let runK = 0, runG = 0;
-    for (const { Kint, Gint } of blocks) {
-        const velK = decKint - prevKint;
-        const velG = decGint - prevGint;
-        const predK = decKint + ((metaKK * velK + 32) >> 6);
-        const predG = decGint + ((metaGK * velG + 32) >> 6);
-        const dk = Kint - predK, dg = Gint - predG;
-        const zk = zigzagEnc(dk) >>> 0, zg = zigzagEnc(dg) >>> 0;
-        if (zk > 0x7FFF || zg > 0x7FFF) {
-            bw.write(1, 1);
-            bw.write(Kint & 0xFFFF, 16); bw.write(Gint & 0xFFFF, 16);
-            prevKint = decKint; prevGint = decGint;
-            decKint = Kint; decGint = Gint;
-            runK = 0; runG = 0;
-        } else {
-            bw.write(0, 1);
-            const kChanged = zk !== 0 ? 1 : 0;
-            const gChanged = zg !== 0 ? 1 : 0;
-            bw.write(kChanged, 1);
-            bw.write(gChanged, 1);
-            if (kChanged) {
-                const mK = runK === 0 ? 0 : Math.min(14, 31 - Math.clz32(runK));
-                bw.write(mK, 4);
-                riceEncode(bw, zk, mK);
-            }
-            if (gChanged) {
-                const mG = runG === 0 ? 0 : Math.min(14, 31 - Math.clz32(runG));
-                bw.write(mG, 4);
-                riceEncode(bw, zg, mG);
-            }
-            prevKint = decKint; prevGint = decGint;
-            decKint = predK + dk;
-            decGint = predG + dg;
-            runK = (runK + zk) >>> 1;
-            runG = (runG + zg) >>> 1;
-        }
-    }
-    return bw.flush();
-}
-
-function encodeKGTrajectoryRunAware(
-    blocks: { Kint: number; Gint: number }[],
-    metaKK: number = 0, metaGK: number = 0,
-): Uint8Array {
-    const bw = new BitWriter();
-    let decKint = 0, decGint = 0;
-    let prevKint = 0, prevGint = 0;
-    let runK = 0, runG = 0;
-    let zeroRun = 0;
-    let runZ = 0;
-    const flushZeroRun = (): void => {
-        if (zeroRun <= 0) return;
-        if (zeroRun === 1) {
-            bw.write(0, 2);
-        } else {
-            bw.write(1, 2);
-            const code = zeroRun - 2;
-            const mRun = runZ === 0 ? 0 : Math.min(14, 31 - Math.clz32(runZ));
-            bw.write(mRun, 4);
-            riceEncode(bw, code, mRun);
-            runZ = (runZ + code) >>> 1;
-        }
-        zeroRun = 0;
-    };
-    for (const { Kint, Gint } of blocks) {
-        const velK = decKint - prevKint;
-        const velG = decGint - prevGint;
-        const predK = decKint + ((metaKK * velK + 32) >> 6);
-        const predG = decGint + ((metaGK * velG + 32) >> 6);
-        const dk = Kint - predK, dg = Gint - predG;
-        const zk = zigzagEnc(dk) >>> 0, zg = zigzagEnc(dg) >>> 0;
-        if (zk === 0 && zg === 0) {
-            zeroRun++;
-            prevKint = decKint; prevGint = decGint;
-            decKint = Kint; decGint = Gint;
-            continue;
-        }
-        flushZeroRun();
-        if (zk > 0x7FFF || zg > 0x7FFF) {
-            bw.write(3, 2);
-            bw.write(Kint & 0xFFFF, 16); bw.write(Gint & 0xFFFF, 16);
-            prevKint = decKint; prevGint = decGint;
-            decKint = Kint; decGint = Gint;
-            runK = 0; runG = 0;
-        } else {
-            bw.write(2, 2);
-            const kChanged = zk !== 0 ? 1 : 0;
-            const gChanged = zg !== 0 ? 1 : 0;
-            bw.write(kChanged, 1);
-            bw.write(gChanged, 1);
-            if (kChanged) {
-                const mK = runK === 0 ? 0 : Math.min(14, 31 - Math.clz32(runK));
-                bw.write(mK, 4);
-                riceEncode(bw, zk, mK);
-            }
-            if (gChanged) {
-                const mG = runG === 0 ? 0 : Math.min(14, 31 - Math.clz32(runG));
-                bw.write(mG, 4);
-                riceEncode(bw, zg, mG);
-            }
-            prevKint = decKint; prevGint = decGint;
-            decKint = predK + dk;
-            decGint = predG + dg;
-            runK = (runK + zk) >>> 1;
-            runG = (runG + zg) >>> 1;
-        }
-    }
-    flushZeroRun();
-    return bw.flush();
-}
-
-function buildKGTrajectoryPayload(
-    blocks: { Kint: number; Gint: number }[],
-    metaKK: number = 0, metaGK: number = 0,
-): { raw: Uint8Array; compressed: Uint8Array } {
-    const legacyBody = encodeKGTrajectoryLegacy(blocks, metaKK, metaGK);
-    const legacy = new Uint8Array(legacyBody.length + 1);
-    legacy[0] = KG_TRAJ_WIRE_LEGACY;
-    legacy.set(legacyBody, 1);
-
-    const runAwareBody = encodeKGTrajectoryRunAware(blocks, metaKK, metaGK);
-    const runAware = new Uint8Array(runAwareBody.length + 1);
-    runAware[0] = KG_TRAJ_WIRE_RUN_AWARE;
-    runAware.set(runAwareBody, 1);
-
-    const legacyCompressed = encode0D(legacy);
-    const runAwareCompressed = encode0D(runAware);
-    if (runAwareCompressed.length < legacyCompressed.length) {
-        return { raw: runAware, compressed: runAwareCompressed };
-    }
-    if (legacyCompressed.length < runAwareCompressed.length) {
-        return { raw: legacy, compressed: legacyCompressed };
-    }
-    const useRunAware = runAware.length < legacy.length;
-    if (useRunAware) return { raw: runAware, compressed: runAwareCompressed };
-    return { raw: legacy, compressed: legacyCompressed };
-}
-
-function decodeKGTrajectoryLegacy(
-    kgBitsData: Uint8Array, numBlocks: number,
-    metaKK: number = 0, metaGK: number = 0,
-): { Kint: number; Gint: number }[] {
-    const br = new BitReader(kgBitsData);
-    const blocks: { Kint: number; Gint: number }[] = [];
-    let prevKint = 0, prevGint = 0, runK = 0, runG = 0;
-    let prev2Kint = 0, prev2Gint = 0;
-    for (let b = 0; b < numBlocks; b++) {
-        let Kint: number, Gint: number;
-        if (br.read(1) !== 0) {
-            Kint = (br.read(16) << 16) >> 16;
-            Gint = (br.read(16) << 16) >> 16;
-            runK = 0; runG = 0;
-        } else {
-            const kChanged = br.read(1);
-            const gChanged = br.read(1);
-            let zk = 0, zg = 0;
-            if (kChanged) {
-                const mK = br.read(4);
-                zk = riceDecode(br, mK);
-            }
-            if (gChanged) {
-                const mG = br.read(4);
-                zg = riceDecode(br, mG);
-            }
-            const velK = prevKint - prev2Kint;
-            const velG = prevGint - prev2Gint;
-            const predK = prevKint + ((metaKK * velK + 32) >> 6);
-            const predG = prevGint + ((metaGK * velG + 32) >> 6);
-            Kint = predK + zigzagDec(zk);
-            Gint = predG + zigzagDec(zg);
-            runK = (runK + zk) >>> 1;
-            runG = (runG + zg) >>> 1;
-        }
-        blocks.push({ Kint, Gint });
-        prev2Kint = prevKint; prev2Gint = prevGint;
-        prevKint = Kint; prevGint = Gint;
-    }
-    return blocks;
-}
-
-function decodeKGTrajectoryRunAware(
-    kgBitsData: Uint8Array, numBlocks: number,
-    metaKK: number = 0, metaGK: number = 0,
-): { Kint: number; Gint: number }[] {
-    const br = new BitReader(kgBitsData);
-    const blocks: { Kint: number; Gint: number }[] = [];
-    let prevKint = 0, prevGint = 0, runK = 0, runG = 0;
-    let prev2Kint = 0, prev2Gint = 0;
-    let runZ = 0;
-    for (let b = 0; b < numBlocks; ) {
-        const tag = br.read(2);
-        if (tag === 0 || tag === 1) {
-            const zeroRun = tag === 0 ? 1 : (() => {
-                const mRun = br.read(4);
-                const code = riceDecode(br, mRun);
-                runZ = (runZ + code) >>> 1;
-                return code + 2;
-            })();
-            for (let r = 0; r < zeroRun && b < numBlocks; r++, b++) {
-                const velK = prevKint - prev2Kint;
-                const velG = prevGint - prev2Gint;
-                const Kint = prevKint + ((metaKK * velK + 32) >> 6);
-                const Gint = prevGint + ((metaGK * velG + 32) >> 6);
-                blocks.push({ Kint, Gint });
-                prev2Kint = prevKint; prev2Gint = prevGint;
-                prevKint = Kint; prevGint = Gint;
-            }
-            continue;
-        }
-        let Kint: number, Gint: number;
-        if (tag === 3) {
-            Kint = (br.read(16) << 16) >> 16;
-            Gint = (br.read(16) << 16) >> 16;
-            runK = 0; runG = 0;
-        } else {
-            const kChanged = br.read(1);
-            const gChanged = br.read(1);
-            let zk = 0, zg = 0;
-            if (kChanged) {
-                const mK = br.read(4);
-                zk = riceDecode(br, mK);
-            }
-            if (gChanged) {
-                const mG = br.read(4);
-                zg = riceDecode(br, mG);
-            }
-            const velK = prevKint - prev2Kint;
-            const velG = prevGint - prev2Gint;
-            const predK = prevKint + ((metaKK * velK + 32) >> 6);
-            const predG = prevGint + ((metaGK * velG + 32) >> 6);
-            Kint = predK + zigzagDec(zk);
-            Gint = predG + zigzagDec(zg);
-            runK = (runK + zk) >>> 1;
-            runG = (runG + zg) >>> 1;
-        }
-        blocks.push({ Kint, Gint });
-        prev2Kint = prevKint; prev2Gint = prevGint;
-        prevKint = Kint; prevGint = Gint;
-        b++;
-    }
-    return blocks;
-}
-
-function decodeKGTrajectory(
-    kgBitsData: Uint8Array, numBlocks: number,
-    metaKK: number = 0, metaGK: number = 0,
-): { Kint: number; Gint: number }[] {
-    if (kgBitsData.length === 0) return [];
-    const mode = kgBitsData[0];
-    const body = kgBitsData.subarray(1);
-    if (mode === KG_TRAJ_WIRE_RUN_AWARE) return decodeKGTrajectoryRunAware(body, numBlocks, metaKK, metaGK);
-    return decodeKGTrajectoryLegacy(body, numBlocks, metaKK, metaGK);
-}
 
 // â”€â”€ ChaCha20 + SipHash-lite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -4820,38 +3729,6 @@ function readF32LE(data: Uint8Array, off: number): number {
     return new Float32Array(b)[0];
 }
 
-// â”€â”€ write K/G trajectory to WASM memory for test inspection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-//
-// Tests read KG_BUF as Int32Array [Kint, Gint, Kint, Gint, ...] per block.
-// numBlocks = ceil(numSamples/32) * numChannels (channels interleaved by block).
-// Synchronous â€” called with an already-resolved wasm instance so the view
-// is never detached by a concurrent memory.grow.
-
-function writeKGToWasmSync(
-    wasm: HarmonicWasmExports,
-    kgPerChannel: { Kint: number; Gint: number }[][],
-    numSamples: number,
-): void {
-    const numChannels = kgPerChannel.length;
-    const numBlocks   = Math.ceil(numSamples / BLOCK_LEN);
-    const bytesNeeded = KG_BUF + numBlocks * numChannels * 8 + 1024;
-    ensureWasmMem(wasm, bytesNeeded);
-
-    // Create view AFTER potential grow so it's never detached.
-    const view = new Int32Array(wasm.memory.buffer);
-    let off = KG_BUF >> 2;
-
-    // Interleave: block 0 ch0, block 0 ch1, block 1 ch0, block 1 ch1, ...
-    for (let b = 0; b < numBlocks; b++) {
-        for (let ch = 0; ch < numChannels; ch++) {
-            const kg = kgPerChannel[ch];
-            if (b < kg.length) {
-                view[off++] = kg[b].Kint;
-                view[off++] = kg[b].Gint;
-            }
-        }
-    }
-}
 
 // â”€â”€ prediction via WASM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -4884,34 +3761,6 @@ function wasmPredictEnc(
     return readI32FromWasm(wasm, residOff, n);
 }
 
-function wasmPredictDec(
-    wasm: HarmonicWasmExports,
-    residuals: Int32Array,
-    blocks: { K: number; G: number }[],
-    stateOffset: number,
-    outOffset: number,
-    qstep: number = 1,
-): Int32Array {
-    const n = residuals.length, nBlocks = blocks.length;
-    const residOff = WASM_BUF_A;
-    const kgOff    = (Math.max(outOffset + n * 4, residOff + n * 4) + 15) & ~15;
-    ensureWasmMem(wasm, kgOff + nBlocks * 8 + 64);
-
-    copyI32ToWasm(wasm, residOff, residuals);
-
-    const kgView = new Float32Array(wasm.memory.buffer, kgOff, nBlocks * 2);
-    for (let i = 0; i < nBlocks; i++) {
-        kgView[i * 2]     = blocks[i].K;
-        kgView[i * 2 + 1] = blocks[i].G;
-    }
-
-    const sv = new Float32Array(wasm.memory.buffer, stateOffset, 2);
-    sv[0] = 0; sv[1] = 0;
-    new Int32Array(wasm.memory.buffer, stateOffset + 8, 1)[0] = qstep;
-
-    wasm.predict_dec(residOff, n, kgOff, stateOffset, outOffset);
-    return readI32FromWasm(wasm, outOffset, n);
-}
 
 // â”€â”€ public encode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
@@ -4919,42 +3768,31 @@ function wasmPredictDec(
 //   header (12 B, cleartext):
 //     numSamples:u32  sampleRate:u32  flags:u16  numCh:u8  numLevels:u8
 //     flags: quality(bits 15..8) | depth(bits 6..5) | layout(bits 4..3)
-//            | BURG_FLAG(0x04) | HARMONIC_FLAG(0x02) | compressed(0x01)
-//     layout: 00=channel (auto M/S or Hadamard), 01=object-based
+//            | compressed(0x01)
+//     layout: 00=channel, 01=object-based
 //     depth:  00=float32, 01=16-bit, 10=24-bit, 11=reserved
 //   encrypted payload (ChaCha20):
-//     framePeak: f32, scalar: u32
+//     framePeak:f32  scalar:u32
 //     if layout == object:
 //       for each channel: azimuth:f32 elevation:f32 distance:f32
-//     for each channel: refIndex:u8 (0xFF = independent, else ref channel)
-//     envelopeMask: bytes
-//     for each coupled channel (refIndex != 0xFF): W:i16 (coupling coefficient)
-//     effectiveChannels: u8
+//     for each channel: refIndex:u8 (0xFF = independent)
+//     envelopeMask: ceil(numCh/8) bytes
+//     effectiveChannels:u8
 //     for each effective channel:
 //       if envelopeMask bit set:
-//         envBlockLen:u32 envCount:u32 envWireLen:u32 envWire
-//       burgOrigLen:u32                      (0 = no Burg for this channel)
-//       if burgOrigLen > 0:
-//         burgCompLen:u32  burgData          (Logos-compressed Burg trajectory)
-//       metaKK:u8  metaGK:u8                (trajectory velocity-carry coefficients, signed+128)
-//       kgOrigLen:u32  kgCompLen:u32         (Logos-compressed Rice-coded K/G trajectory)
-//       kgData: bytes
-//       useMicro:u8                          (1 = micro-oscillator active)
-//       if useMicro:
-//         metaMK:u8  metaMG:u8              (micro-osc meta-prediction)
-//         kg2OrigLen:u32  kg2CompLen:u32     (Logos-compressed micro-osc trajectory)
-//         kg2Data: bytes
-//       useDelta:u8                          (1 = delta pre-filter active)
-//       useTrajectory:u8                     (1 = Farmer-Sidorowich active)
-//       harmonicHeader: u16(numVoiced) u8(maxH)  (0,0,0 = no harmonics)
-//       if numVoiced > 0:
-//         voicedMask + cos/sin fields        (2D MÃ¶bius + per-field plane encoding)
-//       numSubbands: u8                      (1 if wavelet skipped, 4 if active)
+//         envBlockLen:u32  envCount:u32  envWireLen:u32  envData
+//       if coupled (refIndex != 0xFF):
+//         active:u8  Wint_lo:u8  Wint_hi:u8
+//       postFilterOrder:u8 (0 = off)
+//       if postFilterOrder > 0:
+//         [LP_coeff_i + 128 : u8] x order
+//       coeffOrigLen:u32  coeffCompLen:u32  coeffData
+//       numSubbands:u8
 //       for each subband:
-//         sbLen:u32  planeCount:u8           (0=zeroed, 1=lo, 2=mid+lo, 3=all)
-//       globalMaxPlane: u8
-//       for each active plane level:
-//         compLen:u32  data                  (Logos-encoded concatenated plane bytes)
+//         sbLen:u32  planeCount:u8
+//       globalMaxPlane:u8
+//       for each active plane:
+//         compLen:u32  planeData             (Logos-encoded concatenated bytes)
 //   mac0:u32  mac1:u32                       (SipHash-lite 64-bit over ciphertext)
 
 export interface HarmonicOptions {
@@ -4962,8 +3800,6 @@ export interface HarmonicOptions {
     quality?: number;
     /** number of interleaved channels. default 1. */
     numChannels?: number;
-    /** cross-frame streaming state (trajectory predictor window). */
-    state?: HarmonicState;
     /** source bit depth: 16 or 24. overrides quality with the minimum
      *  scalar needed to preserve all source bits. omit for float32 sources. */
     bitDepth?: number;
@@ -5365,8 +4201,8 @@ export async function encodeHarmonic(
         const varBlocks = varOrderFitAllBlocks(data, numSamples);
         let residuals = varOrderPredictEnc(data, numSamples, varBlocks);
 
-        // global post-filter: second-stage prediction on Burg residuals.
-        // tries single-lag and multi-lag Burg candidates, picks the best.
+        // global post-filter: sparse Yule-Walker on Burg residuals.
+        // tries single-lag and multi-lag candidates, picks the cheapest.
         const sbNoFilter = scoreSubbandPath(wasm, residuals, numLevels);
         const costNoFilter = trialLogosSize(sbNoFilter);
 
