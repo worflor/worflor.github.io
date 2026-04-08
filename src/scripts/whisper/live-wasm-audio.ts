@@ -181,9 +181,6 @@ const F32_DEMOTE_F64    = [0xb6];
 // becomes the embedding codec. the tower collapses.
 //
 // prediction state per channel: prev1:f32, prev2:f32, qstep:i32, pad (16 B).
-const WASM_STATE_STRIDE = 0x10;
-function wasmEncState(ch: number): number { return ch * WASM_STATE_STRIDE; }
-function wasmDecState(ch: number): number { return 0x1000 + ch * WASM_STATE_STRIDE; }
 
 // K/G inspection buffer: fit_all_blocks writes Int32 [Kint, Gint] pairs here.
 const KG_BUF = 0x2000;
@@ -940,11 +937,25 @@ const QUALITY_BITS_MAX = 15;
 // half-cycle, giving the Cramer LS enough phase diversity to resolve K and G.
 export const BLOCK_LEN = 32;
 
+// sample-rate-adaptive block length for the varOrder pipeline.
+// targets ~0.67ms blocks (32 @ 48kHz), clamped to powers of 2 in [8, 128].
+// the WASM scorer still uses the fixed BLOCK_LEN = 32 above.
+export function computeBlockLen(sampleRate: number): number {
+    const raw = sampleRate / 1500;
+    // round to nearest power of 2
+    const p = Math.round(Math.log2(raw));
+    const v = 1 << Math.max(0, p);
+    return Math.max(8, Math.min(128, v));
+}
+
+// adaptive max prediction order: half the block length, capped at 16
+function computeMaxOrder(blockLen: number): number {
+    return Math.min(16, blockLen >> 1);
+}
+
 // dead-zone: suppress K/G jitter â‰¤ 2 steps = 2Ïƒ of quantization noise.
 // (quantization step = 1/COEFF_SCALE; RMS noise = step/âˆš12 â‰ˆ 0.29 steps; 2Ïƒ â‰ˆ 2 steps.)
 // both encoder and decoder use the committed (dead-zoned) values for prediction.
-const DEAD_K = 2;
-const DEAD_G = 2;
 
 const HEADER_SIZE = 12;  // numSamples:u32 + sampleRate:u32 + flags:u16 + numCh:u8 + numLevels:u8
 const MAC_SIZE    = 8;   // SipHash-lite 64-bit MAC (mac0:u32 + mac1:u32)
@@ -954,6 +965,7 @@ const MAC_SIZE    = 8;   // SipHash-lite 64-bit MAC (mac0:u32 + mac1:u32)
 //   00 = channel (auto: mono, stereo M/S, or Hadamard for N>2)
 //   01 = object-based (each channel = independent mono object + 3D position)
 const LAYOUT_MASK  = 0x18;       // bits 4-3
+const MS_ACTIVE    = 0x04;       // bit 2: mid/side stereo active
 
 function qualityToScalarIdeal(quality: number): number {
     const q01 = Math.max(0, Math.min(1, quality / 100));
@@ -1034,20 +1046,20 @@ export function lossyFramePeak(samples: Float32Array, scalar: number): number {
     return Math.exp((1 - alpha) * Math.log(peak) + alpha * Math.log(rms));
 }
 
-function envelopeBlockLenFromBurgSuperLen(burgSuperLen: number): number {
-    const low = Math.max(BLOCK_LEN, 1);
+function envelopeBlockLenFromBurgSuperLen(burgSuperLen: number, blockLen: number): number {
+    const low = Math.max(blockLen, 1);
     const high = Math.max(low, burgSuperLen);
     const logMid = 0.5 * (Math.log2(low) + Math.log2(high));
     const len = 1 << Math.round(logMid);
     return Math.max(low, Math.min(high, len));
 }
 
-function envelopeBlockLenCandidates(baseLen: number, numSamples: number): number[] {
+function envelopeBlockLenCandidates(baseLen: number, numSamples: number, blockLen: number): number[] {
     const candidates: number[] = [];
-    for (let len = Math.max(BLOCK_LEN, baseLen); len * 2 <= numSamples; len <<= 1) {
+    for (let len = Math.max(blockLen, baseLen); len * 2 <= numSamples; len <<= 1) {
         candidates.push(len);
     }
-    return candidates.length > 0 ? candidates : [Math.max(BLOCK_LEN, Math.min(baseLen, numSamples))];
+    return candidates.length > 0 ? candidates : [Math.max(blockLen, Math.min(baseLen, numSamples))];
 }
 
 function adaptiveEnvelopeLevels(count: number): number {
@@ -1095,7 +1107,7 @@ function encodeEnvelopeTrajectory(
             const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
             if (zz > maxZZ) maxZZ = zz;
         }
-        const pc = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
+        const pc = planeCount(maxZZ);
         sbPlaneCount.push(pc);
         if (pc > globalMaxPlane) globalMaxPlane = pc;
     }
@@ -1498,18 +1510,11 @@ export const SURROUND_LAYOUTS: Record<string, SpatialObject[]> = {
 // dimensionless â€” only the analysis window lengths need to track
 // physical time.
 
-function adaptiveBurgSuperLen(sampleRate: number): number {
-    // target: ~5.3ms (256 samples at 48kHz). must be multiple of BLOCK_LEN.
+function adaptiveBurgSuperLen(sampleRate: number, blockLen: number): number {
+    // target: ~5.3ms (256 samples at 48kHz). must be multiple of blockLen.
     const target = Math.round(sampleRate * 0.00533);
-    const blocks = Math.max(4, Math.round(target / BLOCK_LEN));
-    return blocks * BLOCK_LEN;
-}
-
-function adaptiveGoertzelLen(sampleRate: number): number {
-    // target: ~21.3ms (1024 samples at 48kHz). must be multiple of BLOCK_LEN.
-    const target = Math.round(sampleRate * 0.02133);
-    const blocks = Math.max(8, Math.round(target / BLOCK_LEN));
-    return blocks * BLOCK_LEN;
+    const blocks = Math.max(4, Math.round(target / blockLen));
+    return blocks * blockLen;
 }
 
 export function adaptiveWaveletLevels(sampleRate: number, numSamples: number): number {
@@ -1601,30 +1606,9 @@ function wasmFitAllBlocks(
  *  delta-stream highly compressible (runs of zeros). the grouping factor
  *  scales inversely with scalar: low Q â†’ large groups â†’ fewer trajectory changes.
  *  at Q=80+ (scalar >= 4096), grouping=1 (no thinning). */
-function thinTrajectory(
-    blocks: { K: number; G: number; Kint: number; Gint: number }[],
-    scalar: number,
-): void {
-    // smooth thinning: group size scales with 1/sqrt(scalar).
-    // at scalar=4096 (Q=80): group=1. at scalar=64 (Q=40): group=4.
-    // at scalar=8 (Q=20): group=11. eliminates bitrate stair-steps.
-    const group = Math.max(1, Math.round(32 / Math.sqrt(scalar)));
-    if (group <= 1) return;
-
-    for (let i = 0; i < blocks.length; i += group) {
-        const anchor = blocks[i];
-        for (let j = 1; j < group && i + j < blocks.length; j++) {
-            blocks[i + j].K = anchor.K;
-            blocks[i + j].G = anchor.G;
-            blocks[i + j].Kint = anchor.Kint;
-            blocks[i + j].Gint = anchor.Gint;
-        }
-    }
-}
-
 /** free-energy proxy for choosing between integer lattices.
  *  the encoder already knows two things before entropy coding:
- *    1. the AR(2) residual rate surrogate
+ *    1. the varOrder residual rate (plane cost + coefficient entropy)
  *    2. the quantization distortion in the shaped domain
  *
  *  convert distortion into "equivalent bits" via the Gaussian
@@ -1639,17 +1623,16 @@ function thinTrajectory(
  *  is the same variational choice with no tuned constants.
  */
 function quantizerFreeEnergy(
-    wasm: HarmonicWasmExports,
     data: Int32Array,
     distortionEnergy: number,
-    scalar: number,
+    blockLen: number,
+    maxOrder: number,
 ): number {
     const n = data.length;
     if (n === 0) return 0;
-    const kgBlocks = wasmFitAllBlocks(wasm, data, n);
-    thinTrajectory(kgBlocks, scalar);
-    const residuals = wasmPredictEnc(wasm, data, kgBlocks, wasmEncState(255));
-    const rateBits = estimateRiceCost(residuals, n) + estimateTrajectoryBits(kgBlocks);
+    const blocks = varOrderFitAllBlocks(data, n, blockLen, maxOrder);
+    const residuals = varOrderPredictEnc(data, n, blocks, blockLen, maxOrder);
+    const rateBits = estimatePlaneCost(residuals) + estimateCoeffBits(blocks);
     const mse = Math.max(distortionEnergy / n, 1e-12);
     return rateBits + 0.5 * n * Math.log2(mse);
 }
@@ -1755,6 +1738,8 @@ function quantizeScaledWithOrbitalGuide(
     shapeNoise: boolean,
     nsK: number,
     nsG: number,
+    varBlockLen: number,
+    varMaxOrder: number,
 ): { data: Int32Array; energy: number } {
     const numSamples = rawScaled.length;
     const coarse = new Int32Array(numSamples);
@@ -1968,8 +1953,8 @@ function quantizeScaledWithOrbitalGuide(
         }
     }
 
-    const orbitalScore = quantizerFreeEnergy(wasm, orbital, orbitalDistEnergy, scalar);
-    const fractalScore = quantizerFreeEnergy(wasm, q, fractalDistEnergy, scalar);
+    const orbitalScore = quantizerFreeEnergy(orbital, orbitalDistEnergy, varBlockLen, varMaxOrder);
+    const fractalScore = quantizerFreeEnergy(q, fractalDistEnergy, varBlockLen, varMaxOrder);
     if (fractalScore < orbitalScore) return { data: q, energy };
 
     let orbitalEnergy = 0;
@@ -1983,10 +1968,11 @@ function quantizeChannelWithOrbitalGuide(
     invPeak: number,
     shapeNoise: boolean, nsK: number, nsG: number,
     numLevels: number, scalar: number,
+    varBlockLen: number, varMaxOrder: number,
 ): { data: Int32Array; energy: number } {
     const rawScaled = new Float32Array(numSamples);
     for (let i = 0; i < numSamples; i++) rawScaled[i] = samples[i * numChannels + ch] * invPeak;
-    return quantizeScaledWithOrbitalGuide(wasm, rawScaled, numLevels, scalar, shapeNoise, nsK, nsG);
+    return quantizeScaledWithOrbitalGuide(wasm, rawScaled, numLevels, scalar, shapeNoise, nsK, nsG, varBlockLen, varMaxOrder);
 }
 
 function buildAmplitudeActionTrajectory(
@@ -2096,6 +2082,8 @@ function quantizeChannelWithAmplitudeAxis(
     nsK: number,
     nsG: number,
     numLevels: number,
+    varBlockLen: number,
+    varMaxOrder: number,
 ): {
     candidates: AmplitudeCandidate[];
     baselineFitBits: number;
@@ -2106,7 +2094,7 @@ function quantizeChannelWithAmplitudeAxis(
     const candidates: AmplitudeCandidate[] = [];
     let baselineFitBits = Number.POSITIVE_INFINITY;
     const carrierLimit = predictorCarrierLimit();
-    for (const blockLen of envelopeBlockLenCandidates(envBlockLen, numSamples)) {
+    for (const blockLen of envelopeBlockLenCandidates(envBlockLen, numSamples, varBlockLen)) {
         const rawEnvLog = buildAmplitudeActionTrajectory(sourceScaled, guide, numSamples, blockLen, scalar);
         if (!rawEnvLog) continue;
         baselineFitBits = Math.min(baselineFitBits, envelopeResidualBits(rawEnvLog, null));
@@ -2136,7 +2124,7 @@ function quantizeChannelWithAmplitudeAxis(
                 carrierScaled[i] = x;
             }
             if (!valid) continue;
-            const quantized = quantizeScaledWithOrbitalGuide(wasm, carrierScaled, numLevels, scalar, shapeNoise, nsK, nsG);
+            const quantized = quantizeScaledWithOrbitalGuide(wasm, carrierScaled, numLevels, scalar, shapeNoise, nsK, nsG, varBlockLen, varMaxOrder);
             const envWire = encodeEnvelopeTrajectory(wasm, envLog);
             const extraBits = envWire.length * 8 + 96 + 1;
             const fitBits = envelopeResidualBits(rawEnvLog, envLog);
@@ -2168,7 +2156,7 @@ function scoreSubbandCost(subbands: Int32Array[]): number {
                 const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
                 if (zz > maxZZ) maxZZ = zz;
             }
-            const pc = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
+            const pc = planeCount(maxZZ);
             sbPlaneCount.push(pc);
             if (pc > globalMaxPlane) globalMaxPlane = pc;
         }
@@ -2252,7 +2240,7 @@ function trialLogosSize(subbands: Int32Array[]): number {
             const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
             if (zz > maxZZ) maxZZ = zz;
         }
-        const pc = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
+        const pc = planeCount(maxZZ);
         sbPlaneCount.push(pc);
         if (pc > globalMaxPlane) globalMaxPlane = pc;
     }
@@ -2296,6 +2284,8 @@ function scoreQuantizedChannel(
     refData?: Int32Array,
     refProjected?: Float32Array,
     extraBits: number = 0,
+    blockLen: number = BLOCK_LEN,
+    maxOrder: number = 10,
 ) : { rateBits: number; objective: number; projectedCarrier: Float32Array } {
     const n = data.length;
     if (n === 0) {
@@ -2316,10 +2306,10 @@ function scoreQuantizedChannel(
                 decoupled[i] = working[i] - (wr >= 0 ? (wr + 0.5) | 0 : (wr - 0.5) | 0);
             }
             // quick cost comparison
-            const blocksOrig = varOrderFitAllBlocks(working, n);
-            const residOrig = varOrderPredictEnc(working, n, blocksOrig);
-            const blocksDec = varOrderFitAllBlocks(decoupled, n);
-            const residDec = varOrderPredictEnc(decoupled, n, blocksDec);
+            const blocksOrig = varOrderFitAllBlocks(working, n, blockLen, maxOrder);
+            const residOrig = varOrderPredictEnc(working, n, blocksOrig, blockLen, maxOrder);
+            const blocksDec = varOrderFitAllBlocks(decoupled, n, blockLen, maxOrder);
+            const residDec = varOrderPredictEnc(decoupled, n, blocksDec, blockLen, maxOrder);
             const costOrig = estimatePlaneCost(residOrig) + estimateCoeffBits(blocksOrig) / 8;
             const costDec = estimatePlaneCost(residDec) + estimateCoeffBits(blocksDec) / 8;
             if (costDec + 2 < costOrig) {
@@ -2331,8 +2321,8 @@ function scoreQuantizedChannel(
     }
 
     // unified variable-order prediction
-    const varBlocks = varOrderFitAllBlocks(working, n);
-    const residuals = varOrderPredictEnc(working, n, varBlocks);
+    const varBlocks = varOrderFitAllBlocks(working, n, blockLen, maxOrder);
+    const residuals = varOrderPredictEnc(working, n, varBlocks, blockLen, maxOrder);
 
     // coefficient stream cost
     const { compressed: coeffComp } = encodeCoeffStream(varBlocks);
@@ -2346,7 +2336,7 @@ function scoreQuantizedChannel(
 
     // reconstruction for distortion measurement
     const scoredResiduals = waveletReconstruct(wasm, subbands);
-    const reconstructed = varOrderPredictDec(scoredResiduals, n, varBlocks);
+    const reconstructed = varOrderPredictDec(scoredResiduals, n, varBlocks, blockLen, maxOrder);
 
     if (couplingW !== undefined && refData) {
         for (let i = 0; i < n; i++) {
@@ -2358,7 +2348,7 @@ function scoreQuantizedChannel(
     // projection: refine decoded integers within quantization cells
     const projectedCarrier = Float32Array.from(reconstructed);
     sanitizeProjectionToCell(projectedCarrier, reconstructed);
-    varOrderCellProject(projectedCarrier, reconstructed, varBlocks);
+    varOrderCellProject(projectedCarrier, reconstructed, varBlocks, blockLen, maxOrder);
     sanitizeProjectionToCell(projectedCarrier, reconstructed);
     if (couplingW !== undefined && refData && refProjected) {
         couplingCellProject(projectedCarrier, reconstructed, refProjected, refData, couplingW);
@@ -2402,34 +2392,6 @@ function sanitizeProjectionToCell(projected: Float32Array, data: Int32Array): vo
 }
 
 // â”€â”€ CDF 5/3 wavelet â€” TypeScript orchestration (calls WASM kernels) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-function wasmWaveletFwd(wasm: HarmonicWasmExports, data: Int32Array): { ll: Int32Array; hh: Int32Array } {
-    const n = data.length;
-    if (n < 2) return { ll: data.slice(), hh: new Int32Array(0) };
-    const srcOff = WASM_BUF_A;
-    const dstOff = srcOff + n * 4;
-    ensureWasmMem(wasm, dstOff + n * 4 + 64);
-    copyI32ToWasm(wasm, srcOff, data);
-    const nlp = wasm.wavelet_fwd(srcOff, n, dstOff);
-    const nhp = n - nlp;
-    return {
-        ll: readI32FromWasm(wasm, dstOff, nlp),
-        hh: readI32FromWasm(wasm, dstOff + nlp * 4, nhp),
-    };
-}
-
-function wasmWaveletInv(wasm: HarmonicWasmExports, ll: Int32Array, hh: Int32Array): Int32Array {
-    const nlp = ll.length, nhp = hh.length, n = nlp + nhp;
-    if (nhp === 0) return ll.slice();
-    const llOff  = WASM_BUF_A;
-    const hhOff  = llOff + nlp * 4;
-    const dstOff = hhOff + nhp * 4;
-    ensureWasmMem(wasm, dstOff + n * 4 + 64);
-    copyI32ToWasm(wasm, llOff, ll);
-    copyI32ToWasm(wasm, hhOff, hh);
-    wasm.wavelet_inv(llOff, nlp, hhOff, nhp, dstOff);
-    return readI32FromWasm(wasm, dstOff, n);
-}
 
 /** Multi-level CDF 5/3 decomposition. Returns [LL_deepest, HH_deepest, ..., HH_1].
  *  runs all levels in WASM memory with a single copy-in, avoiding the per-level
@@ -2503,110 +2465,16 @@ function waveletReconstruct(wasm: HarmonicWasmExports, subbands: Int32Array[]): 
 
 function zigzagEnc(v: number): number { return (v << 1) ^ (v >> 31); }
 function zigzagDec(z: number): number { return (z >>> 1) ^ -(z & 1); }
-
-/** Adaptive plane encoding: skip zero byte planes to reduce Logos calls.
- *  planeCount=1 (lo only) when max zigzag < 256,
- *  planeCount=2 (mid+lo) when < 65536,
- *  planeCount=3 (top+mid+lo) otherwise.
- *  Returns { planeCount, planes[], origLen } where planes are Logos-encoded. */
-function encodeResidualPlanes(residuals: Int32Array): {
-    topEnc: Uint8Array; midEnc: Uint8Array; loEnc: Uint8Array;
-    origLen: number; planeCount: number;
-} {
-    const n = residuals.length;
-    if (n === 0) {
-        const empty = new Uint8Array(0);
-        return { topEnc: empty, midEnc: empty, loEnc: empty, origLen: 0, planeCount: 1 };
-    }
-
-    // scan for max zigzag value to determine plane count
-    let maxZZ = 0;
-    for (let i = 0; i < n; i++) {
-        const v = residuals[i];
-        const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
-        if (zz > maxZZ) maxZZ = zz;
-    }
-
-    const planeCount = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
-    const empty = new Uint8Array(0);
-
-    if (planeCount === 1) {
-        // lo plane only â€” skip top and mid entirely
-        const lo = new Uint8Array(n);
-        for (let i = 0; i < n; i++) {
-            const v = residuals[i];
-            lo[i] = (v >= 0 ? v * 2 : (-v * 2 - 1)) & 0xFF;
-        }
-        return { topEnc: empty, midEnc: empty, loEnc: encode0D(lo), origLen: n, planeCount };
-    }
-
-    if (planeCount === 2) {
-        // mid + lo planes â€” skip top
-        const mid = new Uint8Array(n), lo = new Uint8Array(n);
-        for (let i = 0; i < n; i++) {
-            const v = residuals[i];
-            const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
-            mid[i] = (zz >>> 8) & 0xFF;
-            lo[i]  =  zz        & 0xFF;
-        }
-        return { topEnc: empty, midEnc: encode0D(mid), loEnc: encode0D(lo), origLen: n, planeCount };
-    }
-
-    // planeCount === 3: all planes
-    const top = new Uint8Array(n), mid = new Uint8Array(n), lo = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-        const z = zigzagEnc(residuals[i]) >>> 0;
-        top[i] = (z >>> 16) & 0xFF;
-        mid[i] = (z >>>  8) & 0xFF;
-        lo[i]  =  z         & 0xFF;
-    }
-    return { topEnc: encode0D(top), midEnc: encode0D(mid), loEnc: encode0D(lo), origLen: n, planeCount };
-}
-
-function decodeResidualPlanes(
-    topEnc: Uint8Array, midEnc: Uint8Array, loEnc: Uint8Array,
-    origLen: number, planeCount: number = 3,
-): Int32Array {
-    if (origLen === 0) return new Int32Array(0);
-    const out = new Int32Array(origLen);
-
-    if (planeCount === 1) {
-        const lo = decode0D(loEnc, origLen);
-        for (let i = 0; i < origLen; i++) out[i] = zigzagDec(lo[i]);
-        return out;
-    }
-
-    if (planeCount === 2) {
-        const mid = decode0D(midEnc, origLen);
-        const lo  = decode0D(loEnc,  origLen);
-        for (let i = 0; i < origLen; i++) {
-            const z = ((mid[i] << 8) | lo[i]) >>> 0;
-            out[i] = zigzagDec(z);
-        }
-        return out;
-    }
-
-    // planeCount === 3
-    const top = decode0D(topEnc, origLen);
-    const mid = decode0D(midEnc, origLen);
-    const lo  = decode0D(loEnc,  origLen);
-    for (let i = 0; i < origLen; i++) {
-        const z = ((top[i] << 16) | (mid[i] << 8) | lo[i]) >>> 0;
-        out[i] = zigzagDec(z);
-    }
-    return out;
-}
-
-
+function planeCount(maxZZ: number): number { return maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3; }
 
 // ── Burg analysis primitives ──────────────────────────────────────────
 
 function quantRC(k: number): number {
-    return Math.max(-127, Math.min(127, Math.round(k * 127)));
+    return Math.max(-511, Math.min(511, Math.round(k * 511)));
 }
 
 function dequantRC(q: number): number {
-    return q / 127;
+    return q / 511;
 }
 
 /** Burg's method: compute reflection coefficients for data[start..end). */
@@ -2676,39 +2544,37 @@ function reflToLP(k: Float64Array, order: number): Float64Array {
 //   residual = sample - pred
 // state tracks reconstructed values, so encoder and decoder agree exactly.
 
-const VAR_MAX_ORDER = 10;
-const VAR_ORDERS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const VAR_REUSE_ORDER = 0xFF; // marker: reuse previous block's coefficients
 
 interface VarBlock {
     order: number;
-    quantK: Int8Array;      // quantized reflection coefficients
+    quantK: Int16Array;     // quantized reflection coefficients (10-bit, ±511)
     a: Float64Array;        // LP coefficients (from quantized reflections)
 }
 
-/** fit variable-order Burg on all 32-sample blocks.
+/** fit variable-order Burg on adaptive-length blocks.
  *  returns one VarBlock per block with the optimal order and coefficients.
  *  state carries across blocks (prediction is continuous). */
 export function varOrderFitAllBlocks(
-    data: Int32Array, numSamples: number,
+    data: Int32Array, numSamples: number, blockLen: number, maxOrder: number,
 ): VarBlock[] {
-    const numBlocks = Math.ceil(numSamples / BLOCK_LEN);
+    const numBlocks = Math.ceil(numSamples / blockLen);
     const blocks: VarBlock[] = [];
-    const state = new Float64Array(VAR_MAX_ORDER);
+    const state = new Float64Array(maxOrder);
 
     for (let b = 0; b < numBlocks; b++) {
-        const bStart = b * BLOCK_LEN;
-        const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
+        const bStart = b * blockLen;
+        const bEnd = Math.min(bStart + blockLen, numSamples);
         const bLen = bEnd - bStart;
 
         // fit Burg at maximum feasible order
-        const maxOrd = Math.min(VAR_MAX_ORDER, Math.floor(bLen / 3));
+        const maxOrd = Math.min(maxOrder, Math.floor(bLen / 3));
         const rawK = maxOrd >= 1 ? burgAnalysis(data, bStart, bEnd, maxOrd) : new Float64Array(0);
 
         // evaluate each candidate order via MDL
         let bestOrder = 0;
         let bestCost = Infinity;
-        let bestQuantK = new Int8Array(0);
+        let bestQuantK = new Int16Array(0);
         let bestA = new Float64Array(0);
         let bestReuse = false;
 
@@ -2721,9 +2587,8 @@ export function varOrderFitAllBlocks(
         }
 
         // try all candidate orders
-        for (const tryOrder of VAR_ORDERS) {
-            if (tryOrder === 0 || tryOrder > maxOrd) continue;
-            const qk = new Int8Array(tryOrder);
+        for (let tryOrder = 1; tryOrder <= maxOrd; tryOrder++) {
+            const qk = new Int16Array(tryOrder);
             const dqk = new Float64Array(tryOrder);
             for (let m = 0; m < tryOrder; m++) {
                 qk[m] = quantRC(rawK[m]);
@@ -2742,7 +2607,13 @@ export function varOrderFitAllBlocks(
                 savedState[0] = val;
             }
             const errVar = Math.max(1, errEnergy / bLen);
-            const cost = tryOrder * 8 + bLen * Math.log2(errVar);
+            // entropy-estimated MDL: actual per-coefficient cost instead of fixed 8 bits
+            let coeffCost = 0;
+            for (let m = 0; m < tryOrder; m++) {
+                const absQ = qk[m] < 0 ? -qk[m] : qk[m];
+                coeffCost += 2 + Math.log2(1 + absQ);
+            }
+            const cost = coeffCost + bLen * Math.log2(errVar);
             if (cost < bestCost) {
                 bestCost = cost;
                 bestOrder = tryOrder;
@@ -2785,7 +2656,7 @@ export function varOrderFitAllBlocks(
 
         // advance state: always track original data
         for (let i = 0; i < bLen; i++) {
-            for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
+            for (let m = maxOrder - 1; m > 0; m--) state[m] = state[m - 1];
             state[0] = data[bStart + i];
         }
     }
@@ -2794,12 +2665,18 @@ export function varOrderFitAllBlocks(
 }
 
 /** estimate coefficient stream cost (bits) before Logos compression.
+ *  uses per-coefficient entropy estimate matching MDL criterion.
  *  reuse blocks (order=0xFF) contribute only the order byte, no coefficients. */
 export function estimateCoeffBits(blocks: VarBlock[]): number {
     let bits = 0;
     for (const b of blocks) {
         bits += 8; // order byte (always)
-        if (b.order !== VAR_REUSE_ORDER) bits += b.order * 8; // coefficients (fresh blocks only)
+        if (b.order !== VAR_REUSE_ORDER) {
+            for (let m = 0; m < b.order; m++) {
+                const absQ = b.quantK[m] < 0 ? -b.quantK[m] : b.quantK[m];
+                bits += 2 + Math.log2(1 + absQ);
+            }
+        }
     }
     return bits;
 }
@@ -2808,13 +2685,14 @@ export function estimateCoeffBits(blocks: VarBlock[]): number {
  *  uses a.length for prediction order (handles reuse blocks transparently). */
 export function varOrderPredictEnc(
     data: Int32Array, numSamples: number, blocks: VarBlock[],
+    blockLen: number, maxOrder: number,
 ): Int32Array {
     const residuals = new Int32Array(numSamples);
-    const state = new Float64Array(VAR_MAX_ORDER);
+    const state = new Float64Array(maxOrder);
 
     for (let b = 0; b < blocks.length; b++) {
-        const bStart = b * BLOCK_LEN;
-        const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
+        const bStart = b * blockLen;
+        const bEnd = Math.min(bStart + blockLen, numSamples);
         const { a } = blocks[b];
         const p = a.length;
 
@@ -2828,7 +2706,7 @@ export function varOrderPredictEnc(
             } else {
                 residuals[i] = val;
             }
-            for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
+            for (let m = maxOrder - 1; m > 0; m--) state[m] = state[m - 1];
             state[0] = val;
         }
     }
@@ -2840,13 +2718,14 @@ export function varOrderPredictEnc(
  *  uses a.length for prediction order (handles reuse blocks transparently). */
 function varOrderPredictDec(
     residuals: Int32Array, numSamples: number, blocks: VarBlock[],
+    blockLen: number, maxOrder: number,
 ): Int32Array {
     const data = new Int32Array(numSamples);
-    const state = new Float64Array(VAR_MAX_ORDER);
+    const state = new Float64Array(maxOrder);
 
     for (let b = 0; b < blocks.length; b++) {
-        const bStart = b * BLOCK_LEN;
-        const bEnd = Math.min(bStart + BLOCK_LEN, numSamples);
+        const bStart = b * blockLen;
+        const bEnd = Math.min(bStart + blockLen, numSamples);
         const { a } = blocks[b];
         const p = a.length;
 
@@ -2859,7 +2738,7 @@ function varOrderPredictDec(
             } else {
                 data[i] = residuals[i];
             }
-            for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
+            for (let m = maxOrder - 1; m > 0; m--) state[m] = state[m - 1];
             state[0] = data[i];
         }
     }
@@ -2884,29 +2763,37 @@ function varOrderPredictDec(
  *  the encoder picks whichever candidate saves the most through the full
  *  subband pipeline trial (wavelet + Logos).
  *
- *  wire format: order byte (0 = no filter) + order LP coefficient bytes (8-bit).
+ *  wire format: order byte (0 = no filter) + order LP coefficient pairs (10-bit).
  *  decoder applies the LP coefficients directly.
  *
  *  limitation: at low Q (scalar < ~100), the integer rounding in the prediction
  *  step dominates the prediction gain. the filter only helps at Q70+ where
  *  residuals have enough dynamic range for integer prediction to be meaningful. */
-const POST_FILTER_MAX_ORDER = 8;
 
 interface PostFilterCandidate {
     order: number;
-    quantLP: Int8Array; // quantized LP coefficients
+    quantLP: Int16Array; // quantized LP coefficients (10-bit, ±511)
 }
 
-function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFilterCandidate[] {
+function generatePostFilterCandidates(
+    residuals: Int32Array, n: number, scalar: number, blockLen: number,
+): PostFilterCandidate[] {
     if (n < 16) return [];
     const candidates: PostFilterCandidate[] = [];
 
-    // compute normalized autocorrelation at lags 1-8
+    // adaptive threshold: stricter at low scalar (where integer rounding dominates),
+    // more permissive at high scalar (where residuals have real structure)
+    const acThreshold = Math.max(0.05, Math.min(0.30, 0.25 / Math.sqrt(scalar / 100)));
+
+    // adaptive max order: scales with block length
+    const postFilterMaxOrder = Math.min(blockLen >> 1, 16);
+
+    // compute normalized autocorrelation at lags 1-maxOrder
     let r0 = 0;
     for (let i = 0; i < n; i++) r0 += residuals[i] * residuals[i];
     if (r0 <= 0) return [];
-    const r = new Float64Array(POST_FILTER_MAX_ORDER + 1);
-    for (let lag = 1; lag <= POST_FILTER_MAX_ORDER; lag++) {
+    const r = new Float64Array(postFilterMaxOrder + 1);
+    for (let lag = 1; lag <= postFilterMaxOrder; lag++) {
         let rk = 0;
         for (let i = lag; i < n; i++) rk += residuals[i] * residuals[i - lag];
         r[lag] = rk / r0;
@@ -2914,7 +2801,7 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
 
     // rank lags by |autocorrelation|
     const lagScores: { lag: number; ac: number }[] = [];
-    for (let lag = 1; lag <= POST_FILTER_MAX_ORDER; lag++) {
+    for (let lag = 1; lag <= postFilterMaxOrder; lag++) {
         lagScores.push({ lag, ac: r[lag] < 0 ? -r[lag] : r[lag] });
     }
     lagScores.sort((a, b) => b.ac - a.ac);
@@ -2922,16 +2809,16 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
     // candidate: single-lag at each of top-3 lags
     for (let rank = 0; rank < Math.min(3, lagScores.length); rank++) {
         const { lag, ac } = lagScores[rank];
-        if (ac < 0.14) continue; // threshold: ac² > 0.02
-        const alpha8 = Math.max(-127, Math.min(127, Math.round(r[lag] * 127)));
-        if (alpha8 === 0) continue;
-        const quantLP = new Int8Array(lag);
-        quantLP[lag - 1] = alpha8;
+        if (ac < acThreshold) continue;
+        const alpha10 = Math.max(-511, Math.min(511, Math.round(r[lag] * 511)));
+        if (alpha10 === 0) continue;
+        const quantLP = new Int16Array(lag);
+        quantLP[lag - 1] = alpha10;
         candidates.push({ order: lag, quantLP });
     }
 
     // candidate: sparse pair via Yule-Walker (top-2 lags)
-    if (lagScores.length >= 2 && lagScores[0].ac > 0.14 && lagScores[1].ac > 0.14) {
+    if (lagScores.length >= 2 && lagScores[0].ac > acThreshold && lagScores[1].ac > acThreshold) {
         const j = lagScores[0].lag;
         const k = lagScores[1].lag;
         const rjk = r[j > k ? j - k : k - j];
@@ -2940,9 +2827,9 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
             const a_j = (r[j] - r[k] * rjk) / det;
             const a_k = (r[k] - r[j] * rjk) / det;
             const maxLag = j > k ? j : k;
-            const quantLP = new Int8Array(maxLag);
-            quantLP[j - 1] = Math.max(-127, Math.min(127, Math.round(a_j * 127)));
-            quantLP[k - 1] = Math.max(-127, Math.min(127, Math.round(a_k * 127)));
+            const quantLP = new Int16Array(maxLag);
+            quantLP[j - 1] = Math.max(-511, Math.min(511, Math.round(a_j * 511)));
+            quantLP[k - 1] = Math.max(-511, Math.min(511, Math.round(a_k * 511)));
             if (quantLP[j - 1] !== 0 || quantLP[k - 1] !== 0) {
                 candidates.push({ order: maxLag, quantLP });
             }
@@ -2950,7 +2837,7 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
     }
 
     // candidate: sparse triple via Yule-Walker (top-3 lags)
-    if (lagScores.length >= 3 && lagScores[0].ac > 0.14 && lagScores[1].ac > 0.14 && lagScores[2].ac > 0.14) {
+    if (lagScores.length >= 3 && lagScores[0].ac > acThreshold && lagScores[1].ac > acThreshold && lagScores[2].ac > acThreshold) {
         const lags = lagScores.slice(0, 3).map(l => l.lag).sort((a, b) => a - b);
         const [j, k, l] = lags;
         const r_jk = r[k - j], r_jl = r[l - j], r_kl = r[l - k];
@@ -2960,17 +2847,17 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
             const a_k = (r[j] * (r_jl * r_kl - r_jk) + r[k] * (1 - r_jl * r_jl) + r[l] * (r_jk * r_jl - r_kl)) / det; // note: (r_jk * r_jl - r_kl) via Cramer
             const a_l = (r[j] * (r_jk * r_kl - r_jl) + r[k] * (r_jk * r_jl - r_kl) + r[l] * (1 - r_jk * r_jk)) / det;
             const maxLag = l;
-            const quantLP = new Int8Array(maxLag);
-            quantLP[j - 1] = Math.max(-127, Math.min(127, Math.round(a_j * 127)));
-            quantLP[k - 1] = Math.max(-127, Math.min(127, Math.round(a_k * 127)));
-            quantLP[l - 1] = Math.max(-127, Math.min(127, Math.round(a_l * 127)));
+            const quantLP = new Int16Array(maxLag);
+            quantLP[j - 1] = Math.max(-511, Math.min(511, Math.round(a_j * 511)));
+            quantLP[k - 1] = Math.max(-511, Math.min(511, Math.round(a_k * 511)));
+            quantLP[l - 1] = Math.max(-511, Math.min(511, Math.round(a_l * 511)));
             candidates.push({ order: maxLag, quantLP });
         }
     }
 
     // candidate: sparse quadruple via 4x4 Yule-Walker (top-4 lags)
-    if (lagScores.length >= 4 && lagScores[0].ac > 0.14 && lagScores[1].ac > 0.14 &&
-        lagScores[2].ac > 0.14 && lagScores[3].ac > 0.14) {
+    if (lagScores.length >= 4 && lagScores[0].ac > acThreshold && lagScores[1].ac > acThreshold &&
+        lagScores[2].ac > acThreshold && lagScores[3].ac > acThreshold) {
         const lags = lagScores.slice(0, 4).map(ls => ls.lag).sort((a, b) => a - b);
         // build 4x4 autocorrelation matrix and solve via Gaussian elimination
         const R: number[][] = [];
@@ -2981,7 +2868,7 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
             const row: number[] = [];
             for (let j = 0; j < 4; j++) {
                 const diff = lags[i] > lags[j] ? lags[i] - lags[j] : lags[j] - lags[i];
-                if (diff > POST_FILTER_MAX_ORDER) { valid = false; break; }
+                if (diff > postFilterMaxOrder) { valid = false; break; }
                 row.push(diff === 0 ? 1 : r[diff]);
             }
             if (!valid) break;
@@ -3017,10 +2904,10 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
                     x[i] = sum / A[i][i];
                 }
                 const maxLag = lags[3];
-                const quantLP = new Int8Array(maxLag);
+                const quantLP = new Int16Array(maxLag);
                 let anyNonZero = false;
                 for (let idx = 0; idx < 4; idx++) {
-                    quantLP[lags[idx] - 1] = Math.max(-127, Math.min(127, Math.round(x[idx] * 127)));
+                    quantLP[lags[idx] - 1] = Math.max(-511, Math.min(511, Math.round(x[idx] * 511)));
                     if (quantLP[lags[idx] - 1] !== 0) anyNonZero = true;
                 }
                 if (anyNonZero) {
@@ -3033,9 +2920,9 @@ function generatePostFilterCandidates(residuals: Int32Array, n: number): PostFil
     return candidates;
 }
 
-function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, quantLP: Int8Array): Int32Array {
+function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, quantLP: Int16Array): Int32Array {
     const a = new Float64Array(order);
-    for (let m = 0; m < order; m++) a[m] = quantLP[m] / 127;
+    for (let m = 0; m < order; m++) a[m] = quantLP[m] / 511;
 
     const out = new Int32Array(n);
     const state = new Float64Array(order);
@@ -3050,9 +2937,9 @@ function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, qua
     return out;
 }
 
-function applyPostFilterDec(filtered: Int32Array, n: number, order: number, quantLP: Int8Array): Int32Array {
+function applyPostFilterDec(filtered: Int32Array, n: number, order: number, quantLP: Int16Array): Int32Array {
     const a = new Float64Array(order);
-    for (let m = 0; m < order; m++) a[m] = quantLP[m] / 127;
+    for (let m = 0; m < order; m++) a[m] = quantLP[m] / 511;
 
     const out = new Int32Array(n);
     const state = new Float64Array(order);
@@ -3068,25 +2955,35 @@ function applyPostFilterDec(filtered: Int32Array, n: number, order: number, quan
 }
 
 /** encode coefficient stream in transposed layout for better Logos compression.
- *  layout: [orders...][level-0 coefficients...][level-1 coefficients...]...
+ *  layout: [orders...][lv0-lo...][lv0-hi...][lv1-lo...][lv1-hi...]...
+ *  10-bit coefficients (±511) stored as segregated low/high byte pairs.
  *  reuse blocks (order=0xFF) don't contribute coefficients — they inherit
  *  from the previous block, saving coefficient bytes for stationary segments. */
 export function encodeCoeffStream(blocks: VarBlock[]): { raw: Uint8Array; compressed: Uint8Array } {
     const n = blocks.length;
-    let totalBytes = n; // order bytes
+    let totalCoeffs = 0;
     let maxOrder = 0;
     for (const b of blocks) {
-        const ord = b.order === VAR_REUSE_ORDER ? 0 : b.order; // reuse blocks contribute 0 coefficients
-        totalBytes += ord;
+        const ord = b.order === VAR_REUSE_ORDER ? 0 : b.order;
+        totalCoeffs += ord;
         if (ord > maxOrder) maxOrder = ord;
     }
+    // orders + 2 bytes per coefficient (low then high, segregated by level)
+    const totalBytes = n + totalCoeffs * 2;
     const raw = new Uint8Array(totalBytes);
     let off = 0;
     for (let i = 0; i < n; i++) raw[off++] = blocks[i].order;
     for (let k = 0; k < maxOrder; k++) {
+        // low bytes for level k
         for (let i = 0; i < n; i++) {
             if (blocks[i].order !== VAR_REUSE_ORDER && blocks[i].order > k) {
-                raw[off++] = (blocks[i].quantK[k] + 128) & 0xFF;
+                raw[off++] = (blocks[i].quantK[k] + 512) & 0xFF;
+            }
+        }
+        // high bytes for level k
+        for (let i = 0; i < n; i++) {
+            if (blocks[i].order !== VAR_REUSE_ORDER && blocks[i].order > k) {
+                raw[off++] = ((blocks[i].quantK[k] + 512) >> 8) & 0xFF;
             }
         }
     }
@@ -3095,6 +2992,7 @@ export function encodeCoeffStream(blocks: VarBlock[]): { raw: Uint8Array; compre
 }
 
 /** decode transposed coefficient stream back to VarBlock array.
+ *  10-bit coefficients (±511) stored as segregated low/high byte pairs per level.
  *  reuse blocks (order=0xFF) inherit coefficients from the previous block. */
 function decodeCoeffStream(data: Uint8Array, numBlocks: number): VarBlock[] {
     let off = 0;
@@ -3105,18 +3003,35 @@ function decodeCoeffStream(data: Uint8Array, numBlocks: number): VarBlock[] {
         orders.push(o);
         if (o !== VAR_REUSE_ORDER && o > maxOrder) maxOrder = o;
     }
-    // read transposed coefficients (reuse blocks don't contribute)
-    const quantKArrays: Int8Array[] = [];
+    // read transposed 10-bit coefficients (reuse blocks don't contribute)
+    const quantKArrays: Int16Array[] = [];
+    // count coefficients per level for offset calculation
+    const coeffsPerLevel: number[] = [];
+    for (let k = 0; k < maxOrder; k++) {
+        let count = 0;
+        for (let i = 0; i < numBlocks; i++) {
+            if (orders[i] !== VAR_REUSE_ORDER && orders[i] > k) count++;
+        }
+        coeffsPerLevel.push(count);
+    }
     for (let i = 0; i < numBlocks; i++) {
         const ord = orders[i] === VAR_REUSE_ORDER ? 0 : orders[i];
-        quantKArrays.push(new Int8Array(ord));
+        quantKArrays.push(new Int16Array(ord));
     }
     for (let k = 0; k < maxOrder; k++) {
+        // read low bytes for level k
+        const loOff = off;
+        const hiOff = off + coeffsPerLevel[k];
+        let li = 0;
         for (let i = 0; i < numBlocks; i++) {
             if (orders[i] !== VAR_REUSE_ORDER && orders[i] > k) {
-                quantKArrays[i][k] = (data[off++] - 128) << 24 >> 24;
+                const lo = data[loOff + li];
+                const hi = data[hiOff + li];
+                quantKArrays[i][k] = ((hi << 8) | lo) - 512;
+                li++;
             }
         }
+        off += coeffsPerLevel[k] * 2;
     }
     // build VarBlock array, resolving reuse references
     const blocks: VarBlock[] = [];
@@ -3140,15 +3055,16 @@ function decodeCoeffStream(data: Uint8Array, numBlocks: number): VarBlock[] {
  *  constrained to [q-0.5, q+0.5]. */
 function varOrderCellProject(
     projected: Float32Array, data: Int32Array, blocks: VarBlock[],
+    blockLen: number, maxOrder: number,
 ): void {
     const n = data.length;
     const numBlocks = blocks.length;
 
     // forward pass
-    const state = new Float64Array(VAR_MAX_ORDER);
+    const state = new Float64Array(maxOrder);
     for (let b = 0; b < numBlocks; b++) {
-        const bStart = b * BLOCK_LEN;
-        const bEnd = Math.min(bStart + BLOCK_LEN, n);
+        const bStart = b * blockLen;
+        const bEnd = Math.min(bStart + blockLen, n);
         const { a } = blocks[b];
         const p = a.length;
 
@@ -3188,7 +3104,7 @@ function varOrderCellProject(
             }
         } else {
             for (let i = bStart; i < bEnd; i++) {
-                for (let m = VAR_MAX_ORDER - 1; m > 0; m--) state[m] = state[m - 1];
+                for (let m = maxOrder - 1; m > 0; m--) state[m] = state[m - 1];
                 state[0] = projected[i];
             }
         }
@@ -3292,115 +3208,6 @@ function fractalCellProject(
 }
 
 
-/** Estimate Rice coding cost (bits) for a residual array.
- *  used by quantizerFreeEnergy to estimate the rate term. */
-function estimateRiceCost(residuals: Int32Array, n: number): number {
-    let sumAbs = 0;
-    for (let i = 0; i < n; i++) {
-        const v = residuals[i];
-        sumAbs += v >= 0 ? v : -v;
-    }
-    if (sumAbs === 0) return n; // 1 bit per sample minimum
-    const meanAbs = sumAbs / n;
-    const k = Math.max(0, Math.floor(Math.log2(Math.max(1, meanAbs * Math.LN2))));
-    let bits = 0;
-    for (let i = 0; i < n; i++) {
-        const v = residuals[i];
-        const zz = v >= 0 ? v * 2 : (-v * 2 - 1);
-        bits += (zz >>> k) + 1 + k;
-    }
-    return bits;
-}
-
-/** estimate K/G trajectory encoding cost (bits).
- *  counts per-block change flags and approximates Rice-coded deltas.
- *  used by quantizerFreeEnergy for the orbital/fractal scoring path. */
-const KG_TRAJ_WIRE_LEGACY = 0;
-const KG_TRAJ_WIRE_RUN_AWARE = 1;
-
-function estimateTrajectoryBitsLegacy(
-    blocks: { Kint: number; Gint: number }[],
-    metaKK: number, metaGK: number,
-): number {
-    let bits = 0;
-    let prevK = 0, prevG = 0;
-    let prev2K = 0, prev2G = 0;
-    let runK = 0, runG = 0;
-    for (const { Kint, Gint } of blocks) {
-        const predK = prevK + ((metaKK * (prevK - prev2K) + 32) >> 6);
-        const predG = prevG + ((metaGK * (prevG - prev2G) + 32) >> 6);
-        const dk = Kint - predK;
-        const dg = Gint - predG;
-        const zk = zigzagEnc(dk) >>> 0;
-        const zg = zigzagEnc(dg) >>> 0;
-        if (zk > 0x7FFF || zg > 0x7FFF) {
-            bits += 33;
-            runK = 0; runG = 0;
-        } else {
-            bits += 1; // reset bit
-            const kChanged = zk !== 0;
-            const gChanged = zg !== 0;
-            bits += 2; // changed flags
-            if (kChanged) {
-                const mK = runK === 0 ? 0 : Math.min(14, 31 - Math.clz32(runK));
-                bits += 4 + (zk >>> mK) + 1 + mK;
-                runK = (runK + zk) >>> 1;
-            }
-            if (gChanged) {
-                const mG = runG === 0 ? 0 : Math.min(14, 31 - Math.clz32(runG));
-                bits += 4 + (zg >>> mG) + 1 + mG;
-                runG = (runG + zg) >>> 1;
-            }
-        }
-        prev2K = prevK; prev2G = prevG;
-        prevK = Kint; prevG = Gint;
-    }
-    return bits;
-}
-
-function estimateTrajectoryBitsRunAware(
-    blocks: { Kint: number; Gint: number }[],
-    metaKK: number, metaGK: number,
-): number {
-    let bits = 0;
-    let prevK = 0, prevG = 0;
-    let prev2K = 0, prev2G = 0;
-    let runZeros = 0;
-    let runAvg = 0;
-    for (const { Kint, Gint } of blocks) {
-        const predK = prevK + ((metaKK * (prevK - prev2K) + 32) >> 6);
-        const predG = prevG + ((metaGK * (prevG - prev2G) + 32) >> 6);
-        const dk = Kint - predK;
-        const dg = Gint - predG;
-        if (dk === 0 && dg === 0) {
-            runZeros++;
-        } else {
-            bits += estimateZeroRunBits(runZeros, runAvg);
-            if (runZeros > 1) runAvg = (runAvg + (runZeros - 2)) >>> 1;
-            runZeros = 0;
-            const dkAbs = Math.abs(dk);
-            const dgAbs = Math.abs(dg);
-            bits += 2; // tag
-            const kChanged = dkAbs > DEAD_K;
-            const gChanged = dgAbs > DEAD_G;
-            bits += 2; // changed flags
-            if (kChanged) bits += 4 + Math.max(1, Math.ceil(Math.log2(dkAbs + 1)));
-            if (gChanged) bits += 4 + Math.max(1, Math.ceil(Math.log2(dgAbs + 1)));
-        }
-        prev2K = prevK; prev2G = prevG;
-        prevK = Kint; prevG = Gint;
-    }
-    bits += estimateZeroRunBits(runZeros, runAvg);
-    return bits;
-}
-
-function estimateTrajectoryBits(blocks: { Kint: number; Gint: number }[]): number {
-    const { metaKK, metaGK } = metaPredictKG(blocks);
-    const legacyBits = estimateTrajectoryBitsLegacy(blocks, metaKK, metaGK);
-    const runAwareBits = estimateTrajectoryBitsRunAware(blocks, metaKK, metaGK);
-    return 8 + Math.min(legacyBits, runAwareBits);
-}
-
 // reusable entropy count buffer (avoids allocation per call)
 // entropy estimation scratch is now in _ctx.ent (codec context)
 
@@ -3422,7 +3229,7 @@ function estimatePlaneCost(residuals: Int32Array): number {
         const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
         if (zz > maxZZ) maxZZ = zz;
     }
-    const planes = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
+    const planes = planeCount(maxZZ);
 
     let totalBits = 0;
     for (let plane = 0; plane < planes; plane++) {
@@ -3463,107 +3270,6 @@ function estimatePlaneCost(residuals: Int32Array): number {
     }
     return Math.max(3, Math.ceil(totalBits / 8));
 }
-
-// â”€â”€ bit I/O â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-class BitWriter {
-    private buf: number[] = [];
-    private bits = 0;
-    private acc = 0;
-
-    write(value: number, nbits: number): void {
-        if (nbits === 0) return;
-        this.acc |= ((value & (((1 << nbits) >>> 0) - 1)) >>> 0) << this.bits;
-        this.bits += nbits;
-        while (this.bits >= 8) { this.buf.push(this.acc & 0xFF); this.acc >>>= 8; this.bits -= 8; }
-    }
-
-    flush(): Uint8Array {
-        if (this.bits > 0) this.buf.push(this.acc & 0xFF);
-        return new Uint8Array(this.buf);
-    }
-}
-
-class BitReader {
-    private data: Uint8Array;
-    private pos = 0; private bits = 0; private acc = 0;
-    constructor(data: Uint8Array) { this.data = data; }
-
-    read(nbits: number): number {
-        while (this.bits < nbits && this.pos < this.data.length) {
-            this.acc |= this.data[this.pos++] << this.bits; this.bits += 8;
-        }
-        const mask = nbits === 32 ? 0xFFFFFFFF : ((1 << nbits) >>> 0) - 1;
-        const val  = (this.acc & mask) >>> 0;
-        if (nbits === 32) { this.acc = 0; this.bits = 0; }
-        else { this.acc >>>= nbits; this.bits -= nbits; }
-        return val;
-    }
-}
-
-function riceEncode(bw: BitWriter, value: number, m: number): void {
-    const q = value >>> m;
-    if (q >= 15) {
-        for (let i = 0; i < 15; i++) bw.write(0, 1);
-        bw.write(value & 0x1FFFF, 17);
-    } else {
-        for (let i = 0; i < q; i++) bw.write(0, 1);
-        bw.write(1, 1);
-        if (m > 0) bw.write(value & ((1 << m) - 1), m);
-    }
-}
-
-function riceDecode(br: BitReader, m: number): number {
-    let q = 0;
-    while (q < 15 && br.read(1) === 0) q++;
-    if (q >= 15) return br.read(17);
-    return (q << m) | (m > 0 ? br.read(m) : 0);
-}
-
-function estimateZeroRunBits(runLen: number, runAvg: number): number {
-    if (runLen <= 0) return 0;
-    if (runLen === 1) return 2;
-    const mRun = runAvg === 0 ? 0 : Math.min(14, 31 - Math.clz32(runAvg));
-    const code = runLen - 2;
-    return 2 + 4 + (code >>> mRun) + 1 + mRun;
-}
-
-/** Meta-prediction: fit AR(1) to the K and G trajectories themselves.
- *  the prediction parameters trace orbits in parameter space â€” vibrato
- *  produces oscillating K, pitch glides produce drifting K, sustained
- *  tones produce constant K. the meta-oscillator captures this dynamics,
- *  reducing trajectory entropy by 40-100% across real audio.
- *  returns the meta-coefficients and replaces each Kint/Gint with its
- *  meta-residual (smaller values â†’ shorter Rice codes â†’ fewer bits). */
-function metaPredictKG(blocks: { Kint: number; Gint: number }[]): {
-    metaKK: number; metaGK: number;
-} {
-    const n = blocks.length;
-    if (n < 3) return { metaKK: 0, metaGK: 0 };
-
-    // fit AR(1) to Kint trajectory: Kint[b] â‰ˆ Î±Â·Kint[b-1]
-    // scale 64: Î± âˆˆ [-2, 2) maps to [-128, 127] (signed 8-bit safe)
-    let sxx = 0, sxv = 0;
-    for (let b = 2; b < n; b++) {
-        const dvPrev = blocks[b - 1].Kint - blocks[b - 2].Kint;
-        const dvNext = blocks[b].Kint - blocks[b - 1].Kint;
-        sxx += dvPrev * dvPrev;
-        sxv += dvPrev * dvNext;
-    }
-    const metaKK = sxx > 0 ? Math.max(-128, Math.min(127, Math.round(sxv / sxx * 64))) : 0;
-
-    sxx = 0; sxv = 0;
-    for (let b = 2; b < n; b++) {
-        const dvPrev = blocks[b - 1].Gint - blocks[b - 2].Gint;
-        const dvNext = blocks[b].Gint - blocks[b - 1].Gint;
-        sxx += dvPrev * dvPrev;
-        sxv += dvPrev * dvNext;
-    }
-    const metaGK = sxx > 0 ? Math.max(-128, Math.min(127, Math.round(sxv / sxx * 64))) : 0;
-
-    return { metaKK, metaGK };
-}
-
 
 // â”€â”€ ChaCha20 + SipHash-lite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -3730,38 +3436,6 @@ function readF32LE(data: Uint8Array, off: number): number {
 }
 
 
-// â”€â”€ prediction via WASM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-function wasmPredictEnc(
-    wasm: HarmonicWasmExports,
-    data: Int32Array,
-    blocks: { K: number; G: number }[],
-    stateOffset: number,
-    qstep: number = 1,
-): Int32Array {
-    const n = data.length, nBlocks = blocks.length;
-    const dataOff  = WASM_BUF_A;
-    const residOff = dataOff + n * 4;
-    const kgOff    = (residOff + n * 4 + 15) & ~15;
-    ensureWasmMem(wasm, kgOff + nBlocks * 8 + 64);
-
-    copyI32ToWasm(wasm, dataOff, data);
-
-    const kgView = new Float32Array(wasm.memory.buffer, kgOff, nBlocks * 2);
-    for (let i = 0; i < nBlocks; i++) {
-        kgView[i * 2]     = blocks[i].K;
-        kgView[i * 2 + 1] = blocks[i].G;
-    }
-
-    const sv = new Float32Array(wasm.memory.buffer, stateOffset, 2);
-    sv[0] = 0; sv[1] = 0;
-    new Int32Array(wasm.memory.buffer, stateOffset + 8, 1)[0] = qstep;
-
-    wasm.predict_enc(dataOff, n, kgOff, stateOffset, residOff);
-    return readI32FromWasm(wasm, residOff, n);
-}
-
-
 // â”€â”€ public encode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // wire format:
@@ -3858,8 +3532,10 @@ function prepareHarmonicChannels(
     const channelProjected: (Float32Array | null)[] = [];
     const amplitudeBaselineFitBits: number[] = [];
     const amplitudeCandidates: AmplitudeCandidate[][] = [];
-    const burgSuperLen = adaptiveBurgSuperLen(sampleRate);
-    const envelopeBlockLen = envelopeBlockLenFromBurgSuperLen(burgSuperLen);
+    const varBlockLen = computeBlockLen(sampleRate);
+    const burgSuperLen = adaptiveBurgSuperLen(sampleRate, varBlockLen);
+    const envelopeBlockLen = envelopeBlockLenFromBurgSuperLen(burgSuperLen, varBlockLen);
+    const varMaxOrder = computeMaxOrder(varBlockLen);
     for (let ch = 0; ch < numChannels; ch++) {
         const baseline = quantizeChannelWithOrbitalGuide(
             wasm,
@@ -3873,6 +3549,8 @@ function prepareHarmonicChannels(
             nsG,
             numLevels,
             scalar,
+            varBlockLen,
+            varMaxOrder,
         );
         baselineChannels.push(baseline.data);
         baselineEnergy.push(baseline.energy);
@@ -3897,6 +3575,8 @@ function prepareHarmonicChannels(
                     nsK,
                     nsG,
                     numLevels,
+                    varBlockLen,
+                    varMaxOrder,
                 )
             : { candidates: [], baselineFitBits: 0 };
         amplitudeBaselineFitBits.push(amplitudeAxis.baselineFitBits);
@@ -3908,7 +3588,7 @@ function prepareHarmonicChannels(
     const axisPasses = layout !== "object" && numChannels > 1 ? 3 : 1;
     for (let pass = 0; pass < axisPasses; pass++) {
         totalObjective = 0;
-        if (layout !== "object" && numChannels > 1 && numSamples >= BLOCK_LEN) {
+        if (layout !== "object" && numChannels > 1 && numSamples >= varBlockLen) {
             couplingRefs = assignReferences(channels, numSamples);
         } else {
             couplingRefs = new Array(numChannels).fill(NO_REF);
@@ -3927,6 +3607,7 @@ function prepareHarmonicChannels(
             const refData = refIdx !== NO_REF ? channels[refIdx] : undefined;
             const refProjected = refIdx !== NO_REF ? channelProjected[refIdx] ?? undefined : undefined;
 
+
             const baselineScore = scoreQuantizedChannel(
                 wasm,
                 baselineData,
@@ -3940,6 +3621,9 @@ function prepareHarmonicChannels(
                 numLevels,
                 refData,
                 refProjected,
+                0,
+                varBlockLen,
+                varMaxOrder,
             );
 
             let bestObjective = baselineScore.objective + amplitudeBaselineFitBits[ch];
@@ -3960,6 +3644,8 @@ function prepareHarmonicChannels(
                     refData,
                     refProjected,
                     amplitude.extraBits,
+                    varBlockLen,
+                    varMaxOrder,
                 );
                 const amplitudeObjective = amplitudeScore.objective + amplitude.fitBits;
                 if (amplitudeObjective < bestObjective) {
@@ -3981,7 +3667,7 @@ function prepareHarmonicChannels(
         }
     }
 
-    if (layout !== "object" && numChannels > 1 && numSamples >= BLOCK_LEN) {
+    if (layout !== "object" && numChannels > 1 && numSamples >= varBlockLen) {
         couplingRefs = assignReferences(channels, numSamples);
     }
 
@@ -3995,6 +3681,28 @@ function prepareHarmonicChannels(
         effectiveChannels,
         totalObjective,
     };
+}
+
+/** lossless mid/side stereo transform for 2-channel content.
+ *  side = L - R, mid = L - (side >> 1). perfectly reversible. */
+function msEncode(L: Int32Array, R: Int32Array, n: number): { mid: Int32Array; side: Int32Array } {
+    const side = new Int32Array(n);
+    const mid = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+        side[i] = L[i] - R[i];
+        mid[i] = L[i] - (side[i] >> 1);
+    }
+    return { mid, side };
+}
+
+function msDecode(mid: Int32Array, side: Int32Array, n: number): { L: Int32Array; R: Int32Array } {
+    const L = new Int32Array(n);
+    const R = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+        L[i] = mid[i] + (side[i] >> 1);
+        R[i] = L[i] - side[i];
+    }
+    return { L, R };
 }
 
 export async function encodeHarmonic(
@@ -4070,6 +3778,10 @@ export async function encodeHarmonic(
     // sample-rate-adaptive wavelet levels
     const numLevels = adaptiveWaveletLevels(sampleRate, numSamples);
 
+    // sample-rate-adaptive block length and max prediction order
+    const blockLen = computeBlockLen(sampleRate);
+    const maxOrder = computeMaxOrder(blockLen);
+
     // peak normalization. when bitDepth is set, fix peak=1.0 â€” the scalar
     // is already sized for the source's integer range, and skipping peak
     // normalization makes the quantization bit-exact for integer sources:
@@ -4108,6 +3820,33 @@ export async function encodeHarmonic(
     const channelEnvelopeWire = prepared.channelEnvelopeWire;
     const effectiveChannels = prepared.effectiveChannels;
     let couplingRefs = prepared.couplingRefs;
+
+    // lossless M/S stereo for 2-channel content: trial-gated
+    let msActive = false;
+    if (numChannels === 2 && layout !== "object" && numSamples >= blockLen) {
+        const { mid, side } = msEncode(channels[0], channels[1], numSamples);
+        const blocksL = varOrderFitAllBlocks(channels[0], numSamples, blockLen, maxOrder);
+        const residL = varOrderPredictEnc(channels[0], numSamples, blocksL, blockLen, maxOrder);
+        const blocksR = varOrderFitAllBlocks(channels[1], numSamples, blockLen, maxOrder);
+        const residR = varOrderPredictEnc(channels[1], numSamples, blocksR, blockLen, maxOrder);
+        const costLR = estimatePlaneCost(residL) + estimateCoeffBits(blocksL) / 8
+                     + estimatePlaneCost(residR) + estimateCoeffBits(blocksR) / 8;
+
+        const blocksM = varOrderFitAllBlocks(mid, numSamples, blockLen, maxOrder);
+        const residM = varOrderPredictEnc(mid, numSamples, blocksM, blockLen, maxOrder);
+        const blocksS = varOrderFitAllBlocks(side, numSamples, blockLen, maxOrder);
+        const residS = varOrderPredictEnc(side, numSamples, blocksS, blockLen, maxOrder);
+        const costMS = estimatePlaneCost(residM) + estimateCoeffBits(blocksM) / 8
+                     + estimatePlaneCost(residS) + estimateCoeffBits(blocksS) / 8;
+
+        if (costMS < costLR) {
+            channels[0] = mid;
+            channels[1] = side;
+            msActive = true;
+            // M/S makes coupling redundant
+            couplingRefs = [NO_REF, NO_REF];
+        }
+    }
 
     payloadReset();
     payloadF32(framePeak);
@@ -4153,7 +3892,7 @@ export async function encodeHarmonic(
         const refIdx = couplingRefs[ch] ?? NO_REF;
         const refData = refIdx !== NO_REF ? channels[refIdx] : undefined;
         let channelW: { Wint: number; W: number } | undefined;
-        if (refData && numSamples >= BLOCK_LEN) {
+        if (refData && numSamples >= blockLen) {
             const wFit = fitCouplingW(data, refData, numSamples);
             if (Math.abs(wFit.W) > 0.01) {
                 const decoupled = new Int32Array(numSamples);
@@ -4161,10 +3900,10 @@ export async function encodeHarmonic(
                     const wr = wFit.W * refData[i];
                     decoupled[i] = data[i] - (wr >= 0 ? (wr + 0.5) | 0 : (wr - 0.5) | 0);
                 }
-                const blocksOrig = varOrderFitAllBlocks(data, numSamples);
-                const residOrig = varOrderPredictEnc(data, numSamples, blocksOrig);
-                const blocksDec = varOrderFitAllBlocks(decoupled, numSamples);
-                const residDec = varOrderPredictEnc(decoupled, numSamples, blocksDec);
+                const blocksOrig = varOrderFitAllBlocks(data, numSamples, blockLen, maxOrder);
+                const residOrig = varOrderPredictEnc(data, numSamples, blocksOrig, blockLen, maxOrder);
+                const blocksDec = varOrderFitAllBlocks(decoupled, numSamples, blockLen, maxOrder);
+                const residDec = varOrderPredictEnc(decoupled, numSamples, blocksDec, blockLen, maxOrder);
                 const costOrig = estimatePlaneCost(residOrig) + estimateCoeffBits(blocksOrig) / 8;
                 const costDec = estimatePlaneCost(residDec) + estimateCoeffBits(blocksDec) / 8;
                 if (costDec + 2 < costOrig) {
@@ -4198,8 +3937,8 @@ export async function encodeHarmonic(
         }
 
         // unified variable-order prediction
-        const varBlocks = varOrderFitAllBlocks(data, numSamples);
-        let residuals = varOrderPredictEnc(data, numSamples, varBlocks);
+        const varBlocks = varOrderFitAllBlocks(data, numSamples, blockLen, maxOrder);
+        let residuals = varOrderPredictEnc(data, numSamples, varBlocks, blockLen, maxOrder);
 
         // global post-filter: sparse Yule-Walker on Burg residuals.
         // tries single-lag and multi-lag candidates, picks the cheapest.
@@ -4207,15 +3946,15 @@ export async function encodeHarmonic(
         const costNoFilter = trialLogosSize(sbNoFilter);
 
         let bestPostOrder = 0;
-        let bestPostQuantLP: Int8Array | null = null;
+        let bestPostQuantLP: Int16Array | null = null;
         let bestPostResiduals = residuals;
         let bestCost = costNoFilter;
 
-        const postCandidates = generatePostFilterCandidates(residuals, numSamples);
+        const postCandidates = generatePostFilterCandidates(residuals, numSamples, scalar, blockLen);
         for (const cand of postCandidates) {
             const filtered = applyPostFilterEnc(residuals, numSamples, cand.order, cand.quantLP);
             const sbAfter = scoreSubbandPath(wasm, filtered, numLevels);
-            const costAfter = trialLogosSize(sbAfter) + 1 + cand.order; // 1 byte order + N coeff bytes
+            const costAfter = trialLogosSize(sbAfter) + 1 + cand.order * 2; // 1 byte order + 2N coeff bytes
             if (costAfter < bestCost) {
                 bestCost = costAfter;
                 bestPostOrder = cand.order;
@@ -4228,7 +3967,9 @@ export async function encodeHarmonic(
         if (bestPostOrder > 0) {
             payloadByte(bestPostOrder);
             for (let m = 0; m < bestPostOrder; m++) {
-                payloadByte((bestPostQuantLP![m] + 128) & 0xFF);
+                const v = bestPostQuantLP![m] + 512;
+                payloadByte(v & 0xFF);
+                payloadByte((v >> 8) & 0xFF);
             }
         } else {
             payloadByte(0); // no post-filter
@@ -4264,7 +4005,7 @@ export async function encodeHarmonic(
                     const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
                     if (zz > maxZZ) maxZZ = zz;
                 }
-                const pc = maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3;
+                const pc = planeCount(maxZZ);
                 sbPlaneCount.push(pc);
                 if (pc > globalMaxPlane) globalMaxPlane = pc;
             }
@@ -4319,7 +4060,8 @@ export async function encodeHarmonic(
     ov.setUint32(4, sampleRate, true);
     const layoutFlag = layout === "object" ? LAYOUT_OBJECT : LAYOUT_CHANNEL;
     const depthFlag  = effectiveBitDepth === 16 ? DEPTH_16 : effectiveBitDepth === 24 ? DEPTH_24 : DEPTH_F32;
-    ov.setUint16(8, ((quality & 0xFF) << 8) | 1 | layoutFlag | depthFlag, true);
+    const msFlag = msActive ? MS_ACTIVE : 0;
+    ov.setUint16(8, ((quality & 0xFF) << 8) | 1 | layoutFlag | depthFlag | msFlag, true);
     out[10] = numChannels - 1; out[11] = numLevels; // numChannels stored as 0-based (0=1ch, 255=256ch)
 
     out.set(encrypted, HEADER_SIZE);
@@ -4354,10 +4096,15 @@ export async function decodeHarmonic(
     const layoutFlag  = flags & LAYOUT_MASK;
     const isObject    = layoutFlag === LAYOUT_OBJECT;
     const bitDepth    = depthFromFlags(flags);
+    const isMidSide   = (flags & MS_ACTIVE) !== 0;
 
     if (isRaw) {
         return decodeRawMode(encoded, numSamples, sampleRate, numChannels, encryptionKey);
     }
+
+    // sample-rate-adaptive block length and max prediction order
+    const blockLen = computeBlockLen(sampleRate);
+    const maxOrder = computeMaxOrder(blockLen);
 
     const key = encryptionKey && encryptionKey.length >= 4
         ? new Uint32Array([encryptionKey[0], encryptionKey[1], encryptionKey[2], encryptionKey[3]])
@@ -4414,7 +4161,7 @@ export async function decodeHarmonic(
             const envCount = readU32LE(p, off); off += 4;
             const envWireLen = readU32LE(p, off); off += 4;
             const envLog = decodeEnvelopeTrajectory(wasm, p.subarray(off, off + envWireLen), envCount); off += envWireLen;
-            envCurve = reconstructEnvelopeCurve(envLog, numSamples, Math.max(BLOCK_LEN, envBlockLen), framePeak);
+            envCurve = reconstructEnvelopeCurve(envLog, numSamples, Math.max(blockLen, envBlockLen), framePeak);
         }
 
         // coupling W
@@ -4429,15 +4176,17 @@ export async function decodeHarmonic(
             }
         }
 
-        // decode post-filter params (LP coefficients)
+        // decode post-filter params (10-bit LP coefficients, 2 bytes each)
         const postFilterOrder = p[off++];
-        const postFilterQuantLP = new Int8Array(postFilterOrder);
+        const postFilterQuantLP = new Int16Array(postFilterOrder);
         for (let m = 0; m < postFilterOrder; m++) {
-            postFilterQuantLP[m] = p[off++] - 128;
+            const lo = p[off++];
+            const hi = p[off++];
+            postFilterQuantLP[m] = ((hi << 8) | lo) - 512;
         }
 
         // decode coefficient stream
-        const numBlocks = Math.ceil(numSamples / BLOCK_LEN);
+        const numBlocks = Math.ceil(numSamples / blockLen);
         const coeffOrigLen = readU32LE(p, off); off += 4;
         const coeffCompLen = readU32LE(p, off); off += 4;
         const coeffRaw = decode0D(p.subarray(off, off + coeffCompLen), coeffOrigLen); off += coeffCompLen;
@@ -4497,7 +4246,7 @@ export async function decodeHarmonic(
         if (postFilterOrder > 0) {
             waveletResiduals = applyPostFilterDec(waveletResiduals, numSamples, postFilterOrder, postFilterQuantLP);
         }
-        let reconstructed = varOrderPredictDec(waveletResiduals, numSamples, varBlocks);
+        let reconstructed = varOrderPredictDec(waveletResiduals, numSamples, varBlocks, blockLen, maxOrder);
 
         // signal-level coupling inverse: add W·ref_data back
         if (signalCouplingActive && decCouplingW[ch] !== undefined) {
@@ -4516,7 +4265,7 @@ export async function decodeHarmonic(
         if (bitDepth === 0 && scalar > 1) {
             projected = Float32Array.from(reconstructed);
             sanitizeProjectionToCell(projected, reconstructed);
-            varOrderCellProject(projected, reconstructed, varBlocks);
+            varOrderCellProject(projected, reconstructed, varBlocks, blockLen, maxOrder);
             sanitizeProjectionToCell(projected, reconstructed);
             if (signalCouplingActive && decCouplingW[ch] !== undefined) {
                 const refProjected = allChannelProjected[chRefIdx];
@@ -4531,6 +4280,26 @@ export async function decodeHarmonic(
         }
         allChannelProjected.push(projected);
         allChannelEnvelopes.push(envCurve);
+    }
+
+    // M/S stereo inverse: convert mid/side back to L/R
+    if (isMidSide && numChannels === 2 && allChannelData.length >= 2) {
+        const { L, R } = msDecode(allChannelData[0], allChannelData[1], numSamples);
+        allChannelData[0] = L;
+        allChannelData[1] = R;
+        // also update projected arrays if they exist
+        if (allChannelProjected[0] && allChannelProjected[1]) {
+            const projMid = allChannelProjected[0]!;
+            const projSide = allChannelProjected[1]!;
+            const projL = new Float32Array(numSamples);
+            const projR = new Float32Array(numSamples);
+            for (let i = 0; i < numSamples; i++) {
+                projL[i] = projMid[i] + (projSide[i] / 2);
+                projR[i] = projL[i] - projSide[i];
+            }
+            allChannelProjected[0] = projL;
+            allChannelProjected[1] = projR;
+        }
     }
 
     // dequantize to float32 interleaved output
