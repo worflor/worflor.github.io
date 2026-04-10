@@ -179,11 +179,10 @@ export interface WhisperLiveSessionOptions {
   rtcConfig?: RTCConfiguration;
 
   /**
-   * When true (default), if `rtcConfig` includes ICE servers we will disable them
-   * after establishment (DataChannel open / connected). This keeps external assist
-   * scoped to connection setup only.
+   * Controls whether external assist is dropped after connection setup.
+   * Defaults to "drop-after-connect" for current behavior.
    */
-  externalAssistEstablishmentOnly?: boolean;
+  externalAssistPolicy?: "drop-after-connect" | "keep-for-session";
 
   /**
    * When true, automatically calls confirmFingerprint() upon reaching "verifying" state.
@@ -540,12 +539,13 @@ export class WhisperLiveSession {
   private connectingGraceDone = false;
   private iceRetryInterval: ReturnType<typeof setInterval> | null = null;
   private setupRestartPending = false;
+  private liveRestartPending = false;
   private relaySignalSender: ((signal: TrackerRelaySignal) => void) | null = null;
   private pendingRelaySignals: TrackerRelaySignal[] = [];
   private pendingRemoteIce: (RTCIceCandidateInit | null)[] = [];
 
   // External assist (STUN) lifecycle
-  private externalAssistEstablishmentOnly: boolean;
+  private externalAssistPolicy: "drop-after-connect" | "keep-for-session";
   private externalAssistDropped = false;
 
   // Auto-confirm fingerprint (Campfire programmatic connections)
@@ -600,7 +600,7 @@ export class WhisperLiveSession {
     this.onStreamState = callbacks.onStreamState;
     this.onEdit = callbacks.onEdit;
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
-    this.externalAssistEstablishmentOnly = options.externalAssistEstablishmentOnly ?? true;
+    this.externalAssistPolicy = options.externalAssistPolicy ?? "drop-after-connect";
     this.autoConfirm = options.autoConfirmFingerprint ?? false;
     this.turnPool = options.turnPool ?? [];
   }
@@ -637,7 +637,7 @@ export class WhisperLiveSession {
   }
 
   private dropExternalAssist(pc: RTCPeerConnection): void {
-    if (!this.externalAssistEstablishmentOnly) return;
+    if (this.externalAssistPolicy === "keep-for-session") return;
     if (this.externalAssistDropped) return;
     if (!this.hasExternalAssistConfigured()) return;
     this.externalAssistDropped = true;
@@ -1253,6 +1253,9 @@ export class WhisperLiveSession {
           this.stateBeforeRecovery = this._state as "live" | "silent";
           this.setState("recovering");
           this.onLog("connection interrupted, attempting recovery...");
+          if (this.isOfferer && this.relaySignalSender && !this.liveRestartPending) {
+            void this.maybeSignalIceRestart(pc, true);
+          }
           this.recoveryTimer = setTimeout(() => {
             this.recoveryTimer = null;
             if (this._state === "recovering") {
@@ -1270,6 +1273,9 @@ export class WhisperLiveSession {
         if ((this.isLiveState() || this._state === "recovering") && !this.iceRestartAttempted) {
           this.iceRestartAttempted = true;
           this.onLog("connection failed, waiting for path to recover...");
+          if (this.isOfferer && this.relaySignalSender && !this.liveRestartPending) {
+            void this.maybeSignalIceRestart(pc, true);
+          }
           if (this._state !== "recovering") {
             this.stateBeforeRecovery = this._state as "live" | "silent";
             this.setState("recovering");
@@ -1291,6 +1297,7 @@ export class WhisperLiveSession {
       if (s === "connected" || s === "completed") {
         if (s === "connected") this.onLog("connected to peer");
         this.iceRestartAttempted = false;
+        this.liveRestartPending = false;
         if (this.connectingGraceTimer) { clearTimeout(this.connectingGraceTimer); this.connectingGraceTimer = null; }
         if (this.iceRetryInterval) { clearInterval(this.iceRetryInterval); this.iceRetryInterval = null; }
         this.connectingGraceDone = false;
@@ -1352,7 +1359,9 @@ export class WhisperLiveSession {
   }
 
   private emitRelaySignal(signal: TrackerRelaySignal): void {
-    if (!this.isSetupState()) return;
+    const isRestartSignal = signal.kind === "restart-offer" || signal.kind === "restart-answer";
+    if (!this.isSetupState() && !isRestartSignal && this._state !== "live" && this._state !== "silent" && this._state !== "recovering") return;
+    if (!isRestartSignal && !this.isSetupState()) return;
     if (this.relaySignalSender) {
       this.relaySignalSender(signal);
     } else {
@@ -1377,11 +1386,18 @@ export class WhisperLiveSession {
     }
   }
 
-  private async maybeSignalIceRestart(pc: RTCPeerConnection): Promise<void> {
-    if (!this.relaySignalSender || !this.isOfferer || this.setupRestartPending) return;
-    this.setupRestartPending = true;
+  private async maybeSignalIceRestart(pc: RTCPeerConnection, liveRecovery = false): Promise<void> {
+    if (!this.relaySignalSender || !this.isOfferer) return;
+    if (liveRecovery) {
+      if (this.liveRestartPending) return;
+      this.liveRestartPending = true;
+    } else {
+      if (this.setupRestartPending) return;
+      this.setupRestartPending = true;
+    }
+    let signaled = false;
     try {
-      this.onLog("retrying connection with fresh network paths...");
+      this.onLog(liveRecovery ? "recovery: requesting fresh network paths" : "retrying connection with fresh network paths...");
       const offer = await pc.createOffer({ iceRestart: true });
       await pc.setLocalDescription(offer);
       await this.waitForICE();
@@ -1389,17 +1405,20 @@ export class WhisperLiveSession {
       if (!localSdp) return;
       const code = await sdpToCode(localSdp, "offer", this.phraseRoot ?? undefined);
       this.emitRelaySignal({ kind: "restart-offer", code });
+      signaled = true;
+      if (liveRecovery) this.onLog("recovery: waiting for peer restart answer");
     } catch (err) {
       this.onLog(`restart signaling failed: ${errorMessage(err)}`);
     } finally {
-      this.setupRestartPending = false;
+      if (!liveRecovery) this.setupRestartPending = false;
+      else if (!signaled) this.liveRestartPending = false;
     }
   }
 
   private async handleRemoteRestartOffer(code: string): Promise<void> {
-    if (!this.pc || !this.phraseRoot || this.isOfferer) return;
-    this.onLog("peer is retrying the connection...");
-    const sdp = await codeToSdp(code, "offer", this.phraseRoot);
+    if (!this.pc || this.isOfferer) return;
+    this.onLog("recovery: applying fresh network paths");
+    const sdp = await codeToSdp(code, "offer", this.phraseRoot ?? undefined);
     await this.pc.setRemoteDescription({ type: "offer", sdp });
     await this.flushPendingRemoteIce();
     const answer = await this.pc.createAnswer();
@@ -1407,14 +1426,14 @@ export class WhisperLiveSession {
     await this.waitForICE();
     const localSdp = this.pc.localDescription?.sdp;
     if (!localSdp) return;
-    const answerCode = await sdpToCode(localSdp, "answer", this.phraseRoot);
+    const answerCode = await sdpToCode(localSdp, "answer", this.phraseRoot ?? undefined);
     this.emitRelaySignal({ kind: "restart-answer", code: answerCode });
   }
 
   private async handleRemoteRestartAnswer(code: string): Promise<void> {
-    if (!this.pc || !this.phraseRoot || !this.isOfferer) return;
-    this.onLog("peer sent fresh network paths");
-    const sdp = await codeToSdp(code, "answer", this.phraseRoot);
+    if (!this.pc || !this.isOfferer) return;
+    this.onLog("recovery: applying fresh network paths");
+    const sdp = await codeToSdp(code, "answer", this.phraseRoot ?? undefined);
     await this.pc.setRemoteDescription({ type: "answer", sdp });
     await this.flushPendingRemoteIce();
   }
@@ -2022,9 +2041,9 @@ export class WhisperLiveSession {
       this.loopStateRecv = await this.buildLoopStateFromChainKey(this.ratchetState.chainKeyRecv);
     }
     // reselect TURN only when external assist survives post-establishment.
-    // if externalAssistEstablishmentOnly (default), dropExternalAssist already
+    // if drop-after-connect (default), dropExternalAssist already
     // cleared iceServers — setConfiguration would be pointless.
-    if (this.turnPool.length && !this.externalAssistEstablishmentOnly) void this.ratchetTurnSelection();
+    if (this.turnPool.length && this.externalAssistPolicy === "keep-for-session") void this.ratchetTurnSelection();
   }
 
   // advance the receive loop state and ratchet counter to `until`, storing
@@ -2547,6 +2566,7 @@ export class WhisperLiveSession {
     this.stateBeforeRecovery = null;
     this.iceRestartAttempted = false;
     this.setupRestartPending = false;
+    this.liveRestartPending = false;
     this.externalAssistDropped = false;
     this.turnInjected = false;
     this.relaySignalSender = null;
