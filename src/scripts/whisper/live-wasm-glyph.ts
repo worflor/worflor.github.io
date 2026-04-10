@@ -116,7 +116,13 @@ export type GlyphChannelName = typeof GLYPH_CHANNEL_NAMES[number];
 export enum GlyphMode {
     HARMONIC = 0,
     LINEAR = 1,
-    REPEAT = 2
+    REPEAT = 2,
+    // backward-adaptive: decoder re-estimates K/G by running fit() on
+    // the WASM POINTS buffer (which contains previously decoded points).
+    // encoder runs the same fit() on the original points (= decoded, since
+    // prediction is lossless on integers). zero coefficient cost.
+    // wire encoding: repeat=1, mode=1 (previously unused combination).
+    BACKWARD = 3,
 }
 
 // feature flags for v2 wire format
@@ -319,6 +325,7 @@ export class GlyphCodec {
         const blocks: GlyphBlock[] = [];
         let prevKR = prev?.kR ?? LIN_KR, prevKI = prev?.kI ?? LIN_KI;
         let prevGR = prev?.gR ?? LIN_GR, prevGI = prev?.gI ?? LIN_GI;
+        let prevBlockStart = -1, prevBlockLen = 0; // for backward-adaptive fit
         let hasPrev = !!prev;
 
         for (let i = 2; i < nPts; i += GLYPH_BLOCK_SIZE) {
@@ -339,15 +346,36 @@ export class GlyphCodec {
             const lErr = gval(m.errSum);
 
             // repeat: reuse previous block's coefficients (zero overhead).
-            // backward-adaptive refitting was investigated but requires closed-loop
-            // encode (encoder must decode each block to match decoder's POINTS buffer)
-            // which adds complexity. deferred for a future iteration.
             let rCost = Infinity, rErr = Infinity;
             if (hasPrev) {
                 sval(m.kR, prevKR); sval(m.kI, prevKI);
                 sval(m.gR, prevGR); sval(m.gI, prevGI);
                 rCost = m.encodeBlock(i, len, GlyphMode.REPEAT);
                 rErr = gval(m.errSum);
+            }
+
+            // backward-adaptive: re-estimate K/G from the previous block's
+            // point data via fit(). the encoder's POINTS buffer has the original
+            // points; the decoder's POINTS buffer has decoded points. since
+            // prediction is lossless on integers, these are identical, so both
+            // sides produce the same K/G from the same fit() call.
+            // the fit range must match EXACTLY between encoder and decoder.
+            // both use: fit(prevBlockStart, min(prevBlockLen + 2, available))
+            let bCost = Infinity, bErr = Infinity;
+            let bKR = 0, bKI = 0, bGR = 0, bGI = 0;
+            if (prevBlockStart >= 0 && prevBlockLen >= 3) {
+                // fit on the previous block's point range.
+                // include 2 history points before the block for the AR(2) fit.
+                const fitStart = Math.max(0, prevBlockStart - 2);
+                const fitLen = prevBlockStart - fitStart + prevBlockLen;
+                m.fit(fitStart, fitLen);
+                bKR = gval(m.kR); bKI = gval(m.kI);
+                bGR = gval(m.gR); bGI = gval(m.gI);
+                sval(m.kR, bKR); sval(m.kI, bKI);
+                sval(m.gR, bGR); sval(m.gI, bGI);
+                bCost = m.encodeBlock(i, len, GlyphMode.HARMONIC);
+                bErr = gval(m.errSum);
+                bCost -= 8; // zero coefficient cost (decoder derives via fit)
             }
 
             // compute coefficient delta costs for harmonic
@@ -371,6 +399,12 @@ export class GlyphCodec {
             if (rCost < bestCost || (rCost === bestCost && rErr <= bestErr)) {
                 bestCost = rCost; bestErr = rErr; bestMode = GlyphMode.REPEAT;
             }
+            // only accept backward if residual error isn't much worse than harmonic.
+            // backward saves coefficient bytes but if the prediction is bad, the
+            // larger residuals outweigh the savings. gate at 2x harmonic error.
+            if (bCost < bestCost && bErr <= hErr * 2) {
+                bestCost = bCost; bestErr = bErr; bestMode = GlyphMode.BACKWARD;
+            }
 
             // re-encode the winner to populate RESID
             let useKR = 0, useKI = 0, useGR = 0, useGI = 0;
@@ -379,6 +413,11 @@ export class GlyphCodec {
                 sval(m.gR, hGR); sval(m.gI, hGI);
                 m.encodeBlock(i, len, GlyphMode.HARMONIC);
                 useKR = hKR; useKI = hKI; useGR = hGR; useGI = hGI;
+            } else if (bestMode === GlyphMode.BACKWARD) {
+                sval(m.kR, bKR); sval(m.kI, bKI);
+                sval(m.gR, bGR); sval(m.gI, bGI);
+                m.encodeBlock(i, len, GlyphMode.HARMONIC);
+                useKR = bKR; useKI = bKI; useGR = bGR; useGI = bGI;
             } else if (bestMode === GlyphMode.REPEAT) {
                 sval(m.kR, prevKR); sval(m.kI, prevKI);
                 sval(m.gR, prevGR); sval(m.gI, prevGI);
@@ -602,6 +641,8 @@ export class GlyphCodec {
                 prevGR = useGR; prevGI = useGI;
                 hasPrev = true;
             }
+            prevBlockStart = i;
+            prevBlockLen = len;
         }
         return blocks;
     }
@@ -630,9 +671,27 @@ export class GlyphCodec {
         heap.set(points.subarray(0, nExisting * CH), pointsOff);
 
         let cursor = startIdx;
+        let prevCursor = -1, prevCount = 0;
+        // K/G tracking for REPEAT resolution (mirrors encoder's prevKR/prevGR)
+        let decPrevKR = 0, decPrevKI = 0, decPrevGR = 0, decPrevGI = 0;
+        let decHasPrev = false;
         for (const b of blocks) {
             const count = b.residuals.length / CH;
             if (cursor + count > nExisting) break;
+
+            // resolve K/G for backward and repeat modes.
+            // this runs DURING decode (not unpack) so backward-derived K/G
+            // are available for subsequent repeat blocks.
+            if (b.mode === GlyphMode.BACKWARD && prevCursor >= 0 && prevCount >= 1) {
+                const fitStart = Math.max(0, prevCursor - 2);
+                const fitLen = prevCursor - fitStart + prevCount;
+                m.fit(fitStart, fitLen);
+                b.kR = gval(m.kR); b.kI = gval(m.kI);
+                b.gR = gval(m.gR); b.gI = gval(m.gI);
+            } else if (b.mode === GlyphMode.REPEAT && decHasPrev) {
+                b.kR = decPrevKR; b.kI = decPrevKI;
+                b.gR = decPrevGR; b.gI = decPrevGI;
+            }
 
             // detect channel count for potential undelta
             const chMask = this.detectChMask(b.residuals, count);
@@ -654,16 +713,28 @@ export class GlyphCodec {
                 m.undeltaResid(count, wireCh);
             }
 
-            // decode based on features
+            // decode based on features.
+            // backward mode uses harmonic prediction with fit()-derived K/G.
+            const wasmMode = b.mode === GlyphMode.BACKWARD ? GlyphMode.HARMONIC : b.mode;
             if (b.features & FEAT_SIDECAR) {
-                m.decodeBlockSc(cursor, count, b.mode,
+                m.decodeBlockSc(cursor, count, wasmMode,
                     b.kR, b.kI, b.gR, b.gI, b.scK, b.scG);
             } else if (b.features & FEAT_COUPLING) {
-                m.decodeBlockCpl(cursor, count, b.mode,
+                m.decodeBlockCpl(cursor, count, wasmMode,
                     b.kR, b.kI, b.gR, b.gI, b.cplW);
             } else {
-                m.decodeBlock(cursor, count, b.mode, b.kR, b.kI, b.gR, b.gI);
+                m.decodeBlock(cursor, count, wasmMode, b.kR, b.kI, b.gR, b.gI);
             }
+            // update K/G tracking for subsequent repeat blocks
+            if (b.mode !== GlyphMode.LINEAR) {
+                decPrevKR = b.kR; decPrevKI = b.kI;
+                decPrevGR = b.gR; decPrevGI = b.gI;
+                decHasPrev = true;
+            } else {
+                decHasPrev = false;
+            }
+            prevCursor = cursor;
+            prevCount = count;
             cursor += count;
         }
 
@@ -713,8 +784,10 @@ export class GlyphCodec {
             // ── meta (headers + coefficients) ──
 
             const isRepeat = b.mode === GlyphMode.REPEAT;
-            const modeBit = isRepeat ? 0 : b.mode;
-            const repeatBit = isRepeat ? (1 << 5) : 0;
+            const isBackward = b.mode === GlyphMode.BACKWARD;
+            // backward: repeat=1, mode=1 (previously unused combination)
+            const modeBit = isBackward ? 1 : (isRepeat ? 0 : b.mode);
+            const repeatBit = (isRepeat || isBackward) ? (1 << 5) : 0;
             const hasFeatures = b.features !== 0;
             const headerChMask = hasFeatures ? 0b11 : chMask;
             meta.push(modeBit | ((count - 1) << 1) | repeatBit | (headerChMask << 6));
@@ -837,9 +910,13 @@ export class GlyphCodec {
 
                 let kR = 0, kI = 0, gR = 0, gI = 0;
                 let mode: GlyphMode;
-                if (isRepeat) {
+                if (isRepeat && modeBit === 1) {
+                    // repeat=1, mode=1 → BACKWARD: K/G derived during decodeBlocks
+                    mode = GlyphMode.BACKWARD;
+                } else if (isRepeat) {
+                    // REPEAT: K/G resolved during decodeBlocks (not here) so that
+                    // REPEAT following BACKWARD gets the correct backward-derived K/G.
                     mode = GlyphMode.REPEAT;
-                    kR = prevKR; kI = prevKI; gR = prevGR; gI = prevGI;
                 } else if (modeBit === GlyphMode.HARMONIC) {
                     mode = GlyphMode.HARMONIC;
                     const refKR = hasPrevCoeffs ? prevKR : LIN_KR;
@@ -898,7 +975,11 @@ export class GlyphCodec {
                     mkR, mkI, mgR, mgI, microResiduals,
                 });
 
-                if (mode !== GlyphMode.LINEAR) {
+                if (mode === GlyphMode.BACKWARD || mode === GlyphMode.REPEAT) {
+                    // K/G for backward and repeat are resolved during decodeBlocks,
+                    // not here. backward derives via fit(), repeat copies from the
+                    // decode-time prevK which includes backward-derived values.
+                } else if (mode !== GlyphMode.LINEAR) {
                     prevKR = kR; prevKI = kI; prevGR = gR; prevGI = gI;
                     hasPrevCoeffs = true;
                 } else {

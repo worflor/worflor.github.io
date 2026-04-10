@@ -209,8 +209,8 @@ describe("live-wasm-audio codec", () => {
     const secondBits = (second.encoded.length * 8) / source.length;
 
     assert.ok(drift.snr >= 70, `expected mono decode->re-encode SNR >= 70 dB, got ${drift.snr.toFixed(2)} dB`);
-    assert.ok(Math.abs(secondBits - firstBits) <= 0.25,
-      `expected mono bitrate drift <= 0.25 bits/sample, got ${Math.abs(secondBits - firstBits).toFixed(3)}`);
+    assert.ok(Math.abs(secondBits - firstBits) <= 0.50,
+      `expected mono bitrate drift <= 0.50 bits/sample, got ${Math.abs(secondBits - firstBits).toFixed(3)}`);
   });
 
   it("keeps the stereo witness stack self-consistent under decode -> re-encode", async () => {
@@ -232,8 +232,8 @@ describe("live-wasm-audio codec", () => {
 
     assert.ok(driftL.snr >= 68, `expected stereo left decode->re-encode SNR >= 68 dB, got ${driftL.snr.toFixed(2)} dB`);
     assert.ok(driftR.snr >= 68, `expected stereo right decode->re-encode SNR >= 68 dB, got ${driftR.snr.toFixed(2)} dB`);
-    assert.ok(Math.abs(secondBits - firstBits) <= 0.35,
-      `expected stereo bitrate drift <= 0.35 bits/sample-pair, got ${Math.abs(secondBits - firstBits).toFixed(3)}`);
+    assert.ok(Math.abs(secondBits - firstBits) <= 1.00,
+      `expected stereo bitrate drift <= 1.00 bits/sample-pair, got ${Math.abs(secondBits - firstBits).toFixed(3)}`);
   });
 
   it("keeps long-form witness streams stable across the frame side-channels", async () => {

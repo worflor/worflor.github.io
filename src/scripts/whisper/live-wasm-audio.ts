@@ -2924,24 +2924,24 @@ export function varOrderFitAllBlocks(
             bestCost = bLen * Math.log2(errVar);
         }
 
-        // try all candidate orders using the WASM burg_trial inner loop.
-        // copy data once per block; only LP coefficients and state per order.
-        const bw = getBurgWasm();
-        const _burgDataView = new Int32Array(bw.mem.buffer, BURG_DATA_OFF, bLen);
-        for (let i = 0; i < bLen; i++) _burgDataView[i] = data[bStart + i];
-        const _burgAView = new Float64Array(bw.mem.buffer, BURG_A_OFF, maxOrder);
-        const _burgStView = new Float64Array(bw.mem.buffer, BURG_ST_OFF, maxOrder);
-
+        // try all candidate orders using TypeScript inner loop.
         for (let tryOrder = 1; tryOrder <= maxOrd; tryOrder++) {
             for (let m = 0; m < tryOrder; m++) {
                 _qkBuf[m] = quantRC(rawK[m]);
                 _dqkBuf[m] = dequantRC(_qkBuf[m]);
             }
             const a = reflToLP(_dqkBuf.subarray(0, tryOrder), tryOrder);
-            // copy LP coefficients and state into WASM memory
-            for (let m = 0; m < tryOrder; m++) _burgAView[m] = a[m];
-            for (let m = 0; m < maxOrder; m++) _burgStView[m] = state[m];
-            const errEnergy = bw.burg_trial(BURG_DATA_OFF, 0, bLen, BURG_A_OFF, tryOrder, BURG_ST_OFF);
+            for (let m = 0; m < maxOrder; m++) _savedSt[m] = state[m];
+            let errEnergy = 0;
+            for (let i = 0; i < bLen; i++) {
+                const val = data[bStart + i];
+                let pred = 0;
+                for (let m = 0; m < tryOrder; m++) pred += a[m] * _savedSt[m];
+                const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+                errEnergy += (val - roundPred) * (val - roundPred);
+                for (let m = tryOrder - 1; m > 0; m--) _savedSt[m] = _savedSt[m - 1];
+                _savedSt[0] = val;
+            }
             const errVar = Math.max(1, errEnergy / bLen);
             // entropy-estimated MDL: actual per-coefficient cost instead of fixed 8 bits
             let coeffCost = 0;
@@ -5273,7 +5273,7 @@ export async function decodeHarmonic(
                 if (sbPlanes[sb] > plane) totalBytes += sbLens[sb];
             }
             const compLen = readU32LE(p, off); off += 4;
-            planeData.push(decode0D(p.subarray(off, off + compLen), totalBytes, 2));
+            planeData.push(decode0D(p.subarray(off, off + compLen), totalBytes, 4));
             off += compLen;
         }
 
