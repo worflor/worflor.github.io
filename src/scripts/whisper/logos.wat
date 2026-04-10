@@ -6,15 +6,18 @@
 ;; Every opcode is deliberate. No compiler. No transpiler.
 ;; This is raw WASM that maps 1:1 to binary.
 ;;
-;; The codec is a 7-axis attention predictor (6 temporal + 1 spatial):
+;; The codec is an 8-axis attention predictor (6 temporal + 1 thermodynamic + 1 spatial):
 ;;
-;;   TEMPORAL (always active):
+;;   TEMPORAL — VALUE observables (condition on byte values):
 ;;   F0 (order-0 frequency, 255 bit tree)           — context-free byte distribution (CTW root)
 ;;   U  (bit-lane temporal, 32 ctx)                 — per-bit AR(2), in arithmetic blend
 ;;   O2 (full prev byte context, 256×255 bit tree) — absolute position in Z_2^8
 ;;   E  (Engram AR(2) trajectory, 256×255 bit tree) — K/G oscillator prediction
 ;;   P2N (prev-prev byte nibble class, 16×255 bit tree) — coarse bigram context
 ;;   M  (exact match, PPM exclusion)                — independent log-odds injection
+;;
+;;   THERMODYNAMIC — SCALE observable (conditions on byte energy):
+;;   V  (volatility, 16×255 bit tree)               — log2(L1 over last 16 bytes)
 ;;
 ;;   SPATIAL (active only when stride > 0):
 ;;   Ab (above neighbor, 256×255 bit tree)          — inputBuf[i - stride]
@@ -25,28 +28,37 @@
 ;; when stride = 0, Ab is completely inert: zero weight, no computation,
 ;; bit-identical output to a Logos without it.
 ;;
-;; Axis relationships — complementary by temporal scale, not redundant:
+;; Axis relationships — complementary by physical observable, not redundant:
 ;;   U  = bit-lane temporal: (p1_bit_k, p2_bit_k) → 4 contexts per bit position, 32 cells
 ;;        captures per-lane temporal patterns (alternation, runs, phase) at bit granularity.
 ;;        undamped weight: sweep confirmed 32-cell table warms fast enough that
 ;;        the prior 0.5× dampener was overcorrecting. |p-0.5| gates uncertainty.
 ;;   O2 = absolute byte position in Z_2^8 (full 256-class bigram); warms over ~256 bytes
 ;;   E  = byte trajectory — AR(2) Cramer fit (K,G per byte, 5 dot products); warms ~30 bytes
+;;   V  = local energy / volatility — log2(L1 sum over last 16 bytes), 16 bins.
+;;        the GARCH conjugate of value prediction. while O2/E/P2N condition on
+;;        which BYTE comes next, V conditions on how LOUD the local neighborhood is.
+;;        the missing scale observable: every prior axis tracks first moments of the
+;;        byte process; V tracks the second moment. heteroscedastic residual envelopes
+;;        (residual streams from Burg, AR fits, lifting transforms) are invisible to any
+;;        first-moment axis but show up as long-memory in the local L1.
+;;        thermodynamic framing: O2 is position, V is local temperature.
+;;        warms in ~30 bytes (table is 16× denser than O2).
 ;;   Ab = spatial above-neighbor at offset -stride; bridges the serialization gap
 ;;   M  = deep context exact match (hash chain PPM, independent)
 ;;
-;; 7 axes: F0, U, O2, E, P2N, Ab (Born amplitude pool) + M (log-odds injection)
+;; 7 amplitude axes: F0, U, O2, E, P2N, V, Ab (Born amplitude pool) + M (log-odds injection)
 ;; Born rule mixing: p = (Σwᵢ√pᵢ)² / ((Σwᵢ√pᵢ)² + (Σwᵢ√(1-pᵢ))²)
 ;;   amplitude-space interference handles axis correlation natively.
 ;;   correlated axes naturally damped — double-counting costs quadratically.
 ;;   weights: w = |p-0.5| × min(log1p(n), cap) — confidence × capped evidence.
-;;     split cap: F0=ln(2)≈0.693, U=ln(3)≈1.099, O2/E/P2N=ln(4)≈1.386.
-;;   KT priors: F0 α=0.5, U α=0.5, O2 α=0.125, E α=0.5, P2N α=0.25
+;;     split cap: F0=ln(2)≈0.693, U=ln(3)≈1.099, O2/E/P2N/V/Ab=ln(4)≈1.386.
+;;   KT priors: F0 α=0.5, U α=0.5, O2 α=0.125, E α=0.5, P2N α=0.25, V α=0.25
 ;;   SSE: adaptive α = max(0.05, 8/(1+n)) — James-Stein shrinkage.
 ;;   M independent log-odds → SSE → range coder.
 ;;
 ;; ═══════════════════════════════════════════════════════════════════════════════
-;; MEMORY LAYOUT (94 pages = 6.0 MB)
+;; MEMORY LAYOUT (95 pages = 6.0 MB)
 ;; ═══════════════════════════════════════════════════════════════════════════════
 ;;
 ;; Region      Offset     Size      Type          Description
@@ -73,12 +85,14 @@
 ;; SIGMOID_LUT 0x550000   32,776    f64[4097]     σ(x) lazy LUT + lerp, x ∈ [-12,12]
 ;; f0C         0x558100   2,048     i32[512]      F0-axis counts (order-0 bit tree, CTW root)
 ;; abC         0x558900   524,288   i32[131072]   Ab-axis counts (above-neighbor × bit tree)
-;; (end)       0x5D8900
+;; volC        0x5D8900   32,768    i32[8192]     V-axis counts (volBin × bit tree)
+;; volWindow   0x5E0900   16        u8[16]        V-axis 16-byte ring buffer (rolling L1)
+;; (end)       0x5E0910
 ;;
 ;; ═══════════════════════════════════════════════════════════════════════════════
 
 (module
-  (memory (export "mem") 94)
+  (memory (export "mem") 95)
 
   ;; ─── GLOBALS (scalar state, faster than memory) ───────────────────────────
 
@@ -131,6 +145,16 @@
   (global $g_stride          (mut i32) (i32.const 0))   ;; spatial stride, 0 = disabled
   (global $g_abByte          (mut i32) (i32.const 0))   ;; the above-neighbor byte value
   (global $g_abBase          (mut i32) (i32.const 0))   ;; abByte * 256 (precomputed per byte)
+
+  ;; V-axis: local volatility / energy / temperature observable.
+  ;; rolling L1 sum of the last 16 bytes, log2-binned to 16 bins.
+  ;; the missing scale parameter: O2/E/P2N condition on byte values, V conditions
+  ;; on byte energy. captures heteroscedastic envelopes (GARCH-style) that no
+  ;; first-moment axis can see. update is O(1) — ring buffer + running sum.
+  (global $g_volSum          (mut i32) (i32.const 0))   ;; rolling L1 over last 16 bytes
+  (global $g_volIdx          (mut i32) (i32.const 0))   ;; ring buffer write position (0..15)
+  (global $g_volBin          (mut i32) (i32.const 0))   ;; current bin (0..15) — 32 - clz(volSum), capped
+  (global $g_volBase         (mut i32) (i32.const 0))   ;; volBin * 256 (precomputed per byte)
 
 
   ;; ═══════════════════════════════════════════════════════════════════════════
@@ -517,11 +541,14 @@
     ;; Ab-axis (above neighbor, stride-gated)
     (local $abI i32) (local $abAddr i32)
     (local $abC0 f64) (local $abC1 f64) (local $abT f64) (local $pAb f64)
+    ;; V-axis (local volatility, log2 of rolling L1 over 16 bytes)
+    (local $vI i32) (local $vAddr i32)
+    (local $vC0 f64) (local $vC1 f64) (local $vT f64) (local $pV f64)
     ;; blend weight locals
     (local $wF0 f64) (local $wU f64)
-    (local $wO2 f64) (local $wAb f64) (local $wE f64) (local $wP2N f64)
+    (local $wO2 f64) (local $wAb f64) (local $wE f64) (local $wP2N f64) (local $wV f64)
     (local $f0Ti i32) (local $uTi i32)
-    (local $o2Ti i32) (local $abTi i32) (local $eTi i32) (local $p2nTi i32)
+    (local $o2Ti i32) (local $abTi i32) (local $eTi i32) (local $p2nTi i32) (local $vTi i32)
     (local $wLX f64)
     (local $a0 f64) (local $a1 f64)  ;; Born rule amplitude accumulators
     (local $lambda f64)
@@ -647,6 +674,24 @@
           (f64.add (local.get $abT) (f64.const 0.25)))))
       (else (local.set $pAb (f64.const 0.5))))
 
+    ;; ── V-axis: volatility / local energy / temperature ──
+    ;; volBin = 32 - clz(L1 sum over last 16 bytes), capped at 15. 16 bins × 255 cells.
+    ;; conditions on local byte energy rather than byte values. exposes the GARCH
+    ;; envelope of the byte stream — the second moment that no first-moment axis
+    ;; can see. measured ~13% conditional MI gain on Burg residuals, beyond what
+    ;; O2/P2N/E already capture.
+    (local.set $vI (i32.shl
+      (i32.add (global.get $g_volBase) (local.get $ctx))
+      (i32.const 1)))
+    (local.set $vAddr (i32.shl (local.get $vI) (i32.const 2)))
+    (local.set $vC0 (f64.convert_i32_u (i32.load offset=0x5D8900 (local.get $vAddr))))
+    (local.set $vC1 (f64.convert_i32_u (i32.load offset=0x5D8904 (local.get $vAddr))))
+    (local.set $vT (f64.add (local.get $vC0) (local.get $vC1)))
+    ;; α=0.25 (16-bin table, ~16× denser than O2's 256-bin table)
+    (local.set $pV (f64.div
+      (f64.add (local.get $vC0) (f64.const 0.25))
+      (f64.add (local.get $vT) (f64.const 0.5))))
+
     ;; ── weight computation: w_i = |p_i - 0.5| × min(log1p(total_i), cap) ──
     ;; |p-0.5| gates uncertain axes (confidence). Born rule handles interference
     ;; but the confidence gate is still essential: it prevents high-evidence axes
@@ -704,10 +749,20 @@
           (f64.min (call $log1p (local.get $abTi)) (f64.const 1.3863)))))  ;; cap = ln(4), same as O2
       (else (local.set $wAb (f64.const 0.0))))
 
+    ;; V weight: confidence × capped evidence, cap = ln(4), same as O2/E/P2N
+    (local.set $vTi (i32.trunc_sat_f64_u (local.get $vT)))
+    (local.set $vTi (select (i32.const 4095) (local.get $vTi)
+      (i32.gt_u (local.get $vTi) (i32.const 4095))))
+    (local.set $wV (f64.mul
+      (f64.abs (f64.sub (local.get $pV) (f64.const 0.5)))
+      (f64.min (call $log1p (local.get $vTi)) (f64.const 1.3863))))
+
     ;; wLX = sum of pool axis weights (for M balance and sharpness gate)
     (local.set $wLX (f64.add
-      (f64.add (f64.add (local.get $wF0) (local.get $wU)) (local.get $wO2))
-      (f64.add (f64.add (local.get $wE) (local.get $wP2N)) (local.get $wAb))))
+      (f64.add
+        (f64.add (f64.add (local.get $wF0) (local.get $wU)) (local.get $wO2))
+        (f64.add (f64.add (local.get $wE) (local.get $wP2N)) (local.get $wAb)))
+      (local.get $wV)))
 
     ;; ── Born rule: amplitude-space mixing (Hellinger geometry, α=0) ──
     ;; p = (Σwᵢ√pᵢ)² / ((Σwᵢ√pᵢ)² + (Σwᵢ√(1-pᵢ))²)
@@ -718,30 +773,34 @@
     (if (f64.gt (local.get $wLX) (f64.const 0.0))
       (then
         ;; accumulate weighted amplitudes for bit=0 and bit=1
-        ;; 6 axes in Born pool: F0, U, O2, Ab, E, P2N
+        ;; 7 axes in Born pool: F0, U, O2, E, P2N, V, Ab
         ;; when stride=0, wAb=0 and pAb=0.5 so Ab contributes wAb×√0.5 = 0 to both sums
         (local.set $a0 (f64.add
           (f64.add
             (f64.add
-              (f64.mul (local.get $wF0) (f64.sqrt (local.get $pF0)))
-              (f64.mul (local.get $wU) (f64.sqrt (local.get $pU))))
+              (f64.add
+                (f64.mul (local.get $wF0) (f64.sqrt (local.get $pF0)))
+                (f64.mul (local.get $wU) (f64.sqrt (local.get $pU))))
+              (f64.add
+                (f64.mul (local.get $wO2) (f64.sqrt (local.get $pO2)))
+                (f64.mul (local.get $wAb) (f64.sqrt (local.get $pAb)))))
             (f64.add
-              (f64.mul (local.get $wO2) (f64.sqrt (local.get $pO2)))
-              (f64.mul (local.get $wAb) (f64.sqrt (local.get $pAb)))))
-          (f64.add
-            (f64.mul (local.get $wE) (f64.sqrt (local.get $pE)))
-            (f64.mul (local.get $wP2N) (f64.sqrt (local.get $pP2N))))))
+              (f64.mul (local.get $wE) (f64.sqrt (local.get $pE)))
+              (f64.mul (local.get $wP2N) (f64.sqrt (local.get $pP2N)))))
+          (f64.mul (local.get $wV) (f64.sqrt (local.get $pV)))))
         (local.set $a1 (f64.add
           (f64.add
             (f64.add
-              (f64.mul (local.get $wF0) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pF0))))
-              (f64.mul (local.get $wU) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pU)))))
+              (f64.add
+                (f64.mul (local.get $wF0) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pF0))))
+                (f64.mul (local.get $wU) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pU)))))
+              (f64.add
+                (f64.mul (local.get $wO2) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pO2))))
+                (f64.mul (local.get $wAb) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pAb))))))
             (f64.add
-              (f64.mul (local.get $wO2) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pO2))))
-              (f64.mul (local.get $wAb) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pAb))))))
-          (f64.add
-            (f64.mul (local.get $wE) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pE))))
-            (f64.mul (local.get $wP2N) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pP2N)))))))
+              (f64.mul (local.get $wE) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pE))))
+              (f64.mul (local.get $wP2N) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pP2N))))))
+          (f64.mul (local.get $wV) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pV))))))
         ;; Born rule: p = a0² / (a0² + a1²)
         (local.set $a0 (f64.mul (local.get $a0) (local.get $a0)))  ;; a0²
         (local.set $a1 (f64.mul (local.get $a1) (local.get $a1)))  ;; a1²
@@ -934,6 +993,15 @@
           (i32.const 2)))
         (i32.store offset=0x558900 (local.get $addr)
           (i32.add (i32.load offset=0x558900 (local.get $addr)) (i32.const 1)))))
+
+    ;; volC[(volBase + ctx) * 2 + bit]++ — V-axis update
+    (local.set $addr (i32.shl
+      (i32.add
+        (i32.shl (i32.add (global.get $g_volBase) (local.get $ctx)) (i32.const 1))
+        (local.get $bit))
+      (i32.const 2)))
+    (i32.store offset=0x5D8900 (local.get $addr)
+      (i32.add (i32.load offset=0x5D8900 (local.get $addr)) (i32.const 1)))
 
     )
 
@@ -1227,6 +1295,33 @@
       (then
         (global.set $g_eBypass (i32.gt_u (global.get $g_eDistinct) (i32.const 240))))))
 
+  ;; update_vol(byte) — V-axis state update.
+  ;; rolling L1 sum over a 16-byte window: O(1) eviction + insertion + bin compute.
+  ;; volSum stays in [0, 16*255 = 4080]; bin = 32 - clz(volSum), capped at 15.
+  ;; warm-up: window starts all-zeros, fills over the first 16 bytes; predictor
+  ;; sees a low-energy bin during this period, which is the correct prior.
+  (func $update_vol (param $byte i32)
+    (local $oldByte i32) (local $bin i32)
+
+    ;; evict oldest: volSum -= volWindow[volIdx]
+    (local.set $oldByte (i32.load8_u offset=0x5E0900 (global.get $g_volIdx)))
+    (global.set $g_volSum (i32.sub (global.get $g_volSum) (local.get $oldByte)))
+
+    ;; insert new: volWindow[volIdx] = byte; volSum += byte
+    (i32.store8 offset=0x5E0900 (global.get $g_volIdx) (local.get $byte))
+    (global.set $g_volSum (i32.add (global.get $g_volSum) (local.get $byte)))
+
+    ;; advance ring index modulo 16
+    (global.set $g_volIdx (i32.and (i32.add (global.get $g_volIdx) (i32.const 1)) (i32.const 15)))
+
+    ;; bin = 32 - clz(volSum), capped at 15
+    ;; clz(0)=32 → bin=0; clz(1)=31 → bin=1; clz(0xFF)=24 → bin=8; clz(0xFFF)=20 → bin=12.
+    ;; max sum 4080 → clz≈20 → bin≈12, well under cap.
+    (local.set $bin (i32.sub (i32.const 32) (i32.clz (global.get $g_volSum))))
+    (local.set $bin (select (i32.const 15) (local.get $bin)
+      (i32.gt_s (local.get $bin) (i32.const 15))))
+    (global.set $g_volBin (local.get $bin)))
+
   ;; ═══════════════════════════════════════════════════════════════════════════
   ;; BYTE PIPELINE — encode/decode one byte through the full predictor
   ;; ═══════════════════════════════════════════════════════════════════════════
@@ -1254,6 +1349,7 @@
     (global.set $g_o2Base (i32.shl (global.get $g_p1) (i32.const 8)))
     (global.set $g_eBase (i32.shl (global.get $g_engPred) (i32.const 8)))
     (global.set $g_p2nBase (i32.shl (i32.shr_u (global.get $g_p2) (i32.const 4)) (i32.const 8)))
+    (global.set $g_volBase (i32.shl (global.get $g_volBin) (i32.const 8)))
 
     ;; 8-bit loop: MSB first
     (local.set $ctx (i32.const 1))
@@ -1356,6 +1452,7 @@
     (global.set $g_p2 (global.get $g_p1))
     (global.set $g_p1 (local.get $byte))
     (call $update_entropy (local.get $byte))
+    (call $update_vol (local.get $byte))       ;; V-axis: rolling L1 over last 16 bytes
     (global.set $g_decayTimer (i32.add (global.get $g_decayTimer) (i32.const 1)))
     (if (i32.ge_u (global.get $g_decayTimer) (i32.const 64))
       (then (call $evaporate))))
@@ -1383,6 +1480,7 @@
     (global.set $g_o2Base (i32.shl (global.get $g_p1) (i32.const 8)))
     (global.set $g_eBase (i32.shl (global.get $g_engPred) (i32.const 8)))
     (global.set $g_p2nBase (i32.shl (i32.shr_u (global.get $g_p2) (i32.const 4)) (i32.const 8)))
+    (global.set $g_volBase (i32.shl (global.get $g_volBin) (i32.const 8)))
 
     (local.set $ctx (i32.const 1))
     (local.set $byte (i32.const 0))
@@ -1471,6 +1569,7 @@
     (global.set $g_p2 (global.get $g_p1))
     (global.set $g_p1 (local.get $byte))
     (call $update_entropy (local.get $byte))
+    (call $update_vol (local.get $byte))       ;; V-axis: rolling L1 over last 16 bytes
     (global.set $g_decayTimer (i32.add (global.get $g_decayTimer) (i32.const 1)))
     (if (i32.ge_u (global.get $g_decayTimer) (i32.const 64))
       (then (call $evaporate)))
@@ -1507,6 +1606,11 @@
     ;; Ab-axis (stride is set externally by set_stride, NOT reset here)
     (global.set $g_abByte (i32.const 0))
     (global.set $g_abBase (i32.const 0))
+    ;; V-axis state
+    (global.set $g_volSum (i32.const 0))
+    (global.set $g_volIdx (i32.const 0))
+    (global.set $g_volBin (i32.const 0))
+    (global.set $g_volBase (i32.const 0))
     ;; Engram AR(2) state
     (global.set $g_sP1P1  (f64.const 0.0))
     (global.set $g_sP2P2  (f64.const 0.0))
@@ -1546,6 +1650,10 @@
     (memory.fill (i32.const 0x543000) (i32.const 0) (i32.const 32768))
     ;; Zero abC (131072 × i32 = 524288 bytes at 0x558900) — Ab-axis counts
     (memory.fill (i32.const 0x558900) (i32.const 0) (i32.const 524288))
+    ;; Zero volC (8192 × i32 = 32768 bytes at 0x5D8900) — V-axis counts
+    (memory.fill (i32.const 0x5D8900) (i32.const 0) (i32.const 32768))
+    ;; Zero volWindow (16 bytes at 0x5E0900) — V-axis ring buffer
+    (memory.fill (i32.const 0x5E0900) (i32.const 0) (i32.const 16))
     ;; Fill mPrev with -1 (32768 × i32 at 0x039000)
     (memory.fill (i32.const 0x039000) (i32.const 0xFF) (i32.const 131072))
     ;; Fill mLast2 with -1 (65536 × i32 at 0x059000)
