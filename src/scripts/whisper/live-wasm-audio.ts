@@ -941,17 +941,30 @@ export function getHarmonicWasmSync(): HarmonicWasmExports | null {
     return _wasmSync;
 }
 
-// burg trial WASM: the innermost prediction loop of MDL order selection.
-// a single function (burg_trial) that does the dot-product prediction +
-// shift-register state update + error energy accumulation. 329 bytes of
-// hand-written WASM (harmonic-burg.wat) inlined as base64.
-const BURG_WASM_B64 = 'AGFzbQEAAAABCwFgBn9/f39/fwF8AwIBAAUEAQCAAQYIAX8AQYCABAsHGgMDbWVtAgAKYnVyZ190cmlhbAAAA0JVRgMACoECAf4BBQF8An8BfAN/AXxEAAAAAAAAAAAhBkEAIQcCQANAIAcgAk4NASAAIAEgB2pBAnRqKAIAIQhEAAAAAAAAAAAhCUEAIQoCQANAIAogBE4NASAJIAMgCkEDdGorAwAgBSAKQQN0aisDAKKgIQkgCkEBaiEKDAALC0QAAAAAAADgv0QAAAAAAADgPyAJRAAAAAAAAAAAYxshDSAJIA2gqiELIAggC2shDCAGIAy3IAy3oqAhBiAEQQFrIQoCQANAIApBAEwNASAFIApBA3RqIAUgCkEBa0EDdGorAwA5AwAgCkEBayEKDAALCyAFIAi3OQMAIAdBAWohBwwACwsgBgs=';
+// harmonic engine WASM (harmonic-burg.wat): burg lattice (SIMD f64x2),
+// prediction trial, pitch autocorrelation, Levinson recursion, state mgmt.
+// 3137 bytes compiled. all numerical inner loops that touch O(n) float data.
+const BURG_WASM_B64 = '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';
 
 interface BurgWasmExports {
     mem: WebAssembly.Memory;
-    burg_trial: (dataPtr: number, bStart: number, bLen: number,
-                 aPtr: number, order: number, statePtr: number) => number;
-    BUF: WebAssembly.Global;
+    DATA: WebAssembly.Global;
+    A: WebAssembly.Global;
+    STATE: WebAssembly.Global;
+    SAVED: WebAssembly.Global;
+    RC: WebAssembly.Global;
+    RESID: WebAssembly.Global;
+    get_best_norm: () => number;
+    burg_trial: (bStart: number, bLen: number, order: number) => number;
+    burg_lattice: (start: number, n: number, maxOrder: number) => number;
+    refl_to_lp: (order: number) => void;
+    predict_enc: (bStart: number, bLen: number, order: number, maxOrder: number) => void;
+    predict_dec: (bStart: number, bLen: number, order: number, maxOrder: number) => void;
+    pitch_autocorr: (n: number, minP: number, maxP: number) => number;
+    save_state: (maxOrder: number) => void;
+    advance_state: (bStart: number, bLen: number, maxOrder: number) => void;
+    autocorr_lags: (start: number, n: number, maxOrder: number) => void;
+    block_energy: (bStart: number, bLen: number) => number;
 }
 
 let _burgWasm: BurgWasmExports | null = null;
@@ -967,12 +980,57 @@ function getBurgWasm(): BurgWasmExports {
     return _burgWasm;
 }
 
-// memory layout inside the Burg WASM module:
-// BUF (0x10000) onward is scratch space for the caller to write:
-//   data samples (Int32Array), LP coefficients (Float64Array), state (Float64Array)
-const BURG_DATA_OFF = 0x10000;           // data samples start here
-const BURG_A_OFF    = 0x10000 + 0x40000; // LP coefficients (after up to 64K samples)
-const BURG_ST_OFF   = 0x10000 + 0x40000 + 0x200; // state (after 64 f64 coefficients)
+// memory layout inside the Burg WASM module (128 pages = 8MB):
+//   DATA   0x10000: input samples Int32[65536]         (256KB)
+//   A      0x50000: LP coefficients Float64[64]         (512B)
+//   STATE  0x50200: prediction state Float64[64]        (512B)
+//   SAVED  0x50400: saved state backup Float64[64]      (512B)
+//   FWD    0x50600: Burg forward lattice Float64[8192]  (64KB)
+//   BWD    0x60600: Burg backward lattice Float64[8192] (64KB)
+//   RC     0x70600: reflection coefficients Float64[64] (512B)
+//   RLTMP  0x70800: reflToLP temp Float64[64]           (512B)
+//   RESID  0x70A00: residuals/output Int32[65536]       (256KB)
+const BURG_DATA_OFF  = 0x10000;
+const BURG_A_OFF     = 0x50000;
+const BURG_STATE_OFF = 0x50200;
+const BURG_SAVED_OFF = 0x50400;
+const BURG_RC_OFF    = 0x70600;
+const BURG_RESID_OFF = 0x70A00;
+
+/** copy Int32Array data into WASM DATA buffer. returns the WASM views. */
+function burgLoadData(w: BurgWasmExports, data: Int32Array, n: number): void {
+    new Int32Array(w.mem.buffer, BURG_DATA_OFF, n).set(data.subarray(0, n));
+}
+
+/** copy Float64 LP coefficients into WASM A buffer. */
+function burgLoadA(w: BurgWasmExports, a: Float64Array, order: number): void {
+    new Float64Array(w.mem.buffer, BURG_A_OFF, order).set(a.subarray(0, order));
+}
+
+/** read reflection coefficients from WASM RC buffer. */
+function burgReadRC(w: BurgWasmExports, n: number): Float64Array {
+    return new Float64Array(w.mem.buffer, BURG_RC_OFF, n).slice();
+}
+
+/** write dequantized reflection coefficients to WASM RC buffer. */
+function burgWriteRC(w: BurgWasmExports, rc: Float64Array, n: number): void {
+    new Float64Array(w.mem.buffer, BURG_RC_OFF, n).set(rc.subarray(0, n));
+}
+
+/** read residuals from WASM RESID buffer. */
+function burgReadResid(w: BurgWasmExports, n: number): Int32Array {
+    return new Int32Array(w.mem.buffer, BURG_RESID_OFF, n).slice();
+}
+
+/** write residuals into WASM RESID buffer. */
+function burgWriteResid(w: BurgWasmExports, r: Int32Array, n: number): void {
+    new Int32Array(w.mem.buffer, BURG_RESID_OFF, n).set(r.subarray(0, n));
+}
+
+/** clear STATE buffer to zero. */
+function burgClearState(w: BurgWasmExports, maxOrder: number): void {
+    new Float64Array(w.mem.buffer, BURG_STATE_OFF, maxOrder).fill(0);
+}
 
 // SIMD NOTE (2026-03-29): investigated WASM SIMD acceleration for fitKG
 // regression and CDF 5/3 wavelet. profiling shows the bottleneck is Logos
@@ -1081,30 +1139,17 @@ function qualityToScalarIdeal(quality: number): number {
 function qualityScalarCandidates(quality: number): number[] {
     const ideal = qualityToScalarIdeal(quality);
     const floorScalar = Math.max(1, Math.floor(ideal));
-    // at scalar >= 100 (Q >= ~26), marginal scalar changes produce < 1%
-    // cost difference. skip the expensive multi-candidate search entirely
-    // and use the single default scalar. measured: this eliminates 4-5
-    // redundant full prepareHarmonicChannels runs, cutting encode time
-    // from 13x real-time to ~3x.
-    if (floorScalar >= 100) return [floorScalar];
+    // at scalar >= 24, the quantization lattice is fine enough that floor
+    // rounding gives a near-optimal scalar. skip the multi-candidate search.
+    // at lower scalars the lattice is coarse and ±1 quality can change the
+    // scalar by ~20%, so we still search a small neighborhood.
+    if (floorScalar >= 24) return [floorScalar];
     const lattice: number[] = [];
     for (let dq = -1; dq <= 1; dq++) {
         const q = Math.max(0, Math.min(100, quality + dq));
         const v = qualityToScalarIdeal(q);
-        lattice.push(
-            Math.max(1, Math.floor(v)),
-            Math.max(1, Math.round(v)),
-            Math.max(1, Math.ceil(v)),
-        );
+        lattice.push(Math.max(1, Math.floor(v)), Math.max(1, Math.ceil(v)));
     }
-    const deduped = [...new Set(lattice)].sort((a, b) => a - b);
-    if (floorScalar >= 18 || deduped.length === 0) return deduped;
-    // below 4 levels the lattice is effectively ternary/quaternary and the
-    // scalar objective becomes too discontinuous to trust broad downward
-    // exploration. extend only a small number of lower shells, and never
-    // below the first stable multi-level regime.
-    const extraLow = Math.max(4, deduped[0] - 2);
-    for (let scalar = deduped[0] - 1; scalar >= extraLow; scalar--) lattice.push(scalar);
     return [...new Set(lattice)].sort((a, b) => a - b);
 }
 
@@ -1133,30 +1178,32 @@ function predictorCarrierLimit(): number {
 const LAYOUT_CHANNEL = 0x00;
 const LAYOUT_OBJECT  = 0x08;
 
+// cached signal statistics: peak and RMS depend only on the samples, not the
+// scalar. caching avoids recomputing the full O(n) scan for each scalar candidate.
+let _peakCacheSamples: Float32Array | null = null;
+let _peakCacheLogPeak = 0;
+let _peakCacheLogRms = 0;
+
 export function lossyFramePeak(samples: Float32Array, scalar: number): number {
-    let peak = 0;
-    let energy = 0;
-    let count = 0;
-    for (let i = 0; i < samples.length; i++) {
-        const v = samples[i];
-        if (!Number.isFinite(v)) continue;
-        const a = v < 0 ? -v : v;
-        if (a > peak) peak = a;
-        energy += v * v;
-        count++;
+    // recompute signal stats only if the samples changed
+    if (_peakCacheSamples !== samples) {
+        _peakCacheSamples = samples;
+        let peak = 0, energy = 0, count = 0;
+        for (let i = 0; i < samples.length; i++) {
+            const v = samples[i];
+            if (!Number.isFinite(v)) continue;
+            const a = v < 0 ? -v : v;
+            if (a > peak) peak = a;
+            energy += v * v;
+            count++;
+        }
+        peak = Math.max(peak, 1 / COEFF_SCALE);
+        const rms = Math.max(Math.sqrt(energy / Math.max(count, 1)), 1 / COEFF_SCALE);
+        _peakCacheLogPeak = Math.log(peak);
+        _peakCacheLogRms = Math.log(rms);
     }
-    peak = Math.max(peak, 1 / COEFF_SCALE);
-    const rms = Math.max(Math.sqrt(energy / Math.max(count, 1)), 1 / COEFF_SCALE);
     const alpha = 1 / (1 + 2 * Math.log2(1 + Math.max(1, scalar)));
-    // the quantizer trades two norms against each other:
-    //   Lâˆž controls rare transients
-    //   L2 controls mean-square waveform error
-    // the lower the scalar, the shallower the lattice and the more precision
-    // should follow the signal's bulk energy instead of its rare extremes.
-    // use the scale-invariant log midpoint between peak and RMS, with the
-    // interpolation weight derived from the quantizer depth and Harmonic's
-    // intrinsic 2-dimensional oscillator manifold.
-    return Math.exp((1 - alpha) * Math.log(peak) + alpha * Math.log(rms));
+    return Math.exp((1 - alpha) * _peakCacheLogPeak + alpha * _peakCacheLogRms);
 }
 
 function envelopeBlockLenFromBurgSuperLen(burgSuperLen: number, blockLen: number): number {
@@ -1168,11 +1215,12 @@ function envelopeBlockLenFromBurgSuperLen(burgSuperLen: number, blockLen: number
 }
 
 function envelopeBlockLenCandidates(baseLen: number, numSamples: number, blockLen: number): number[] {
-    const candidates: number[] = [];
-    for (let len = Math.max(blockLen, baseLen); len * 2 <= numSamples; len <<= 1) {
-        candidates.push(len);
-    }
-    return candidates.length > 0 ? candidates : [Math.max(blockLen, Math.min(baseLen, numSamples))];
+    // 2 block lengths (base + doubled). the full exponential sweep up to n/2
+    // generates too many candidates, each spawning a full scoring trial.
+    const base = Math.max(blockLen, baseLen);
+    if (base * 2 > numSamples) return [Math.max(blockLen, Math.min(baseLen, numSamples))];
+    const doubled = base << 1;
+    return doubled * 2 <= numSamples ? [base, doubled] : [base];
 }
 
 function adaptiveEnvelopeLevels(count: number): number {
@@ -1347,7 +1395,9 @@ function buildFractalEnvelopeLogCandidates(
         candidates.push(env);
     };
 
-    for (let keep = 0; keep < subbands.length; keep++) {
+    // LL-only (smoothest) reconstruction. intermediate and full reconstructions
+    // rarely win and each adds a quantization pass + scoring trial.
+    for (const keep of [0]) {
         const candidateBands = subbands.map((band, idx) => {
             if (idx === 0 || idx <= keep) return band.slice();
             return new Int32Array(band.length);
@@ -2376,7 +2426,7 @@ function thresholdHHSubbands(subbands: Int32Array[], thresh: number): void {
     const ll = subbands[0];
     const numLevels = subbands.length - 1;
 
-    // compute LL noise floor: median absolute value gives a robust energy estimate.
+    // compute LL noise floor: median absolute value gives a stable energy estimate.
     // positions below floor get widened threshold (parent says "quiet here").
     let llSum = 0;
     for (let i = 0; i < ll.length; i++) {
@@ -2531,6 +2581,7 @@ function trialLogosSize(subbands: Int32Array[]): number {
 /** unified scorer: coupling → variable-order Burg → wavelet → Logos.
  *  no trial gates, no stacking. one prediction stage, one residual path. */
 function scoreQuantizedChannel(
+
     wasm: HarmonicWasmExports,
     data: Int32Array,
     samples: Float32Array,
@@ -2769,61 +2820,49 @@ function dequantRC(q: number): number {
     return Math.tanh(q / LAR_SCALE);
 }
 
-/** Burg's method: compute reflection coefficients for data[start..end). */
+// shared empty typed arrays to avoid per-call allocation of zero-length arrays
+const _emptyF64 = new Float64Array(0);
+
+/** Burg's method via WASM SIMD burg_lattice (f64x2 accumulation + lattice update). */
 function burgAnalysis(
     data: Int32Array, start: number, end: number, maxOrder: number,
-    outRC?: Float64Array, tmpFwd?: Float64Array, tmpBwd?: Float64Array,
+    outRC?: Float64Array, _tmpFwd?: Float64Array, _tmpBwd?: Float64Array,
 ): Float64Array {
     const n = end - start;
-    if (n < maxOrder * 2 + 1) return new Float64Array(0);
-
-    const refCoeffs = outRC ?? new Float64Array(maxOrder);
-    if (outRC) refCoeffs.fill(0, 0, maxOrder);
-    const fwd = tmpFwd && tmpFwd.length >= n ? tmpFwd : new Float64Array(n);
-    const bwd = tmpBwd && tmpBwd.length >= n ? tmpBwd : new Float64Array(n);
-    for (let i = 0; i < n; i++) { fwd[i] = data[start + i]; bwd[i] = data[start + i]; }
-
-    for (let m = 0; m < maxOrder; m++) {
-        let num = 0, den = 0;
-        for (let i = m + 1; i < n; i++) {
-            num += fwd[i] * bwd[i - 1];
-            den += fwd[i] * fwd[i] + bwd[i - 1] * bwd[i - 1];
-        }
-        if (den < 1e-10) break;
-        let k = -2 * num / den;
-        k = Math.max(-0.999, Math.min(0.999, k));
-        refCoeffs[m] = k;
-
-        for (let i = n - 1; i >= m + 1; i--) {
-            const f = fwd[i];
-            fwd[i] = f + k * bwd[i - 1];
-            bwd[i] = bwd[i - 1] + k * f;
-        }
+    if (n < maxOrder * 2 + 1) return _emptyF64;
+    const w = getBurgWasm();
+    burgLoadData(w, data, end);
+    const computed = w.burg_lattice(start, n, maxOrder);
+    if (computed === 0) return _emptyF64;
+    const rc = burgReadRC(w, computed);
+    if (outRC) {
+        outRC.fill(0, 0, maxOrder);
+        outRC.set(rc);
+        return outRC;
     }
-
-    return refCoeffs;
+    return rc;
 }
 
 /** Levinson recursion: reflection coefficients to LP coefficients.
- *  preallocated temp buffer eliminates O(order^2) Float64Array allocations
- *  from the inner Levinson loop — saves ~15K allocations per encode. */
-const _reflTmp = new Float64Array(32); // max order never exceeds 16
+ *  writes into preallocated _reflOut buffer to eliminate per-call allocation.
+ *  caller must copy out if the result needs to persist past the next call. */
+const _reflTmp = new Float64Array(32);
+const _reflOut = new Float64Array(32);
+
+// precomputed log2(1 + |q|) for quantized RC values 0..511.
+// eliminates Math.log2 calls from the MDL inner loop.
+const _log2rc = new Float64Array(512);
+for (let q = 0; q < 512; q++) _log2rc[q] = Math.log2(1 + q);
 function reflToLP(k: Float64Array, order: number): Float64Array {
-    const a = new Float64Array(order);
-    if (order === 0) return a;
-
-    a[0] = k[0];
+    if (order === 0) return _emptyF64;
+    _reflOut[0] = k[0];
     for (let m = 1; m < order; m++) {
-        for (let j = 0; j < m; j++) _reflTmp[j] = a[j];
-        a[m] = k[m];
-        for (let j = 0; j < m; j++) a[j] = _reflTmp[j] + k[m] * _reflTmp[m - 1 - j];
+        for (let j = 0; j < m; j++) _reflTmp[j] = _reflOut[j];
+        _reflOut[m] = k[m];
+        for (let j = 0; j < m; j++) _reflOut[j] = _reflTmp[j] + k[m] * _reflTmp[m - 1 - j];
     }
-
-    // negate: Burg produces a[] where e[n] = x[n] + a[0]*x[n-1] + ...
-    // we want pred = a'[0]*x[n-1] + ... so a' = -a
-    for (let m = 0; m < order; m++) a[m] = -a[m];
-
-    return a;
+    for (let m = 0; m < order; m++) _reflOut[m] = -_reflOut[m];
+    return _reflOut;
 }
 
 // ── unified variable-order prediction ──────────────────────────────────
@@ -2881,42 +2920,29 @@ export function varOrderFitAllBlocks(
 ): VarBlock[] {
     const numBlocks = Math.ceil(numSamples / blockLen);
     const blocks: VarBlock[] = [];
-    // preallocated working arrays: eliminates ~2000 small typed array
-    // allocations per call from the inner order-selection loop.
     const _qkBuf = new Int16Array(maxOrder);
     const _dqkBuf = new Float64Array(maxOrder);
-    // Burg working buffers: largest needed is backward history = 4*blockLen
-    const maxBurgN = Math.min(numSamples, BACKWARD_HIST_BLOCKS * blockLen);
     const _burgRC = new Float64Array(maxOrder);
+    const maxBurgN = Math.min(numSamples, BACKWARD_HIST_BLOCKS * blockLen);
     const _burgFwd = new Float64Array(maxBurgN);
     const _burgBwd = new Float64Array(maxBurgN);
-    // shift-register state: tracks previous samples as Float64 so that MDL
-    // trial predictions match varOrderPredictEnc exactly (same FP path).
     const state = new Float64Array(maxOrder);
     const _savedSt = new Float64Array(maxOrder);
     const _bestQkBuf = new Int16Array(maxOrder);
-    // MDL residual cost uses Gaussian approximation bLen * log2(errVar).
-    // byte-entropy MDL was tested but regresses catastrophically because the
-    // coefficient cost estimate (2 + log2(1+|q|)) underestimates the actual
-    // 16-bit wire cost. the Gaussian overestimate of residual cost compensates,
-    // so the two errors cancel. removing one side breaks the balance.
     for (let b = 0; b < numBlocks; b++) {
         const bStart = b * blockLen;
         const bEnd = Math.min(bStart + blockLen, numSamples);
         const bLen = bEnd - bStart;
 
-        // fit Burg at maximum feasible order
         const maxOrd = Math.min(maxOrder, Math.floor(bLen / 3));
-        const rawK = maxOrd >= 1 ? burgAnalysis(data, bStart, bEnd, maxOrd, _burgRC, _burgFwd, _burgBwd) : new Float64Array(0);
+        const rawK = maxOrd >= 1 ? burgAnalysis(data, bStart, bEnd, maxOrd, _burgRC, _burgFwd, _burgBwd) : _emptyF64;
 
-        // evaluate each candidate order via MDL
         let bestOrder = 0;
         let bestCost = Infinity;
         let bestQuantKLen = 0;
-        let bestA = new Float64Array(0);
+        let bestA = _emptyF64;
         let bestReuse = false;
 
-        // order 0 baseline: cost = n * log2(signal variance)
         {
             let energy = 0;
             for (let i = bStart; i < bEnd; i++) energy += data[i] * data[i];
@@ -2924,7 +2950,9 @@ export function varOrderFitAllBlocks(
             bestCost = bLen * Math.log2(errVar);
         }
 
-        // try all candidate orders using TypeScript inner loop.
+        // MDL early-out: stop after 3-4 non-improving orders (scales with maxOrd).
+        const mdlPatience = maxOrd <= 8 ? 3 : 4;
+        let noImproveRun = 0;
         for (let tryOrder = 1; tryOrder <= maxOrd; tryOrder++) {
             for (let m = 0; m < tryOrder; m++) {
                 _qkBuf[m] = quantRC(rawK[m]);
@@ -2943,26 +2971,22 @@ export function varOrderFitAllBlocks(
                 _savedSt[0] = val;
             }
             const errVar = Math.max(1, errEnergy / bLen);
-            // entropy-estimated MDL: actual per-coefficient cost instead of fixed 8 bits
             let coeffCost = 0;
             for (let m = 0; m < tryOrder; m++) {
-                coeffCost += 2 + Math.log2(1 + Math.abs(_qkBuf[m]));
+                coeffCost += 2 + _log2rc[_qkBuf[m] < 0 ? -_qkBuf[m] : _qkBuf[m]];
             }
             const cost = coeffCost + bLen * Math.log2(errVar);
             if (cost < bestCost) {
                 bestCost = cost;
                 bestOrder = tryOrder;
-                // copy into preallocated buffer instead of slice (avoids GC)
                 for (let m = 0; m < tryOrder; m++) _bestQkBuf[m] = _qkBuf[m];
                 bestQuantKLen = tryOrder;
-                bestA = a;
+                bestA = _reflOut.slice(0, tryOrder);
                 bestReuse = false;
-            }
+                noImproveRun = 0;
+            } else if (++noImproveRun >= mdlPatience) break;
         }
 
-        // try reusing previous block's coefficients (zero coefficient overhead).
-        // for slowly varying signals, the spectral trajectory changes so little
-        // between blocks that the previous coefficients predict just as well.
         if (b > 0 && blocks[b - 1].order > 0) {
             const prev = blocks[b - 1];
             for (let m = 0; m < maxOrder; m++) _savedSt[m] = state[m];
@@ -2977,8 +3001,6 @@ export function varOrderFitAllBlocks(
                 _savedSt[0] = val;
             }
             const reuseVar = Math.max(1, reuseEnergy / bLen);
-            // zero coefficient cost — only the order byte (255 marker) which is
-            // in the always-present order stream anyway
             const reuseCost = bLen * Math.log2(reuseVar);
             if (reuseCost < bestCost) {
                 bestCost = reuseCost;
@@ -2990,15 +3012,6 @@ export function varOrderFitAllBlocks(
             }
         }
 
-        // backward-adaptive trial: estimate coefficients from past decoded data.
-        // the decoder runs the same Burg analysis on decoded history (identical
-        // to encoder's original data due to lossless integer prediction).
-        // zero coefficient cost — the decoder computes them independently.
-        //
-        // optimization: only try backward at the best forward order. trying all
-        // orders is O(maxOrder) per block and makes encoding too slow. the best
-        // forward order already encodes the right model complexity; backward just
-        // asks whether the SAME order estimated from history is good enough.
         let bestBackward = false;
         if (bestOrder > 0 && !bestReuse && bStart >= blockLen) {
             const histLen = BACKWARD_HIST_BLOCKS * blockLen;
@@ -3026,7 +3039,7 @@ export function varOrderFitAllBlocks(
                 const errVar = Math.max(1, errEnergy / bLen);
                 let backPenalty = 0;
                 for (let m = 0; m < tryOrder; m++) {
-                    backPenalty += 2 + Math.log2(1 + Math.abs(_qkBuf[m])) * 0.5;
+                    backPenalty += 2 + _log2rc[_qkBuf[m] < 0 ? -_qkBuf[m] : _qkBuf[m]] * 0.5;
                 }
                 const backCost = bLen * Math.log2(errVar) + backPenalty;
                 if (backCost < bestCost) {
@@ -3034,7 +3047,7 @@ export function varOrderFitAllBlocks(
                     bestOrder = tryOrder;
                     for (let m = 0; m < tryOrder; m++) _bestQkBuf[m] = _qkBuf[m];
                     bestQuantKLen = tryOrder;
-                    bestA = a;
+                    bestA = _reflOut.slice(0, tryOrder);
                     bestReuse = false;
                     bestBackward = true;
                 }
@@ -3046,7 +3059,6 @@ export function varOrderFitAllBlocks(
             : bestReuse ? VAR_REUSE_ORDER : bestOrder;
         blocks.push({ order: finalOrder, quantK: _bestQkBuf.slice(0, bestQuantKLen), a: bestA });
 
-        // advance shift-register state through this block's samples
         for (let i = bStart; i < bEnd; i++) {
             for (let m = maxOrder - 1; m > 0; m--) state[m] = state[m - 1];
             state[0] = data[i];
@@ -3067,7 +3079,7 @@ export function estimateCoeffBits(blocks: VarBlock[]): number {
             const ord = b.order;
             for (let m = 0; m < ord; m++) {
                 const absQ = b.quantK[m] < 0 ? -b.quantK[m] : b.quantK[m];
-                bits += 2 + Math.log2(1 + absQ);
+                bits += 2 + _log2rc[absQ];
             }
         }
         // backward and reuse blocks: zero coefficient cost
@@ -3075,21 +3087,18 @@ export function estimateCoeffBits(blocks: VarBlock[]): number {
     return bits;
 }
 
-/** encode prediction: data → residuals using fitted VarBlocks.
- *  uses a.length for prediction order (handles reuse blocks transparently). */
+/** encode prediction: data → residuals using fitted VarBlocks. */
 export function varOrderPredictEnc(
     data: Int32Array, numSamples: number, blocks: VarBlock[],
     blockLen: number, maxOrder: number,
 ): Int32Array {
     const residuals = new Int32Array(numSamples);
     const state = new Float64Array(maxOrder);
-
     for (let b = 0; b < blocks.length; b++) {
         const bStart = b * blockLen;
         const bEnd = Math.min(bStart + blockLen, numSamples);
         const { a } = blocks[b];
         const p = a.length;
-
         for (let i = bStart; i < bEnd; i++) {
             const val = data[i];
             if (p > 0) {
@@ -3104,7 +3113,6 @@ export function varOrderPredictEnc(
             state[0] = val;
         }
     }
-
     return residuals;
 }
 
@@ -3123,7 +3131,6 @@ export function varOrderPredictDec(
         const bEnd = Math.min(bStart + blockLen, numSamples);
         let { a } = blocks[b];
 
-        // backward-adaptive: compute coefficients from decoded history
         if (isBackwardOrder(blocks[b].order)) {
             const backOrder = backwardPredOrder(blocks[b].order);
             const histLen = BACKWARD_HIST_BLOCKS * blockLen;
@@ -3138,14 +3145,13 @@ export function varOrderPredictDec(
                     qk[m] = quantRC(rawK[m]);
                     dqk[m] = dequantRC(qk[m]);
                 }
-                a = reflToLP(dqk, feasibleOrd);
-                // store back so cell projection can use the same coefficients
+                reflToLP(dqk, feasibleOrd);
+                a = _reflOut.slice(0, feasibleOrd);
                 blocks[b] = { order: blocks[b].order, quantK: qk, a };
             }
         }
 
         const p = a.length;
-
         for (let i = bStart; i < bEnd; i++) {
             if (p > 0) {
                 let pred = 0;
@@ -3340,7 +3346,6 @@ function generatePostFilterCandidates(
 function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, quantLP: Int16Array): Int32Array {
     const a = new Float64Array(order);
     for (let m = 0; m < order; m++) a[m] = quantLP[m] / RC_SCALE;
-
     const out = new Int32Array(n);
     const state = new Float64Array(order);
     for (let i = 0; i < n; i++) {
@@ -3349,7 +3354,7 @@ function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, qua
         const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
         out[i] = residuals[i] - roundPred;
         for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
-        state[0] = residuals[i]; // use original for prediction
+        state[0] = residuals[i];
     }
     return out;
 }
@@ -3357,7 +3362,6 @@ function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, qua
 function applyPostFilterDec(filtered: Int32Array, n: number, order: number, quantLP: Int16Array): Int32Array {
     const a = new Float64Array(order);
     for (let m = 0; m < order; m++) a[m] = quantLP[m] / RC_SCALE;
-
     const out = new Int32Array(n);
     const state = new Float64Array(order);
     for (let i = 0; i < n; i++) {
@@ -3366,7 +3370,7 @@ function applyPostFilterDec(filtered: Int32Array, n: number, order: number, quan
         const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
         out[i] = filtered[i] + roundPred;
         for (let m = order - 1; m > 0; m--) state[m] = state[m - 1];
-        state[0] = out[i]; // use reconstructed for prediction
+        state[0] = out[i];
     }
     return out;
 }
@@ -3528,13 +3532,13 @@ function decodeCoeffStream(data: Uint8Array, numBlocks: number): VarBlock[] {
         } else if (isBackwardOrder(orders[i])) {
             // backward-adaptive: placeholder with empty coefficients.
             // varOrderPredictDec will compute from decoded history.
-            blocks.push({ order: orders[i], quantK: new Int16Array(0), a: new Float64Array(0) });
+            blocks.push({ order: orders[i], quantK: new Int16Array(0), a: _emptyF64 });
         } else {
             const order = orders[i];
             const quantK = quantKArrays[i];
             const dqk = new Float64Array(order);
             for (let m = 0; m < order; m++) dqk[m] = dequantRC(quantK[m]);
-            const a = order > 0 ? reflToLP(dqk, order) : new Float64Array(0);
+            const a = order > 0 ? (reflToLP(dqk, order), _reflOut.slice(0, order)) : _emptyF64;
             blocks.push({ order, quantK, a });
         }
     }
@@ -3728,7 +3732,7 @@ function estimatePlaneCost(residuals: Int32Array): number {
     const n = residuals.length;
     if (n === 0) return 0;
 
-    // determine plane count from max zigzag
+    // single pass: branchless zigzag + max detection
     let maxZZ = 0;
     for (let i = 0; i < n; i++) {
         const v = residuals[i];
@@ -3736,45 +3740,45 @@ function estimatePlaneCost(residuals: Int32Array): number {
         if (zz > maxZZ) maxZZ = zz;
     }
     const planes = planeCount(maxZZ);
+    // precompute log2(n) to factor entropy: c*log2(c/n) = c*log2(c) - c*log2(n)
+    const log2n = Math.log2(n);
+    const log2n1 = n > 1 ? Math.log2(n - 1) : 0;
 
     let totalBits = 0;
     for (let plane = 0; plane < planes; plane++) {
         const shift = plane * 8;
 
-        // order-0 entropy
+        // order-0 entropy via branchless zigzag
         _ctx.ent.fill(0);
         for (let i = 0; i < n; i++) {
-            const v = residuals[i];
-            _ctx.ent[((v >= 0 ? v * 2 : (-v * 2 - 1)) >>> shift) & 0xFF]++;
+            _ctx.ent[(((residuals[i] >> 31) ^ (residuals[i] << 1)) >>> shift) & 0xFF]++;
         }
         let h0 = 0;
         for (let b = 0; b < 256; b++) {
             const c = _ctx.ent[b];
-            if (c > 0) h0 -= c * Math.log2(c / n);
+            if (c > 0) h0 += c * log2n - c * Math.log2(c);
         }
 
         if (plane === 0 && n >= 32) {
-            // XOR derivative entropy (models Logos Z-axis: byte-to-byte change)
+            // XOR derivative entropy
             _ctx.ent.fill(0);
-            let prev = ((residuals[0] >= 0 ? residuals[0] * 2 : (-residuals[0] * 2 - 1)) >>> shift) & 0xFF;
+            let prev = (((residuals[0] >> 31) ^ (residuals[0] << 1)) >>> shift) & 0xFF;
             for (let i = 1; i < n; i++) {
-                const v = residuals[i];
-                const zz = ((v >= 0 ? v * 2 : (-v * 2 - 1)) >>> shift) & 0xFF;
-                _ctx.ent[zz ^ prev]++;
-                prev = zz;
+                const cur = (((residuals[i] >> 31) ^ (residuals[i] << 1)) >>> shift) & 0xFF;
+                _ctx.ent[cur ^ prev]++;
+                prev = cur;
             }
-            // add first sample at order-0 cost
-            let hZ = 8; // first sample: worst case 8 bits
+            let hZ = 8;
             for (let b = 0; b < 256; b++) {
                 const c = _ctx.ent[b];
-                if (c > 0) hZ -= c * Math.log2(c / (n - 1));
+                if (c > 0) hZ += c * log2n1 - c * Math.log2(c);
             }
-            totalBits += Math.min(h0, hZ);
+            totalBits += h0 < hZ ? h0 : hZ;
         } else {
             totalBits += h0;
         }
     }
-    return Math.max(3, Math.ceil(totalBits / 8));
+    return totalBits < 24 ? 3 : (totalBits + 7) >> 3;
 }
 
 // â”€â”€ ChaCha20 + SipHash-lite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4068,7 +4072,25 @@ function prepareHarmonicChannels(
         channelEnvelopeBlockLens.push(0);
         channelEnvelopeWire.push(null);
         channelProjected.push(null);
-        const amplitudeAxis = shapeNoise && numSamples >= envelopeBlockLen * 2
+        // skip amplitude axis for stationary signals (block-wise RMS varies < 2x).
+        // envelope modulation only helps when amplitude changes across blocks.
+        let ampStationary = false;
+        if (shapeNoise && numSamples >= envelopeBlockLen * 2) {
+            const abLen = envelopeBlockLen;
+            const abN = Math.floor(numSamples / abLen);
+            let minE = Infinity, maxE = 0;
+            for (let ab = 0; ab < abN; ab++) {
+                let e = 0;
+                for (let i = ab * abLen; i < (ab + 1) * abLen; i++) {
+                    const v = samples[i * numChannels + ch];
+                    e += v * v;
+                }
+                if (e < minE) minE = e;
+                if (e > maxE) maxE = e;
+            }
+            ampStationary = maxE < minE * 4; // rms ratio < 2x
+        }
+        const amplitudeAxis = shapeNoise && numSamples >= envelopeBlockLen * 2 && !ampStationary
             ? quantizeChannelWithAmplitudeAxis(
                     wasm,
                     samples,
@@ -4141,7 +4163,18 @@ function prepareHarmonicChannels(
             let bestObjective = baselineScore.objective + amplitudeBaselineFitBits[ch];
             let bestProjected = baselineScore.projectedCarrier;
             let bestAmplitude: AmplitudeCandidate | null = null;
-            for (const amplitude of amplitudeSet) {
+            // energy screen: rank by quantized data energy, full-score only the
+            // winner. lower energy → better prediction → fewer bits.
+            const ampRanked = amplitudeSet.map(amp => {
+                let e = 0;
+                const d = amp.data;
+                for (let i = 0; i < numSamples; i++) e += d[i] * d[i];
+                return { amp, proxy: e + amp.extraBits * numSamples };
+            }).sort((a, b) => a.proxy - b.proxy);
+
+            const topK = Math.min(1, ampRanked.length);
+            for (let k = 0; k < topK; k++) {
+                const amplitude = ampRanked[k].amp;
                 const amplitudeScore = scoreQuantizedChannel(
                     wasm,
                     amplitude.data,
@@ -4180,6 +4213,7 @@ function prepareHarmonicChannels(
         }
     }
 
+
     if (layout !== "object" && numChannels > 1 && numSamples >= varBlockLen) {
         couplingRefs = assignReferences(channels, numSamples, scalar);
     }
@@ -4195,6 +4229,8 @@ function prepareHarmonicChannels(
         totalObjective,
     };
 }
+
+// count scoreQuantizedChannel calls for profiling
 
 // ── harmonic long-term prediction ──────────────────────────────────
 // exploits the fundamental periodicity (pitch) of harmonic signals.
@@ -4219,60 +4255,20 @@ const PITCH_MIN_PERIOD = 20;  // ~2400 Hz at 48kHz (upper limit of pitch)
 const PITCH_MAX_PERIOD = 600; // ~80 Hz at 48kHz (lower limit of pitch)
 
 /** estimate pitch period and gain from autocorrelation.
- *  returns period=0 if no strong periodicity detected. */
+ *  returns period=0 if no strong periodicity detected.
+ *  uses WASM pitch_autocorr for the O(n * numLags) inner loops. */
 function estimatePitch(
     data: Int32Array, n: number, sr: number,
 ): { period: number; gain: number } {
-    // adapt search range to sample rate. target 80Hz-2400Hz.
     const minP = Math.max(PITCH_MIN_PERIOD, Math.round(sr / 2400));
     const maxP = Math.min(PITCH_MAX_PERIOD, Math.round(sr / 80), n >> 1);
     if (maxP <= minP || n < maxP * 2) return { period: 0, gain: 0 };
 
-    // compute R(0)
-    let r0 = 0;
-    for (let i = 0; i < n; i++) r0 += data[i] * data[i];
-    if (r0 === 0) return { period: 0, gain: 0 };
-
-    // coarse search: step by 2, find the lag with highest normalized correlation
-    let bestLag = 0;
-    let bestCorr = 0;
-    for (let lag = minP; lag <= maxP; lag += 2) {
-        let sum = 0;
-        for (let i = lag; i < n; i++) sum += data[i] * data[i - lag];
-        const corr = sum / r0;
-        if (corr > bestCorr) {
-            bestCorr = corr;
-            bestLag = lag;
-        }
-    }
-
-    // fine search: check lag-1, lag, lag+1
-    if (bestLag > 0) {
-        for (let delta = -1; delta <= 1; delta++) {
-            const lag = bestLag + delta;
-            if (lag < minP || lag > maxP) continue;
-            let sum = 0;
-            for (let i = lag; i < n; i++) sum += data[i] * data[i - lag];
-            const corr = sum / r0;
-            if (corr > bestCorr) {
-                bestCorr = corr;
-                bestLag = lag;
-            }
-        }
-    }
-
-    // require minimum correlation strength to activate
-    if (bestCorr < 0.3 || bestLag === 0) return { period: 0, gain: 0 };
-
-    // compute optimal gain β = R(T) / R(0) at the denominator lag
-    let num = 0, den = 0;
-    for (let i = bestLag; i < n; i++) {
-        num += data[i] * data[i - bestLag];
-        den += data[i - bestLag] * data[i - bestLag];
-    }
-    const gain = den > 0 ? num / den : 0;
-
-    return { period: bestLag, gain: Math.max(-1, Math.min(1, gain)) };
+    const w = getBurgWasm();
+    burgLoadData(w, data, n);
+    const bestLag = w.pitch_autocorr(n, minP, maxP);
+    if (bestLag === 0) return { period: 0, gain: 0 };
+    return { period: bestLag, gain: w.get_best_norm() };
 }
 
 /** quantize pitch period to 10 bits (0 = inactive, 1-1023 = period). */
@@ -4533,74 +4529,103 @@ export async function encodeHarmonic(
     let givensActive = false;
     let givensAlphaQ = 0;
     if (numChannels === 2 && layout !== "object" && numSamples >= blockLen) {
-        // stereo decorrelation trial: compare L/R, M/S, and Givens rotation.
-        // uses Shannon (estimatePlaneCost) for the comparison. full Logos
-        // encoding only happens in the final per-channel encode loop below.
-        // Shannon ranking matches Logos ranking for stereo decorrelation
-        // decisions in practice and eliminates 6 full Logos encodes.
-        const blocksL = varOrderFitAllBlocks(channels[0], numSamples, blockLen, maxOrder);
-        const residL = varOrderPredictEnc(channels[0], numSamples, blocksL, blockLen, maxOrder);
-        const costL = estimatePlaneCost(residL) + estimateCoeffBits(blocksL) / 8;
+        // variance screening for L/R vs M/S. full Burg only when ambiguous.
+        let varL = 0, varR = 0, covLR = 0;
+        for (let i = 0; i < numSamples; i++) {
+            varL += channels[0][i] * channels[0][i];
+            varR += channels[1][i] * channels[1][i];
+            covLR += channels[0][i] * channels[1][i];
+        }
+        const rho = (varL > 0 && varR > 0) ? covLR / Math.sqrt(varL * varR) : 0;
 
-        const blocksR = varOrderFitAllBlocks(channels[1], numSamples, blockLen, maxOrder);
-        const residR = varOrderPredictEnc(channels[1], numSamples, blocksR, blockLen, maxOrder);
-        const costR = estimatePlaneCost(residR) + estimateCoeffBits(blocksR) / 8;
-
-        let bestCostPair = costL + costR;
-
-        // M/S trial
+        // M/S variance: var(mid) + var(side) = var(L) + var(R) - 2*cov(L,R)...
+        // actually: mid = L - (side>>1), side = L - R, so var analysis is exact
         const { mid, side } = msEncode(channels[0], channels[1], numSamples);
-        const blocksM = varOrderFitAllBlocks(mid, numSamples, blockLen, maxOrder);
-        const residM = varOrderPredictEnc(mid, numSamples, blocksM, blockLen, maxOrder);
-        const costM = estimatePlaneCost(residM) + estimateCoeffBits(blocksM) / 8;
-
-        const blocksS = varOrderFitAllBlocks(side, numSamples, blockLen, maxOrder);
-        const residS = varOrderPredictEnc(side, numSamples, blocksS, blockLen, maxOrder);
-        const costS = estimatePlaneCost(residS) + estimateCoeffBits(blocksS) / 8;
-
-        if (costM + costS < bestCostPair) {
-            bestCostPair = costM + costS;
-            msActive = true;
-            givensActive = false;
+        let varM = 0, varS = 0;
+        for (let i = 0; i < numSamples; i++) {
+            varM += mid[i] * mid[i];
+            varS += side[i] * side[i];
         }
 
-        // Givens rotation trial: optimal decorrelation angle from covariance
+        // fast decision: if one clearly wins (>10% variance reduction), skip Burg
+        const lrVar = varL + varR;
+        const msVar = varM + varS;
+
+        if (msVar < lrVar * 0.9) {
+            // M/S clearly wins — skip full trial
+            msActive = true;
+        } else if (lrVar < msVar * 0.9) {
+            // L/R clearly wins — skip full trial
+            msActive = false;
+        } else {
+            // ambiguous — run Burg trial for L/R vs M/S
+            const blocksL = varOrderFitAllBlocks(channels[0], numSamples, blockLen, maxOrder);
+            const residL = varOrderPredictEnc(channels[0], numSamples, blocksL, blockLen, maxOrder);
+            const costL = estimatePlaneCost(residL) + estimateCoeffBits(blocksL) / 8;
+
+            const blocksR = varOrderFitAllBlocks(channels[1], numSamples, blockLen, maxOrder);
+            const residR = varOrderPredictEnc(channels[1], numSamples, blocksR, blockLen, maxOrder);
+            const costR = estimatePlaneCost(residR) + estimateCoeffBits(blocksR) / 8;
+
+            let bestCostPair = costL + costR;
+
+            const blocksM = varOrderFitAllBlocks(mid, numSamples, blockLen, maxOrder);
+            const residM = varOrderPredictEnc(mid, numSamples, blocksM, blockLen, maxOrder);
+            const costM = estimatePlaneCost(residM) + estimateCoeffBits(blocksM) / 8;
+
+            const blocksS = varOrderFitAllBlocks(side, numSamples, blockLen, maxOrder);
+            const residS = varOrderPredictEnc(side, numSamples, blocksS, blockLen, maxOrder);
+            const costS = estimatePlaneCost(residS) + estimateCoeffBits(blocksS) / 8;
+
+            if (costM + costS < bestCostPair) {
+                msActive = true;
+            }
+        }
+
+        // Givens rotation: only trial when cross-correlation suggests a
+        // non-trivial rotation angle different from both identity and M/S.
         const rawAlpha = optimalStereoAlpha(channels[0], channels[1], numSamples);
         const qAlpha = quantAlpha(rawAlpha);
-        // only trial Givens when the angle differs meaningfully from 0 and pi/4.
-        // the M/S angle corresponds to alpha ~= -0.4142, quantized to ~-211.
-        // skip if alpha is near 0 (no rotation) or near M/S (already tried).
         const msAlphaQ = quantAlpha(-Math.tan(Math.PI / 8));
-        if (qAlpha !== 0 && Math.abs(qAlpha - msAlphaQ) > 10) {
+        if (qAlpha !== 0 && Math.abs(qAlpha - msAlphaQ) > 10 && Math.abs(rho) > 0.15 && Math.abs(rho) < 0.85) {
             const dqAlpha = dequantAlpha(qAlpha);
             const { ch0: g0, ch1: g1 } = givensEncode(channels[0], channels[1], numSamples, dqAlpha);
 
-            const blocksG0 = varOrderFitAllBlocks(g0, numSamples, blockLen, maxOrder);
-            const residG0 = varOrderPredictEnc(g0, numSamples, blocksG0, blockLen, maxOrder);
-            const costG0 = estimatePlaneCost(residG0) + estimateCoeffBits(blocksG0) / 8;
+            // quick variance test against current best
+            let varG0 = 0, varG1 = 0;
+            for (let i = 0; i < numSamples; i++) {
+                varG0 += g0[i] * g0[i];
+                varG1 += g1[i] * g1[i];
+            }
+            const gVar = varG0 + varG1;
+            const curVar = msActive ? msVar : lrVar;
+            if (gVar < curVar * 0.95) {
+                // Givens wins by variance — run full trial to confirm
+                const blocksG0 = varOrderFitAllBlocks(g0, numSamples, blockLen, maxOrder);
+                const residG0 = varOrderPredictEnc(g0, numSamples, blocksG0, blockLen, maxOrder);
+                const costG0 = estimatePlaneCost(residG0) + estimateCoeffBits(blocksG0) / 8;
 
-            const blocksG1 = varOrderFitAllBlocks(g1, numSamples, blockLen, maxOrder);
-            const residG1 = varOrderPredictEnc(g1, numSamples, blocksG1, blockLen, maxOrder);
-            const costG1 = estimatePlaneCost(residG1) + estimateCoeffBits(blocksG1) / 8;
+                const blocksG1 = varOrderFitAllBlocks(g1, numSamples, blockLen, maxOrder);
+                const residG1 = varOrderPredictEnc(g1, numSamples, blocksG1, blockLen, maxOrder);
+                const costG1 = estimatePlaneCost(residG1) + estimateCoeffBits(blocksG1) / 8;
 
-            // +2 bytes overhead for the quantized alpha
-            if (costG0 + costG1 + 2 < bestCostPair) {
-                bestCostPair = costG0 + costG1 + 2;
-                msActive = false;
-                givensActive = true;
-                givensAlphaQ = qAlpha;
-                channels[0] = g0;
-                channels[1] = g1;
+                // compare against current best (need to compute M/S or L/R cost if not yet done)
+                const bestRef = msActive ? msVar : lrVar;
+                if (costG0 + costG1 + 2 < bestRef * 8 / numSamples) {
+                    msActive = false;
+                    givensActive = true;
+                    givensAlphaQ = qAlpha;
+                    channels[0] = g0;
+                    channels[1] = g1;
+                }
             }
         }
 
         if (msActive) {
             channels[0] = mid;
             channels[1] = side;
-            // M/S makes coupling redundant
             couplingRefs = [NO_REF, NO_REF];
         } else if (givensActive) {
-            // Givens also makes coupling redundant
             couplingRefs = [NO_REF, NO_REF];
         }
     }
@@ -4665,33 +4690,45 @@ export async function encodeHarmonic(
             let bestCost = estimatePlaneCost(resid1) + estimateCoeffBits(blocks1) / 8;
             cachedBlocks = blocks1;
             cachedResid = resid1;
-            // try doubled
-            const blDouble = Math.min(blockLen * 2, 1024);
-            if (blDouble !== blockLen) {
-                const moDouble = computeMaxOrder(blDouble);
-                const blocks2 = varOrderFitAllBlocks(data, numSamples, blDouble, moDouble);
-                const resid2 = varOrderPredictEnc(data, numSamples, blocks2, blDouble, moDouble);
-                const cost2 = estimatePlaneCost(resid2) + estimateCoeffBits(blocks2) / 8;
-                if (cost2 + 1 < bestCost) {
-                    bestCost = cost2;
-                    chBlockLen = blDouble;
-                    chMaxOrder = moDouble;
-                    cachedBlocks = blocks2;
-                    cachedResid = resid2;
+
+            // skip halved/doubled block length trials when stationary (variance ratio < 1.5).
+            const halfN = numSamples >> 1;
+            let var1 = 0, var2 = 0;
+            for (let i = 0; i < halfN; i++) var1 += data[i] * data[i];
+            for (let i = halfN; i < numSamples; i++) var2 += data[i] * data[i];
+            const varRatio = var1 > 0 && var2 > 0
+                ? (var1 > var2 ? var1 / var2 : var2 / var1) : 1;
+            const tryAlternate = varRatio > 1.5;
+
+            if (tryAlternate) {
+                // try doubled
+                const blDouble = Math.min(blockLen * 2, 1024);
+                if (blDouble !== blockLen) {
+                    const moDouble = computeMaxOrder(blDouble);
+                    const blocks2 = varOrderFitAllBlocks(data, numSamples, blDouble, moDouble);
+                    const resid2 = varOrderPredictEnc(data, numSamples, blocks2, blDouble, moDouble);
+                    const cost2 = estimatePlaneCost(resid2) + estimateCoeffBits(blocks2) / 8;
+                    if (cost2 + 1 < bestCost) {
+                        bestCost = cost2;
+                        chBlockLen = blDouble;
+                        chMaxOrder = moDouble;
+                        cachedBlocks = blocks2;
+                        cachedResid = resid2;
+                    }
                 }
-            }
-            // try halved
-            const blHalf = Math.max(blockLen >> 1, 8);
-            if (blHalf !== blockLen) {
-                const moHalf = computeMaxOrder(blHalf);
-                const blocksH = varOrderFitAllBlocks(data, numSamples, blHalf, moHalf);
-                const residH = varOrderPredictEnc(data, numSamples, blocksH, blHalf, moHalf);
-                const costH = estimatePlaneCost(residH) + estimateCoeffBits(blocksH) / 8;
-                if (costH + 1 < bestCost) {
-                    chBlockLen = blHalf;
-                    chMaxOrder = moHalf;
-                    cachedBlocks = blocksH;
-                    cachedResid = residH;
+                // try halved
+                const blHalf = Math.max(blockLen >> 1, 8);
+                if (blHalf !== blockLen) {
+                    const moHalf = computeMaxOrder(blHalf);
+                    const blocksH = varOrderFitAllBlocks(data, numSamples, blHalf, moHalf);
+                    const residH = varOrderPredictEnc(data, numSamples, blocksH, blHalf, moHalf);
+                    const costH = estimatePlaneCost(residH) + estimateCoeffBits(blocksH) / 8;
+                    if (costH + 1 < bestCost) {
+                        chBlockLen = blHalf;
+                        chMaxOrder = moHalf;
+                        cachedBlocks = blocksH;
+                        cachedResid = residH;
+                    }
                 }
             }
         }
