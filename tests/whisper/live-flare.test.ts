@@ -17,6 +17,10 @@ function encodePayload(payload: unknown): string {
   return b64url(JSON.stringify(payload));
 }
 
+function decodePayload<T>(payload: string): T {
+  return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as T;
+}
+
 class FakeFlareWebSocket {
   static instances: FakeFlareWebSocket[] = [];
   static scenario: Scenario = "live-flare";
@@ -68,7 +72,11 @@ class FakeFlareWebSocket {
             data: JSON.stringify({
               offer: {
                 type: "offer",
-                sdp: `whisper-intent:${encodePayload({ attemptId: "remote-attempt" })}`,
+                sdp: `whisper-intent:${encodePayload({
+                  attemptId: "remote-attempt",
+                  sessionTag: "peer-remote-session",
+                  issuedAt: Date.now(),
+                })}`,
               },
               offer_id: "remote-intent",
               peer_id: "peer-remote",
@@ -82,8 +90,9 @@ class FakeFlareWebSocket {
       // match-ack now uses type:"answer" with whisper type prefix in sdp
       const answerSdp = typeof msg.answer?.sdp === "string" ? msg.answer.sdp : "";
       if (answerSdp.startsWith("whisper-match-ack:") && FakeFlareWebSocket.scenario === "live-flare" && !this.responded) {
-        const payloadJson = Buffer.from(answerSdp.slice("whisper-match-ack:".length), "base64url").toString("utf8");
-        const matchPayload = JSON.parse(payloadJson) as { rendezvousId: string };
+        const matchPayload = decodePayload<{ rendezvousId: string; toSessionTag: string; fromSessionTag: string }>(
+          answerSdp.slice("whisper-match-ack:".length),
+        );
         this.responded = true;
         queueMicrotask(() => {
           if (this.readyState !== FakeFlareWebSocket.OPEN) return;
@@ -91,7 +100,13 @@ class FakeFlareWebSocket {
             data: JSON.stringify({
               offer: {
                 type: "offer",
-                sdp: `whisper-offer-code:${encodePayload({ rendezvousId: matchPayload.rendezvousId, code: "A".repeat(64) })}`.padEnd(1024, "."),
+                sdp: `whisper-offer-code:${encodePayload({
+                  rendezvousId: matchPayload.rendezvousId,
+                  code: "A".repeat(64),
+                  fromSessionTag: "peer-remote-session",
+                  toSessionTag: matchPayload.fromSessionTag,
+                  issuedAt: Date.now(),
+                })}`.padEnd(1024, "."),
                 whisper_session: matchPayload.rendezvousId,
                 to_peer_id: msg.peer_id,
               },

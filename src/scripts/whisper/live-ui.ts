@@ -4621,6 +4621,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function createSession(): WhisperLiveSession {
     const externalAssist = opts.externalAssistToggle.checked;
     const rtcConfig = externalAssist ? WHISPER_LIVE_RTC_PUBLIC_STUN : WHISPER_LIVE_RTC_LOCAL_ONLY;
+    const externalAssistPolicy = (relayActive || flareActive) ? "keep-for-session" : "drop-after-connect";
 
     // Only log verbose network info in manual mode — relay/flare users don't need to see it
     if (!relayActive && !flareActive) {
@@ -4645,6 +4646,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onDrawStream: (ev) => handleRemoteDraw(ev),
     }, {
       rtcConfig,
+      externalAssistPolicy,
       autoConfirmFingerprint: true,
       turnPool: opts.turnPool,
     });
@@ -4754,11 +4756,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "handshaking":
-        if (relayHandle) {
-          relayHandle.destroy();
-          relayHandle = null;
-          session?.setRelaySignalSender(null);
-        }
         enterPhase(opts.connectingSection, "starting encryption...", true, true);
         opts.connectingStatus.textContent = "starting end-to-end encryption...";
         break;

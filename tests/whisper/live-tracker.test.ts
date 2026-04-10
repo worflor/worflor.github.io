@@ -19,6 +19,10 @@ function encodePayload(payload: unknown): string {
   return b64url(JSON.stringify(payload));
 }
 
+function decodePayload<T>(payload: string): T {
+  return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as T;
+}
+
 function createRendezvousId(
   localPeerId: string,
   localAttemptId: string,
@@ -33,6 +37,7 @@ class FakeTrackerWebSocket {
   static instances: FakeTrackerWebSocket[] = [];
   static lastRendezvousId = "";
   static lastLiveOfferId = "";
+  static scenario: "normal" | "stale-intent" = "normal";
   static CONNECTING = 0;
   static OPEN = 1;
   static CLOSING = 2;
@@ -48,6 +53,7 @@ class FakeTrackerWebSocket {
   closeCodes: number[] = [];
   private sentMatchAck = false;
   private sentAnswer = false;
+  private sentFreshIntent = false;
 
   constructor(url: string) {
     this.url = url;
@@ -76,8 +82,78 @@ class FakeTrackerWebSocket {
     const offerSdp = typeof announceOffer?.sdp === "string" ? announceOffer.sdp : "";
     if (offerSdp.startsWith("whisper-intent:") && !this.sentMatchAck) {
       const intentPayload = offerSdp.slice("whisper-intent:".length);
-      const attemptId = JSON.parse(Buffer.from(intentPayload, "base64url").toString("utf8")).attemptId as string;
-      const rendezvousId = createRendezvousId(msg.peer_id, attemptId, "peer-remote", "remote-attempt");
+      const localIntent = decodePayload<{
+        attemptId: string;
+        sessionTag: string;
+        issuedAt: number;
+      }>(intentPayload);
+      const remoteSessionTag = "peer-remote-session";
+      const remoteAttemptId = "remote-attempt";
+
+      if (FakeTrackerWebSocket.scenario === "stale-intent" && !this.sentFreshIntent) {
+        const staleIntent = `whisper-intent:${encodePayload({
+          attemptId: remoteAttemptId,
+          sessionTag: "peer-remote-old",
+          issuedAt: Date.now() - 90_000,
+        })}`;
+        const freshIntent = `whisper-intent:${encodePayload({
+          attemptId: remoteAttemptId,
+          sessionTag: remoteSessionTag,
+          issuedAt: Date.now(),
+        })}`;
+        this.sentFreshIntent = true;
+        this.sentMatchAck = true;
+        const rendezvousId = createRendezvousId(msg.peer_id, localIntent.attemptId, "peer-remote", remoteAttemptId);
+        FakeTrackerWebSocket.lastRendezvousId = rendezvousId;
+        queueMicrotask(() => {
+          if (this.readyState !== FakeTrackerWebSocket.OPEN) return;
+          this.onmessage?.call(this, {
+            data: JSON.stringify({
+              offer: {
+                type: "offer",
+                sdp: staleIntent,
+              },
+              offer_id: "remote-intent-stale",
+              peer_id: "peer-remote",
+              to_peer_id: msg.peer_id,
+              info_hash: msg.info_hash,
+            }),
+          });
+          this.onmessage?.call(this, {
+            data: JSON.stringify({
+              offer: {
+                type: "offer",
+                sdp: freshIntent,
+              },
+              offer_id: "remote-intent-fresh",
+              peer_id: "peer-remote",
+              to_peer_id: msg.peer_id,
+              info_hash: msg.info_hash,
+            }),
+          });
+          this.onmessage?.call(this, {
+            data: JSON.stringify({
+              answer: {
+                type: "answer",
+                sdp: `whisper-match-ack:${encodePayload({
+                  rendezvousId,
+                  fromAttemptId: remoteAttemptId,
+                  fromSessionTag: remoteSessionTag,
+                  toSessionTag: localIntent.sessionTag,
+                  issuedAt: Date.now(),
+                })}`,
+              },
+              peer_id: "peer-remote",
+              to_peer_id: msg.peer_id,
+              offer_id: msg.offers?.[0]?.offer_id,
+              info_hash: msg.info_hash,
+            }),
+          });
+        });
+        return;
+      }
+
+      const rendezvousId = createRendezvousId(msg.peer_id, localIntent.attemptId, "peer-remote", remoteAttemptId);
       FakeTrackerWebSocket.lastRendezvousId = rendezvousId;
       this.sentMatchAck = true;
       queueMicrotask(() => {
@@ -86,7 +162,13 @@ class FakeTrackerWebSocket {
           data: JSON.stringify({
             answer: {
               type: "answer",
-              sdp: `whisper-match-ack:${encodePayload({ rendezvousId, fromAttemptId: "remote-attempt" })}`,
+              sdp: `whisper-match-ack:${encodePayload({
+                rendezvousId,
+                fromAttemptId: remoteAttemptId,
+                fromSessionTag: remoteSessionTag,
+                toSessionTag: localIntent.sessionTag,
+                issuedAt: Date.now(),
+              })}`,
             },
             peer_id: "peer-remote",
             to_peer_id: msg.peer_id,
@@ -100,9 +182,11 @@ class FakeTrackerWebSocket {
 
     if (offerSdp.startsWith("whisper-offer-code:") && !this.sentAnswer) {
       const codePayload = offerSdp.replace(/\.+$/, "").slice("whisper-offer-code:".length);
-      const offerPayload = JSON.parse(Buffer.from(codePayload, "base64url").toString("utf8")) as {
+      const offerPayload = decodePayload<{
         rendezvousId: string;
-      };
+        toSessionTag: string;
+        fromSessionTag: string;
+      }>(codePayload);
       FakeTrackerWebSocket.lastLiveOfferId = String(msg.offers?.[0]?.offer_id ?? "");
       this.sentAnswer = true;
       queueMicrotask(() => {
@@ -111,7 +195,13 @@ class FakeTrackerWebSocket {
           data: JSON.stringify({
             answer: {
               type: "answer",
-              sdp: `whisper-answer-code:${encodePayload({ rendezvousId: offerPayload.rendezvousId, code: "A".repeat(64) })}`.padEnd(1024, "."),
+              sdp: `whisper-answer-code:${encodePayload({
+                rendezvousId: offerPayload.rendezvousId,
+                code: "A".repeat(64),
+                fromSessionTag: "peer-remote-session",
+                toSessionTag: offerPayload.fromSessionTag,
+                issuedAt: Date.now(),
+              })}`.padEnd(1024, "."),
             },
             peer_id: "peer-remote",
             to_peer_id: msg.peer_id,
@@ -145,10 +235,11 @@ function closeAllFakeSockets(): void {
   for (const ws of FakeTrackerWebSocket.instances) ws.close(1000);
 }
 
-function installFakeWebSocket(): void {
+function installFakeWebSocket(scenario: "normal" | "stale-intent" = "normal"): void {
   FakeTrackerWebSocket.instances = [];
   FakeTrackerWebSocket.lastRendezvousId = "";
   FakeTrackerWebSocket.lastLiveOfferId = "";
+  FakeTrackerWebSocket.scenario = scenario;
   globalThis.WebSocket = FakeTrackerWebSocket as unknown as typeof WebSocket;
 }
 
@@ -239,5 +330,27 @@ describe("live-tracker cleanup", () => {
       if (ws.closeCodes.length === 1) assert.equal(ws.closeCodes[0], 1000);
       assert.notEqual(ws.readyState, FakeTrackerWebSocket.OPEN);
     }
+  });
+
+  it("simultaneous rendezvous ignores stale intents and still completes", async () => {
+    installFakeWebSocket("stale-intent");
+    const ac = new AbortController();
+    const logs: string[] = [];
+
+    const result = await runLiveRendezvous({
+      mode: "simultaneous",
+      phrase: "tower phrase",
+      createOfferCode: async () => "B".repeat(64),
+      acceptOfferCode: async () => "unused",
+      callbacks: {
+        onStatus: () => {},
+        onLog: (line) => logs.push(line),
+      },
+      signal: ac.signal,
+    });
+
+    assert.ok(result.relay);
+    assert.ok(logs.some((line) => line.includes("ignoring stale relay intent")));
+    result.relay.destroy();
   });
 });

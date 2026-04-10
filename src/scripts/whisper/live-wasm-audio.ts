@@ -10,11 +10,15 @@
  *
  *   1. peak normalization + scalar quantization (float32 -> int32)
  *   2. cross-channel coupling W on the channel axis
- *   3. variable-order Burg LPC on 32-sample blocks (orders 0-10, MDL)
- *   4. sparse Yule-Walker post-filter on Burg residuals (lags 1-8)
- *   5. CDF 5/3 wavelet decomposition + guarded subband masking
- *   6. Logos entropy coding (zigzag byte planes)
- *   7. ChaCha20 stream cipher + SipHash-lite MAC
+ *   3. harmonic long-term prediction (autocorrelation pitch, 1-tap)
+ *   4. variable-order Burg LPC on adaptive blocks (forward/backward/reuse, MDL)
+ *   5. sparse Yule-Walker post-filter on Burg residuals (lags 1-16)
+ *   6. CDF 5/3 wavelet decomposition (Logos-accurate level selection)
+ *   7. MERA disentangler (Givens rotation between LL and deepest HH subband)
+ *   8. cross-scale connection prediction (LL derivative predicts HH at transients)
+ *   9. wavelet packet split (1-bit best-basis on shallowest HH)
+ *  10. Logos entropy coding (zigzag byte planes, per-plane subband filtering)
+ *  11. ChaCha20 stream cipher + SipHash-lite MAC
  *
  * the core dynamical law is the AR(2) oscillator:
  *
@@ -40,15 +44,20 @@
  * slow multiscale field, carried explicitly on the wire with its block length,
  * and it is selected by the same downstream objective as the carrier lattice.
  *
- * measured position (FM chirp 1s mono @ 48kHz, 2026-04-07):
- *     q5    1.5 KB   10.6 dB
- *     q25  14.5 KB   35.9 dB
- *     q50  19.5 KB   57.1 dB
- *     q80  27.7 KB   82.4 dB
- *     q95  32.0 KB   94.5 dB
+ * measured position (FM chirp 1s mono @ 48kHz, 2026-04-08):
+ *     q5    1.4 KB    7.7 dB
+ *     q25  11.9 KB   32.5 dB
+ *     q50  15.3 KB   54.0 dB
+ *     q80  24.0 KB   79.2 dB
+ *     q95  28.6 KB   91.3 dB
  *
- * lossless modes:
- *   bitDepth=16 and bitDepth=24 remain exact. q=100 is raw float32 passthrough.
+ * speech-like 1s mono @ 48kHz:
+ *     q80  20.7 KB   80.5 dB (backward-adaptive: -17.4% vs forward-only)
+ *
+ * lossless modes (440Hz sine, 1s @ 48kHz):
+ *   bitDepth=16: 1176B (1.1KB), bit-exact
+ *   bitDepth=24: 2244B (2.2KB), bit-exact
+ *   q=100 is raw float32 passthrough.
  *
  * comments in this file should stay descriptive, lowercase, and tied to the
  * implemented math. if a benchmark or architectural note changes, update this
@@ -938,19 +947,28 @@ const QUALITY_BITS_MAX = 15;
 export const BLOCK_LEN = 32;
 
 // sample-rate-adaptive block length for the varOrder pipeline.
-// targets ~0.67ms blocks (32 @ 48kHz), clamped to powers of 2 in [8, 128].
+// targets ~10.7ms blocks (512 @ 48kHz), clamped to powers of 2 in [16, 1024].
 // the WASM scorer still uses the fixed BLOCK_LEN = 32 above.
+//
+// 2026-04-09: bumped from blk=32 to blk=512 after frontier exploration showed
+// 4-10% bps reduction with +0.6 dB SNR on real audio. larger Burg windows
+// amortize coefficient overhead and let the variable-order MDL pick higher
+// orders for tonal content. blk=512 sweet spot beats both blk=256 and blk=1024.
+// verified bit-exact round-trip up to blk=1024 and faster encode (fewer fits).
 export function computeBlockLen(sampleRate: number): number {
-    const raw = sampleRate / 1500;
+    const raw = sampleRate / 94;
     // round to nearest power of 2
     const p = Math.round(Math.log2(raw));
     const v = 1 << Math.max(0, p);
-    return Math.max(8, Math.min(128, v));
+    return Math.max(16, Math.min(1024, v));
 }
 
-// adaptive max prediction order: half the block length, capped at 16
+// adaptive max prediction order: half the block length, capped at 24.
+// (cap raised from 16→24 alongside the blk=32→512 bump on 2026-04-09 — at the
+// new larger block sizes the variable-order MDL benefits from deeper LP fits
+// for tonal content. real-audio probe showed +0.5% bps savings at ord=24 vs 16.)
 function computeMaxOrder(blockLen: number): number {
-    return Math.min(16, blockLen >> 1);
+    return Math.min(24, blockLen >> 1);
 }
 
 // dead-zone: suppress K/G jitter â‰¤ 2 steps = 2Ïƒ of quantization noise.
@@ -966,6 +984,7 @@ const MAC_SIZE    = 8;   // SipHash-lite 64-bit MAC (mac0:u32 + mac1:u32)
 //   01 = object-based (each channel = independent mono object + 3D position)
 const LAYOUT_MASK  = 0x18;       // bits 4-3
 const MS_ACTIVE    = 0x04;       // bit 2: mid/side stereo active
+const GIVENS_ACTIVE = 0x02;     // bit 1: Givens rotation active (alpha in payload)
 
 function qualityToScalarIdeal(quality: number): number {
     const q01 = Math.max(0, Math.min(1, quality / 100));
@@ -1089,117 +1108,85 @@ function waveletSubbandLengths(n: number, levels: number): number[] {
 }
 
 function encodeEnvelopeTrajectory(
-    wasm: HarmonicWasmExports,
+    _wasm: HarmonicWasmExports,
     logEnv: Int16Array,
 ): Uint8Array {
-    const levels = adaptiveEnvelopeLevels(logEnv.length);
-    const envData = new Int32Array(logEnv.length);
-    for (let i = 0; i < logEnv.length; i++) envData[i] = logEnv[i];
-    const subbands = waveletDecompose(wasm, envData, levels);
+    // delta encoding: the envelope varies slowly (1-20 Hz dynamics sampled at
+    // ~750-1500 Hz), so consecutive differences are tiny. delta + zigzag +
+    // byte-plane + Logos compresses 37-82% better than wavelet decomposition
+    // because Logos's context model handles small delta values much better
+    // than wavelet coefficients scattered across subbands.
+    const n = logEnv.length;
+    const delta = new Int32Array(n);
+    delta[0] = logEnv[0];
+    for (let i = 1; i < n; i++) delta[i] = logEnv[i] - logEnv[i - 1];
 
-    const sbPlaneCount: number[] = [];
-    let globalMaxPlane = 0;
-    for (let sb = 0; sb < subbands.length; sb++) {
-        let maxZZ = 0;
-        const d = subbands[sb];
-        for (let i = 0; i < d.length; i++) {
-            const v = d[i];
-            const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
-            if (zz > maxZZ) maxZZ = zz;
-        }
-        const pc = planeCount(maxZZ);
-        sbPlaneCount.push(pc);
-        if (pc > globalMaxPlane) globalMaxPlane = pc;
+    let maxZZ = 0;
+    for (let i = 0; i < n; i++) {
+        const v = delta[i];
+        const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
+        if (zz > maxZZ) maxZZ = zz;
     }
+    const pc = planeCount(maxZZ);
 
     const chunks: Uint8Array[] = [];
     let total = 0;
-    const push = (chunk: Uint8Array) => {
-        chunks.push(chunk);
-        total += chunk.length;
-    };
+    const push = (chunk: Uint8Array) => { chunks.push(chunk); total += chunk.length; };
     const pushByte = (v: number) => push(Uint8Array.of(v & 0xFF));
     const pushU32 = (v: number) => push(Uint8Array.of(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF));
 
-    pushByte(levels);
-    pushByte(globalMaxPlane);
-    for (let sb = 0; sb < sbPlaneCount.length; sb++) pushByte(sbPlaneCount[sb]);
+    pushByte(pc);
 
-    for (let plane = 0; plane < globalMaxPlane; plane++) {
-        let totalBytes = 0;
-        for (let sb = 0; sb < subbands.length; sb++) totalBytes += subbands[sb].length;
-        const concat = new Uint8Array(totalBytes);
-        let off = 0;
-        for (let sb = 0; sb < subbands.length; sb++) {
-            const d = subbands[sb];
-            const shift = plane * 8;
-            for (let i = 0; i < d.length; i++) {
-                const v = d[i];
-                const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
-                concat[off++] = (zz >>> shift) & 0xFF;
-            }
+    for (let plane = 0; plane < pc; plane++) {
+        const buf = new Uint8Array(n);
+        const shift = plane * 8;
+        for (let i = 0; i < n; i++) {
+            const v = delta[i];
+            const zz = (v >= 0 ? v * 2 : (-v * 2 - 1)) >>> 0;
+            buf[i] = (zz >>> shift) & 0xFF;
         }
-        const encoded = encode0D(concat);
+        const encoded = encode0D(buf);
         pushU32(encoded.length);
         push(encoded);
     }
 
     const out = new Uint8Array(total);
     let off = 0;
-    for (const chunk of chunks) {
-        out.set(chunk, off);
-        off += chunk.length;
-    }
+    for (const chunk of chunks) { out.set(chunk, off); off += chunk.length; }
     return out;
 }
 
 function decodeEnvelopeTrajectory(
-    wasm: HarmonicWasmExports,
+    _wasm: HarmonicWasmExports,
     wire: Uint8Array,
     count: number,
 ): Int16Array {
     if (count === 0) return new Int16Array(0);
     let off = 0;
-    const levels = wire[off++] ?? 0;
-    const globalMaxPlane = wire[off++] ?? 1;
-    const subbandLens = waveletSubbandLengths(count, levels);
-    const sbPlaneCount = new Uint8Array(subbandLens.length);
-    for (let sb = 0; sb < sbPlaneCount.length; sb++) sbPlaneCount[sb] = wire[off++] ?? 1;
+    const pc = wire[off++] ?? 1;
 
     const planeData: Uint8Array[] = [];
-    for (let plane = 0; plane < globalMaxPlane; plane++) {
+    for (let plane = 0; plane < pc; plane++) {
         const encLen = readU32LE(wire, off); off += 4;
-        let totalBytes = 0;
-        for (let sb = 0; sb < subbandLens.length; sb++) totalBytes += subbandLens[sb];
-        planeData.push(decode0D(wire.subarray(off, off + encLen), totalBytes));
+        planeData.push(decode0D(wire.subarray(off, off + encLen), count));
         off += encLen;
     }
 
-    const subbands: Int32Array[] = [];
-    let planeOff = 0;
-    for (let sb = 0; sb < subbandLens.length; sb++) {
-        const n = subbandLens[sb];
-        const out = new Int32Array(n);
-        if (globalMaxPlane === 1) {
-            const lo = planeData[0];
-            for (let i = 0; i < n; i++) out[i] = zigzagDec(lo[planeOff + i]);
-        } else if (globalMaxPlane === 2) {
-            const lo = planeData[0], mid = planeData[1];
-            for (let i = 0; i < n; i++) out[i] = zigzagDec(((mid[planeOff + i] << 8) | lo[planeOff + i]) >>> 0);
-        } else {
-            const lo = planeData[0], mid = planeData[1], top = planeData[2];
-            for (let i = 0; i < n; i++) {
-                out[i] = zigzagDec(((top[planeOff + i] << 16) | (mid[planeOff + i] << 8) | lo[planeOff + i]) >>> 0);
-            }
+    // reconstruct delta values from byte planes
+    const delta = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+        let zz = 0;
+        for (let plane = 0; plane < pc; plane++) {
+            zz |= planeData[plane][i] << (plane * 8);
         }
-        planeOff += n;
-        subbands.push(out);
+        delta[i] = zigzagDec(zz >>> 0);
     }
 
-    const recon = waveletReconstruct(wasm, subbands);
+    // cumulative sum to undo delta encoding
     const logEnv = new Int16Array(count);
-    for (let i = 0; i < count; i++) {
-        logEnv[i] = Math.max(-0x8000, Math.min(0x7FFF, recon[i] | 0));
+    logEnv[0] = Math.max(-0x8000, Math.min(0x7FFF, delta[0]));
+    for (let i = 1; i < count; i++) {
+        logEnv[i] = Math.max(-0x8000, Math.min(0x7FFF, logEnv[i - 1] + delta[i]));
     }
     return logEnv;
 }
@@ -1301,8 +1288,11 @@ const DEPTH_32    = 0x60;
 // going higher risks i32 overflow in the WASM IIR-2 prediction loop
 // (K*prev near Â±2^31 traps i32.trunc_f32_s).
 function scalarForBitDepth(depth: number): number {
-    if (depth === 16) return 32768;   // 2^15
-    if (depth === 24) return 8388608; // 2^23
+    // use 2^(bd-1) - 1 so that round(k/M * M) = k for any integer k in the
+    // source range. this makes lossless roundtrip bit-exact for sources
+    // normalized by the standard convention (int / (2^(bd-1) - 1)).
+    if (depth === 16) return 32767;   // 2^15 - 1
+    if (depth === 24) return 8388607; // 2^23 - 1
     return 0; // float32 or unsupported: use Q-derived scalar
 }
 
@@ -1353,7 +1343,7 @@ const W_SCALE = COEFF_SCALE; // same quantization as K/G
 // channels are ordered by decreasing total energy â€” the loudest channel
 // is the anchor (encoded first, referenced by others).
 function assignReferences(
-    channels: Int32Array[], numSamples: number,
+    channels: Int32Array[], numSamples: number, scalar: number = 64,
 ) : number[] {
     const N = channels.length;
     if (N < 2) return [NO_REF];
@@ -1396,7 +1386,12 @@ function assignReferences(
             }
         }
 
-        if (bestCorr >= 0.3) refIndex[ch] = bestRef;
+        // adaptive coupling gate: at low scalar (low Q), require stronger
+        // correlation to justify the coupling overhead. at high scalar (high Q),
+        // even weak correlation saves bits because the residuals are larger.
+        // threshold = clamp(0.5 / sqrt(scalar / 100), 0.1, 0.5)
+        const corrThresh = Math.max(0.1, Math.min(0.5, 0.5 / Math.sqrt(scalar / 100)));
+        if (bestCorr >= corrThresh) refIndex[ch] = bestRef;
     }
 
     return refIndex;
@@ -1526,14 +1521,6 @@ export function adaptiveWaveletLevels(sampleRate: number, numSamples: number): n
     return levels;
 }
 
-// prediction gain thresholds (in power ratio, not dB):
-// AR2_SKIP_BURG: 30 dB = 10^3 â†’ residual < 0.1% of signal. above this,
-// Burg's higher-order LP can't improve over AR(2) enough to justify its cost.
-const AR2_SKIP_BURG = 1 - 1e-3;     // 0.999
-// AR2_SKIP_MASKING: 15 dB = 10^1.5 â†’ residual < 3% of signal. above this,
-// residuals are reconstruction-critical quantization noise â€” don't zero subbands.
-const AR2_SKIP_MASKING = 1 - Math.pow(10, -1.5);  // ~0.968
-
 
 // â”€â”€ IIR-2 K/G regression â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
@@ -1661,6 +1648,17 @@ function clampToWaveformNeighborhood(q: number, raw: number): number {
  *  the smallest self-derived nontrivial beam is therefore 2Â² = 4 paths.
  *  each step searches the posterior lattice point and its nearest neighbors.
  */
+// preallocated trellis candidate buffers (single-threaded, safe to reuse).
+// eliminates per-step object + Int32Array allocation from the inner loop.
+const _TB = 4, _TC = 3, _TN = _TB * _TC;
+const _tCost = new Float64Array(_TN);
+const _tQ1 = new Float64Array(_TN);
+const _tQ2 = new Float64Array(_TN);
+const _tE1 = new Float64Array(_TN);
+const _tE2 = new Float64Array(_TN);
+const _tQi = new Int32Array(_TN);
+const _tPar = new Int32Array(_TN);
+const _tSrt = new Uint8Array(_TN);
 function trellisQuantizeBlock(
     rawBlock: Float64Array,
     K: number, G: number, w: number,
@@ -1669,23 +1667,36 @@ function trellisQuantizeBlock(
     backwardPrior?: Float64Array, backwardWeight: number = 0,
 ): QuantBeamState {
     const blockLen = rawBlock.length;
-    let beam: QuantBeamState[] = [{
-        cost: 0,
-        q1: initQ1,
-        q2: initQ2,
-        e1: initE1,
-        e2: initE2,
-        seq: new Int32Array(blockLen),
-    }];
+
+    // backpointer reconstruction: instead of seq.slice() at every candidate
+    // (O(blockLen^2 * beam * cands) copies), store a compact backpointer table
+    // and trace the optimal path once at the end. this eliminates the dominant
+    // GC pressure from the inner loop.
+    const decs = new Int32Array(blockLen * _TB);
+    const pars = new Int32Array(blockLen * _TB);
+
+    // double-buffered beam state (flat typed arrays for cache locality)
+    const bCost = [new Float64Array(_TB), new Float64Array(_TB)];
+    const bQ1 = [new Float64Array(_TB), new Float64Array(_TB)];
+    const bQ2 = [new Float64Array(_TB), new Float64Array(_TB)];
+    const bE1 = [new Float64Array(_TB), new Float64Array(_TB)];
+    const bE2 = [new Float64Array(_TB), new Float64Array(_TB)];
+    let cur = 0, bSize = 1;
+    bQ1[0][0] = initQ1; bQ2[0][0] = initQ2;
+    bE1[0][0] = initE1; bE2[0][0] = initE2;
+
+    const hasBack = backwardPrior !== undefined && backwardWeight > 0;
 
     for (let t = 0; t < blockLen; t++) {
-        const next: QuantBeamState[] = [];
-        for (const state of beam) {
-            const s = shapeNoise ? rawBlock[t] + nsK * state.e1 - nsG * state.e2 : rawBlock[t];
-            const pred = K * state.q1 - G * state.q2;
-            const hasBackward = backwardPrior && backwardWeight > 0;
-            const predBack = hasBackward ? backwardPrior[t] : 0;
-            const target = hasBackward
+        let nSize = 0;
+        for (let bi = 0; bi < bSize; bi++) {
+            const sq1 = bQ1[cur][bi], sq2 = bQ2[cur][bi];
+            const se1 = bE1[cur][bi], se2 = bE2[cur][bi];
+            const sc = bCost[cur][bi];
+            const s = shapeNoise ? rawBlock[t] + nsK * se1 - nsG * se2 : rawBlock[t];
+            const pred = K * sq1 - G * sq2;
+            const predBack = hasBack ? backwardPrior![t] : 0;
+            const target = hasBack
                 ? (s + w * pred + backwardWeight * predBack) / (1 + w + backwardWeight)
                 : (s + w * pred) / (1 + w);
             const center = clampToWaveformNeighborhood(quantizeToInt(target), s);
@@ -1693,26 +1704,55 @@ function trellisQuantizeBlock(
             for (let dc = -1; dc <= 1; dc++) {
                 const qi = clampToWaveformNeighborhood(center + dc, s);
                 const err = s - qi;
-                const seq = state.seq.slice();
-                seq[t] = qi;
-                next.push({
-                    cost: state.cost
-                        + err * err
-                        + w * (qi - pred) * (qi - pred)
-                        + (hasBackward ? backwardWeight * (qi - predBack) * (qi - predBack) : 0),
-                    q1: qi,
-                    q2: state.q1,
-                    e1: err,
-                    e2: state.e1,
-                    seq,
-                });
+                const dp = qi - pred;
+                _tCost[nSize] = sc + err * err + w * dp * dp
+                    + (hasBack ? backwardWeight * (qi - predBack) * (qi - predBack) : 0);
+                _tQ1[nSize] = qi; _tQ2[nSize] = sq1;
+                _tE1[nSize] = err; _tE2[nSize] = se1;
+                _tQi[nSize] = qi; _tPar[nSize] = bi;
+                nSize++;
             }
         }
-        next.sort((a, b) => a.cost - b.cost);
-        beam = next.slice(0, 4);
+
+        // insertion sort by cost (<=12 elements, faster than generic sort)
+        for (let i = 0; i < nSize; i++) _tSrt[i] = i;
+        for (let i = 1; i < nSize; i++) {
+            const key = _tSrt[i];
+            const kv = _tCost[key];
+            let j = i - 1;
+            while (j >= 0 && _tCost[_tSrt[j]] > kv) {
+                _tSrt[j + 1] = _tSrt[j]; j--;
+            }
+            _tSrt[j + 1] = key;
+        }
+
+        // keep top beam-width survivors
+        const nxt = 1 - cur;
+        bSize = Math.min(_TB, nSize);
+        const off = t * _TB;
+        for (let i = 0; i < bSize; i++) {
+            const si = _tSrt[i];
+            bCost[nxt][i] = _tCost[si];
+            bQ1[nxt][i] = _tQ1[si]; bQ2[nxt][i] = _tQ2[si];
+            bE1[nxt][i] = _tE1[si]; bE2[nxt][i] = _tE2[si];
+            decs[off + i] = _tQi[si];
+            pars[off + i] = _tPar[si];
+        }
+        cur = nxt;
     }
 
-    return beam[0];
+    // reconstruct optimal path via backpointers
+    const seq = new Int32Array(blockLen);
+    let idx = 0;
+    for (let t = blockLen - 1; t >= 0; t--) {
+        seq[t] = decs[t * _TB + idx];
+        idx = pars[t * _TB + idx];
+    }
+
+    return {
+        cost: bCost[cur][0], q1: bQ1[cur][0], q2: bQ2[cur][0],
+        e1: bE1[cur][0], e2: bE2[cur][0], seq,
+    };
 }
 
 /** quantize onto the integer lattice with a local AR(2) orbital prior.
@@ -1740,6 +1780,7 @@ function quantizeScaledWithOrbitalGuide(
     nsG: number,
     varBlockLen: number,
     varMaxOrder: number,
+    lossless: boolean = false,
 ): { data: Int32Array; energy: number } {
     const numSamples = rawScaled.length;
     const coarse = new Int32Array(numSamples);
@@ -1750,6 +1791,15 @@ function quantizeScaledWithOrbitalGuide(
         const qi = s >= 0 ? (s + 0.5) | 0 : (s - 0.5) | 0;
         if (shapeNoise) { e2 = e1; e1 = s - qi; }
         coarse[i] = qi;
+    }
+
+    // lossless: skip orbital/trellis quantization. the trellis biases values
+    // toward the AR(2) trajectory which improves lossy quality but can shift
+    // a quantized value by ±1 LSB, breaking bit-exact lossless roundtrip.
+    if (lossless) {
+        let energy = 0;
+        for (let i = 0; i < numSamples; i++) energy += coarse[i] * coarse[i];
+        return { data: coarse, energy };
     }
 
     if (numSamples < BLOCK_LEN) {
@@ -1969,10 +2019,11 @@ function quantizeChannelWithOrbitalGuide(
     shapeNoise: boolean, nsK: number, nsG: number,
     numLevels: number, scalar: number,
     varBlockLen: number, varMaxOrder: number,
+    lossless: boolean = false,
 ): { data: Int32Array; energy: number } {
     const rawScaled = new Float32Array(numSamples);
     for (let i = 0; i < numSamples; i++) rawScaled[i] = samples[i * numChannels + ch] * invPeak;
-    return quantizeScaledWithOrbitalGuide(wasm, rawScaled, numLevels, scalar, shapeNoise, nsK, nsG, varBlockLen, varMaxOrder);
+    return quantizeScaledWithOrbitalGuide(wasm, rawScaled, numLevels, scalar, shapeNoise, nsK, nsG, varBlockLen, varMaxOrder, lossless);
 }
 
 function buildAmplitudeActionTrajectory(
@@ -2166,12 +2217,12 @@ function scoreSubbandCost(subbands: Int32Array[]): number {
     for (let plane = 0; plane < globalMaxPlane; plane++) {
         let totalBytes = 0;
         for (let sb = 0; sb < numSb; sb++) {
-            if (sbPlaneCount[sb] > 0) totalBytes += subbands[sb].length;
+            if (sbPlaneCount[sb] > plane) totalBytes += subbands[sb].length;
         }
         const concat = new Uint8Array(totalBytes);
         let off = 0;
         for (let sb = 0; sb < numSb; sb++) {
-            if (sbPlaneCount[sb] === 0) continue;
+            if (sbPlaneCount[sb] <= plane) continue;
             const d = subbands[sb];
             const shift = plane * 8;
             for (let i = 0; i < d.length; i++) {
@@ -2186,21 +2237,72 @@ function scoreSubbandCost(subbands: Int32Array[]): number {
     return bits;
 }
 
-/** fast entropy estimate for subband path selection (no Logos calls). */
-function estimateSubbandBits(subbands: Int32Array[]): number {
-    let bits = 8 + 8; // numSubbands + globalMaxPlane
-    for (const sb of subbands) {
-        bits += 40; // sbLen + planeCount header
-        bits += estimatePlaneCost(sb) * 8;
+
+/** compute the HH subband coefficient threshold for a given scalar.
+ *  returns 0: audio residuals after Burg prediction carry only signal,
+ *  not noise. unlike image wavelets where deep HH subbands are dominated
+ *  by sensor noise (the MERA disentangler regime), audio prediction residuals
+ *  have uniform signal content across all wavelet subbands. zeroing even
+ *  ±1 HH coefficients destroys ~20-40% of the dynamic range at high Q,
+ *  causing catastrophic SNR loss (verified: thresh=2 gives -24dB at Q80).
+ *  the wavelet level trial in scoreSubbandPath already optimizes the
+ *  decomposition depth, and Logos compresses near-zero runs efficiently,
+ *  so explicit thresholding adds no benefit to well-predicted audio. */
+function subbandThreshold(_scalar: number, bitDepth: number): number {
+    if (bitDepth > 0) return 0;
+    return 0;
+}
+
+/** apply LL-guided HH subband thresholding in-place.
+ *  the MERA insight: wavelet subbands have cross-scale magnitude correlation.
+ *  if the LL (coarse-grained) coefficient is small at position i, the
+ *  corresponding HH (detail) coefficient is likely noise. energy conservation
+ *  in the lifting scheme means quiet regions can't produce large detail.
+ *
+ *  subbands are [LL, HH_deepest, ..., HH_shallowest]. HH at level k has
+ *  2^(k-1)× resolution relative to LL, so HH[i]'s parent is LL[i >> (k-1)].
+ *  where the parent is quiet (below the noise floor), the threshold widens
+ *  by 2×, zeroing more coefficients in silent regions.
+ *
+ *  thresh=0 is a no-op (lossless). thresh=1 is also a no-op for integers. */
+function thresholdHHSubbands(subbands: Int32Array[], thresh: number): void {
+    if (thresh <= 1 || subbands.length <= 1) return;
+    const ll = subbands[0];
+    const numLevels = subbands.length - 1;
+
+    // compute LL noise floor: median absolute value gives a robust energy estimate.
+    // positions below floor get widened threshold (parent says "quiet here").
+    let llSum = 0;
+    for (let i = 0; i < ll.length; i++) {
+        const v = ll[i];
+        llSum += v >= 0 ? v : -v;
     }
-    return bits;
+    const llFloor = ll.length > 0 ? llSum / ll.length : 0;
+
+    for (let sb = 1; sb <= numLevels; sb++) {
+        const d = subbands[sb];
+        // sb=1 is deepest HH (same resolution as LL), sb=numLevels is shallowest.
+        // decimation ratio from HH to LL: deepest has 1:1, each shallower level 2×.
+        const shift = sb - 1;
+        for (let i = 0; i < d.length; i++) {
+            const v = d[i];
+            // map HH position to LL parent
+            const parentIdx = Math.min(i >> shift, ll.length - 1);
+            const parentAbs = ll[parentIdx] >= 0 ? ll[parentIdx] : -ll[parentIdx];
+            // where parent is quiet, widen the dead zone
+            const localThresh = parentAbs <= llFloor ? thresh * 2 : thresh;
+            if (v > -localThresh && v < localThresh) d[i] = 0;
+        }
+    }
 }
 
 /** choose wavelet decomposition or bypass (direct single subband).
- *  compares concatenated entropy estimates: the per-subband estimate was
- *  inaccurate because it doesn't reflect how the encoder actually batches
- *  all subbands into one Logos call per plane. */
-function scoreSubbandPath(wasm: HarmonicWasmExports, residuals: Int32Array, numLevels: number): Int32Array[] {
+ *  compares concatenated entropy estimates with HH thresholding applied,
+ *  so the trial reflects what the encoder actually writes. */
+function scoreSubbandPath(
+    wasm: HarmonicWasmExports, residuals: Int32Array,
+    numLevels: number, hhThresh: number = 0,
+): Int32Array[] {
     if (numLevels === 0) return [residuals];
 
     // trial all level counts from 0 (bypass) to numLevels.
@@ -2212,11 +2314,51 @@ function scoreSubbandPath(wasm: HarmonicWasmExports, residuals: Int32Array, numL
 
     for (let lev = 1; lev <= numLevels; lev++) {
         const sb = waveletDecompose(wasm, residuals, lev);
+        thresholdHHSubbands(sb, hhThresh);
         const total = sb.reduce((s, d) => s + d.length, 0);
         const concat = new Int32Array(total);
         let off = 0;
         for (const d of sb) { concat.set(d, off); off += d.length; }
         const cost = estimatePlaneCost(concat);
+        if (cost < bestCost) {
+            bestCost = cost;
+            bestSb = sb;
+        }
+    }
+
+    return bestSb;
+}
+
+/** Logos-accurate wavelet level selection. uses trialLogosSize (actual Logos
+ *  encoding) for all candidates instead of Shannon entropy, matching the
+ *  per-plane subband filtering structure the encoder actually writes.
+ *
+ *  verified improvements over Shannon estimator:
+ *    lossless 24-bit: 3340→2480B (-25.7%)
+ *    harmonic Q95: 1452→1232B (-15.2%)
+ *    chirp Q95: 30652→30552B (-0.3%)
+ *
+ *  the Shannon estimator miscalibrates for high-precision signals because it
+ *  ignores per-plane subband filtering (different subbands contribute to
+ *  different planes). a 2-phase approach (Shannon shortlist + Logos confirm)
+ *  was tried but the Shannon ranking can differ from the Logos ranking, so
+ *  the top-2 shortlist missed the optimal level. full scan costs numLevels+1
+ *  Logos calls (~5% encode time) but ensures the globally best level.
+ *
+ *  used only in the final encoding path (not inside trial gates). */
+function scoreSubbandPathAccurate(
+    wasm: HarmonicWasmExports, residuals: Int32Array,
+    numLevels: number, hhThresh: number = 0,
+): Int32Array[] {
+    if (numLevels === 0) return [residuals];
+
+    let bestCost = trialLogosSize([residuals]); // bypass baseline
+    let bestSb: Int32Array[] = [residuals];
+
+    for (let lev = 1; lev <= numLevels; lev++) {
+        const sb = waveletDecompose(wasm, residuals, lev);
+        thresholdHHSubbands(sb, hhThresh);
+        const cost = trialLogosSize(sb);
         if (cost < bestCost) {
             bestCost = cost;
             bestSb = sb;
@@ -2248,12 +2390,12 @@ function trialLogosSize(subbands: Int32Array[]): number {
     for (let plane = 0; plane < globalMaxPlane; plane++) {
         let totalBytes = 0;
         for (let sb = 0; sb < numSb; sb++) {
-            if (sbPlaneCount[sb] > 0) totalBytes += subbands[sb].length;
+            if (sbPlaneCount[sb] > plane) totalBytes += subbands[sb].length;
         }
         const concat = new Uint8Array(totalBytes);
         let off = 0;
         for (let sb = 0; sb < numSb; sb++) {
-            if (sbPlaneCount[sb] === 0) continue;
+            if (sbPlaneCount[sb] <= plane) continue;
             const d = subbands[sb];
             const shift = plane * 8;
             for (let i = 0; i < d.length; i++) {
@@ -2262,7 +2404,7 @@ function trialLogosSize(subbands: Int32Array[]): number {
                 concat[off++] = (zz >>> shift) & 0xFF;
             }
         }
-        const encoded = encode0D(concat.subarray(0, off));
+        const encoded = encode0D(concat.subarray(0, off), 2);
         total += 4 + encoded.length;
     }
     return total;
@@ -2286,6 +2428,7 @@ function scoreQuantizedChannel(
     extraBits: number = 0,
     blockLen: number = BLOCK_LEN,
     maxOrder: number = 10,
+    hhThresh: number = 0,
 ) : { rateBits: number; objective: number; projectedCarrier: Float32Array } {
     const n = data.length;
     if (n === 0) {
@@ -2331,7 +2474,7 @@ function scoreQuantizedChannel(
     // wavelet vs bypass trial: compare cost of wavelet decomposition vs direct encoding.
     // for well-predicted (nearly white) residuals, wavelet adds subband overhead
     // without decorrelation benefit. trial both and pick the cheaper path.
-    const subbands = scoreSubbandPath(wasm, residuals, numLevels);
+    const subbands = scoreSubbandPath(wasm, residuals, numLevels, hhThresh);
     rateBits += scoreSubbandCost(subbands);
 
     // reconstruction for distortion measurement
@@ -2463,30 +2606,63 @@ function waveletReconstruct(wasm: HarmonicWasmExports, subbands: Int32Array[]): 
 
 // â”€â”€ zigzag / byte-plane split â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-function zigzagEnc(v: number): number { return (v << 1) ^ (v >> 31); }
 function zigzagDec(z: number): number { return (z >>> 1) ^ -(z & 1); }
 function planeCount(maxZZ: number): number { return maxZZ < 256 ? 1 : maxZZ < 65536 ? 2 : 3; }
 
 // ── Burg analysis primitives ──────────────────────────────────────────
 
+// reflection coefficient quantization: uniform 10-bit signed (±511).
+// reflection coefficient quantization lives on the natural metric of the
+// stable AR(p) region: K ∈ (-1, 1) is the 1D Klein/Poincaré model of
+// hyperbolic space, and the right chart is log-area-ratio (LAR), the
+// hyperbolic-isometric map atanh: (-1, 1) → ℝ.
+//
+// linear Q14 (the previous scheme) wastes resolution on |K| < 0.5 (where
+// dK/dλ ≈ 1, the manifold is nearly flat) and starves resolution near
+// |K| → 1 (where dK/dλ → 0, the manifold is curved and formant poles
+// physically live). LAR with scale=64 covers the full stable region
+// |K| ≤ tanh(511/64) ≈ 0.999999 within the same ±511 wire range, and
+// concentrates resolution on the disk boundary where the AR(p) actually
+// feels rounding error.
+//
+// measured 2026-04-09 on production K vectors (8 real-audio clips × 5s @
+// 48kHz): LAR scale=64 saves 6.4% on the K coefficient Logos stream vs
+// linear, with unchanged residual variance after dequantization. K stream
+// is 2-3% of total bytes so end-to-end gain is ~0.18%; the change earns
+// its place by being the correct metric on the manifold, not by raw bytes.
+//
+// the 2-byte wire format uses +512 bias, encoding values 1-1023 in the
+// active range. RC_SCALE/RC_BIAS retained for linear-quantized streams
+// (post-filter LP coefficients, Givens rotation half-angles) which do
+// not live on the same manifold.
+const RC_SCALE = 511;
+const RC_BIAS  = 512;
+const LAR_SCALE = 64;
+const LAR_K_MAX = Math.tanh(RC_SCALE / LAR_SCALE);
+
 function quantRC(k: number): number {
-    return Math.max(-511, Math.min(511, Math.round(k * 511)));
+    const kc = k > LAR_K_MAX ? LAR_K_MAX : (k < -LAR_K_MAX ? -LAR_K_MAX : k);
+    const lar = Math.atanh(kc);
+    const q = Math.round(lar * LAR_SCALE);
+    return q > RC_SCALE ? RC_SCALE : (q < -RC_SCALE ? -RC_SCALE : q);
 }
 
 function dequantRC(q: number): number {
-    return q / 511;
+    return Math.tanh(q / LAR_SCALE);
 }
 
 /** Burg's method: compute reflection coefficients for data[start..end). */
 function burgAnalysis(
     data: Int32Array, start: number, end: number, maxOrder: number,
+    outRC?: Float64Array, tmpFwd?: Float64Array, tmpBwd?: Float64Array,
 ): Float64Array {
     const n = end - start;
     if (n < maxOrder * 2 + 1) return new Float64Array(0);
 
-    const refCoeffs = new Float64Array(maxOrder);
-    const fwd = new Float64Array(n);
-    const bwd = new Float64Array(n);
+    const refCoeffs = outRC ?? new Float64Array(maxOrder);
+    if (outRC) refCoeffs.fill(0, 0, maxOrder);
+    const fwd = tmpFwd && tmpFwd.length >= n ? tmpFwd : new Float64Array(n);
+    const bwd = tmpBwd && tmpBwd.length >= n ? tmpBwd : new Float64Array(n);
     for (let i = 0; i < n; i++) { fwd[i] = data[start + i]; bwd[i] = data[start + i]; }
 
     for (let m = 0; m < maxOrder; m++) {
@@ -2510,17 +2686,19 @@ function burgAnalysis(
     return refCoeffs;
 }
 
-/** Levinson recursion: reflection coefficients to LP coefficients. */
+/** Levinson recursion: reflection coefficients to LP coefficients.
+ *  preallocated temp buffer eliminates O(order^2) Float64Array allocations
+ *  from the inner Levinson loop — saves ~15K allocations per encode. */
+const _reflTmp = new Float64Array(32); // max order never exceeds 16
 function reflToLP(k: Float64Array, order: number): Float64Array {
     const a = new Float64Array(order);
     if (order === 0) return a;
 
     a[0] = k[0];
     for (let m = 1; m < order; m++) {
-        const prev = new Float64Array(m);
-        for (let j = 0; j < m; j++) prev[j] = a[j];
+        for (let j = 0; j < m; j++) _reflTmp[j] = a[j];
         a[m] = k[m];
-        for (let j = 0; j < m; j++) a[j] = prev[j] + k[m] * prev[m - 1 - j];
+        for (let j = 0; j < m; j++) a[j] = _reflTmp[j] + k[m] * _reflTmp[m - 1 - j];
     }
 
     // negate: Burg produces a[] where e[n] = x[n] + a[0]*x[n-1] + ...
@@ -2545,6 +2723,21 @@ function reflToLP(k: Float64Array, order: number): Float64Array {
 // state tracks reconstructed values, so encoder and decoder agree exactly.
 
 const VAR_REUSE_ORDER = 0xFF; // marker: reuse previous block's coefficients
+const VAR_BACKWARD_BASE = 0x80; // marker: backward-adaptive prediction (order = byte - 0x80)
+// backward-adaptive Burg: the decoder estimates coefficients from already-decoded
+// history, so no coefficients are transmitted. for stationary signals (speech,
+// sustained tones), backward estimates are nearly as good as forward estimates
+// because the spectral envelope changes slowly across blocks. the encoder
+// evaluates backward alongside forward/reuse via MDL with zero coefficient cost.
+// order byte encodes 0x80+p where p is the backward prediction order.
+const BACKWARD_HIST_BLOCKS = 4; // number of past blocks used for backward Burg
+
+function isBackwardOrder(order: number): boolean {
+    return order >= VAR_BACKWARD_BASE && order < VAR_REUSE_ORDER;
+}
+function backwardPredOrder(order: number): number {
+    return order - VAR_BACKWARD_BASE;
+}
 
 interface VarBlock {
     order: number;
@@ -2560,8 +2753,24 @@ export function varOrderFitAllBlocks(
 ): VarBlock[] {
     const numBlocks = Math.ceil(numSamples / blockLen);
     const blocks: VarBlock[] = [];
+    // preallocated working arrays: eliminates ~2000 small typed array
+    // allocations per call from the inner order-selection loop.
+    const _qkBuf = new Int16Array(maxOrder);
+    const _dqkBuf = new Float64Array(maxOrder);
+    // Burg working buffers: largest needed is backward history = 4*blockLen
+    const maxBurgN = Math.min(numSamples, BACKWARD_HIST_BLOCKS * blockLen);
+    const _burgRC = new Float64Array(maxOrder);
+    const _burgFwd = new Float64Array(maxBurgN);
+    const _burgBwd = new Float64Array(maxBurgN);
+    // shift-register state: tracks previous samples as Float64 so that MDL
+    // trial predictions match varOrderPredictEnc exactly (same FP path).
     const state = new Float64Array(maxOrder);
-
+    const _savedSt = new Float64Array(maxOrder);
+    // MDL residual cost uses Gaussian approximation bLen * log2(errVar).
+    // byte-entropy MDL was tested but regresses catastrophically because the
+    // coefficient cost estimate (2 + log2(1+|q|)) underestimates the actual
+    // 16-bit wire cost. the Gaussian overestimate of residual cost compensates,
+    // so the two errors cancel. removing one side breaks the balance.
     for (let b = 0; b < numBlocks; b++) {
         const bStart = b * blockLen;
         const bEnd = Math.min(bStart + blockLen, numSamples);
@@ -2569,7 +2778,7 @@ export function varOrderFitAllBlocks(
 
         // fit Burg at maximum feasible order
         const maxOrd = Math.min(maxOrder, Math.floor(bLen / 3));
-        const rawK = maxOrd >= 1 ? burgAnalysis(data, bStart, bEnd, maxOrd) : new Float64Array(0);
+        const rawK = maxOrd >= 1 ? burgAnalysis(data, bStart, bEnd, maxOrd, _burgRC, _burgFwd, _burgBwd) : new Float64Array(0);
 
         // evaluate each candidate order via MDL
         let bestOrder = 0;
@@ -2586,38 +2795,37 @@ export function varOrderFitAllBlocks(
             bestCost = bLen * Math.log2(errVar);
         }
 
-        // try all candidate orders
+        // try all candidate orders using shift-register state that matches
+        // varOrderPredictEnc exactly (same Float64 arithmetic path).
         for (let tryOrder = 1; tryOrder <= maxOrd; tryOrder++) {
-            const qk = new Int16Array(tryOrder);
-            const dqk = new Float64Array(tryOrder);
             for (let m = 0; m < tryOrder; m++) {
-                qk[m] = quantRC(rawK[m]);
-                dqk[m] = dequantRC(qk[m]);
+                _qkBuf[m] = quantRC(rawK[m]);
+                _dqkBuf[m] = dequantRC(_qkBuf[m]);
             }
-            const a = reflToLP(dqk, tryOrder);
-            const savedState = new Float64Array(state);
+            const a = reflToLP(_dqkBuf.subarray(0, tryOrder), tryOrder);
+            for (let m = 0; m < maxOrder; m++) _savedSt[m] = state[m];
             let errEnergy = 0;
             for (let i = 0; i < bLen; i++) {
                 const val = data[bStart + i];
                 let pred = 0;
-                for (let m = 0; m < tryOrder; m++) pred += a[m] * savedState[m];
+                for (let m = 0; m < tryOrder; m++) pred += a[m] * _savedSt[m];
                 const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
                 errEnergy += (val - roundPred) * (val - roundPred);
-                for (let m = tryOrder - 1; m > 0; m--) savedState[m] = savedState[m - 1];
-                savedState[0] = val;
+                for (let m = tryOrder - 1; m > 0; m--) _savedSt[m] = _savedSt[m - 1];
+                _savedSt[0] = val;
             }
             const errVar = Math.max(1, errEnergy / bLen);
             // entropy-estimated MDL: actual per-coefficient cost instead of fixed 8 bits
             let coeffCost = 0;
             for (let m = 0; m < tryOrder; m++) {
-                const absQ = qk[m] < 0 ? -qk[m] : qk[m];
+                const absQ = _qkBuf[m] < 0 ? -_qkBuf[m] : _qkBuf[m];
                 coeffCost += 2 + Math.log2(1 + absQ);
             }
             const cost = coeffCost + bLen * Math.log2(errVar);
             if (cost < bestCost) {
                 bestCost = cost;
                 bestOrder = tryOrder;
-                bestQuantK = qk;
+                bestQuantK = _qkBuf.slice(0, tryOrder);
                 bestA = a;
                 bestReuse = false;
             }
@@ -2628,16 +2836,16 @@ export function varOrderFitAllBlocks(
         // between blocks that the previous coefficients predict just as well.
         if (b > 0 && blocks[b - 1].order > 0) {
             const prev = blocks[b - 1];
-            const savedState = new Float64Array(state);
+            for (let m = 0; m < maxOrder; m++) _savedSt[m] = state[m];
             let reuseEnergy = 0;
             for (let i = 0; i < bLen; i++) {
                 const val = data[bStart + i];
                 let pred = 0;
-                for (let m = 0; m < prev.order; m++) pred += prev.a[m] * savedState[m];
+                for (let m = 0; m < prev.order; m++) pred += prev.a[m] * _savedSt[m];
                 const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
                 reuseEnergy += (val - roundPred) * (val - roundPred);
-                for (let m = prev.order - 1; m > 0; m--) savedState[m] = savedState[m - 1];
-                savedState[0] = val;
+                for (let m = prev.order - 1; m > 0; m--) _savedSt[m] = _savedSt[m - 1];
+                _savedSt[0] = val;
             }
             const reuseVar = Math.max(1, reuseEnergy / bLen);
             // zero coefficient cost — only the order byte (255 marker) which is
@@ -2652,12 +2860,66 @@ export function varOrderFitAllBlocks(
             }
         }
 
-        blocks.push({ order: bestReuse ? VAR_REUSE_ORDER : bestOrder, quantK: bestQuantK, a: bestA });
+        // backward-adaptive trial: estimate coefficients from past decoded data.
+        // the decoder runs the same Burg analysis on decoded history (identical
+        // to encoder's original data due to lossless integer prediction).
+        // zero coefficient cost — the decoder computes them independently.
+        //
+        // optimization: only try backward at the best forward order. trying all
+        // orders is O(maxOrder) per block and makes encoding too slow. the best
+        // forward order already encodes the right model complexity; backward just
+        // asks whether the SAME order estimated from history is good enough.
+        let bestBackward = false;
+        if (bestOrder > 0 && !bestReuse && bStart >= blockLen) {
+            const histLen = BACKWARD_HIST_BLOCKS * blockLen;
+            const histStart = Math.max(0, bStart - histLen);
+            const histN = bStart - histStart;
+            const tryOrder = Math.min(bestOrder, Math.floor(histN / 3));
+            if (tryOrder >= 1) {
+                const backK = burgAnalysis(data, histStart, bStart, tryOrder, _burgRC, _burgFwd, _burgBwd);
+                for (let m = 0; m < tryOrder; m++) {
+                    _qkBuf[m] = quantRC(backK[m]);
+                    _dqkBuf[m] = dequantRC(_qkBuf[m]);
+                }
+                const a = reflToLP(_dqkBuf.subarray(0, tryOrder), tryOrder);
+                for (let m = 0; m < maxOrder; m++) _savedSt[m] = state[m];
+                let errEnergy = 0;
+                for (let i = 0; i < bLen; i++) {
+                    const val = data[bStart + i];
+                    let pred = 0;
+                    for (let m = 0; m < tryOrder; m++) pred += a[m] * _savedSt[m];
+                    const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+                    errEnergy += (val - roundPred) * (val - roundPred);
+                    for (let m = tryOrder - 1; m > 0; m--) _savedSt[m] = _savedSt[m - 1];
+                    _savedSt[0] = val;
+                }
+                const errVar = Math.max(1, errEnergy / bLen);
+                let backPenalty = 0;
+                for (let m = 0; m < tryOrder; m++) {
+                    const absQ = _qkBuf[m] < 0 ? -_qkBuf[m] : _qkBuf[m];
+                    backPenalty += 2 + Math.log2(1 + absQ) * 0.5;
+                }
+                const backCost = bLen * Math.log2(errVar) + backPenalty;
+                if (backCost < bestCost) {
+                    bestCost = backCost;
+                    bestOrder = tryOrder;
+                    bestQuantK = _qkBuf.slice(0, tryOrder);
+                    bestA = a;
+                    bestReuse = false;
+                    bestBackward = true;
+                }
+            }
+        }
 
-        // advance state: always track original data
-        for (let i = 0; i < bLen; i++) {
+        const finalOrder = bestBackward
+            ? (VAR_BACKWARD_BASE + bestOrder)
+            : bestReuse ? VAR_REUSE_ORDER : bestOrder;
+        blocks.push({ order: finalOrder, quantK: bestQuantK, a: bestA });
+
+        // advance shift-register state through this block's samples
+        for (let i = bStart; i < bEnd; i++) {
             for (let m = maxOrder - 1; m > 0; m--) state[m] = state[m - 1];
-            state[0] = data[bStart + i];
+            state[0] = data[i];
         }
     }
 
@@ -2671,12 +2933,14 @@ export function estimateCoeffBits(blocks: VarBlock[]): number {
     let bits = 0;
     for (const b of blocks) {
         bits += 8; // order byte (always)
-        if (b.order !== VAR_REUSE_ORDER) {
-            for (let m = 0; m < b.order; m++) {
+        if (b.order !== VAR_REUSE_ORDER && !isBackwardOrder(b.order)) {
+            const ord = b.order;
+            for (let m = 0; m < ord; m++) {
                 const absQ = b.quantK[m] < 0 ? -b.quantK[m] : b.quantK[m];
                 bits += 2 + Math.log2(1 + absQ);
             }
         }
+        // backward and reuse blocks: zero coefficient cost
     }
     return bits;
 }
@@ -2715,8 +2979,9 @@ export function varOrderPredictEnc(
 }
 
 /** decode prediction: residuals → data using fitted VarBlocks.
- *  uses a.length for prediction order (handles reuse blocks transparently). */
-function varOrderPredictDec(
+ *  uses a.length for prediction order (handles reuse blocks transparently).
+ *  backward-adaptive blocks compute Burg coefficients from decoded history. */
+export function varOrderPredictDec(
     residuals: Int32Array, numSamples: number, blocks: VarBlock[],
     blockLen: number, maxOrder: number,
 ): Int32Array {
@@ -2726,7 +2991,29 @@ function varOrderPredictDec(
     for (let b = 0; b < blocks.length; b++) {
         const bStart = b * blockLen;
         const bEnd = Math.min(bStart + blockLen, numSamples);
-        const { a } = blocks[b];
+        let { a } = blocks[b];
+
+        // backward-adaptive: compute coefficients from decoded history
+        if (isBackwardOrder(blocks[b].order)) {
+            const backOrder = backwardPredOrder(blocks[b].order);
+            const histLen = BACKWARD_HIST_BLOCKS * blockLen;
+            const histStart = Math.max(0, bStart - histLen);
+            const histN = bStart - histStart;
+            const feasibleOrd = Math.min(backOrder, Math.floor(histN / 3));
+            if (feasibleOrd >= 1 && histN >= 3) {
+                const rawK = burgAnalysis(data, histStart, bStart, feasibleOrd);
+                const qk = new Int16Array(feasibleOrd);
+                const dqk = new Float64Array(feasibleOrd);
+                for (let m = 0; m < feasibleOrd; m++) {
+                    qk[m] = quantRC(rawK[m]);
+                    dqk[m] = dequantRC(qk[m]);
+                }
+                a = reflToLP(dqk, feasibleOrd);
+                // store back so cell projection can use the same coefficients
+                blocks[b] = { order: blocks[b].order, quantK: qk, a };
+            }
+        }
+
         const p = a.length;
 
         for (let i = bStart; i < bEnd; i++) {
@@ -2810,7 +3097,7 @@ function generatePostFilterCandidates(
     for (let rank = 0; rank < Math.min(3, lagScores.length); rank++) {
         const { lag, ac } = lagScores[rank];
         if (ac < acThreshold) continue;
-        const alpha10 = Math.max(-511, Math.min(511, Math.round(r[lag] * 511)));
+        const alpha10 = Math.max(-RC_SCALE, Math.min(RC_SCALE, Math.round(r[lag] * RC_SCALE)));
         if (alpha10 === 0) continue;
         const quantLP = new Int16Array(lag);
         quantLP[lag - 1] = alpha10;
@@ -2828,8 +3115,8 @@ function generatePostFilterCandidates(
             const a_k = (r[k] - r[j] * rjk) / det;
             const maxLag = j > k ? j : k;
             const quantLP = new Int16Array(maxLag);
-            quantLP[j - 1] = Math.max(-511, Math.min(511, Math.round(a_j * 511)));
-            quantLP[k - 1] = Math.max(-511, Math.min(511, Math.round(a_k * 511)));
+            quantLP[j - 1] = Math.max(-RC_SCALE, Math.min(RC_SCALE, Math.round(a_j * RC_SCALE)));
+            quantLP[k - 1] = Math.max(-RC_SCALE, Math.min(RC_SCALE, Math.round(a_k * RC_SCALE)));
             if (quantLP[j - 1] !== 0 || quantLP[k - 1] !== 0) {
                 candidates.push({ order: maxLag, quantLP });
             }
@@ -2848,9 +3135,9 @@ function generatePostFilterCandidates(
             const a_l = (r[j] * (r_jk * r_kl - r_jl) + r[k] * (r_jk * r_jl - r_kl) + r[l] * (1 - r_jk * r_jk)) / det;
             const maxLag = l;
             const quantLP = new Int16Array(maxLag);
-            quantLP[j - 1] = Math.max(-511, Math.min(511, Math.round(a_j * 511)));
-            quantLP[k - 1] = Math.max(-511, Math.min(511, Math.round(a_k * 511)));
-            quantLP[l - 1] = Math.max(-511, Math.min(511, Math.round(a_l * 511)));
+            quantLP[j - 1] = Math.max(-RC_SCALE, Math.min(RC_SCALE, Math.round(a_j * RC_SCALE)));
+            quantLP[k - 1] = Math.max(-RC_SCALE, Math.min(RC_SCALE, Math.round(a_k * RC_SCALE)));
+            quantLP[l - 1] = Math.max(-RC_SCALE, Math.min(RC_SCALE, Math.round(a_l * RC_SCALE)));
             candidates.push({ order: maxLag, quantLP });
         }
     }
@@ -2907,7 +3194,7 @@ function generatePostFilterCandidates(
                 const quantLP = new Int16Array(maxLag);
                 let anyNonZero = false;
                 for (let idx = 0; idx < 4; idx++) {
-                    quantLP[lags[idx] - 1] = Math.max(-511, Math.min(511, Math.round(x[idx] * 511)));
+                    quantLP[lags[idx] - 1] = Math.max(-RC_SCALE, Math.min(RC_SCALE, Math.round(x[idx] * RC_SCALE)));
                     if (quantLP[lags[idx] - 1] !== 0) anyNonZero = true;
                 }
                 if (anyNonZero) {
@@ -2922,7 +3209,7 @@ function generatePostFilterCandidates(
 
 function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, quantLP: Int16Array): Int32Array {
     const a = new Float64Array(order);
-    for (let m = 0; m < order; m++) a[m] = quantLP[m] / 511;
+    for (let m = 0; m < order; m++) a[m] = quantLP[m] / RC_SCALE;
 
     const out = new Int32Array(n);
     const state = new Float64Array(order);
@@ -2939,7 +3226,7 @@ function applyPostFilterEnc(residuals: Int32Array, n: number, order: number, qua
 
 function applyPostFilterDec(filtered: Int32Array, n: number, order: number, quantLP: Int16Array): Int32Array {
     const a = new Float64Array(order);
-    for (let m = 0; m < order; m++) a[m] = quantLP[m] / 511;
+    for (let m = 0; m < order; m++) a[m] = quantLP[m] / RC_SCALE;
 
     const out = new Int32Array(n);
     const state = new Float64Array(order);
@@ -2954,90 +3241,164 @@ function applyPostFilterDec(filtered: Int32Array, n: number, order: number, quan
     return out;
 }
 
-/** encode coefficient stream in transposed layout for better Logos compression.
- *  layout: [orders...][lv0-lo...][lv0-hi...][lv1-lo...][lv1-hi...]...
- *  10-bit coefficients (±511) stored as segregated low/high byte pairs.
- *  reuse blocks (order=0xFF) don't contribute coefficients — they inherit
- *  from the previous block, saving coefficient bytes for stationary segments. */
+/** encode coefficient stream with trial-gated order-sorted layout.
+ *  tries both temporal order and order-sorted layouts, picks the smaller.
+ *
+ *  order-sorted: within each level, forward blocks are sorted by their
+ *  order value (stable). this groups same-complexity blocks together,
+ *  giving Logos longer runs of homogeneous coefficient statistics.
+ *  the decoder reconstructs the same sorted permutation from the order
+ *  stream. a leading flag byte (0=temporal, 1=sorted) tells the decoder
+ *  which layout was used.
+ *
+ *  the sorting gives 15-37% coefficient stream reduction for longer frames
+ *  (100ms+) but can slightly regress on very short frames (10ms) where
+ *  the coefficient stream is too small for Logos to benefit from grouping. */
 export function encodeCoeffStream(blocks: VarBlock[]): { raw: Uint8Array; compressed: Uint8Array } {
     const n = blocks.length;
     let totalCoeffs = 0;
     let maxOrder = 0;
     for (const b of blocks) {
-        const ord = b.order === VAR_REUSE_ORDER ? 0 : b.order;
+        const ord = (b.order === VAR_REUSE_ORDER || isBackwardOrder(b.order)) ? 0 : b.order;
         totalCoeffs += ord;
         if (ord > maxOrder) maxOrder = ord;
     }
-    // orders + 2 bytes per coefficient (low then high, segregated by level)
-    const totalBytes = n + totalCoeffs * 2;
-    const raw = new Uint8Array(totalBytes);
-    let off = 0;
-    for (let i = 0; i < n; i++) raw[off++] = blocks[i].order;
+
+    const coeffBytes = totalCoeffs * 2;
+    // +1 for the flag byte
+    const totalBytes = 1 + n + coeffBytes;
+
+    // build temporal-order raw stream
+    const rawTemporal = new Uint8Array(totalBytes);
+    rawTemporal[0] = 0; // flag: temporal order
+    let off = 1;
+    for (let i = 0; i < n; i++) rawTemporal[off++] = blocks[i].order;
     for (let k = 0; k < maxOrder; k++) {
-        // low bytes for level k
         for (let i = 0; i < n; i++) {
-            if (blocks[i].order !== VAR_REUSE_ORDER && blocks[i].order > k) {
-                raw[off++] = (blocks[i].quantK[k] + 512) & 0xFF;
+            const o = blocks[i].order;
+            if (o !== VAR_REUSE_ORDER && !isBackwardOrder(o) && o > k) {
+                rawTemporal[off++] = (blocks[i].quantK[k] + RC_BIAS) & 0xFF;
             }
         }
-        // high bytes for level k
         for (let i = 0; i < n; i++) {
-            if (blocks[i].order !== VAR_REUSE_ORDER && blocks[i].order > k) {
-                raw[off++] = ((blocks[i].quantK[k] + 512) >> 8) & 0xFF;
+            const o = blocks[i].order;
+            if (o !== VAR_REUSE_ORDER && !isBackwardOrder(o) && o > k) {
+                rawTemporal[off++] = ((blocks[i].quantK[k] + RC_BIAS) >> 8) & 0xFF;
             }
         }
     }
-    const compressed = encode0D(raw);
-    return { raw, compressed };
+    const compTemporal = encode0D(rawTemporal);
+
+    // build order-sorted index for forward blocks
+    const fwdIndices: number[] = [];
+    for (let i = 0; i < n; i++) {
+        if (blocks[i].order !== VAR_REUSE_ORDER && !isBackwardOrder(blocks[i].order)) {
+            fwdIndices.push(i);
+        }
+    }
+    // check if sorting would differ (need at least 2 distinct orders)
+    let distinct = false;
+    for (let i = 1; i < fwdIndices.length; i++) {
+        if (blocks[fwdIndices[i]].order !== blocks[fwdIndices[0]].order) { distinct = true; break; }
+    }
+
+    if (!distinct || fwdIndices.length < 4) {
+        // sorting would be identical to temporal, skip trial
+        return { raw: rawTemporal, compressed: compTemporal };
+    }
+
+    fwdIndices.sort((a, b) => blocks[a].order - blocks[b].order);
+
+    const rawSorted = new Uint8Array(totalBytes);
+    rawSorted[0] = 1; // flag: order-sorted
+    off = 1;
+    for (let i = 0; i < n; i++) rawSorted[off++] = blocks[i].order;
+    for (let k = 0; k < maxOrder; k++) {
+        for (const idx of fwdIndices) {
+            if (blocks[idx].order > k) {
+                rawSorted[off++] = (blocks[idx].quantK[k] + RC_BIAS) & 0xFF;
+            }
+        }
+        for (const idx of fwdIndices) {
+            if (blocks[idx].order > k) {
+                rawSorted[off++] = ((blocks[idx].quantK[k] + RC_BIAS) >> 8) & 0xFF;
+            }
+        }
+    }
+    const compSorted = encode0D(rawSorted);
+
+    if (compSorted.length < compTemporal.length) {
+        return { raw: rawSorted, compressed: compSorted };
+    }
+    return { raw: rawTemporal, compressed: compTemporal };
 }
 
 /** decode transposed coefficient stream back to VarBlock array.
- *  10-bit coefficients (±511) stored as segregated low/high byte pairs per level.
- *  reuse blocks (order=0xFF) inherit coefficients from the previous block. */
+ *  reads a flag byte (0=temporal, 1=order-sorted) then orders, then coefficients.
+ *  for sorted layout, reconstructs the same permutation from the order stream. */
 function decodeCoeffStream(data: Uint8Array, numBlocks: number): VarBlock[] {
     let off = 0;
+    // flag byte: 0 = temporal order, 1 = order-sorted
+    const sorted = data[off++] === 1;
+
     const orders: number[] = [];
     let maxOrder = 0;
     for (let i = 0; i < numBlocks; i++) {
         const o = data[off++];
         orders.push(o);
-        if (o !== VAR_REUSE_ORDER && o > maxOrder) maxOrder = o;
+        if (o !== VAR_REUSE_ORDER && !isBackwardOrder(o) && o > maxOrder) maxOrder = o;
     }
-    // read transposed 10-bit coefficients (reuse blocks don't contribute)
+
+    // build forward-block index (same for both layouts)
+    const fwdIndices: number[] = [];
+    for (let i = 0; i < numBlocks; i++) {
+        if (orders[i] !== VAR_REUSE_ORDER && !isBackwardOrder(orders[i])) {
+            fwdIndices.push(i);
+        }
+    }
+    // for sorted layout, reorder by block order to match encoder
+    if (sorted) fwdIndices.sort((a, b) => orders[a] - orders[b]);
+
     const quantKArrays: Int16Array[] = [];
+    for (let i = 0; i < numBlocks; i++) {
+        const ord = (orders[i] === VAR_REUSE_ORDER || isBackwardOrder(orders[i])) ? 0 : orders[i];
+        quantKArrays.push(new Int16Array(ord));
+    }
+
     // count coefficients per level for offset calculation
     const coeffsPerLevel: number[] = [];
     for (let k = 0; k < maxOrder; k++) {
         let count = 0;
-        for (let i = 0; i < numBlocks; i++) {
-            if (orders[i] !== VAR_REUSE_ORDER && orders[i] > k) count++;
+        for (const idx of fwdIndices) {
+            if (orders[idx] > k) count++;
         }
         coeffsPerLevel.push(count);
     }
-    for (let i = 0; i < numBlocks; i++) {
-        const ord = orders[i] === VAR_REUSE_ORDER ? 0 : orders[i];
-        quantKArrays.push(new Int16Array(ord));
-    }
+
+    // read coefficients in the layout order (temporal or sorted)
     for (let k = 0; k < maxOrder; k++) {
-        // read low bytes for level k
         const loOff = off;
         const hiOff = off + coeffsPerLevel[k];
         let li = 0;
-        for (let i = 0; i < numBlocks; i++) {
-            if (orders[i] !== VAR_REUSE_ORDER && orders[i] > k) {
+        for (const idx of fwdIndices) {
+            if (orders[idx] > k) {
                 const lo = data[loOff + li];
                 const hi = data[hiOff + li];
-                quantKArrays[i][k] = ((hi << 8) | lo) - 512;
+                quantKArrays[idx][k] = ((hi << 8) | lo) - RC_BIAS;
                 li++;
             }
         }
         off += coeffsPerLevel[k] * 2;
     }
-    // build VarBlock array, resolving reuse references
+    // build VarBlock array, resolving reuse and backward references
     const blocks: VarBlock[] = [];
     for (let i = 0; i < numBlocks; i++) {
         if (orders[i] === VAR_REUSE_ORDER && i > 0) {
             blocks.push(blocks[i - 1]); // share reference with previous block
+        } else if (isBackwardOrder(orders[i])) {
+            // backward-adaptive: placeholder with empty coefficients.
+            // varOrderPredictDec will compute from decoded history.
+            blocks.push({ order: orders[i], quantK: new Int16Array(0), a: new Float64Array(0) });
         } else {
             const order = orders[i];
             const quantK = quantKArrays[i];
@@ -3051,8 +3412,13 @@ function decodeCoeffStream(data: Uint8Array, numBlocks: number): VarBlock[] {
 }
 
 /** dequantization refinement: project decoded integers onto the prediction
- *  manifold within each quantization cell. forward + backward Burg priors
- *  constrained to [q-0.5, q+0.5]. */
+ *  manifold within each quantization cell. forward Burg prior constrained
+ *  to [q-0.5, q+0.5].
+ *
+ *  note: backward (anti-causal) pass was tried but provides negligible
+ *  improvement (~0.000001 maxErr). the ±0.5 cell is too narrow for the
+ *  backward prediction to add meaningful information beyond the forward
+ *  pass. the forward-only projection is already near-optimal. */
 function varOrderCellProject(
     projected: Float32Array, data: Int32Array, blocks: VarBlock[],
     blockLen: number, maxOrder: number,
@@ -3459,7 +3825,7 @@ function readF32LE(data: Uint8Array, off: number): number {
 //         active:u8  Wint_lo:u8  Wint_hi:u8
 //       postFilterOrder:u8 (0 = off)
 //       if postFilterOrder > 0:
-//         [LP_coeff_i + 128 : u8] x order
+//         [LP_lo:u8 LP_hi:u8] x order   (10-bit signed, +512 bias)
 //       coeffOrigLen:u32  coeffCompLen:u32  coeffData
 //       numSubbands:u8
 //       for each subband:
@@ -3497,6 +3863,7 @@ function prepareHarmonicChannels(
     effectiveBitDepth: number,
     numLevels: number,
     layout: "channel" | "object",
+    hhThresh: number = 0,
 ): {
     channels: Int32Array[];
     channelEnergy: number[];
@@ -3551,6 +3918,7 @@ function prepareHarmonicChannels(
             scalar,
             varBlockLen,
             varMaxOrder,
+            effectiveBitDepth > 0,
         );
         baselineChannels.push(baseline.data);
         baselineEnergy.push(baseline.energy);
@@ -3589,7 +3957,7 @@ function prepareHarmonicChannels(
     for (let pass = 0; pass < axisPasses; pass++) {
         totalObjective = 0;
         if (layout !== "object" && numChannels > 1 && numSamples >= varBlockLen) {
-            couplingRefs = assignReferences(channels, numSamples);
+            couplingRefs = assignReferences(channels, numSamples, scalar);
         } else {
             couplingRefs = new Array(numChannels).fill(NO_REF);
         }
@@ -3624,6 +3992,7 @@ function prepareHarmonicChannels(
                 0,
                 varBlockLen,
                 varMaxOrder,
+                hhThresh,
             );
 
             let bestObjective = baselineScore.objective + amplitudeBaselineFitBits[ch];
@@ -3646,6 +4015,7 @@ function prepareHarmonicChannels(
                     amplitude.extraBits,
                     varBlockLen,
                     varMaxOrder,
+                    hhThresh,
                 );
                 const amplitudeObjective = amplitudeScore.objective + amplitude.fitBits;
                 if (amplitudeObjective < bestObjective) {
@@ -3668,7 +4038,7 @@ function prepareHarmonicChannels(
     }
 
     if (layout !== "object" && numChannels > 1 && numSamples >= varBlockLen) {
-        couplingRefs = assignReferences(channels, numSamples);
+        couplingRefs = assignReferences(channels, numSamples, scalar);
     }
 
     return {
@@ -3681,6 +4051,120 @@ function prepareHarmonicChannels(
         effectiveChannels,
         totalObjective,
     };
+}
+
+// ── harmonic long-term prediction ──────────────────────────────────
+// exploits the fundamental periodicity (pitch) of harmonic signals.
+// the short-term AR predictor (order ≤ 16) captures formant structure
+// and local oscillations but cannot reach pitch periods (typically
+// 100-500 samples at 48kHz = 2-10ms). the long-term predictor removes
+// the periodic component first, leaving a flatter residual for Burg.
+//
+// physics: a vibrating string/vocal cord produces a periodic waveform
+// with period T = 1/f0. the optimal 1-tap predictor is x'[n] = β·x[n-T]
+// where β = R(T)/R(0) is the autocorrelation-derived gain. this is
+// exactly the Green's function of the damped wave equation evaluated
+// at the resonant frequency — the codec's namesake.
+//
+// 3-tap fractional-delay attempted and rejected: for pure sines, the
+// 3x3 LS system at adjacent lags is near-singular (all taps sample
+// the same phase). the clamped gains after quantization produce worse
+// predictions than the simple 1-tap. the Burg AR predictor already
+// handles the slowly-varying fractional-period drift after 1-tap.
+
+const PITCH_MIN_PERIOD = 20;  // ~2400 Hz at 48kHz (upper limit of pitch)
+const PITCH_MAX_PERIOD = 600; // ~80 Hz at 48kHz (lower limit of pitch)
+
+/** estimate pitch period and gain from autocorrelation.
+ *  returns period=0 if no strong periodicity detected. */
+function estimatePitch(
+    data: Int32Array, n: number, sr: number,
+): { period: number; gain: number } {
+    // adapt search range to sample rate. target 80Hz-2400Hz.
+    const minP = Math.max(PITCH_MIN_PERIOD, Math.round(sr / 2400));
+    const maxP = Math.min(PITCH_MAX_PERIOD, Math.round(sr / 80), n >> 1);
+    if (maxP <= minP || n < maxP * 2) return { period: 0, gain: 0 };
+
+    // compute R(0)
+    let r0 = 0;
+    for (let i = 0; i < n; i++) r0 += data[i] * data[i];
+    if (r0 === 0) return { period: 0, gain: 0 };
+
+    // coarse search: step by 2, find the lag with highest normalized correlation
+    let bestLag = 0;
+    let bestCorr = 0;
+    for (let lag = minP; lag <= maxP; lag += 2) {
+        let sum = 0;
+        for (let i = lag; i < n; i++) sum += data[i] * data[i - lag];
+        const corr = sum / r0;
+        if (corr > bestCorr) {
+            bestCorr = corr;
+            bestLag = lag;
+        }
+    }
+
+    // fine search: check lag-1, lag, lag+1
+    if (bestLag > 0) {
+        for (let delta = -1; delta <= 1; delta++) {
+            const lag = bestLag + delta;
+            if (lag < minP || lag > maxP) continue;
+            let sum = 0;
+            for (let i = lag; i < n; i++) sum += data[i] * data[i - lag];
+            const corr = sum / r0;
+            if (corr > bestCorr) {
+                bestCorr = corr;
+                bestLag = lag;
+            }
+        }
+    }
+
+    // require minimum correlation strength to activate
+    if (bestCorr < 0.3 || bestLag === 0) return { period: 0, gain: 0 };
+
+    // compute optimal gain β = R(T) / R(0) at the denominator lag
+    let num = 0, den = 0;
+    for (let i = bestLag; i < n; i++) {
+        num += data[i] * data[i - bestLag];
+        den += data[i - bestLag] * data[i - bestLag];
+    }
+    const gain = den > 0 ? num / den : 0;
+
+    return { period: bestLag, gain: Math.max(-1, Math.min(1, gain)) };
+}
+
+/** quantize pitch period to 10 bits (0 = inactive, 1-1023 = period). */
+function quantPitchPeriod(p: number): number {
+    return Math.max(0, Math.min(1023, p));
+}
+
+/** quantize pitch gain to 8-bit signed (range -1.0 to +1.0, 127 steps). */
+function quantPitchGain(g: number): number {
+    return Math.max(-127, Math.min(127, Math.round(g * 127)));
+}
+function dequantPitchGain(q: number): number { return q / 127; }
+
+/** apply pitch prediction (forward): remove periodic component.
+ *  x'[n] = x[n] - round(β * x[n - T]) for n >= T. */
+function pitchPredict(data: Int32Array, n: number, period: number, gain: number): Int32Array {
+    const out = new Int32Array(n);
+    for (let i = 0; i < period; i++) out[i] = data[i];
+    for (let i = period; i < n; i++) {
+        const pred = gain * data[i - period];
+        out[i] = data[i] - (pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0);
+    }
+    return out;
+}
+
+/** inverse pitch prediction (decoder): restore periodic component.
+ *  x[n] = x'[n] + round(β * x[n - T]) for n >= T. */
+function pitchUnpredict(data: Int32Array, n: number, period: number, gain: number): Int32Array {
+    const out = new Int32Array(n);
+    for (let i = 0; i < period; i++) out[i] = data[i];
+    for (let i = period; i < n; i++) {
+        const pred = gain * out[i - period]; // use DECODED output, not input
+        out[i] = data[i] + (pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0);
+    }
+    return out;
 }
 
 /** lossless mid/side stereo transform for 2-channel content.
@@ -3703,6 +4187,79 @@ function msDecode(mid: Int32Array, side: Int32Array, n: number): { L: Int32Array
         R[i] = L[i] - side[i];
     }
     return { L, R };
+}
+
+/** compute the optimal decorrelation angle from the 2x2 covariance matrix.
+ *  the eigenvectors of [[var_L, cov_LR], [cov_LR, var_R]] give the KLT
+ *  rotation that maximally concentrates energy into one channel.
+ *  returns the lifting parameter alpha = -tan(theta/2). */
+function optimalStereoAlpha(L: Int32Array, R: Int32Array, n: number): number {
+    let varL = 0, varR = 0, covLR = 0;
+    for (let i = 0; i < n; i++) {
+        varL += L[i] * L[i];
+        varR += R[i] * R[i];
+        covLR += L[i] * R[i];
+    }
+    // eigenvector direction: theta_e = 0.5 * atan2(2*cov, varL - varR)
+    // to project onto the principal eigenvector, apply R(-theta_e).
+    // the Givens lifting implements R(theta) with alpha = -tan(theta/2).
+    // for R(-theta_e): alpha = -tan(-theta_e/2) = tan(theta_e/2).
+    const diff = varL - varR;
+    const cross = 2 * covLR;
+    const thetaE = 0.5 * Math.atan2(cross, diff);
+    return Math.max(-0.99, Math.min(0.99, Math.tan(thetaE * 0.5)));
+}
+
+/** lossless integer Givens rotation via three lifting shears.
+ *  factorizes the 2D rotation matrix R(theta) into:
+ *    [[1, alpha], [0, 1]] · [[1, 0], [beta, 1]] · [[1, alpha], [0, 1]]
+ *  where alpha = -tan(theta/2), beta = sin(theta) = -2*alpha/(1+alpha^2).
+ *  each shear step is perfectly reversible with integer rounding. */
+function givensEncode(
+    L: Int32Array, R: Int32Array, n: number, alpha: number,
+): { ch0: Int32Array; ch1: Int32Array } {
+    const beta = -2 * alpha / (1 + alpha * alpha);
+    const ch0 = new Int32Array(n);
+    const ch1 = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+        // step 1: shear L by alpha * R
+        let a = L[i] + Math.round(alpha * R[i]);
+        // step 2: shear R by beta * a
+        const b = R[i] + Math.round(beta * a);
+        // step 3: shear a by alpha * b
+        a = a + Math.round(alpha * b);
+        ch0[i] = a;
+        ch1[i] = b;
+    }
+    return { ch0, ch1 };
+}
+
+function givensDecode(
+    ch0: Int32Array, ch1: Int32Array, n: number, alpha: number,
+): { L: Int32Array; R: Int32Array } {
+    const beta = -2 * alpha / (1 + alpha * alpha);
+    const L = new Int32Array(n);
+    const R = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+        // undo step 3
+        let a = ch0[i] - Math.round(alpha * ch1[i]);
+        // undo step 2
+        const r = ch1[i] - Math.round(beta * a);
+        // undo step 1
+        const l = a - Math.round(alpha * r);
+        L[i] = l;
+        R[i] = r;
+    }
+    return { L, R };
+}
+
+/** quantize alpha to 10 bits (±511 like reflection coefficients). */
+function quantAlpha(a: number): number {
+    return Math.max(-RC_SCALE, Math.min(RC_SCALE, Math.round(a * RC_SCALE)));
+}
+
+function dequantAlpha(q: number): number {
+    return q / RC_SCALE;
 }
 
 export async function encodeHarmonic(
@@ -3796,6 +4353,7 @@ export async function encodeHarmonic(
     let prepared = prepareHarmonicChannels(
         wasm, samples, sampleRate, numChannels, numSamples,
         scalar, framePeak, targetScalar, effectiveBitDepth, numLevels, layout,
+        subbandThreshold(scalar, effectiveBitDepth),
     );
     const seenScalars = new Set<number>([scalar]);
     for (const cand of scalarCandidates) {
@@ -3806,6 +4364,7 @@ export async function encodeHarmonic(
         const candidatePrepared = prepareHarmonicChannels(
             wasm, samples, sampleRate, numChannels, numSamples,
             candidateScalar, candidatePeak, targetScalar, effectiveBitDepth, numLevels, layout,
+            subbandThreshold(candidateScalar, effectiveBitDepth),
         );
         if (candidatePrepared.totalObjective < prepared.totalObjective) {
             scalar = candidateScalar;
@@ -3813,6 +4372,7 @@ export async function encodeHarmonic(
             prepared = candidatePrepared;
         }
     }
+    const hhThresh = subbandThreshold(scalar, effectiveBitDepth);
     const channels = prepared.channels;
     const channelEnergy = prepared.channelEnergy;
     const channelEnvelopes = prepared.channelEnvelopes;
@@ -3821,29 +4381,85 @@ export async function encodeHarmonic(
     const effectiveChannels = prepared.effectiveChannels;
     let couplingRefs = prepared.couplingRefs;
 
-    // lossless M/S stereo for 2-channel content: trial-gated
+    // stereo decorrelation: trial L/R, M/S, and Givens rotation.
+    // the Givens rotation generalizes M/S to any angle via three lifting
+    // shears, finding the optimal decorrelation direction from the 2x2
+    // covariance matrix (KLT eigenvectors). lossless: each shear is
+    // perfectly reversible with integer rounding.
     let msActive = false;
+    let givensActive = false;
+    let givensAlphaQ = 0;
     if (numChannels === 2 && layout !== "object" && numSamples >= blockLen) {
-        const { mid, side } = msEncode(channels[0], channels[1], numSamples);
+        // L/R cost through full pipeline
         const blocksL = varOrderFitAllBlocks(channels[0], numSamples, blockLen, maxOrder);
         const residL = varOrderPredictEnc(channels[0], numSamples, blocksL, blockLen, maxOrder);
+        const sbL = scoreSubbandPath(wasm, residL, numLevels, hhThresh);
+        const costL = trialLogosSize(sbL) + estimateCoeffBits(blocksL) / 8;
+
         const blocksR = varOrderFitAllBlocks(channels[1], numSamples, blockLen, maxOrder);
         const residR = varOrderPredictEnc(channels[1], numSamples, blocksR, blockLen, maxOrder);
-        const costLR = estimatePlaneCost(residL) + estimateCoeffBits(blocksL) / 8
-                     + estimatePlaneCost(residR) + estimateCoeffBits(blocksR) / 8;
+        const sbR = scoreSubbandPath(wasm, residR, numLevels, hhThresh);
+        const costR = trialLogosSize(sbR) + estimateCoeffBits(blocksR) / 8;
 
+        let bestCostPair = costL + costR;
+
+        // M/S trial
+        const { mid, side } = msEncode(channels[0], channels[1], numSamples);
         const blocksM = varOrderFitAllBlocks(mid, numSamples, blockLen, maxOrder);
         const residM = varOrderPredictEnc(mid, numSamples, blocksM, blockLen, maxOrder);
+        const sbM = scoreSubbandPath(wasm, residM, numLevels, hhThresh);
+        const costM = trialLogosSize(sbM) + estimateCoeffBits(blocksM) / 8;
+
         const blocksS = varOrderFitAllBlocks(side, numSamples, blockLen, maxOrder);
         const residS = varOrderPredictEnc(side, numSamples, blocksS, blockLen, maxOrder);
-        const costMS = estimatePlaneCost(residM) + estimateCoeffBits(blocksM) / 8
-                     + estimatePlaneCost(residS) + estimateCoeffBits(blocksS) / 8;
+        const sbS = scoreSubbandPath(wasm, residS, numLevels, hhThresh);
+        const costS = trialLogosSize(sbS) + estimateCoeffBits(blocksS) / 8;
 
-        if (costMS < costLR) {
+        if (costM + costS < bestCostPair) {
+            bestCostPair = costM + costS;
+            msActive = true;
+            givensActive = false;
+        }
+
+        // Givens rotation trial: optimal decorrelation angle from covariance
+        const rawAlpha = optimalStereoAlpha(channels[0], channels[1], numSamples);
+        const qAlpha = quantAlpha(rawAlpha);
+        // only trial Givens when the angle differs meaningfully from 0 and pi/4.
+        // the M/S angle corresponds to alpha ≈ -0.4142, quantized to ~-211.
+        // skip if alpha is near 0 (no rotation) or near M/S (already tried).
+        const msAlphaQ = quantAlpha(-Math.tan(Math.PI / 8)); // M/S equivalent
+        if (qAlpha !== 0 && Math.abs(qAlpha - msAlphaQ) > 10) {
+            const dqAlpha = dequantAlpha(qAlpha);
+            const { ch0: g0, ch1: g1 } = givensEncode(channels[0], channels[1], numSamples, dqAlpha);
+
+            const blocksG0 = varOrderFitAllBlocks(g0, numSamples, blockLen, maxOrder);
+            const residG0 = varOrderPredictEnc(g0, numSamples, blocksG0, blockLen, maxOrder);
+            const sbG0 = scoreSubbandPath(wasm, residG0, numLevels, hhThresh);
+            const costG0 = trialLogosSize(sbG0) + estimateCoeffBits(blocksG0) / 8;
+
+            const blocksG1 = varOrderFitAllBlocks(g1, numSamples, blockLen, maxOrder);
+            const residG1 = varOrderPredictEnc(g1, numSamples, blocksG1, blockLen, maxOrder);
+            const sbG1 = scoreSubbandPath(wasm, residG1, numLevels, hhThresh);
+            const costG1 = trialLogosSize(sbG1) + estimateCoeffBits(blocksG1) / 8;
+
+            // +2 bytes overhead for the quantized alpha
+            if (costG0 + costG1 + 2 < bestCostPair) {
+                bestCostPair = costG0 + costG1 + 2;
+                msActive = false;
+                givensActive = true;
+                givensAlphaQ = qAlpha;
+                channels[0] = g0;
+                channels[1] = g1;
+            }
+        }
+
+        if (msActive) {
             channels[0] = mid;
             channels[1] = side;
-            msActive = true;
             // M/S makes coupling redundant
+            couplingRefs = [NO_REF, NO_REF];
+        } else if (givensActive) {
+            // Givens also makes coupling redundant
             couplingRefs = [NO_REF, NO_REF];
         }
     }
@@ -3854,6 +4470,13 @@ export async function encodeHarmonic(
     // 24-bit mode (scalar=8388608). the decoder reads this directly â€”
     // no formula inversion needed.
     payloadU32(scalar);
+
+    // Givens rotation alpha: 10-bit quantized, stored as 2 bytes (signed + 512)
+    if (givensActive) {
+        const v = givensAlphaQ + RC_BIAS;
+        payloadByte(v & 0xFF);
+        payloadByte((v >> 8) & 0xFF);
+    }
 
     // write spatial metadata for object-based layout (always written when object,
     // even without explicit positions, so encoder/decoder stay in sync)
@@ -3888,11 +4511,57 @@ export async function encodeHarmonic(
         const envLog = channelEnvelopes[ch];
         const envWire = channelEnvelopeWire[ch];
 
+        // per-channel adaptive block length: try halved, standard, and doubled
+        // blockLen, pick the cheapest. cache the winning Burg fit for reuse
+        // in coupling and pitch trials (eliminates 2-3 redundant fits).
+        let chBlockLen = blockLen;
+        let chMaxOrder = maxOrder;
+        let cachedBlocks: VarBlock[] | null = null;
+        let cachedResid: Int32Array | null = null;
+        if (numSamples >= blockLen * 2) {
+            const blocks1 = varOrderFitAllBlocks(data, numSamples, blockLen, maxOrder);
+            const resid1 = varOrderPredictEnc(data, numSamples, blocks1, blockLen, maxOrder);
+            let bestCost = estimatePlaneCost(resid1) + estimateCoeffBits(blocks1) / 8;
+            cachedBlocks = blocks1;
+            cachedResid = resid1;
+            // try doubled
+            const blDouble = Math.min(blockLen * 2, 1024);
+            if (blDouble !== blockLen) {
+                const moDouble = computeMaxOrder(blDouble);
+                const blocks2 = varOrderFitAllBlocks(data, numSamples, blDouble, moDouble);
+                const resid2 = varOrderPredictEnc(data, numSamples, blocks2, blDouble, moDouble);
+                const cost2 = estimatePlaneCost(resid2) + estimateCoeffBits(blocks2) / 8;
+                if (cost2 + 1 < bestCost) {
+                    bestCost = cost2;
+                    chBlockLen = blDouble;
+                    chMaxOrder = moDouble;
+                    cachedBlocks = blocks2;
+                    cachedResid = resid2;
+                }
+            }
+            // try halved
+            const blHalf = Math.max(blockLen >> 1, 8);
+            if (blHalf !== blockLen) {
+                const moHalf = computeMaxOrder(blHalf);
+                const blocksH = varOrderFitAllBlocks(data, numSamples, blHalf, moHalf);
+                const residH = varOrderPredictEnc(data, numSamples, blocksH, blHalf, moHalf);
+                const costH = estimatePlaneCost(residH) + estimateCoeffBits(blocksH) / 8;
+                if (costH + 1 < bestCost) {
+                    chBlockLen = blHalf;
+                    chMaxOrder = moHalf;
+                    cachedBlocks = blocksH;
+                    cachedResid = residH;
+                }
+            }
+        }
+        // wire: blockLen exponent (0=8, 1=16, 2=32, 3=64, 4=128, 5=256, 6=512, 7=1024)
+        payloadByte(Math.round(Math.log2(chBlockLen)) - 3);
+
         // cross-channel coupling: subtract W·ref, trial-gated via varOrder cost
         const refIdx = couplingRefs[ch] ?? NO_REF;
         const refData = refIdx !== NO_REF ? channels[refIdx] : undefined;
         let channelW: { Wint: number; W: number } | undefined;
-        if (refData && numSamples >= blockLen) {
+        if (refData && numSamples >= chBlockLen) {
             const wFit = fitCouplingW(data, refData, numSamples);
             if (Math.abs(wFit.W) > 0.01) {
                 const decoupled = new Int32Array(numSamples);
@@ -3900,15 +4569,19 @@ export async function encodeHarmonic(
                     const wr = wFit.W * refData[i];
                     decoupled[i] = data[i] - (wr >= 0 ? (wr + 0.5) | 0 : (wr - 0.5) | 0);
                 }
-                const blocksOrig = varOrderFitAllBlocks(data, numSamples, blockLen, maxOrder);
-                const residOrig = varOrderPredictEnc(data, numSamples, blocksOrig, blockLen, maxOrder);
-                const blocksDec = varOrderFitAllBlocks(decoupled, numSamples, blockLen, maxOrder);
-                const residDec = varOrderPredictEnc(decoupled, numSamples, blocksDec, blockLen, maxOrder);
+                // reuse cached Burg blocks for orig if available (same data, same blockLen)
+                const blocksOrig = cachedBlocks ?? varOrderFitAllBlocks(data, numSamples, chBlockLen, chMaxOrder);
+                const residOrig = cachedResid ?? varOrderPredictEnc(data, numSamples, blocksOrig, chBlockLen, chMaxOrder);
+                const blocksDec = varOrderFitAllBlocks(decoupled, numSamples, chBlockLen, chMaxOrder);
+                const residDec = varOrderPredictEnc(decoupled, numSamples, blocksDec, chBlockLen, chMaxOrder);
                 const costOrig = estimatePlaneCost(residOrig) + estimateCoeffBits(blocksOrig) / 8;
                 const costDec = estimatePlaneCost(residDec) + estimateCoeffBits(blocksDec) / 8;
                 if (costDec + 2 < costOrig) {
                     data = decoupled;
                     channelW = wFit;
+                    // invalidate cache — data changed
+                    cachedBlocks = null;
+                    cachedResid = null;
                 } else {
                     couplingRefs[ch] = NO_REF;
                 }
@@ -3936,13 +4609,65 @@ export async function encodeHarmonic(
             }
         }
 
-        // unified variable-order prediction
-        const varBlocks = varOrderFitAllBlocks(data, numSamples, blockLen, maxOrder);
-        let residuals = varOrderPredictEnc(data, numSamples, varBlocks, blockLen, maxOrder);
+        // harmonic long-term prediction: remove pitch periodicity before Burg.
+        // trial-gated: only activate if the full pipeline (pitch → Burg → wavelet → Logos)
+        // is cheaper than Burg alone. caches Burg results from the trial to avoid
+        // redundant computation in the main encoding path.
+        let pitchPeriodQ = 0;
+        let pitchGainQ = 0;
+        let cachedVarBlocks: VarBlock[] | null = null;
+        let cachedResiduals: Int32Array | null = null;
+        if (numSamples >= PITCH_MIN_PERIOD * 4) {
+            const { period, gain } = estimatePitch(data, numSamples, sampleRate);
+            if (period > 0) {
+                const pQ = quantPitchPeriod(period);
+                const gQ = quantPitchGain(gain);
+                if (pQ > 0 && gQ !== 0) {
+                    const dqGain = dequantPitchGain(gQ);
+                    const pitched = pitchPredict(data, numSamples, pQ, dqGain);
+                    // full pipeline cost comparison (Burg → wavelet → Logos)
+                    // reuse cached Burg blocks for orig if available
+                    const blocksOrig = cachedBlocks ?? varOrderFitAllBlocks(data, numSamples, chBlockLen, chMaxOrder);
+                    const residOrig = cachedResid ?? varOrderPredictEnc(data, numSamples, blocksOrig, chBlockLen, chMaxOrder);
+                    const sbOrig = scoreSubbandPath(wasm, residOrig, numLevels, hhThresh);
+                    const costOrig = trialLogosSize(sbOrig) + estimateCoeffBits(blocksOrig) / 8;
+                    const blocksPitch = varOrderFitAllBlocks(pitched, numSamples, chBlockLen, chMaxOrder);
+                    const residPitch = varOrderPredictEnc(pitched, numSamples, blocksPitch, chBlockLen, chMaxOrder);
+                    const sbPitch = scoreSubbandPath(wasm, residPitch, numLevels, hhThresh);
+                    const costPitch = trialLogosSize(sbPitch) + estimateCoeffBits(blocksPitch) / 8 + 4;
+                    if (costPitch < costOrig) {
+                        data = pitched;
+                        pitchPeriodQ = pQ;
+                        pitchGainQ = gQ;
+                        cachedVarBlocks = blocksPitch;
+                        cachedResiduals = residPitch;
+                    } else {
+                        cachedVarBlocks = blocksOrig;
+                        cachedResiduals = residOrig;
+                    }
+                }
+            }
+        }
+        // write pitch parameters: 1 byte flag, then conditionally 3 bytes
+        if (pitchPeriodQ > 0) {
+            payloadByte(1);
+            payloadByte(pitchPeriodQ & 0xFF);
+            payloadByte((pitchPeriodQ >> 8) & 0xFF);
+            payloadByte((pitchGainQ + 128) & 0xFF);
+        } else {
+            payloadByte(0);
+        }
+
+        // unified variable-order prediction (reuse cached results from pitch trial)
+        const varBlocks = cachedVarBlocks ?? varOrderFitAllBlocks(data, numSamples, chBlockLen, chMaxOrder);
+        let residuals = cachedResiduals ?? varOrderPredictEnc(data, numSamples, varBlocks, chBlockLen, chMaxOrder);
 
         // global post-filter: sparse Yule-Walker on Burg residuals.
         // tries single-lag and multi-lag candidates, picks the cheapest.
-        const sbNoFilter = scoreSubbandPath(wasm, residuals, numLevels);
+        // uses Shannon-based scoreSubbandPath for fast candidate screening,
+        // but the trialLogosSize on top ensures the final cost comparison
+        // is Logos-accurate for each candidate's wavelet level choice.
+        const sbNoFilter = scoreSubbandPath(wasm, residuals, numLevels, hhThresh);
         const costNoFilter = trialLogosSize(sbNoFilter);
 
         let bestPostOrder = 0;
@@ -3950,10 +4675,10 @@ export async function encodeHarmonic(
         let bestPostResiduals = residuals;
         let bestCost = costNoFilter;
 
-        const postCandidates = generatePostFilterCandidates(residuals, numSamples, scalar, blockLen);
+        const postCandidates = generatePostFilterCandidates(residuals, numSamples, scalar, chBlockLen);
         for (const cand of postCandidates) {
             const filtered = applyPostFilterEnc(residuals, numSamples, cand.order, cand.quantLP);
-            const sbAfter = scoreSubbandPath(wasm, filtered, numLevels);
+            const sbAfter = scoreSubbandPath(wasm, filtered, numLevels, hhThresh);
             const costAfter = trialLogosSize(sbAfter) + 1 + cand.order * 2; // 1 byte order + 2N coeff bytes
             if (costAfter < bestCost) {
                 bestCost = costAfter;
@@ -3967,7 +4692,7 @@ export async function encodeHarmonic(
         if (bestPostOrder > 0) {
             payloadByte(bestPostOrder);
             for (let m = 0; m < bestPostOrder; m++) {
-                const v = bestPostQuantLP![m] + 512;
+                const v = bestPostQuantLP![m] + RC_BIAS;
                 payloadByte(v & 0xFF);
                 payloadByte((v >> 8) & 0xFF);
             }
@@ -3981,8 +4706,148 @@ export async function encodeHarmonic(
         payloadU32(coeffComp.length);
         payloadAppend(coeffComp);
 
-        // wavelet vs bypass: pick the cheaper path
-        const subbands = scoreSubbandPath(wasm, residuals, numLevels);
+        // wavelet vs bypass: Logos-accurate level selection. the Shannon estimator
+        // is well-calibrated for broadband signals (chirp, speech) but miscalibrates
+        // for high-precision narrowband signals: lossless 24-bit improved 25.7%
+        // (3340→2480B) and harmonic Q95 improved 15.2% (1452→1232B) by using
+        // actual Logos encoding cost instead of Shannon entropy for level selection.
+        // costs ~4 extra Logos calls per channel (~5% encode time) but this is
+        // the final path where the decision directly determines output bytes.
+        const subbands = scoreSubbandPathAccurate(wasm, residuals, numLevels, hhThresh);
+
+        // cached baseline cost for subband transform trials (MERA, connection, packet).
+        // invalidated (-1) whenever subbands are modified, recomputed lazily.
+        let sbBaseCost = -1;
+
+        // MERA disentangler: Givens rotation between LL and deepest HH subband.
+        // multi-scale entanglement renormalization ansatz (MERA) insight: wavelet
+        // subbands at adjacent scales share magnitude correlation (e.g. edges
+        // produce large coefficients in both LL and HH simultaneously). a Givens
+        // rotation disentangles this correlation, concentrating energy into one
+        // subband and making both more compressible. this is the "disentangler"
+        // layer of the MERA tensor network, operating between renormalization
+        // (wavelet) layers. trial-gated: only applied when Logos cost decreases.
+        let meraAlphaQ = 0;
+        let meraActive = false;
+        if (subbands.length >= 2) {
+            const sb0 = subbands[0], sb1 = subbands[1];
+            const minLen = Math.min(sb0.length, sb1.length);
+            if (minLen >= 4) {
+                const rawAlpha = optimalStereoAlpha(sb0, sb1, minLen);
+                const qAlpha = quantAlpha(rawAlpha);
+                if (qAlpha !== 0) {
+                    const dqAlpha = dequantAlpha(qAlpha);
+                    const { ch0, ch1 } = givensEncode(sb0, sb1, minLen, dqAlpha);
+                    // build trial subbands with rotated LL and HH
+                    const trialSb: Int32Array[] = subbands.slice();
+                    const rot0 = new Int32Array(sb0.length);
+                    rot0.set(ch0.subarray(0, minLen));
+                    if (sb0.length > minLen) rot0[minLen] = sb0[minLen];
+                    const rot1 = new Int32Array(sb1.length);
+                    rot1.set(ch1.subarray(0, minLen));
+                    if (sb1.length > minLen) rot1[minLen] = sb1[minLen];
+                    trialSb[0] = rot0;
+                    trialSb[1] = rot1;
+                    if (sbBaseCost < 0) sbBaseCost = trialLogosSize(subbands);
+                    const costMera = trialLogosSize(trialSb) + 3; // 1 flag + 2 alpha
+                    if (costMera < sbBaseCost) {
+                        subbands[0] = rot0;
+                        subbands[1] = rot1;
+                        meraAlphaQ = qAlpha;
+                        meraActive = true;
+                        sbBaseCost = -1; // invalidate: subbands changed
+                    }
+                }
+            }
+        }
+        payloadByte(meraActive ? 1 : 0);
+        if (meraActive) {
+            const v = meraAlphaQ + RC_BIAS;
+            payloadByte(v & 0xFF);
+            payloadByte((v >> 8) & 0xFF);
+        }
+
+        // cross-scale connection prediction: the CDF 5/3 lifting scheme is a
+        // discrete connection on a fiber bundle. LL is the base space, HH is the
+        // fiber. the LL derivative (local slope) predicts HH coefficient magnitude
+        // at transient locations where the bundle has curvature. this is the local
+        // version of what the MERA disentangler does globally. the prediction
+        // exploits the fact that singularities (transients, onsets) create large
+        // coefficients in both LL and HH at the same position.
+        let connectionAlphaQ = 0;
+        let connectionActive = false;
+        if (subbands.length >= 2) {
+            const ll = subbands[0], hh = subbands[1];
+            const minLen = Math.min(ll.length - 1, hh.length);
+            if (minLen >= 4) {
+                // compute LL derivative and cross-correlate with deepest HH
+                let covDH = 0, varD = 0;
+                for (let i = 0; i < minLen; i++) {
+                    const d = ll[i + 1] - ll[i]; // connection form: local LL slope
+                    covDH += d * hh[i];
+                    varD += d * d;
+                }
+                if (varD > 0) {
+                    const rawAlpha = covDH / varD;
+                    const qAlpha = quantAlpha(rawAlpha);
+                    if (qAlpha !== 0) {
+                        const dqAlpha = dequantAlpha(qAlpha);
+                        // trial: predict HH from LL derivative, see if residual is cheaper
+                        const trialHH = new Int32Array(hh.length);
+                        for (let i = 0; i < minLen; i++) {
+                            const d = ll[i + 1] - ll[i];
+                            const pred = dqAlpha * d;
+                            trialHH[i] = hh[i] - (pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0);
+                        }
+                        // copy any trailing samples unchanged
+                        for (let i = minLen; i < hh.length; i++) trialHH[i] = hh[i];
+                        const trialSb = subbands.slice();
+                        trialSb[1] = trialHH;
+                        if (sbBaseCost < 0) sbBaseCost = trialLogosSize(subbands);
+                        const costConn = trialLogosSize(trialSb) + 3; // 1 flag + 2 alpha
+                        if (costConn < sbBaseCost) {
+                            subbands[1] = trialHH;
+                            connectionAlphaQ = qAlpha;
+                            connectionActive = true;
+                            sbBaseCost = -1; // invalidate: subbands changed
+                        }
+                    }
+                }
+            }
+        }
+        payloadByte(connectionActive ? 1 : 0);
+        if (connectionActive) {
+            const v = connectionAlphaQ + RC_BIAS;
+            payloadByte(v & 0xFF);
+            payloadByte((v >> 8) & 0xFF);
+        }
+
+        // wavelet packet split: try one extra decomposition level on the
+        // shallowest HH subband (HH1, the largest). this is the Coifman-
+        // Wickerhauser best-basis idea reduced to a single 1-bit decision:
+        // if splitting HH1 into two sub-subbands reduces Logos cost, do it.
+        // post-Burg residuals often retain spectral color that the standard
+        // dyadic wavelet tree doesn't fully exploit.
+        let packetSplit = false;
+        if (subbands.length >= 2) {
+            const lastIdx = subbands.length - 1;
+            const hh1 = subbands[lastIdx];
+            if (hh1.length >= 4) {
+                const splitSb = waveletDecompose(wasm, hh1, 1);
+                if (splitSb.length === 2) {
+                    const trialSb = subbands.slice(0, lastIdx);
+                    trialSb.push(splitSb[0], splitSb[1]);
+                    if (sbBaseCost < 0) sbBaseCost = trialLogosSize(subbands);
+                    const costSplit = trialLogosSize(trialSb) + 1; // 1 flag byte
+                    if (costSplit < sbBaseCost) {
+                        subbands[lastIdx] = splitSb[0];
+                        subbands.push(splitSb[1]);
+                        packetSplit = true;
+                    }
+                }
+            }
+        }
+        payloadByte(packetSplit ? 1 : 0);
 
         // subband encoding: zigzag + byte planes + batched Logos
         const numSb = subbands.length;
@@ -4018,16 +4883,19 @@ export async function encodeHarmonic(
         }
         payloadByte(globalMaxPlane);
 
-        // build concatenated plane streams and encode each with one Logos call
+        // build concatenated plane streams and encode each with one Logos call.
+        // only include subbands that actually have data at this plane level:
+        // a subband with planeCount=1 has no high-byte data, so including it
+        // in plane 1 would just feed zeros to Logos (wasting context bandwidth).
         for (let plane = 0; plane < globalMaxPlane; plane++) {
             let totalBytes = 0;
             for (let sb = 0; sb < numSb; sb++) {
-                if (sbPlaneCount[sb] > 0) totalBytes += subbands[sb].length;
+                if (sbPlaneCount[sb] > plane) totalBytes += subbands[sb].length;
             }
             const concat = new Uint8Array(totalBytes);
             let off = 0;
             for (let sb = 0; sb < numSb; sb++) {
-                if (sbPlaneCount[sb] === 0) continue;
+                if (sbPlaneCount[sb] <= plane) continue;
                 const d = subbands[sb];
                 const shift = plane * 8;
                 for (let i = 0; i < d.length; i++) {
@@ -4036,7 +4904,13 @@ export async function encodeHarmonic(
                     concat[off++] = (zz >>> shift) & 0xFF;
                 }
             }
-            const encoded = encode0D(concat.subarray(0, off));
+            // stride=2 gives Logos a second-order spatial context: the byte two
+            // positions back (sample[n-2] in the same plane). this is complementary
+            // to Logos's O2 axis (byte at n-1) and provides a consistent -0.3% to
+            // -1.1% improvement on post-Burg residuals. safe for single-subband
+            // (common case, wavelet bypassed); at multi-subband boundaries the Ab
+            // context is briefly wrong but Ab is just one of 7 axes.
+            const encoded = encode0D(concat.subarray(0, off), 2);
             payloadU32(encoded.length);
             payloadAppend(encoded);
         }
@@ -4061,7 +4935,8 @@ export async function encodeHarmonic(
     const layoutFlag = layout === "object" ? LAYOUT_OBJECT : LAYOUT_CHANNEL;
     const depthFlag  = effectiveBitDepth === 16 ? DEPTH_16 : effectiveBitDepth === 24 ? DEPTH_24 : DEPTH_F32;
     const msFlag = msActive ? MS_ACTIVE : 0;
-    ov.setUint16(8, ((quality & 0xFF) << 8) | 1 | layoutFlag | depthFlag | msFlag, true);
+    const givensFlag = givensActive ? GIVENS_ACTIVE : 0;
+    ov.setUint16(8, ((quality & 0xFF) << 8) | 1 | layoutFlag | depthFlag | msFlag | givensFlag, true);
     out[10] = numChannels - 1; out[11] = numLevels; // numChannels stored as 0-based (0=1ch, 255=256ch)
 
     out.set(encrypted, HEADER_SIZE);
@@ -4097,6 +4972,7 @@ export async function decodeHarmonic(
     const isObject    = layoutFlag === LAYOUT_OBJECT;
     const bitDepth    = depthFromFlags(flags);
     const isMidSide   = (flags & MS_ACTIVE) !== 0;
+    const isGivens    = (flags & GIVENS_ACTIVE) !== 0;
 
     if (isRaw) {
         return decodeRawMode(encoded, numSamples, sampleRate, numChannels, encryptionKey);
@@ -4130,6 +5006,13 @@ export async function decodeHarmonic(
     const framePeak = readF32LE(p, off); off += 4; // authenticated: inside MAC scope
     const scalar = readU32LE(p, off) || 1; off += 4; // actual scalar used by encoder
 
+    // Givens rotation alpha (10-bit quantized, 2 bytes)
+    let givensAlpha = 0;
+    if (isGivens) {
+        const lo = p[off]; const hi = p[off + 1]; off += 2;
+        givensAlpha = dequantAlpha(((hi << 8) | lo) - RC_BIAS);
+    }
+
     // read spatial metadata for object-based layout
     let spatialObjects: SpatialObject[] | undefined;
     if (isObject) {
@@ -4154,6 +5037,11 @@ export async function decodeHarmonic(
     const effectiveChannels = p[off++];
 
     for (let ch = 0; ch < effectiveChannels; ch++) {
+        // per-channel adaptive block length
+        const chBlockLenExponent = p[off++];
+        const chBlockLen = 8 << chBlockLenExponent;
+        const chMaxOrder = computeMaxOrder(chBlockLen);
+
         let envCurve: Float32Array | null = null;
         const hasEnvelope = ((envelopeMask[ch >> 3] >> (ch & 7)) & 1) !== 0;
         if (hasEnvelope) {
@@ -4161,7 +5049,7 @@ export async function decodeHarmonic(
             const envCount = readU32LE(p, off); off += 4;
             const envWireLen = readU32LE(p, off); off += 4;
             const envLog = decodeEnvelopeTrajectory(wasm, p.subarray(off, off + envWireLen), envCount); off += envWireLen;
-            envCurve = reconstructEnvelopeCurve(envLog, numSamples, Math.max(blockLen, envBlockLen), framePeak);
+            envCurve = reconstructEnvelopeCurve(envLog, numSamples, Math.max(chBlockLen, envBlockLen), framePeak);
         }
 
         // coupling W
@@ -4176,21 +5064,51 @@ export async function decodeHarmonic(
             }
         }
 
+        // decode pitch prediction params
+        const pitchActive = p[off++] === 1;
+        let pitchPeriod = 0;
+        let pitchGain = 0;
+        if (pitchActive) {
+            pitchPeriod = p[off] | (p[off + 1] << 8); off += 2;
+            pitchGain = dequantPitchGain(p[off++] - 128);
+        }
+
         // decode post-filter params (10-bit LP coefficients, 2 bytes each)
         const postFilterOrder = p[off++];
         const postFilterQuantLP = new Int16Array(postFilterOrder);
         for (let m = 0; m < postFilterOrder; m++) {
             const lo = p[off++];
             const hi = p[off++];
-            postFilterQuantLP[m] = ((hi << 8) | lo) - 512;
+            postFilterQuantLP[m] = ((hi << 8) | lo) - RC_BIAS;
         }
 
         // decode coefficient stream
-        const numBlocks = Math.ceil(numSamples / blockLen);
+        const numBlocks = Math.ceil(numSamples / chBlockLen);
         const coeffOrigLen = readU32LE(p, off); off += 4;
         const coeffCompLen = readU32LE(p, off); off += 4;
         const coeffRaw = decode0D(p.subarray(off, off + coeffCompLen), coeffOrigLen); off += coeffCompLen;
         const varBlocks = decodeCoeffStream(coeffRaw, numBlocks);
+
+        // MERA disentangler params
+        const meraFlag = p[off++];
+        let meraAlpha = 0;
+        if (meraFlag === 1) {
+            const lo = p[off++];
+            const hi = p[off++];
+            meraAlpha = dequantAlpha(((hi << 8) | lo) - RC_BIAS);
+        }
+
+        // cross-scale connection prediction params
+        const connectionFlag = p[off++];
+        let connectionAlpha = 0;
+        if (connectionFlag === 1) {
+            const lo = p[off++];
+            const hi = p[off++];
+            connectionAlpha = dequantAlpha(((hi << 8) | lo) - RC_BIAS);
+        }
+
+        // wavelet packet split flag
+        const packetSplitFlag = p[off++];
 
         // decode subbands (batched plane streams)
         const numSubbands = p[off++];
@@ -4206,39 +5124,64 @@ export async function decodeHarmonic(
         for (let plane = 0; plane < globalMaxPlane; plane++) {
             let totalBytes = 0;
             for (let sb = 0; sb < numSubbands; sb++) {
-                if (sbPlanes[sb] > 0) totalBytes += sbLens[sb];
+                if (sbPlanes[sb] > plane) totalBytes += sbLens[sb];
             }
             const compLen = readU32LE(p, off); off += 4;
-            planeData.push(decode0D(p.subarray(off, off + compLen), totalBytes));
+            planeData.push(decode0D(p.subarray(off, off + compLen), totalBytes, 2));
             off += compLen;
         }
 
-        // reconstruct subbands from plane slices
+        // reconstruct subbands from plane slices. each plane only contains
+        // subbands where sbPlanes[sb] > plane, so per-plane offsets track
+        // independently.
         const subbands: Int32Array[] = [];
-        let planeOff = 0;
+        const planeOffs = new Array(globalMaxPlane).fill(0);
         for (let sb = 0; sb < numSubbands; sb++) {
             const n = sbLens[sb];
-            if (sbPlanes[sb] === 0) {
+            const pc = sbPlanes[sb];
+            if (pc === 0) {
                 subbands.push(new Int32Array(n));
                 continue;
             }
             const out = new Int32Array(n);
-            if (globalMaxPlane === 1) {
-                const lo = planeData[0];
-                for (let i = 0; i < n; i++) out[i] = zigzagDec(lo[planeOff + i]);
-            } else if (globalMaxPlane === 2) {
-                const lo = planeData[0], mid = planeData[1];
-                for (let i = 0; i < n; i++) {
-                    out[i] = zigzagDec(((mid[planeOff + i] << 8) | lo[planeOff + i]) >>> 0);
+            for (let i = 0; i < n; i++) {
+                let zz = 0;
+                for (let plane = 0; plane < pc; plane++) {
+                    zz |= planeData[plane][planeOffs[plane] + i] << (plane * 8);
                 }
-            } else {
-                const lo = planeData[0], mid = planeData[1], top = planeData[2];
-                for (let i = 0; i < n; i++) {
-                    out[i] = zigzagDec(((top[planeOff + i] << 16) | (mid[planeOff + i] << 8) | lo[planeOff + i]) >>> 0);
-                }
+                out[i] = zigzagDec(zz >>> 0);
             }
-            planeOff += n;
+            for (let plane = 0; plane < pc; plane++) {
+                planeOffs[plane] += n;
+            }
             subbands.push(out);
+        }
+
+        // wavelet packet unsplit: if HH1 was split, reconstruct it from last two subbands
+        if (packetSplitFlag === 1 && subbands.length >= 3) {
+            const hh1Parts = [subbands[subbands.length - 2], subbands[subbands.length - 1]];
+            const hh1 = waveletReconstruct(wasm, hh1Parts);
+            subbands.length -= 2;
+            subbands.push(hh1);
+        }
+
+        // cross-scale connection inverse: add back LL-derivative prediction to HH
+        if (connectionFlag === 1 && subbands.length >= 2) {
+            const ll = subbands[0], hh = subbands[1];
+            const minLen = Math.min(ll.length - 1, hh.length);
+            for (let i = 0; i < minLen; i++) {
+                const d = ll[i + 1] - ll[i];
+                const pred = connectionAlpha * d;
+                hh[i] += pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
+            }
+        }
+
+        // MERA disentangler inverse: undo Givens rotation on LL and deepest HH
+        if (meraFlag === 1 && subbands.length >= 2) {
+            const sb0 = subbands[0], sb1 = subbands[1];
+            const minLen = Math.min(sb0.length, sb1.length);
+            const { L, R } = givensDecode(sb0, sb1, minLen, meraAlpha);
+            for (let i = 0; i < minLen; i++) { sb0[i] = L[i]; sb1[i] = R[i]; }
         }
 
         // wavelet reconstruct -> post-filter inverse -> varOrder prediction inverse
@@ -4246,7 +5189,12 @@ export async function decodeHarmonic(
         if (postFilterOrder > 0) {
             waveletResiduals = applyPostFilterDec(waveletResiduals, numSamples, postFilterOrder, postFilterQuantLP);
         }
-        let reconstructed = varOrderPredictDec(waveletResiduals, numSamples, varBlocks, blockLen, maxOrder);
+        let reconstructed = varOrderPredictDec(waveletResiduals, numSamples, varBlocks, chBlockLen, chMaxOrder);
+
+        // pitch prediction inverse: restore periodic component
+        if (pitchActive && pitchPeriod > 0) {
+            reconstructed = pitchUnpredict(reconstructed, numSamples, pitchPeriod, pitchGain);
+        }
 
         // signal-level coupling inverse: add W·ref_data back
         if (signalCouplingActive && decCouplingW[ch] !== undefined) {
@@ -4265,7 +5213,7 @@ export async function decodeHarmonic(
         if (bitDepth === 0 && scalar > 1) {
             projected = Float32Array.from(reconstructed);
             sanitizeProjectionToCell(projected, reconstructed);
-            varOrderCellProject(projected, reconstructed, varBlocks, blockLen, maxOrder);
+            varOrderCellProject(projected, reconstructed, varBlocks, chBlockLen, chMaxOrder);
             sanitizeProjectionToCell(projected, reconstructed);
             if (signalCouplingActive && decCouplingW[ch] !== undefined) {
                 const refProjected = allChannelProjected[chRefIdx];
@@ -4282,12 +5230,32 @@ export async function decodeHarmonic(
         allChannelEnvelopes.push(envCurve);
     }
 
-    // M/S stereo inverse: convert mid/side back to L/R
-    if (isMidSide && numChannels === 2 && allChannelData.length >= 2) {
+    // stereo inverse: convert rotated channels back to L/R
+    if (isGivens && numChannels === 2 && allChannelData.length >= 2) {
+        // Givens inverse rotation
+        const { L, R } = givensDecode(allChannelData[0], allChannelData[1], numSamples, givensAlpha);
+        allChannelData[0] = L;
+        allChannelData[1] = R;
+        if (allChannelProjected[0] && allChannelProjected[1]) {
+            // approximate inverse for projected (float) arrays
+            const beta = -2 * givensAlpha / (1 + givensAlpha * givensAlpha);
+            const p0 = allChannelProjected[0]!;
+            const p1 = allChannelProjected[1]!;
+            const pL = new Float32Array(numSamples);
+            const pR = new Float32Array(numSamples);
+            for (let i = 0; i < numSamples; i++) {
+                let a = p0[i] - givensAlpha * p1[i];
+                const r = p1[i] - beta * a;
+                pL[i] = a - givensAlpha * r;
+                pR[i] = r;
+            }
+            allChannelProjected[0] = pL;
+            allChannelProjected[1] = pR;
+        }
+    } else if (isMidSide && numChannels === 2 && allChannelData.length >= 2) {
         const { L, R } = msDecode(allChannelData[0], allChannelData[1], numSamples);
         allChannelData[0] = L;
         allChannelData[1] = R;
-        // also update projected arrays if they exist
         if (allChannelProjected[0] && allChannelProjected[1]) {
             const projMid = allChannelProjected[0]!;
             const projSide = allChannelProjected[1]!;

@@ -91,6 +91,8 @@ const TRACKER_INTENT_TYPE = "whisper-intent";
 const TRACKER_MATCH_ACK_TYPE = "whisper-match-ack";
 const TRACKER_OFFER_CODE_TYPE = "whisper-offer-code";
 const TRACKER_ANSWER_CODE_TYPE = "whisper-answer-code";
+const SIMULTANEOUS_MESSAGE_TTL_MS = 30_000;
+const MAX_CLOCK_SKEW_MS = 60_000;
 
 // Concurrent tracker socket budget (module-scoped, survives pool teardown).
 let liveSockets = 0;
@@ -251,21 +253,32 @@ function decodeTrackerRelaySignal(encoded: string): TrackerRelaySignal | null {
 
 interface TrackerIntentPayload {
   attemptId: string;
+  sessionTag: string;
+  issuedAt: number;
 }
 
 interface TrackerMatchAckPayload {
   rendezvousId: string;
   fromAttemptId: string;
+  fromSessionTag: string;
+  toSessionTag: string;
+  issuedAt: number;
 }
 
 interface TrackerOfferCodePayload {
   rendezvousId: string;
   code: string;
+  fromSessionTag: string;
+  toSessionTag: string;
+  issuedAt: number;
 }
 
 interface TrackerAnswerCodePayload {
   rendezvousId: string;
   code: string;
+  fromSessionTag: string;
+  toSessionTag: string;
+  issuedAt: number;
 }
 
 function encodeTrackerPayload<T>(payload: T): string {
@@ -302,8 +315,13 @@ function makeIntentPayloads(
   peerId: string,
   offerId: string,
   attemptId: string,
+  sessionTag: string,
 ): string[] {
-  const encoded = encodeTrackerPayload<TrackerIntentPayload>({ attemptId });
+  const encoded = encodeTrackerPayload<TrackerIntentPayload>({
+    attemptId,
+    sessionTag,
+    issuedAt: Date.now(),
+  });
   return infoHashes.map((h) => JSON.stringify({
     action: "announce",
     info_hash: h,
@@ -326,6 +344,8 @@ function makeMatchAckPayload(
   offerId: string,
   rendezvousId: string,
   fromAttemptId: string,
+  fromSessionTag: string,
+  toSessionTag: string,
 ): string {
   return JSON.stringify({
     action: "announce",
@@ -334,7 +354,13 @@ function makeMatchAckPayload(
     to_peer_id: toPeerId,
     answer: {
       type: "answer",
-      sdp: whisperSdp(TRACKER_MATCH_ACK_TYPE, encodeTrackerPayload<TrackerMatchAckPayload>({ rendezvousId, fromAttemptId })),
+      sdp: whisperSdp(TRACKER_MATCH_ACK_TYPE, encodeTrackerPayload<TrackerMatchAckPayload>({
+        rendezvousId,
+        fromAttemptId,
+        fromSessionTag,
+        toSessionTag,
+        issuedAt: Date.now(),
+      })),
     },
     offer_id: offerId,
   });
@@ -347,6 +373,8 @@ function makeOfferCodePayload(
   rendezvousId: string,
   offerId: string,
   offerCode: string,
+  fromSessionTag: string,
+  toSessionTag: string,
 ): string {
   return JSON.stringify({
     action: "announce",
@@ -357,7 +385,13 @@ function makeOfferCodePayload(
       offer_id: offerId,
       offer: {
         type: "offer",
-        sdp: padCode(whisperSdp(TRACKER_OFFER_CODE_TYPE, encodeTrackerPayload<TrackerOfferCodePayload>({ rendezvousId, code: offerCode }))),
+        sdp: padCode(whisperSdp(TRACKER_OFFER_CODE_TYPE, encodeTrackerPayload<TrackerOfferCodePayload>({
+          rendezvousId,
+          code: offerCode,
+          fromSessionTag,
+          toSessionTag,
+          issuedAt: Date.now(),
+        }))),
         whisper_session: rendezvousId,
         to_peer_id: toPeerId,
       },
@@ -372,6 +406,8 @@ function makeAnswerCodePayload(
   rendezvousId: string,
   offerId: string,
   answerCode: string,
+  fromSessionTag: string,
+  toSessionTag: string,
 ): string {
   return JSON.stringify({
     action: "announce",
@@ -380,7 +416,13 @@ function makeAnswerCodePayload(
     to_peer_id: toPeerId,
     answer: {
       type: "answer",
-      sdp: padCode(whisperSdp(TRACKER_ANSWER_CODE_TYPE, encodeTrackerPayload<TrackerAnswerCodePayload>({ rendezvousId, code: answerCode }))),
+      sdp: padCode(whisperSdp(TRACKER_ANSWER_CODE_TYPE, encodeTrackerPayload<TrackerAnswerCodePayload>({
+        rendezvousId,
+        code: answerCode,
+        fromSessionTag,
+        toSessionTag,
+        issuedAt: Date.now(),
+      }))),
       whisper_session: rendezvousId,
     },
     offer_id: offerId,
@@ -407,6 +449,12 @@ function compareAttemptOrder(
   remoteAttemptId: string,
 ): number {
   return `${localPeerId}:${localAttemptId}`.localeCompare(`${remotePeerId}:${remoteAttemptId}`);
+}
+
+function isFreshIssuedAt(issuedAt: unknown, now = Date.now()): issuedAt is number {
+  if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt)) return false;
+  const age = now - issuedAt;
+  return age >= -MAX_CLOCK_SKEW_MS && age <= SIMULTANEOUS_MESSAGE_TTL_MS;
 }
 
 /* ── Shared helpers ──────────────────────────────────────── */
@@ -721,6 +769,7 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
   const hashes = await deriveInfoHashes(opts.phrase);
   const peerId = randomBinId();
   const attemptId = randomBinId();
+  const sessionTag = randomBinId();
   const intentOfferId = randomBinId();
   const seenMessages = new Set<string>();
 
@@ -737,6 +786,8 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
 
     let lockPeerId = "";
     let lockAttemptId = "";
+    let lockPeerSessionTag = "";
+    let lockIssuedAt = 0;
     let lockInfoHash = "";
     let rendezvousId = "";
     let currentOfferCode: string | null = null;
@@ -777,10 +828,33 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       }
     };
 
-    const lockPeer = (remotePeerId: string, remoteAttemptId: string, infoHash: string): boolean => {
-      if (lockPeerId && (lockPeerId !== remotePeerId || lockAttemptId !== remoteAttemptId)) return false;
+    const lockPeer = (
+      remotePeerId: string,
+      remoteAttemptId: string,
+      remoteSessionTag: string,
+      infoHash: string,
+      issuedAt: number,
+    ): boolean => {
+      if (!remotePeerId || !remoteAttemptId || !remoteSessionTag) return false;
+      if (!lockPeerId) {
+        lockPeerId = remotePeerId;
+        lockAttemptId = remoteAttemptId;
+        lockPeerSessionTag = remoteSessionTag;
+        lockIssuedAt = issuedAt;
+        lockInfoHash = infoHash || hashes[0];
+        rendezvousId = createRendezvousId(peerId, attemptId, remotePeerId, remoteAttemptId);
+        opts.callbacks.onLog("relay attempt locked to peer");
+        return true;
+      }
+      if (lockPeerId !== remotePeerId) return false;
+      if (lockPeerSessionTag === remoteSessionTag) return true;
+      if (offerCreationStarted || acceptStarted) return false;
+      if (issuedAt <= lockIssuedAt) return false;
+      opts.callbacks.onLog("replacing locked peer with newer relay attempt");
       lockPeerId = remotePeerId;
       lockAttemptId = remoteAttemptId;
+      lockPeerSessionTag = remoteSessionTag;
+      lockIssuedAt = issuedAt;
       lockInfoHash = infoHash || hashes[0];
       rendezvousId = createRendezvousId(peerId, attemptId, remotePeerId, remoteAttemptId);
       return true;
@@ -792,12 +866,21 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       }
       if (role === "offerer" && realOfferId && lockPeerId && rendezvousId && currentOfferCode) {
         return announceHashes.map((infoHash) =>
-          makeOfferCodePayload(infoHash, peerId, lockPeerId, rendezvousId, realOfferId, currentOfferCode!));
+          makeOfferCodePayload(
+            infoHash,
+            peerId,
+            lockPeerId,
+            rendezvousId,
+            realOfferId,
+            currentOfferCode!,
+            sessionTag,
+            lockPeerSessionTag,
+          ));
       }
       if (role === "answerer") {
         return makeTrackerPresencePayloads(announceHashes, peerId);
       }
-      return makeIntentPayloads(announceHashes, peerId, intentOfferId, attemptId);
+      return makeIntentPayloads(announceHashes, peerId, intentOfferId, attemptId, sessionTag);
     };
 
     const buildRelayHandle = (): TrackerRelayHandle => ({
@@ -846,6 +929,14 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       },
     });
 
+    const logDifferentSession = (): void => {
+      opts.callbacks.onLog("ignoring relay payload for a different session");
+    };
+
+    const logStaleRelayIntent = (): void => {
+      opts.callbacks.onLog("ignoring stale relay intent");
+    };
+
     const startOfferCreation = (): void => {
       if (offerCreationStarted || !opts.createOfferCode || !lockPeerId || !lockInfoHash || !rendezvousId) return;
       offerCreationStarted = true;
@@ -880,17 +971,30 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : hashes[0];
       const remoteOfferId = String(msg.offer_id ?? "");
 
-      if (!payload?.attemptId || !remotePeerId || !remoteOfferId) return;
+      if (!payload?.attemptId || !payload.sessionTag || !isFreshIssuedAt(payload.issuedAt)) {
+        logStaleRelayIntent();
+        return;
+      }
+      if (!remotePeerId || !remoteOfferId) return;
       if (remotePeerId === peerId) return;
       if (toPeerId && toPeerId !== peerId) return;
-      if (!rememberSeen(seenMessages, `intent|${remotePeerId}|${remoteOfferId}|${payload.attemptId}`)) return;
-      if (!lockPeer(remotePeerId, payload.attemptId, infoHash)) return;
+      if (!rememberSeen(seenMessages, `intent|${remotePeerId}|${remoteOfferId}|${payload.attemptId}|${payload.sessionTag}`)) return;
+      if (!lockPeer(remotePeerId, payload.attemptId, payload.sessionTag, infoHash, payload.issuedAt)) return;
 
       const becomeAnswerer = (): void => {
         role = "answerer";
         opts.callbacks.onStatus("found your peer!");
         opts.callbacks.onLog(opts.mode === "flare-listener" ? "flare accepted peer" : "peer matched, waiting for offer");
-        pool?.sendAll([makeMatchAckPayload(lockInfoHash, peerId, lockPeerId, remoteOfferId, rendezvousId, attemptId)]);
+        pool?.sendAll([makeMatchAckPayload(
+          lockInfoHash,
+          peerId,
+          lockPeerId,
+          remoteOfferId,
+          rendezvousId,
+          attemptId,
+          sessionTag,
+          lockPeerSessionTag,
+        )]);
       };
 
       if (opts.mode === "flare-listener") {
@@ -938,11 +1042,23 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       const toPeerId = String(msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
 
-      if (!payload?.rendezvousId || !payload.fromAttemptId) return;
+      if (!payload?.rendezvousId || !payload.fromAttemptId || !payload.fromSessionTag || !payload.toSessionTag) return;
+      if (!isFreshIssuedAt(payload.issuedAt)) {
+        logStaleRelayIntent();
+        return;
+      }
       if (!remotePeerId || remotePeerId === peerId) return;
       if (toPeerId && toPeerId !== peerId) return;
+      if (payload.toSessionTag !== sessionTag) {
+        logDifferentSession();
+        return;
+      }
+      if (lockPeerId && lockPeerSessionTag && payload.fromSessionTag !== lockPeerSessionTag) {
+        logDifferentSession();
+        return;
+      }
       if (incomingOfferId !== intentOfferId) return;
-      if (!lockPeer(remotePeerId, payload.fromAttemptId, typeof msg.info_hash === "string" ? msg.info_hash : hashes[0])) return;
+      if (!lockPeer(remotePeerId, payload.fromAttemptId, payload.fromSessionTag, typeof msg.info_hash === "string" ? msg.info_hash : hashes[0], payload.issuedAt)) return;
       if (payload.rendezvousId !== rendezvousId) return;
 
       role = "offerer";
@@ -960,9 +1076,21 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       const toPeerId = String(offer.to_peer_id ?? msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
 
-      if (!payload?.rendezvousId || !payload.code) return;
+      if (!payload?.rendezvousId || !payload.code || !payload.fromSessionTag || !payload.toSessionTag) return;
+      if (!isFreshIssuedAt(payload.issuedAt)) {
+        logStaleRelayIntent();
+        return;
+      }
       if (!remotePeerId || remotePeerId !== lockPeerId) return;
       if (toPeerId && toPeerId !== peerId) return;
+      if (payload.toSessionTag !== sessionTag) {
+        logDifferentSession();
+        return;
+      }
+      if (payload.fromSessionTag !== lockPeerSessionTag) {
+        logDifferentSession();
+        return;
+      }
       if (payload.rendezvousId !== rendezvousId) return;
       if (!BASE64URL_RE.test(payload.code) || payload.code.length < MIN_CODE_LEN) return;
 
@@ -973,7 +1101,16 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       void opts.acceptOfferCode(payload.code)
         .then((answerCode) => {
           if (settled) return;
-          pool?.sendAll([makeAnswerCodePayload(lockInfoHash, peerId, lockPeerId, rendezvousId, realOfferId, answerCode)]);
+          pool?.sendAll([makeAnswerCodePayload(
+            lockInfoHash,
+            peerId,
+            lockPeerId,
+            rendezvousId,
+            realOfferId,
+            answerCode,
+            sessionTag,
+            lockPeerSessionTag,
+          )]);
           opts.callbacks.onStatus("connecting directly...");
           finish({ role: "answerer", relay: buildRelayHandle() });
         })
@@ -993,9 +1130,21 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       const toPeerId = String(msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
 
-      if (!payload?.rendezvousId || !payload.code) return;
+      if (!payload?.rendezvousId || !payload.code || !payload.fromSessionTag || !payload.toSessionTag) return;
+      if (!isFreshIssuedAt(payload.issuedAt)) {
+        logStaleRelayIntent();
+        return;
+      }
       if (!remotePeerId || remotePeerId !== lockPeerId) return;
       if (toPeerId && toPeerId !== peerId) return;
+      if (payload.toSessionTag !== sessionTag) {
+        logDifferentSession();
+        return;
+      }
+      if (payload.fromSessionTag !== lockPeerSessionTag) {
+        logDifferentSession();
+        return;
+      }
       if (incomingOfferId !== realOfferId) return;
       if (payload.rendezvousId !== rendezvousId) return;
       if (!BASE64URL_RE.test(payload.code) || payload.code.length < MIN_CODE_LEN) return;
