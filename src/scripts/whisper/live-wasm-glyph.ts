@@ -104,7 +104,15 @@
  * GlyphStreamDecoder reconstructs points from each block.
  */
 
-import { encode0D, decode0D, createInstance } from './live-wasm-logos';
+import { encode0D, decode0D, createInstance, type LogosCodec } from './live-wasm-logos';
+
+// cached Logos instance for micro trial comparison. avoids recompiling
+// the WASM module per block (~1-5ms saved per micro trial).
+let _microLogos: LogosCodec | null = null;
+function getMicroLogos(): LogosCodec {
+    if (!_microLogos) _microLogos = createInstance();
+    return _microLogos;
+}
 
 export const GLYPH_BLOCK_SIZE = 16;
 
@@ -325,8 +333,11 @@ export class GlyphCodec {
         const blocks: GlyphBlock[] = [];
         let prevKR = prev?.kR ?? LIN_KR, prevKI = prev?.kI ?? LIN_KI;
         let prevGR = prev?.gR ?? LIN_GR, prevGI = prev?.gI ?? LIN_GI;
-        let prevBlockStart = -1, prevBlockLen = 0; // for backward-adaptive fit
+        let prevBlockStart = -1, prevBlockLen = 0;
         let hasPrev = !!prev;
+        // preallocated per-block buffers (max block = GLYPH_BLOCK_SIZE × CH)
+        const _residBuf = new Int32Array(GLYPH_BLOCK_SIZE * CH);
+        const _microBuf = new Int32Array(GLYPH_BLOCK_SIZE * 2);
 
         for (let i = 2; i < nPts; i += GLYPH_BLOCK_SIZE) {
             const len = Math.min(GLYPH_BLOCK_SIZE, nPts - i);
@@ -346,8 +357,10 @@ export class GlyphCodec {
             const lErr = gval(m.errSum);
 
             // repeat: reuse previous block's coefficients (zero overhead).
+            // skip when previous was linear — repeat of linear = linear.
             let rCost = Infinity, rErr = Infinity;
-            if (hasPrev) {
+            const prevWasNonLinear = hasPrev && (prevKR !== LIN_KR || prevKI !== LIN_KI || prevGR !== LIN_GR || prevGI !== LIN_GI);
+            if (prevWasNonLinear) {
                 sval(m.kR, prevKR); sval(m.kI, prevKI);
                 sval(m.gR, prevGR); sval(m.gI, prevGI);
                 rCost = m.encodeBlock(i, len, GlyphMode.REPEAT);
@@ -391,60 +404,78 @@ export class GlyphCodec {
             // subtract 8 and add actual varint delta cost.
             const hAdjCost = hCost - 8 + coeffCost;
 
-            // pick cheapest mode
+            // pick cheapest mode. track the last trial that wrote RESID to skip
+            // redundant re-encode when the winner is already in the buffer.
+            // trial order: harmonic → linear → repeat → backward
+            // last writer: backward > repeat > linear (harmonic is before linear)
             let bestCost = hAdjCost, bestErr = hErr, bestMode = GlyphMode.HARMONIC;
+            let lastResidWriter = -1; // -1 = harmonic, 0 = linear, 1 = repeat, 2 = backward
             if (lCost < bestCost || (lCost === bestCost && lErr <= bestErr)) {
                 bestCost = lCost; bestErr = lErr; bestMode = GlyphMode.LINEAR;
             }
+            lastResidWriter = 0; // linear was the last unconditional write
             if (rCost < bestCost || (rCost === bestCost && rErr <= bestErr)) {
                 bestCost = rCost; bestErr = rErr; bestMode = GlyphMode.REPEAT;
             }
-            // only accept backward if residual error isn't much worse than harmonic.
-            // backward saves coefficient bytes but if the prediction is bad, the
-            // larger residuals outweigh the savings. gate at 2x harmonic error.
+            if (prevWasNonLinear) lastResidWriter = 1; // repeat ran after linear
             if (bCost < bestCost && bErr <= hErr * 2) {
                 bestCost = bCost; bestErr = bErr; bestMode = GlyphMode.BACKWARD;
             }
+            if (prevBlockStart >= 0 && prevBlockLen >= 3) lastResidWriter = 2;
 
-            // re-encode the winner to populate RESID
+            // re-encode only if the winner isn't already the last RESID writer
             let useKR = 0, useKI = 0, useGR = 0, useGI = 0;
+            const needReencode = !(
+                (bestMode === GlyphMode.LINEAR && lastResidWriter === 0) ||
+                (bestMode === GlyphMode.REPEAT && lastResidWriter === 1) ||
+                (bestMode === GlyphMode.BACKWARD && lastResidWriter === 2)
+            );
             if (bestMode === GlyphMode.HARMONIC) {
                 sval(m.kR, hKR); sval(m.kI, hKI);
                 sval(m.gR, hGR); sval(m.gI, hGI);
                 m.encodeBlock(i, len, GlyphMode.HARMONIC);
                 useKR = hKR; useKI = hKI; useGR = hGR; useGI = hGI;
             } else if (bestMode === GlyphMode.BACKWARD) {
-                sval(m.kR, bKR); sval(m.kI, bKI);
-                sval(m.gR, bGR); sval(m.gI, bGI);
-                m.encodeBlock(i, len, GlyphMode.HARMONIC);
                 useKR = bKR; useKI = bKI; useGR = bGR; useGI = bGI;
+                if (needReencode) {
+                    sval(m.kR, bKR); sval(m.kI, bKI);
+                    sval(m.gR, bGR); sval(m.gI, bGI);
+                    m.encodeBlock(i, len, GlyphMode.HARMONIC);
+                }
             } else if (bestMode === GlyphMode.REPEAT) {
-                sval(m.kR, prevKR); sval(m.kI, prevKI);
-                sval(m.gR, prevGR); sval(m.gI, prevGI);
-                m.encodeBlock(i, len, GlyphMode.REPEAT);
                 useKR = prevKR; useKI = prevKI; useGR = prevGR; useGI = prevGI;
+                if (needReencode) {
+                    sval(m.kR, prevKR); sval(m.kI, prevKI);
+                    sval(m.gR, prevGR); sval(m.gI, prevGI);
+                    m.encodeBlock(i, len, GlyphMode.REPEAT);
+                }
             } else {
-                m.encodeBlock(i, len, GlyphMode.LINEAR);
+                if (needReencode) m.encodeBlock(i, len, GlyphMode.LINEAR);
             }
 
-            // copy primary residuals
+            // copy primary residuals + detect pressure in one pass
             const residuals = new Int32Array(len * CH);
-            for (let j = 0; j < len * CH; j++) residuals[j] = heap[residOff + j];
+            let hasPressure = false;
+            for (let j = 0; j < len; j++) {
+                const off = j * CH;
+                residuals[off] = heap[residOff + off];
+                residuals[off + 1] = heap[residOff + off + 1];
+                residuals[off + 2] = heap[residOff + off + 2];
+                residuals[off + 3] = heap[residOff + off + 3];
+                residuals[off + 4] = heap[residOff + off + 4];
+                if (residuals[off + 2] !== 0) hasPressure = true;
+            }
             const baseCost = bestCost;
 
             // ── phase 2: trial v2 features on top of the winner ──
-
+            // skip feature trials when residuals are negligible
             let features = 0;
             let scK = 0, scG = 0;
             let cplW = 0;
             let mkR = 0, mkI = 0, mgR = 0, mgI = 0;
             let microResiduals: Int32Array | null = null;
 
-            // check if pressure channel is active
-            let hasPressure = false;
-            for (let j = 0; j < len; j++) {
-                if (residuals[j * CH + 2] !== 0) { hasPressure = true; break; }
-            }
+            if (baseCost > 4) {
 
             // magnitude sum of active channels — proxy for entropy.
             // smaller zigzag values → more concentrated around zero → better Logos.
@@ -499,9 +530,12 @@ export class GlyphCodec {
                 if (bestScCost < baseCost) {
                     features |= FEAT_SIDECAR;
                     scK = bestScK; scG = bestScG;
-                    sval(m.kR, useKR); sval(m.kI, useKI);
-                    sval(m.gR, useGR); sval(m.gI, useGI);
-                    m.encodeBlockSc(i, len, bestMode, scK, scG);
+                    // re-encode only if winner wasn't the last trial (indep)
+                    if (bestScK !== indepK || bestScG !== indepG) {
+                        sval(m.kR, useKR); sval(m.kI, useKI);
+                        sval(m.gR, useGR); sval(m.gI, useGI);
+                        m.encodeBlockSc(i, len, bestMode, scK, scG);
+                    }
                     for (let j = 0; j < len * CH; j++) residuals[j] = heap[residOff + j];
                 } else {
                     for (let j = 0; j < len * CH; j++) heap[residOff + j] = residuals[j];
@@ -516,19 +550,13 @@ export class GlyphCodec {
                 if (trialCplW !== 0) {
                     sval(m.kR, useKR); sval(m.kI, useKI);
                     sval(m.gR, useGR); sval(m.gI, useGI);
-                    m.encodeBlockCpl(i, len, bestMode, trialCplW);
-
-                    sval(m.kR, useKR); sval(m.kI, useKI);
-                    sval(m.gR, useGR); sval(m.gI, useGI);
                     const cplCost = m.encodeBlockCpl(i, len, bestMode, trialCplW);
                     const cplOverhead = vszCost(zzEnc(trialCplW));
 
                     if (cplCost + cplOverhead < baseCost) {
                         features |= FEAT_COUPLING;
                         cplW = trialCplW;
-                        sval(m.kR, useKR); sval(m.kI, useKI);
-                        sval(m.gR, useGR); sval(m.gI, useGI);
-                        m.encodeBlockCpl(i, len, bestMode, cplW);
+                        // RESID already populated by the trial call above
                         for (let j = 0; j < len * CH; j++) residuals[j] = heap[residOff + j];
                     } else {
                         for (let j = 0; j < len * CH; j++) heap[residOff + j] = residuals[j];
@@ -551,19 +579,19 @@ export class GlyphCodec {
                 if (trialMkR !== 0 || trialMkI !== 0 || trialMgR !== 0 || trialMgI !== 0) {
                     m.microEnc(len);
 
-                    // build trial byte streams: original x,y vs micro x,y
-                    // use isolated Logos instances for fair comparison
-                    const origBuf: number[] = [];
-                    for (let j = 0; j < len; j++) origBuf.push(residuals[j * CH + 0] & 0xFF);
-                    for (let j = 0; j < len; j++) origBuf.push(residuals[j * CH + 1] & 0xFF);
+                    // build trial byte streams into preallocated buffers
+                    const trialLen = len * 2;
+                    const origArr = _microBuf.subarray(0, 0); // reuse _microBuf's underlying buffer
+                    const origU8 = new Uint8Array(trialLen);
+                    const microU8 = new Uint8Array(trialLen);
+                    for (let j = 0; j < len; j++) origU8[j] = residuals[j * CH] & 0xFF;
+                    for (let j = 0; j < len; j++) origU8[len + j] = residuals[j * CH + 1] & 0xFF;
+                    for (let j = 0; j < len; j++) microU8[j] = heap[resid2Off + j * 2] & 0xFF;
+                    for (let j = 0; j < len; j++) microU8[len + j] = heap[resid2Off + j * 2 + 1] & 0xFF;
 
-                    const microBuf: number[] = [];
-                    for (let j = 0; j < len; j++) microBuf.push(heap[resid2Off + j * 2] & 0xFF);
-                    for (let j = 0; j < len; j++) microBuf.push(heap[resid2Off + j * 2 + 1] & 0xFF);
-
-                    const trial = createInstance();
-                    const origSize = trial.encode0D(new Uint8Array(origBuf), len).length;
-                    const microSize = trial.encode0D(new Uint8Array(microBuf), len).length;
+                    const trial = getMicroLogos();
+                    const origSize = trial.encode0D(origU8, len).length;
+                    const microSize = trial.encode0D(microU8, len).length;
 
                     // micro coefficient wire cost
                     const microCoeffCost = vszCost(zzEnc(trialMkR)) + vszCost(zzEnc(trialMkI)) +
@@ -618,6 +646,8 @@ export class GlyphCodec {
                     for (let j = 0; j < len * CH; j++) heap[residOff + j] = residuals[j];
                 }
             }
+
+            } // end if (baseCost > 4) feature trial gate
 
             // ── build block ──
 

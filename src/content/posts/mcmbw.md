@@ -75,9 +75,9 @@ that's smaller than most images on a webpage. smaller than a single minecraft te
 
 no dependencies. no frameworks. just java doing java things.
 
-## the vibe
+## the ViBe
 
-i wanted something that felt invisible. run it once and completely forget about it. your server stays updated, backed up, and running. Or just running if you don't care for auto-updates. 
+i wanted something that felt invisible. something you can run once and completely forget about. your server stays updated, backed up, and running. *Or just running if you don't care for auto-updates.*
 
 no notifications. no emails. no "upgrade to pro for more features." Just a [tiny](https://en.wikipedia.org/wiki/Waist) tool that does one job well.
 

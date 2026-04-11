@@ -82,20 +82,23 @@
  * slow multiscale field, carried explicitly on the wire with its block length,
  * and it is selected by the same downstream objective as the carrier lattice.
  *
- * measured position (FM chirp 1s mono @ 48kHz, 2026-04-08):
- *     q5    1.4 KB    7.7 dB
- *     q25  11.9 KB   32.5 dB
- *     q50  15.3 KB   54.0 dB
- *     q80  24.0 KB   79.2 dB
- *     q95  28.6 KB   91.3 dB
+ * measured position (real audio, Beethoven piano 15s mono @ 48kHz, 2026-04-10):
+ *     q20   81 kbps   21.0 dB
+ *     q40  102 kbps   35.2 dB
+ *     q60  142 kbps   49.3 dB
+ *     q80  198 kbps   65.3 dB
+ *     q90  227 kbps   73.5 dB
  *
- * speech-like 1s mono @ 48kHz:
- *     q80  20.7 KB   80.5 dB (backward-adaptive: -17.4% vs forward-only)
+ * real speech stereo (clean studio, 6.1s @ 48kHz):
+ *     q80  358 kbps   62.2 dB   0.0% channel balance drift
+ *
+ * encode speed (1s speech-like mono, sub-real-time at Q30-Q95):
+ *     q55  0.82x RT   q80  0.91x RT   decode  0.26x RT
  *
  * lossless modes (440Hz sine, 1s @ 48kHz):
- *   bitDepth=16: 1176B (1.1KB), bit-exact
- *   bitDepth=24: 2244B (2.2KB), bit-exact
- *   q=100 is raw float32 passthrough.
+ *   bitDepth=16: bit-exact, ~5 kbps
+ *   bitDepth=24: bit-exact, ~11 kbps
+ *   q=100 is raw float32 passthrough (1538 kbps).
  *
  * comments in this file should stay descriptive, lowercase, and tied to the
  * implemented math. if a benchmark or architectural note changes, update this
@@ -2005,10 +2008,11 @@ function quantizeScaledWithOrbitalGuide(
             }
             continue;
         }
+        const invG = 1 / G; // reciprocal: one division per block, not per sample
         let obsEnergy = 0;
         let count = 0;
         for (let i = end - 1; i >= start; i--) {
-            const pred = (K * n1 - n2) / G;
+            const pred = (K * n1 - n2) * invG;
             backwardPred[i] = pred;
             const err = coarse[i] - pred;
             obsEnergy += err * err;
@@ -2025,6 +2029,9 @@ function quantizeScaledWithOrbitalGuide(
     let orbitalDistEnergy = 0;
     e1 = 0; e2 = 0;
     p1 = 0; p2 = 0;
+    // preallocate trellis buffers outside the per-block loop
+    const _rawBlock = new Float64Array(BLOCK_LEN);
+    const _backBlock = new Float64Array(BLOCK_LEN);
     for (let b = 0; b < guide.length; b++) {
         const { K, G } = guide[b];
         const w = weights[b];
@@ -2032,10 +2039,11 @@ function quantizeScaledWithOrbitalGuide(
         const start = b * BLOCK_LEN;
         const end = Math.min(start + BLOCK_LEN, numSamples);
         if (w >= 1) {
-            const rawBlock = new Float64Array(end - start);
-            for (let i = start; i < end; i++) rawBlock[i - start] = rawScaled[i];
-            const backBlock = wb > 0 ? Float64Array.from(backwardPred.subarray(start, end)) : undefined;
-            const best = trellisQuantizeBlock(rawBlock, K, G, w, nsK, nsG, shapeNoise, p1, p2, e1, e2, backBlock, wb);
+            const bLen = end - start;
+            for (let i = 0; i < bLen; i++) _rawBlock[i] = rawScaled[start + i];
+            let backBlock: Float64Array | undefined;
+            if (wb > 0) { for (let i = 0; i < bLen; i++) _backBlock[i] = backwardPred[start + i]; backBlock = _backBlock; }
+            const best = trellisQuantizeBlock(_rawBlock.subarray(0, bLen), K, G, w, nsK, nsG, shapeNoise, p1, p2, e1, e2, backBlock?.subarray(0, bLen), wb);
             orbital.set(best.seq, start);
             orbitalDistEnergy += best.cost;
             p1 = best.q1;
@@ -2043,14 +2051,15 @@ function quantizeScaledWithOrbitalGuide(
             e1 = best.e1;
             e2 = best.e2;
         } else {
+            const invWSum = wb > 0 ? 1 / (1 + w + wb) : 1 / (1 + w);
             for (let i = start; i < end; i++) {
                 const raw = rawScaled[i];
                 const s = shapeNoise ? raw + nsK * e1 - nsG * e2 : raw;
                 const pred = K * p1 - G * p2;
                 const predBack = backwardPred[i];
                 const target = wb > 0
-                    ? (s + w * pred + wb * predBack) / (1 + w + wb)
-                    : (s + w * pred) / (1 + w);
+                    ? (s + w * pred + wb * predBack) * invWSum
+                    : (s + w * pred) * invWSum;
                 const qi = clampToWaveformNeighborhood(quantizeToInt(target), s);
                 const err = s - qi;
                 if (shapeNoise) { e2 = e1; e1 = err; }
@@ -2140,6 +2149,7 @@ function quantizeScaledWithOrbitalGuide(
         const w = weights[b];
         const start = b * BLOCK_LEN;
         const end = Math.min(start + BLOCK_LEN, n);
+        const invW1 = 1 / (1 + w);
         for (let i = start; i < end; i++) {
             const raw = rawScaled[i];
             const s = shapeNoise ? raw + nsK * e1 - nsG * e2 : raw;
@@ -2147,7 +2157,7 @@ function quantizeScaledWithOrbitalGuide(
             const wf = fractalWeight[i];
             const target = wf > 0
                 ? (s + w * pred + fractalSum[i]) / (1 + w + wf)
-                : (s + w * pred) / (1 + w);
+                : (s + w * pred) * invW1;
             const qi = clampToWaveformNeighborhood(quantizeToInt(target), s);
             const err = s - qi;
             if (shapeNoise) { e2 = e1; e1 = s - qi; }
@@ -2658,7 +2668,8 @@ function scoreQuantizedChannel(
     }
 
     // projection: refine decoded integers within quantization cells
-    const projectedCarrier = Float32Array.from(reconstructed);
+    const projectedCarrier = new Float32Array(n);
+    for (let i = 0; i < n; i++) projectedCarrier[i] = reconstructed[i];
     sanitizeProjectionToCell(projectedCarrier, reconstructed);
     varOrderCellProject(projectedCarrier, reconstructed, varBlocks, blockLen, maxOrder);
     sanitizeProjectionToCell(projectedCarrier, reconstructed);
@@ -2688,7 +2699,7 @@ function scoreQuantizedChannel(
 
     return {
         rateBits,
-        objective: rateBits + 0.5 * n * Math.log2(Math.max(mse / n, 1e-12)),
+        objective: rateBits + 0.5 * (n * Math.log2(Math.max(mse, 1e-12)) - n * Math.log2(n)),
         projectedCarrier,
     };
 }
@@ -2823,24 +2834,35 @@ function dequantRC(q: number): number {
 // shared empty typed arrays to avoid per-call allocation of zero-length arrays
 const _emptyF64 = new Float64Array(0);
 
-/** Burg's method via WASM SIMD burg_lattice (f64x2 accumulation + lattice update). */
+/** Burg's method: forward-backward lattice for reflection coefficients. */
 function burgAnalysis(
     data: Int32Array, start: number, end: number, maxOrder: number,
-    outRC?: Float64Array, _tmpFwd?: Float64Array, _tmpBwd?: Float64Array,
+    outRC?: Float64Array,
 ): Float64Array {
     const n = end - start;
     if (n < maxOrder * 2 + 1) return _emptyF64;
-    const w = getBurgWasm();
-    burgLoadData(w, data, end);
-    const computed = w.burg_lattice(start, n, maxOrder);
-    if (computed === 0) return _emptyF64;
-    const rc = burgReadRC(w, computed);
-    if (outRC) {
-        outRC.fill(0, 0, maxOrder);
-        outRC.set(rc);
-        return outRC;
+    const refCoeffs = outRC ?? new Float64Array(maxOrder);
+    if (outRC) refCoeffs.fill(0, 0, maxOrder);
+    const fwd = new Float64Array(n);
+    const bwd = new Float64Array(n);
+    for (let i = 0; i < n; i++) { fwd[i] = data[start + i]; bwd[i] = data[start + i]; }
+    for (let m = 0; m < maxOrder; m++) {
+        let num = 0, den = 0;
+        for (let i = m + 1; i < n; i++) {
+            num += fwd[i] * bwd[i - 1];
+            den += fwd[i] * fwd[i] + bwd[i - 1] * bwd[i - 1];
+        }
+        if (den < 1e-10) break;
+        let k = -2 * num / den;
+        k = Math.max(-0.999, Math.min(0.999, k));
+        refCoeffs[m] = k;
+        for (let i = n - 1; i >= m + 1; i--) {
+            const f = fwd[i];
+            fwd[i] = f + k * bwd[i - 1];
+            bwd[i] = bwd[i - 1] + k * f;
+        }
     }
-    return rc;
+    return refCoeffs;
 }
 
 /** Levinson recursion: reflection coefficients to LP coefficients.
@@ -2923,19 +2945,19 @@ export function varOrderFitAllBlocks(
     const _qkBuf = new Int16Array(maxOrder);
     const _dqkBuf = new Float64Array(maxOrder);
     const _burgRC = new Float64Array(maxOrder);
-    const maxBurgN = Math.min(numSamples, BACKWARD_HIST_BLOCKS * blockLen);
-    const _burgFwd = new Float64Array(maxBurgN);
-    const _burgBwd = new Float64Array(maxBurgN);
     const state = new Float64Array(maxOrder);
     const _savedSt = new Float64Array(maxOrder);
     const _bestQkBuf = new Int16Array(maxOrder);
+    const w = getBurgWasm();
+    burgLoadData(w, data, numSamples);
     for (let b = 0; b < numBlocks; b++) {
         const bStart = b * blockLen;
         const bEnd = Math.min(bStart + blockLen, numSamples);
         const bLen = bEnd - bStart;
+        const invBLen = 1 / bLen;
 
         const maxOrd = Math.min(maxOrder, Math.floor(bLen / 3));
-        const rawK = maxOrd >= 1 ? burgAnalysis(data, bStart, bEnd, maxOrd, _burgRC, _burgFwd, _burgBwd) : _emptyF64;
+        const rawK = maxOrd >= 1 ? burgAnalysis(data, bStart, bEnd, maxOrd, _burgRC) : _emptyF64;
 
         let bestOrder = 0;
         let bestCost = Infinity;
@@ -2946,36 +2968,31 @@ export function varOrderFitAllBlocks(
         {
             let energy = 0;
             for (let i = bStart; i < bEnd; i++) energy += data[i] * data[i];
-            const errVar = Math.max(1, energy / bLen);
+            const errVar = Math.max(1, energy * invBLen);
             bestCost = bLen * Math.log2(errVar);
         }
 
-        // MDL early-out: stop after 3-4 non-improving orders (scales with maxOrd).
         const mdlPatience = maxOrd <= 8 ? 3 : 4;
         let noImproveRun = 0;
+        let coeffCost = 0;
         for (let tryOrder = 1; tryOrder <= maxOrd; tryOrder++) {
-            for (let m = 0; m < tryOrder; m++) {
-                _qkBuf[m] = quantRC(rawK[m]);
-                _dqkBuf[m] = dequantRC(_qkBuf[m]);
-            }
-            const a = reflToLP(_dqkBuf.subarray(0, tryOrder), tryOrder);
-            for (let m = 0; m < maxOrder; m++) _savedSt[m] = state[m];
-            let errEnergy = 0;
-            for (let i = 0; i < bLen; i++) {
-                const val = data[bStart + i];
-                let pred = 0;
-                for (let m = 0; m < tryOrder; m++) pred += a[m] * _savedSt[m];
-                const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
-                errEnergy += (val - roundPred) * (val - roundPred);
-                for (let m = tryOrder - 1; m > 0; m--) _savedSt[m] = _savedSt[m - 1];
-                _savedSt[0] = val;
-            }
-            const errVar = Math.max(1, errEnergy / bLen);
-            let coeffCost = 0;
-            for (let m = 0; m < tryOrder; m++) {
-                coeffCost += 2 + _log2rc[_qkBuf[m] < 0 ? -_qkBuf[m] : _qkBuf[m]];
-            }
-            const cost = coeffCost + bLen * Math.log2(errVar);
+            // quantize only the NEW coefficient at this order
+            _qkBuf[tryOrder - 1] = quantRC(rawK[tryOrder - 1]);
+            _dqkBuf[tryOrder - 1] = dequantRC(_qkBuf[tryOrder - 1]);
+            // write RC → WASM, refl_to_lp → A, copy A to _reflOut, copy state → SAVED, burg_trial
+            burgWriteRC(w, _dqkBuf, tryOrder);
+            w.refl_to_lp(tryOrder);
+            // copy LP from WASM A to _reflOut immediately after refl_to_lp
+            const wasmLP = new Float64Array(w.mem.buffer, BURG_A_OFF, tryOrder);
+            for (let m = 0; m < tryOrder; m++) _reflOut[m] = wasmLP[m];
+            const absQ = _qkBuf[tryOrder - 1] < 0 ? -_qkBuf[tryOrder - 1] : _qkBuf[tryOrder - 1];
+            coeffCost += 2 + _log2rc[absQ];
+            // write state and A to WASM, call burg_trial
+            burgLoadA(w, _reflOut, tryOrder);
+            const saved = new Float64Array(w.mem.buffer, BURG_SAVED_OFF, maxOrder);
+            for (let m = 0; m < maxOrder; m++) saved[m] = state[m];
+            const errEnergy = w.burg_trial(bStart, bLen, tryOrder);
+            const cost = coeffCost + bLen * Math.log2(Math.max(1, errEnergy * invBLen));
             if (cost < bestCost) {
                 bestCost = cost;
                 bestOrder = tryOrder;
@@ -2987,20 +3004,13 @@ export function varOrderFitAllBlocks(
             } else if (++noImproveRun >= mdlPatience) break;
         }
 
-        if (b > 0 && blocks[b - 1].order > 0) {
+        if (b > 0 && blocks[b - 1].order > 0 && blocks[b - 1].order !== VAR_REUSE_ORDER && !isBackwardOrder(blocks[b - 1].order)) {
             const prev = blocks[b - 1];
-            for (let m = 0; m < maxOrder; m++) _savedSt[m] = state[m];
-            let reuseEnergy = 0;
-            for (let i = 0; i < bLen; i++) {
-                const val = data[bStart + i];
-                let pred = 0;
-                for (let m = 0; m < prev.order; m++) pred += prev.a[m] * _savedSt[m];
-                const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
-                reuseEnergy += (val - roundPred) * (val - roundPred);
-                for (let m = prev.order - 1; m > 0; m--) _savedSt[m] = _savedSt[m - 1];
-                _savedSt[0] = val;
-            }
-            const reuseVar = Math.max(1, reuseEnergy / bLen);
+            burgLoadA(w, prev.a, prev.a.length);
+            const saved2 = new Float64Array(w.mem.buffer, BURG_SAVED_OFF, maxOrder);
+            for (let m = 0; m < maxOrder; m++) saved2[m] = state[m];
+            const reuseEnergy = w.burg_trial(bStart, bLen, prev.a.length);
+            const reuseVar = Math.max(1, reuseEnergy * invBLen);
             const reuseCost = bLen * Math.log2(reuseVar);
             if (reuseCost < bestCost) {
                 bestCost = reuseCost;
@@ -3019,24 +3029,20 @@ export function varOrderFitAllBlocks(
             const histN = bStart - histStart;
             const tryOrder = Math.min(bestOrder, Math.floor(histN / 3));
             if (tryOrder >= 1) {
-                const backK = burgAnalysis(data, histStart, bStart, tryOrder, _burgRC, _burgFwd, _burgBwd);
+                const backK = burgAnalysis(data, histStart, bStart, tryOrder, _burgRC);
                 for (let m = 0; m < tryOrder; m++) {
                     _qkBuf[m] = quantRC(backK[m]);
                     _dqkBuf[m] = dequantRC(_qkBuf[m]);
                 }
-                const a = reflToLP(_dqkBuf.subarray(0, tryOrder), tryOrder);
-                for (let m = 0; m < maxOrder; m++) _savedSt[m] = state[m];
-                let errEnergy = 0;
-                for (let i = 0; i < bLen; i++) {
-                    const val = data[bStart + i];
-                    let pred = 0;
-                    for (let m = 0; m < tryOrder; m++) pred += a[m] * _savedSt[m];
-                    const roundPred = pred >= 0 ? (pred + 0.5) | 0 : (pred - 0.5) | 0;
-                    errEnergy += (val - roundPred) * (val - roundPred);
-                    for (let m = tryOrder - 1; m > 0; m--) _savedSt[m] = _savedSt[m - 1];
-                    _savedSt[0] = val;
-                }
-                const errVar = Math.max(1, errEnergy / bLen);
+                burgWriteRC(w, _dqkBuf, tryOrder);
+                w.refl_to_lp(tryOrder);
+                const bkA = new Float64Array(w.mem.buffer, BURG_A_OFF, tryOrder);
+                for (let m = 0; m < tryOrder; m++) _reflOut[m] = bkA[m];
+                burgLoadA(w, _reflOut, tryOrder);
+                const saved3 = new Float64Array(w.mem.buffer, BURG_SAVED_OFF, maxOrder);
+                for (let m = 0; m < maxOrder; m++) saved3[m] = state[m];
+                const errEnergy = w.burg_trial(bStart, bLen, tryOrder);
+                const errVar = Math.max(1, errEnergy * invBLen);
                 let backPenalty = 0;
                 for (let m = 0; m < tryOrder; m++) {
                     backPenalty += 2 + _log2rc[_qkBuf[m] < 0 ? -_qkBuf[m] : _qkBuf[m]] * 0.5;
@@ -3728,11 +3734,16 @@ function estimateSubbandsCost(subbands: Int32Array[]): number {
     return total;
 }
 
+// c * log2(c) lookup: avoids Math.log2 in the entropy inner loop.
+// 4096 entries covers most histogram counts; rare large counts fall back to Math.log2.
+const _clog2c = new Float64Array(4096);
+for (let c = 1; c < 4096; c++) _clog2c[c] = c * Math.log2(c);
+function clog2c(c: number): number { return c < 4096 ? _clog2c[c] : c * Math.log2(c); }
+
 function estimatePlaneCost(residuals: Int32Array): number {
     const n = residuals.length;
     if (n === 0) return 0;
 
-    // single pass: branchless zigzag + max detection
     let maxZZ = 0;
     for (let i = 0; i < n; i++) {
         const v = residuals[i];
@@ -3740,27 +3751,26 @@ function estimatePlaneCost(residuals: Int32Array): number {
         if (zz > maxZZ) maxZZ = zz;
     }
     const planes = planeCount(maxZZ);
-    // precompute log2(n) to factor entropy: c*log2(c/n) = c*log2(c) - c*log2(n)
-    const log2n = Math.log2(n);
-    const log2n1 = n > 1 ? Math.log2(n - 1) : 0;
+    const nlog2n = n * Math.log2(n);
+    const n1log2n1 = n > 1 ? (n - 1) * Math.log2(n - 1) : 0;
 
     let totalBits = 0;
     for (let plane = 0; plane < planes; plane++) {
         const shift = plane * 8;
 
-        // order-0 entropy via branchless zigzag
         _ctx.ent.fill(0);
         for (let i = 0; i < n; i++) {
             _ctx.ent[(((residuals[i] >> 31) ^ (residuals[i] << 1)) >>> shift) & 0xFF]++;
         }
-        let h0 = 0;
+        // h0 = sum(c * log2(n/c)) = n*log2(n) - sum(c*log2(c))
+        let sumClogC = 0;
         for (let b = 0; b < 256; b++) {
             const c = _ctx.ent[b];
-            if (c > 0) h0 += c * log2n - c * Math.log2(c);
+            if (c > 0) sumClogC += clog2c(c);
         }
+        const h0 = nlog2n - sumClogC;
 
         if (plane === 0 && n >= 32) {
-            // XOR derivative entropy
             _ctx.ent.fill(0);
             let prev = (((residuals[0] >> 31) ^ (residuals[0] << 1)) >>> shift) & 0xFF;
             for (let i = 1; i < n; i++) {
@@ -3768,11 +3778,12 @@ function estimatePlaneCost(residuals: Int32Array): number {
                 _ctx.ent[cur ^ prev]++;
                 prev = cur;
             }
-            let hZ = 8;
+            let sumClogC2 = 0;
             for (let b = 0; b < 256; b++) {
                 const c = _ctx.ent[b];
-                if (c > 0) hZ += c * log2n1 - c * Math.log2(c);
+                if (c > 0) sumClogC2 += clog2c(c);
             }
+            const hZ = 8 + n1log2n1 - sumClogC2;
             totalBits += h0 < hZ ? h0 : hZ;
         } else {
             totalBits += h0;
