@@ -13,6 +13,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     GlyphCodec,
+    GlyphLane,
     GlyphMode,
     GlyphStreamEncoder,
     GlyphStreamDecoder,
@@ -81,6 +82,18 @@ function line(x0: number, y0: number, dx: number, dy: number, n: number): Int32A
     for (let i = 0; i < n; i++) {
         pts[i * CH] = Math.round(x0 + dx * i);
         pts[i * CH + 1] = Math.round(y0 + dy * i);
+        pts[i * CH + 2] = 16000;
+        pts[i * CH + 3] = 0;
+        pts[i * CH + 4] = 0;
+    }
+    return pts;
+}
+
+function quadraticStroke(n: number): Int32Array {
+    const pts = new Int32Array(n * CH);
+    for (let i = 0; i < n; i++) {
+        pts[i * CH] = 1000 + 18 * i + 7 * i * i;
+        pts[i * CH + 1] = 4000 - 12 * i + 5 * i * i;
         pts[i * CH + 2] = 16000;
         pts[i * CH + 3] = 0;
         pts[i * CH + 4] = 0;
@@ -273,7 +286,7 @@ describe("glyph codec: mode selection", () => {
 
     it("chooses harmonic or repeat for tight circles", () => {
         const pts = circle(5000, 5000, 5000, 2 + GLYPH_BLOCK_SIZE * 2);
-        const blocks = GlyphCodec.encode(pts);
+        const blocks = GlyphCodec.encode(pts, undefined, { adaptiveSegmentation: false });
         const [h, l, r] = countModes(blocks);
         assert.ok(l === 0, `tight circle should not use linear mode, got ${l} linear blocks`);
         assert.ok(h + r === blocks.length, "all blocks should be harmonic or repeat");
@@ -306,6 +319,26 @@ describe("glyph codec: mode selection", () => {
         assert.ok(ll > 0, "lines should produce linear blocks");
         assertExactRoundTrip(arcPts, "compound-arc");
         assertExactRoundTrip(linePts, "compound-line");
+    });
+});
+
+describe("glyph codec: primitive-bank lanes", () => {
+
+    it("selects the ballistic lane on quadratic strokes", () => {
+        const pts = quadraticStroke(2 + GLYPH_BLOCK_SIZE * 2);
+        const blocks = GlyphCodec.encode(pts);
+        assert.ok(blocks.some(b => b.lane === GlyphLane.BALLISTIC),
+            "quadratic stroke should trigger the ballistic lane");
+        assertExactRoundTrip(pts, "quadratic-ballistic");
+    });
+
+    it("segments a sharp within-block corner at a motion boundary", () => {
+        const pts = corner(2 + GLYPH_BLOCK_SIZE);
+        const blocks = GlyphCodec.encode(pts);
+        assert.ok(blocks.length >= 2, `expected at least 2 blocks, got ${blocks.length}`);
+        assert.ok(blocks[0].residuals.length / CH < GLYPH_BLOCK_SIZE,
+            "phase-aware segmentation should cut before the 16-point ceiling");
+        assertExactRoundTrip(pts, "segmented-corner");
     });
 });
 
@@ -1726,6 +1759,39 @@ describe("glyph codec: cross-block continuity", () => {
 
 describe("glyph codec: wire format robustness", () => {
 
+    it("uses the extended wire header when meta exceeds one byte", () => {
+        const blocks = Array.from({ length: 300 }, () => ({
+            lane: GlyphLane.DEFAULT,
+            mode: GlyphMode.LINEAR,
+            kR: 0,
+            kI: 0,
+            gR: 0,
+            gI: 0,
+            residuals: new Int32Array(CH),
+            features: 0,
+            scK: 0,
+            scG: 0,
+            cplW: 0,
+            mkR: 0,
+            mkI: 0,
+            mgR: 0,
+            mgI: 0,
+            microResiduals: null,
+        }));
+
+        const packed = GlyphCodec.pack(blocks);
+        assert.equal(packed[0], 0, "extended header should use zero raw-length sentinel");
+        assert.equal(packed[1], 0, "extended header should use zero raw-length sentinel");
+
+        const unpacked = GlyphCodec.unpack(packed);
+        assert.equal(unpacked.length, blocks.length, "extended header block count mismatch");
+        for (let i = 0; i < unpacked.length; i++) {
+            assert.equal(unpacked[i].lane, GlyphLane.DEFAULT);
+            assert.equal(unpacked[i].mode, GlyphMode.LINEAR);
+            assert.equal(unpacked[i].residuals.length, CH);
+        }
+    });
+
     it("truncated wire data does not crash (graceful degradation)", () => {
         const pts = handwriting(2 + GLYPH_BLOCK_SIZE * 3);
         const packed = GlyphCodec.pack(GlyphCodec.encode(pts));
@@ -1966,7 +2032,7 @@ describe("glyph codec: encoder/decoder agreement", () => {
         }
 
         // encode block by block manually and compare with batch encode
-        const batchBlocks = GlyphCodec.encode(pts);
+        const batchBlocks = GlyphCodec.encode(pts, undefined, { adaptiveSegmentation: false });
         // decode and verify
         assertExactRoundTrip(pts, "multi-block-heap");
 
@@ -1997,6 +2063,7 @@ describe("glyph codec: encoder/decoder agreement", () => {
 
             assert.equal(unpacked.length, blocks.length, "block count mismatch");
             for (let i = 0; i < blocks.length; i++) {
+                assert.equal(unpacked[i].lane, blocks[i].lane, `block ${i} lane mismatch`);
                 assert.equal(unpacked[i].mode, blocks[i].mode, `block ${i} mode mismatch`);
                 if (blocks[i].mode === GlyphMode.HARMONIC) {
                     assert.equal(unpacked[i].kR, blocks[i].kR, `block ${i} kR mismatch`);

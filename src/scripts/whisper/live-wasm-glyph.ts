@@ -1,24 +1,26 @@
 /**
- * live-wasm-glyph.ts — Whisper Glyph 7D Kinetic Stroke Codec (Woflo / MB)
+ * live-wasm-glyph.ts — Whisper Glyph 7D Online Ink Codec (Woflo / MB)
  *
- * models human pen strokes as a damped harmonic oscillator in the complex
- * plane. (x, y) coordinates form a single complex number z = x + iy.
- * the predictor for sample n:
+ * compresses time-ordered pen motion, not just final vector shape.
+ * (x, y) are the main path. pressure, tilt, azimuth ride alongside it.
+ * most blocks use a damped harmonic oscillator in the complex plane.
+ * short straight-ish runs can switch to a ballistic cubic predictor.
+ * main predictor for sample n:
  *
  *   z[n] = K · z[n-1] − G · z[n-2]
  *
- * K, G are complex coefficients fitted per 16-sample block via complex
- * least-squares (2×2 Hermitian normal equation, Cramer solution) with
- * Tikhonov regularization on the diagonal. after quantization to Q14,
- * the eigenvalue product and sum are clamped to the stability manifold
- * (|G| <= 1, |K| <= 2) so the oscillator never diverges.
+ * K, G are complex coefficients fitted per local block (up to 16 samples)
+ * via complex least-squares (2×2 Hermitian normal equation, Cramer
+ * solution) with Tikhonov regularization on the diagonal. after
+ * quantization to Q14, the eigenvalue product and sum are clamped to the
+ * stability manifold (|G| <= 1, |K| <= 2) so the oscillator never diverges.
  *
  * the seven dimensions:
  *   x  (explicit)  horizontal position, complex real part
  *   y  (explicit)  vertical position, complex imaginary part
- *   p  (explicit)  pressure / force, witness channel
- *   θ  (explicit)  tilt / altitude angle, witness channel
- *   φ  (explicit)  azimuth angle, witness channel
+ *   p  (explicit)  pressure / force side channel
+ *   θ  (explicit)  tilt / altitude angle side channel
+ *   φ  (explicit)  azimuth angle side channel
  *   t  (implicit)  time = sample index
  *   s  (implicit)  stroke identity = stream instance
  *
@@ -26,25 +28,26 @@
  * needs both K and G. curvature and damping live in the same algebraic
  * object: the eigenvalues λ₁, λ₂ of the characteristic equation
  * λ² − Kλ + G = 0 give the natural frequencies of the stroke segment.
- * the residuals are where intent departs from the hand's dynamics.
+ * the residuals cover what the fitted block law misses.
  *
  * ── prediction hierarchy ──────────────────────────────────────────────
  *
- * 7D input → complex oscillator → sidecar/coupling/delta → Logos (0D)
+ * 7D input → mode select → sidecar/coupling/delta → Logos (0D)
  *
- * the oscillator captures (x,y) oscillatory structure along time.
- * pressure, tilt, azimuth are witness channels of the same biomechanical
- * system — their prediction is derived from or coupled to the oscillator:
+ * the oscillator lane handles loops, ellipses, cursive swings, and other
+ * rhythmic segments. the ballistic lane handles short reaches, hooks,
+ * taps, and straighter runs where cubic extrapolation is cheaper.
+ * pressure, tilt, azimuth are coded with linear prediction, oscillator
+ * reuse, or an independent sidecar fit:
  *
  *   default:  c[n] = 2·c[n-1] − c[n-2]           (linear extrapolation)
  *   coupled:  c[n] = kR·c[n-1] − gR·c[n-2]       (oscillator eigenvalues)
  *   fitted:   c[n] = k·c[n-1] − g·c[n-2]         (independent AR(2))
  *   velocity: c[n] = linear + α·|Δz[n]|           (pressure-speed coupling)
  *
- * the coupled trial uses the oscillator's real coefficients kR/gR for
- * pressure prediction — same wrist dynamics, zero extra bytes. when the
- * witness confirms the shared dynamics (low residual), it compresses free.
- * when it disagrees, the codec falls back to independent prediction.
+ * the coupled trial reuses the oscillator's real coefficients kR/gR for
+ * pressure with no extra fit bytes. if that is wrong, the codec falls
+ * back to an independent sidecar fit or plain linear prediction.
  *
  * all sidecar trials are gated: only fire when they reduce total cost.
  *
@@ -57,7 +60,9 @@
  *   microFit, microEnc, microDec          second-pass oscillator on residuals
  *   deltaResid, undeltaResid              first-difference pre-filter
  *
- * the WASM binary is inlined as base64. zero dependencies beyond Logos.
+ * the js wrapper adds lane selection, batch-only short blocks on sharp
+ * motion changes, and the ballistic lane. the WASM binary is inlined as
+ * base64. zero dependencies beyond Logos.
  *
  * WASM memory layout (1 page = 64KB):
  *   POINTS  0x0000  i32[10240]  2048 pts × 5 channels
@@ -70,12 +75,14 @@
  * residuals. single Logos call on the combined stream. the Ab-axis stride
  * bridges across channel groups in the residual region.
  *
- *   [rawLen:2 LE] [metaLen:1] [stride:1] [Logos(meta + data)]
+ *   short:    [rawLen:2 LE] [metaLen:1] [stride:1] [Logos(meta + data)]
+ *   extended: [0,0] [rawLen:4 LE] [metaLen:2 LE] [stride:1] [Logos(meta + data)]
  *
  * meta region (per block):
  *   [header:1]  mode(bit 0) | (count-1)(bits 1-4) | repeat(bit 5)
  *               | chMask(bits 6-7). chMask=0b11 → extended byte follows.
- *   [ext:1]     (if chMask=0b11) bits 0-1=real chMask, bits 2-5=features
+ *   [ext:1]     (if chMask=0b11) bits 0-1=real chMask, bits 2-5=features,
+ *               bits 6-7=primitive lane
  *   [coeffs]    zigzag varint deltas of kR,kI,gR,gI (harmonic only)
  *   [scK,scG]   zigzag varint deltas from baseline (if FEAT_SIDECAR)
  *   [cplW]      zigzag varint (if FEAT_COUPLING)
@@ -100,8 +107,9 @@
  *
  * ── streaming ───────────────────────────────────────────────────────────
  *
- * GlyphStreamEncoder accumulates points and emits compressed blocks of 16.
- * GlyphStreamDecoder reconstructs points from each block.
+ * GlyphStreamEncoder accumulates points and emits fixed 16-point packets.
+ * batch encode may cut earlier on sharp motion changes; live streaming
+ * stays fixed-size. GlyphStreamDecoder reconstructs points from each packet.
  */
 
 import { encode0D, decode0D, createInstance, type LogosCodec } from './live-wasm-logos';
@@ -133,6 +141,11 @@ export enum GlyphMode {
     BACKWARD = 3,
 }
 
+export enum GlyphLane {
+    DEFAULT = 0,
+    BALLISTIC = 1,
+}
+
 // feature flags for v2 wire format
 const FEAT_DELTA    = 1 << 0;
 const FEAT_SIDECAR  = 1 << 1;
@@ -147,6 +160,7 @@ export interface GlyphCoeffs {
 }
 
 export interface GlyphBlock {
+    lane: GlyphLane;
     mode: GlyphMode;
     kR: number;
     kI: number;
@@ -166,6 +180,11 @@ export interface GlyphBlock {
 }
 
 export type GlyphSeed = number[];
+
+export interface GlyphEncodeOptions {
+    // batch encode may cut before 16 on motion changes. streaming keeps fixed 16-point packets.
+    adaptiveSegmentation?: boolean;
+}
 
 // ── inlined WASM binary ─────────────────────────────────────────────────────
 
@@ -268,6 +287,8 @@ const LIN_KR = 32768;  // K = 2.0 in Q14
 const LIN_KI = 0;
 const LIN_GR = 16384;  // G = 1.0 in Q14
 const LIN_GI = 0;
+const I32_MIN = -2147483648;
+const I32_MAX = 2147483647;
 
 export class GlyphCodec {
 
@@ -319,7 +340,237 @@ export class GlyphCodec {
 
     // ── encode (WASM predictor, multi-feature trial) ─────────────────────
 
-    static encode(points: Int32Array, prev?: GlyphCoeffs): GlyphBlock[] {
+    private static phaseBoundaryScore(points: Int32Array, boundaryPt: number, nPts: number): number {
+        if (boundaryPt < 1 || boundaryPt + 2 >= nPts) return 0;
+
+        const p = (pt: number, ch: number): number => points[pt * CH + ch];
+        const v0x = p(boundaryPt, 0) - p(boundaryPt - 1, 0);
+        const v0y = p(boundaryPt, 1) - p(boundaryPt - 1, 1);
+        const v1x = p(boundaryPt + 1, 0) - p(boundaryPt, 0);
+        const v1y = p(boundaryPt + 1, 1) - p(boundaryPt, 1);
+        const v2x = p(boundaryPt + 2, 0) - p(boundaryPt + 1, 0);
+        const v2y = p(boundaryPt + 2, 1) - p(boundaryPt + 1, 1);
+
+        const s0 = Math.hypot(v0x, v0y);
+        const s1 = Math.hypot(v1x, v1y);
+        const s2 = Math.hypot(v2x, v2y);
+        const cross01 = v0x * v1y - v0y * v1x;
+        const cross12 = v1x * v2y - v1y * v2x;
+        const turn = Math.abs(cross01) / (s0 * s1 + 1);
+        const jerk = Math.hypot(v2x - 2 * v1x + v0x, v2y - 2 * v1y + v0y) / (s0 + s1 + s2 + 1);
+        const speedShock = Math.abs(s1 - s0) / (Math.max(s0, s1) + 1);
+
+        let witnessJump = 0;
+        witnessJump += Math.abs(p(boundaryPt + 1, 2) - p(boundaryPt, 2)) / 4096;
+        witnessJump += Math.abs(p(boundaryPt + 1, 3) - p(boundaryPt, 3)) / 6144;
+        witnessJump += Math.abs(p(boundaryPt + 1, 4) - p(boundaryPt, 4)) / 8192;
+
+        const speedValley = (s1 < Math.min(s0, s2) * 0.65) ? 0.35 : 0;
+        const curvatureFlip = (cross01 !== 0 && cross12 !== 0 && cross01 * cross12 < 0) ? 0.28 : 0;
+        const salient =
+            turn > 0.55 ||
+            jerk > 0.45 ||
+            speedShock > 0.6 ||
+            witnessJump > 1.1 ||
+            curvatureFlip > 0;
+
+        if (!salient) return 0;
+
+        return turn * 1.05 +
+            jerk * 0.9 +
+            speedShock * 0.55 +
+            witnessJump * 0.28 +
+            speedValley +
+            curvatureFlip;
+    }
+
+    private static chooseBlockLen(points: Int32Array, startPt: number, nPts: number): number {
+        const remaining = nPts - startPt;
+        const maxLen = Math.min(GLYPH_BLOCK_SIZE, remaining);
+        if (maxLen <= 4) return maxLen;
+
+        let bestLen = maxLen;
+        let bestScore = 1.1;
+
+        for (let len = 4; len < maxLen; len++) {
+            const score = this.phaseBoundaryScore(points, startPt + len - 1, nPts);
+            if (score > bestScore) {
+                bestScore = score;
+                bestLen = len;
+                if (score > 2.2) break;
+            }
+        }
+
+        const tail = remaining - bestLen;
+        if (bestLen < maxLen && tail > 0 && tail < 4 && bestScore < 1.8) {
+            return maxLen;
+        }
+        return bestLen;
+    }
+
+    private static isBallisticFriendly(points: Int32Array, startPt: number, len: number): boolean {
+        if (len < 4) return false;
+
+        let turnSum = 0;
+        let turnMax = 0;
+        let accSamples = 0;
+        let refAx = 0, refAy = 0, refMag = 0;
+        let alignSum = 0;
+        let twistSum = 0;
+
+        for (let absPt = startPt; absPt < startPt + len; absPt++) {
+            const v0x = points[(absPt - 1) * CH] - points[(absPt - 2) * CH];
+            const v0y = points[(absPt - 1) * CH + 1] - points[(absPt - 2) * CH + 1];
+            const v1x = points[absPt * CH] - points[(absPt - 1) * CH];
+            const v1y = points[absPt * CH + 1] - points[(absPt - 1) * CH + 1];
+            const s0 = Math.hypot(v0x, v0y);
+            const s1 = Math.hypot(v1x, v1y);
+            const turn = Math.abs(v0x * v1y - v0y * v1x) / (s0 * s1 + 1);
+            turnSum += turn;
+            if (turn > turnMax) turnMax = turn;
+
+            if (absPt < 2) continue;
+            const ax = points[absPt * CH] - 2 * points[(absPt - 1) * CH] + points[(absPt - 2) * CH];
+            const ay = points[absPt * CH + 1] - 2 * points[(absPt - 1) * CH + 1] + points[(absPt - 2) * CH + 1];
+            const amag = Math.hypot(ax, ay);
+            if (amag < 2) continue;
+
+            if (accSamples === 0) {
+                refAx = ax;
+                refAy = ay;
+                refMag = amag;
+            } else {
+                alignSum += (ax * refAx + ay * refAy) / (amag * refMag + 1);
+                twistSum += Math.abs(ax * refAy - ay * refAx) / (amag * refMag + 1);
+            }
+            accSamples++;
+        }
+
+        if (accSamples < 2) return false;
+
+        const meanTurn = turnSum / len;
+        const alignCount = Math.max(1, accSamples - 1);
+        const meanAlign = alignSum / alignCount;
+        const meanTwist = twistSum / alignCount;
+
+        return turnMax < 0.42 &&
+            meanTurn < 0.22 &&
+            meanAlign > 0.8 &&
+            meanTwist < 0.28;
+    }
+
+    private static buildBallisticBlock(points: Int32Array, startPt: number, len: number): GlyphBlock | null {
+        if (!this.isBallisticFriendly(points, startPt, len)) return null;
+        const residuals = new Int32Array(len * CH);
+
+        for (let j = 0; j < len; j++) {
+            const absPt = startPt + j;
+            for (let c = 0; c < CH; c++) {
+                const pred = absPt >= 3
+                    ? 3 * points[(absPt - 1) * CH + c] - 3 * points[(absPt - 2) * CH + c] + points[(absPt - 3) * CH + c]
+                    : 2 * points[(absPt - 1) * CH + c] - points[(absPt - 2) * CH + c];
+                const diff = points[absPt * CH + c] - pred;
+                if (diff < I32_MIN || diff > I32_MAX) return null;
+                residuals[j * CH + c] = zzEnc(diff | 0);
+            }
+        }
+
+        return {
+            lane: GlyphLane.BALLISTIC,
+            mode: GlyphMode.LINEAR,
+            kR: 0,
+            kI: 0,
+            gR: 0,
+            gI: 0,
+            residuals,
+            features: 0,
+            scK: 0,
+            scG: 0,
+            cplW: 0,
+            mkR: 0,
+            mkI: 0,
+            mgR: 0,
+            mgI: 0,
+            microResiduals: null,
+        };
+    }
+
+    private static decodeBallisticBlock(
+        heap: Int32Array,
+        pointsOff: number,
+        cursor: number,
+        count: number,
+        residuals: Int32Array
+    ): void {
+        for (let j = 0; j < count; j++) {
+            const absPt = cursor + j;
+            const dst = pointsOff + absPt * CH;
+            const p1 = pointsOff + (absPt - 1) * CH;
+            const p2 = pointsOff + (absPt - 2) * CH;
+            const p3 = pointsOff + (absPt - 3) * CH;
+
+            for (let c = 0; c < CH; c++) {
+                const pred = absPt >= 3
+                    ? 3 * heap[p1 + c] - 3 * heap[p2 + c] + heap[p3 + c]
+                    : 2 * heap[p1 + c] - heap[p2 + c];
+                heap[dst + c] = pred + zzDec(residuals[j * CH + c]);
+            }
+        }
+    }
+
+    private static estimateRawBlockCost(
+        block: GlyphBlock,
+        hasPrevCoeffs: boolean,
+        prevKR: number,
+        prevKI: number,
+        prevGR: number,
+        prevGI: number
+    ): number {
+        const count = block.residuals.length / CH;
+        const chMask = this.detectChMask(block.residuals, count);
+        const wireCh = this.maskChannels(chMask);
+        const hasExt = block.features !== 0 || block.lane !== GlyphLane.DEFAULT;
+
+        let cost = 1 + (hasExt ? 1 : 0);
+
+        if (block.lane === GlyphLane.DEFAULT && block.mode === GlyphMode.HARMONIC) {
+            const refKR = hasPrevCoeffs ? prevKR : LIN_KR;
+            const refKI = hasPrevCoeffs ? prevKI : LIN_KI;
+            const refGR = hasPrevCoeffs ? prevGR : LIN_GR;
+            const refGI = hasPrevCoeffs ? prevGI : LIN_GI;
+            cost += this.coeffDeltaCost(block.kR, block.kI, block.gR, block.gI, refKR, refKI, refGR, refGI);
+        }
+
+        if (block.features & FEAT_SIDECAR) {
+            cost += vszCost(zzEnc(block.scK - 32768));
+            cost += vszCost(zzEnc(block.scG - 16384));
+        }
+        if (block.features & FEAT_COUPLING) {
+            cost += vszCost(zzEnc(block.cplW));
+        }
+        if (block.features & FEAT_MICRO) {
+            cost += vszCost(zzEnc(block.mkR));
+            cost += vszCost(zzEnc(block.mkI));
+            cost += vszCost(zzEnc(block.mgR));
+            cost += vszCost(zzEnc(block.mgI));
+        }
+
+        if ((block.features & FEAT_MICRO) && block.microResiduals) {
+            for (let i = 0; i < count; i++) cost += vszCost(block.microResiduals[i * 2]);
+            for (let i = 0; i < count; i++) cost += vszCost(block.microResiduals[i * 2 + 1]);
+            for (let c = 2; c < wireCh; c++) {
+                for (let i = 0; i < count; i++) cost += vszCost(block.residuals[i * CH + c]);
+            }
+        } else {
+            for (let c = 0; c < wireCh; c++) {
+                for (let i = 0; i < count; i++) cost += vszCost(block.residuals[i * CH + c]);
+            }
+        }
+
+        return cost;
+    }
+
+    static encode(points: Int32Array, prev?: GlyphCoeffs, opts?: GlyphEncodeOptions): GlyphBlock[] {
         const m = w();
         const maxPts = 2048;
         const nPts = Math.min(Math.floor(points.length / CH), maxPts);
@@ -327,6 +578,7 @@ export class GlyphCodec {
         const residOff = gval(m.RESID) >> 2;
         const resid2Off = gval(m.RESID2) >> 2;
         const heap = new Int32Array(m.mem.buffer);
+        const adaptiveSegmentation = opts?.adaptiveSegmentation ?? true;
 
         heap.set(points.subarray(0, nPts * CH), pointsOff);
 
@@ -339,8 +591,10 @@ export class GlyphCodec {
         const _residBuf = new Int32Array(GLYPH_BLOCK_SIZE * CH);
         const _microBuf = new Int32Array(GLYPH_BLOCK_SIZE * 2);
 
-        for (let i = 2; i < nPts; i += GLYPH_BLOCK_SIZE) {
-            const len = Math.min(GLYPH_BLOCK_SIZE, nPts - i);
+        for (let i = 2; i < nPts;) {
+            const len = adaptiveSegmentation
+                ? this.chooseBlockLen(points, i, nPts)
+                : Math.min(GLYPH_BLOCK_SIZE, nPts - i);
             if (len < 1) break;
 
             // ── phase 1: find best primary mode (harmonic/linear/repeat) ──
@@ -651,7 +905,8 @@ export class GlyphCodec {
 
             // ── build block ──
 
-            const block: GlyphBlock = {
+            let block: GlyphBlock = {
+                lane: GlyphLane.DEFAULT,
                 mode: bestMode,
                 kR: useKR, kI: useKI, gR: useGR, gI: useGI,
                 residuals,
@@ -662,17 +917,34 @@ export class GlyphCodec {
                 microResiduals,
             };
 
+            const defaultRawCost = this.estimateRawBlockCost(block, hasPrev, prevKR, prevKI, prevGR, prevGI);
+            const ballisticBlock = this.buildBallisticBlock(points, i, len);
+            if (ballisticBlock) {
+                const ballisticRawCost = this.estimateRawBlockCost(
+                    ballisticBlock,
+                    false,
+                    LIN_KR,
+                    LIN_KI,
+                    LIN_GR,
+                    LIN_GI
+                );
+                if (ballisticRawCost <= defaultRawCost) {
+                    block = ballisticBlock;
+                }
+            }
+
             blocks.push(block);
 
-            if (bestMode === GlyphMode.LINEAR) {
+            if (block.lane !== GlyphLane.DEFAULT || block.mode === GlyphMode.LINEAR) {
                 hasPrev = false;
             } else {
-                prevKR = useKR; prevKI = useKI;
-                prevGR = useGR; prevGI = useGI;
+                prevKR = block.kR; prevKI = block.kI;
+                prevGR = block.gR; prevGI = block.gI;
                 hasPrev = true;
             }
             prevBlockStart = i;
             prevBlockLen = len;
+            i += len;
         }
         return blocks;
     }
@@ -708,6 +980,15 @@ export class GlyphCodec {
         for (const b of blocks) {
             const count = b.residuals.length / CH;
             if (cursor + count > nExisting) break;
+
+            if (b.lane === GlyphLane.BALLISTIC) {
+                this.decodeBallisticBlock(heap, pointsOff, cursor, count, b.residuals);
+                decHasPrev = false;
+                prevCursor = cursor;
+                prevCount = count;
+                cursor += count;
+                continue;
+            }
 
             // resolve K/G for backward and repeat modes.
             // this runs DURING decode (not unpack) so backward-derived K/G
@@ -818,15 +1099,15 @@ export class GlyphCodec {
             // backward: repeat=1, mode=1 (previously unused combination)
             const modeBit = isBackward ? 1 : (isRepeat ? 0 : b.mode);
             const repeatBit = (isRepeat || isBackward) ? (1 << 5) : 0;
-            const hasFeatures = b.features !== 0;
-            const headerChMask = hasFeatures ? 0b11 : chMask;
+            const hasExt = b.features !== 0 || b.lane !== GlyphLane.DEFAULT;
+            const headerChMask = hasExt ? 0b11 : chMask;
             meta.push(modeBit | ((count - 1) << 1) | repeatBit | (headerChMask << 6));
 
-            if (hasFeatures) {
-                meta.push(chMask | (b.features << 2));
+            if (hasExt) {
+                meta.push(chMask | (b.features << 2) | (b.lane << 6));
             }
 
-            if (b.mode === GlyphMode.HARMONIC) {
+            if (b.lane === GlyphLane.DEFAULT && b.mode === GlyphMode.HARMONIC) {
                 const refKR = hasPrevCoeffs ? prevKR : LIN_KR;
                 const refKI = hasPrevCoeffs ? prevKI : LIN_KI;
                 const refGR = hasPrevCoeffs ? prevGR : LIN_GR;
@@ -869,7 +1150,7 @@ export class GlyphCodec {
                 }
             }
 
-            if (b.mode !== GlyphMode.LINEAR) {
+            if (b.lane === GlyphLane.DEFAULT && b.mode !== GlyphMode.LINEAR) {
                 prevKR = b.kR; prevKI = b.kI;
                 prevGR = b.gR; prevGI = b.gI;
                 hasPrevCoeffs = true;
@@ -885,31 +1166,65 @@ export class GlyphCodec {
         for (let i = 0; i < meta.length; i++) raw[i] = meta[i];
         for (let i = 0; i < data.length; i++) raw[meta.length + i] = data[i];
 
-        // stride for Ab-axis: bytes per channel in the residual region.
-        // Logos applies stride globally, but during the meta prefix the Ab-axis
-        // harmlessly looks at positions before the stream start (returns default
-        // prediction). once we enter the residual block, stride aligns channels.
+        // stride for Ab-axis: bytes per residual channel. during the meta
+        // prefix the Ab-axis falls back to its default predictor. once the
+        // residual region begins, stride lines channels up.
         const stride = residPerChannel;
         const compressed = encode0D(raw, stride);
 
-        // wire: [rawLen:2 LE] [metaLen:1] [stride:1] [logos data]
-        const out = new Uint8Array(4 + compressed.length);
-        out[0] = raw.length & 0xFF;
-        out[1] = (raw.length >> 8) & 0xFF;
-        out[2] = meta.length & 0xFF;
-        out[3] = stride & 0xFF;
-        out.set(compressed, 4);
+        if (raw.length <= 0xFFFF && meta.length <= 0xFE) {
+            // short header: 2-byte rawLen, 1-byte metaLen
+            const out = new Uint8Array(4 + compressed.length);
+            out[0] = raw.length & 0xFF;
+            out[1] = (raw.length >> 8) & 0xFF;
+            out[2] = meta.length & 0xFF;
+            out[3] = stride & 0xFF;
+            out.set(compressed, 4);
+            return out;
+        }
+
+        // long header: raw/meta lengths no longer fit in the short form
+        const out = new Uint8Array(9 + compressed.length);
+        out[0] = 0;
+        out[1] = 0;
+        out[2] = raw.length & 0xFF;
+        out[3] = (raw.length >> 8) & 0xFF;
+        out[4] = (raw.length >> 16) & 0xFF;
+        out[5] = (raw.length >> 24) & 0xFF;
+        out[6] = meta.length & 0xFF;
+        out[7] = (meta.length >> 8) & 0xFF;
+        out[8] = stride & 0xFF;
+        out.set(compressed, 9);
         return out;
     }
 
     static unpack(bytes: Uint8Array): GlyphBlock[] {
         if (bytes.length < 5) return [];
-        const rawLen = bytes[0] | (bytes[1] << 8);
-        const metaLen = bytes[2];
-        const stride = bytes[3];
+        let rawLen: number;
+        let metaLen: number;
+        let stride: number;
+        let payloadOff: number;
+
+        if (bytes[0] === 0 && bytes[1] === 0) {
+            if (bytes.length < 9) return [];
+            rawLen =
+                (bytes[2]) |
+                (bytes[3] << 8) |
+                (bytes[4] << 16) |
+                (bytes[5] << 24);
+            rawLen >>>= 0;
+            metaLen = bytes[6] | (bytes[7] << 8);
+            stride = bytes[8];
+            payloadOff = 9;
+        } else {
+            rawLen = bytes[0] | (bytes[1] << 8);
+            metaLen = bytes[2];
+            stride = bytes[3];
+            payloadOff = 4;
+        }
         if (rawLen === 0) return [];
 
-        const raw = decode0D(bytes.subarray(4), rawLen, stride);
+        const raw = decode0D(bytes.subarray(payloadOff), rawLen, stride);
         // meta occupies raw[0..metaLen-1], data occupies raw[metaLen..]
         const blocks: GlyphBlock[] = [];
         const mOff = { v: 0 };        // meta cursor
@@ -928,10 +1243,12 @@ export class GlyphCodec {
 
                 let chMask: number;
                 let features: number;
+                let lane = GlyphLane.DEFAULT;
                 if (headerChMask === 0b11) {
                     const ext = mOff.v < metaLen ? raw[mOff.v++] : 0;
                     chMask = ext & 3;
                     features = (ext >> 2) & 0xF;
+                    lane = (ext >> 6) & 0x3;
                 } else {
                     chMask = headerChMask;
                     features = 0;
@@ -940,7 +1257,10 @@ export class GlyphCodec {
 
                 let kR = 0, kI = 0, gR = 0, gI = 0;
                 let mode: GlyphMode;
-                if (isRepeat && modeBit === 1) {
+                if (lane !== GlyphLane.DEFAULT) {
+                    mode = GlyphMode.LINEAR;
+                    hasPrevCoeffs = false;
+                } else if (isRepeat && modeBit === 1) {
                     // repeat=1, mode=1 → BACKWARD: K/G derived during decodeBlocks
                     mode = GlyphMode.BACKWARD;
                 } else if (isRepeat) {
@@ -1000,12 +1320,15 @@ export class GlyphCodec {
                 }
 
                 blocks.push({
+                    lane,
                     mode, kR, kI, gR, gI, residuals,
                     features, scK, scG, cplW,
                     mkR, mkI, mgR, mgI, microResiduals,
                 });
 
-                if (mode === GlyphMode.BACKWARD || mode === GlyphMode.REPEAT) {
+                if (lane !== GlyphLane.DEFAULT) {
+                    hasPrevCoeffs = false;
+                } else if (mode === GlyphMode.BACKWARD || mode === GlyphMode.REPEAT) {
                     // K/G for backward and repeat are resolved during decodeBlocks,
                     // not here. backward derives via fit(), repeat copies from the
                     // decode-time prevK which includes backward-derived values.
@@ -1038,7 +1361,7 @@ export class GlyphStreamEncoder {
         for (let c = 0; c < CH; c++) this.buffer[base + c] = values[c];
         this.head++;
         if (this.head === GLYPH_BLOCK_SIZE + 2) {
-            const blocks = GlyphCodec.encode(this.buffer, this.prev);
+            const blocks = GlyphCodec.encode(this.buffer, this.prev, { adaptiveSegmentation: false });
             const last = blocks[blocks.length - 1];
             if (last && last.mode !== GlyphMode.LINEAR) {
                 this.prev = { kR: last.kR, kI: last.kI, gR: last.gR, gI: last.gI };
@@ -1059,7 +1382,11 @@ export class GlyphStreamEncoder {
     /** flush partial block. call on stroke end. */
     flush(): Uint8Array | null {
         if (this.head <= 2) return null;
-        return GlyphCodec.pack(GlyphCodec.encode(this.buffer.slice(0, this.head * CH), this.prev));
+        return GlyphCodec.pack(GlyphCodec.encode(
+            this.buffer.slice(0, this.head * CH),
+            this.prev,
+            { adaptiveSegmentation: false }
+        ));
     }
 }
 
