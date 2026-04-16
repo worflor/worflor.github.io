@@ -660,8 +660,9 @@ function rgbaToYuv420(rgba: Uint8Array, w: number, h: number): Uint8Array {
 function saoFilter(plane: Uint8Array, w: number, h: number, strength: number): void {
     if (strength < 1) return;
     // clamp strength: at most 2 levels of correction to avoid over-filtering.
-    // the minimum threshold of 1 ensures SAO doesn't fire at high quality (Q>=85)
-    // where wavelet ringing is below 1 pixel level.
+    // callers use floor(baseQ * 0.5) which gives 0 for Q>=81, disabling SAO
+    // where wavelet ringing is below 1 pixel level and SAO modifies genuine
+    // texture instead of ringing artifacts.
     const s = Math.min(2, strength);
     if (s === 0) return;
     // only adjust pixels where the excursion from both neighbors exceeds a
@@ -700,6 +701,42 @@ function saoFilter(plane: Uint8Array, w: number, h: number, strength: number): v
             }
         }
     }
+    // diagonal passes: HH wavelet ringing manifests as checkerboard patterns
+    // at 45° and 135°. the H/V passes miss these because they only check
+    // cardinal neighbors. use half strength to avoid over-filtering (diagonal
+    // ringing is typically weaker due to the oblique effect and HH dead zones).
+    const ds = Math.max(1, (s + 1) >> 1);  // half strength, at least 1
+    const dt = ds * 2;
+    // 45° pass (NW-SE diagonal)
+    for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+            const idx = y * w + x;
+            const c = plane[idx];
+            const nw = plane[(y-1) * w + x - 1];
+            const se = plane[(y+1) * w + x + 1];
+            const dnw = c - nw, dse = c - se;
+            if (dnw > dt && dse > dt) {
+                plane[idx] = Math.max(0, c - ds);
+            } else if (dnw < -dt && dse < -dt) {
+                plane[idx] = Math.min(255, c + ds);
+            }
+        }
+    }
+    // 135° pass (NE-SW diagonal)
+    for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+            const idx = y * w + x;
+            const c = plane[idx];
+            const ne = plane[(y-1) * w + x + 1];
+            const sw = plane[(y+1) * w + x - 1];
+            const dne = c - ne, dsw = c - sw;
+            if (dne > dt && dsw > dt) {
+                plane[idx] = Math.max(0, c - ds);
+            } else if (dne < -dt && dsw < -dt) {
+                plane[idx] = Math.min(255, c + ds);
+            }
+        }
+    }
 }
 
 // alpha channel support: extract alpha plane from RGBA and detect if it's trivial (all opaque).
@@ -722,6 +759,35 @@ function yuv420ToRgba(yuv: Uint8Array, w: number, h: number, useNN: boolean = fa
     // nearest-neighbor preserves sharp chroma transitions; bilinear smooths
     // gradients. the encoder signals which is better for each frame.
     return useNN ? simd.yuv420ToRgbaNN(yuv, w, h) : simd.yuv420ToRgba(yuv, w, h);
+}
+
+// 4:4:4 chroma: no subsampling. each pixel keeps its own U,V sample.
+// eliminates the 4:2:0 chroma error amplification (maxErr=63 on landscape)
+// that caps PSNR at ~39.5 dB. uses limited-range BT.601 matching the WASM path.
+function rgbaToYuv444(rgba: Uint8Array, w: number, h: number): Uint8Array {
+    const n = w * h;
+    const out = new Uint8Array(n * 3);
+    for (let i = 0; i < n; i++) {
+        const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+        out[i]         = Math.max(16, Math.min(235, ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16));
+        out[n + i]     = Math.max(16, Math.min(240, ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128));
+        out[n * 2 + i] = Math.max(16, Math.min(240, ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128));
+    }
+    return out;
+}
+
+function yuv444ToRgba(yuv: Uint8Array, w: number, h: number): Uint8Array {
+    const n = w * h;
+    const rgba = new Uint8Array(n * 4);
+    for (let i = 0; i < n; i++) {
+        const y = yuv[i], u = yuv[n + i], v = yuv[n * 2 + i];
+        const c = y - 16, d = u - 128, e = v - 128;
+        rgba[i * 4]     = Math.max(0, Math.min(255, (298 * c + 409 * e + 128) >> 8));
+        rgba[i * 4 + 1] = Math.max(0, Math.min(255, (298 * c - 100 * d - 208 * e + 128) >> 8));
+        rgba[i * 4 + 2] = Math.max(0, Math.min(255, (298 * c + 516 * d + 128) >> 8));
+        rgba[i * 4 + 3] = 255;
+    }
+    return rgba;
 }
 
 /** choose chroma upsampling method based on chroma spatial activity.
@@ -771,19 +837,20 @@ interface FrameLayout {
     paddedUvSize: number;
     paddedYuvSize: number;
     numLevels: number;
+    chroma444: boolean;
 }
 
 function roundUpToStep(n: number, step: number): number {
     return Math.ceil(Math.max(1, n) / step) * step;
 }
 
-function buildFrameLayout(width: number, height: number, numLevels: number): FrameLayout {
+function buildFrameLayout(width: number, height: number, numLevels: number, chroma444: boolean = false): FrameLayout {
     const step = 1 << numLevels;
     // pad to multiples of the wavelet step so all subbands align.
     const yStep = step;
     const uvStep = step;
-    const uvW = width >> 1;
-    const uvH = height >> 1;
+    const uvW = chroma444 ? width : (width >> 1);
+    const uvH = chroma444 ? height : (height >> 1);
     const ySize = width * height;
     const uvSize = uvW * uvH;
     const paddedWidth = roundUpToStep(width, yStep);
@@ -808,6 +875,7 @@ function buildFrameLayout(width: number, height: number, numLevels: number): Fra
         paddedUvSize,
         paddedYuvSize: paddedYSize + paddedUvSize * 2,
         numLevels,
+        chroma444,
     };
 }
 
@@ -985,30 +1053,158 @@ const CDF97_DELTA =  0.443506852;
 const CDF97_K     =  1.230174104875;
 const CDF97_K_INV =  1 / CDF97_K;
 
-/** forward 1D CDF 9/7 lifting (in-place on Float64Array). n must be even. */
-function fwt1D_97(a: Float64Array, n: number): void {
+// adaptive bilateral weight for edge-aware lifting: reduces prediction
+// strength at edges (large gradient between even neighbors).
+//   w(g) = 1 / (1 + (g/σ)²)
+// where g = |s_left - s_right| and σ² = threshold.
+// the weight depends ONLY on even samples, which are identical in both
+// forward and inverse transforms → perfectly invertible.
+//
+// physics: the wavelet predict step assumes the odd sample lies on the
+// line between its even neighbors (polynomial interpolation). at an edge,
+// this assumption fails and the prediction error (detail coefficient) is
+// large, spreading edge energy into all detail subbands. the bilateral
+// weight detects the edge from the gradient and reduces the prediction
+// to zero, keeping the edge energy localized in the detail coefficient
+// at the FINEST level only — exactly the boundary/bulk separation.
+//
+// adaptive bilateral lifting was tested (2026-04-05): city +3-5 dB but
+// portrait -2-5 dB. the bilateral weight damages smooth content by
+// weakening wavelet prediction everywhere, not just at edges. rejected for
+// GLOBAL use but viable for TILED edge tiles where edges dominate.
+
+// bilateral weight: w = 1/(1 + g²/σ²). reduces prediction at edges.
+// σ² calibrated for edge tiles where gradients are 40-120 units.
+const BILATERAL_SIGMA2 = 3600; // w(60)=0.5, w(30)=0.8, w(120)=0.2
+
+function bilateralWeight(sL: number, sR: number): number {
+    const g = sL - sR;
+    return 1 / (1 + g * g / BILATERAL_SIGMA2);
+}
+
+/** forward 1D bilateral CDF 9/7 lifting (edge-aware, for tiled path). */
+function fwt1D_97_bilateral(a: Float64Array, n: number): void {
     const h = n >> 1;
-    // step 1: predict (α)
     for (let k = 0; k < h; k++) {
+        const s = a[2 * k];
         const r = (2 * k + 2 < n) ? a[2 * k + 2] : a[n - 2];
-        a[2 * k + 1] += CDF97_ALPHA * (a[2 * k] + r);
+        a[2 * k + 1] += CDF97_ALPHA * bilateralWeight(s, r) * (s + r);
     }
-    // step 2: update (β)
     for (let k = 0; k < h; k++) {
         const dm1 = k > 0 ? a[2 * k - 1] : a[1];
         a[2 * k] += CDF97_BETA * (dm1 + a[2 * k + 1]);
     }
-    // step 3: predict (γ)
     for (let k = 0; k < h; k++) {
+        const s = a[2 * k];
         const r = (2 * k + 2 < n) ? a[2 * k + 2] : a[n - 2];
-        a[2 * k + 1] += CDF97_GAMMA * (a[2 * k] + r);
+        a[2 * k + 1] += CDF97_GAMMA * bilateralWeight(s, r) * (s + r);
     }
-    // step 4: update (δ)
     for (let k = 0; k < h; k++) {
         const dm1 = k > 0 ? a[2 * k - 1] : a[1];
         a[2 * k] += CDF97_DELTA * (dm1 + a[2 * k + 1]);
     }
-    // scale + de-interleave
+    const tmp = new Float64Array(n);
+    for (let k = 0; k < h; k++) {
+        tmp[k] = a[2 * k] * CDF97_K;
+        tmp[h + k] = a[2 * k + 1] * CDF97_K_INV;
+    }
+    a.set(tmp);
+}
+
+/** inverse 1D bilateral CDF 9/7 lifting (must match forward). */
+function iwt1D_97_bilateral(a: Float64Array, n: number): void {
+    const h = n >> 1;
+    const tmp = new Float64Array(n);
+    for (let k = 0; k < h; k++) {
+        tmp[2 * k] = a[k] * CDF97_K_INV;
+        tmp[2 * k + 1] = a[h + k] * CDF97_K;
+    }
+    a.set(tmp);
+    for (let k = 0; k < h; k++) {
+        const dm1 = k > 0 ? a[2 * k - 1] : a[1];
+        a[2 * k] -= CDF97_DELTA * (dm1 + a[2 * k + 1]);
+    }
+    for (let k = 0; k < h; k++) {
+        const s = a[2 * k];
+        const r = (2 * k + 2 < n) ? a[2 * k + 2] : a[n - 2];
+        a[2 * k + 1] -= CDF97_GAMMA * bilateralWeight(s, r) * (s + r);
+    }
+    for (let k = 0; k < h; k++) {
+        const dm1 = k > 0 ? a[2 * k - 1] : a[1];
+        a[2 * k] -= CDF97_BETA * (dm1 + a[2 * k + 1]);
+    }
+    for (let k = 0; k < h; k++) {
+        const s = a[2 * k];
+        const r = (2 * k + 2 < n) ? a[2 * k + 2] : a[n - 2];
+        a[2 * k + 1] -= CDF97_ALPHA * bilateralWeight(s, r) * (s + r);
+    }
+}
+
+/** forward 2D bilateral CDF 9/7 (in-place, for tiled edge tiles). */
+function fwt2D_97_bilateral(c: Float64Array, w: number, h: number, numLevels: number): void {
+    const row = new Float64Array(Math.max(w, h));
+    let lw = w, lh = h;
+    for (let lv = 0; lv < numLevels; lv++) {
+        // rows
+        for (let y = 0; y < lh; y++) {
+            row.set(c.subarray(y * w, y * w + lw));
+            fwt1D_97_bilateral(row, lw);
+            c.set(row.subarray(0, lw), y * w);
+        }
+        // columns
+        const col = new Float64Array(lh);
+        for (let x = 0; x < lw; x++) {
+            for (let y = 0; y < lh; y++) col[y] = c[y * w + x];
+            fwt1D_97_bilateral(col, lh);
+            for (let y = 0; y < lh; y++) c[y * w + x] = col[y];
+        }
+        lw >>= 1; lh >>= 1;
+    }
+}
+
+/** inverse 2D bilateral CDF 9/7 (must match forward). */
+function iwt2D_97_bilateral(c: Float64Array, w: number, h: number, numLevels: number): void {
+    const sizes: [number, number][] = [];
+    let lw = w, lh = h;
+    for (let lv = 0; lv < numLevels; lv++) { sizes.push([lw, lh]); lw >>= 1; lh >>= 1; }
+    const row = new Float64Array(Math.max(w, h));
+    for (let lv = numLevels - 1; lv >= 0; lv--) {
+        [lw, lh] = sizes[lv];
+        // columns
+        const col = new Float64Array(lh);
+        for (let x = 0; x < lw; x++) {
+            for (let y = 0; y < lh; y++) col[y] = c[y * w + x];
+            iwt1D_97_bilateral(col, lh);
+            for (let y = 0; y < lh; y++) c[y * w + x] = col[y];
+        }
+        // rows
+        for (let y = 0; y < lh; y++) {
+            row.set(c.subarray(y * w, y * w + lw));
+            iwt1D_97_bilateral(row, lw);
+            c.set(row.subarray(0, lw), y * w);
+        }
+    }
+}
+
+/** forward 1D CDF 9/7 lifting (in-place on Float64Array). n must be even. */
+function fwt1D_97(a: Float64Array, n: number): void {
+    const h = n >> 1;
+    for (let k = 0; k < h; k++) {
+        const r = (2 * k + 2 < n) ? a[2 * k + 2] : a[n - 2];
+        a[2 * k + 1] += CDF97_ALPHA * (a[2 * k] + r);
+    }
+    for (let k = 0; k < h; k++) {
+        const dm1 = k > 0 ? a[2 * k - 1] : a[1];
+        a[2 * k] += CDF97_BETA * (dm1 + a[2 * k + 1]);
+    }
+    for (let k = 0; k < h; k++) {
+        const r = (2 * k + 2 < n) ? a[2 * k + 2] : a[n - 2];
+        a[2 * k + 1] += CDF97_GAMMA * (a[2 * k] + r);
+    }
+    for (let k = 0; k < h; k++) {
+        const dm1 = k > 0 ? a[2 * k - 1] : a[1];
+        a[2 * k] += CDF97_DELTA * (dm1 + a[2 * k + 1]);
+    }
     const tmp = new Float64Array(n);
     for (let k = 0; k < h; k++) {
         tmp[k] = a[2 * k] * CDF97_K;
@@ -1020,29 +1216,24 @@ function fwt1D_97(a: Float64Array, n: number): void {
 /** inverse 1D CDF 9/7 lifting (in-place on Float64Array). n must be even. */
 function iwt1D_97(a: Float64Array, n: number): void {
     const h = n >> 1;
-    // re-interleave + undo scale
     const tmp = new Float64Array(n);
     for (let k = 0; k < h; k++) {
         tmp[2 * k] = a[k] * CDF97_K_INV;
         tmp[2 * k + 1] = a[h + k] * CDF97_K;
     }
     a.set(tmp);
-    // undo step 4 (δ)
     for (let k = 0; k < h; k++) {
         const dm1 = k > 0 ? a[2 * k - 1] : a[1];
         a[2 * k] -= CDF97_DELTA * (dm1 + a[2 * k + 1]);
     }
-    // undo step 3 (γ)
     for (let k = 0; k < h; k++) {
         const r = (2 * k + 2 < n) ? a[2 * k + 2] : a[n - 2];
         a[2 * k + 1] -= CDF97_GAMMA * (a[2 * k] + r);
     }
-    // undo step 2 (β)
     for (let k = 0; k < h; k++) {
         const dm1 = k > 0 ? a[2 * k - 1] : a[1];
         a[2 * k] -= CDF97_BETA * (dm1 + a[2 * k + 1]);
     }
-    // undo step 1 (α)
     for (let k = 0; k < h; k++) {
         const r = (2 * k + 2 < n) ? a[2 * k + 2] : a[n - 2];
         a[2 * k + 1] -= CDF97_ALPHA * (a[2 * k] + r);
@@ -1590,8 +1781,9 @@ function fwt2D_97(c: Float64Array, w: number, h: number, numLevels: number): voi
 
 /** inverse 2D CDF 9/7 on Float64Array (in-place). */
 function iwt2D_97(c: Float64Array, w: number, h: number, numLevels: number): void {
-    if (_lumenWasm) {
-        const wasm = _lumenWasm;
+    // WASM path disabled: edge-aware bilateral lifting is in the JS 1D path.
+    if (false && _lumenWasm) {
+        const wasm = _lumenWasm!;
         // SIMD f32x4 path (same alignment check as forward)
         const simdMinAlign = 4 << (numLevels > 0 ? numLevels - 1 : 0);
         if (wasm.iwt2D_97_simd && (w & (simdMinAlign - 1)) === 0 && (h & (simdMinAlign - 1)) === 0) {
@@ -1727,6 +1919,15 @@ function temporalLevels(d: number): number {
  *  collapsing the temporal axis via wavelet projection at multiple scales.
  *  Temporal uses CDF 5/3 (integer Haar) for exact motion compensation.
  *  Spatial uses CDF 9/7 (float) for superior energy compaction and continuous steps. */
+// pre-wavelet MED prediction was considered and rejected: the wavelet's CDF 9/7
+// lifting IS prediction. MED residuals are zero-mean and high-frequency, which
+// HURTS the wavelet's energy compaction (LL subband loses its meaning as a
+// downsampled image). the correct approach for edge handling is either:
+//   (a) tiled adaptive wavelet (depth varies per tile — already implemented)
+//   (b) adaptive lifting (data-dependent predict/update weights)
+//   (c) pre-wavelet directional intra prediction (like AV1, per-block)
+// option (c) requires a full block-based intra mode decision engine.
+
 function fwt3D(vol: Int32Array, w: number, h: number, d: number, numLevels: number): Float64Array {
     const c = new Float64Array(vol.length);
     for (let i = 0; i < vol.length; i++) c[i] = vol[i];
@@ -1866,41 +2067,35 @@ function videoBaseQ(quality: number): number {
 
 function subbandStep(quality: number, w: number, h: number, level: number, numLevels: number,
     isHH: boolean, isLL: boolean, temporalBand: 'low' | 'high', isChroma: boolean): number {
-    // four factors combine to set the quantization step:
-    // 1. baseQ: quality knob (user-controlled operating point)
-    // 2. synthNorm: wavelet noise amplification (physical, from impulse response energy)
-    // 3. csfWeight: human visual sensitivity (perceptual, from spatial contrast sensitivity)
-    // 4. temporalCSF: temporal frequency sensitivity (from stelaCSF, Mantiuk SIGGRAPH 2022)
+    // non-perceptual step: baseQ / synthNorm, with chroma correction.
+    // synthNorm is the wavelet synthesis filter's noise amplification factor
+    // (physical, from impulse response energy). their ratio gives MSE-optimal
+    // bit allocation within each plane.
+    //
+    // chroma correction: BT.601 conversion amplifies chroma errors non-uniformly:
+    //   Cb error ε → R:0, G:0.391ε, B:2.018ε → per-pixel MSE_RGB = 1.408ε²
+    //   Cr error ε → R:1.596ε, G:0.813ε, B:0 → per-pixel MSE_RGB = 1.069ε²
+    //   Y  error ε → R:ε, G:ε, B:ε → MSE_RGB = ε²
+    //
+    // in 4:2:0, each chroma sample maps to 4 RGB pixels (2×2 block), so
+    // total MSE is 4× the per-pixel value:
+    //   Cb: 1/√5.63 ≈ 0.42, Cr: 1/√4.28 ≈ 0.48, geomean ≈ 0.45.
+    //
+    // in 4:4:4, use the same scale: this over-allocates bits to chroma vs the
+    // MSE-optimal 0.90, but ensures bpp increases monotonically across the
+    // 4:2:0→4:4:4 transition and the extra chroma resolution breaks the
+    // landscape 39.5 dB PSNR ceiling.
+    //
+    // per-plane differentiation: Cb has 32% more MSE amplification than Cr
+    // in the Blue channel (coefficient 2.018 vs 0). using the exact per-plane
+    // scales (0.42 for Cb, 0.48 for Cr) allocates more bits to Cb where the
+    // error matters most, improving worst-channel (Blue) PSNR.
+    const CHROMA_STEP_SCALE = 0.45;
     const bq = videoBaseQ(quality);
     const norm = synthNorm3D(w, h, level, numLevels, isHH, isLL, temporalBand);
-    const csf = csfWeight(level, numLevels, isLL, isHH, isChroma);
-    // temporal CSF derived from Kelly's (1979) temporal contrast sensitivity model:
-    //   CSF_t(f) = (f / f_peak) × exp(-(f - f_peak) / f_peak)
-    //
-    // the speed of light in video spacetime: c = ppd × max_pursuit / fps
-    //   = 32 pixels/degree × 30°/s / 30fps = 32 pixels/frame (Rashbass 1961)
-    //
-    // this defines the "light cone" — the causal region where temporal prediction
-    // can reach. the temporal highpass center frequency at 30fps GOP-2 is 15 Hz.
-    //   CSF_t(15) / CSF_t(8) = (15/8) × exp(-(15-8)/8) = 1.875 × e^(-0.875) = 0.782
-    //
-    // so temporal detail is visible at 78.2% of peak sensitivity → quantize 1/0.782 coarser.
-    // no magic numbers: f_peak = 8 Hz (measured, Kelly 1979), framerate = 30, GOP = 2.
-    const TEMPORAL_F_PEAK = 8;   // peak temporal sensitivity (Hz), from Kelly 1979
-    const TEMPORAL_F_HIGH = 15;  // center frequency of temporal highpass at 30fps GOP-2
-    const kellyRatio = (TEMPORAL_F_HIGH / TEMPORAL_F_PEAK) *
-        Math.exp(-(TEMPORAL_F_HIGH - TEMPORAL_F_PEAK) / TEMPORAL_F_PEAK);
-    // note: the CHROMATIC temporal CSF (de Lange 1958, Kelly 1983) has peak at ~4 Hz,
-    // giving 3.2× less sensitivity at 15 Hz than luma. this is correct perceptually
-    // but PSNR penalizes chroma errors equally to luma. when switching to SSIM-based
-    // quality metrics, add: kellyChroma = (15/4)×exp(-11/4) = 0.24, and use
-    // sqrt(kellyLuma×kellyChroma) for chroma detail subbands.
-    const temporalCSF = temporalBand === 'high' ? 1 / kellyRatio : 1.0;
-    // step = baseQ · csfInvisibility · temporalCSF / synthesisNorm
-    // high norm → need finer step (more noise amplification)
-    // high csf → can use coarser step (eye less sensitive)
+    const chromaScale = isChroma ? CHROMA_STEP_SCALE : 1.0;
     // CDF 9/7 float pipeline: continuous step, no integer rounding.
-    return Math.max(0.5, bq * csf * temporalCSF / norm);
+    return Math.max(0.5, bq * chromaScale / norm);
 }
 
 // ── Dead-zone quantize/dequantize ──
@@ -1931,23 +2126,50 @@ function laplacianBias(mu: number): number {
 
 // compute adaptive bias from quantized subband data and step.
 // both encoder and decoder call this on the quantized coefficients.
+// uses GGD-aware interpolation: measures kurtosis of nonzero quantized values
+// to estimate the GGD shape parameter β, then blends between Laplacian bias
+// (β=1, exact) and Gaussian bias (β=2, bias≈0.5). for super-Gaussian (β<1),
+// the Laplacian bias is already conservative so no correction needed.
 function computeBias(qSub: Int32Array, step: number): number {
-    // estimate σ from nonzero quantized values: σ ≈ mean(|q|) * step / √2
-    // (for Laplacian: E[|X|] = σ·√2, so σ = E[|X|] / √2)
     let sumAbs = 0, nz = 0;
     for (let i = 0; i < qSub.length; i++) {
         if (qSub[i] !== 0) { sumAbs += Math.abs(qSub[i]); nz++; }
     }
-    if (nz === 0) return 0.25; // fallback: no nonzero coefficients
-    const meanAbsQ = sumAbs / nz; // mean absolute quantized value
-    // the dequantized mean absolute value: E[|X|] ≈ (meanAbsQ + bias) * step
-    // for Laplacian: E[|X|] = σ√2, so σ ≈ (meanAbsQ + 0.25) * step / √2
-    // λ = √2/σ ≈ 2 / ((meanAbsQ + 0.25) * step)
-    // μ = λΔ ≈ 2 / (meanAbsQ + 0.25)
-    // this is a self-consistent approximation: the bias affects the σ estimate,
-    // but the iteration converges in one step because the bias is smooth.
+    if (nz === 0) return 0.25;
+    const meanAbsQ = sumAbs / nz;
     const mu = 2 / (meanAbsQ + 0.25);
-    return laplacianBias(mu);
+    const lapBias = laplacianBias(mu);
+
+    // estimate GGD shape β from kurtosis of nonzero quantized values.
+    // need at least 16 nonzero values for a reliable kurtosis estimate.
+    if (nz < 16) return lapBias;
+    let s2 = 0, s4 = 0;
+    for (let i = 0; i < qSub.length; i++) {
+        if (qSub[i] !== 0) {
+            const v = Math.abs(qSub[i]) - meanAbsQ;
+            s2 += v * v;
+            s4 += v * v * v * v;
+        }
+    }
+    const variance = s2 / nz;
+    if (variance < 0.01) return lapBias;
+    const kurt = (s4 / nz) / (variance * variance) - 3;
+    // bisect for GGD shape parameter (same as computeGgdDz)
+    const lnG = (x: number) => x <= 0 ? 0 : (x - 0.5) * Math.log(x) - x + 0.5 * Math.log(2 * Math.PI) + 1 / (12 * x);
+    const ggdK = (b: number) => Math.exp(lnG(5/b) + lnG(1/b) - 2 * lnG(3/b)) - 3;
+    let bLo = 0.3, bHi = 2.5;
+    if (kurt > 0) {
+        for (let j = 0; j < 12; j++) {
+            const mid = (bLo + bHi) / 2;
+            if (ggdK(mid) > kurt) bLo = mid; else bHi = mid;
+        }
+    }
+    const beta = kurt <= 0 ? 2.0 : (bLo + bHi) / 2;
+    // interpolate: for β>1 (sub-Gaussian), bias shifts toward bin center (0.5).
+    // for β≤1 (super-Gaussian), keep Laplacian bias (already optimal or conservative).
+    if (beta <= 1.0) return lapBias;
+    const t = Math.min(1, beta - 1);  // 0 at β=1, 1 at β=2
+    return lapBias + (0.5 - lapBias) * t * 0.5;  // conservative: half the full correction
 }
 
 // ── BayesShrink: mathematically optimal wavelet denoising (Donoho 1995) ──
@@ -1969,6 +2191,18 @@ let _noiseSigma: number = 0;
 // keyframe activity mask: reused for P-frame encoding so edge masking
 // reflects the REFERENCE frame's texture structure (where residuals concentrate).
 let _keyframeMaskMap: Float32Array | null = null;
+// keyframe decoded LL: saved for P-frame geometric dead zone.
+// the keyframe LL has structural gradient information (edges, textures)
+// that predicts where P-frame residual energy concentrates.
+let _keyframeLL: Float64Array | null = null;
+// luma dequantized coefficients: stored after encoding Y so chroma encoding can
+// use luma significance as a cross-channel dead zone mask. where the luma detail
+// coefficient is zero, the chroma residual (after CfL) is unlikely to be
+// perceptually important — widen the chroma dead zone. encoder-only.
+let _lumaDequant: Float64Array | null = null;
+let _lumaDequantW: number = 0;
+let _lumaDequantH: number = 0;
+let _lumaDequantD: number = 0;
 // decoder-side keyframe mask: stored after decoding keyframe LL, reused for P-frames.
 let _decKeyframeMaskMap: Float32Array | null = null;
 // context bit machinery (parent, sibling, temporal, cross-channel) was tested via A/B
@@ -2091,118 +2325,23 @@ function synthNorm3D(w: number, h: number, level: number, numLevels: number, isH
     return spatial * tNorm;
 }
 
-// ── Contrast Sensitivity Function (CSF) weighting ──
-//
-// The human visual system's sensitivity to spatial frequency follows the
-// Mannos-Sakrison (1974) model, simplified for isotropic viewing:
-//
-//   CSF(f) = (0.2 + 0.45·f) · e^{−0.18·f}
-//
-// where f is spatial frequency in cycles/degree. This peaks at ~5.1 cpd and
-// falls off at both low and high frequencies.
-//
-// for a wavelet at level l in a K-level decomposition, the center
-// frequency of the detail subband is f_Nyquist / 2^l, where f_Nyquist depends
-// on viewing conditions (pixels/degree). We normalize to the LL band sensitivity
-// so the CSF weight is a RELATIVE scaling: higher weight = eye is MORE sensitive
-// = need FINER quantization (smaller step).
-//
-// For typical viewing (32 pixels/degree, as assumed by JPEG 2000):
-//   f_Nyquist = 16 cpd (Nyquist = half sampling rate)
-//   level 1: f = 8 cpd (near peak sensitivity at ~5.1 cpd)
-//   level 2: f = 4 cpd
-//   level 3: f = 2 cpd
-//   LL at level 3: f = 1 cpd
-//
-// CSF_luma is the standard model. CSF_chroma has ~2-4× less sensitivity,
-// modeled by Mullen (1985) as a frequency-dependent ratio:
-//   chromaRatio(f) ≈ 1 + (f / f_chroma_cutoff)²
-// where f_chroma_cutoff ≈ 4 cpd (chroma acuity falls off faster than luma).
-
-// viewing model: a single parameter (pixels per degree) determines both spatial
-// and temporal sensitivity. at typical desktop viewing (60cm, 100dpi):
-//   ppd = 2 × distance × tan(π/360) × dpi ≈ 32 pixels/degree
-// this connects to:
-//   spatial Nyquist = ppd/2 = 16 cpd (the highest frequency the display can show)
-//   temporal light cone = ppd × max_pursuit / fps = 32 pixels/frame
-const CSF_VIEWING_PPD = 32;   // pixels per degree (typical desktop viewing)
-const CSF_F_NYQUIST = CSF_VIEWING_PPD / 2;   // 16 cpd
-
-/** Mannos-Sakrison CSF for luma at frequency f (cpd). */
-function csfLuma(f: number): number {
-    return (0.2 + 0.45 * f) * Math.exp(-0.18 * f);
-}
-
-/** Chroma sensitivity relative to luma. Rolls off above f₀ where f₀ is the
- *  luma CSF peak frequency (~5.1 cpd at 32 ppd). below the luma peak, both
- *  channels contribute to perceived quality; above it, chromatic acuity
- *  drops faster than luminance. Mullen (1985) and Poynton (2012). */
-const CSF_CHROMA_F0 = 1 / 0.18 - 0.2 / 0.45;   // luma CSF peak ≈ 5.11 cpd
-function csfChromaRatio(f: number): number {
-    const fNorm = f / CSF_CHROMA_F0;
-    return 1 / (1 + fNorm * fNorm);
-}
-
-/** CSF visibility weight for a wavelet subband. Returns the inverse weight:
- *  higher value = eye is LESS sensitive = can use COARSER quantization.
- *  Normalized so the PEAK sensitivity frequency (≈5.1 cpd) = 1.0.
- *  All bands get weight ≥ 1.0 — CSF never makes quantization finer than
+/** CSF visibility weight for a wavelet subband.
+ *  non-perceptual codec: always returns 1 (flat allocation).
+ *  step = baseQ / synthNorm gives MSE-optimal bit distribution.
  *  the synthesis norms dictate, only coarser where the eye is less sensitive. */
-function csfWeight(level: number, numLevels: number, isLL: boolean, isHH: boolean, isChroma: boolean): number {
-    // center frequency of this subband.
-    // chroma at 4:2:0 has half the sampling rate per axis, so its Nyquist
-    // is half of luma's. using the luma Nyquist for chroma would evaluate
-    // the chromatic CSF at 2× the actual frequency, over-penalizing chroma.
-    const fNyq = isChroma ? CSF_F_NYQUIST / 2 : CSF_F_NYQUIST;
-    const f = isLL ? fNyq / Math.pow(2, numLevels) : fNyq / Math.pow(2, level);
-
-    // peak CSF occurs at ~5.11 cpd for the Mannos-Sakrison model.
-    // exact peak: d/df[(0.2+0.45f)e^{-0.18f}] = 0 → f_peak = 1/0.18 - 0.2/0.45 ≈ 5.11 cpd
-    const F_PEAK = 1 / 0.18 - 0.2 / 0.45;   // ≈ 5.11 cpd, derived from CSF derivative
-    const peakCSF = csfLuma(F_PEAK);
-
-    // sensitivity relative to peak: always ≤ 1
-    const relSens = csfLuma(f) / peakCSF;
-
-    // oblique effect: the human visual system is less sensitive to diagonal
-    // spatial frequencies than horizontal/vertical (Campbell & Kulikowski 1966).
-    // the effect is FREQUENCY-DEPENDENT:
-    //   below 2 cpd: negligible (k → 0)
-    //   2-5 cpd: ramps linearly (k → 0 to k_max)
-    //   above 5 cpd: full effect (k = k_max)
+function csfWeight(_level: number, _numLevels: number, _isLL: boolean, _isHH: boolean, _isChroma: boolean): number {
+    // non-perceptual codec: flat subband allocation.
+    // step = baseQ / synthNorm gives MSE-optimal bit distribution across
+    // subbands. each subband's contribution to reconstruction error is
+    // weighted solely by its synthesis filter amplification (synthNorm),
+    // which is the physically correct allocation for minimizing total MSE.
     //
-    // physical mechanism (Barten 2003, SPIE 5294): the neural integration length
-    // N_E drops from 15 cycles at cardinal orientations to 7.5 at oblique.
-    // this halving produces sensitivity ratio √(7.5/15) = √0.5 ≈ 0.71 at the
-    // high-frequency cutoff. Watson et al. 1997 measured 20-40% coarser HH
-    // thresholds than LH/HL in wavelet subbands.
-    //
-    // k_max = 0.28: conservative vs Barten's √0.5 = 0.29 and Watson's 40% upper bound.
-    // at level 1 (f ≈ 8 cpd): k = 0.28 → HH quantized 39% coarser (1/0.72)
-    // at level 2 (f ≈ 4 cpd): k = 0.19 → HH quantized 23% coarser
-    // at level 3 (f ≈ 2 cpd): k = 0.00 → no oblique effect (correct per psychophysics)
-    const OBLIQUE_K_MAX = 0.28;    // full oblique strength at high frequencies
-    const OBLIQUE_F_LO = 2.0;     // cpd: below this, oblique effect is negligible
-    const OBLIQUE_F_HI = 5.0;     // cpd: at and above this, full effect
-    let obliqueFactor = 1.0;
-    if (isHH && !isLL) {
-        const k = f <= OBLIQUE_F_LO ? 0 :
-            f >= OBLIQUE_F_HI ? OBLIQUE_K_MAX :
-            OBLIQUE_K_MAX * (f - OBLIQUE_F_LO) / (OBLIQUE_F_HI - OBLIQUE_F_LO);
-        obliqueFactor = 1 - k;  // sin²(2·45°) = 1 for HH orientation
-    }
-
-    // chroma: the Mullen 1985 chromatic CSF shows reduced sensitivity at high
-    // spatial frequencies. however, with integer quantization steps, the
-    // multiplicative penalty gets amplified by rounding (step 2→3 is +50%,
-    // far exceeding the CSF's ~38% recommendation at L1). applying only the
-    // square root of the ratio prevents the integer step from over-penalizing
-    // chroma while still encoding the perceptual roll-off.
-    const chromaPenalty = isChroma ? Math.sqrt(csfChromaRatio(f)) : 1.0;
-
-    // combined weight: frequency sensitivity × oblique effect × chroma
-    const weight = relSens * obliqueFactor * chromaPenalty;
-    return weight > 0 ? 1 / weight : 1;
+    // previous perceptual weighting (Mannos-Sakrison CSF, oblique effect,
+    // chromatic CSF) made L1 HH 54% coarser — sacrificing fine diagonal
+    // detail (trees, grass, texture) for perceptual efficiency. removed
+    // because this is a 1:1 non-perceptual codec where all frequencies
+    // are treated equally.
+    return 1;
 }
 
 function clampByte(v: number): number {
@@ -2517,10 +2656,11 @@ function warpYuv420(yuv: Uint8Array, layout: FrameLayout, params: Int16Array, in
     const out = new Uint8Array(yuv.length);
     const yPlane = warpPlane(yuv.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, params, inverse);
     out.set(yPlane);
-    // Chroma is half-resolution (4:2:0): affine params represent luma-pixel
+    // in 4:2:0, chroma is half-resolution: affine params represent luma-pixel
     // displacements, so halve all components for chroma planes.
-    const chromaParams = new Int16Array(6);
-    for (let i = 0; i < 6; i++) chromaParams[i] = Math.round(params[i] / 2);
+    // in 4:4:4, chroma is full-resolution: use params directly.
+    const chromaParams = layout.chroma444 ? params : new Int16Array(6);
+    if (!layout.chroma444) for (let i = 0; i < 6; i++) chromaParams[i] = Math.round(params[i] / 2);
     const uPlane = warpPlane(
         yuv.subarray(layout.paddedYSize, layout.paddedYSize + layout.paddedUvSize),
         layout.paddedUvW, layout.paddedUvH, chromaParams, inverse
@@ -3089,6 +3229,34 @@ function buildSiblingMap(
 // applied per-coefficient: effective_step = base_step × mask(x,y).
 // causal: both encoder and decoder compute mask from the same dequantized LL.
 
+/** GGD (generalized gaussian distribution) dead zone factor from kurtosis.
+ *  wavelet detail coefficients follow a GGD with shape β < 2 (super-Gaussian).
+ *  the optimal dead zone width for a GGD source is (2/β)^(1/β)/2 × step.
+ *  for Laplacian (β=1): factor = 1.0 (standard dead zone).
+ *  for sparser distributions (β < 1): factor > 1 (wider dead zone).
+ *  quality-adaptive: clamped to maxMask+0.25 at high Q to preserve fine detail. */
+function computeGgdDz(coeffs: Float64Array, offset: number, count: number, quality: number): number {
+    let s1 = 0, s2 = 0, s4 = 0;
+    for (let i = 0; i < count; i++) s1 += coeffs[offset + i];
+    const mu = s1 / count;
+    for (let i = 0; i < count; i++) { const dd = coeffs[offset + i] - mu; s2 += dd * dd; s4 += dd * dd * dd * dd; }
+    const variance = s2 / count;
+    const kurt = variance > 0 ? (s4 / count) / (variance * variance) - 3 : 0;
+    let bLo = 0.3, bHi = 2.5;
+    const lnG = (x: number) => x <= 0 ? 0 : (x - 0.5) * Math.log(x) - x + 0.5 * Math.log(2 * Math.PI) + 1 / (12 * x);
+    const ggdK = (b: number) => Math.exp(lnG(5/b) + lnG(1/b) - 2 * lnG(3/b)) - 3;
+    if (kurt > 0) {
+        for (let i = 0; i < 20; i++) {
+            const mid = (bLo + bHi) / 2;
+            if (ggdK(mid) > kurt) bLo = mid; else bHi = mid;
+        }
+    }
+    const beta = kurt <= 0 ? 2.0 : (bLo + bHi) / 2;
+    const rawDZ = Math.pow(2 / beta, 1 / beta) / 2;
+    const { maxMask } = maskingParams(quality);
+    return Math.max(1.0, Math.min(maxMask + 0.25, rawDZ));
+}
+
 /** texture masking exponent: Stevens' power law for suprathreshold contrast.
  *  the psychophysical literature (Watson et al. 1997, JPEG 2000 Part 2) gives
  *  γ = 0.2 for luminance wavelet coefficient masking. however, our masking map
@@ -3102,18 +3270,23 @@ function buildSiblingMap(
 // masking aggressiveness scales with quality: at low Q, aggressive masking saves
 // bits on invisible texture detail. at high Q, the user is paying for every
 // coefficient — masking should be minimal.
-// at Q≤60 (bq≥4): full masking (exponent=0.15, maxMask=1.25)
-// at Q≈80 (bq≈2): moderate masking (exponent=0.10, maxMask=1.17)
-// at Q≥94 (bq≤1): no masking (exponent=0, maxMask=1.0)
-function maskingParams(quality: number): { exponent: number; maxMask: number } {
-    const bq = videoBaseQ(quality);
-    // smooth transition: masking fades from bq=1 (Q≈80) to bq=0.5 (Q≈94).
-    // below bq=1: moderate-to-full masking. above bq=4: capped at full.
-    // the masking should never be completely disabled — even at Q=99, a tiny
-    // amount of noise zeroing is beneficial because wavelet ringing at the
-    // dead zone boundary introduces structured noise that hurts PSNR.
-    const t = Math.min(1, Math.max(0.1, (bq - 0.3) / 3.7));
-    return { exponent: 0.15 * t, maxMask: 1 + 0.25 * t };
+// texture masking: the human visual system is less sensitive to
+// quantization errors in textured regions (Stevens power law).
+//   at Q≤60 (bq≥4): full masking (exponent=0.15, maxMask=1.25)
+//   at Q≈80 (bq≈2): moderate masking (exponent=0.10, maxMask=1.17)
+//   at Q≥94 (bq≤1): no masking (exponent=0, maxMask=1.0)
+// tested 2026-04-05: increasing to 0.18/1.35 gave 5-7% fewer bytes but
+// -0.64 dB on complex images (city). rejected for a non-perceptual codec
+// where PSNR matters: texture IS signal, not noise. stronger (0.20/1.50)
+// also rejected: -1.5 dB on city.
+function maskingParams(_quality: number): { exponent: number; maxMask: number } {
+    // non-perceptual codec: disable activity masking.
+    // activity masking (Stevens power law + Weber-Fechner) scales the
+    // quantization step coarser in textured and dark regions where the
+    // eye tolerates more noise. for a 1:1 non-perceptual codec, all
+    // regions are treated equally — no perceptual weighting.
+    // returning exponent=0 makes buildMaskMap return all-1s (no effect).
+    return { exponent: 0, maxMask: 1 };
 }
 
 /** build a per-pixel masking map from the dequantized LL subband.
@@ -3224,7 +3397,92 @@ function subbandMaskScale(
     return scale;
 }
 
+/** geometric dead zone from LL gradient direction (encoder-only).
+ *  the LL gradient at each spatial position reveals the local edge angle θ.
+ *  physics predicts how much energy each detail subband should have at that
+ *  location: LH ∝ cos²θ, HL ∝ sin²θ, HH ∝ sin²(2θ)/4. where expected
+ *  energy is low, the coefficient is likely noise — widen the dead zone.
+ *  both encoder and decoder have the decoded LL, so this is self-derived. */
+function buildGradientDzMap(
+    ll: Float64Array, llW: number, llH: number, d: number,
+    sbW: number, sbH: number,
+    orient: 'LH' | 'HL' | 'HH',
+    strength: number = 0.5
+): Float32Array | null {
+    if (llW < 3 || llH < 3) return null;  // need at least 3×3 for Sobel
+    const llFS = llW * llH;
+    const downshift = sbW > llW ? Math.round(Math.log2(sbW / llW)) : 0;
+    const out = new Float32Array(sbW * sbH * d);
+
+    // compute gradient magnitude threshold: median gradient magnitude.
+    // only apply geometric dead zone at confirmed edge locations (above median).
+    // in flat regions, gradient direction is noise — factor stays 1.0.
+    // use a subsample for speed (same approach as buildMaskMap's median).
+    const gradMags: number[] = [];
+    for (let y = 1; y < llH - 1; y += 2) {
+        for (let x = 1; x < llW - 1; x += 2) {
+            const gx = ll[y * llW + x + 1] - ll[y * llW + x - 1];
+            const gy = ll[(y + 1) * llW + x] - ll[(y - 1) * llW + x];
+            gradMags.push(gx * gx + gy * gy);
+        }
+    }
+    gradMags.sort((a, b) => a - b);
+    const magThresh = gradMags.length > 0 ? gradMags[gradMags.length >> 1] : 0;
+    if (magThresh <= 0) return null;  // flat image — no gradient structure
+
+    for (let t = 0; t < d; t++) {
+        const tOff = t * sbW * sbH;
+        const tLLOff = t * llFS;
+        for (let y = 0; y < sbH; y++) {
+            const my = Math.min(y >> downshift, llH - 1);
+            for (let x = 0; x < sbW; x++) {
+                const mx = Math.min(x >> downshift, llW - 1);
+                // central differences for gradient (clamp at borders)
+                const ly = Math.max(0, my - 1), ry = Math.min(llH - 1, my + 1);
+                const lx = Math.max(0, mx - 1), rx = Math.min(llW - 1, mx + 1);
+                const gx = ll[tLLOff + my * llW + rx] - ll[tLLOff + my * llW + lx];
+                const gy = ll[tLLOff + ry * llW + mx] - ll[tLLOff + ly * llW + mx];
+                const mag2 = gx * gx + gy * gy;
+                if (mag2 <= magThresh) {
+                    out[tOff + y * sbW + x] = 1.0;
+                    continue;
+                }
+                // expected energy fraction for this orientation
+                const invMag2 = 1.0 / mag2;
+                let expected: number;
+                if (orient === 'LH') {
+                    expected = gx * gx * invMag2;  // cos²θ
+                } else if (orient === 'HL') {
+                    expected = gy * gy * invMag2;  // sin²θ
+                } else {
+                    // HH: sin²(2θ)/4 = (2·sinθ·cosθ)²/4 = gx²·gy²/mag⁴
+                    expected = (gx * gx * invMag2) * (gy * gy * invMag2);
+                }
+                // factor: 1.0 where expected=1 (full energy), up to 1+strength where expected=0
+                out[tOff + y * sbW + x] = 1.0 + strength * (1.0 - expected);
+            }
+        }
+    }
+    return out;
+}
+
 // ── encodeSubband3D / decodeSubband3D ──
+
+// per-subband byte breakdown logging (for codec development diagnostics)
+let _lumenDebugSubbands = false;
+
+export function setLumenDebug(v: boolean) { _lumenDebugSubbands = v; }
+
+// lightweight encode profiling (development only)
+let _lumenProfile = false;
+let _profileCounters: Record<string, number> = {};
+let _profileAccum: Record<string, number> = {};
+export function setLumenProfile(v: boolean) { _lumenProfile = v; if (v) { _profileAccum = {}; _profileCounters = {}; } }
+export function getLumenProfile(): Record<string, number> { return { ..._profileAccum }; }
+export function getLumenCounters(): Record<string, number> { return { ..._profileCounters }; }
+function _profileCount(key: string, n: number) { if (_lumenProfile) _profileCounters[key] = (_profileCounters[key] || 0) + n; }
+function _profileStart(): number { return _lumenProfile ? performance.now() : 0; }
+function _profileAdd(key: string, t0: number) { if (_lumenProfile) _profileAccum[key] = (_profileAccum[key] || 0) + (performance.now() - t0); }
 
 function encodeSubband3D(
     coeffs: Float64Array, w: number, h: number, d: number,
@@ -3246,6 +3504,8 @@ function encodeSubband3D(
     // the dead zone, not how survivors are reconstructed.
     const llW = w >> numLevels, llH = h >> numLevels;
     let maskMap: Float32Array | null = null;
+    // dequantized LL for gradient-direction dead zone (saved after LL encoding)
+    let decodedLL: Float64Array | null = null;
 
     // cross-orientation significance: at each wavelet level, the LH and HL subbands
     // are encoded before HH. their quantized magnitudes predict HH significance.
@@ -3276,6 +3536,11 @@ function encodeSubband3D(
         // LL DPCM: closed-loop prediction through the quantizer.
         // predicts each LL coefficient from RECONSTRUCTED neighbors and quantizes
         // only the RESIDUAL. same approach as JPEG-LS.
+        //
+        // backward-adaptive K/G on LL was tested and rejected: the LL subband at
+        // 3 wavelet levels is only 32×32 (for 256×256 images). the causal window
+        // is too small for a 3-parameter fit to improve over MED. measured: ±0.03 dB,
+        // ±56 bytes — statistically insignificant.
         if (isLL) {
             const step = baseStep;
             const invStep = 1.0 / step;
@@ -3283,6 +3548,10 @@ function encodeSubband3D(
             const recon = new Float64Array(subLen);
             const dqSub = new Float64Array(subLen);
             let allZero = true;
+            // GAP tested and rejected on LL (2026-04-05): wavelet LL coefficients
+            // are smooth, near-Gaussian — MED is already near-optimal. GAP's gradient
+            // thresholds are calibrated for pixel values not wavelet domain. result:
+            // +1-7% bytes with no PSNR improvement.
             for (let t = 0; t < d; t++) {
                 const tOff = t * sbW * sbH;
                 for (let y = 0; y < sbH; y++) {
@@ -3312,13 +3581,20 @@ function encodeSubband3D(
 
             if (allZero) {
                 mainBw.write(0, 1);  // zero flag
+                if (_lumenDebugSubbands) console.log(`  [${isChroma?'C':'Y'}] LL ${sbW}x${sbH}: 0B (allZero)`);
             } else {
                 mainBw.write(1, 1);  // nonzero
                 // LL DPCM residuals are already predicted; zigzag and encode with Logos
                 const zzBytes = zzToBytes(qRes);
                 if (zzBytes) {
                     mainBw.write(0, 1);  // pred flag: 0 = DPCM zigzag fits in a byte
+                    const _llt0 = _profileStart();
                     const wire = encode0D(zzBytes, sbW);
+                    _profileAdd('logos_encode', _llt0);
+                    if (_lumenDebugSubbands) {
+                        let nz = 0; for (let i = 0; i < qRes.length; i++) if (qRes[i] !== 0) nz++;
+                        console.log(`  [${isChroma?'C':'Y'}] LL ${sbW}x${sbH}: ${wire.length}B nz=${nz}/${qRes.length} (${(100*nz/qRes.length).toFixed(1)}%)`);
+                    }
                     const ulebLen = encodeULEB(wire.length);
                     for (let i = 0; i < ulebLen.length; i++) mainBw.write(ulebLen[i], 8);
                     for (let i = 0; i < wire.length; i++) mainBw.write(wire[i], 8);
@@ -3346,23 +3622,53 @@ function encodeSubband3D(
             // the reference frame's texture structure, which predicts where P-frame
             // residuals concentrate better than the P-frame's own difference LL).
             if (!isChroma) {
+                const freshLL = new Float64Array(dqSub);
+                if (temporalBand === 'low') {
+                    _keyframeLL = freshLL; // save for P-frame gradient dead zone
+                }
+                // for P-frames: use keyframe LL (structural gradients) if available.
+                // the P-frame's own residual LL has near-zero values and noisy
+                // gradients — the keyframe LL reveals where edges actually are.
+                decodedLL = (temporalBand === 'high' && _keyframeLL) ? _keyframeLL : freshLL;
+
                 const freshMask = buildMaskMap(dqSub, sbW, sbH, d, quality);
                 if (temporalBand === 'low') {
                     _keyframeMaskMap = freshMask; // save for P-frame reuse
                 }
                 // for P-frames: use keyframe mask if available (stronger edge info)
                 maskMap = (temporalBand === 'high' && _keyframeMaskMap) ? _keyframeMaskMap : freshMask;
+            } else {
+                decodedLL = new Float64Array(dqSub);
             }
             return;
         }
 
+
+        // cross-orientation HH prediction was tested (2026-04-05): subtract
+        // α×LH×HL/√(LH²+HL²) from HH before quantization (α=0.49 from CDF 9/7
+        // synthesis norms). result: +0.7-1.2% LARGER on all content. the prediction
+        // creates new nonzero coefficients where pred≠0 but HH=0, costing more
+        // entropy than the reduced coefficients save. same lesson as all dead ends:
+        // don't preprocess data for Logos — the distribution change hurts entropy.
+        // the cross-orientation DEAD ZONE (already shipped) is the correct approach:
+        // it zeros HH where siblings are zero (reducing entropy) without creating
+        // new nonzero values.
+        const hhPredBuf: Float64Array | null = null;
 
         // global BayesShrink: soft-threshold per-coefficient.
         // this is the FIRST stage of two-stage denoising. the SECOND stage (per-block
         // Wiener) follows. two stages at different granularities (global + block) remove
         // more noise than a single optimal stage because the first reshapes the noise
         // distribution for the second. empirically validated: two-stage beats unified.
-        if (_noiseSigma > 0) {
+        // BayesShrink: only denoise when noise sigma is well below the
+        // quantization step. the previous guard (sigma < step) let denoising
+        // fire on clean images where the MAD estimator detects texture as
+        // "noise." this systematically reduced quality by 0.2-0.5 dB on
+        // edge-heavy content (soft thresholding shrinks ALL coefficients,
+        // not just noise). the tighter guard (sigma < step/2) ensures
+        // denoising only activates when there's genuine camera noise that
+        // the dead zone alone can't handle.
+        if (_noiseSigma > 0 && _noiseSigma < baseStep * 0.5) {
             bayesShrink(sub, _noiseSigma, baseStep, temporalBand === 'high');
         }
 
@@ -3375,7 +3681,8 @@ function encodeSubband3D(
         // noise model: σ² = σ²_camera × (2 if P-frame, 1 if keyframe).
         // w_block = max(0, 1 - σ²/var_block): MMSE scale per block.
         // encoder-only, no format change.
-        if (_noiseSigma > 0) {
+        // Wiener: same guard as BayesShrink — only when genuine noise present
+        if (_noiseSigma > 0 && _noiseSigma < baseStep * 0.5) {
             const sigma2 = _noiseSigma * _noiseSigma * (temporalBand === 'high' ? 2 : 1);
             const WB = 8;
             for (let t = 0; t < d; t++) {
@@ -3400,89 +3707,131 @@ function encodeSubband3D(
             }
         }
 
-        // dead-zone-only activity masking for detail subbands
-        let dzMask: Float32Array | null = null;
-        if (!isChroma && maskMap) {
-            dzMask = subbandMaskScale(maskMap, llW, llH, sbW, sbH, d);
+        // activity masking removed for non-perceptual codec (step scaling
+        // in textured regions was a perceptual optimization).
+
+        // cross-orientation dead zone (encoder-only).
+        // physics: an edge at angle θ produces LH ∝ sin θ, HL ∝ cos θ,
+        // HH ∝ sin θ·cos θ. cross-orientation significance predicts
+        // coefficient significance at the same spatial location.
+        //
+        // HH: nonzero ONLY where both LH and HL have energy (cross-edge).
+        //     widen dead zone by 1.3× where either sibling is zero.
+        // HL: the LH sibling (same level, orthogonal) predicts HL activity.
+        //     where LH is zero, HL is more likely noise — widen by 1.2×.
+        //     weaker factor than HH (HL uses one sibling, HH uses two).
+        let crossDzMask: Float32Array | null = null;
+        if (isHH && !isLL) {
+            const lhDq = extractSubbandF(fullDequant, w, sbW, 0, sbW, sbH, d);
+            const hlDq = extractSubbandF(fullDequant, w, 0, sbH, sbW, sbH, d);
+            crossDzMask = new Float32Array(subLen);
+            for (let i = 0; i < subLen; i++) {
+                const lhAlive = Math.abs(lhDq[i]) > 0.01;
+                const hlAlive = Math.abs(hlDq[i]) > 0.01;
+                crossDzMask[i] = (lhAlive && hlAlive) ? 1.0 : 1.5;
+            }
+        } else if (sx === 0 && sy > 0 && !isHH) {
+            // HL sibling dead zone: where LH is zero at the same position,
+            // HL is less likely to represent a real edge. encoding order is
+            // LH→HL→HH, so LH is already dequantized in fullDequant.
+            const lhDq = extractSubbandF(fullDequant, w, sbW, 0, sbW, sbH, d);
+            crossDzMask = new Float32Array(subLen);
+            for (let i = 0; i < subLen; i++) {
+                crossDzMask[i] = Math.abs(lhDq[i]) > 0.01 ? 1.0 : 1.3;
+            }
         }
 
+        // geometric dead zone from LL gradient direction (encoder-only).
+        // the LL gradient reveals local edge angle θ. expected energy for each
+        // orientation: LH ∝ cos²θ, HL ∝ sin²θ, HH ∝ sin²(2θ)/4. where the
+        // gradient direction says a subband shouldn't have energy, widen the
+        // dead zone. self-derived from decoded LL — zero side info.
+        let geoDzMask: Float32Array | null = null;
+        if (!isChroma && !isLL && decodedLL) {
+            const orient = isHH ? 'HH' : (sx > 0 && sy === 0 ? 'LH' : 'HL');
+            // quality-adaptive strength: geometric evidence (edge direction) is
+            // valid at any quality — a horizontal edge shouldn't produce LH energy
+            // regardless of Q. use a gentle fade from 0.3 (Q≤70) to 0.15 (Q≥94)
+            // to preserve directional sparsification even at high quality.
+            const geoT = Math.min(1, Math.max(0, (videoBaseQ(quality) - 0.3) / 3.7));
+            const geoStrength = 0.15 + 0.15 * geoT;  // range [0.15, 0.30]
+            geoDzMask = buildGradientDzMap(decodedLL, llW, llH, d, sbW, sbH, orient as 'LH' | 'HL' | 'HH', geoStrength);
+        }
 
-        // GGD adaptive dead zone from measured kurtosis
-        let GGD_DZ: number;
-        {
-            const n = sub.length;
-            let s1 = 0, s2 = 0, s4 = 0;
-            for (let i = 0; i < n; i++) s1 += sub[i];
-            const mu = s1 / n;
-            for (let i = 0; i < n; i++) { const dd = sub[i] - mu; s2 += dd * dd; s4 += dd * dd * dd * dd; }
-            const variance = s2 / n;
-            const kurt = variance > 0 ? (s4 / n) / (variance * variance) - 3 : 0;
-            let bLo = 0.3, bHi = 2.5;
-            const lnG = (x: number) => x <= 0 ? 0 : (x - 0.5) * Math.log(x) - x + 0.5 * Math.log(2 * Math.PI) + 1 / (12 * x);
-            const ggdK = (b: number) => Math.exp(lnG(5/b) + lnG(1/b) - 2 * lnG(3/b)) - 3;
-            if (kurt > 0) {
-                for (let i = 0; i < 20; i++) {
-                    const mid = (bLo + bHi) / 2;
-                    if (ggdK(mid) > kurt) bLo = mid; else bHi = mid;
+        // cross-channel chroma dead zone: where the corresponding luma detail
+        // coefficient is zero, the chroma CfL residual is unlikely to be
+        // perceptually important. the luma subband at the same wavelet level
+        // and orientation is 2× the chroma resolution (4:2:0). each chroma
+        // coefficient maps to a 2×2 block of luma; if ALL 4 luma neighbors
+        // are zero, widen the chroma dead zone by 1.5×. encoder-only.
+        let chromaDzMask: Float32Array | null = null;
+        if (isChroma && !isLL && _lumaDequant) {
+            // find the corresponding luma subband at the same level and orientation.
+            // chroma subband at (sx, sy) with size (sbW, sbH) corresponds to
+            // luma subband at (sx*2, sy*2) with size (sbW*2, sbH*2).
+            const lumaW = _lumaDequantW;
+            const lumaSx = sx * 2, lumaSy = sy * 2;
+            const lumaSbW = sbW * 2, lumaSbH = sbH * 2;
+            // only build mask if luma subband is within bounds
+            if (lumaSx + lumaSbW <= lumaW && lumaSy + lumaSbH <= (_lumaDequantH * _lumaDequantD)) {
+                chromaDzMask = new Float32Array(subLen);
+                for (let t = 0; t < d; t++) {
+                    const tOff = t * sbW * sbH;
+                    const tLumaOff = t * lumaW * _lumaDequantH;
+                    for (let y = 0; y < sbH; y++) {
+                        for (let x = 0; x < sbW; x++) {
+                            // check 2x2 luma block
+                            const ly = lumaSy + y * 2, lx = lumaSx + x * 2;
+                            const l00 = Math.abs(_lumaDequant[tLumaOff + ly * lumaW + lx]);
+                            const l10 = Math.abs(_lumaDequant[tLumaOff + ly * lumaW + lx + 1]);
+                            const l01 = Math.abs(_lumaDequant[tLumaOff + (ly + 1) * lumaW + lx]);
+                            const l11 = Math.abs(_lumaDequant[tLumaOff + (ly + 1) * lumaW + lx + 1]);
+                            const allZero = l00 < 0.01 && l10 < 0.01 && l01 < 0.01 && l11 < 0.01;
+                            chromaDzMask[tOff + y * sbW + x] = allZero ? 1.5 : 1.0;
+                        }
+                    }
                 }
             }
-            const beta = kurt <= 0 ? 2.0 : (bLo + bHi) / 2;
-            const rawDZ = Math.pow(2 / beta, 1 / beta) / 2;
-            // quality-adaptive GGD: at high Q, reduce dead zone widening so
-            // fine detail survives quantization. the GGD clamp upper bound
-            // scales from 1.5 (Q≤60) to 1.0 (Q≥94) — same as activity masking.
-            const { maxMask } = maskingParams(quality);
-            GGD_DZ = Math.max(1.0, Math.min(maxMask + 0.25, rawDZ));
         }
+
+        // GGD adaptive dead zone from measured kurtosis
+        const GGD_DZ = computeGgdDz(sub, 0, sub.length, quality);
 
         // quantize + multi-layer dead zone masking, then adaptive dequantization.
         // the reconstruction bias is physics-derived from the quantized coefficient
         // statistics: for a Laplacian source with μ = λΔ, the optimal bias is
         // 1/μ - 1/(e^μ - 1). dense subbands get bias ≈ 0.5 (bin center),
         // sparse subbands get bias ≈ 0 (bin edge). this gives +1-2 dB on LL/LH.
-        // for d=4 volumes, apply coarser quantization to temporal-detail frames
-        // (frames 1-3 in the wavelet output). the Kelly temporal CSF at 15 Hz
-        // gives 1/0.782 ≈ 1.28× coarser step for temporal detail. for d<=2
-        // this has no effect (spatialFrameSize covers the whole subband).
-        const spatialFrameSize = sbW * sbH;
-        const temporalCSFScale = 1.0 / 0.782; // Kelly(15Hz/8Hz) = 0.782
-
         const quantizeWithMask = (step: number, qSub: Int32Array, dqSub: Float64Array) => {
             let allZero = true;
-            const hasMasks = GGD_DZ > 1.0 || dzMask;
-            // pass 1: quantize with per-coefficient adaptive step.
-            // the step scales by: temporal CSF (for d≥4 detail frames) and
-            // activity mask (for textured regions — Stevens power law masking).
-            // the activity mask is computed from decoded LL, so the decoder can
-            // compute the IDENTICAL mask and apply the IDENTICAL step scaling.
-            // no side info needed — both sides derive the mask from the same LL.
+            // pass 1: quantize with uniform step (non-perceptual).
+            // previous temporal CSF scaling and activity masking removed for
+            // non-perceptual codec. all coefficients use the same base step.
             for (let i = 0; i < sub.length; i++) {
-                const tFrame = Math.floor(i / spatialFrameSize);
-                let effStep = tFrame > 0 && d >= 4 ? step * temporalCSFScale : step;
-                // activity masking: scale the step by the LL-derived mask factor.
-                // textured regions get coarser step → fewer bits, same perceptual quality.
-                // the decoder computes the IDENTICAL mask from the decoded LL —
-                // both sides apply the SAME scaling. no side info needed (self-derived).
-                // GGD dead zone is encoder-only (widens dead zone, doesn't affect step).
-                if (dzMask && dzMask[i] > 1.0) effStep *= dzMask[i];
+                const effStep = step;
                 const invStep = 1.0 / effStep;
                 const c = sub[i];
                 const absC = Math.abs(c);
                 // GGD dead zone: encoder-only (kills small coefficients, doesn't change step)
-                const dzStep = GGD_DZ > 1.0 ? effStep * GGD_DZ : effStep;
+                // cross-orientation mask (HH only): widens dead zone where siblings are zero
+                // parent mask: widens dead zone where parent coefficient is zero
+                // geometric mask: widens dead zone where LL gradient says low expected energy
+                // chroma mask: widens dead zone where luma detail is zero (cross-channel)
+                const crossFactor = crossDzMask ? crossDzMask[i] : 1.0;
+                const parentFactor = parentDzMask ? parentDzMask[i] : 1.0;
+                const geoFactor = geoDzMask ? geoDzMask[i] : 1.0;
+                const chromaFactor = chromaDzMask ? chromaDzMask[i] : 1.0;
+                const dzStep = (GGD_DZ > 1.0 || crossFactor > 1.0 || parentFactor > 1.0 || geoFactor > 1.0 || chromaFactor > 1.0)
+                    ? effStep * GGD_DZ * crossFactor * parentFactor * geoFactor * chromaFactor : effStep;
                 const q = absC < dzStep ? 0 : (c > 0 ? 1 : -1) * Math.floor(absC * invStep);
                 qSub[i] = q;
                 if (q !== 0) allZero = false;
             }
-            // pass 2: dequantize with same per-coefficient step as quantization.
-            // includes temporal CSF + activity mask scaling (identical to encoder pass 1).
+            // pass 2: dequantize with uniform step (mirrors decoder exactly).
             const adaptiveBias = computeBias(qSub, step);
             let mse = 0;
             for (let i = 0; i < sub.length; i++) {
-                const tFrame = Math.floor(i / spatialFrameSize);
-                let effStep = tFrame > 0 && d >= 4 ? step * temporalCSFScale : step;
-                // activity mask step scaling (same as decoder — NO GGD here)
-                if (dzMask && dzMask[i] > 1.0) effStep *= dzMask[i];
+                const effStep = step;
                 dqSub[i] = qSub[i] === 0 ? 0 :
                     (qSub[i] > 0 ? 1 : -1) * (Math.abs(qSub[i]) + adaptiveBias) * effStep;
                 const err = sub[i] - dqSub[i];
@@ -3525,6 +3874,20 @@ function encodeSubband3D(
         const subbandLevel = Math.round(Math.log2(w / sbW));
         const hasParent = subbandLevel < numLevels && subbandLevel >= 1;
         const parentMap = hasParent ? buildParentMap(fullDequant, w, sx, sy, sbW, sbH, d) : null;
+        // parent-guided dead zone: cross-scale significance predicts child zeros.
+        // P(child=0|parent=0) ≈ 99.6% — overwhelmingly, zero parents have zero
+        // children. widen the dead zone for children with zero parents to zero out
+        // the remaining 0.4% that would survive the base dead zone. this is a
+        // MULTIPLICATIVE encoder-only operation (no format change, no side info).
+        // the decoder uses the base step unmodified; the parent map is self-derived
+        // from fullDequant which both sides have.
+        let parentDzMask: Float32Array | null = null;
+        if (parentMap) {
+            parentDzMask = new Float32Array(subLen);
+            for (let i = 0; i < subLen; i++) {
+                parentDzMask[i] = parentMap[i] === 0 ? 2.0 : 1.0;
+            }
+        }
         // cross-orientation sibling map: the conformal structure of the wavelet
         // means LH→HL→HH at each level share significance patterns.
         // HL's sibling is LH (same level, orthogonal). HH's siblings are LH AND HL.
@@ -3539,34 +3902,180 @@ function encodeSubband3D(
         }
         // (all context machinery removed — A/B tested: zero benefit)
 
+        // helper: encode sparse 1-byte subband (positions + values).
+        // returns null if encoding fails (overflow, etc).
+        const encodeSparse1B = (scanSub: Int32Array, nzCount: number): Uint8Array | null => {
+            const posDeltas = new Uint8Array(nzCount * 4);
+            const vals = new Uint8Array(nzCount);
+            let posLen = 0, prev = 0, valIdx = 0;
+            let posOverflow = false;
+            for (let i = 0; i < scanSub.length; i++) {
+                if (scanSub[i] !== 0) {
+                    let gap = i - prev;
+                    prev = i;
+                    do {
+                        let b = gap & 0x7f;
+                        gap >>>= 7;
+                        if (gap > 0) b |= 0x80;
+                        if (posLen >= posDeltas.length) { posOverflow = true; break; }
+                        posDeltas[posLen++] = b;
+                    } while (gap > 0);
+                    if (posOverflow) break;
+                    const z = zz(scanSub[i]);
+                    if (z > 255) { posOverflow = true; break; }
+                    vals[valIdx++] = z;
+                }
+            }
+            if (posOverflow) return null;
+            const posWire = encode0D(posDeltas.subarray(0, posLen));
+            const valWire = encode0D(vals.subarray(0, valIdx));
+            const nzUleb = encodeULEB(nzCount);
+            const posDecLenUleb = encodeULEB(posLen);
+            const posWireLenUleb = encodeULEB(posWire.length);
+            const sparseTotal = nzUleb.length + posDecLenUleb.length + posWireLenUleb.length + posWire.length + valWire.length;
+            const combined = new Uint8Array(sparseTotal);
+            let off = 0;
+            combined.set(nzUleb, off); off += nzUleb.length;
+            combined.set(posDecLenUleb, off); off += posDecLenUleb.length;
+            combined.set(posWireLenUleb, off); off += posWireLenUleb.length;
+            combined.set(posWire, off); off += posWire.length;
+            combined.set(valWire, off);
+            return combined;
+        };
+
         const logosEncode = (qSub: Int32Array): { wire: Uint8Array; mode: number } => {
             const n = qSub.length;
 
-            // context bits (parent, sibling, temporal, cross-channel) were A/B tested
-            // and provide ZERO compression benefit. Logos's O2+Ab learn the same
-            // structure adaptively. mode 3 encoding path removed.
+            // geometry-aware scan order: LH subbands (horizontal detail) have
+            // strong VERTICAL correlation (edges extend vertically). transposing
+            // LH before encoding makes the sequential O2 context follow the
+            // strong direction. the Ab axis (stride = sbH after transpose) then
+            // sees the horizontal neighbor — the weak direction that still helps.
+            //
+            // for HL (vertical detail): row-major is already the strong direction.
+            // for HH (diagonal): no single raster order matches — kept row-major.
+            //
+            // both encoder and decoder apply the same transpose (isLH is
+            // deterministic from subband position). zero side info.
+            // geometry-aware scan: align the byte stream with each subband's
+            // correlation direction so Logos's O2 axis (previous byte) sees the
+            // most correlated neighbor.
+            //
+            // LH (horizontal detail, vertical edges): transpose so consecutive
+            // bytes follow the vertical direction. stride = sbH gives Ab the
+            // horizontal neighbor.
+            //
+            // HL (vertical detail, horizontal edges): row-major is already the
+            // strong direction. stride = sbW gives Ab the vertical neighbor.
+            //
+            // HH: diagonal stride (sbW±1) was tested and rejected — row boundary
+            // wrapping and cold-start overhead cause tiny regression (+4-24B).
+            // the default stride = sbW is better because Ab at least sees a
+            // meaningful spatial neighbor (directly above).
+            let scanSub = qSub;
+            let scanStride = sbW;
+            if (isLH && sbW > 1 && sbH > 1 && d === 1) {
+                const transposed = new Int32Array(n);
+                for (let y = 0; y < sbH; y++)
+                    for (let x = 0; x < sbW; x++)
+                        transposed[x * sbH + y] = qSub[y * sbW + x];
+                scanSub = transposed;
+                scanStride = sbH;
+            }
 
-            const rawZZ = zzToBytes(qSub);
+            const rawZZ = zzToBytes(scanSub);
             if (!rawZZ) {
                 // overflow: 2-byte zigzag
                 const rawBytes = new Uint8Array(n * 2);
                 for (let i = 0; i < n; i++) {
-                    const z = zz(qSub[i]);
-                    rawBytes[i * 2] = (z >> 8) & 0xff;
-                    rawBytes[i * 2 + 1] = z & 0xff;
+                    const z2 = zz(scanSub[i]);
+                    rawBytes[i * 2] = (z2 >> 8) & 0xff;
+                    rawBytes[i * 2 + 1] = z2 & 0xff;
                 }
-                return { wire: encode0D(rawBytes, sbW * 2), mode: 2 }; // stride = sbW*2 for 2-byte zigzag
+                const _lt0 = _profileStart();
+                const _lw = encode0D(rawBytes, scanStride * 2);
+                _profileAdd('logos_encode', _lt0);
+
+                // try sparse 2-byte mode
+                let nz2 = 0;
+                for (let i = 0; i < n; i++) if (scanSub[i] !== 0) nz2++;
+                const sp2 = 1 - nz2 / n;
+                if (sp2 > 0.5 && nz2 > 0 && n >= 256) {
+                    const posD = new Uint8Array(nz2 * 4);
+                    const vals2 = new Uint8Array(nz2 * 2);
+                    let pLen = 0, prev2 = 0, vi2 = 0;
+                    let overflow = false;
+                    for (let i = 0; i < n; i++) {
+                        if (scanSub[i] !== 0) {
+                            let gap = i - prev2;
+                            prev2 = i;
+                            do {
+                                let b = gap & 0x7f;
+                                gap >>>= 7;
+                                if (gap > 0) b |= 0x80;
+                                if (pLen >= posD.length) { overflow = true; break; }
+                                posD[pLen++] = b;
+                            } while (gap > 0);
+                            if (overflow) break;
+                            const z2 = zz(scanSub[i]);
+                            vals2[vi2 * 2] = (z2 >> 8) & 0xff;
+                            vals2[vi2 * 2 + 1] = z2 & 0xff;
+                            vi2++;
+                        }
+                    }
+                    if (!overflow) {
+                        const pw = encode0D(posD.subarray(0, pLen));
+                        const vw = encode0D(vals2.subarray(0, vi2 * 2));
+                        const nzU = encodeULEB(nz2);
+                        const pdU = encodeULEB(pLen);
+                        const pwU = encodeULEB(pw.length);
+                        const tot = nzU.length + pdU.length + pwU.length + pw.length + vw.length;
+                        if (tot < _lw.length) {
+                            const combined = new Uint8Array(tot);
+                            let o = 0;
+                            combined.set(nzU, o); o += nzU.length;
+                            combined.set(pdU, o); o += pdU.length;
+                            combined.set(pwU, o); o += pwU.length;
+                            combined.set(pw, o); o += pw.length;
+                            combined.set(vw, o);
+                            return { wire: combined, mode: 4 };
+                        }
+                    }
+                }
+                return { wire: _lw, mode: 2 };
             }
 
-            const rawWire = encode0D(rawZZ, sbW);
+            // count non-zero values first (cheap) to decide encoding strategy.
+            // highly sparse subbands skip the raw encode entirely.
+            let nzCount = 0;
+            for (let i = 0; i < scanSub.length; i++) if (scanSub[i] !== 0) nzCount++;
+            const sparsity = 1 - nzCount / scanSub.length;
 
-            // quick autocorrelation check on RAW (pre-quantized) coefficients.
-            // using raw coefficients captures the true spatial structure before
-            // the dead zone + BayesShrink kills it. threshold self-derived from
-            // the break-even: ρ² > sideInfoBits / (nInterior × bitsPerCoeff).
+            // for highly sparse subbands (>85% zeros), skip raw Logos encode
+            // and go straight to sparse mode. saves one expensive encode0D call
+            // per sparse subband (~100-200ms each).
+            if (sparsity > 0.85 && nzCount > 0 && scanSub.length >= 256) {
+                const sparseResult = encodeSparse1B(scanSub, nzCount);
+                if (sparseResult) return { wire: sparseResult, mode: 3 };
+            }
+
+            const _lt1 = _profileStart();
+            const rawWire = encode0D(rawZZ, scanStride);
+            _profileAdd('logos_encode', _lt1);
+
+            // K/G spatial oscillator: pred = Kx*L + Ky*A - G*D per 8x8 block.
+            // trial-gated: only fires when autocorrelation exceeds a self-derived
+            // threshold. the pre-check is fast (256-sample subsample) — the full
+            // trial encode is expensive (O(n) Cramer solve + Logos encode).
+            //
+            // note: K/G almost never fires on natural images because the wavelet
+            // transform already removes most spatial correlation. the quantized
+            // detail coefficients have <1% residual variance reduction from K/G,
+            // which doesn't pay for the 3 bytes/block side info. K/G is kept for
+            // synthetic content (gradients, renders) where post-wavelet correlation
+            // remains strong.
             let useKG = false;
-            if (n >= KG_MIN_SIZE) { // only on large subbands
-                // self-derive threshold from raw wire cost (bits per coefficient)
+            if (n >= KG_MIN_SIZE) {
                 const rawBpc = rawWire.length * 8 / n;
                 const kgRhoThresh = Math.sqrt(KG_SIDE_BITS / (KG_INTERIOR * Math.max(1, rawBpc)));
                 let sumXX = 0, sumXprev = 0, sumYY = 0, sumYprev = 0;
@@ -3575,13 +4084,11 @@ function encodeSubband3D(
                 let cnt = 0;
                 for (let i = sampStride; i < sbW * sbH && cnt < sampleN; i += sampStride, cnt++) {
                     const v = sub[i];
-                    // x-neighbor correlation
                     if ((i % sbW) > 0) {
                         const Lv = sub[i - 1];
                         sumXX += v * v;
                         sumXprev += v * Lv;
                     }
-                    // y-neighbor correlation
                     if (i >= sbW) {
                         const Av = sub[i - sbW];
                         sumYY += v * v;
@@ -3593,7 +4100,124 @@ function encodeSubband3D(
                 useKG = rhoX > kgRhoThresh || rhoY > kgRhoThresh;
             }
 
+            // backward-adaptive K/G (mode 5): derive Kx/Ky/G per 8x8 block
+            // from the causal neighborhood in scan-order coordinates.
+            // operates on scanSub (already transposed for LH subbands) so the
+            // prediction aligns with Logos's O2/Ab axes and the decoder's
+            // transpose handling. zero side information.
+            //
+            // the image's "metric" (edge direction) is encoded in the fitted
+            // Kx/Ky/G coefficients. for smooth regions Kx~1, Ky~1, G~1 (MED).
+            // for directional edges, one coefficient dominates (horizontal
+            // prediction for vertical edges, vertical for horizontal edges).
+            // the decoder derives identical coefficients from decoded data.
+            {
+                // scan-order dimensions: after transpose, scan "width" and "height"
+                // may differ from the original sbW/sbH.
+                const sW = isLH && sbW > 1 && sbH > 1 && d === 1 ? sbH : sbW;
+                const sH = isLH && sbW > 1 && sbH > 1 && d === 1 ? sbW : sbH;
+
+                if (n >= KG_MIN_SIZE && sW >= KG_BLOCK && sH >= KG_BLOCK * 2) {
+                    const bkResidual = new Int32Array(n);
+                    // work on a copy so closed-loop prediction doesn't corrupt scanSub
+                    const bkScan = new Int32Array(n);
+                    for (let i = 0; i < n; i++) bkScan[i] = scanSub[i];
+
+                    for (let t = 0; t < d; t++) {
+                        const tOff = t * sW * sH;
+                        for (let by = 0; by < sH; by += KG_BLOCK) {
+                            for (let bx = 0; bx < sW; bx += KG_BLOCK) {
+                                const bw = Math.min(KG_BLOCK, sW - bx);
+                                const bh = Math.min(KG_BLOCK, sH - by);
+
+                                // fit from causal L-shaped neighborhood in scan order
+                                let sLL = 0, sAA = 0, sDD = 0;
+                                let sLA = 0, sLD = 0, sAD = 0;
+                                let sLV = 0, sAV = 0, sDV = 0;
+                                let fitCount = 0;
+
+                                const fitRowStart = Math.max(1, by - KG_BLOCK);
+                                for (let fy = fitRowStart; fy < by; fy++) {
+                                    for (let fx = Math.max(1, bx); fx < bx + bw && fx < sW; fx++) {
+                                        const idx = tOff + fy * sW + fx;
+                                        const v = bkScan[idx];
+                                        const L = bkScan[idx - 1];
+                                        const A = fy > 0 ? bkScan[idx - sW] : 0;
+                                        const D2 = fy > 0 ? bkScan[idx - sW - 1] : 0;
+                                        sLL += L*L; sAA += A*A; sDD += D2*D2;
+                                        sLA += L*A; sLD += L*D2; sAD += A*D2;
+                                        sLV += L*v; sAV += A*v; sDV += D2*v;
+                                        fitCount++;
+                                    }
+                                }
+                                if (bx >= 1) {
+                                    const fitColStart = Math.max(1, bx - KG_BLOCK);
+                                    for (let fy = by; fy < by + bh && fy < sH; fy++) {
+                                        for (let fx = fitColStart; fx < bx; fx++) {
+                                            if (fy > 0) {
+                                                const idx = tOff + fy * sW + fx;
+                                                const v = bkScan[idx];
+                                                const L = fx > 0 ? bkScan[idx - 1] : 0;
+                                                const A = bkScan[idx - sW];
+                                                const D2 = fx > 0 ? bkScan[idx - sW - 1] : 0;
+                                                sLL += L*L; sAA += A*A; sDD += D2*D2;
+                                                sLA += L*A; sLD += L*D2; sAD += A*D2;
+                                                sLV += L*v; sAV += A*v; sDV += D2*v;
+                                                fitCount++;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let dkx = 0, dky = 0, dg = 0;
+                                if (fitCount >= 6) {
+                                    const reg = 1e-4 * (sLL + sAA + sDD + 1);
+                                    const a11 = sLL+reg, a12 = sLA, a13 = -sLD;
+                                    const a21 = sLA, a22 = sAA+reg, a23 = -sAD;
+                                    const a31 = -sLD, a32 = -sAD, a33 = sDD+reg;
+                                    const det = a11*(a22*a33-a23*a32) - a12*(a21*a33-a23*a31) + a13*(a21*a32-a22*a31);
+                                    if (Math.abs(det) > 1e-10) {
+                                        const kx = (sLV*(a22*a33-a23*a32) - a12*(sAV*a33+a23*sDV) + a13*(sAV*a32+a22*sDV)) / det;
+                                        const ky = (a11*(sAV*a33+a23*sDV) - sLV*(a21*a33-a23*a31) + a13*(a21*(-sDV)-sAV*a31)) / det;
+                                        const g  = (a11*(a22*(-sDV)-sAV*a32) - a12*(a21*(-sDV)-sAV*a31) + sLV*(a21*a32-a22*a31)) / det;
+                                        dkx = Math.max(-2, Math.min(2, kx));
+                                        dky = Math.max(-2, Math.min(2, ky));
+                                        dg = Math.max(-2, Math.min(2, g));
+                                    }
+                                }
+
+                                for (let y = 0; y < bh; y++) {
+                                    for (let x = 0; x < bw; x++) {
+                                        const gy = by + y, gx = bx + x;
+                                        const idx = tOff + gy * sW + gx;
+                                        const L = gx > 0 ? bkScan[idx - 1] : 0;
+                                        const A = gy > 0 ? bkScan[idx - sW] : 0;
+                                        const D2 = (gx > 0 && gy > 0) ? bkScan[idx - sW - 1] : 0;
+                                        const pred = Math.round(dkx * L + dky * A - dg * D2);
+                                        bkResidual[idx] = bkScan[idx] - pred;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    const bkZZ = zzToBytes(bkResidual);
+                    if (bkZZ) {
+                        const bkWire = encode0D(bkZZ, scanStride);
+                        if (bkWire.length < rawWire.length) {
+                            return { wire: bkWire, mode: 5 };
+                        }
+                    }
+                }
+            }
+
             if (!useKG) {
+                if (sparsity > 0.5 && nzCount > 0 && scanSub.length >= 256) {
+                    const sparseWire = encodeSparse1B(scanSub, nzCount);
+                    if (sparseWire && sparseWire.length < rawWire.length) {
+                        return { wire: sparseWire, mode: 3 };
+                    }
+                }
                 return { wire: rawWire, mode: 0 };
             }
 
@@ -3676,7 +4300,9 @@ function encodeSubband3D(
                 }
             }
 
-            // encode K/G field via Logos (1D — no spatial stride for K/G params)
+            // encode K/G field via Logos (1D — no spatial stride for K/G params).
+            // delta-coding was tested and provides zero benefit — Logos's O2 axis
+            // already captures the sequential correlation in the K/G field.
             const kgWire = encode0D(kgField);
 
             // encode residual via Logos
@@ -3709,11 +4335,94 @@ function encodeSubband3D(
         mainBw.write(0, 1);
         const qSub = new Int32Array(sub.length);
         const dqSub = new Float64Array(sub.length);
-        const { allZero } = quantizeWithMask(baseStep, qSub, dqSub);
-        {
-        }
+        let { allZero } = quantizeWithMask(baseStep, qSub, dqSub);
 
-        // (significance storage removed — A/B tested: zero benefit from context bits)
+        // RDOQ cleanup: zero out isolated |q|=1 coefficients where the
+        // entropy cost exceeds the distortion penalty. after the compound
+        // dead zone kills most insignificant coefficients, a few isolated
+        // ±1 survivors remain that are expensive to encode (Logos sees
+        // all-zero context → high surprise for a nonzero symbol) but
+        // contribute little perceptually. this is the per-coefficient
+        // analogue of the subband-level MDL skip.
+        // encoder-only: the decoder reads whatever the encoder writes.
+        if (!isLL && !allZero) {
+            // RDOQ: two-phase rate-distortion optimization.
+            //
+            // phase 1 (zeroing): for isolated small coefficients, check if zeroing
+            // saves more rate than it costs in distortion. iterative: zeroing one
+            // coefficient can isolate its neighbors, making them candidates.
+            //
+            // phase 2 (downward): for coefficients with |q| >= 2, check if reducing
+            // |q| by 1 improves the R-D tradeoff. the rate saving from a smaller
+            // zigzag value is estimated from the Laplacian source model. this is a
+            // one-shot pass (no iteration needed since reduction doesn't cascade).
+            const rdoqLambda = baseStep * baseStep;
+
+            // phase 1: zeroing pass (iterative)
+            for (let pass = 0; pass < 4; pass++) {
+                let nzCount = 0;
+                for (let i = 0; i < qSub.length; i++) if (qSub[i] !== 0) nzCount++;
+                if (nzCount === 0) break;
+                const sparsity = 1 - nzCount / qSub.length;
+                const rateSaving = Math.max(1.5, Math.min(6.0,
+                    -Math.log2(1 - sparsity + 1e-6) + Math.log2(sparsity + 1e-6)));
+                const rdoqThresh = rateSaving * rdoqLambda;
+                let zeroed = 0;
+                for (let t = 0; t < d; t++) {
+                    const tOff = t * sbW * sbH;
+                    for (let y = 0; y < sbH; y++) {
+                        for (let x = 0; x < sbW; x++) {
+                            const i = tOff + y * sbW + x;
+                            const q = qSub[i];
+                            if (q === 0) continue;
+                            const absQ = q > 0 ? q : -q;
+                            if (absQ > 2) continue;
+                            let nnz = 0;
+                            if (x > 0 && qSub[i - 1] !== 0) nnz++;
+                            if (x < sbW - 1 && qSub[i + 1] !== 0) nnz++;
+                            if (y > 0 && qSub[i - sbW] !== 0) nnz++;
+                            if (y < sbH - 1 && qSub[i + sbW] !== 0) nnz++;
+                            if (nnz > 1) continue;
+                            const scale = nnz === 0 ? 1.0 : 0.6;
+                            const origCoeff = sub[i];
+                            const dqVal = dqSub[i];
+                            const deltaD = dqVal * (2 * origCoeff - dqVal);
+                            if (deltaD < rdoqThresh * scale) {
+                                qSub[i] = 0;
+                                dqSub[i] = 0;
+                                zeroed++;
+                            }
+                        }
+                    }
+                }
+                if (zeroed === 0) break;
+            }
+
+            // downward quantization (|q|→|q|-1) tested and rejected (2026-04-05):
+            // the rate estimate for reducing |q| by 1 is inaccurate because
+            // Logos's context model doesn't decompose into per-symbol costs.
+            // measured: +1% bytes at Q30, -0.4% at Q70, with -0.2 dB PSNR.
+            // the bias recomputation after reduction shifts all reconstruction
+            // points, causing PSNR regression. not worth the complexity.
+            // recheck allZero and recompute dequantization after RDOQ.
+            // the decoder sees the RDOQ-cleaned distribution and computes
+            // computeBias from it. the encoder must match by re-dequantizing
+            // with the post-RDOQ bias (otherwise a slight mismatch in the
+            // reconstruction point causes drift in P-frame predictions).
+            allZero = true;
+            for (let i = 0; i < qSub.length; i++) {
+                if (qSub[i] !== 0) { allZero = false; break; }
+            }
+            if (!allZero) {
+                const postBias = computeBias(qSub, baseStep);
+                for (let i = 0; i < sub.length; i++) {
+                    if (qSub[i] === 0) continue;
+                    dqSub[i] = qSub[i] > 0
+                        ? (qSub[i] + postBias) * baseStep
+                        : -((-qSub[i]) + postBias) * baseStep;
+                }
+            }
+        }
 
         if (allZero) {
             mainBw.write(0, 1);  // zero flag
@@ -3729,20 +4438,18 @@ function encodeSubband3D(
         // multiplier at the R-D operating point (from quantization theory:
         // the optimal trade-off slope equals the quantization step squared).
         // no magic numbers: λ IS the physics (step² = codec noise floor squared).
+        let mdlDistortion = 0;
+        for (let i = 0; i < dqSub.length; i++) mdlDistortion += dqSub[i] * dqSub[i];
+        const mdlLambda = baseStep * baseStep;
         {
-            // estimate encoding cost: count nonzero zigzag bits
+            // fast pre-encode check: crude bit estimate avoids Logos encoding
+            // for subbands that are clearly not worth encoding.
             let estBits = 0;
             for (let i = 0; i < qSub.length; i++) {
                 if (qSub[i] !== 0) estBits += Math.max(1, Math.ceil(Math.log2(Math.abs(zz(qSub[i])) + 1)));
             }
             estBits += 16; // overhead: mode bits + ULEB length + Logos header
-            // distortion from zeroing: sum of squared dequantized values
-            let distortion = 0;
-            for (let i = 0; i < dqSub.length; i++) distortion += dqSub[i] * dqSub[i];
-            // Lagrange multiplier: λ = step² (the R-D operating point for dead-zone quantization)
-            const lambda = baseStep * baseStep;
-            // MDL: skip if encoding costs more bits than the distortion justifies
-            if (estBits > distortion / lambda) {
+            if (estBits > mdlDistortion / mdlLambda) {
                 mainBw.write(0, 1);  // zero flag (skip subband)
                 const zeroDq = new Float64Array(sub.length);
                 insertSubbandF(fullDequant, w, sx, sy, sbW, sbH, d, zeroDq);
@@ -3751,12 +4458,35 @@ function encodeSubband3D(
         }
 
         // encode with Logos
-        mainBw.write(1, 1);  // nonzero flag
         const { wire, mode: encMode } = logosEncode(qSub);
-        mainBw.write(encMode, 2);  // 2-bit mode: 0=raw 1B, 1=pred 1B, 2=raw 2B
+
+        // post-encode MDL refinement: the pre-MDL check uses a crude bit
+        // estimate (ceil(log2(zz))). the actual Logos output can be larger due
+        // to context adaptation cost and header overhead. check again with the
+        // real wire length — catches subbands where the estimate was optimistic.
+        {
+            const ulebBytes = encodeULEB(wire.length);
+            const actualBits = (wire.length + ulebBytes.length) * 8 + 3; // +3: nonzero flag + mode bits
+            if (actualBits > mdlDistortion / mdlLambda) {
+                mainBw.write(0, 1);  // zero flag (post-MDL skip)
+                const zeroDq = new Float64Array(sub.length);
+                insertSubbandF(fullDequant, w, sx, sy, sbW, sbH, d, zeroDq);
+                return;
+            }
+        }
+
+        mainBw.write(1, 1);  // nonzero flag
+        mainBw.write(encMode, 3);  // 3-bit mode: 0=raw 1B, 1=K/G, 2=raw 2B, 3=sparse 1B, 4=sparse 2B, 5=backward K/G
         const ulebLen = encodeULEB(wire.length);
         for (let i = 0; i < ulebLen.length; i++) mainBw.write(ulebLen[i], 8);
         for (let i = 0; i < wire.length; i++) mainBw.write(wire[i], 8);
+
+        if (_lumenDebugSubbands) {
+            const lvl = isLL ? 'LL' : isHH ? 'HH' : (sx > 0 && sy === 0) ? 'LH' : 'HL';
+            const l = isLL ? 0 : Math.round(Math.log2(w / sbW));
+            let nz = 0; for (let i = 0; i < qSub.length; i++) if (qSub[i] !== 0) nz++;
+            console.log(`  [${isChroma?'C':'Y'}] L${l} ${lvl} ${sbW}x${sbH}: ${wire.length}B mode=${encMode} nz=${nz}/${qSub.length} (${(100*nz/qSub.length).toFixed(1)}%)`);
+        }
 
         insertSubbandF(fullDequant, w, sx, sy, sbW, sbH, d, dqSub);
 
@@ -3804,6 +4534,7 @@ function decodeSubband3D(
 
             const subLen = sbW * sbH * d;
             let qSub: Int32Array;
+            const _sbt0 = _profileStart();
             if (predFlag === 1) {
                 // two-byte zigzag
                 const rawBytes = decode0D(logosData, subLen * 2, sbW * 2);
@@ -3818,8 +4549,9 @@ function decodeSubband3D(
                 qSub = new Int32Array(subLen);
                 for (let i = 0; i < subLen; i++) qSub[i] = uzz(zzBytes[i]);
             }
+            _profileAdd('dec_logos_LL', _sbt0);
 
-            // DPCM reconstruction
+            // DPCM reconstruction (MED prediction, mirrors encoder)
             const dqSub = new Float64Array(subLen);
             const recon = new Float64Array(subLen);
             const step = baseStep;
@@ -3870,7 +4602,7 @@ function decodeSubband3D(
         const nonzero = br.read(1);
         if (nonzero === 0) return; // all zero
 
-        const encMode = br.read(2);  // 0=raw 1B, 1=K/G predicted, 2=raw 2B overflow
+        const encMode = br.read(3);  // 0=raw 1B, 1=K/G, 2=raw 2B, 3=sparse 1B, 4=sparse 2B, 5=backward K/G
         // read ULEB wire length
         let wireLen = 0, shift = 0;
         while (true) {
@@ -3883,15 +4615,32 @@ function decodeSubband3D(
         for (let i = 0; i < wireLen; i++) logosData[i] = br.read(8);
 
         const subLen = sbW * sbH * d;
+        const decIsLH = sx > 0 && sy === 0 && !isHH;
+        const decTranspose = decIsLH && sbW > 1 && sbH > 1 && d === 1;
+        const decScanStride = decTranspose ? sbH : sbW;
         let qSub: Int32Array;
 
+        _profileCount('dec_detail_outputBytes', subLen);
+        _profileCount('dec_detail_wireBytes', wireLen);
+        _profileCount('dec_detail_calls', 1);
+        _profileCount(`dec_detail_mode${encMode}`, 1);
+        const _sbt1 = _profileStart();
         if (encMode === 2) {
             // raw two-byte zigzag (overflow path)
-            const rawBytes = decode0D(logosData, subLen * 2, sbW * 2);
-            qSub = new Int32Array(subLen);
+            const rawBytes = decode0D(logosData, subLen * 2, decScanStride * 2);
+            const qScan = new Int32Array(subLen);
             for (let i = 0; i < subLen; i++) {
                 const z = (rawBytes[i * 2] << 8) | rawBytes[i * 2 + 1];
-                qSub[i] = uzz(z);
+                qScan[i] = uzz(z);
+            }
+            if (decTranspose) {
+                // un-transpose: row-major in scan → column-major in original
+                qSub = new Int32Array(subLen);
+                for (let y = 0; y < sbH; y++)
+                    for (let x = 0; x < sbW; x++)
+                        qSub[y * sbW + x] = qScan[x * sbH + y];
+            } else {
+                qSub = qScan;
             }
         } else if (encMode === 1) {
             // K/G predicted: read ULEB(kgLen), Logos(kgField), Logos(residual)
@@ -3950,43 +4699,209 @@ function decodeSubband3D(
                 }
             }
         } else if (encMode === 3) {
-            // context-enhanced zigzag: bit 7 = parent/sibling, bit 6 = sibling (if 5D).
-            // strip BOTH context bits: always use & 0x3F for maximum compatibility.
-            // the encoder decides whether to use 7-bit (parent-only, bit 6 always 0)
-            // or 6-bit (5D, bit 6 carries sibling info). the decoder doesn't care —
-            // it strips both bits uniformly.
-            const zzBytes = decode0D(logosData, subLen, sbW);
-            qSub = new Int32Array(subLen);
-            for (let i = 0; i < subLen; i++) qSub[i] = uzz(zzBytes[i] & 0x3F);
+            // sparse mode: only non-zero positions and values are encoded.
+            // format: [ULEB(numNZ)][ULEB(posDecodedLen)][ULEB(posWireLen)][posWire][valWire]
+            let off = 0;
+            const readULEB = () => { let v = 0, s = 0; while (off < logosData.length) { const b = logosData[off++]; v |= (b & 0x7f) << s; if ((b & 0x80) === 0) break; s += 7; } return v; };
+            const numNZ = readULEB();
+            const posDecodedLen = readULEB();
+            const posWireLen = readULEB();
+            const posWire = logosData.subarray(off, off + posWireLen);
+            const valWire = logosData.subarray(off + posWireLen);
+
+            const rawPosBytes = decode0D(posWire, posDecodedLen);
+            const vals = decode0D(valWire, numNZ);
+
+            // reconstruct positions from ULEB delta stream
+            const qScan = new Int32Array(subLen); // zeroed
+            let posOff = 0, curPos = 0;
+            for (let i = 0; i < numNZ; i++) {
+                let gap = 0, gapShift = 0;
+                while (posOff < rawPosBytes.length) {
+                    const b = rawPosBytes[posOff++];
+                    gap |= (b & 0x7f) << gapShift;
+                    if ((b & 0x80) === 0) break;
+                    gapShift += 7;
+                }
+                curPos += gap;
+                if (curPos < subLen) qScan[curPos] = uzz(vals[i]);
+            }
+
+            if (decTranspose) {
+                qSub = new Int32Array(subLen);
+                for (let y = 0; y < sbH; y++)
+                    for (let x = 0; x < sbW; x++)
+                        qSub[y * sbW + x] = qScan[x * sbH + y];
+            } else {
+                qSub = qScan;
+            }
+        } else if (encMode === 4) {
+            // sparse 2-byte mode: same as mode 3 but values are 2-byte zigzag
+            let off = 0;
+            const readULEB2 = () => { let v = 0, s = 0; while (off < logosData.length) { const b = logosData[off++]; v |= (b & 0x7f) << s; if ((b & 0x80) === 0) break; s += 7; } return v; };
+            const numNZ = readULEB2();
+            const posDecodedLen = readULEB2();
+            const posWireLen = readULEB2();
+            const posWire = logosData.subarray(off, off + posWireLen);
+            const valWire = logosData.subarray(off + posWireLen);
+
+            const rawPosBytes = decode0D(posWire, posDecodedLen);
+            const vals2B = decode0D(valWire, numNZ * 2);
+
+            const qScan = new Int32Array(subLen);
+            let posOff = 0, curPos = 0;
+            for (let i = 0; i < numNZ; i++) {
+                let gap = 0, gapShift = 0;
+                while (posOff < rawPosBytes.length) {
+                    const b = rawPosBytes[posOff++];
+                    gap |= (b & 0x7f) << gapShift;
+                    if ((b & 0x80) === 0) break;
+                    gapShift += 7;
+                }
+                curPos += gap;
+                if (curPos < subLen) {
+                    const z = (vals2B[i * 2] << 8) | vals2B[i * 2 + 1];
+                    qScan[curPos] = uzz(z);
+                }
+            }
+
+            if (decTranspose) {
+                qSub = new Int32Array(subLen);
+                for (let y = 0; y < sbH; y++)
+                    for (let x = 0; x < sbW; x++)
+                        qSub[y * sbW + x] = qScan[x * sbH + y];
+            } else {
+                qSub = qScan;
+            }
+        } else if (encMode === 5) {
+            // backward-adaptive K/G: decoder re-derives Kx/Ky/G per block from
+            // decoded causal neighborhood in scan-order coordinates. for LH
+            // subbands (decTranspose=true), "scan width" = sbH, "scan height" = sbW.
+            const KG_BLOCK = 8;
+            const sW = decTranspose ? sbH : sbW;
+            const sH = decTranspose ? sbW : sbH;
+            const zzBytes = decode0D(logosData, subLen, decScanStride);
+            const residual = new Int32Array(subLen);
+            for (let i = 0; i < subLen; i++) residual[i] = uzz(zzBytes[i]);
+
+            // reconstruct in scan order, then untranspose if needed
+            const qScan = new Int32Array(subLen);
+            for (let t = 0; t < d; t++) {
+                const tOff = t * sW * sH;
+                for (let by = 0; by < sH; by += KG_BLOCK) {
+                    for (let bx = 0; bx < sW; bx += KG_BLOCK) {
+                        const bw = Math.min(KG_BLOCK, sW - bx);
+                        const bh2 = Math.min(KG_BLOCK, sH - by);
+
+                        let sLL = 0, sAA = 0, sDD = 0;
+                        let sLA = 0, sLD = 0, sAD = 0;
+                        let sLV = 0, sAV = 0, sDV = 0;
+                        let fitCount = 0;
+
+                        const fitRowStart = Math.max(1, by - KG_BLOCK);
+                        for (let fy = fitRowStart; fy < by; fy++) {
+                            for (let fx = Math.max(1, bx); fx < bx + bw && fx < sW; fx++) {
+                                const idx = tOff + fy * sW + fx;
+                                const v = qScan[idx];
+                                const L = qScan[idx - 1];
+                                const A = fy > 0 ? qScan[idx - sW] : 0;
+                                const D2 = fy > 0 ? qScan[idx - sW - 1] : 0;
+                                sLL += L*L; sAA += A*A; sDD += D2*D2;
+                                sLA += L*A; sLD += L*D2; sAD += A*D2;
+                                sLV += L*v; sAV += A*v; sDV += D2*v;
+                                fitCount++;
+                            }
+                        }
+                        if (bx >= 1) {
+                            const fitColStart = Math.max(1, bx - KG_BLOCK);
+                            for (let fy = by; fy < by + bh2 && fy < sH; fy++) {
+                                for (let fx = fitColStart; fx < bx; fx++) {
+                                    if (fy > 0) {
+                                        const idx = tOff + fy * sW + fx;
+                                        const v = qScan[idx];
+                                        const L = fx > 0 ? qScan[idx - 1] : 0;
+                                        const A = qScan[idx - sW];
+                                        const D2 = fx > 0 ? qScan[idx - sW - 1] : 0;
+                                        sLL += L*L; sAA += A*A; sDD += D2*D2;
+                                        sLA += L*A; sLD += L*D2; sAD += A*D2;
+                                        sLV += L*v; sAV += A*v; sDV += D2*v;
+                                        fitCount++;
+                                    }
+                                }
+                            }
+                        }
+
+                        let dkx = 0, dky = 0, dg = 0;
+                        if (fitCount >= 6) {
+                            const reg = 1e-4 * (sLL + sAA + sDD + 1);
+                            const a11 = sLL+reg, a12 = sLA, a13 = -sLD;
+                            const a21 = sLA, a22 = sAA+reg, a23 = -sAD;
+                            const a31 = -sLD, a32 = -sAD, a33 = sDD+reg;
+                            const det = a11*(a22*a33-a23*a32) - a12*(a21*a33-a23*a31) + a13*(a21*a32-a22*a31);
+                            if (Math.abs(det) > 1e-10) {
+                                const kx = (sLV*(a22*a33-a23*a32) - a12*(sAV*a33+a23*sDV) + a13*(sAV*a32+a22*sDV)) / det;
+                                const ky = (a11*(sAV*a33+a23*sDV) - sLV*(a21*a33-a23*a31) + a13*(a21*(-sDV)-sAV*a31)) / det;
+                                const g  = (a11*(a22*(-sDV)-sAV*a32) - a12*(a21*(-sDV)-sAV*a31) + sLV*(a21*a32-a22*a31)) / det;
+                                dkx = Math.max(-2, Math.min(2, kx));
+                                dky = Math.max(-2, Math.min(2, ky));
+                                dg = Math.max(-2, Math.min(2, g));
+                            }
+                        }
+
+                        for (let y = 0; y < bh2; y++) {
+                            for (let x = 0; x < bw; x++) {
+                                const gy = by + y, gx = bx + x;
+                                const idx = tOff + gy * sW + gx;
+                                const L = gx > 0 ? qScan[idx - 1] : 0;
+                                const A = gy > 0 ? qScan[idx - sW] : 0;
+                                const D2 = (gx > 0 && gy > 0) ? qScan[idx - sW - 1] : 0;
+                                const pred = Math.round(dkx * L + dky * A - dg * D2);
+                                qScan[idx] = residual[idx] + pred;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // untranspose if needed (same as raw mode)
+            if (decTranspose) {
+                qSub = new Int32Array(subLen);
+                for (let y = 0; y < sbH; y++)
+                    for (let x = 0; x < sbW; x++)
+                        qSub[y * sbW + x] = qScan[x * sbH + y];
+            } else {
+                qSub = qScan;
+            }
         } else {
             // raw quantized: single-byte zigzag → lumen-logos 2D decode → uzz
-            const zzBytes = decode0D(logosData, subLen, sbW);
-            qSub = new Int32Array(subLen);
-            for (let i = 0; i < subLen; i++) qSub[i] = uzz(zzBytes[i]);
+            const zzBytes = decode0D(logosData, subLen, decScanStride);
+            const qScan = new Int32Array(subLen);
+            for (let i = 0; i < subLen; i++) qScan[i] = uzz(zzBytes[i]);
+            if (decTranspose) {
+                qSub = new Int32Array(subLen);
+                for (let y = 0; y < sbH; y++)
+                    for (let x = 0; x < sbW; x++)
+                        qSub[y * sbW + x] = qScan[x * sbH + y];
+            } else {
+                qSub = qScan;
+            }
         }
+        _profileAdd('dec_logos_detail', _sbt1);
 
         // dequantize with per-coefficient adaptive step (mirrors encoder exactly).
         // includes temporal CSF (d>=4) + activity mask scaling (from decoded LL).
         // the activity mask is self-derived — encoder and decoder compute IDENTICAL
         // masks from the IDENTICAL decoded LL values. no side info needed.
+        // non-perceptual dequantization: uniform step, no temporal CSF or activity mask.
+        const _sbt2 = _profileStart();
         const adaptiveBias = computeBias(qSub, step);
         const dqSub = new Float64Array(subLen);
-        const dSpatialFrame = sbW * sbH;
-        const dTemporalCSF = 1.0 / 0.782; // Kelly(15Hz/8Hz)
-        // activity mask from decoded LL (same computation as encoder — self-derived).
-        // the decoder computes the IDENTICAL mask from the decoded LL values.
-        // activity masking scales the step in textured regions, allowing coarser
-        // quantization where the human eye tolerates more noise (Stevens power law).
-        const decDzMask = (!isChroma && decMaskMap) ? subbandMaskScale(decMaskMap, llW, llH, sbW, sbH, d) : null;
         for (let i = 0; i < subLen; i++) {
-            const tFrame = Math.floor(i / dSpatialFrame);
-            let effStep = tFrame > 0 && d >= 4 ? step * dTemporalCSF : step;
-            // activity mask step scaling (identical to encoder — self-derived from decoded LL)
-            if (decDzMask && decDzMask[i] > 1.0) effStep *= decDzMask[i];
             const q = qSub[i];
-            dqSub[i] = q === 0 ? 0 : (q > 0 ? (q + adaptiveBias) * effStep : -((-q) + adaptiveBias) * effStep);
+            dqSub[i] = q === 0 ? 0 : (q > 0 ? (q + adaptiveBias) * step : -((-q) + adaptiveBias) * step);
         }
         insertSubbandF(fullCoeffs, w, sx, sy, sbW, sbH, d, dqSub);
+        _profileAdd('dec_dequant', _sbt2);
     }, quality, temporalBand, isChroma);
 
     const consumed = (br.pos + 7) >> 3;
@@ -4004,6 +4919,416 @@ function decodeSubband3D(
 
 const FMT_DPCM_LOGOS = 0x0D;
 const FMT_TILED_WAVELET = 0x0E;
+const FMT_LOSSLESS = 0x0F;
+
+// ── Lossless RGBA Path (0x0F) ──────────────���───────────────────────────────
+//
+// pixel-exact lossless compression for Q100. operates directly on RGBA to
+// avoid any color space or subsampling loss. per-channel MED DPCM prediction
+// with zigzag-mapped residuals encoded through Logos.
+//
+// wire format: [0x0F][w:u16le][h:u16le][4 × (pixelCount:ULEB + wireLen:ULEB + wireData)]
+// channels are R, G, B, A in order.
+
+function medPredByte(recon: Uint8Array, idx: number, w: number, x: number, y: number): number {
+    const L = x > 0 ? recon[idx - 1] : 128;
+    const A = y > 0 ? recon[idx - w] : 128;
+    const D = (x > 0 && y > 0) ? recon[idx - w - 1] : 128;
+    const p = L + A - D;
+    const lo = L < A ? L : A;
+    const hi = L > A ? L : A;
+    return p < lo ? lo : p > hi ? hi : p;
+}
+
+// circular zigzag: maps mod-256 residuals so small errors → small byte values.
+// without this, error -1 becomes byte 255 and error +1 becomes byte 1 — Logos
+// sees these as completely different. with circular zigzag, error ±1 maps to
+// bytes 1 and 2, so Logos's bit-tree context predicts both correctly.
+function circZZ(r: number): number {
+    // r is mod-256 residual: 0 = no error, 1 = +1, 255 = -1, etc.
+    // interpret as signed: r < 128 → positive, r ≥ 128 → negative (r - 256)
+    if (r === 0) return 0;
+    if (r <= 128) return 2 * r - 1;   // +1→1, +2→3, ..., +128→255
+    return 2 * (256 - r);             // -1→2, -2→4, ..., -127→254
+}
+
+function circUZZ(z: number): number {
+    if (z === 0) return 0;
+    if (z & 1) return (z + 1) >> 1;         // odd: positive error
+    return (256 - (z >> 1)) & 0xFF;         // even: negative error
+}
+
+// logos has a 1MB input buffer limit. for hires images (e.g., 1024x1520),
+// a single channel exceeds this. encode as horizontal strips that fit.
+const LOGOS_MAX_INPUT = 1048576;
+const LOSSLESS_TILED_MARKER = 0xFE;
+const LOSSLESS_SPARSE_MARKER = 0xFD;
+
+function encodeLosslessStrip(
+    plane: Uint8Array, w: number, h: number, y0: number, lastRow: Uint8Array | null
+): { wire: Uint8Array; lastRowOut: Uint8Array } {
+    const n = w * h;
+    const recon = new Uint8Array(n);
+    const residuals = new Uint8Array(n);
+
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const idx = y * w + x;
+            // for the first row of a strip (after the first), use the last row
+            // of the previous strip as the "above" context
+            let pred: number;
+            if (y === 0 && lastRow) {
+                const L = x > 0 ? recon[idx - 1] : 128;
+                const A = lastRow[x];
+                const D = x > 0 ? lastRow[x - 1] : 128;
+                const p = L + A - D;
+                const lo = L < A ? L : A;
+                const hi = L > A ? L : A;
+                pred = p < lo ? lo : p > hi ? hi : p;
+            } else {
+                pred = medPredByte(recon, idx, w, x, y);
+            }
+            residuals[idx] = circZZ((plane[idx] - pred) & 0xFF);
+            recon[idx] = plane[idx];
+        }
+    }
+
+    const lastRowOut = new Uint8Array(w);
+    lastRowOut.set(recon.subarray((h - 1) * w, h * w));
+
+    return { wire: encode0D(residuals, w), lastRowOut };
+}
+
+function decodeLosslessStrip(
+    wire: Uint8Array, w: number, h: number, lastRow: Uint8Array | null
+): { recon: Uint8Array; lastRowOut: Uint8Array } {
+    const n = w * h;
+    const _sdt0 = _profileStart();
+    const residuals = decode0D(wire, n, w);
+    _profileAdd('ll_logos', _sdt0);
+    const _sdr0 = _profileStart();
+    const recon = new Uint8Array(n);
+
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const idx = y * w + x;
+            let pred: number;
+            if (y === 0 && lastRow) {
+                const L = x > 0 ? recon[idx - 1] : 128;
+                const A = lastRow[x];
+                const D = x > 0 ? lastRow[x - 1] : 128;
+                const p = L + A - D;
+                const lo = L < A ? L : A;
+                const hi = L > A ? L : A;
+                pred = p < lo ? lo : p > hi ? hi : p;
+            } else {
+                pred = medPredByte(recon, idx, w, x, y);
+            }
+            recon[idx] = (pred + circUZZ(residuals[idx])) & 0xFF;
+        }
+    }
+    _profileAdd('ll_medpred_recon', _sdr0);
+
+    const lastRowOut = new Uint8Array(w);
+    lastRowOut.set(recon.subarray((h - 1) * w, h * w));
+
+    return { recon, lastRowOut };
+}
+
+function encodeLosslessPlane(
+    plane: Uint8Array, w: number, h: number
+): Uint8Array {
+    const n = w * h;
+
+    if (n <= LOGOS_MAX_INPUT) {
+        // single shot: compute MED residuals
+        const recon = new Uint8Array(n);
+        const residuals = new Uint8Array(n);
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const idx = y * w + x;
+                const pred = medPredByte(recon, idx, w, x, y);
+                residuals[idx] = circZZ((plane[idx] - pred) & 0xFF);
+                recon[idx] = plane[idx];
+            }
+        }
+
+        // count zeros: if >50% sparse, try position+value encoding.
+        // reduces Logos decode work proportionally to the zero fraction
+        // because the decoder processes fewer bytes through the range coder.
+        let nzCount = 0;
+        for (let i = 0; i < n; i++) if (residuals[i] !== 0) nzCount++;
+        const sparsity = 1 - nzCount / n;
+
+        if (sparsity > 0.50 && nzCount > 0 && n >= 256) {
+            // sparse encoding: ULEB position deltas + values, both through Logos
+            const posDeltas = new Uint8Array(nzCount * 5); // generous alloc for ULEB
+            const vals = new Uint8Array(nzCount);
+            let posLen = 0, prev = 0, vi = 0;
+            for (let i = 0; i < n; i++) {
+                if (residuals[i] !== 0) {
+                    let gap = i - prev;
+                    prev = i;
+                    do {
+                        let b = gap & 0x7f;
+                        gap >>>= 7;
+                        if (gap > 0) b |= 0x80;
+                        posDeltas[posLen++] = b;
+                    } while (gap > 0);
+                    vals[vi++] = residuals[i];
+                }
+            }
+            const posWire = encode0D(posDeltas.subarray(0, posLen));
+            const valWire = encode0D(vals.subarray(0, vi));
+
+            // header: [0xFD][numNZ:ULEB][posDecodedLen:ULEB][posWireLen:ULEB]
+            const nzU = encodeULEB(nzCount);
+            const pdU = encodeULEB(posLen);
+            const pwU = encodeULEB(posWire.length);
+            const sparseTotal = 1 + nzU.length + pdU.length + pwU.length + posWire.length + valWire.length;
+
+            const combined = new Uint8Array(sparseTotal);
+            let o = 0;
+            combined[o++] = LOSSLESS_SPARSE_MARKER;
+            for (let i = 0; i < nzU.length; i++) combined[o++] = nzU[i];
+            for (let i = 0; i < pdU.length; i++) combined[o++] = pdU[i];
+            for (let i = 0; i < pwU.length; i++) combined[o++] = pwU[i];
+            combined.set(posWire, o); o += posWire.length;
+            combined.set(valWire, o);
+
+            // for very high sparsity (>85%), skip the expensive raw Logos encode
+            // and go straight to sparse. for moderate sparsity (50-85%), compare.
+            if (sparsity > 0.85) return combined;
+
+            const rawWire = encode0D(residuals, w);
+            return sparseTotal < rawWire.length ? combined : rawWire;
+        }
+
+        return encode0D(residuals, w);
+    }
+
+    // tiled: split into horizontal strips
+    const stripRows = Math.floor(LOGOS_MAX_INPUT / w);
+    const nStrips = Math.ceil(h / stripRows);
+    const wires: Uint8Array[] = [];
+    let lastRow: Uint8Array | null = null;
+
+    for (let s = 0; s < nStrips; s++) {
+        const y0 = s * stripRows;
+        const sh = Math.min(stripRows, h - y0);
+        const stripPlane = plane.subarray(y0 * w, (y0 + sh) * w);
+        const { wire, lastRowOut } = encodeLosslessStrip(stripPlane, w, sh, y0, lastRow);
+        wires.push(wire);
+        lastRow = lastRowOut;
+    }
+
+    // pack: [0xFE marker][nStrips:ULEB][for each: wireLen:ULEB][all wires]
+    let headerSize = 1 + ulebSize(nStrips);
+    let totalWireSize = 0;
+    for (const wire of wires) {
+        headerSize += ulebSize(wire.length);
+        totalWireSize += wire.length;
+    }
+    const out = new Uint8Array(headerSize + totalWireSize);
+    let o = 0;
+    out[o++] = LOSSLESS_TILED_MARKER;
+    o += writeULEB128(out, o, nStrips);
+    for (const wire of wires) o += writeULEB128(out, o, wire.length);
+    for (const wire of wires) { out.set(wire, o); o += wire.length; }
+    return out.subarray(0, o);
+}
+
+function decodeLosslessPlane(
+    wire: Uint8Array, decodedLen: number, w: number, h: number
+): Uint8Array {
+    if (wire[0] === LOSSLESS_SPARSE_MARKER) {
+        // sparse: [0xFD][numNZ:ULEB][posDecodedLen:ULEB][posWireLen:ULEB][posWire][valWire]
+        const _sst0 = _profileStart();
+        let o = 1;
+        const r1 = readULEB128(wire, o); o += r1.bytes; const numNZ = r1.value;
+        const r2 = readULEB128(wire, o); o += r2.bytes; const posDecodedLen = r2.value;
+        const r3 = readULEB128(wire, o); o += r3.bytes; const posWireLen = r3.value;
+        const posWire = wire.subarray(o, o + posWireLen);
+        const valWire = wire.subarray(o + posWireLen);
+
+        const rawPosBytes = decode0D(posWire, posDecodedLen);
+        const vals = decode0D(valWire, numNZ);
+        _profileAdd('ll_logos', _sst0);
+
+        // reconstruct residuals from sparse position deltas + values
+        const _ssr0 = _profileStart();
+        const residuals = new Uint8Array(decodedLen); // zeroed
+        let posOff = 0, curPos = 0;
+        for (let i = 0; i < numNZ; i++) {
+            let gap = 0, gapShift = 0;
+            while (posOff < rawPosBytes.length) {
+                const b = rawPosBytes[posOff++];
+                gap |= (b & 0x7f) << gapShift;
+                if ((b & 0x80) === 0) break;
+                gapShift += 7;
+            }
+            curPos += gap;
+            if (curPos < decodedLen) residuals[curPos] = vals[i];
+        }
+
+        // MED reconstruction (same as non-sparse path)
+        const recon = new Uint8Array(w * h);
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const idx = y * w + x;
+                const pred = medPredByte(recon, idx, w, x, y);
+                recon[idx] = (pred + circUZZ(residuals[idx])) & 0xFF;
+            }
+        }
+        _profileAdd('ll_medpred_recon', _ssr0);
+        return recon;
+    }
+
+    if (wire[0] !== LOSSLESS_TILED_MARKER) {
+        // single shot (raw Logos)
+        const _sst0 = _profileStart();
+        const residuals = decode0D(wire, decodedLen, w);
+        _profileAdd('ll_logos', _sst0);
+        const _ssr0 = _profileStart();
+        const recon = new Uint8Array(w * h);
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const idx = y * w + x;
+                const pred = medPredByte(recon, idx, w, x, y);
+                recon[idx] = (pred + circUZZ(residuals[idx])) & 0xFF;
+            }
+        }
+        _profileAdd('ll_medpred_recon', _ssr0);
+        return recon;
+    }
+
+    // tiled decode
+    let o = 1;
+    const nStripsR = readULEB128(wire, o); o += nStripsR.bytes;
+    const nStrips = nStripsR.value;
+    const stripRows = Math.floor(LOGOS_MAX_INPUT / w);
+
+    const wireLens: number[] = [];
+    for (let s = 0; s < nStrips; s++) {
+        const r = readULEB128(wire, o); o += r.bytes;
+        wireLens.push(r.value);
+    }
+
+    const recon = new Uint8Array(w * h);
+    let lastRow: Uint8Array | null = null;
+
+    for (let s = 0; s < nStrips; s++) {
+        const y0 = s * stripRows;
+        const sh = Math.min(stripRows, h - y0);
+        const stripWire = wire.subarray(o, o + wireLens[s]); o += wireLens[s];
+        const { recon: stripRecon, lastRowOut } = decodeLosslessStrip(stripWire, w, sh, lastRow);
+        recon.set(stripRecon, y0 * w);
+        lastRow = lastRowOut;
+    }
+
+    return recon;
+}
+
+// subtract-green inter-channel prediction (same as WebP lossless).
+// G is encoded first, then R-G and B-G residuals. the green channel
+// has the highest SNR in natural images and is highly correlated with
+// R and B. subtracting G reduces entropy of the R and B channels by
+// 15-40% on typical photographic content.
+function losslessEncodeRGBA(
+    pixels: Uint8Array, w: number, h: number
+): { gWire: Uint8Array; rgWire: Uint8Array; bgWire: Uint8Array; aWire: Uint8Array } {
+    const n = w * h;
+    const gPlane = new Uint8Array(n);
+    const rgPlane = new Uint8Array(n);
+    const bgPlane = new Uint8Array(n);
+    const aPlane = new Uint8Array(n);
+
+    for (let i = 0; i < n; i++) {
+        const r = pixels[i * 4];
+        const g = pixels[i * 4 + 1];
+        const b = pixels[i * 4 + 2];
+        gPlane[i] = g;
+        rgPlane[i] = (r - g) & 0xFF;
+        bgPlane[i] = (b - g) & 0xFF;
+        aPlane[i] = pixels[i * 4 + 3];
+    }
+
+    return {
+        gWire: encodeLosslessPlane(gPlane, w, h),
+        rgWire: encodeLosslessPlane(rgPlane, w, h),
+        bgWire: encodeLosslessPlane(bgPlane, w, h),
+        aWire: encodeLosslessPlane(aPlane, w, h),
+    };
+}
+
+function losslessDecodeRGBA(
+    gWire: Uint8Array, rgWire: Uint8Array, bgWire: Uint8Array, aWire: Uint8Array,
+    n: number, w: number, h: number
+): Uint8Array {
+    const gPlane = decodeLosslessPlane(gWire, n, w, h);
+    const rgPlane = decodeLosslessPlane(rgWire, n, w, h);
+    const bgPlane = decodeLosslessPlane(bgWire, n, w, h);
+    const aPlane = decodeLosslessPlane(aWire, n, w, h);
+
+    const rgba = new Uint8Array(n * 4);
+    for (let i = 0; i < n; i++) {
+        const g = gPlane[i];
+        rgba[i * 4] = (rgPlane[i] + g) & 0xFF;
+        rgba[i * 4 + 1] = g;
+        rgba[i * 4 + 2] = (bgPlane[i] + g) & 0xFF;
+        rgba[i * 4 + 3] = aPlane[i];
+    }
+
+    return rgba;
+}
+
+function packLosslessFrame(
+    w: number, h: number,
+    rWire: Uint8Array, gWire: Uint8Array, bWire: Uint8Array, aWire: Uint8Array,
+    pixelCount: number
+): Uint8Array {
+    const pcSz = ulebSize(pixelCount);
+    const rLenSz = ulebSize(rWire.length);
+    const gLenSz = ulebSize(gWire.length);
+    const bLenSz = ulebSize(bWire.length);
+    const aLenSz = ulebSize(aWire.length);
+    // header: format(1) + w(2) + h(2) = 5
+    const total = 5
+        + pcSz + rLenSz + rWire.length
+        + pcSz + gLenSz + gWire.length
+        + pcSz + bLenSz + bWire.length
+        + pcSz + aLenSz + aWire.length;
+    const out = new Uint8Array(total);
+    let o = 0;
+    out[o++] = FMT_LOSSLESS;
+    out[o++] = w & 0xFF; out[o++] = (w >> 8) & 0xFF;
+    out[o++] = h & 0xFF; out[o++] = (h >> 8) & 0xFF;
+    for (const wire of [rWire, gWire, bWire, aWire]) {
+        o += writeULEB128(out, o, pixelCount);
+        o += writeULEB128(out, o, wire.length);
+        out.set(wire, o); o += wire.length;
+    }
+    return out.subarray(0, o);
+}
+
+function unpackLosslessFrame(data: Uint8Array): {
+    w: number; h: number;
+    channels: Array<{ pixelCount: number; wire: Uint8Array }>;
+} | null {
+    if (data.length < 5 || data[0] !== FMT_LOSSLESS) return null;
+    let o = 1;
+    const w = data[o] | (data[o + 1] << 8); o += 2;
+    const h = data[o] | (data[o + 1] << 8); o += 2;
+    const channels: Array<{ pixelCount: number; wire: Uint8Array }> = [];
+    for (let c = 0; c < 4; c++) {
+        if (o >= data.length) return null;
+        const pc = readULEB128(data, o); o += pc.bytes;
+        const wl = readULEB128(data, o); o += wl.bytes;
+        channels.push({ pixelCount: pc.value, wire: data.subarray(o, o + wl.value) });
+        o += wl.value;
+    }
+    return { w, h, channels };
+}
 
 // ── Tiled adaptive wavelet ──────────────────────────────────────────────
 //
@@ -4024,7 +5349,7 @@ const FMT_TILED_WAVELET = 0x0E;
 // the encoder tries all three paths (global wavelet, DPCM, tiled wavelet) and
 // picks the smallest. smooth content → global wins. edges → tiled wins.
 
-const TILE_SIZE = 32;            // tile size for luma (must be power of 2, ≥ 8)
+const TILE_SIZE = 64;            // tile size for luma (must be power of 2, ≥ 8)
 const TILE_SIZE_UV = TILE_SIZE >> 1; // chroma tile size (4:2:0)
 const TILE_MAX_LEVELS = 3;       // maximum wavelet levels per tile
 
@@ -4044,12 +5369,19 @@ function tileGradientEnergy(plane: Float64Array, w: number, px: number, py: numb
 
 function selectTileLevel(gradEnergy: number, step: number): number {
     // thresholds derived from the quantization step: edges produce gradient
-    // energy proportional to step² × edge_density. at step=2:
-    //   smooth: gradE < 4 (below dead zone, wavelet zeros everything)
-    //   medium: 4 ≤ gradE < 40 (some detail worth separating)
-    //   edgy:   gradE ≥ 40 (strong edges, limit wavelet depth)
+    // energy proportional to step² × edge_density.
+    //   smooth: gradE < t2 → 3 levels (full frequency separation)
+    //   medium: t2 ≤ gradE < t1 → 2 levels (moderate)
+    //   edgy:   t1 ≤ gradE < t0 → 1 level (minimal wavelet)
+    //   boundary: gradE ≥ t0 → 0 levels (pure MED DPCM, no wavelet)
+    //
+    // the level=0 threshold is at step²×40: at this gradient density,
+    // every pixel has a strong edge and the wavelet spreads it all.
+    // MED prediction along the edge outperforms the wavelet here.
+    const t0 = step * step * 40;  // threshold for 1→0 levels (pure DPCM)
     const t1 = step * step * 10;  // threshold for 2→1 level
     const t2 = step * step * 2.5; // threshold for 3→2 levels
+    if (gradEnergy >= t0) return 0;
     if (gradEnergy >= t1) return 1;
     if (gradEnergy >= t2) return 2;
     return TILE_MAX_LEVELS;
@@ -4061,7 +5393,7 @@ function encodeTiledWaveletPlane(
 ): { wire: Uint8Array; reconBuf: Float64Array; levelMap: Uint8Array } {
     const ts = isChroma ? TILE_SIZE_UV : TILE_SIZE;
     const ntx = Math.ceil(w / ts), nty = Math.ceil(h / ts);
-    const step = videoBaseQ(quality) * (isChroma ? 1.5 : 1.0);
+    const baseQ = videoBaseQ(quality);
     const reconBuf = new Float64Array(w * h);
     const allCoeffs: number[] = [];
 
@@ -4070,7 +5402,7 @@ function encodeTiledWaveletPlane(
     for (let ty = 0; ty < nty; ty++) {
         for (let tx = 0; tx < ntx; tx++) {
             const ge = tileGradientEnergy(plane, w, tx * ts, ty * ts, ts);
-            levelMap[ty * ntx + tx] = selectTileLevel(ge, step);
+            levelMap[ty * ntx + tx] = selectTileLevel(ge, baseQ);
         }
     }
 
@@ -4082,27 +5414,168 @@ function encodeTiledWaveletPlane(
             const levels = levelMap[ty * ntx + tx];
 
             // extract tile
-            const tile = new Float64Array(ts * ts); // zero-padded if at edge
+            const tile = new Float64Array(ts * ts);
             for (let y = 0; y < th; y++)
                 for (let x = 0; x < tw; x++)
                     tile[y * ts + x] = plane[(by + y) * w + (bx + x)];
 
-            // wavelet at selected depth
+            // wavelet at selected depth.
+            // bilateral CDF 9/7 for edge tiles was tested and rejected:
+            // the bilateral weight changes coefficient distributions in ways that
+            // can increase entropy at some quality levels (+1% city Q=60).
+            // the standard CDF 9/7 is used for all tile depths.
             if (levels > 0 && ts >= (1 << levels) * 2) {
                 fwt2D_97(tile, ts, ts, levels);
             }
 
-            // quantize all tile coefficients first, then compute adaptive bias
+            // per-subband quantization using the same CSF + synthesis norm weighting
+            // as the global wavelet path. this is what makes tiled competitive.
             const tileQ = new Int32Array(ts * ts);
-            for (let i = 0; i < ts * ts; i++) {
-                tileQ[i] = Math.abs(tile[i]) < step ? 0 :
-                    Math.max(-127, Math.min(127, Math.sign(tile[i]) * Math.floor(Math.abs(tile[i]) / step)));
-                allCoeffs.push(zz(tileQ[i]));
-            }
-            // compute bias from full tile statistics, then dequantize
-            const tileBias = computeBias(tileQ, step);
-            for (let i = 0; i < ts * ts; i++) {
-                tile[i] = tileQ[i] === 0 ? 0 : (tileQ[i] > 0 ? (tileQ[i] + tileBias) : -((-tileQ[i]) + tileBias)) * step;
+            if (levels === 0) {
+                // edge tile: closed-loop MED DPCM prediction.
+                // the wavelet is the optimal transform for the bulk (smooth regions)
+                // but edges are BOUNDARIES — singularities where the RG diverges.
+                // for tiles dominated by edges, MED prediction along the edge
+                // direction produces smaller residuals than any wavelet.
+                //
+                // MED is the Möbius predictor on B_2: L + A - D clamped to [min,max].
+                // it adaptively selects horizontal (for vertical edges), vertical
+                // (for horizontal edges), or planar (for smooth) — zero side info.
+                // closed loop: predict from RECONSTRUCTED neighbors (same as decoder).
+                const step = subbandStep(quality, ts, ts, 0, 1, false, true, 'low', isChroma);
+                const invStep = 1.0 / step;
+                const recon = new Float64Array(ts * ts);
+                const bias = 0.375; // LL-like: dense residuals, near bin center
+                for (let y = 0; y < th; y++) {
+                    for (let x = 0; x < tw; x++) {
+                        const i = y * ts + x;
+                        const L = x > 0 ? recon[i - 1] : 0;
+                        const A = y > 0 ? recon[i - ts] : 0;
+                        const D = (x > 0 && y > 0) ? recon[i - ts - 1] : 0;
+                        const p = L + A - D;
+                        const lo = L < A ? L : A;
+                        const hi = L > A ? L : A;
+                        const pred = p < lo ? lo : (p > hi ? hi : p);
+                        const residual = tile[i] - pred;
+                        const absR = Math.abs(residual);
+                        const q = absR < step ? 0 :
+                            Math.max(-127, Math.min(127, (residual > 0 ? 1 : -1) * Math.floor(absR * invStep)));
+                        tileQ[i] = q;
+                        allCoeffs.push(zz(q));
+                        const dq = q === 0 ? 0 : (q > 0 ? (q + bias) * step : -((-q) + bias) * step);
+                        recon[i] = pred + dq;
+                        tile[i] = recon[i]; // for reconstruction buffer
+                    }
+                }
+                // pad remaining tile area (for edge tiles smaller than ts)
+                for (let y = th; y < ts; y++)
+                    for (let x = 0; x < ts; x++) {
+                        tileQ[y * ts + x] = 0;
+                        allCoeffs.push(0);
+                    }
+                for (let y = 0; y < th; y++)
+                    for (let x = tw; x < ts; x++) {
+                        tileQ[y * ts + x] = 0;
+                        allCoeffs.push(zz(0));
+                    }
+            } else {
+                // quantize each subband with its own CSF-weighted step.
+                // LL uses closed-loop MED DPCM (same as the global path):
+                // predict each coefficient from RECONSTRUCTED neighbors, quantize
+                // only the residual. for 8×8 LL, MED reduces variance by 30-50%.
+                const llW = ts >> levels, llH = ts >> levels;
+                const llStep = subbandStep(quality, ts, ts, 0, levels, false, true, 'low', isChroma);
+                const llInvStep = 1.0 / llStep;
+                const llRecon = new Float64Array(llW * llH);
+                const llBias = 0.375;
+                for (let y = 0; y < llH; y++) for (let x = 0; x < llW; x++) {
+                    const i = y * ts + x;
+                    const ri = y * llW + x;
+                    const L = x > 0 ? llRecon[ri - 1] : 0;
+                    const A = y > 0 ? llRecon[ri - llW] : 0;
+                    const D = (x > 0 && y > 0) ? llRecon[ri - llW - 1] : 0;
+                    const p = L + A - D;
+                    const lo = L < A ? L : A;
+                    const hi = L > A ? L : A;
+                    const pred = p < lo ? lo : (p > hi ? hi : p);
+                    const residual = tile[i] - pred;
+                    const absR = Math.abs(residual);
+                    const q = absR < llStep ? 0 :
+                        Math.max(-127, Math.min(127, (residual > 0 ? 1 : -1) * Math.floor(absR * llInvStep)));
+                    tileQ[i] = q;
+                    const dq = q === 0 ? 0 : (q > 0 ? (q + llBias) * llStep : -((-q) + llBias) * llStep);
+                    llRecon[ri] = pred + dq;
+                }
+                // detail subbands with cross-orientation dead zones.
+                // same encoder-only multiplicative dead zones as the global path,
+                // adapted for the tiled layout. encoding order LH→HL→HH ensures
+                // sibling significance is available for cross-orientation masking.
+                // GGD is omitted: tile subbands are too small (≤32×32) for reliable
+                // kurtosis estimation — noisy β causes over-aggressive zeroing.
+                // parent and geometric dead zones were tested (2026-04-05) and have
+                // zero impact: the tiled path is rarely selected (DPCM wins on edges,
+                // global wavelet wins on smooth). when it IS selected, all tiles
+                // have levels=0 (pure DPCM) so wavelet dead zones don't apply.
+                for (let lv = levels; lv >= 1; lv--) {
+                    const sbW = ts >> lv, sbH = ts >> lv;
+                    const lhStep = subbandStep(quality, ts, ts, lv, levels, false, false, 'low', isChroma);
+                    const hhStep = subbandStep(quality, ts, ts, lv, levels, true, false, 'low', isChroma);
+                    // LH (right of LL quadrant)
+                    for (let y = 0; y < sbH; y++) for (let x = 0; x < sbW; x++) {
+                        const i = y * ts + sbW + x;
+                        tileQ[i] = Math.abs(tile[i]) < lhStep ? 0 :
+                            Math.max(-127, Math.min(127, Math.sign(tile[i]) * Math.floor(Math.abs(tile[i]) / lhStep)));
+                    }
+                    // HL (below LL quadrant) — cross-orientation: widen where LH is zero
+                    for (let y = 0; y < sbH; y++) for (let x = 0; x < sbW; x++) {
+                        const i = (sbH + y) * ts + x;
+                        const lhZero = tileQ[y * ts + sbW + x] === 0;
+                        const dz = lhZero ? lhStep * 1.3 : lhStep;
+                        tileQ[i] = Math.abs(tile[i]) < dz ? 0 :
+                            Math.max(-127, Math.min(127, Math.sign(tile[i]) * Math.floor(Math.abs(tile[i]) / lhStep)));
+                    }
+                    // HH (diagonal) — cross-orientation: widen where LH or HL is zero
+                    for (let y = 0; y < sbH; y++) for (let x = 0; x < sbW; x++) {
+                        const i = (sbH + y) * ts + sbW + x;
+                        const lhAlive = tileQ[y * ts + sbW + x] !== 0;
+                        const hlAlive = tileQ[(sbH + y) * ts + x] !== 0;
+                        const crossFactor = (lhAlive && hlAlive) ? 1.0 : 1.5;
+                        const dz = hhStep * crossFactor;
+                        tileQ[i] = Math.abs(tile[i]) < dz ? 0 :
+                            Math.max(-127, Math.min(127, Math.sign(tile[i]) * Math.floor(Math.abs(tile[i]) / hhStep)));
+                    }
+                }
+                // serialize all quantized coefficients in raster order
+                for (let i = 0; i < ts * ts; i++) allCoeffs.push(zz(tileQ[i]));
+
+                // dequantize LL via DPCM reconstruction (matches encoder prediction)
+                for (let y = 0; y < llH; y++) for (let x = 0; x < llW; x++) {
+                    const i = y * ts + x;
+                    tile[i] = llRecon[y * llW + x];
+                }
+                for (let lv = levels; lv >= 1; lv--) {
+                    const sbW = ts >> lv, sbH = ts >> lv;
+                    const lhStep = subbandStep(quality, ts, ts, lv, levels, false, false, 'low', isChroma);
+                    const hhStep = subbandStep(quality, ts, ts, lv, levels, true, false, 'low', isChroma);
+                    // compute bias per subband type
+                    const lhCoeffs: number[] = [], hlCoeffs: number[] = [], hhCoeffs: number[] = [];
+                    for (let y = 0; y < sbH; y++) for (let x = 0; x < sbW; x++) {
+                        lhCoeffs.push(tileQ[y * ts + sbW + x]);
+                        hlCoeffs.push(tileQ[(sbH + y) * ts + x]);
+                        hhCoeffs.push(tileQ[(sbH + y) * ts + sbW + x]);
+                    }
+                    const lhBias = computeBias(new Int32Array(lhCoeffs), lhStep);
+                    const hlBias = computeBias(new Int32Array(hlCoeffs), lhStep);
+                    const hhBias = computeBias(new Int32Array(hhCoeffs), hhStep);
+                    for (let y = 0; y < sbH; y++) for (let x = 0; x < sbW; x++) {
+                        const iLH = y * ts + sbW + x;
+                        tile[iLH] = tileQ[iLH] === 0 ? 0 : (tileQ[iLH] > 0 ? (tileQ[iLH] + lhBias) : -((-tileQ[iLH]) + lhBias)) * lhStep;
+                        const iHL = (sbH + y) * ts + x;
+                        tile[iHL] = tileQ[iHL] === 0 ? 0 : (tileQ[iHL] > 0 ? (tileQ[iHL] + hlBias) : -((-tileQ[iHL]) + hlBias)) * lhStep;
+                        const iHH = (sbH + y) * ts + sbW + x;
+                        tile[iHH] = tileQ[iHH] === 0 ? 0 : (tileQ[iHH] > 0 ? (tileQ[iHH] + hhBias) : -((-tileQ[iHH]) + hhBias)) * hhStep;
+                    }
+                }
             }
 
             // inverse wavelet for reconstruction
@@ -4117,10 +5590,17 @@ function encodeTiledWaveletPlane(
         }
     }
 
-    // encode all coefficients as a single Logos stream
+    // encode all coefficients as a single Logos stream.
+    // stride = ts gives the Ab axis context from the coefficient directly above
+    // within each tile, providing 2D spatial context for intra-tile prediction.
     const zzBytes = new Uint8Array(allCoeffs.length);
     for (let i = 0; i < allCoeffs.length; i++) zzBytes[i] = allCoeffs[i];
-    const wire = encode0D(zzBytes);
+    const wire = encode0D(zzBytes, ts);
+
+    // tile boundary deblocking was tested and provides negligible improvement
+    // (<0.01 dB). the wavelet's symmetric boundary extension already handles
+    // cross-tile smoothness; the remaining boundary artifacts are below the
+    // quantization noise floor.
 
     return { wire, reconBuf, levelMap };
 }
@@ -4133,8 +5613,7 @@ function decodeTiledWaveletPlane(
 ): Float64Array {
     const ts = isChroma ? TILE_SIZE_UV : TILE_SIZE;
     const ntx = Math.ceil(w / ts), nty = Math.ceil(h / ts);
-    const step = videoBaseQ(quality) * (isChroma ? 1.5 : 1.0);
-    const zzBytes = decode0D(wire, decodedLen);
+    const zzBytes = decode0D(wire, decodedLen, ts);
     const reconBuf = new Float64Array(w * h);
 
     let coeffIdx = 0;
@@ -4144,19 +5623,86 @@ function decodeTiledWaveletPlane(
             const tw = Math.min(ts, w - bx), th = Math.min(ts, h - by);
             const levels = levelMap[ty * ntx + tx];
 
-            // dequantize tile coefficients with adaptive bias from full tile stats
+            // read quantized tile coefficients
             const tileQ = new Int32Array(ts * ts);
             for (let i = 0; i < ts * ts; i++) tileQ[i] = uzz(zzBytes[coeffIdx++]);
-            const tileBias = computeBias(tileQ, step);
             const tile = new Float64Array(ts * ts);
-            for (let i = 0; i < ts * ts; i++) {
-                tile[i] = tileQ[i] === 0 ? 0 : (tileQ[i] > 0 ? (tileQ[i] + tileBias) : -((-tileQ[i]) + tileBias)) * step;
+
+            if (levels === 0) {
+                // edge tile: MED DPCM reconstruction (mirrors encoder)
+                const step = subbandStep(quality, ts, ts, 0, 1, false, true, 'low', isChroma);
+                const bias = 0.375;
+                const recon = new Float64Array(ts * ts);
+                for (let y = 0; y < th; y++) {
+                    for (let x = 0; x < tw; x++) {
+                        const i = y * ts + x;
+                        const L = x > 0 ? recon[i - 1] : 0;
+                        const A = y > 0 ? recon[i - ts] : 0;
+                        const D = (x > 0 && y > 0) ? recon[i - ts - 1] : 0;
+                        const p = L + A - D;
+                        const lo = L < A ? L : A;
+                        const hi = L > A ? L : A;
+                        const pred = p < lo ? lo : (p > hi ? hi : p);
+                        const q = tileQ[i];
+                        const dq = q === 0 ? 0 : (q > 0 ? (q + bias) * step : -((-q) + bias) * step);
+                        recon[i] = pred + dq;
+                        tile[i] = recon[i];
+                    }
+                }
+            } else {
+                // per-subband dequantization matching the encoder.
+                // LL uses closed-loop MED DPCM (mirrors encoder).
+                const llW = ts >> levels, llH = ts >> levels;
+                const llStep = subbandStep(quality, ts, ts, 0, levels, false, true, 'low', isChroma);
+                const llBias2 = 0.375;
+                const llRecon = new Float64Array(llW * llH);
+                for (let y = 0; y < llH; y++) for (let x = 0; x < llW; x++) {
+                    const i = y * ts + x;
+                    const ri = y * llW + x;
+                    const L = x > 0 ? llRecon[ri - 1] : 0;
+                    const A = y > 0 ? llRecon[ri - llW] : 0;
+                    const D = (x > 0 && y > 0) ? llRecon[ri - llW - 1] : 0;
+                    const p = L + A - D;
+                    const lo = L < A ? L : A;
+                    const hi = L > A ? L : A;
+                    const pred = p < lo ? lo : (p > hi ? hi : p);
+                    const q = tileQ[i];
+                    const dq = q === 0 ? 0 : (q > 0 ? (q + llBias2) * llStep : -((-q) + llBias2) * llStep);
+                    llRecon[ri] = pred + dq;
+                    tile[i] = llRecon[ri];
+                }
+                for (let lv = levels; lv >= 1; lv--) {
+                    const sbW = ts >> lv, sbH = ts >> lv;
+                    const lhStep = subbandStep(quality, ts, ts, lv, levels, false, false, 'low', isChroma);
+                    const hhStep = subbandStep(quality, ts, ts, lv, levels, true, false, 'low', isChroma);
+                    const lhCoeffs: number[] = [], hlCoeffs: number[] = [], hhCoeffs: number[] = [];
+                    for (let y = 0; y < sbH; y++) for (let x = 0; x < sbW; x++) {
+                        lhCoeffs.push(tileQ[y * ts + sbW + x]);
+                        hlCoeffs.push(tileQ[(sbH + y) * ts + x]);
+                        hhCoeffs.push(tileQ[(sbH + y) * ts + sbW + x]);
+                    }
+                    const lhBias = computeBias(new Int32Array(lhCoeffs), lhStep);
+                    const hlBias = computeBias(new Int32Array(hlCoeffs), lhStep);
+                    const hhBias = computeBias(new Int32Array(hhCoeffs), hhStep);
+                    for (let y = 0; y < sbH; y++) for (let x = 0; x < sbW; x++) {
+                        const iLH = y * ts + sbW + x;
+                        tile[iLH] = tileQ[iLH] === 0 ? 0 : (tileQ[iLH] > 0 ? (tileQ[iLH] + lhBias) : -((-tileQ[iLH]) + lhBias)) * lhStep;
+                        const iHL = (sbH + y) * ts + x;
+                        tile[iHL] = tileQ[iHL] === 0 ? 0 : (tileQ[iHL] > 0 ? (tileQ[iHL] + hlBias) : -((-tileQ[iHL]) + hlBias)) * lhStep;
+                        const iHH = (sbH + y) * ts + sbW + x;
+                        tile[iHH] = tileQ[iHH] === 0 ? 0 : (tileQ[iHH] > 0 ? (tileQ[iHH] + hhBias) : -((-tileQ[iHH]) + hhBias)) * hhStep;
+                    }
+                }
             }
 
             // inverse wavelet
             if (levels > 0 && ts >= (1 << levels) * 2) {
                 iwt2D_97(tile, ts, ts, levels);
             }
+
+            // (boundary prediction tested and reverted: DC prediction is redundant
+            // with wavelet LL, bilinear prediction creates quantizer grid misalignment.
+            // the wavelet already captures tile DC optimally in LL(0,0).)
 
             // write to output
             for (let y = 0; y < th; y++)
@@ -4177,11 +5723,12 @@ function packTiledWaveletFrame(
     quality: number, useNNUpsample: boolean,
     uAlphaInt: number, vAlphaInt: number
 ): Uint8Array {
-    // pack level maps: 2 bits per tile (values 1-3 → encoded as 0-2)
+    // pack level maps: 2 bits per tile (values 0-3 → encoded directly)
+    // level 0 = pure MED DPCM (edge tiles), 1-3 = wavelet depth
     const packLevelMap = (map: Uint8Array): Uint8Array => {
         const packed = new Uint8Array(Math.ceil(map.length * 2 / 8));
         for (let i = 0; i < map.length; i++) {
-            const val = (map[i] - 1) & 3; // 1→0, 2→1, 3→2
+            const val = map[i] & 3;
             const byteIdx = (i * 2) >> 3;
             const bitOff = (i * 2) & 7;
             packed[byteIdx] |= val << bitOff;
@@ -4264,7 +5811,7 @@ function unpackTiledWaveletFrame(data: Uint8Array): {
         for (let i = 0; i < nTiles; i++) {
             const byteIdx = (i * 2) >> 3;
             const bitOff = (i * 2) & 7;
-            map[i] = ((packed[byteIdx] >> bitOff) & 3) + 1; // 0→1, 1→2, 2→3
+            map[i] = (packed[byteIdx] >> bitOff) & 3; // 0-3 directly
         }
         return map;
     };
@@ -4284,65 +5831,89 @@ function unpackTiledWaveletFrame(data: Uint8Array): {
 
 // encode one plane using DPCM + Logos. the prediction loop is closed-loop:
 // reconstruction feeds back into prediction so encoder and decoder match exactly.
+// returns decodedLen: w*h for 1-byte zigzag, w*h*2 for 2-byte zigzag.
+// the decoder detects the mode from decodedLen > w*h.
 function encodeDpcmLogosPlane(
     plane: Float64Array, w: number, h: number,
     quality: number, isChroma: boolean
-): { wire: Uint8Array; reconBuf: Float64Array } {
-    const step = videoBaseQ(quality) * (isChroma ? 1.5 : 1.0);
-    const reconBuf = new Float64Array(w * h);
-    const zzBytes = new Uint8Array(w * h);
+): { wire: Uint8Array; reconBuf: Float64Array; decodedLen: number } {
+    // non-perceptual: chroma needs finer quantization to equalize RGB MSE.
+    // BT.601 + 4:2:0 amplifies each chroma error ~5× in RGB space.
+    // 0.45 = 1/√5 balances luma and chroma contribution to total RGB MSE.
+    const step = videoBaseQ(quality) * (isChroma ? 0.45 : 1.0);
+    const n = w * h;
+    const reconBuf = new Float64Array(n);
+    const qArr = new Int32Array(n);
 
+    // first pass: quantize and reconstruct (closed-loop), detect overflow
+    let need2B = false;
     for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
             const idx = y * w + x;
-            // predict from reconstructed neighbors using MED
             const L = x > 0 ? reconBuf[idx - 1] : 0;
             const A = y > 0 ? reconBuf[idx - w] : 0;
             const D = (x > 0 && y > 0) ? reconBuf[idx - w - 1] : 0;
             const pred = med2D(L, A, D);
 
-            // quantize residual with dead-zone quantizer
             const residual = plane[idx] - pred;
-            let q = quantizeDZ(residual, step);
-            // clamp to zigzag range (logos handles bytes only)
-            if (q > 127) q = 127;
-            if (q < -127) q = -127;
+            const q = quantizeDZ(residual, step);
+            qArr[idx] = q;
+            if (q > 127 || q < -127) need2B = true;
 
-            // dequantize and reconstruct (closed-loop)
             const recon = pred + dequantizeDZ(q, step, 0.25);
             reconBuf[idx] = Math.round(recon);
-
-            // zigzag map to unsigned byte
-            zzBytes[idx] = zz(q);
         }
     }
 
-    // encode the entire zigzag stream with Logos
-    const wire = encode0D(zzBytes);
-    return { wire, reconBuf };
+    if (need2B) {
+        // 2-byte zigzag: interleaved high/low bytes
+        const rawBytes = new Uint8Array(n * 2);
+        for (let i = 0; i < n; i++) {
+            const z2 = zz(qArr[i]);
+            rawBytes[i * 2] = (z2 >> 8) & 0xff;
+            rawBytes[i * 2 + 1] = z2 & 0xff;
+        }
+        const wire = encode0D(rawBytes, w * 2);
+        return { wire, reconBuf, decodedLen: n * 2 };
+    }
+
+    // 1-byte zigzag
+    const zzBytes = new Uint8Array(n);
+    for (let i = 0; i < n; i++) zzBytes[i] = zz(qArr[i]);
+    const wire = encode0D(zzBytes, w);
+    return { wire, reconBuf, decodedLen: n };
 }
 
 // decode one plane from DPCM + Logos wire. mirrors encodeDpcmLogosPlane exactly.
+// decodedLen > w*h indicates 2-byte zigzag mode (decodedLen = w*h*2).
 function decodeDpcmLogosPlane(
     wire: Uint8Array, decodedLen: number,
     w: number, h: number,
     quality: number, isChroma: boolean
 ): Float64Array {
-    const step = videoBaseQ(quality) * (isChroma ? 1.5 : 1.0);
-    const zzBytes = decode0D(wire, decodedLen);
-    const reconBuf = new Float64Array(w * h);
+    // must match encodeDpcmLogosPlane step (non-perceptual chroma correction)
+    const step = videoBaseQ(quality) * (isChroma ? 0.45 : 1.0);
+    const n = w * h;
+    const is2B = decodedLen > n;
+    const stride = is2B ? w * 2 : w;
+    const rawBytes = decode0D(wire, decodedLen, stride);
+    const reconBuf = new Float64Array(n);
 
     for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
             const idx = y * w + x;
-            // predict from reconstructed neighbors using MED
             const L = x > 0 ? reconBuf[idx - 1] : 0;
             const A = y > 0 ? reconBuf[idx - w] : 0;
             const D = (x > 0 && y > 0) ? reconBuf[idx - w - 1] : 0;
             const pred = med2D(L, A, D);
 
-            // un-zigzag and dequantize
-            const q = uzz(zzBytes[idx]);
+            let q: number;
+            if (is2B) {
+                const z2 = (rawBytes[idx * 2] << 8) | rawBytes[idx * 2 + 1];
+                q = uzz(z2);
+            } else {
+                q = uzz(rawBytes[idx]);
+            }
             const recon = pred + dequantizeDZ(q, step, 0.25);
             reconBuf[idx] = Math.round(recon);
         }
@@ -4535,13 +6106,14 @@ function interChannelRegression(
     // quadratic extension measured +0.32 R² on nature but requires wire format
     // changes across 6+ pack/unpack functions — deferred for marginal gain.
     const yFS = yW * yH, uvFS = uvW * uvH;
+    const same = (yW === uvW && yH === uvH);
     const yDS = new Float64Array(uvLL.length);
     let sYY = 0, sYUV = 0;
     for (let t = 0; t < d; t++) {
         for (let uy = 0; uy < uvH; uy++) {
             for (let ux = 0; ux < uvW; ux++) {
                 const idx = t * uvFS + uy * uvW + ux;
-                const y = yLL[t * yFS + Math.min(uy * 2, yH - 1) * yW + Math.min(ux * 2, yW - 1)];
+                const y = same ? yLL[idx] : yLL[t * yFS + Math.min(uy * 2, yH - 1) * yW + Math.min(ux * 2, yW - 1)];
                 yDS[idx] = y;
                 sYY += y * y;
                 sYUV += y * uvLL[idx];
@@ -4567,12 +6139,117 @@ function interChannelReconstruct(
     residual: Float64Array, alpha: number, yLL: Float64Array, yW: number, yH: number, uvW: number, uvH: number, d: number
 ): void {
     const yFS = yW * yH, uvFS = uvW * uvH;
+    const same = (yW === uvW && yH === uvH);
     for (let t = 0; t < d; t++) {
         for (let uy = 0; uy < uvH; uy++) {
             for (let ux = 0; ux < uvW; ux++) {
-                const yVal = yLL[t * yFS + Math.min(uy * 2, yH - 1) * yW + Math.min(ux * 2, yW - 1)];
-                residual[t * uvFS + uy * uvW + ux] += alpha * yVal;
+                const idx = t * uvFS + uy * uvW + ux;
+                const yVal = same ? yLL[idx] : yLL[t * yFS + Math.min(uy * 2, yH - 1) * yW + Math.min(ux * 2, yW - 1)];
+                residual[idx] += alpha * yVal;
             }
+        }
+    }
+}
+
+// ─── Cross-Chroma Prediction (Cb → Cr) ──────────────────────────────────────
+//
+// natural images have strong Cb-Cr anti-correlation (ρ ≈ -0.87 to -0.94).
+// BT.601 creates this: Cb ∝ B-Y, Cr ∝ R-Y, and the R-B relationship is
+// constrained by natural illumination (blackbody spectra, surface reflectance).
+// predicting Cr from dequantized Cb removes ~87-94% of Cr variance, leaving
+// a much smaller residual that requires fewer bits to encode.
+
+function crossChromaRegression(
+    uLL: Float64Array, vLL: Float64Array, w: number, h: number, d: number
+): { gamma: number; residual: Float64Array } {
+    const fs = w * h;
+    let sUU = 0, sUV = 0;
+    for (let i = 0; i < uLL.length; i++) {
+        sUU += uLL[i] * uLL[i];
+        sUV += uLL[i] * vLL[i];
+    }
+    const olsGamma = sUU < 1 ? 0 : Math.max(-4, Math.min(4, sUV / sUU));
+    const gammaInt0 = Math.max(-127, Math.min(127, Math.floor(olsGamma * 32)));
+    const gammaInt1 = Math.min(127, gammaInt0 + 1);
+    const g0 = gammaInt0 / 32, g1 = gammaInt1 / 32;
+    let e0 = 0, e1 = 0;
+    for (let i = 0; i < vLL.length; i++) {
+        const r0 = vLL[i] - g0 * uLL[i], r1 = vLL[i] - g1 * uLL[i];
+        e0 += r0 * r0; e1 += r1 * r1;
+    }
+    const gamma = e0 <= e1 ? g0 : g1;
+    const residual = new Float64Array(vLL.length);
+    for (let i = 0; i < vLL.length; i++) residual[i] = vLL[i] - gamma * uLL[i];
+    return { gamma, residual };
+}
+
+function crossChromaReconstruct(
+    residual: Float64Array, gamma: number, uLL: Float64Array
+): void {
+    if (gamma === 0) return;
+    for (let i = 0; i < residual.length; i++) {
+        residual[i] += gamma * uLL[i];
+    }
+}
+
+/** apply cross-chroma detail prediction: predict Cr detail subbands from
+ *  dequantized Cb detail subbands at the same resolution. returns gamma per subband. */
+function applyCrossChromaDetail(
+    uDequant: Float64Array, vCoeffs: Float64Array,
+    w: number, h: number, d: number, numLevels: number
+): Int8Array {
+    const nBands = numLevels * 3;
+    const gammas = new Int8Array(nBands);
+    let bandIdx = 0;
+    for (let lv = numLevels; lv >= 1; lv--) {
+        const sbW = w >> lv, sbH = h >> lv;
+        const bands: [number, number][] = [
+            [sbW, 0],   // LH
+            [0, sbH],   // HL
+            [sbW, sbH], // HH
+        ];
+        for (let b = 0; b < 3; b++) {
+            const uSub = extractSubbandF(uDequant, w, bands[b][0], bands[b][1], sbW, sbH, d);
+            const vSub = extractSubbandF(vCoeffs, w, bands[b][0], bands[b][1], sbW, sbH, d);
+            let sUU = 0, sUV = 0;
+            for (let i = 0; i < uSub.length; i++) {
+                sUU += uSub[i] * uSub[i];
+                sUV += uSub[i] * vSub[i];
+            }
+            const olsG = sUU < 1 ? 0 : Math.max(-4, Math.min(4, sUV / sUU));
+            const gInt = Math.max(-127, Math.min(127, Math.round(olsG * 32)));
+            gammas[bandIdx++] = gInt;
+            const g = gInt / 32;
+            if (g !== 0) {
+                const res = new Float64Array(vSub.length);
+                for (let i = 0; i < vSub.length; i++) res[i] = vSub[i] - g * uSub[i];
+                insertSubbandF(vCoeffs, w, bands[b][0], bands[b][1], sbW, sbH, d, res);
+            }
+        }
+    }
+    return gammas;
+}
+
+/** reverse cross-chroma detail prediction: add back gamma * uDequant to vCoeffs. */
+function reverseCrossChromaDetail(
+    uDequant: Float64Array, vCoeffs: Float64Array,
+    w: number, h: number, d: number, numLevels: number, gammas: Int8Array
+): void {
+    let bandIdx = 0;
+    for (let lv = numLevels; lv >= 1; lv--) {
+        const sbW = w >> lv, sbH = h >> lv;
+        const bands: [number, number][] = [
+            [sbW, 0],
+            [0, sbH],
+            [sbW, sbH],
+        ];
+        for (let b = 0; b < 3; b++) {
+            const g = gammas[bandIdx++] / 32;
+            if (g === 0) continue;
+            const uSub = extractSubbandF(uDequant, w, bands[b][0], bands[b][1], sbW, sbH, d);
+            const vSub = extractSubbandF(vCoeffs, w, bands[b][0], bands[b][1], sbW, sbH, d);
+            for (let i = 0; i < vSub.length; i++) vSub[i] += g * uSub[i];
+            insertSubbandF(vCoeffs, w, bands[b][0], bands[b][1], sbW, sbH, d, vSub);
         }
     }
 }
@@ -4677,7 +6354,10 @@ function pack3DFrame(
     vDetailAlphas: Int8Array | null = null,
     useNNUpsample: boolean = false,
     alphaWire: Uint8Array | null = null,
-    mvWire: Uint8Array | null = null
+    mvWire: Uint8Array | null = null,
+    ccGammaInt: number = 0,
+    ccDetailGammas: Int8Array | null = null,
+    chroma444: boolean = false
 ): Uint8Array {
     // affine params: 6 per set. d=2 has 1 set (6 params), d=4 has 3 sets (18 params).
     // bit 7 of affineMask: 0 = 1 set (standard), 1 = 3 sets (d=4 MCTF).
@@ -4712,7 +6392,7 @@ function pack3DFrame(
     const uLenSz = ulebSize(uWire.length);
     const vLenSz = ulebSize(vWire.length);
     const aLenSz = alphaWire ? ulebSize(alphaWire.length) : 0;
-    const headerSize = 11 + affineBytes + mvSize + 2 * nDetailAlphas;
+    const headerSize = 11 + affineBytes + mvSize + 2 * nDetailAlphas + 1 + nDetailAlphas;
     const alphaSize = alphaWire ? 1 + aLenSz + alphaWire.length : 1;
     const total = headerSize + yLenSz + yWire.length + uLenSz + uWire.length + vLenSz + vWire.length + alphaSize;
     const out = new Uint8Array(total);
@@ -4722,7 +6402,7 @@ function pack3DFrame(
     out[o++] = gopType;
     out[o++] = paddedW & 0xFF; out[o++] = (paddedW >> 8) & 0xFF;
     out[o++] = paddedH & 0xFF; out[o++] = (paddedH >> 8) & 0xFF;
-    out[o++] = numLevels;
+    out[o++] = (numLevels & 0x7F) | (chroma444 ? 0x80 : 0);
     out[o++] = (quality & 0x7F) | (useNNUpsample ? 0x80 : 0);
     out[o++] = affineMask;
 
@@ -4762,6 +6442,11 @@ function pack3DFrame(
     for (let i = 0; i < nDetailAlphas; i++)
         out[o++] = ((vDetailAlphas ? vDetailAlphas[i] : 0) + 128) & 0xFF;
 
+    // cross-chroma (Cb→Cr) prediction: LL gamma + detail gammas (always full block)
+    out[o++] = ((ccGammaInt + 128) & 0xFF);
+    for (let i = 0; i < nDetailAlphas; i++)
+        out[o++] = ((ccDetailGammas ? ccDetailGammas[i] : 0) + 128) & 0xFF;
+
     o += writeULEB128(out, o, yWire.length);
     out.set(yWire, o); o += yWire.length;
 
@@ -4788,10 +6473,12 @@ function unpack3DFrame(data: Uint8Array): {
     paddedW: number; paddedH: number;
     numLevels: number; quality: number;
     useNNUpsample: boolean;
+    chroma444: boolean;
     affineParams: Int16Array | null;
     mvWire: Uint8Array | null;
     uAlphaInt: number; vAlphaInt: number;
     uDetailAlphas: Int8Array; vDetailAlphas: Int8Array;
+    ccGammaInt: number; ccDetailGammas: Int8Array;
     yWire: Uint8Array; uWire: Uint8Array; vWire: Uint8Array;
     alphaWire: Uint8Array | null;
 } | null {
@@ -4800,7 +6487,9 @@ function unpack3DFrame(data: Uint8Array): {
     const gopType = data[o++];
     const paddedW = data[o] | (data[o + 1] << 8); o += 2;
     const paddedH = data[o] | (data[o + 1] << 8); o += 2;
-    const numLevels = data[o++];
+    const numLevelsByte = data[o++];
+    const numLevels = numLevelsByte & 0x7F;
+    const chroma444 = (numLevelsByte & 0x80) !== 0;
     const qualityByte = data[o++];
     const quality = qualityByte & 0x7F;
     const useNNUpsample = (qualityByte & 0x80) !== 0;
@@ -4856,6 +6545,12 @@ function unpack3DFrame(data: Uint8Array): {
     for (let i = 0; i < nDetailAlphas; i++)
         vDetailAlphas[i] = (data[o++] ?? 128) - 128;
 
+    // cross-chroma (Cb→Cr) prediction: LL gamma + detail gammas
+    const ccGammaInt = (data[o++] ?? 128) - 128;
+    const ccDetailGammas = new Int8Array(nDetailAlphas);
+    for (let i = 0; i < nDetailAlphas; i++)
+        ccDetailGammas[i] = (data[o++] ?? 128) - 128;
+
     const yR = readULEB128(data, o); o += yR.bytes;
     const yWire = data.subarray(o, o + yR.value); o += yR.value;
 
@@ -4875,7 +6570,7 @@ function unpack3DFrame(data: Uint8Array): {
         o++; // skip 0x00 flag
     }
 
-    return { gopType, paddedW, paddedH, numLevels, quality, useNNUpsample, affineParams, mvWire, uAlphaInt, vAlphaInt, uDetailAlphas, vDetailAlphas, yWire, uWire, vWire, alphaWire };
+    return { gopType, paddedW, paddedH, numLevels, quality, useNNUpsample, chroma444, affineParams, mvWire, uAlphaInt, vAlphaInt, uDetailAlphas, vDetailAlphas, ccGammaInt, ccDetailGammas, yWire, uWire, vWire, alphaWire };
 }
 
 export interface VideoCodecConfig {
@@ -4960,9 +6655,12 @@ export class VideoCodec {
         this.gopLayout = null;
     }
 
-    /** Maximum packet size for a given resolution (raw/uncompressed case). */
+    /** upper-bound packet size for any quality level at this resolution.
+     *  lossless Q100 can expand slightly for incompressible data:
+     *  entropy overhead (~0.5%) + framing/pseudoDims padding (~256B). */
     static packetSize(width: number, height: number): number {
-        return HEADER_SIZE + width * height * 4 + MAC_SIZE;
+        const rawBytes = width * height * 4;
+        return HEADER_SIZE + rawBytes + (rawBytes >>> 7) + 256 + MAC_SIZE;
     }
 
     /** Read packet header without decrypting. Useful for routing, stats, drop detection. */
@@ -4985,11 +6683,29 @@ export class VideoCodec {
     }
 
     private compressFrame(pixels: Uint8Array, w: number, h: number): { payload: Uint8Array; flags: number } {
-        const { quality, keyFrameInterval, numLevels } = this.config;
-        let yuv = rgbaToYuv420(pixels, w, h);
+        const { quality, keyFrameInterval } = this.config;
+        // adaptive wavelet depth: select numLevels based on global gradient energy.
+        // high-gradient content (edges, city) benefits from fewer levels (less edge
+        // spreading). low-gradient content (portrait, smooth) benefits from more
+        // levels (better energy compaction in LL).
+        //
+        // gradient energy measured on Y channel (most significant for compression).
+        // thresholds derived from the quantization step: when gradient energy exceeds
+        // step² × 12, edges dominate and fewer levels help. below step² × 3, content
+        // is smooth enough for 4 levels.
+        // adaptive numLevels was tested (2026-04-05): tried selecting 2 vs 3
+        // levels based on global gradient energy. result: zero impact. edge-heavy
+        // content already uses the tiled/DPCM path (making wavelet numLevels
+        // irrelevant), and smooth content is always better at 3 levels.
+        const numLevels = this.config.numLevels;
+        // 4:4:4 chroma at Q>=95: eliminates the 4:2:0 error amplification
+        // that caps landscape PSNR at ~39.5 dB. the extra chroma bits are
+        // worth it at high quality where chroma error dominates.
+        const chroma444 = quality >= 96;
+        let yuv = chroma444 ? rgbaToYuv444(pixels, w, h) : rgbaToYuv420(pixels, w, h);
         // decide chroma upsampling method before padding/PQ transforms
-        this.useNNUpsample = chooseUpsampleNN(pixels, yuv, w, h);
-        const layout = buildFrameLayout(w, h, numLevels);
+        this.useNNUpsample = chroma444 ? false : chooseUpsampleNN(pixels, yuv, w, h);
+        const layout = buildFrameLayout(w, h, numLevels, chroma444);
         const key = layoutKey(layout);
         yuv = padYuv420(yuv, layout);
         pqForward(yuv, 0, layout.paddedYSize);
@@ -5048,7 +6764,7 @@ export class VideoCodec {
                     const vE = encodeSubband3D(zV, layout.paddedUvW, layout.paddedUvH, 1, quality, numLevels, 'high', true);
                     const payload = pack3DFrame(GOP_SLIDING, yE.wire, uE.wire, vE.wire, 0, 0,
                         layout.paddedWidth, layout.paddedHeight, numLevels, quality, null,
-                        null, null, this.useNNUpsample, alphaWire);
+                        null, null, this.useNNUpsample, alphaWire, null, 0, null, chroma444);
                     this.prevOrigYuv = new Uint8Array(yuv);
                     this.prevLayoutKey = key;
                     this.prevNumLevels = numLevels;
@@ -5073,7 +6789,7 @@ export class VideoCodec {
                     const vE = encodeSubband3D(zV, layout.paddedUvW, layout.paddedUvH, 1, quality, numLevels, 'high', true);
                     const payload = pack3DFrame(GOP_KEYREF, yE.wire, uE.wire, vE.wire, 0, 0,
                         layout.paddedWidth, layout.paddedHeight, numLevels, quality, null,
-                        null, null, this.useNNUpsample, alphaWire);
+                        null, null, this.useNNUpsample, alphaWire, null, 0, null, chroma444);
                     // Reconstruction is the keyframe reconstruction
                     this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = new Uint8Array(this.keyReconFrame!);
                     this.prevReconInts = { y: new Int32Array(this.keyReconInts!.y), u: new Int32Array(this.keyReconInts!.u), v: new Int32Array(this.keyReconInts!.v) };
@@ -5145,7 +6861,7 @@ export class VideoCodec {
                         const zVE = encodeSubband3D(zV, layout.paddedUvW, layout.paddedUvH, 1, quality, numLevels, 'high', true);
                         const pay = pack3DFrame(gopT, zYE.wire, zUE.wire, zVE.wire, 0, 0,
                             layout.paddedWidth, layout.paddedHeight, numLevels, quality, aff,
-                            null, null, this.useNNUpsample, alphaWire, mvWire);
+                            null, null, this.useNNUpsample, alphaWire, mvWire, 0, null, chroma444);
                         // reuse the warped reference as reconstruction
                         const reconF = new Uint8Array(ref0);
                         reconF.set(yRefined, 0); // use motion-refined Y
@@ -5221,14 +6937,14 @@ export class VideoCodec {
                         const zVE = encodeSubband3D(zV, layout.paddedUvW, layout.paddedUvH, 1, quality, numLevels, 'high', true);
                         const pay = pack3DFrame(gopT, zYE.wire, zUE.wire, zVE.wire, 0, 0,
                             layout.paddedWidth, layout.paddedHeight, numLevels, quality, aff,
-                            null, null, this.useNNUpsample, alphaWire, mvWire);
+                            null, null, this.useNNUpsample, alphaWire, mvWire, 0, null, chroma444);
                         candidates.push({ payload: pay, gopType: gopT, reconFrame: ref0, reconInts: { y: new Int32Array(refY), u: new Int32Array(refU), v: new Int32Array(refV) } });
                         return;
                     }
 
                     const wavPay = pack3DFrame(gopT, yE.wire, uE.wire, vE.wire, trUAlphaInt, trVAlphaInt,
                         layout.paddedWidth, layout.paddedHeight, numLevels, quality, aff,
-                        trUDetailAlphas, trVDetailAlphas, this.useNNUpsample, alphaWire, mvWire);
+                        trUDetailAlphas, trVDetailAlphas, this.useNNUpsample, alphaWire, mvWire, 0, null, chroma444);
 
                     // dual-path: try DPCM+Logos on the diff (pixel-domain MED on the
                     // motion-compensated difference). this often beats wavelet on sparse
@@ -5243,7 +6959,7 @@ export class VideoCodec {
                         const dpcmUDiff = encodeDpcmLogosPlane(uD, layout.paddedUvW, layout.paddedUvH, quality, true);
                         const dpcmVDiff = encodeDpcmLogosPlane(vD, layout.paddedUvW, layout.paddedUvH, quality, true);
                         const dpcmPay = packDpcmLogosFrame(gopT, dpcmYDiff.wire, dpcmUDiff.wire, dpcmVDiff.wire,
-                            yFS1, uvFS1, uvFS1, 0, 0,
+                            dpcmYDiff.decodedLen, dpcmUDiff.decodedLen, dpcmVDiff.decodedLen, 0, 0,
                             layout.paddedWidth, layout.paddedHeight, quality, this.useNNUpsample);
                         if (dpcmPay.length < wavPay.length) {
                             bestPay = dpcmPay; bestIsWavelet = false;
@@ -5359,7 +7075,7 @@ export class VideoCodec {
             const vE = encodeSubband3D(zV, layout.paddedUvW, layout.paddedUvH, 1, quality, numLevels, 'high', true);
             const payload = pack3DFrame(GOP_SLIDING, yE.wire, uE.wire, vE.wire, 0, 0,
                 layout.paddedWidth, layout.paddedHeight, numLevels, quality, null,
-                null, null, this.useNNUpsample, alphaWire);
+                null, null, this.useNNUpsample, alphaWire, null, 0, null, chroma444);
             return { payload, flags: encodeFlags(true, false, quality) };
         } else {
             // Final frame of GOP — encode all frames together
@@ -5437,7 +7153,7 @@ export class VideoCodec {
                     const vE = encodeSubband3D(zV, layout.paddedUvW, layout.paddedUvH, 1, quality, numLevels, 'high', true);
                     const payload = pack3DFrame(GOP_SLIDING, yE.wire, uE.wire, vE.wire, 0, 0,
                         layout.paddedWidth, layout.paddedHeight, numLevels, quality, null,
-                        null, null, this.useNNUpsample, alphaWire);
+                        null, null, this.useNNUpsample, alphaWire, null, 0, null, chroma444);
                     this.prevOrigYuv = new Uint8Array(yuv);
                     this.prevLayoutKey = key;
                     this.prevNumLevels = numLevels;
@@ -5536,6 +7252,11 @@ export class VideoCodec {
         // from local MAD includes temporal noise, and T = σ²/σ_s shrinks it away.
 
         const yEnc = encodeSubband3D(yCoeffs, layout.paddedWidth, layout.paddedHeight, d, quality, numLevels, 'low', false);
+        // store luma dequant for cross-channel chroma dead zone
+        _lumaDequant = yEnc.dequant;
+        _lumaDequantW = layout.paddedWidth;
+        _lumaDequantH = layout.paddedHeight;
+        _lumaDequantD = d;
 
         // chroma-from-luma: predict U/V LL from dequantized Y LL
         const yLLW = layout.paddedWidth >> numLevels;
@@ -5556,21 +7277,43 @@ export class VideoCodec {
         const vDetailAlphas = applyDetailCfL(yEnc.dequant, vCoeffs,
             layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, d, numLevels);
 
-        // encode U first (saves significance for V cross-channel context)
+        // encode U first so dequantized Cb is available for cross-chroma prediction
 
         const uEnc = encodeSubband3D(uCoeffs, layout.paddedUvW, layout.paddedUvH, d, quality, numLevels, 'low', true);
-        // encode V with U cross-channel context (the 6th dimension: λ/color)
+
+        // cross-chroma prediction: Cr ≈ gamma × dequantized Cb.
+        // natural images have ρ(Cb,Cr) ≈ -0.87 to -0.94, so this removes
+        // up to 88% of Cr variance. the residual is much cheaper to encode.
+        const uLLDequant = extractSubbandF(uEnc.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d);
+        const vLLForCross = extractSubbandF(vCoeffs, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d);
+        const ccReg = crossChromaRegression(uLLDequant, vLLForCross, uvLLW, uvLLH, d);
+        insertSubbandF(vCoeffs, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d, ccReg.residual);
+
+        // cross-chroma detail prediction
+        const ccDetailGammas = applyCrossChromaDetail(uEnc.dequant, vCoeffs,
+            layout.paddedUvW, layout.paddedUvH, d, numLevels);
 
         const vEnc = encodeSubband3D(vCoeffs, layout.paddedUvW, layout.paddedUvH, d, quality, numLevels, 'low', true);
 
         const uAlphaInt = Math.max(-127, Math.min(127, Math.round(uReg.alpha * 64)));
         const vAlphaInt = Math.max(-127, Math.min(127, Math.round(vReg.alpha * 64)));
+        const ccGammaInt = Math.max(-127, Math.min(127, Math.round(ccReg.gamma * 32)));
 
         const payload = pack3DFrame(gopType, yEnc.wire, uEnc.wire, vEnc.wire, uAlphaInt, vAlphaInt,
             layout.paddedWidth, layout.paddedHeight, numLevels, quality, combinedAffine,
-            uDetailAlphas, vDetailAlphas, this.useNNUpsample, alphaWire);
+            uDetailAlphas, vDetailAlphas, this.useNNUpsample, alphaWire, null,
+            ccGammaInt, ccDetailGammas, layout.chroma444);
 
         // reconstruct last frame for reference (reverse CfL + inverse wavelet)
+        // first reverse cross-chroma prediction on V
+        reverseCrossChromaDetail(uEnc.dequant, vEnc.dequant,
+            layout.paddedUvW, layout.paddedUvH, d, numLevels, ccDetailGammas);
+        const ccGammaEnc = ccGammaInt / 32;
+        if (ccGammaEnc !== 0) {
+            const vLLDec = extractSubbandF(vEnc.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d);
+            crossChromaReconstruct(vLLDec, ccGammaEnc, uLLDequant);
+            insertSubbandF(vEnc.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d, vLLDec);
+        }
         reverseDetailCfL(yEnc.dequant, uEnc.dequant,
             layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, d, numLevels, uDetailAlphas);
         reverseDetailCfL(yEnc.dequant, vEnc.dequant,
@@ -5607,7 +7350,7 @@ export class VideoCodec {
         reconFrame.set(modelIntsToPlane(reconUInts, 128), layout.paddedYSize);
         reconFrame.set(modelIntsToPlane(reconVInts, 128), layout.paddedYSize + layout.paddedUvSize);
 
-        const saoEnc = Math.round(videoBaseQ(quality) * 0.5);
+        const saoEnc = Math.floor(videoBaseQ(quality) * 0.5);
         saoFilter(reconFrame.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoEnc);
 
         this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = reconFrame;
@@ -5688,6 +7431,11 @@ export class VideoCodec {
             fwt2D_97(uDiffCoeffs, layout.paddedUvW, layout.paddedUvH, numLevels);
             fwt2D_97(vDiffCoeffs, layout.paddedUvW, layout.paddedUvH, numLevels);
             const yHigh = encodeSubband3D(yDiffCoeffs, layout.paddedWidth, layout.paddedHeight, 1, quality, numLevels, 'high', false);
+            // store luma dequant for cross-channel chroma dead zone
+            _lumaDequant = yHigh.dequant;
+            _lumaDequantW = layout.paddedWidth;
+            _lumaDequantH = layout.paddedHeight;
+            _lumaDequantD = 1;
 
             // chroma-from-luma on diff signal: predict U/V LL from dequantized Y LL
             const yLLW = layout.paddedWidth >> numLevels;
@@ -5708,13 +7456,32 @@ export class VideoCodec {
             const vDiffDetailAlphas = applyDetailCfL(yHigh.dequant, vDiffCoeffs,
                 layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, 1, numLevels);
 
+            // encode U first, then cross-chroma predict V from dequantized U
             const uHigh = encodeSubband3D(uDiffCoeffs, layout.paddedUvW, layout.paddedUvH, 1, quality, numLevels, 'high', true);
+
+            const uDiffLLDequant = extractSubbandF(uHigh.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, 1);
+            const vDiffLLForCross = extractSubbandF(vDiffCoeffs, layout.paddedUvW, 0, 0, uvLLW, uvLLH, 1);
+            const ccDiffReg = crossChromaRegression(uDiffLLDequant, vDiffLLForCross, uvLLW, uvLLH, 1);
+            insertSubbandF(vDiffCoeffs, layout.paddedUvW, 0, 0, uvLLW, uvLLH, 1, ccDiffReg.residual);
+            const ccDiffDetailGammas = applyCrossChromaDetail(uHigh.dequant, vDiffCoeffs,
+                layout.paddedUvW, layout.paddedUvH, 1, numLevels);
+
             const vHigh = encodeSubband3D(vDiffCoeffs, layout.paddedUvW, layout.paddedUvH, 1, quality, numLevels, 'high', true);
 
             const uAlphaInt = Math.max(-127, Math.min(127, Math.round(uDiffReg.alpha * 64)));
             const vAlphaInt = Math.max(-127, Math.min(127, Math.round(vDiffReg.alpha * 64)));
+            const ccDiffGammaInt = Math.max(-127, Math.min(127, Math.round(ccDiffReg.gamma * 32)));
 
-            // reconstruct CfL before inverse wavelet (mirror decoder)
+            // reconstruct predictions before inverse wavelet (mirror decoder):
+            // 1. reverse cross-chroma 2. reverse detail CfL 3. reverse LL CfL
+            reverseCrossChromaDetail(uHigh.dequant, vHigh.dequant,
+                layout.paddedUvW, layout.paddedUvH, 1, numLevels, ccDiffDetailGammas);
+            const ccDiffGammaEnc = ccDiffGammaInt / 32;
+            if (ccDiffGammaEnc !== 0) {
+                const vDiffLLCcDec = extractSubbandF(vHigh.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, 1);
+                crossChromaReconstruct(vDiffLLCcDec, ccDiffGammaEnc, uDiffLLDequant);
+                insertSubbandF(vHigh.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, 1, vDiffLLCcDec);
+            }
             reverseDetailCfL(yHigh.dequant, uHigh.dequant,
                 layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, 1, numLevels, uDiffDetailAlphas);
             reverseDetailCfL(yHigh.dequant, vHigh.dequant,
@@ -5760,9 +7527,10 @@ export class VideoCodec {
             }
             const payload = pack3DFrame(gopType, yHigh.wire, uHigh.wire, vHigh.wire, uAlphaInt, vAlphaInt,
                 layout.paddedWidth, layout.paddedHeight, numLevels, quality, affineParams,
-                uDiffDetailAlphas, vDiffDetailAlphas, this.useNNUpsample, alphaWire);
+                uDiffDetailAlphas, vDiffDetailAlphas, this.useNNUpsample, alphaWire, null,
+                ccDiffGammaInt, ccDiffDetailGammas, layout.chroma444);
             // SAO on encoder reconstruction (must match decoder)
-            const saoEnc = Math.round(videoBaseQ(quality) * 0.5);
+            const saoEnc = Math.floor(videoBaseQ(quality) * 0.5);
             saoFilter(reconFrame.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoEnc);
             this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = reconFrame;
             this.prevReconInts = { y: reconYInts, u: reconUInts, v: reconVInts };
@@ -5803,13 +7571,23 @@ export class VideoCodec {
             const v1 = planeToModelInts(alignedF1.subarray(layout.paddedYSize + layout.paddedUvSize), 128);
             yVol.set(y1, yFS); uVol.set(u1, uvFS); vVol.set(v1, uvFS);
         }
+        let _pt0 = _profileStart();
         const yCoeffs = fwt3D(yVol, layout.paddedWidth, layout.paddedHeight, d, numLevels);
         const uCoeffs = fwt3D(uVol, layout.paddedUvW, layout.paddedUvH, d, numLevels);
         const vCoeffs = fwt3D(vVol, layout.paddedUvW, layout.paddedUvH, d, numLevels);
+        _profileAdd('fwt3D', _pt0);
         // encode Y first so we can use dequantized Y LL for chroma-from-luma prediction
+        _pt0 = _profileStart();
         const yEnc = encodeSubband3D(yCoeffs, layout.paddedWidth, layout.paddedHeight, d, quality, numLevels, 'low', false);
+        _profileAdd('encodeSubband_Y', _pt0);
+        // store luma dequant for cross-channel chroma dead zone
+        _lumaDequant = yEnc.dequant;
+        _lumaDequantW = layout.paddedWidth;
+        _lumaDequantH = layout.paddedHeight;
+        _lumaDequantD = d;
 
         // chroma-from-luma: predict U/V LL from dequantized Y LL
+        _pt0 = _profileStart();
         const yLLW = layout.paddedWidth >> numLevels;
         const yLLH = layout.paddedHeight >> numLevels;
         const uvLLW = layout.paddedUvW >> numLevels;
@@ -5828,17 +7606,32 @@ export class VideoCodec {
             layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, d, numLevels);
         const vDetailAlphas = applyDetailCfL(yEnc.dequant, vCoeffs,
             layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, d, numLevels);
+        _profileAdd('cfl', _pt0);
 
+        // encode U first so dequantized Cb is available for cross-chroma prediction
+        _pt0 = _profileStart();
         const uEnc = encodeSubband3D(uCoeffs, layout.paddedUvW, layout.paddedUvH, d, quality, numLevels, 'low', true);
+
+        // cross-chroma prediction: Cr ≈ gamma × dequantized Cb
+        const uLLDequant = extractSubbandF(uEnc.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d);
+        const vLLForCross = extractSubbandF(vCoeffs, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d);
+        const ccReg = crossChromaRegression(uLLDequant, vLLForCross, uvLLW, uvLLH, d);
+        insertSubbandF(vCoeffs, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d, ccReg.residual);
+        const ccDetailGammas = applyCrossChromaDetail(uEnc.dequant, vCoeffs,
+            layout.paddedUvW, layout.paddedUvH, d, numLevels);
+
         const vEnc = encodeSubband3D(vCoeffs, layout.paddedUvW, layout.paddedUvH, d, quality, numLevels, 'low', true);
+        _profileAdd('encodeSubband_UV', _pt0);
 
         // quantize alpha as signed byte (±127), scale factor 64
         const uAlphaInt = Math.max(-127, Math.min(127, Math.round(uReg.alpha * 64)));
         const vAlphaInt = Math.max(-127, Math.min(127, Math.round(vReg.alpha * 64)));
+        const ccGammaInt = Math.max(-127, Math.min(127, Math.round(ccReg.gamma * 32)));
 
         const globalPayload = pack3DFrame(gopType, yEnc.wire, uEnc.wire, vEnc.wire, uAlphaInt, vAlphaInt,
             layout.paddedWidth, layout.paddedHeight, numLevels, quality, affineParams,
-            uDetailAlphas, vDetailAlphas, this.useNNUpsample, alphaWire);
+            uDetailAlphas, vDetailAlphas, this.useNNUpsample, alphaWire, null,
+            ccGammaInt, ccDetailGammas, layout.chroma444);
 
         // dual-path selection: wavelet vs DPCM+Logos.
         // the wavelet IS the renormalization group — perfect for smooth content.
@@ -5856,11 +7649,17 @@ export class VideoCodec {
         // skip at large resolutions (> 640×480) where DPCM is too slow.
         let payload: Uint8Array;
         const totalPixels = layout.paddedWidth * layout.paddedHeight;
-        // the DPCM trial is O(n) through Logos — ~40ms at 128×128, ~130ms at 256×256.
-        // only run when: (a) enough pixels to amortize (≥ 192×192 = 36864), (b) the
-        // wavelet is struggling (bpp > 0.2), (c) not too large (≤ 640×480 = 307200).
+        // the DPCM trial is O(n) through Logos — ~500ms at 512×512. profiling shows
+        // DPCM wins only on high-detail content at very high quality (Q≥85, bpp>4.0)
+        // where pixel-domain MED prediction preserves chroma better than the wavelet
+        // path's 4:2:0 subsampling. at lower Q or bpp, the wavelet always wins.
+        // for small images (≤192×192, ~10-40ms trial), run at the old threshold.
         const wavBpp = globalPayload.length * 8 / totalPixels;
-        if (d === 1 && wavBpp > 0.2 && totalPixels >= 36864 && totalPixels <= 307200) {
+        _pt0 = _profileStart();
+        const dpcmGate = totalPixels <= 36864
+            ? wavBpp > 1.0       // small images: try DPCM above 1.0 bpp (cheap)
+            : wavBpp > 4.0 && quality >= 80;  // large images: only at high Q + high bpp
+        if (d === 1 && dpcmGate && totalPixels >= 1024 && totalPixels <= 307200) {
             const yPlaneF = new Float64Array(y0.length);
             for (let i = 0; i < y0.length; i++) yPlaneF[i] = y0[i];
             const uPlaneF = new Float64Array(u0.length);
@@ -5881,9 +7680,7 @@ export class VideoCodec {
 
             const dpcmPayload = packDpcmLogosFrame(
                 gopType, dpcmY.wire, dpcmU.wire, dpcmV.wire,
-                layout.paddedWidth * layout.paddedHeight,
-                layout.paddedUvW * layout.paddedUvH,
-                layout.paddedUvW * layout.paddedUvH,
+                dpcmY.decodedLen, dpcmU.decodedLen, dpcmV.decodedLen,
                 dpcmUAlphaInt, dpcmVAlphaInt,
                 layout.paddedWidth, layout.paddedHeight,
                 quality, this.useNNUpsample, alphaWire,
@@ -5899,15 +7696,26 @@ export class VideoCodec {
             for (let i = 0; i < yFS; i++) { const e = y0[i] - Math.round(dpcmY.reconBuf[i]); dpcmMse += e*e; }
             dpcmMse /= yFS;
             const dpcmPsnr = dpcmMse === 0 ? 999 : 10 * Math.log10(255*255 / dpcmMse);
-            // wavelet MSE from already-encoded dequantized coefficients
+            // wavelet MSE from already-encoded dequantized coefficients.
+            // use clamped reconstruction (matching the actual decode pipeline) to avoid
+            // overly optimistic predictions when wavelet synthesis overshoots [0, 255].
             const yIwt = new Float64Array(yEnc.dequant);
             iwt2D_97(yIwt, layout.paddedWidth, layout.paddedHeight, numLevels);
             let wavMse = 0;
-            for (let i = 0; i < yFS; i++) { const e = y0[i] - Math.round(yIwt[i]); wavMse += e*e; }
+            for (let i = 0; i < yFS; i++) { const e = y0[i] - (clampByte(Math.round(yIwt[i]) + 128) - 128); wavMse += e*e; }
             wavMse /= yFS;
             const wavPsnr = wavMse === 0 ? 999 : 10 * Math.log10(255*255 / wavMse);
-            // DPCM must be smaller AND have >= PSNR (no quality regression)
-            if (dpcmPayload.length < globalPayload.length && dpcmPsnr >= wavPsnr) {
+            // R-D comparison: DPCM wins if it has better rate-distortion performance.
+            // pure byte comparison is too conservative — DPCM can be slightly larger
+            // but significantly higher quality (e.g., +5 dB for +5% bytes on city).
+            // use bits + λ × MSE where λ = baseStep² (from quantization theory).
+            const rdLambda = videoBaseQ(quality) * videoBaseQ(quality);
+            const dpcmRdCost = dpcmPayload.length * 8 + rdLambda * dpcmMse * yFS;
+            const wavRdCost = globalPayload.length * 8 + rdLambda * wavMse * yFS;
+            if (_lumenDebugSubbands) {
+                console.log(`  [DPCM vs WAV] dpcm: ${dpcmPayload.length}B psnr=${dpcmPsnr.toFixed(1)} rdCost=${dpcmRdCost.toFixed(0)} | wav: ${globalPayload.length}B psnr=${wavPsnr.toFixed(1)} rdCost=${wavRdCost.toFixed(0)} | λ=${rdLambda.toFixed(3)} winner=${dpcmRdCost < wavRdCost && dpcmPsnr >= wavPsnr - 0.5 ? 'DPCM' : 'WAV'}`);
+            }
+            if (dpcmRdCost < wavRdCost && dpcmPsnr >= wavPsnr - 0.5) {
                 // DPCM wins: reconstruct from DPCM path for future reference frames
                 pixelCfLReconstruct(dpcmU.reconBuf, dpcmUAlphaInt / 64, dpcmY.reconBuf,
                     layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH);
@@ -5928,11 +7736,18 @@ export class VideoCodec {
         } else {
             payload = globalPayload;
         }
+        _profileAdd('dpcm_trial', _pt0);
 
         // third path: tiled adaptive wavelet for edge-heavy content.
-        // only try when the global wavelet is struggling (high bpp) and
-        // the image is large enough for tiles to be meaningful.
-        if (d === 1 && payload.length * 8 / totalPixels > 0.15 && totalPixels >= 36864 && totalPixels <= 307200) {
+        // the tiled path handles edges better (no cross-subband energy spreading)
+        // and provides better chroma quality at very high bpp (pixel-domain CfL
+        // bypasses the 4:2:0 subsampling loss in the global wavelet path).
+        // profiling shows tiled only wins when global bpp > 4.5 (city Q80+, ~5 bpp).
+        // below 4.5 bpp, the global wavelet's cross-tile correlation always wins on
+        // bytes. raised from 0.8 to 4.5 (2026-04-05): saves ~1000ms on the vast
+        // majority of 512×512 encodes (portrait/nature/BBB at all Q, city Q≤70).
+        _pt0 = _profileStart();
+        if (d === 1 && payload.length * 8 / totalPixels > 4.5 && totalPixels >= 1024 && totalPixels <= 307200) {
             const yPlaneF2 = new Float64Array(y0.length);
             for (let i = 0; i < y0.length; i++) yPlaneF2[i] = y0[i];
             const uPlaneF2 = new Float64Array(u0.length);
@@ -5940,14 +7755,19 @@ export class VideoCodec {
             const vPlaneF2 = new Float64Array(v0.length);
             for (let i = 0; i < v0.length; i++) vPlaneF2[i] = v0[i];
 
-            const tiledY = encodeTiledWaveletPlane(yPlaneF2, layout.paddedWidth, layout.paddedHeight, quality, false);
+            // the tiled path preserves edge structure better (no cross-subband spreading),
+            // producing higher quality per bit in edge regions. reduce quality by 5 Q-points
+            // to compensate for the loss of cross-tile correlation while exploiting the edge
+            // benefit. the quality gate (tiledPsnr >= curPsnr - 0.5) prevents regressions.
+            const tiledQ = Math.max(1, quality - 5);
+            const tiledY = encodeTiledWaveletPlane(yPlaneF2, layout.paddedWidth, layout.paddedHeight, tiledQ, false);
             // CfL on tiled Y reconstruction
             const tiledUCfl = pixelCfLRegression(tiledY.reconBuf, layout.paddedWidth, layout.paddedHeight,
                 uPlaneF2, layout.paddedUvW, layout.paddedUvH);
             const tiledVCfl = pixelCfLRegression(tiledY.reconBuf, layout.paddedWidth, layout.paddedHeight,
                 vPlaneF2, layout.paddedUvW, layout.paddedUvH);
-            const tiledU = encodeTiledWaveletPlane(tiledUCfl.residual, layout.paddedUvW, layout.paddedUvH, quality, true);
-            const tiledV = encodeTiledWaveletPlane(tiledVCfl.residual, layout.paddedUvW, layout.paddedUvH, quality, true);
+            const tiledU = encodeTiledWaveletPlane(tiledUCfl.residual, layout.paddedUvW, layout.paddedUvH, tiledQ, true);
+            const tiledV = encodeTiledWaveletPlane(tiledVCfl.residual, layout.paddedUvW, layout.paddedUvH, tiledQ, true);
 
             const tiledUAlphaInt = Math.max(-127, Math.min(127, Math.round(tiledUCfl.alpha * 64)));
             const tiledVAlphaInt = Math.max(-127, Math.min(127, Math.round(tiledVCfl.alpha * 64)));
@@ -5955,23 +7775,27 @@ export class VideoCodec {
             const tiledPayload = packTiledWaveletFrame(
                 gopType, tiledY.wire, tiledU.wire, tiledV.wire,
                 tiledY.levelMap, tiledU.levelMap, tiledV.levelMap,
-                layout.paddedWidth, layout.paddedHeight, quality, this.useNNUpsample,
+                layout.paddedWidth, layout.paddedHeight, tiledQ, this.useNNUpsample,
                 tiledUAlphaInt, tiledVAlphaInt
             );
 
-            // quality gate: compute tiled Y PSNR and require it's not worse
+            // quality gate: compute tiled Y PSNR and require it's not worse.
+            // use clamped reconstruction to match the actual decode pipeline.
             let tiledMse = 0;
-            for (let i = 0; i < yFS; i++) { const e2 = y0[i] - Math.round(tiledY.reconBuf[i]); tiledMse += e2*e2; }
+            for (let i = 0; i < yFS; i++) { const e2 = y0[i] - (clampByte(Math.round(tiledY.reconBuf[i]) + 128) - 128); tiledMse += e2*e2; }
             tiledMse /= yFS;
             const tiledPsnr = tiledMse === 0 ? 999 : 10 * Math.log10(255*255 / tiledMse);
-            // compare with current best path's PSNR
+            // compare with current best path's PSNR (also clamped)
             const curYIwt = new Float64Array(yEnc.dequant);
             iwt2D_97(curYIwt, layout.paddedWidth, layout.paddedHeight, numLevels);
             let curMse = 0;
-            for (let i = 0; i < yFS; i++) { const e2 = y0[i] - Math.round(curYIwt[i]); curMse += e2*e2; }
+            for (let i = 0; i < yFS; i++) { const e2 = y0[i] - (clampByte(Math.round(curYIwt[i]) + 128) - 128); curMse += e2*e2; }
             curMse /= yFS;
             const curPsnr = curMse === 0 ? 999 : 10 * Math.log10(255*255 / curMse);
 
+            if (_lumenDebugSubbands) {
+                console.log(`  [TILED vs CUR] tiled: ${tiledPayload.length}B psnr=${tiledPsnr.toFixed(1)} tiledQ=${tiledQ} | cur: ${payload.length}B psnr=${curPsnr.toFixed(1)} | winner=${tiledPayload.length < payload.length && tiledPsnr >= curPsnr - 0.5 ? 'TILED' : 'CUR'}`);
+            }
             if (tiledPayload.length < payload.length && tiledPsnr >= curPsnr - 0.5) {
                 // tiled wavelet wins: reconstruct for reference frame
                 pixelCfLReconstruct(tiledU.reconBuf, tiledUAlphaInt / 64, tiledY.reconBuf,
@@ -5990,9 +7814,21 @@ export class VideoCodec {
                 return tiledPayload;
             }
         }
+        _profileAdd('tiled_trial', _pt0);
 
-        // reconstruct CfL before inverse wavelet (same as decoder)
-        // first reverse detail CfL, then reverse LL CfL
+        // reconstruct predictions before inverse wavelet (same order as decoder):
+        // 1. reverse cross-chroma (Cb→Cr) detail + LL
+        // 2. reverse detail CfL (Y→UV)
+        // 3. reverse LL CfL (Y→UV)
+        _pt0 = _profileStart();
+        reverseCrossChromaDetail(uEnc.dequant, vEnc.dequant,
+            layout.paddedUvW, layout.paddedUvH, d, numLevels, ccDetailGammas);
+        const ccGammaEnc = ccGammaInt / 32;
+        if (ccGammaEnc !== 0) {
+            const vLLCcDec = extractSubbandF(vEnc.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d);
+            crossChromaReconstruct(vLLCcDec, ccGammaEnc, uLLDequant);
+            insertSubbandF(vEnc.dequant, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d, vLLCcDec);
+        }
         reverseDetailCfL(yEnc.dequant, uEnc.dequant,
             layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, d, numLevels, uDetailAlphas);
         reverseDetailCfL(yEnc.dequant, vEnc.dequant,
@@ -6051,17 +7887,52 @@ export class VideoCodec {
         }
         // SAO on encoder intra reconstruction (must match decoder)
         if (!skipFullRecon) {
-            const saoEnc2 = Math.round(videoBaseQ(quality) * 0.5);
+            const saoEnc2 = Math.floor(videoBaseQ(quality) * 0.5);
             saoFilter(reconFrame.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoEnc2);
         }
         this.prevPrevReconFrame = this.prevReconFrame; this.prevReconFrame = reconFrame;
         this.prevReconInts = { y: new Int32Array(reconYInts2), u: new Int32Array(reconUInts2), v: new Int32Array(reconVInts2) };
+        _profileAdd('recon', _pt0);
 
         return payload;
     }
 
     private decompressFrame(decrypted: Uint8Array, w: number, h: number, flags: number): Uint8Array {
         const { quality } = decodeFlags(flags);
+
+        // lossless RGBA path (Q100): subtract-green + MED DPCM + Logos
+        if (decrypted[0] === FMT_LOSSLESS) {
+            const _llt0 = _profileStart();
+            const lf = unpackLosslessFrame(decrypted);
+            _profileAdd('ll_unpack', _llt0);
+            if (!lf || lf.channels.length < 4) {
+                return new Uint8Array(w * h * 4);
+            }
+            const n = lf.channels[0].pixelCount;
+            const _llg = _profileStart();
+            const gPlane = decodeLosslessPlane(lf.channels[0].wire, n, w, h);
+            _profileAdd('ll_plane_G', _llg);
+            const _llrg = _profileStart();
+            const rgPlane = decodeLosslessPlane(lf.channels[1].wire, n, w, h);
+            _profileAdd('ll_plane_RG', _llrg);
+            const _llbg = _profileStart();
+            const bgPlane = decodeLosslessPlane(lf.channels[2].wire, n, w, h);
+            _profileAdd('ll_plane_BG', _llbg);
+            const _lla = _profileStart();
+            const aPlane = decodeLosslessPlane(lf.channels[3].wire, n, w, h);
+            _profileAdd('ll_plane_A', _lla);
+            const _llmx = _profileStart();
+            const rgba = new Uint8Array(n * 4);
+            for (let i = 0; i < n; i++) {
+                const g = gPlane[i];
+                rgba[i * 4] = (rgPlane[i] + g) & 0xFF;
+                rgba[i * 4 + 1] = g;
+                rgba[i * 4 + 2] = (bgPlane[i] + g) & 0xFF;
+                rgba[i * 4 + 3] = aPlane[i];
+            }
+            _profileAdd('ll_merge', _llmx);
+            return rgba;
+        }
 
         // tiled adaptive wavelet path
         if (decrypted[0] === FMT_TILED_WAVELET) {
@@ -6089,7 +7960,7 @@ export class VideoCodec {
             for (let i = 0; i < layout.paddedUvSize; i++) reconYuv[layout.paddedYSize + i] = clampByte(Math.round(uReconRaw[i]) + 128);
             for (let i = 0; i < layout.paddedUvSize; i++) reconYuv[layout.paddedYSize + layout.paddedUvSize + i] = clampByte(Math.round(vReconRaw[i]) + 128);
 
-            const saoStr = Math.round(videoBaseQ(tiled.quality) * 0.5);
+            const saoStr = Math.floor(videoBaseQ(tiled.quality) * 0.5);
             saoFilter(reconYuv.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoStr);
             this.prevDecFrame = new Uint8Array(reconYuv);
             this.prevDecLayoutKey = layoutKey(layout);
@@ -6158,8 +8029,8 @@ export class VideoCodec {
             return yuv420ToRgba(cropYuv420(this.prevDecFrame || new Uint8Array(fallbackLayout.paddedYuvSize), fallbackLayout), w, h);
         }
 
-        const { gopType, numLevels, useNNUpsample, affineParams, mvWire, uAlphaInt, vAlphaInt, uDetailAlphas, vDetailAlphas, yWire, uWire, vWire, alphaWire } = unpacked;
-        const layout = buildFrameLayout(w, h, numLevels);
+        const { gopType, numLevels, useNNUpsample, chroma444, affineParams, mvWire, uAlphaInt, vAlphaInt, uDetailAlphas, vDetailAlphas, ccGammaInt, ccDetailGammas, yWire, uWire, vWire, alphaWire } = unpacked;
+        const layout = buildFrameLayout(w, h, numLevels, chroma444);
         const key = layoutKey(layout);
         const d = (gopType === GOP_SINGLE) ? 1 : (gopType === GOP_INTRA_4) ? 4 : 2;
 
@@ -6227,13 +8098,13 @@ export class VideoCodec {
             for (let i = 0; i < uvFS; i++) reconYuv[layout.paddedYSize + i] = clampByte((uDiff[i] + prevU[i]) + 128);
             for (let i = 0; i < uvFS; i++) reconYuv[layout.paddedYSize + layout.paddedUvSize + i] = clampByte((vDiff[i] + prevV[i]) + 128);
             // SAO on inter-frame reconstruction
-            const saoStr = Math.round(videoBaseQ(quality) * 0.5);
+            const saoStr = Math.floor(videoBaseQ(quality) * 0.5);
             saoFilter(reconYuv.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoStr);
             this.prevDecFrame = new Uint8Array(reconYuv);
             this.prevDecLayoutKey = key;
             const yuv = cropYuv420(reconYuv, layout);
             pqInverse(yuv, 0, layout.ySize);
-            const rgba = yuv420ToRgba(yuv, w, h, useNNUpsample);
+            const rgba = chroma444 ? yuv444ToRgba(yuv, w, h) : yuv420ToRgba(yuv, w, h, useNNUpsample);
             if (alphaWire) {
                 const aDec = decodeSubband3D(alphaWire, 0, layout.paddedWidth, layout.paddedHeight, 1, quality, numLevels, 'low', false);
                 iwt2D_97(aDec.coeffs, layout.paddedWidth, layout.paddedHeight, numLevels);
@@ -6246,12 +8117,32 @@ export class VideoCodec {
             // Intra or single: decode all subbands
             // temporal band: 'low' for all intra volumes (d=2 and d=4)
             const tBand: 'low' | 'high' = 'low';
+            let _dt0 = _profileStart();
             const yDec = decodeSubband3D(yWire, 0, layout.paddedWidth, layout.paddedHeight, d, quality, numLevels, tBand, false);
+            _profileAdd('dec_subbandY', _dt0);
+            _dt0 = _profileStart();
             const uDec = decodeSubband3D(uWire, 0, layout.paddedUvW, layout.paddedUvH, d, quality, numLevels, tBand, true);
             const vDec = decodeSubband3D(vWire, 0, layout.paddedUvW, layout.paddedUvH, d, quality, numLevels, tBand, true);
+            _profileAdd('dec_subbandUV', _dt0);
             yCoeffs = yDec.coeffs; uCoeffs = uDec.coeffs; vCoeffs = vDec.coeffs;
 
-            // reverse detail CfL first, then LL CfL
+            // reverse predictions in opposite order of encoding:
+            // 1. reverse cross-chroma (Cb→Cr) detail + LL
+            // 2. reverse detail CfL (Y→UV)
+            // 3. reverse LL CfL (Y→UV)
+            _dt0 = _profileStart();
+            const ccGamma = ccGammaInt / 32;
+            reverseCrossChromaDetail(uCoeffs, vCoeffs,
+                layout.paddedUvW, layout.paddedUvH, d, numLevels, ccDetailGammas);
+            if (ccGamma !== 0) {
+                const uvLLWd = layout.paddedUvW >> numLevels;
+                const uvLLHd = layout.paddedUvH >> numLevels;
+                const uLLd = extractSubbandF(uCoeffs, layout.paddedUvW, 0, 0, uvLLWd, uvLLHd, d);
+                const vLLd = extractSubbandF(vCoeffs, layout.paddedUvW, 0, 0, uvLLWd, uvLLHd, d);
+                crossChromaReconstruct(vLLd, ccGamma, uLLd);
+                insertSubbandF(vCoeffs, layout.paddedUvW, 0, 0, uvLLWd, uvLLHd, d, vLLd);
+            }
+
             reverseDetailCfL(yCoeffs, uCoeffs,
                 layout.paddedWidth, layout.paddedHeight, layout.paddedUvW, layout.paddedUvH, d, numLevels, uDetailAlphas);
             reverseDetailCfL(yCoeffs, vCoeffs,
@@ -6277,15 +8168,19 @@ export class VideoCodec {
                     insertSubbandF(vCoeffs, layout.paddedUvW, 0, 0, uvLLW, uvLLH, d, vLL);
                 }
             }
+            _profileAdd('dec_cfl', _dt0);
         }
 
+        let _dt0 = _profileStart();
         const yRecon = iwt3D(yCoeffs, layout.paddedWidth, layout.paddedHeight, d, numLevels);
         const uRecon = iwt3D(uCoeffs, layout.paddedUvW, layout.paddedUvH, d, numLevels);
         const vRecon = iwt3D(vCoeffs, layout.paddedUvW, layout.paddedUvH, d, numLevels);
+        _profileAdd('dec_iwt3D', _dt0);
 
         // MCTF inverse: unwarp frames that were aligned to frame 0 during encoding.
         // d=2: frame 1 was warped toward frame 0. unwarp it back.
         // d=4: frames 1,2,3 were warped toward frame 0. unwarp each.
+        _dt0 = _profileStart();  // reuse outer _dt0
         const lastOff = d - 1;
         let reconYuv: Uint8Array;
         if (d === 4 && affineParams && affineParams.length >= 18 && gopType === GOP_INTRA_4) {
@@ -6326,10 +8221,13 @@ export class VideoCodec {
             reconYuv = new Uint8Array(layout.paddedYuvSize);
             reconYuv.set(yPlane); reconYuv.set(uPlane, layout.paddedYSize); reconYuv.set(vPlane, layout.paddedYSize + layout.paddedUvSize);
         }
+        _profileAdd('dec_reconYuv', _dt0);
 
         // SAO on intra reconstruction
-        const saoStr2 = Math.round(videoBaseQ(quality) * 0.5);
+        _dt0 = _profileStart();
+        const saoStr2 = Math.floor(videoBaseQ(quality) * 0.5);
         saoFilter(reconYuv.subarray(0, layout.paddedYSize), layout.paddedWidth, layout.paddedHeight, saoStr2);
+        _profileAdd('dec_sao', _dt0);
 
         this.prevDecFrame = new Uint8Array(reconYuv);
         this.prevDecLayoutKey = key;
@@ -6337,9 +8235,11 @@ export class VideoCodec {
             this.keyDecFrame = new Uint8Array(reconYuv);
         }
 
+        _dt0 = _profileStart();
         const yuv = cropYuv420(reconYuv, layout);
         pqInverse(yuv, 0, layout.ySize);
-        const rgba = yuv420ToRgba(yuv, w, h, useNNUpsample);
+        const rgba = chroma444 ? yuv444ToRgba(yuv, w, h) : yuv420ToRgba(yuv, w, h, useNNUpsample);
+        _profileAdd('dec_yuv2rgba', _dt0);
         if (alphaWire) {
             const aDec = decodeSubband3D(alphaWire, 0, layout.paddedWidth, layout.paddedHeight, 1, quality, numLevels, 'low', false);
             iwt2D_97(aDec.coeffs, layout.paddedWidth, layout.paddedHeight, numLevels);
@@ -6355,9 +8255,43 @@ export class VideoCodec {
         if (!this.wasm) throw new Error("Codec not initialized");
         const numPixels = width * height;
 
-        // Raw path (quality 100 = lossless, no compression).
-        // Tiny frames without chroma support also stay raw.
-        if (this.config.quality === 100 || !this.canUseCompressedPath(width, height)) {
+        // lossless path (Q100): subtract-green + MED DPCM + Logos on RGBA.
+        // avoids YUV420 subsampling and CDF 9/7 irrational wavelet (both lossy).
+        // subtract-green decorrelates channels (15-40% entropy reduction on R,B).
+        if (this.config.quality === 100) {
+            const { gWire, rgWire, bgWire, aWire } = losslessEncodeRGBA(pixels, width, height);
+            const payload = packLosslessFrame(width, height, gWire, rgWire, bgWire, aWire, numPixels);
+            const withLen = new Uint8Array(4 + payload.length);
+            new DataView(withLen.buffer).setUint32(0, payload.length, true);
+            withLen.set(payload, 4);
+            const [pseudoW, pseudoH] = pseudoDims(Math.ceil(withLen.length / 4));
+            const pseudoPixels = pseudoW * pseudoH;
+            const pseudoBytes = pseudoPixels * 4;
+            const paddedPayload = new Uint8Array(pseudoBytes);
+            paddedPayload.set(withLen);
+            const outMaxBytes = HEADER_SIZE + pseudoBytes + MAC_SIZE;
+            const totalNeeded = BUF_START + pseudoBytes + outMaxBytes;
+            const mem = this.wasm.memory;
+            if (mem.buffer.byteLength < totalNeeded) {
+                this.wasm.memory.grow(Math.ceil((totalNeeded - mem.buffer.byteLength) / 65536));
+            }
+            const pixelsPtr = BUF_START;
+            const outPtr = BUF_START + pseudoBytes;
+            new Uint8Array(mem.buffer).set(paddedPayload, pixelsPtr);
+            const dv = new DataView(mem.buffer, outPtr, HEADER_SIZE);
+            dv.setUint16(0, pseudoW, true);
+            dv.setUint16(2, pseudoH, true);
+            dv.setUint32(8, encodeFlags(true, true, 100), true);
+            const bytesWritten = this.wasm.encode_video(pixelsPtr, pseudoPixels, outPtr);
+            const result = new Uint8Array(mem.buffer.slice(outPtr, outPtr + bytesWritten));
+            const rdv = new DataView(result.buffer, result.byteOffset, HEADER_SIZE);
+            rdv.setUint16(0, width, true);
+            rdv.setUint16(2, height, true);
+            return result;
+        }
+
+        // raw path for tiny frames without chroma support
+        if (!this.canUseCompressedPath(width, height)) {
             const pixelBytes = numPixels * 4;
             const outMaxBytes = HEADER_SIZE + pixelBytes + MAC_SIZE;
             const totalNeeded = BUF_START + pixelBytes + outMaxBytes;
@@ -6417,7 +8351,41 @@ export class VideoCodec {
         if (!this.wasm) throw new Error("Codec not initialized");
         const numPixels = width * height;
 
-        if (this.config.quality === 100 || !this.canUseCompressedPath(width, height)) {
+        // lossless path (Q100): subtract-green + MED DPCM + Logos
+        if (this.config.quality === 100) {
+            const { gWire, rgWire, bgWire, aWire } = losslessEncodeRGBA(pixels, width, height);
+            const payload = packLosslessFrame(width, height, gWire, rgWire, bgWire, aWire, numPixels);
+            const withLen = new Uint8Array(4 + payload.length);
+            new DataView(withLen.buffer).setUint32(0, payload.length, true);
+            withLen.set(payload, 4);
+            const [pseudoW, pseudoH] = pseudoDims(Math.ceil(withLen.length / 4));
+            const pseudoPixels = pseudoW * pseudoH;
+            const pseudoBytes = pseudoPixels * 4;
+            const paddedPayload = new Uint8Array(pseudoBytes);
+            paddedPayload.set(withLen);
+            const outMaxBytes = HEADER_SIZE + pseudoBytes + MAC_SIZE;
+            const totalNeeded = BUF_START + pseudoBytes + outMaxBytes;
+            const mem = this.wasm.memory;
+            if (mem.buffer.byteLength < totalNeeded) {
+                this.wasm.memory.grow(Math.ceil((totalNeeded - mem.buffer.byteLength) / 65536));
+            }
+            const pixelsPtr = BUF_START;
+            const outPtr = BUF_START + pseudoBytes;
+            new Uint8Array(mem.buffer).set(paddedPayload, pixelsPtr);
+            const dv = new DataView(mem.buffer, outPtr, HEADER_SIZE);
+            dv.setUint16(0, pseudoW, true);
+            dv.setUint16(2, pseudoH, true);
+            dv.setUint32(8, encodeFlags(true, true, 100), true);
+            const bytesWritten = this.wasm.encode_video(pixelsPtr, pseudoPixels, outPtr);
+            out.set(new Uint8Array(mem.buffer, outPtr, bytesWritten));
+            const rdv = new DataView(out.buffer, out.byteOffset, HEADER_SIZE);
+            rdv.setUint16(0, width, true);
+            rdv.setUint16(2, height, true);
+            return bytesWritten;
+        }
+
+        // raw path for tiny frames
+        if (!this.canUseCompressedPath(width, height)) {
             const pixelBytes = numPixels * 4;
             const outMaxBytes = HEADER_SIZE + pixelBytes + MAC_SIZE;
             const totalNeeded = BUF_START + pixelBytes + outMaxBytes;
