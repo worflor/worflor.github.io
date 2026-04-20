@@ -15,6 +15,7 @@ this license applies to the Whisper Protocol and its components:
 - **Whisper Loup** - 8D self codec (`live-wasm-loup.ts`)
 - **Whisper Kizuna** - 16D membrane codec (`live-wasm-kizuna.ts`)
 - **Whisper Engram** - 256D embedding trajectory codec (`engram/`)
+- **Manifold** - desktop Git client with spectral repository analysis, built on Whisper Logos (WLAC) and the broader hypercomplex / spectral math stack
 
 ---
 
@@ -101,6 +102,14 @@ you must obtain a commercial license if you are a for-profit legal entity and an
 - you are engaged in commercial deployment (this requirement does not apply to independent bootstrapped entities)
 
 arrangements structured to circumvent these requirements are violations of this license. splitting ownership, bidding, operations, or deployment across coordinated entities does not avoid these requirements where the same commercial objective or beneficiary is present. the copyright holder may look through any corporate structure to determine the ultimate beneficial owner or beneficiary.
+
+### linking, aggregation, and dependency use
+
+mere aggregation of this software with other works on a single storage or distribution medium, linking against this software through documented interfaces, or including this software as a dependency of your own work, does not bring those other works under the terms of this license. those other works remain governed by their own licenses, and your own original code remains yours to license as you choose.
+
+this clause is a clarification of scope, not a reduction of obligations. it does not alter the commercial license requirements above, the prohibited uses below, or the attribution and notice-retention requirements elsewhere in this document. if your activity would otherwise require a commercial license, or would otherwise violate the prohibited uses, it still does. parties required to obtain a commercial license must do so regardless of how this software is incorporated into their products, services, or distributions.
+
+the portions of your work that are governed by this license are those portions of this software that you use, copy, modify, or redistribute. portions of your work that do not include this software, and are not derivative works of it, are not subject to this license solely by virtue of being distributed, linked, or bundled alongside it.
 
 ---
 
