@@ -188,6 +188,6 @@ That was the capstone.
 
 By the end I was looking at a runtime harness that let a prediction machine do useful work inside a deterministic system. It lived in a game, yes. It could patch live behaviour, yes. It also had enough surrounding structure to be something harsher and more interesting than a toy.
 
-AI isn't about the model itself, it's about the system as a whole and how everything comes together to multiply the force potential of the 'organism'. That's how we work as humans, isn't it? We have a series of organs; a brain, a body / 'meat suit', and a nervous system. Those work together to produce you, me, and everybody else. The magic isn't the tongue, the environment, or the brain itself, its the way these tools come together to convey a meaning, intention, or goal.
+AI isn't about the model itself, it's about the system as a whole and how everything comes together to multiply the force potential of the 'organism'. That's how we work as humans, isn't it? We have a series of organs; a brain, a body / 'meat suit', and a nervous system. Those work together to produce you, me, and everybody else. The magic isn't the tongue, the environment, or the brain itself, its the way these tools come together to convey our abilities, intentions, or goals.
 
 how's that for philosophy?
