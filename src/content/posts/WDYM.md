@@ -52,7 +52,7 @@ I assumed the patching would be the hard part.
 
 That assumption lasted a while, mostly because it sounded reasonable. Live patching is the kind of phrase that arrives wearing a hazard tape dress. Draped in problems. There is bytecode involved. There are hooks involved. There is a live game involved. There is a non-deterministic system involved. If you put those ingredients on a table and ask which one will consume your life first, patching seems like a fair guess.
 
-But ultimately it was not the right guess.
+It was not the right guess.
 
 **The patching was hard, just not in the way I thought. It was the visible problem, not the largest one.**
 
@@ -91,7 +91,7 @@ None of those sound as sexy on a poster, which is unfortunate because that is wh
 
 The project slowly stopped feeling like a mod with a cool feature and started feeling like a runtime that happened to be wearing Minecraft as a skin.
 
-By the end, the project had put a mask on itself. Underneath, it was still the same idea. It was just uglier, messier, and carrying a lot more machinery than it had at the start.
+By the end, it had put a mask on itself. Underneath, it was still the same idea. Just uglier, messier, and carrying far more machinery than it had at the start.
 
 At a certain point I kept asking myself the same question in slightly different forms. If this needs more and more of the runtime to become trustworthy, where does the boundary actually sit? Is this still just a Minecraft thing? Is this an engine-level idea hiding in a game because the game is a convenient sandbox? If I did this in Unreal or Unity, would the core logic even change that much, or would the skin just be different?
 
@@ -107,7 +107,7 @@ I think I knew the answer before I said it clearly.
 
 **Tools do not get the same mercy as demos.**
 
-A tool has to survive contact with bad inputs, missing context, weird states, partial failure, and the user doing something stupid because users are committed to the art form. A tool has to earn the right to be boring. If it cannot be boring, it cannot be trusted. If it cannot be trusted, it is just one more charismatic lab accident.
+A tool has to survive contact with bad inputs, missing context, weird states, partial failure, and the user doing something stupid because users are committed to the art form. A tool has to earn the right to be boring. If it cannot be boring, it cannot be trusted. If it cannot be trusted, it is just another charismatic lab accident.
 
 That was the real project.
 
@@ -139,7 +139,7 @@ That meant:
 
 One of the first moments where the project felt properly real was the first time the patch tool worked and I did not have to argue with it.
 
-That sounds like a low bar but it was not.
+That sounds like a low bar. It was not.
 
 I had built enough systems by that point to understand exactly how many things could go wrong between `"I think this should be possible"` and `"it actually happened inside the running game and did not burst into flames."` I did not fully trust it yet. Then the patch landed first try.
 
@@ -147,7 +147,7 @@ That was a very specific kind of relief.
 
 **It all clicked there. I saw it do the thing I had been building it to do. Live. In front of me.** ***Unprompted.*** 
 
-The harness hit friction in one of its own read paths. **A genuine bug.** Instead of stalling, it reasoned through what the tool was supposed to do, patched around the failure so it could keep working, used that patched path to continue the job, and then reported the underlying issue back to me at the end for the real fix outside the patch environment. That was when WDYM stopped feeling like a clever setup and started feeling real.
+The harness hit friction in one of its own read paths. **A genuine bug.** Instead of stalling, it reasoned through what the tool was supposed to do, patched around the failure so it could keep working, used that patched path to continue the job, and then reported the underlying issue back to me at the end for the real fix outside the patch environment. That was when WDYM stopped feeling like a clever setup and started feeling like itself.
 
 It was not triumph, and it definitely was not cinematic victory. It felt more like the quiet little psychic click of a machine finally agreeing to stop embarrassing me in its own habitat.
 
@@ -161,7 +161,7 @@ The thing the player sees and touches is always where all the clean ideas come b
 
 That mess matters too.
 
-If I write this post as though the project unfolded in a sequence of noble insights and elegant abstractions, it becomes fake immediately. A lot of it was deadpan engineering work. Staring at a behavior that should be possible. Building a little more machinery around it. Finding out the machinery needed machinery; and it's machinery needs some machinery... Watching the harness get more invasive because the alternative was settling with subpar unreliable behaviour.
+If I write this post as though the project unfolded in a sequence of noble insights and elegant abstractions, it just wouldn't be true. A lot of it was just deep thinking and engineering work. Staring at a behavior that *should* be possible... building a little more machinery around it then finding out the machinery needed machinery; and its machinery needed machinery too. Watching the harness get more invasive because the alternative was settling for subpar, unreliable behavior.
 
 ## What WDYM became
 
@@ -175,7 +175,7 @@ If a model can generate arbitrary text or code, then a whole spectrum of real-ti
 
 **That is a better limitation to run into. At least it is real.**
 
-By the time WDYM was done, **"real-time patching"** still sounded cool, but it no longer felt like the headline. It felt like the compressed surface of a larger structure. A tidy phrase sitting on top of context pipelines, runtime inspection, session memory, source truth, tool orchestration, bytecode surgery, reactive systems, UI/UX, and all the other invisible nonsense required to make a non-deterministic model stop acting like a stage magician and start acting like part of a toolchain.
+By the time WDYM was done, **"real-time patching"** still sounded cool, but it no longer felt like the headline. It felt like the compressed surface of a larger structure. A tidy phrase sitting on top of context pipelines, runtime inspection, session memory, source truth, tool orchestration, bytecode surgery, reactive systems, UI/UX, and all the other invisible nonsense required to make a non-deterministic model stop acting like a stage magician and start acting like part of the toolchain.
 
 I still like the three words.
 
@@ -187,7 +187,7 @@ And I think that is why I like the project so much.
 
 ## The actual takeaway
 
-WDYM did not teach me that LLMs are magical. If anything, it pushed me in the other direction. The less mysticism I projected onto them, the more useful they got. Put one in a real runtime. Let it inspect actual state. Give it enough evidence that its outputs can be checked against something other than vibes. Suddenly the novelty is not that it can generate things. The novelty is how much opens up once generation can touch a live system without immediately drifting into bullsh#t.
+WDYM did not teach me that LLMs are magical. If anything, it pushed me in the other direction. The less mysticism I projected onto them, the more useful they got. Put one in a real runtime. Let it inspect actual state. Give it enough evidence that its outputs can be checked against something other than vibes. Suddenly the novelty is not that it can generate things. The novelty is how much opens up once generation can touch a live system without immediately drifting into bullshit.
 
 That was the capstone.
 
