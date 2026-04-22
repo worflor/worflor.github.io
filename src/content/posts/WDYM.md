@@ -6,8 +6,6 @@ author: "woflo"
 images:
   - url: "/images/wdym-cover.webp"
     alt: "College Capstone 2026"
-  - url: "/images/wdym-cover.webp"
-    alt: "College Capstone 2026"
 ---
 
 > Three words.
