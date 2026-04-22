@@ -10,8 +10,6 @@ images:
     alt: "College Capstone 2026"
 ---
 
-# real-time patching
-
 > Three words.
 >
 > *three very smug words, honestly.*
