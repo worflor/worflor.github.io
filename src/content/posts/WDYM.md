@@ -1,11 +1,16 @@
 ---
 title: "real-time patching"
-pubDate: "2026-04-21"
+pubDate: "2026-04-22"
 description: "three words that took a whole runtime to make true"
 author: "woflo"
 images:
   - url: "/images/wdym-cover.webp"
     alt: "College Capstone 2026"
+  - url: "/images/gdd_hero.webp"
+    alt: "Agent refusing to crash the game"
+  - url: "/images/gdd_confirm_pulse.webp"
+    alt: "Action Consent Request"
+    
 ---
 
 > Three words.
