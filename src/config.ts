@@ -192,11 +192,13 @@ export const projectsPageContent: ProjectPageContent = {
   subtitle: "some endeavours.",
   projects: [
     {
-      title: "Whisper",
-      description: "Steganography and encrypted communication, entirely in the browser.<br>Hide data in images, talk peer-to-peer, derive shared secrets.<br>No servers, no accounts, no trace.",
-      image: "/images/whisper.webp",
+      title: "Manifold",
+      description:
+        "Git desktop client. Your codebase is a manifold.<br>Heat-kernel diffusion over the file graph finds what's structurally coupled to each change. Ricci curvature pinpoints the architectural bridges.<br>Flutter, Dart, and 5 months of spectral geometry.",
+      image: "/images/manifold",
       year: "2026",
-      url: "/whisper",
+      url: "https://github.com/worflor/git-desktop-premium-ultra-promax-plus-R",
+      github: "worflor/git-desktop-premium-ultra-promax-plus-R",
     },
     {
       title: "What Do You Mean? - Mod/Tool",
@@ -204,6 +206,13 @@ export const projectsPageContent: ProjectPageContent = {
       image: "/images/wdym-cover.webp",
       year: "2026",
       url: "/blog/wdym",
+    },
+    {
+      title: "Whisper",
+      description: "Encrypted communication over Möbius geometry, entirely in the browser.<br>Hide data in images, talk peer-to-peer through a 16D spatial codec, derive shared secrets.<br>No servers, no accounts, no trace.",
+      image: "/images/whisper.webp",
+      year: "2026",
+      url: "/whisper",
     },
     {
       title: "Minecraft Server Maintainer",

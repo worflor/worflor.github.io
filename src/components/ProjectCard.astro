@@ -1,11 +1,31 @@
 ---
 import { Image } from "astro:assets";
+import fs from "node:fs";
+import path from "node:path";
 import type { Project } from "../types/config";
 import { parseMarkdown } from "../utils/helpers";
 
 type Props = Project & { loading?: "eager" | "lazy" };
 
 const { title, description, image, year, url, github, loading = "lazy" } = Astro.props;
+
+let images: string[] | null = null;
+let resolvedImage = image;
+const fsPath = path.join("public", image);
+try {
+  if (fs.statSync(fsPath).isDirectory()) {
+    const files = fs.readdirSync(fsPath)
+      .filter(f => f.endsWith(".webp"))
+      .sort();
+    if (files.length > 1) {
+      images = files.map(f => `${image}/${f}`);
+    } else if (files.length === 1) {
+      resolvedImage = `${image}/${files[0]}`;
+    } else {
+      throw new Error(`[ProjectCard] no .webp files in ${fsPath}`);
+    }
+  }
+} catch {}
 
 const htmlDescription = parseMarkdown(description);
 ---
@@ -18,15 +38,29 @@ const htmlDescription = parseMarkdown(description);
   class="interactive py-[var(--space-md)] flex flex-wrap gap-[var(--space-md)] card-hover stagger-in"
 >
   <div class="bg-[var(--color-border)] rounded-[var(--radius-lg)] w-[var(--size-thumbnail-md)] min-w-0 shrink-0 self-start">
-    <Image
-      width={1920}
-      height={1080}
-      src={image}
-      alt={title}
-      loading={loading}
-      decoding="async"
-      class="w-full h-auto rounded-[var(--radius-lg)]"
-    />
+    {images ? (<>
+      <img
+        width="1920"
+        height="1080"
+        src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+        alt={title}
+        loading={loading}
+        decoding="async"
+        class="w-full h-auto rounded-[var(--radius-lg)] project-rng"
+        data-images={JSON.stringify(images)}
+      />
+      <noscript><img width="1920" height="1080" src={images[0]} alt={title} class="w-full h-auto rounded-[var(--radius-lg)]" /></noscript>
+    </>) : (
+      <Image
+        width={1920}
+        height={1080}
+        src={resolvedImage}
+        alt={title}
+        loading={loading}
+        decoding="async"
+        class="w-full h-auto rounded-[var(--radius-lg)]"
+      />
+    )}
   </div>
   <div class="flex flex-col justify-start flex-1 min-w-[14rem]">
     <div class="flex items-baseline gap-1 mb-2 flex-wrap">
@@ -48,6 +82,11 @@ const htmlDescription = parseMarkdown(description);
 </a>
 
 <script>
+  document.querySelectorAll<HTMLImageElement>('.project-rng').forEach(function (img) {
+    var images = JSON.parse(img.getAttribute('data-images')!);
+    img.src = images[Math.floor(Math.random() * images.length)];
+  });
+
   (function () {
     var CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
     var STORE_KEY = 'github-stars-cache-v1';

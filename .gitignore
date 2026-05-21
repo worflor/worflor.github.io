@@ -39,18 +39,34 @@ pnpm-debug.log*
 Thumbs.db
 nul
 
-# dev scripts (benchmarks, diagnostics, one-off tools)
-scripts/bench-*.ts
-scripts/bench_*.ts
-scripts/diag-*.ts
-scripts/diag_*.ts
-scripts/codec-compare/
-scripts/ltp_debug.ts
-scripts/test-roundtrip.ts
+# r&d scripts (probes, benchmarks, diagnostics)
+scripts/*
+!scripts/run-whisper-tests.mjs
 
-# loose root files
+# r&d docs (codec tower write-ups, not site content)
+docs/
+
+# benchmark data
+public/benchmarks/
+
+# debug/bench test files
+tests/whisper/_*.test.ts
+
+# temp review artifacts
+.tmp-review*/
+.tmp-review-base*/
+
+# research output (root)
+harmonic_*.json
+harmonic_*.log
+harmonic_*.txt
+bench_*.txt
 hyperdimensional_chemistry.md
 real_audio_benchmark.json
+
+# one-off tools
+md-to-pdf.mjs
+*.patch
 
 # sensitive docs
 protocol.md
