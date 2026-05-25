@@ -6,8 +6,8 @@ import { WhisperLiveSession, type LiveState, type WhisperLiveSessionOptions } fr
 import type { TrackerRelaySignal } from "../../src/scripts/whisper/live-tracker.js";
 
 class FakePeerConnection {
-  iceConnectionState: RTCPeerConnectionIceConnectionState = "connected";
-  iceGatheringState: RTCPeerConnectionIceGatheringState = "complete";
+  iceConnectionState: RTCIceConnectionState = "connected";
+  iceGatheringState: RTCIceGatheringState = "complete";
   localDescription: RTCSessionDescriptionInit | null = null;
   remoteDescription: RTCSessionDescriptionInit | null = null;
   onicecandidate: ((this: FakePeerConnection, ev: RTCPeerConnectionIceEvent) => unknown) | null = null;
