@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <radialGradient id="wick-bg" cx="32%" cy="50%" r="68%">
+      <stop offset="0%" stop-color="#0E1518"/>
+      <stop offset="100%" stop-color="#0A0A0A"/>
+    </radialGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#wick-bg)"/>
+
+  <!-- dot field on the right, the corpus -->
+  <g fill="#7e7460" opacity="0.55">
+    <circle cx="1180" cy="320" r="5"/>
+    <circle cx="1320" cy="380" r="5"/>
+    <circle cx="1260" cy="500" r="5"/>
+    <circle cx="1480" cy="460" r="5"/>
+    <circle cx="1400" cy="600" r="5"/>
+    <circle cx="1560" cy="540" r="5"/>
+    <circle cx="1280" cy="660" r="5"/>
+    <circle cx="1500" cy="720" r="5"/>
+    <circle cx="1640" cy="640" r="5"/>
+    <circle cx="1200" cy="780" r="5"/>
+    <circle cx="1380" cy="820" r="5"/>
+  </g>
+
+  <!-- the dot the probe whisker reaches, slightly brighter -->
+  <circle cx="1320" cy="540" r="7" fill="#c5b9a1" opacity="0.85"/>
+
+  <!-- cat face, three-quarters, on the left -->
+  <g stroke="#c5b9a1" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- head outline -->
+    <path d="
+      M 540 460
+      Q 480 470 460 540
+      Q 450 620 490 680
+      Q 540 730 620 730
+      Q 720 730 770 670
+      Q 800 620 790 550
+      Q 780 480 720 450
+      Q 640 432 580 442
+      Q 555 448 540 460 Z"/>
+    <!-- ears -->
+    <path d="M 510 478 L 488 412 L 558 458"/>
+    <path d="M 720 458 L 752 396 L 778 472"/>
+    <!-- closed eyes (sleepy/focused) -->
+    <path d="M 540 560 Q 562 553 584 562"/>
+    <path d="M 660 562 Q 682 555 704 564"/>
+    <!-- nose -->
+    <path d="M 614 612 L 624 626 L 634 612 Z"/>
+    <!-- mouth -->
+    <path d="M 624 632 Q 614 648 600 642"/>
+    <path d="M 624 632 Q 634 648 648 642"/>
+  </g>
+
+  <!-- whiskers on left side, dim -->
+  <g stroke="#7e7460" stroke-width="1.5" fill="none" stroke-linecap="round" opacity="0.6">
+    <path d="M 470 580 Q 380 572 320 596"/>
+    <path d="M 472 605 Q 376 612 308 628"/>
+    <path d="M 478 630 Q 380 648 320 678"/>
+  </g>
+
+  <!-- whiskers on right side: two dim, one bright extending to the probe target -->
+  <g stroke="#7e7460" stroke-width="1.5" fill="none" stroke-linecap="round" opacity="0.6">
+    <path d="M 778 578 Q 868 572 928 596"/>
+    <path d="M 778 628 Q 876 644 936 674"/>
+  </g>
+  <!-- the active probe whisker, reaches across to the bright dot -->
+  <path d="M 778 604 Q 980 580 1160 558 Q 1240 548 1316 542"
+        stroke="#c5b9a1" stroke-width="1.8" fill="none" stroke-linecap="round" opacity="0.85"/>
+</svg>

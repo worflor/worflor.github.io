@@ -90,10 +90,11 @@ export type AboutPageContent = {
 export type Project = {
   title: string;
   description: string;
-  image: string;
+  image?: string;
   year: string;
   url: string;
   github?: string;
+  status?: "private-beta" | "concept";
 };
 
 export type ProjectPageContent = {

@@ -10,6 +10,11 @@ import { contactPageContent } from "../config";
       {contactPageContent.subtitle}
     </p>
 
+    <div class="project-context" hidden aria-live="polite">
+      <span class="project-context-label">inquiry</span>
+      <span id="project-context-name"></span>
+    </div>
+
     <div class="sent-message">
       <p>{contactPageContent.sentMessage}</p>
     </div>
@@ -120,6 +125,26 @@ import { contactPageContent } from "../config";
       document.documentElement.dataset.sent = "";
       history.replaceState({}, "", location.pathname);
     }
+    var project = p.get("project");
+    var labels = {
+      seance: "Seance",
+      wick: "Wick",
+      pocket: "Project Pocket",
+      prisma: "Project Prisma",
+    };
+    var label = project ? labels[project] : null;
+    if (label) {
+      var banner = document.querySelector(".project-context");
+      var labelEl = document.getElementById("project-context-name");
+      if (banner && labelEl) {
+        labelEl.textContent = label;
+        banner.removeAttribute("hidden");
+      }
+      var subjectEl = document.querySelector('input[name="_subject"]');
+      if (subjectEl) subjectEl.value = "Inquiry: " + label;
+      var messageEl = document.getElementById("message");
+      if (messageEl) messageEl.placeholder = "what brings you to " + label + "?";
+    }
     document.documentElement.dataset.ready = "";
   })();
 </script>
@@ -178,6 +203,33 @@ import { contactPageContent } from "../config";
     top: -9999px;
     opacity: 0;
     pointer-events: none;
+  }
+
+  /* Inquiry banner: shown when /contact is hit with ?project= */
+  .project-context {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.55rem;
+    margin-bottom: var(--space-lg);
+    padding: 0.45rem 0.85rem;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-left: 2px solid rgb(var(--chromatic-cyan) / 0.55);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / 0.7);
+  }
+
+  /* Honor the `hidden` attribute despite the display override above. */
+  .project-context[hidden] {
+    display: none;
+  }
+
+  .project-context-label {
+    font-size: calc(var(--text-sm) * 0.78);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.55;
   }
 
   /* Sent confirmation - hidden until ?sent */

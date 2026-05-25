@@ -1,0 +1,70 @@
+---
+import type { Project } from "../types/config";
+import { parseMarkdown } from "../utils/helpers";
+
+type Props = Project;
+
+const { title, description, url } = Astro.props;
+const firstChunk = description.split("<br>")[0];
+const htmlDescription = parseMarkdown(firstChunk);
+const isExternal = /^https?:\/\//.test(url);
+---
+
+<a
+  href={url}
+  target={isExternal ? "_blank" : "_self"}
+  rel={isExternal ? "noopener noreferrer" : undefined}
+  aria-label={`View concept: ${title}`}
+  class="concept-card interactive block stagger-in"
+>
+  <div class="concept-card-header">
+    <p class="concept-card-title">{title}</p>
+    <span class="project-status">concept</span>
+  </div>
+  <div class="concept-card-body">
+    <Fragment set:html={htmlDescription} />
+  </div>
+</a>
+
+<style>
+  .concept-card {
+    padding: var(--space-md);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-md);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background-color var(--duration-normal) var(--ease-out),
+      transform var(--duration-fast) var(--ease-out);
+  }
+
+  .concept-card:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.18);
+    background-color: rgb(var(--color-text-rgb) / 0.02);
+  }
+
+  .concept-card:active {
+    transform: scale(var(--scale-active));
+    transition-duration: var(--duration-fast);
+  }
+
+  .concept-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.4rem;
+  }
+
+  .concept-card-title {
+    font-weight: 500;
+    font-size: var(--text-sm);
+    margin: 0;
+    min-width: 0;
+  }
+
+  .concept-card-body {
+    font-size: var(--text-sm);
+    opacity: 0.55;
+    line-height: 1.55;
+  }
+</style>

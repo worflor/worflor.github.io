@@ -2,19 +2,98 @@
 import Layout from "../layouts/Layout.astro";
 import { projectsPageContent } from "../config";
 import ProjectCard from "../components/ProjectCard.astro";
+import ConceptCard from "../components/ConceptCard.astro";
 import { getLoadingPriority } from "../utils/helpers";
+
+const allProjects = projectsPageContent.projects;
+const mainProjects = allProjects.filter((p) => p.status !== "concept");
+const conceptProjects = allProjects.filter((p) => p.status === "concept");
 ---
 
 <Layout seo={projectsPageContent.seo}>
-  <section class="mt-8 content-section">
+  <section class="mt-8 projects-page">
     <h1 class="page-title">Projects</h1>
     <p class="opacity-60 mb-10">{projectsPageContent.subtitle}</p>
-    <div class="grid grid-cols-1 group">
-      {
-        projectsPageContent.projects.map((project, index) => (
-          <ProjectCard {...project} loading={getLoadingPriority(index)} />
-        ))
-      }
+
+    <div class:list={["projects-layout", { "projects-layout--has-concepts": conceptProjects.length > 0 }]}>
+      <div class="projects-main grid grid-cols-1 group">
+        {
+          mainProjects.map((project, index) => (
+            <ProjectCard {...project} loading={getLoadingPriority(index)} />
+          ))
+        }
+      </div>
+
+      {conceptProjects.length > 0 && (
+        <aside class="projects-concepts" aria-labelledby="concepts-heading">
+          <div class="concepts-header">
+            <h2 id="concepts-heading" class="concepts-title">Concepts</h2>
+            <p class="concepts-subtitle">research stage. design first, code later.</p>
+          </div>
+          <div class="grid grid-cols-1 gap-[var(--space-sm)] group">
+            {conceptProjects.map((project) => (
+              <ConceptCard {...project} />
+            ))}
+          </div>
+        </aside>
+      )}
     </div>
   </section>
 </Layout>
+
+<style>
+  .projects-page {
+    width: 100%;
+    max-width: 58rem;
+    margin-inline: auto;
+    padding-inline: max(clamp(1rem, 4vw, 1.5rem), env(safe-area-inset-left), env(safe-area-inset-right));
+    container-type: inline-size;
+  }
+
+  .projects-layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-xl);
+  }
+
+  @container (min-width: 52rem) {
+    .projects-layout--has-concepts {
+      grid-template-columns: minmax(0, 1fr) 16rem;
+      gap: calc(var(--space-xl) * 1.25);
+    }
+
+    .projects-layout--has-concepts .projects-concepts {
+      position: sticky;
+      top: 5rem;
+      align-self: start;
+    }
+  }
+
+  .concepts-header {
+    margin-bottom: var(--space-md);
+    padding-bottom: var(--space-sm);
+    border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.08);
+  }
+
+  .concepts-title {
+    font-size: calc(var(--text-sm) * 0.85);
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0.5;
+    margin: 0;
+  }
+
+  .concepts-subtitle {
+    margin-top: 0.4rem;
+    font-size: var(--text-sm);
+    opacity: 0.4;
+    line-height: 1.45;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .projects-concepts {
+      position: static;
+    }
+  }
+</style>

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <radialGradient id="seance-bg" cx="50%" cy="48%" r="68%">
+      <stop offset="0%" stop-color="#0E1518"/>
+      <stop offset="100%" stop-color="#0A0A0A"/>
+    </radialGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#seance-bg)"/>
+
+  <!-- layer lines underneath, like disk platters or stacked weights -->
+  <g stroke="#a89c83" stroke-width="2" fill="none" stroke-linecap="round" opacity="0.32">
+    <path d="M 280 780 Q 600 778 920 781"/>
+    <path d="M 280 820 Q 540 822 760 818"/>
+    <path d="M 280 860 Q 700 858 1080 862"/>
+    <path d="M 280 900 Q 560 901 820 898"/>
+    <path d="M 280 940 Q 640 941 980 939"/>
+  </g>
+
+  <!-- sleeping cat, curled in profile, head tucked, tail wrapping front -->
+  <g stroke="#c5b9a1" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- body: one continuous curl, back over top, rear right, tail tucks under -->
+    <path d="
+      M 980 660
+      C 920 620 920 540 1000 480
+      C 1090 420 1220 408 1330 440
+      C 1430 470 1480 550 1450 630
+      C 1430 690 1370 720 1300 715
+      C 1230 710 1180 690 1140 700
+      C 1080 715 1020 700 980 660 Z"/>
+    <!-- two ear peaks on the back-top of head -->
+    <path d="M 1108 414 L 1118 376 L 1152 408"/>
+    <path d="M 1210 402 L 1225 368 L 1258 402"/>
+    <!-- closed eye, soft curve -->
+    <path d="M 1330 488 Q 1346 484 1362 490"/>
+    <!-- tail tip emerging from front, curling -->
+    <path d="M 1000 680 Q 950 712 905 700 Q 880 692 895 670"/>
+  </g>
+</svg>

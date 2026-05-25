@@ -242,7 +242,18 @@ const seo = {
                 var p = document.getElementById("whisper-page");
                 if (!p) return;
 
-                var m = sessionStorage.getItem("whisper-mode") || "embed";
+                // URL params override session state; share-friendly deep links.
+                var urlParams = new URLSearchParams(location.search);
+                var paramMode = urlParams.has("live") ? "live" :
+                                urlParams.has("embed") ? "embed" :
+                                urlParams.has("extract") ? "extract" :
+                                urlParams.has("hunt") ? "hunt" : null;
+                if (paramMode) {
+                  sessionStorage.setItem("whisper-mode", paramMode);
+                  history.replaceState({}, "", location.pathname);
+                }
+
+                var m = paramMode || sessionStorage.getItem("whisper-mode") || "embed";
                 var c = sessionStorage.getItem("whisper-carrier") || "file";
 
                 if (

@@ -187,6 +187,32 @@
   container-type: inline-size;
 }
 
+/* Status pill shared by project listings (main cards + concept cards). */
+.project-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.15em 0.55em;
+  border: 1px solid rgb(var(--color-text-rgb) / 0.18);
+  border-radius: var(--radius-sm);
+  font-size: calc(var(--text-sm) * 0.72);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgb(var(--color-text-rgb) / 0.55);
+  text-transform: lowercase;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.project-status-dot {
+  width: 0.4em;
+  height: 0.4em;
+  border-radius: 50%;
+  background: rgb(var(--chromatic-cyan) / 0.65);
+  box-shadow: 0 0 0.3em rgb(var(--chromatic-cyan) / 0.18);
+}
+
 /* Keep control typography predictable and prevent iOS focus zoom. */
 :where(input, textarea, select) {
   font-size: var(--text-ui-base);
