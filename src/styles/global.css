@@ -273,33 +273,88 @@
 }
 
 /* Shared tool action surfaces (Prism/Lens/Mirror/Radar/Whisper/Cage). */
+/* spectral plasma action bar — universal floating bar with webgpu shader.
+   .action-bar is the new standard. .tool-actions-shell is a compat alias. */
+.action-bar,
 .tool-actions-shell {
   position: fixed;
   bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
   left: 50%;
-  transform: translateX(-50%);
-  display: inline-flex;
-  gap: calc(var(--space-xs) * 0.25);
-  padding: calc(var(--space-xs) * 0.7);
-  background: var(--tool-actionbar-bg);
+  transform: translateX(-50%) translateY(var(--bar-shadow-shift, 0px));
+  z-index: 40;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid rgb(var(--color-text-rgb) / 0.06);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
   backdrop-filter: blur(16px) saturate(1.2);
-  border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+  background: transparent;
   box-shadow:
-    var(--edge-highlight),
-    0 4px 20px rgb(0 0 0 / 0.25);
-  z-index: 40;
+    0 8px 32px rgb(0 0 0 / 0.35),
+    0 2px 8px rgb(0 0 0 / 0.25),
+    0 0 1px rgb(0 0 0 / 0.4),
+    -2px 6px 24px rgb(var(--chromatic-cyan) / 0.05),
+    2px 6px 24px rgb(var(--chromatic-red) / 0.03);
   white-space: nowrap;
+}
+
+.action-bar-plasma {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.action-bar-content {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--space-xs) * 0.25);
+  padding: calc(var(--space-xs) * 0.7);
+  max-width: min(calc(100vw - 2rem), 36rem);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.action-bar-content::-webkit-scrollbar {
+  display: none;
+}
+
+/* compact: narrower padding + smaller text on small viewports */
+@media (max-width: 520px) {
+  .action-bar-content {
+    gap: calc(var(--space-xs) * 0.18);
+    padding: calc(var(--space-xs) * 0.55);
+  }
+  .tool-action-btn {
+    font-size: calc(var(--text-sm) * 0.9);
+    padding: calc(var(--space-xs) * 0.6) calc(var(--space-xs) * 1.1);
+  }
+}
+
+/* fallback: no webgpu = no shader canvas = needs a solid bg.
+   the shader init script adds [data-plasma] when active;
+   without it, fall back to a dark translucent background. */
+.action-bar:not([data-plasma]),
+.tool-actions-shell:not([data-plasma]) {
+  background: var(--tool-actionbar-bg);
 }
 
 @supports not (
   (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
 ) {
+  .action-bar,
   .tool-actions-shell {
     background: var(--tool-actionbar-bg-fallback);
   }
 }
 
+/* inscriptions in the spectral plane. not buttons on a surface,
+   but text that exists within the computational substrate. */
 .tool-action-btn {
   display: inline-flex;
   align-items: center;
@@ -309,9 +364,13 @@
   padding: calc(var(--space-xs) * 0.8) calc(var(--space-xs) * 1.5);
   background: transparent;
   border: none;
-  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+  color: rgb(var(--color-text-rgb) / 0.55);
   font-family: var(--font-body);
   font-size: var(--text-ui-sm);
+  letter-spacing: 0.04em;
+  /* prevent layout shift from letter-spacing transitions on hover */
+  min-width: max-content;
   cursor: pointer;
   white-space: nowrap;
   touch-action: manipulation;
@@ -319,9 +378,11 @@
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+  text-shadow: 0 0 8px rgb(var(--color-text-rgb) / 0.08);
   transition:
-    background var(--duration-normal) var(--ease-out),
-    color var(--duration-normal) var(--ease-out);
+    color var(--duration-slow) var(--ease-out),
+    text-shadow var(--duration-slow) var(--ease-out),
+    letter-spacing var(--duration-slow) var(--ease-out);
 }
 
 button,
@@ -336,41 +397,56 @@ input[type="reset"] {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Input-modality baseline for shared tool actions. */
+/* hover: the inscription surfaces. the spectral plane acknowledges your intent.
+   text brightens slowly, gains chromatic character, letter-spacing relaxes. */
 @media (hover: hover) and (pointer: fine) {
   .tool-action-btn:hover:not(:disabled) {
-    background: rgb(var(--color-text-rgb) / 0.06);
-    color: var(--color-text);
+    color: rgb(var(--color-text-rgb) / 0.9);
+    letter-spacing: 0.06em;
+    text-shadow:
+      0 0 12px rgb(var(--chromatic-cyan) / 0.15),
+      calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.4),
+      var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / 0.25);
   }
 }
 
 .tool-action-btn:active {
-  background: rgb(var(--color-text-rgb) / 0.1);
+  color: var(--color-text);
+  letter-spacing: 0.02em;
+  text-shadow:
+    0 0 16px rgb(var(--chromatic-cyan) / 0.25),
+    calc(-2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.6),
+    calc(2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.4);
 }
 
 .tool-action-btn:focus-visible {
   outline: 1px solid rgb(var(--chromatic-cyan) / 0.4);
   outline-offset: 1px;
   color: var(--color-text);
-  background: rgb(var(--chromatic-cyan) / 0.08);
+  text-shadow:
+    calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.4),
+    var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / 0.3);
 }
 
 .tool-action-btn:disabled {
   cursor: not-allowed;
-  color: rgb(var(--color-text-rgb) / 0.4);
+  color: rgb(var(--color-text-rgb) / 0.25);
   background: transparent;
   opacity: 1;
+  text-shadow: none;
 }
 
 @media (hover: none) {
   .tool-action-btn:hover {
     background: transparent;
-    color: var(--color-text-muted);
+    color: rgb(var(--color-text-rgb) / 0.6);
   }
 
   .tool-action-btn:active {
-    background: rgb(var(--color-text-rgb) / 0.1);
     color: var(--color-text);
+    text-shadow:
+      calc(-2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.6),
+      calc(2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.4);
   }
 }
 

@@ -1,0 +1,51 @@
+---
+/**
+ * ActionBar — universal floating action bar with WebGPU spectral plasma effect.
+ *
+ * the bar floats above page content like a controlled rift. through it, spectral
+ * plasma drifts: chromatic filaments of cyan and red that separate and recombine.
+ * it breathes, reacts to pointer proximity, and parallaxes with scroll.
+ *
+ * the webgpu shader renders the plasma surface. css backdrop-filter handles the
+ * live content blur behind it. buttons sit on top via z-index. if webgpu is
+ * unavailable, the bar falls back to css-only (current production look).
+ *
+ * usage:
+ *   <ActionBar label="Prism controls" id="prism-actions" class="prism-actions">
+ *     <button class="tool-action-btn">Run</button>
+ *   </ActionBar>
+ */
+interface Props {
+  id?: string;
+  label: string;
+  class?: string;
+  visible?: boolean;
+}
+const { id, label, class: cls, visible = true } = Astro.props;
+---
+
+<div
+  class:list={["action-bar", cls]}
+  id={id}
+  role="group"
+  aria-label={label}
+  style={visible ? undefined : "display:none;opacity:0"}
+>
+  <canvas class="action-bar-plasma" aria-hidden="true"></canvas>
+  <div class="action-bar-content">
+    <slot />
+  </div>
+</div>
+
+<script>
+  import { initPlasma } from "../scripts/action-bar-plasma";
+
+  function boot() {
+    initPlasma();
+  }
+
+  // run on initial load and after astro view transitions
+  if (document.readyState !== "loading") boot();
+  else document.addEventListener("DOMContentLoaded", boot, { once: true });
+  document.addEventListener("astro:page-load", boot);
+</script>

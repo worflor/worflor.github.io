@@ -2,6 +2,7 @@
 // woflo - digital browser mirror
 // A transparent, educational display of all browser-detectable client information.
 import Layout from "../layouts/Layout.astro";
+import ActionBar from "../components/ActionBar.astro";
 
 const seo = {
   title: "Digital Mirror | woflo",
@@ -84,12 +85,12 @@ const seo = {
     </section>
 
     <!-- Actions -->
-    <div class="tool-actions-shell mirror-actions" role="group" aria-label="Mirror actions">
+    <ActionBar label="Mirror actions" class="mirror-actions">
       <button class="tool-action-btn action-btn" id="action-copy">Copy</button>
       <button class="tool-action-btn action-btn" id="action-expand">Expand</button>
       <button class="tool-action-btn action-btn" id="action-collapse">Collapse</button>
       <button class="tool-action-btn action-btn" id="action-refresh">Rescan</button>
-    </div>
+    </ActionBar>
   </div>
 
   <script>

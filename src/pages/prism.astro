@@ -1,5 +1,6 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import ActionBar from "../components/ActionBar.astro";
 
 const seo = {
   title: "Prism | woflo",
@@ -299,13 +300,7 @@ const seo = {
     </section>
 
     <!-- ── Action Bar ────────────────────────────────────────── -->
-    <div
-      class="tool-actions-shell prism-actions"
-      id="prism-actions"
-      role="group"
-      aria-label="Prism controls"
-      style="display:none;opacity:0"
-    >
+    <ActionBar id="prism-actions" label="Prism controls" class="prism-actions" visible={false}>
       <button
         class="tool-action-btn action-btn action-btn--primary"
         id="prism-btn-run"
@@ -353,7 +348,7 @@ const seo = {
       <button class="tool-action-btn action-btn" id="prism-btn-clear" type="button"
         >Clear</button
       >
-    </div>
+    </ActionBar>
   </div>
 
   <script>

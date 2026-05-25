@@ -46,6 +46,9 @@ scripts/*
 # r&d docs (codec tower write-ups, not site content)
 docs/
 
+# r&d project notes (concept drafts, prototypes, scratch)
+projects/
+
 # benchmark data
 public/benchmarks/
 

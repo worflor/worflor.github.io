@@ -4,6 +4,8 @@ import WhisperLiveIdle from "../components/whisper/WhisperLiveIdle.astro";
 import WhisperLiveChat from "../components/whisper/WhisperLiveChat.astro";
 import WhisperCampfire from "../components/whisper/WhisperCampfire.astro";
 import WhisperSealOverlay from "../components/whisper/WhisperSealOverlay.astro";
+import WhisperSealPanel from "../components/whisper/WhisperSealPanel.astro";
+import ActionBar from "../components/ActionBar.astro";
 
 const seo = {
   title: "Whisper | woflo",
@@ -37,7 +39,7 @@ const seo = {
       <div class="whisper-mode-bar" role="group" aria-label="Whisper mode">
         <button
           class="whisper-mode-btn whisper-mode-btn--active"
-          data-whisper-mode="embed"
+          data-whisper-mode="carrier"
           aria-pressed="true"
           type="button"
         >
@@ -53,13 +55,13 @@ const seo = {
               d="M4 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2"
             ></path>
             <path d="M2 4h12"></path>
-            <path d="M5.5 9.5h5M8 7v5"></path>
+            <path d="M6 9l2 2 2-2M8 6v5"></path>
           </svg>
-          <span class="btn-label">Embed</span>
+          <span class="btn-label">Carrier</span>
         </button>
         <button
           class="whisper-mode-btn"
-          data-whisper-mode="extract"
+          data-whisper-mode="seal"
           aria-pressed="false"
           type="button"
         >
@@ -69,34 +71,14 @@ const seo = {
             fill="none"
             stroke="currentColor"
             stroke-width="1.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
             aria-hidden="true"
           >
-            <path
-              d="M4 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2"
-            ></path>
-            <path d="M2 11h12"></path>
-            <path d="M5.5 6.5h5"></path>
+            <path d="M9.5 3l2 2-5.5 5.5H4V8.5L9.5 3z"></path>
+            <path d="M3 14h10"></path>
           </svg>
-          <span class="btn-label">Extract</span>
-        </button>
-        <button
-          class="whisper-mode-btn"
-          data-whisper-mode="hunt"
-          aria-pressed="false"
-          type="button"
-        >
-          <svg
-            class="whisper-mode-icon"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.2"
-            aria-hidden="true"
-          >
-            <circle cx="7" cy="7" r="4"></circle>
-            <path d="M10 10l3.5 3.5"></path>
-          </svg>
-          <span class="btn-label">Hunt</span>
+          <span class="btn-label">Digital Signature</span>
         </button>
         <button
           class="whisper-mode-btn"
@@ -117,7 +99,60 @@ const seo = {
           </svg>
           <span class="btn-label">Live</span>
         </button>
+        <span class="whisper-mode-indicator" aria-hidden="true"></span>
       </div>
+      <script is:inline>
+        (function () {
+          var bar = document.querySelector(".whisper-mode-bar");
+          var ind = bar && bar.querySelector(".whisper-mode-indicator");
+          if (!bar || !ind) return;
+
+          var cyan = "rgb(var(--chromatic-cyan))";
+          var red = "rgb(var(--chromatic-red))";
+          var btns = bar.querySelectorAll(".whisper-mode-btn");
+
+          function measure(btn) {
+            var s = getComputedStyle(btn);
+            var pl = parseFloat(s.paddingLeft) || 0;
+            var pr = parseFloat(s.paddingRight) || 0;
+            return {
+              left: btn.offsetLeft + pl,
+              width: btn.offsetWidth - pl - pr,
+              live: btn.getAttribute("data-whisper-mode") === "live"
+            };
+          }
+
+          function moveTo(btn) {
+            var m = measure(btn);
+            ind.style.left = m.left + "px";
+            ind.style.right = (bar.offsetWidth - m.left - m.width) + "px";
+            ind.style.background = m.live ? red : cyan;
+          }
+
+          function moveToActive() {
+            var active = bar.querySelector(".whisper-mode-btn--active");
+            if (active) moveTo(active);
+          }
+
+          moveToActive();
+
+          for (var i = 0; i < btns.length; i++) {
+            btns[i].addEventListener("mouseenter", (function (btn) {
+              return function () { moveTo(btn); };
+            })(btns[i]));
+          }
+
+          bar.addEventListener("mouseleave", moveToActive);
+
+          new MutationObserver(moveToActive).observe(bar, {
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["class"]
+          });
+
+          new ResizeObserver(moveToActive).observe(bar);
+        })();
+      </script>
     </section>
 
     <!-- ── Upload Zone (carrier) ────────────────────────────── -->
@@ -193,42 +228,66 @@ const seo = {
             >
           </div>
 
-          <!-- Carrier type toggle (embed mode only) -->
-          <div
-            class="whisper-field whisper-field--embed ws-carrier-toggle-wrap"
-          >
-            <span class="whisper-field-label">carrier</span>
-            <div
-              class="ws-carrier-toggle"
-              role="radiogroup"
-              aria-label="Carrier type"
-            >
-              <label class="ws-carrier-opt">
-                <input
-                  type="radio"
-                  name="ws-carrier-type"
-                  value="file"
-                  checked
-                  class="ws-carrier-radio"
-                />
-                <span class="ws-carrier-label">File</span>
-              </label>
-              <label class="ws-carrier-opt">
-                <input
-                  type="radio"
-                  name="ws-carrier-type"
-                  value="url"
-                  class="ws-carrier-radio"
-                />
-                <span class="ws-carrier-label">URL</span>
-              </label>
-              <button
-                id="ws-my-seal-btn"
-                type="button"
-                class="whisper-mini-btn ws-my-seal-btn ws-seal-mode-chip ws-seal-mode-chip--stable"
-                aria-pressed="false"
-                title="switch seal mode">Stable seal</button
+          <!-- Direction + carrier type (single row) -->
+          <div class="whisper-field ws-controls-row-wrap">
+            <div class="ws-controls-row">
+              <div
+                class="ws-direction-toggle"
+                role="radiogroup"
+                aria-label="Operation direction"
               >
+                <label class="ws-direction-opt">
+                  <input
+                    type="radio"
+                    name="ws-direction"
+                    value="embed"
+                    checked
+                    class="ws-direction-radio"
+                  />
+                  <span class="ws-direction-label">Embed</span>
+                </label>
+                <label class="ws-direction-opt">
+                  <input
+                    type="radio"
+                    name="ws-direction"
+                    value="extract"
+                    class="ws-direction-radio"
+                  />
+                  <span class="ws-direction-label">Extract</span>
+                </label>
+              </div>
+              <div
+                class="ws-carrier-toggle whisper-field--embed"
+                role="radiogroup"
+                aria-label="Carrier type"
+              >
+                <label class="ws-carrier-opt">
+                  <input
+                    type="radio"
+                    name="ws-carrier-type"
+                    value="file"
+                    checked
+                    class="ws-carrier-radio"
+                  />
+                  <span class="ws-carrier-label">File</span>
+                </label>
+                <label class="ws-carrier-opt">
+                  <input
+                    type="radio"
+                    name="ws-carrier-type"
+                    value="url"
+                    class="ws-carrier-radio"
+                  />
+                  <span class="ws-carrier-label">URL</span>
+                </label>
+                <button
+                  id="ws-my-seal-btn"
+                  type="button"
+                  class="whisper-mini-btn ws-my-seal-btn ws-seal-mode-chip ws-seal-mode-chip--stable"
+                  aria-pressed="false"
+                  title="switch seal mode">Stable seal</button
+                >
+              </div>
               <span
                 id="ws-my-seal-inline"
                 class="ws-my-seal-inline"
@@ -247,26 +306,34 @@ const seo = {
                 var paramMode = urlParams.has("live") ? "live" :
                                 urlParams.has("embed") ? "embed" :
                                 urlParams.has("extract") ? "extract" :
-                                urlParams.has("hunt") ? "hunt" : null;
+                                urlParams.has("seal") ? "seal" : null;
                 if (paramMode) {
                   sessionStorage.setItem("whisper-mode", paramMode);
                   history.replaceState({}, "", location.pathname);
                 }
 
-                var m = paramMode || sessionStorage.getItem("whisper-mode") || "embed";
+                var savedMode = sessionStorage.getItem("whisper-mode");
+                // migrate any legacy "hunt" sessionStorage value to embed
+                if (savedMode === "hunt") {
+                  savedMode = "embed";
+                  sessionStorage.setItem("whisper-mode", "embed");
+                }
+                var m = paramMode || savedMode || "embed";
                 var c = sessionStorage.getItem("whisper-carrier") || "file";
 
                 if (
                   m === "embed" ||
                   m === "extract" ||
-                  m === "hunt" ||
+                  m === "seal" ||
                   m === "live"
                 ) {
                   p.dataset.mode = m;
+                  // "carrier" tab covers both embed and extract
+                  var tabMode = (m === "embed" || m === "extract") ? "carrier" : m;
                   var btns = p.querySelectorAll(".whisper-mode-btn");
                   for (var i = 0; i < btns.length; i++) {
                     var active =
-                      btns[i].getAttribute("data-whisper-mode") === m;
+                      btns[i].getAttribute("data-whisper-mode") === tabMode;
                     active
                       ? btns[i].classList.add("whisper-mode-btn--active")
                       : btns[i].classList.remove("whisper-mode-btn--active");
@@ -274,6 +341,11 @@ const seo = {
                       "aria-pressed",
                       active ? "true" : "false",
                     );
+                  }
+                  // sync direction toggle
+                  var dirRadios = p.querySelectorAll('input[name="ws-direction"]');
+                  for (var j = 0; j < dirRadios.length; j++) {
+                    dirRadios[j].checked = dirRadios[j].value === m;
                   }
                 }
 
@@ -681,23 +753,30 @@ const seo = {
             </label>
           </div>
 
-          <!-- Clue -->
-          <label
-            class="whisper-field whisper-field--hunt"
-            for="whisper-clue-input"
-          >
-            <span class="whisper-field-label"
-              >filter <span class="whisper-field-hint"
-                >(optional, skip payloads that don't match)</span
-              ></span
-            >
-            <input
-              id="whisper-clue-input"
-              type="text"
-              class="whisper-input"
-              placeholder="filename, label, or type"
-            />
-          </label>
+          <!-- Filter (formerly Hunt mode; now an advanced toggle inside Extract) -->
+          <details class="whisper-extract-advanced whisper-field--filter">
+            <summary class="whisper-extract-advanced-summary">advanced</summary>
+            <label class="whisper-field" for="whisper-clue-input">
+              <span class="whisper-field-label"
+                >filter <span class="whisper-field-hint"
+                  >(optional, skip payloads that don't match)</span
+                ></span
+              >
+              <input
+                id="whisper-clue-input"
+                type="text"
+                class="whisper-input"
+                placeholder="filename, label, or type"
+              />
+            </label>
+          </details>
+        </div>
+      </div>
+
+      <!-- Seal mode content (digital signature encryption via Glyph) -->
+      <div class="whisper-op-seal" id="seal-section">
+        <div class="content-section">
+          <WhisperSealPanel />
         </div>
       </div>
 
@@ -884,13 +963,7 @@ const seo = {
     </section>
 
     <!-- ── Fixed Action Bar (hidden until carrier loaded) ──── -->
-    <div
-      class="tool-actions-shell whisper-actions whisper-section--solo"
-      id="whisper-actions"
-      role="group"
-      aria-label="Whisper controls"
-      style="display:none;opacity:0"
-    >
+    <ActionBar id="whisper-actions" label="Whisper controls" class="whisper-actions whisper-section--solo" visible={false}>
       <button
         class="tool-action-btn action-btn action-btn--primary"
         id="whisper-action-run"
@@ -932,7 +1005,23 @@ const seo = {
         type="button"
         disabled>Clear</button
       >
-    </div>
+    </ActionBar>
+
+    <!-- ── Seal Action Bar ──── -->
+    <ActionBar id="seal-actions-bar" label="Seal controls" class="seal-actions-bar" visible={false}>
+      <button
+        class="tool-action-btn action-btn action-btn--primary"
+        id="seal-bar-seal"
+        type="button"
+        disabled
+      >Seal</button>
+      <button
+        class="tool-action-btn action-btn"
+        id="seal-bar-unseal"
+        type="button"
+        disabled
+      >Unseal</button>
+    </ActionBar>
   </div>
 
   <script>
@@ -1443,12 +1532,9 @@ const seo = {
   .whisper-mode-bar {
     display: inline-flex;
     flex-wrap: nowrap;
-    gap: calc(var(--space-xs) * 0.3);
-    border: 1px solid var(--whisper-edge);
-    border-radius: var(--whisper-radius);
-    padding: calc(var(--space-xs) * 0.35);
-    background: var(--whisper-surface);
-    box-shadow: var(--edge-highlight);
+    align-items: stretch;
+    position: relative;
+    gap: 0;
     max-width: 100%;
   }
 
@@ -1456,21 +1542,19 @@ const seo = {
     display: inline-flex;
     align-items: center;
     gap: 0.4em;
-    border: 1px solid transparent;
-    border-radius: var(--whisper-radius-soft);
+    position: relative;
+    border: none;
+    border-radius: 0;
     background: transparent;
-    color: rgb(var(--color-text-rgb) / 0.55);
-    padding: 0.45rem 0.85rem;
+    color: rgb(var(--color-text-rgb) / 0.38);
+    padding: 0.5rem 0.7rem;
     min-height: var(--touch-target);
     font-family: var(--font-body);
     font-size: var(--text-sm);
     cursor: pointer;
     white-space: nowrap;
     min-width: 0;
-    transition:
-      border-color var(--duration-normal) var(--ease-out),
-      color var(--duration-normal) var(--ease-out),
-      background-color var(--duration-normal) var(--ease-out);
+    transition: color var(--duration-normal) var(--ease-out);
   }
 
   .whisper-mode-icon {
@@ -1484,139 +1568,147 @@ const seo = {
     display: none;
   }
   [data-compact] > .whisper-mode-btn {
-    padding: 0.45rem;
+    padding: 0.5rem;
   }
 
-  .whisper-mode-btn:hover,
+  .whisper-mode-btn:hover {
+    color: rgb(var(--color-text-rgb) / 0.65);
+  }
+
   .whisper-mode-btn:focus-visible {
-    color: rgb(var(--color-text-rgb));
-    border-color: rgb(var(--color-text-rgb) / 0.18);
+    color: rgb(var(--color-text-rgb) / 0.65);
     outline: none;
-  }
-
-  .whisper-mode-btn:focus-visible {
     box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
   }
 
   .whisper-mode-btn--active {
-    border-color: rgb(var(--chromatic-cyan) / 0.4);
-    color: rgb(var(--chromatic-cyan));
-    background: rgb(var(--chromatic-cyan) / 0.08);
+    color: rgb(var(--color-text-rgb) / 0.92);
   }
 
   .whisper-mode-btn--active:hover {
-    border-color: rgb(var(--chromatic-cyan) / 0.55);
-    color: rgb(var(--chromatic-cyan));
-    background: rgb(var(--chromatic-cyan) / 0.12);
+    color: rgb(var(--color-text-rgb));
   }
 
-  /* Live mode button — red accent when active (most alpha feature) */
+  /* hairline separator before Live */
+  .whisper-mode-btn[data-whisper-mode="live"] {
+    margin-left: 0.25rem;
+    padding-left: 0.95rem;
+  }
+
+  .whisper-mode-btn[data-whisper-mode="live"]::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 22%;
+    height: 56%;
+    width: 1px;
+    background: rgb(var(--color-text-rgb) / 0.12);
+  }
+
   .whisper-mode-btn--active[data-whisper-mode="live"] {
-    border-color: rgb(var(--chromatic-red) / 0.4);
     color: rgb(var(--chromatic-red));
-    background: rgb(var(--chromatic-red) / 0.08);
+  }
+
+  /* sliding indicator shared across all tabs.
+     left and right transition at different speeds so the indicator
+     stretches to bridge old and new positions before contracting. */
+  .whisper-mode-indicator {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 100%;
+    height: 2px;
+    border-radius: 1px;
+    background: rgb(var(--chromatic-cyan));
+    pointer-events: none;
+    transition:
+      left 0.32s cubic-bezier(0.4, 0, 0.1, 1),
+      right 0.4s cubic-bezier(0.35, 0, 0.1, 1),
+      background 0.25s ease;
   }
 
   .whisper-mode-btn--active[data-whisper-mode="live"]:hover {
-    border-color: rgb(var(--chromatic-red) / 0.55);
     color: rgb(var(--chromatic-red));
-    background: rgb(var(--chromatic-red) / 0.12);
   }
 
   /* ── Upload Zone ───────────────────────────────────────── */
   .whisper-upload-zone {
     position: relative;
-    border: 2px dashed rgb(var(--color-text-rgb) / 0.14);
+    border: 1px dashed rgb(var(--color-text-rgb) / var(--opacity-faint));
     border-radius: var(--whisper-radius);
-    padding: var(--space-xl) var(--space-md);
+    padding: var(--space-sm) var(--space-md);
     text-align: center;
     cursor: pointer;
-    background: linear-gradient(
-      180deg,
-      rgb(var(--color-text-rgb) / 0.012) 0%,
-      transparent 60%
-    );
-    box-shadow: var(--edge-highlight);
+    background: rgb(0 0 0 / 0.15);
+    box-shadow: var(--depth-inset), inset 0 2px 4px rgb(0 0 0 / 0.15);
+    animation: whisper-well-breathe 4s ease-in-out infinite;
     transition:
-      border-color var(--duration-slow) var(--ease-spring),
       background var(--duration-slow) var(--ease-spring),
       box-shadow var(--duration-slow) var(--ease-spring);
   }
 
+  @keyframes whisper-well-breathe {
+    0%, 100% { border-color: rgb(var(--color-text-rgb) / 0.07); }
+    50% { border-color: rgb(var(--color-text-rgb) / 0.18); }
+  }
+
   .whisper-upload-zone:hover,
   .whisper-upload-zone:global(.whisper-drop-active) {
-    border-color: rgb(var(--chromatic-cyan) / 0.35);
-    background: linear-gradient(
-      180deg,
-      rgb(var(--chromatic-cyan) / 0.03) 0%,
-      rgb(var(--chromatic-cyan) / 0.008) 50%,
-      transparent 100%
-    );
-    box-shadow: var(--edge-highlight);
+    animation-name: none;
+    border-color: rgb(var(--chromatic-cyan) / 0.2);
+    background: rgb(0 0 0 / 0.22);
+    box-shadow:
+      var(--depth-inset),
+      inset 0 2px 6px rgb(0 0 0 / 0.2),
+      inset 0 0 12px rgb(var(--chromatic-cyan) / 0.03);
   }
 
   .whisper-upload-zone:active {
-    border-color: rgb(var(--chromatic-cyan) / 0.5);
-    background: linear-gradient(
-      180deg,
-      rgb(var(--chromatic-cyan) / 0.05) 0%,
-      rgb(var(--chromatic-cyan) / 0.015) 50%,
-      transparent 100%
-    );
+    animation-name: none;
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    background: rgb(0 0 0 / 0.28);
+    box-shadow:
+      var(--depth-inset),
+      inset 0 3px 8px rgb(0 0 0 / 0.25),
+      inset 0 0 12px rgb(var(--chromatic-cyan) / 0.05);
   }
 
   .whisper-upload-zone:focus-visible {
-    border-color: rgb(var(--chromatic-cyan) / 0.45);
+    animation-name: none;
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
     box-shadow:
-      var(--edge-highlight),
-      0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
+      var(--depth-inset),
+      inset 0 2px 4px rgb(0 0 0 / 0.15),
+      0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
     outline: none;
   }
 
   .upload-icon {
-    position: absolute;
-    top: calc(var(--space-sm) * 1.2);
-    left: calc(var(--space-sm) * 1.2);
-    width: var(--space-xl);
-    height: var(--space-xl);
-    color: rgb(var(--color-text-rgb) / 0.14);
-    line-height: 0;
-    transition:
-      color var(--duration-slow) var(--ease-spring),
-      transform var(--duration-slow) var(--ease-spring);
-  }
-
-  .whisper-upload-zone:hover .upload-icon {
-    color: rgb(var(--chromatic-cyan) / 0.4);
-    transform: scale(1.06);
-  }
-
-  .whisper-upload-zone:active .upload-icon {
-    transform: scale(0.94);
+    display: none;
   }
 
   .upload-text {
-    font-size: var(--text-lg);
-    font-weight: 600;
-    margin: 0 0 calc(var(--space-xs) * 0.3);
-    color: rgb(var(--color-text-rgb) / 0.6);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    margin: 0 0 calc(var(--space-xs) * 0.15);
+    color: rgb(var(--color-text-rgb) / var(--opacity-hover-dim));
     transition: color var(--duration-slow) var(--ease-out);
   }
 
   .whisper-upload-zone:hover .upload-text {
-    color: rgb(var(--color-text-rgb) / 0.8);
+    color: rgb(var(--color-text-rgb) / var(--opacity-muted));
   }
 
   .upload-subtext {
-    font-size: var(--text-sm);
-    margin: 0 0 var(--space-sm);
-    color: rgb(var(--color-text-rgb) / 0.28);
+    font-size: var(--whisper-text-soft);
+    margin: 0 0 calc(var(--space-xs) * 0.3);
+    color: rgb(var(--color-text-rgb) / var(--opacity-subtle));
   }
 
   .upload-formats {
-    font-size: var(--whisper-text-soft);
+    font-size: var(--whisper-text-micro);
     margin: 0;
-    color: rgb(var(--color-text-rgb) / 0.15);
+    color: rgb(var(--color-text-rgb) / var(--opacity-faint));
     letter-spacing: 0.06em;
   }
 
@@ -1625,7 +1717,7 @@ const seo = {
     display: none;
     margin: 0;
     font-size: var(--text-sm);
-    color: rgb(var(--color-text-rgb) / 0.38);
+    color: rgb(var(--color-text-rgb) / var(--opacity-hover-dim));
   }
 
   /* ── Upload Zone compact (after file loaded) ────────────── */
@@ -1636,6 +1728,8 @@ const seo = {
     text-align: left;
     cursor: pointer;
     background: var(--whisper-surface);
+    box-shadow: var(--depth-inset);
+    animation: none;
   }
 
   .whisper-upload-zone:global(.whisper-upload-zone--compact) .upload-icon {
@@ -1926,23 +2020,66 @@ const seo = {
 
   /* ── Mode-conditional visibility ───────────────────────── */
 
-  /* Field-level: hide hunt fields in embed/extract, embed fields in extract/hunt */
-  .whisper-page[data-mode="embed"] .whisper-field--hunt,
-  .whisper-page[data-mode="extract"] .whisper-field--hunt,
+  /* Field-level: filter (formerly hunt) shows only inside Extract;
+     embed fields show only inside Embed. */
+  .whisper-page[data-mode="embed"] .whisper-field--filter,
+  .whisper-page[data-mode="seal"] .whisper-field--filter,
   .whisper-page[data-mode="extract"] .whisper-field--embed,
-  .whisper-page[data-mode="hunt"] .whisper-field--embed {
+  .whisper-page[data-mode="seal"] .whisper-field--embed {
     display: none;
   }
 
-  /* Solo vs live: operation panels — only the active mode shows */
+  /* Operation panels — only the active mode shows. Seal and Live each
+     have their own top-level panel; the others share .whisper-op-solo. */
   .whisper-page[data-mode="embed"] .whisper-op-live,
   .whisper-page[data-mode="extract"] .whisper-op-live,
-  .whisper-page[data-mode="hunt"] .whisper-op-live {
+  .whisper-page[data-mode="seal"] .whisper-op-live {
     display: none;
   }
 
-  .whisper-page[data-mode="live"] .whisper-op-solo {
+  .whisper-page[data-mode="embed"] .whisper-op-seal,
+  .whisper-page[data-mode="extract"] .whisper-op-seal,
+  .whisper-page[data-mode="live"] .whisper-op-seal {
     display: none;
+  }
+
+  .whisper-page[data-mode="live"] .whisper-op-solo,
+  .whisper-page[data-mode="seal"] .whisper-op-solo,
+  .whisper-page[data-mode="live"] .whisper-section--solo {
+    display: none;
+  }
+
+  /* seal bar: visibility managed by JS in WhisperSealPanel (inline style) */
+  .seal-actions-bar {
+    border-radius: var(--radius-lg);
+  }
+
+  /* Advanced toggle (Extract): subtle disclosure styling. */
+  .whisper-extract-advanced {
+    margin-top: var(--space-md);
+  }
+  .whisper-extract-advanced-summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: calc(var(--text-sm) * 0.85);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 0.5;
+    user-select: none;
+    transition: opacity var(--duration-normal) var(--ease-out);
+  }
+  .whisper-extract-advanced-summary::-webkit-details-marker { display: none; }
+  .whisper-extract-advanced-summary::before {
+    content: "+ ";
+    display: inline-block;
+    width: 1em;
+  }
+  .whisper-extract-advanced[open] .whisper-extract-advanced-summary::before {
+    content: "− ";
+  }
+  .whisper-extract-advanced-summary:hover { opacity: 0.75; }
+  .whisper-extract-advanced[open] > :not(summary) {
+    margin-top: var(--space-sm);
   }
 
   /* Solo-only sections: upload zone, progress, results, action bar.
@@ -1955,14 +2092,9 @@ const seo = {
     display: none;
   }
 
-  /* Carrier toggle: only visible in embed mode */
-  .whisper-page:not([data-mode="embed"]) .ws-carrier-toggle-wrap {
-    display: none;
-  }
-
   /* When carrier=url: hide file-specific embed fields, upload zone, and file password */
   .whisper-page[data-mode="embed"][data-carrier="url"]
-    .whisper-field--embed:not(.ws-carrier-toggle-wrap):not([for="ws-message"]) {
+    .whisper-field--embed:not(.ws-carrier-toggle):not([for="ws-message"]) {
     display: none;
   }
   .whisper-page[data-mode="embed"][data-carrier="url"] #whisper-upload-zone {
@@ -3190,6 +3322,79 @@ const seo = {
     }
   }
 
+  /* ── Controls Row (direction + carrier type) ────────── */
+  .ws-controls-row-wrap {
+    gap: 0;
+  }
+
+  .ws-controls-row {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--space-xs) * 0.8);
+    flex-wrap: wrap;
+  }
+
+  .ws-direction-toggle {
+    display: inline-flex;
+    gap: 0;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-radius: calc(var(--whisper-radius) * 0.5);
+    overflow: hidden;
+    background: rgb(var(--color-text-rgb) / 0.02);
+  }
+
+  .ws-direction-opt {
+    display: inline-flex;
+    cursor: pointer;
+    user-select: none;
+    margin: 0;
+  }
+
+  .ws-direction-radio {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .ws-direction-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: calc(var(--text-sm) * 0.88);
+    font-family: var(--font-body);
+    color: rgb(var(--color-text-rgb) / 0.38);
+    padding: 0.35em 0.8em;
+    border: none;
+    background: transparent;
+    transition:
+      color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
+  }
+
+  .ws-direction-label:hover {
+    color: rgb(var(--color-text-rgb) / 0.55);
+    background: rgb(var(--color-text-rgb) / 0.03);
+  }
+
+  .ws-direction-radio:checked + .ws-direction-label {
+    color: rgb(var(--chromatic-cyan));
+    background: rgb(var(--chromatic-cyan) / 0.08);
+  }
+
+  .ws-direction-radio:focus-visible + .ws-direction-label {
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12) inset;
+  }
+
+  .ws-direction-opt + .ws-direction-opt .ws-direction-label {
+    border-left: 1px solid rgb(var(--color-text-rgb) / 0.08);
+  }
+
+  .whisper-page:not([data-mode="embed"]):not([data-mode="extract"]):not([data-mode="hunt"]) .ws-controls-row-wrap {
+    display: none;
+  }
+
   /* ═══════════════════════════════════════════════════════
      Whisper Seal — Inline & Overlay Styles
      ═══════════════════════════════════════════════════════ */
@@ -3235,7 +3440,7 @@ const seo = {
     padding: 0.25em 0.55em;
     cursor: pointer;
     user-select: all;
-    flex: 0 1 auto;
+    flex: 0 0 100%;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

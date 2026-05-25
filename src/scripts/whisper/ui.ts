@@ -97,7 +97,8 @@ const MODE_EMBED = "embed";
 const MODE_EXTRACT = "extract";
 const MODE_HUNT = "hunt";
 const MODE_LIVE = "live";
-type WhisperMode = typeof MODE_EMBED | typeof MODE_EXTRACT | typeof MODE_HUNT | typeof MODE_LIVE;
+const MODE_SEAL = "seal";
+type WhisperMode = typeof MODE_EMBED | typeof MODE_EXTRACT | typeof MODE_HUNT | typeof MODE_LIVE | typeof MODE_SEAL;
 
 const ACTION_BAR_FADE_MS = 200;
 const MODE_LABELS: Record<WhisperMode, string> = {
@@ -105,12 +106,13 @@ const MODE_LABELS: Record<WhisperMode, string> = {
   [MODE_EXTRACT]: "Extract",
   [MODE_HUNT]: "Hunt",
   [MODE_LIVE]: "Live",
+  [MODE_SEAL]: "Digital Signature",
 };
 
 /* ── DOM Helpers ───────────────────────────────────────── */
 
 function isMode(value: string | null | undefined): value is WhisperMode {
-  return value === MODE_EMBED || value === MODE_EXTRACT || value === MODE_HUNT || value === MODE_LIVE;
+  return value === MODE_EMBED || value === MODE_EXTRACT || value === MODE_HUNT || value === MODE_LIVE || value === MODE_SEAL;
 }
 
 function readSingleFile(input: HTMLInputElement): File | null {
@@ -369,6 +371,7 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
       case MODE_EMBED: return hasCarrier() && (hasPayload() || hasEmbedMessage()) && pw;
       case MODE_EXTRACT: return hasCarrier() && pw;
       case MODE_HUNT: return hasHuntFiles() && pw;
+      case MODE_SEAL: return false;
     }
   }
 
@@ -450,12 +453,15 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
     }
 
     syncOpTitle();
+    const tabMode = (mode === MODE_EMBED || mode === MODE_EXTRACT || mode === MODE_HUNT) ? "carrier" : mode;
     opts.modeButtons.forEach((btn) => {
-      const active = btn.dataset.whisperMode === mode;
+      const active = btn.dataset.whisperMode === tabMode;
       btn.classList.toggle("whisper-mode-btn--active", active);
       btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
-    if (mode === MODE_LIVE) {
+    const dirRadios = opts.page.querySelectorAll<HTMLInputElement>('input[name="ws-direction"]');
+    dirRadios.forEach((r) => { r.checked = r.value === mode; });
+    if (mode === MODE_LIVE || mode === MODE_SEAL) {
       hideActionsBar();
     } else if (mode === MODE_EMBED && isCarrierUrl()) {
       hideActionsBar();
@@ -709,7 +715,11 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
   opts.modeButtons.forEach((button) => button.addEventListener("click", (event: Event) => {
     const target = event.currentTarget;
     if (!(target instanceof HTMLButtonElement)) return;
-    const mode = target.dataset.whisperMode;
+    let mode = target.dataset.whisperMode;
+    if (mode === "carrier") {
+      const dirRadio = opts.page.querySelector<HTMLInputElement>('input[name="ws-direction"]:checked');
+      mode = dirRadio?.value === "extract" ? MODE_EXTRACT : MODE_EMBED;
+    }
     if (!isMode(mode)) return;
 
     if (mode === activeMode) {
@@ -735,6 +745,14 @@ export function initWhisper(opts: WhisperUIOptions): () => void {
 
     setMode(mode);
   }, { signal }));
+
+  opts.page.querySelectorAll<HTMLInputElement>('input[name="ws-direction"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (!radio.checked) return;
+      const mode = radio.value === "extract" ? MODE_EXTRACT : MODE_EMBED;
+      setMode(mode);
+    }, { signal });
+  });
   syncUploadZoneForMode();
 
   /* ── Carrier type toggle (embed: file vs url/seal) ──── */
