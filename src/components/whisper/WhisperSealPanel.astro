@@ -11,7 +11,7 @@
 <section class="seal-panel" data-seal-panel>
   <header class="seal-intro">
     <h2 class="seal-title">Digital Signature Encryption with Whisper Glyph</h2>
-    <p class="seal-subtitle">literally sign it sealed</p>
+    <p class="seal-subtitle">sign it or whatever, see if I care</p>
   </header>
 
   <!-- ── sign ──────────────────────────────────────────────── -->
@@ -150,8 +150,9 @@
 
 
   function init() {
-    const panel = document.querySelector<HTMLElement>("[data-seal-panel]");
-    if (!panel) return;
+    const panelRaw = document.querySelector<HTMLElement>("[data-seal-panel]");
+    if (!panelRaw) return;
+    const panel = panelRaw;
     if ((panel as HTMLElement & { __sealInit?: boolean }).__sealInit) return;
     (panel as HTMLElement & { __sealInit?: boolean }).__sealInit = true;
 
