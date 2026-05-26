@@ -92,41 +92,39 @@ const htmlDescription = parseMarkdown(description);
 </a>
 
 <script>
-  document.querySelectorAll<HTMLImageElement>('.project-rng').forEach(function (img) {
-    var images = JSON.parse(img.getAttribute('data-images')!);
-    img.src = images[Math.floor(Math.random() * images.length)];
-  });
+  var CACHE_TTL_MS = 1000 * 60 * 60;
+  var STORE_KEY = 'github-stars-cache-v1';
 
-  (function () {
-    var CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
-    var STORE_KEY = 'github-stars-cache-v1';
-
-    function readCache(): Record<string, { stars: number; ts: number }> {
-      try {
-        var raw = localStorage.getItem(STORE_KEY);
-        if (!raw) return {};
-        var parsed = JSON.parse(raw) as Record<string, { stars: number; ts: number }>;
-        return parsed && typeof parsed === 'object' ? parsed : {};
-      } catch {
-        return {};
-      }
+  function readCache(): Record<string, { stars: number; ts: number }> {
+    try {
+      var raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return {};
+      var parsed = JSON.parse(raw) as Record<string, { stars: number; ts: number }>;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
     }
+  }
 
-    function writeCache(cache: Record<string, { stars: number; ts: number }>) {
-      try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(cache));
-      } catch {
-        // ignore quota/storage errors
-      }
-    }
+  function writeCache(cache: Record<string, { stars: number; ts: number }>) {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(cache));
+    } catch {}
+  }
 
-    function setStars(el: HTMLElement, stars: number) {
-      var countEl = el.querySelector('.star-count');
-      if (countEl) {
-        countEl.textContent = String(stars);
-        el.style.display = 'flex';
-      }
+  function setStars(el: HTMLElement, stars: number) {
+    var countEl = el.querySelector('.star-count');
+    if (countEl) {
+      countEl.textContent = String(stars);
+      el.style.display = 'flex';
     }
+  }
+
+  function bootProjectCards() {
+    document.querySelectorAll<HTMLImageElement>('.project-rng').forEach(function (img) {
+      var images = JSON.parse(img.getAttribute('data-images')!);
+      img.src = images[Math.floor(Math.random() * images.length)];
+    });
 
     var inflight = new Map<string, Promise<any>>();
     var cache = readCache();
@@ -166,10 +164,10 @@ const htmlDescription = parseMarkdown(description);
           writeCache(cache);
           setStars(el, data.stargazers_count);
         }
-      } catch {
-        // Silently fail
-      }
+      } catch {}
     });
-  })();
+  }
+
+  document.addEventListener("astro:page-load", bootProjectCards);
 </script>
 
