@@ -1124,7 +1124,7 @@
       const overlayCvs = matchSection.querySelector<HTMLCanvasElement>("[data-match-overlay]")!;
       const overlayCtx = overlayCvs.getContext("2d")!;
 
-      function renderOverlay(tA: Trajectory, tB: Trajectory) {
+      function renderOverlay(tA: SlotTrajectory, tB: SlotTrajectory) {
         const rect = overlayCvs.getBoundingClientRect();
         const dpr = window.devicePixelRatio || 1;
         const w = Math.max(1, Math.floor(rect.width));
@@ -1159,8 +1159,9 @@
         function tx(v: number) { return pad * w + ((v - minX) / rangeX) * w * (1 - 2 * pad); }
         function ty(v: number) { return pad * h + ((v - minY) / rangeY) * h * (1 - 2 * pad); }
 
-        function drawTrajectory(t: Trajectory, color: string) {
+        function drawTrajectory(t: SlotTrajectory, color: string) {
           if (t.n < 2) return;
+          const breakSet = new Set(t.breaks);
           overlayCtx.strokeStyle = color;
           overlayCtx.lineWidth = 1.5;
           overlayCtx.lineCap = "round";
@@ -1168,7 +1169,15 @@
           overlayCtx.globalCompositeOperation = "screen";
           overlayCtx.beginPath();
           overlayCtx.moveTo(tx(t.x[0]), ty(t.y[0]));
-          for (let i = 1; i < t.n; i++) overlayCtx.lineTo(tx(t.x[i]), ty(t.y[i]));
+          for (let i = 1; i < t.n; i++) {
+            if (breakSet.has(i)) {
+              overlayCtx.stroke();
+              overlayCtx.beginPath();
+              overlayCtx.moveTo(tx(t.x[i]), ty(t.y[i]));
+            } else {
+              overlayCtx.lineTo(tx(t.x[i]), ty(t.y[i]));
+            }
+          }
           overlayCtx.stroke();
           overlayCtx.globalCompositeOperation = "source-over";
         }
@@ -1177,22 +1186,30 @@
         drawTrajectory(tB, "rgba(220, 160, 40, 0.7)");
       }
 
-      function slotTrajectory(slot: MatchSlot): Trajectory {
-        if (slot.loaded) return trajectoryFromBlocks(slot.blocks);
-        // drawn strokes: flatten all strokes into one trajectory
+      interface SlotTrajectory extends Trajectory {
+        breaks: number[];
+      }
+
+      function slotTrajectory(slot: MatchSlot): SlotTrajectory {
+        if (slot.loaded) {
+          const t = trajectoryFromBlocks(slot.blocks);
+          return { ...t, breaks: [] };
+        }
         let total = 0;
         for (const s of slot.strokes) total += s.length;
         const x = new Float32Array(total);
         const y = new Float32Array(total);
         const p = new Float32Array(total);
+        const breaks: number[] = [];
         let off = 0;
         for (const s of slot.strokes) {
+          if (off > 0) breaks.push(off);
           for (const pt of s) {
             x[off] = pt.x; y[off] = pt.y; p[off] = pt.p;
             off++;
           }
         }
-        return { n: total, x, y, p };
+        return { n: total, x, y, p, breaks };
       }
 
       function renderResult(l: LikenessResult) {
@@ -1801,9 +1818,6 @@
     );
     transition: width 0.4s cubic-bezier(0.34, 1.4, 0.64, 1);
   }
-  [data-match-bar="shape"] { animation: tol-breathe var(--seal-breathe-shape, 3s) ease-in-out infinite; }
-  [data-match-bar="speed"] { animation: tol-breathe var(--seal-breathe-speed, 3s) ease-in-out infinite; animation-delay: -1s; }
-  [data-match-bar="pressure"] { animation: tol-breathe var(--seal-breathe-pressure, 3s) ease-in-out infinite; animation-delay: -2s; }
   .seal-match-axis-fill:not([data-empty])::after {
     content: '';
     position: absolute;
