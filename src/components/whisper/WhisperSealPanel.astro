@@ -1199,8 +1199,8 @@
         overallPct.textContent = String(Math.round(l.overall * 100));
 
         for (const axis of ["shape", "speed", "pressure"] as const) {
-          const bar = matchSection.querySelector<HTMLElement>(`[data-match-bar="${axis}"]`);
-          const pct = matchSection.querySelector<HTMLElement>(`[data-match-axis-pct="${axis}"]`);
+          const bar = matchSection!.querySelector<HTMLElement>(`[data-match-bar="${axis}"]`);
+          const pct = matchSection!.querySelector<HTMLElement>(`[data-match-axis-pct="${axis}"]`);
           if (bar) {
             bar.style.width = `${Math.round(l[axis] * 100)}%`;
             bar.toggleAttribute("data-empty", l[axis] === 0);

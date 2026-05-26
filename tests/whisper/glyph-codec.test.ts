@@ -1777,6 +1777,10 @@ describe("glyph codec: wire format robustness", () => {
             mgR: 0,
             mgI: 0,
             microResiduals: null,
+            tiltK: 0,
+            tiltG: 0,
+            azimK: 0,
+            azimG: 0,
         }));
 
         const packed = GlyphCodec.pack(blocks);
