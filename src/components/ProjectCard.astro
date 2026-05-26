@@ -72,8 +72,8 @@ const htmlDescription = parseMarkdown(description);
       <span class="opacity-60 tabular-nums shrink-0 whitespace-nowrap">· {year}</span>
       {status && (
         <span class="project-status">
-          {status === "private-beta" && <span class="project-status-dot" aria-hidden="true"></span>}
-          {status === "private-beta" ? "private beta" : "concept"}
+          {(status === "private-beta" || status === "closed-dev-alpha") && <span class="project-status-dot" aria-hidden="true"></span>}
+          {status === "private-beta" ? "private beta" : status === "closed-dev-alpha" ? "closed dev alpha" : "concept"}
         </span>
       )}
       {github && (

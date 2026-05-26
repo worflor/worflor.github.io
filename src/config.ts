@@ -202,7 +202,7 @@ export const projectsPageContent: ProjectPageContent = {
     },
     {
       title: "Whisper",
-      description: "Encrypted communication over Möbius geometry, entirely in the browser.<br>Hide data in images, talk peer-to-peer through a 16D spatial codec, derive shared secrets.<br>No servers, no accounts, no trace.",
+      description: "Encrypted communication over Möbius geometry, entirely in the browser.<br>Hide data in files, talk peer-to-peer through a 16D bond codec, derive shared secrets.<br>Mathetmatically private.",
       image: "/images/whisper.webp",
       year: "2026",
       url: "/whisper?live",
@@ -232,14 +232,21 @@ export const projectsPageContent: ProjectPageContent = {
     },
     {
       title: "Project Pocket",
-      description: "Encryption that doesn't protect the file. Encryption that decides whether the file exists.<br>Project Pocket is the witness. A public BitTorrent swarm holds the blobs; nothing in them is recognizable as data, and nothing in the swarm knows what it's holding. A Kizuna 16D witness check decides whether your handshake's geometry matches, and if it does, the blob collapses into a file your machine can read and execute. Authorized peers run WASM forward and push the next encrypted state back. There is no admin. The math is the access controller.<br>Concept paper, unreviewed code, and the open question of what breaks first.",
+      description: "Encryption that doesn't protect the file. Encryption that decides whether the file exists.<br>A public BitTorrent swarm holds the blobs; nothing in them is recognizable as data. A Kizuna 16D witness check decides whether your handshake's geometry matches, and if it does, the blob collapses into a file your machine can read.",
       year: "2026",
       url: "/contact?project=pocket",
       status: "concept",
     },
     {
+      title: "hindsight",
+      description: "hindsight is 20/20, and your gameplay just got clipped in 4K.<br>Vulkan captures frames straight off the swapchain, Lumen folds them into a continuous light field, and Glyph tracks your hands as 7D kinetic strokes; the way you played baked into the recording as an eigenidentity.",
+      year: "2026",
+      url: "/contact?project=hindsight",
+      status: "closed-dev-alpha",
+    },
+    {
       title: "Project Prisma",
-      description: "Footage in superposition. Every frame holds every possible cut.<br>Prisma is the measurement. The Whisper codecs already produce a surprise signal for every byte, every sample, every frame. Read those signals as attention, weight them, collapse the timeline. The edit was always in the recording; nobody had a way to find it.<br>Concept stage. The codec measures attention. Whether that's what an editor would measure is still being worked out.",
+      description: "Footage in superposition. Every frame holds every possible cut.<br>Prisma is the measurement. The Whisper codecs already produce a surprise signal for every byte, every sample, every frame. Read those signals as attention, weight them, collapse the timeline. The edit was always in the recording; nobody had a way to find it.",
       year: "2026",
       url: "/contact?project=prisma",
       status: "concept",
@@ -271,7 +278,7 @@ export const projectsPageContent: ProjectPageContent = {
     */
     {
       title: "Morithon",
-      description: "Unreal Engine 5 death-run. 45 students, one semester.<br>UI, UX, and the settings menu logic on the UI team.<br>Can you beat your friends?",
+      description: "Unreal Engine 5 death-run. 45 students, one semester.<br>Can you beat your friends?",
       image: "/images/morithon.webp",
       year: "2024",
       url: "https://dhafo.itch.io/morithon",

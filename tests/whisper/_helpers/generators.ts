@@ -101,6 +101,89 @@ export const TEST_EMOJIS = [
   "1️⃣",            // keycap
 ];
 
+// ── glyph geometry generators ───────────────────────────────────────────────
+// each produces Int32Array in [x, y, p, tilt, azimuth, ...] layout.
+
+const GLYPH_CH = 5;
+
+export function glyphCircle(cx: number, cy: number, r: number, n: number, pressure = 16000): Int32Array {
+  const pts = new Int32Array(n * GLYPH_CH);
+  for (let i = 0; i < n; i++) {
+    const theta = (i / n) * Math.PI * 2;
+    pts[i * GLYPH_CH] = Math.round(cx + r * Math.cos(theta));
+    pts[i * GLYPH_CH + 1] = Math.round(cy + r * Math.sin(theta));
+    pts[i * GLYPH_CH + 2] = pressure;
+  }
+  return pts;
+}
+
+export function glyphLine(x0: number, y0: number, dx: number, dy: number, n: number, pressure = 16000): Int32Array {
+  const pts = new Int32Array(n * GLYPH_CH);
+  for (let i = 0; i < n; i++) {
+    pts[i * GLYPH_CH] = Math.round(x0 + dx * i);
+    pts[i * GLYPH_CH + 1] = Math.round(y0 + dy * i);
+    pts[i * GLYPH_CH + 2] = pressure;
+  }
+  return pts;
+}
+
+export function glyphEllipse(cx: number, cy: number, a: number, b: number, n: number, pressure = 16000): Int32Array {
+  const pts = new Int32Array(n * GLYPH_CH);
+  for (let i = 0; i < n; i++) {
+    const theta = (i / n) * Math.PI * 2;
+    pts[i * GLYPH_CH] = Math.round(cx + a * Math.cos(theta));
+    pts[i * GLYPH_CH + 1] = Math.round(cy + b * Math.sin(theta));
+    pts[i * GLYPH_CH + 2] = pressure;
+  }
+  return pts;
+}
+
+export function glyphSpiral(cx: number, cy: number, r0: number, growth: number, n: number): Int32Array {
+  const pts = new Int32Array(n * GLYPH_CH);
+  for (let i = 0; i < n; i++) {
+    const theta = (i / n) * Math.PI * 4;
+    const r = r0 + growth * i;
+    pts[i * GLYPH_CH] = Math.round(cx + r * Math.cos(theta));
+    pts[i * GLYPH_CH + 1] = Math.round(cy + r * Math.sin(theta));
+    pts[i * GLYPH_CH + 2] = 16000;
+  }
+  return pts;
+}
+
+export function glyphLissajous(cx: number, cy: number, a: number, b: number, freqX: number, freqY: number, n: number): Int32Array {
+  const pts = new Int32Array(n * GLYPH_CH);
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    pts[i * GLYPH_CH] = Math.round(cx + a * Math.sin(freqX * t));
+    pts[i * GLYPH_CH + 1] = Math.round(cy + b * Math.sin(freqY * t));
+    pts[i * GLYPH_CH + 2] = 16000;
+  }
+  return pts;
+}
+
+export function glyphNoisyCircle(cx: number, cy: number, r: number, n: number, jitter: number, seed: number): Int32Array {
+  let s = seed | 0;
+  function rng() { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 0x100000000; }
+  const pts = new Int32Array(n * GLYPH_CH);
+  for (let i = 0; i < n; i++) {
+    const theta = (i / n) * Math.PI * 2;
+    pts[i * GLYPH_CH] = Math.round(cx + r * Math.cos(theta) + (rng() - 0.5) * jitter);
+    pts[i * GLYPH_CH + 1] = Math.round(cy + r * Math.sin(theta) + (rng() - 0.5) * jitter);
+    pts[i * GLYPH_CH + 2] = 16000;
+  }
+  return pts;
+}
+
+export function glyphZigzag(n: number, amplitude: number): Int32Array {
+  const pts = new Int32Array(n * GLYPH_CH);
+  for (let i = 0; i < n; i++) {
+    pts[i * GLYPH_CH] = i * 200;
+    pts[i * GLYPH_CH + 1] = (i % 2 === 0) ? amplitude : -amplitude;
+    pts[i * GLYPH_CH + 2] = 16000;
+  }
+  return pts;
+}
+
 /** Edge-case filenames for testing. */
 export const TEST_FILENAMES = [
   "normal.txt",

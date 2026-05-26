@@ -94,7 +94,7 @@ export type Project = {
   year: string;
   url: string;
   github?: string;
-  status?: "private-beta" | "concept";
+  status?: "private-beta" | "concept" | "closed-dev-alpha";
 };
 
 export type ProjectPageContent = {

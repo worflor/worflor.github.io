@@ -4,9 +4,8 @@ import { parseMarkdown } from "../utils/helpers";
 
 type Props = Project;
 
-const { title, description, url } = Astro.props;
-const firstChunk = description.split("<br>")[0];
-const htmlDescription = parseMarkdown(firstChunk);
+const { title, description, url, status } = Astro.props;
+const htmlDescription = parseMarkdown(description);
 const isExternal = /^https?:\/\//.test(url);
 ---
 
@@ -19,7 +18,9 @@ const isExternal = /^https?:\/\//.test(url);
 >
   <div class="concept-card-header">
     <p class="concept-card-title">{title}</p>
-    <span class="project-status">concept</span>
+    <span class="project-status">
+      {status === "closed-dev-alpha" ? "closed dev alpha" : "concept"}
+    </span>
   </div>
   <div class="concept-card-body">
     <Fragment set:html={htmlDescription} />

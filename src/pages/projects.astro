@@ -6,8 +6,8 @@ import ConceptCard from "../components/ConceptCard.astro";
 import { getLoadingPriority } from "../utils/helpers";
 
 const allProjects = projectsPageContent.projects;
-const mainProjects = allProjects.filter((p) => p.status !== "concept");
-const conceptProjects = allProjects.filter((p) => p.status === "concept");
+const mainProjects = allProjects.filter((p) => !p.status || p.status === "private-beta");
+const conceptProjects = allProjects.filter((p) => p.status === "concept" || p.status === "closed-dev-alpha");
 ---
 
 <Layout seo={projectsPageContent.seo}>

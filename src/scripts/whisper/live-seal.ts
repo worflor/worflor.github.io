@@ -78,7 +78,7 @@ function quantizeIndex(value: number, binWidth: number): number {
   return Math.round(value / binWidth);
 }
 
-function encodeAllBlocks(strokes: SignatureStroke[]): GlyphBlock[] {
+export function encodeAllBlocks(strokes: SignatureStroke[]): GlyphBlock[] {
   const blocks: GlyphBlock[] = [];
   for (const stroke of strokes) {
     if (stroke.points.length < 4 * GLYPH_CHANNELS) continue;
@@ -124,32 +124,73 @@ function unpackAttentionContinuous(bytes: Uint8Array, count: number): Float32Arr
 
 // ── digest ─────────────────────────────────────────────────────────────────────
 
+const DIGEST_LAYOUT = [
+  { key: "kR",    axis: "shape"    },
+  { key: "kI",    axis: "shape"    },
+  { key: "gR",    axis: "speed"    },
+  { key: "gI",    axis: "speed"    },
+  { key: "scK",   axis: "pressure" },
+  { key: "scG",   axis: "pressure" },
+  { key: "cplW",  axis: "pressure" },
+  { key: "mkR",   axis: "shape"    },
+  { key: "mkI",   axis: "shape"    },
+  { key: "mgR",   axis: "speed"    },
+  { key: "mgI",   axis: "speed"    },
+  { key: "tiltK", axis: "shape"    },
+  { key: "tiltG", axis: "shape"    },
+  { key: "azimK", axis: "shape"    },
+  { key: "azimG", axis: "shape"    },
+] as const;
+
+type DigestKey = typeof DIGEST_LAYOUT[number]["key"];
+type DigestAxis = typeof DIGEST_LAYOUT[number]["axis"];
+
+const DIGEST_OFFSET = Object.fromEntries(
+  DIGEST_LAYOUT.map((e, i) => [e.key, i * 2])
+) as Record<DigestKey, number>;
+
+const DIGEST_AXIS_OFFSETS: Record<DigestAxis, number[]> = { shape: [], speed: [], pressure: [] };
+for (const e of DIGEST_LAYOUT) DIGEST_AXIS_OFFSETS[e.axis].push(DIGEST_OFFSET[e.key]);
+
+export const DIGEST_AXIS_COUNTS = {
+  shape: DIGEST_AXIS_OFFSETS.shape.length,
+  speed: DIGEST_AXIS_OFFSETS.speed.length,
+  pressure: DIGEST_AXIS_OFFSETS.pressure.length,
+} as const;
+
+const DIGEST_COEFS = DIGEST_LAYOUT.length;
+const DIGEST_BYTES_PER_BLOCK = DIGEST_COEFS * 2;
+
+/**
+ * quantize an eigenmotion into a commitment digest. the attention array can be
+ * overridden for unseal (where stored attention from seal-time is used instead
+ * of the current hand's attention).
+ */
 function buildDigest(
-  blocks: GlyphBlock[],
+  em: EigenMotion,
   base: SealStrictness,
-  attention: Float32Array,
+  attentionOverride?: Float32Array,
 ): Uint8Array {
-  if (blocks.length === 0) {
+  if (em.n === 0) {
     throw new Error("signature too short to fit any glyph block");
   }
-  const buf = new Uint8Array(blocks.length * 12);
+  const att = attentionOverride ?? em.attention;
+  const buf = new Uint8Array(em.n * DIGEST_BYTES_PER_BLOCK);
   const view = new DataView(buf.buffer);
   let off = 0;
   const baseShapeBw = binWidthFromSlider(base.shape);
   const baseSpeedBw = binWidthFromSlider(base.speed);
   const basePressureBw = binWidthFromSlider(base.pressure);
-  for (let i = 0; i < blocks.length; i++) {
-    const b = blocks[i];
-    const a = attention[i] ?? 0.5;
-    const shapeBw = effectiveBinWidth(baseShapeBw, a);
-    const speedBw = effectiveBinWidth(baseSpeedBw, a);
-    const pressureBw = effectiveBinWidth(basePressureBw, a);
-    view.setInt16(off, quantizeIndex(b.kR, shapeBw), true); off += 2;
-    view.setInt16(off, quantizeIndex(b.kI, shapeBw), true); off += 2;
-    view.setInt16(off, quantizeIndex(b.gR, speedBw), true); off += 2;
-    view.setInt16(off, quantizeIndex(b.gI, speedBw), true); off += 2;
-    view.setInt16(off, quantizeIndex(b.scK, pressureBw), true); off += 2;
-    view.setInt16(off, quantizeIndex(b.scG, pressureBw), true); off += 2;
+  const bwByAxis = { shape: 0, speed: 0, pressure: 0 };
+  for (let i = 0; i < em.n; i++) {
+    const a = att[i] ?? 0.5;
+    bwByAxis.shape = effectiveBinWidth(baseShapeBw, a);
+    bwByAxis.speed = effectiveBinWidth(baseSpeedBw, a);
+    bwByAxis.pressure = effectiveBinWidth(basePressureBw, a);
+    for (let j = 0; j < DIGEST_COEFS; j++) {
+      view.setInt16(off, quantizeIndex(eigenCoef(em, i, j), bwByAxis[DIGEST_LAYOUT[j].axis]), true);
+      off += 2;
+    }
   }
   return buf;
 }
@@ -306,14 +347,15 @@ export async function sealFile(
 ): Promise<Uint8Array> {
   const blocks = encodeAllBlocks(strokes);
   if (blocks.length === 0) throw new Error("signature too short to fit any glyph block");
-  const attention = computeAttention(blocks);
-  const digest = buildDigest(blocks, strictness, attention);
+  const em = extractEigenMotion(blocks);
+  const attBytes = packAttentionContinuous(em.attention);
+  const quantizedAtt = unpackAttentionContinuous(attBytes, em.n);
+  const digest = buildDigest(em, strictness, quantizedAtt);
   const salt = randomBytes(SALT_LENGTH);
   const nonce = randomBytes(NONCE_LENGTH);
   const trimmed = phrase?.trim() || undefined;
   const key = await deriveKey(digest, salt, trimmed);
-  const attBytes = packAttentionContinuous(attention);
-  const header = buildV3Header(strictness, filename, blocks.length, salt, nonce, attBytes);
+  const header = buildV3Header(strictness, filename, em.n, salt, nonce, attBytes);
   const ciphertext = await aesGcmEncrypt(key, plaintext, nonce, header);
   const out = new Uint8Array(header.length + ciphertext.length);
   out.set(header, 0);
@@ -328,7 +370,8 @@ export async function unsealFile(
 ): Promise<{ filename: string; plaintext: Uint8Array }> {
   const parsed = parseHeader(blob);
   const blocks = encodeAllBlocks(strokes);
-  const digest = buildDigest(blocks, parsed.strictness, parsed.attention);
+  const em = extractEigenMotion(blocks);
+  const digest = buildDigest(em, parsed.strictness, parsed.attention);
   const trimmed = phrase?.trim() || undefined;
   const key = await deriveKey(digest, parsed.salt, trimmed);
   const ciphertext = blob.subarray(parsed.ciphertextOffset);
@@ -344,6 +387,341 @@ export function isSealBlob(bytes: Uint8Array): boolean {
 
 export function readSealStrictness(blob: Uint8Array): SealStrictness {
   return parseHeader(blob).strictness;
+}
+
+// ── eigenmotion vector ────────────────────────────────────────────────────────
+
+/**
+ * raw coefficient vector for a block sequence. this is the canonical representation
+ * of a signature's eigenmotion — both the seal (quantized projection) and the
+ * likeness engine (continuous distance) read from this same structure.
+ */
+export interface EigenMotion {
+  n: number;
+  vectors: Float32Array; // n × DIGEST_COEFS, row-major
+  attention: Float32Array; // n values in [0,1]
+}
+
+export function extractEigenMotion(blocks: GlyphBlock[]): EigenMotion {
+  const n = blocks.length;
+  const vectors = new Float32Array(n * DIGEST_COEFS);
+  for (let i = 0; i < n; i++) {
+    const b = blocks[i];
+    const off = i * DIGEST_COEFS;
+    for (let j = 0; j < DIGEST_COEFS; j++) {
+      vectors[off + j] = b[DIGEST_LAYOUT[j].key];
+    }
+  }
+  return { n, vectors, attention: computeAttention(blocks) };
+}
+
+function eigenCoef(em: EigenMotion, block: number, coef: number): number {
+  return em.vectors[block * DIGEST_COEFS + coef];
+}
+
+// ── signal-level likeness (DTW on the actual kinetic trajectory) ──────────────
+
+export interface Trajectory {
+  n: number;       // sample count
+  x: Float32Array; // normalized position x [0,1]
+  y: Float32Array; // normalized position y [0,1]
+  p: Float32Array; // pressure [0,1]
+}
+
+export interface LikenessResult {
+  samplesA: number;
+  samplesB: number;
+  compared: number;
+  shape: number;
+  speed: number;
+  pressure: number;
+  overall: number;
+  perStep: Array<{ shape: number; speed: number; pressure: number }>;
+}
+
+// downsample a trajectory to at most maxN points via linear interpolation.
+// keeps the signal shape faithful while bounding DTW cost to O(maxN^2).
+function downsample(t: Trajectory, maxN: number): Trajectory {
+  if (t.n <= maxN) return t;
+  const x = new Float32Array(maxN);
+  const y = new Float32Array(maxN);
+  const p = new Float32Array(maxN);
+  for (let i = 0; i < maxN; i++) {
+    const frac = i / (maxN - 1) * (t.n - 1);
+    const lo = Math.floor(frac);
+    const hi = Math.min(lo + 1, t.n - 1);
+    const a = frac - lo;
+    x[i] = t.x[lo] * (1 - a) + t.x[hi] * a;
+    y[i] = t.y[lo] * (1 - a) + t.y[hi] * a;
+    p[i] = t.p[lo] * (1 - a) + t.p[hi] * a;
+  }
+  return { n: maxN, x, y, p };
+}
+
+// normalize position: translate centroid to (0.5, 0.5), scale so max
+// extent fits [0,1]. makes comparison translation/scale invariant.
+function normalizePosition(t: Trajectory): Trajectory {
+  let cx = 0, cy = 0;
+  for (let i = 0; i < t.n; i++) { cx += t.x[i]; cy += t.y[i]; }
+  cx /= t.n; cy /= t.n;
+
+  let maxExt = 0;
+  for (let i = 0; i < t.n; i++) {
+    maxExt = Math.max(maxExt, Math.abs(t.x[i] - cx), Math.abs(t.y[i] - cy));
+  }
+  const scale = maxExt > 1e-6 ? 0.5 / maxExt : 1;
+
+  const x = new Float32Array(t.n);
+  const y = new Float32Array(t.n);
+  for (let i = 0; i < t.n; i++) {
+    x[i] = (t.x[i] - cx) * scale + 0.5;
+    y[i] = (t.y[i] - cy) * scale + 0.5;
+  }
+  return { n: t.n, x, y, p: t.p };
+}
+
+// extract trajectory from blocks via zero-seed reconstruction. the resulting
+// curve differs from the original (zero seeds ≠ original seeds), but is
+// deterministic and consistent for comparison between two block sets.
+export function trajectoryFromBlocks(blocks: GlyphBlock[]): Trajectory {
+  if (blocks.length === 0) return { n: 0, x: new Float32Array(0), y: new Float32Array(0), p: new Float32Array(0) };
+  const zeroSeed = [0, 0, 0, 0, 0];
+  const raw = GlyphCodec.decode(blocks, zeroSeed, zeroSeed);
+  const total = raw.length / GLYPH_CHANNELS;
+  // skip first 2 samples (seeds) to avoid transient
+  const start = 2;
+  const n = total - start;
+  if (n <= 0) return { n: 0, x: new Float32Array(0), y: new Float32Array(0), p: new Float32Array(0) };
+  const x = new Float32Array(n);
+  const y = new Float32Array(n);
+  const p = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const off = (start + i) * GLYPH_CHANNELS;
+    x[i] = raw[off] / 32767;
+    y[i] = raw[off + 1] / 32767;
+    p[i] = Math.max(0, raw[off + 2] / 32767);
+  }
+  return { n, x, y, p };
+}
+
+export function likeness(a: Trajectory, b: Trajectory): LikenessResult {
+  if (a.n < 2 || b.n < 2) {
+    return {
+      samplesA: a.n, samplesB: b.n, compared: 0,
+      shape: 0, speed: 0, pressure: 0, overall: 0, perStep: [],
+    };
+  }
+
+  // normalize position for translation/scale invariance
+  const na = normalizePosition(a);
+  const nb = normalizePosition(b);
+
+  // downsample to cap DTW at O(128^2)
+  const sa = downsample(na, 128);
+  const sb = downsample(nb, 128);
+  const nA = sa.n, nB = sb.n;
+
+  // precompute velocity (finite differences on normalized position)
+  const vxA = new Float32Array(nA), vyA = new Float32Array(nA);
+  const vxB = new Float32Array(nB), vyB = new Float32Array(nB);
+  for (let i = 1; i < nA; i++) { vxA[i] = sa.x[i] - sa.x[i - 1]; vyA[i] = sa.y[i] - sa.y[i - 1]; }
+  for (let i = 1; i < nB; i++) { vxB[i] = sb.x[i] - sb.x[i - 1]; vyB[i] = sb.y[i] - sb.y[i - 1]; }
+
+  // per-sample distance decomposed into shape, speed, pressure
+  function sampleDist(i: number, j: number): [number, number, number] {
+    const dx = sa.x[i] - sb.x[j], dy = sa.y[i] - sb.y[j];
+    const shapeDist = Math.sqrt(dx * dx + dy * dy);
+
+    const dvx = vxA[i] - vxB[j], dvy = vyA[i] - vyB[j];
+    const speedDist = Math.sqrt(dvx * dvx + dvy * dvy);
+
+    const pressDist = Math.abs(sa.p[i] - sb.p[j]);
+    return [shapeDist, speedDist, pressDist];
+  }
+
+  // DTW cumulative cost matrix
+  const dtw = new Float64Array(nA * nB);
+  for (let i = 0; i < nA; i++) {
+    for (let j = 0; j < nB; j++) {
+      const [sd, spd, pd] = sampleDist(i, j);
+      const cost = sd + spd + pd;
+      let prev: number;
+      if (i === 0 && j === 0) prev = 0;
+      else if (i === 0) prev = dtw[j - 1];
+      else if (j === 0) prev = dtw[i * nB];
+      else prev = Math.min(dtw[(i - 1) * nB + j], dtw[i * nB + j - 1], dtw[(i - 1) * nB + j - 1]);
+      dtw[i * nB + j] = cost + prev;
+    }
+  }
+
+  // backtrace
+  const path: [number, number][] = [];
+  let ci = nA - 1, cj = nB - 1;
+  path.push([ci, cj]);
+  while (ci > 0 || cj > 0) {
+    if (ci === 0) { cj--; }
+    else if (cj === 0) { ci--; }
+    else {
+      const d = dtw[(ci - 1) * nB + cj - 1];
+      const l = dtw[ci * nB + cj - 1];
+      const u = dtw[(ci - 1) * nB + cj];
+      if (d <= l && d <= u) { ci--; cj--; }
+      else if (l <= u) { cj--; }
+      else { ci--; }
+    }
+    path.push([ci, cj]);
+  }
+  path.reverse();
+
+  // convert distances to likeness [0,1] along the warping path.
+  // gaussian kernel: likeness = exp(-dist^2 / (2 * sigma^2))
+  // shape sigma 0.15: 50% at ~17.6% normalized position error
+  // speed sigma 0.10: 50% at ~11.8% velocity error (meaningful threshold)
+  // pressure sigma 0.20: 50% at ~23.5% pressure error
+  const SHAPE_SIGMA = 0.15;
+  const SPEED_SIGMA = 0.10;
+  const PRESS_SIGMA = 0.2;
+  function gauss(dist: number, sigma: number): number {
+    return Math.exp(-(dist * dist) / (2 * sigma * sigma));
+  }
+
+  const perStep: LikenessResult["perStep"] = [];
+  let shapeSum = 0, speedSum = 0, pressureSum = 0;
+
+  for (const [ai, bj] of path) {
+    const [sd, spd, pd] = sampleDist(ai, bj);
+    const s = gauss(sd, SHAPE_SIGMA);
+    const sp = gauss(spd, SPEED_SIGMA);
+    const p = gauss(pd, PRESS_SIGMA);
+    perStep.push({ shape: s, speed: sp, pressure: p });
+    shapeSum += s; speedSum += sp; pressureSum += p;
+  }
+
+  const pLen = path.length;
+  const shape = shapeSum / pLen;
+  const speed = speedSum / pLen;
+  const pressure = pressureSum / pLen;
+  // shape-biased: for signature comparison, spatial fidelity dominates
+  const overall = 0.5 * shape + 0.25 * speed + 0.25 * pressure;
+
+  return {
+    samplesA: a.n, samplesB: b.n, compared: pLen,
+    shape, speed, pressure, overall,
+    perStep,
+  };
+}
+
+// ── fingerprint (block-count invariant summary) ───────────────────────────────
+
+/**
+ * fixed-size eigenmotion fingerprint: mean and variance of each coefficient
+ * across all blocks. comparable without alignment, invariant to signature length.
+ * two signatures from the same hand produce similar fingerprints regardless of
+ * how many blocks each contains or where the block boundaries fell.
+ */
+export interface EigenFingerprint {
+  mean: Float32Array;     // DIGEST_COEFS values
+  variance: Float32Array; // DIGEST_COEFS values
+  omega: number;          // dominant angular frequency (from mean |kI|)
+  damping: number;        // mean damping ratio (from mean |gR|/|gI| magnitude)
+}
+
+export function fingerprint(em: EigenMotion): EigenFingerprint {
+  const mean = new Float32Array(DIGEST_COEFS);
+  const variance = new Float32Array(DIGEST_COEFS);
+  if (em.n === 0) return { mean, variance, omega: 0, damping: 0 };
+
+  for (let j = 0; j < DIGEST_COEFS; j++) {
+    let sum = 0;
+    for (let i = 0; i < em.n; i++) sum += eigenCoef(em, i, j);
+    mean[j] = sum / em.n;
+  }
+  for (let j = 0; j < DIGEST_COEFS; j++) {
+    let sumSq = 0;
+    for (let i = 0; i < em.n; i++) {
+      const d = eigenCoef(em, i, j) - mean[j];
+      sumSq += d * d;
+    }
+    variance[j] = sumSq / em.n;
+  }
+
+  const kIIndex = DIGEST_LAYOUT.findIndex(e => e.key === "kI");
+  const gRIndex = DIGEST_LAYOUT.findIndex(e => e.key === "gR");
+  const gIIndex = DIGEST_LAYOUT.findIndex(e => e.key === "gI");
+  const omega = Math.abs(mean[kIIndex]) / 16384 * Math.PI;
+  const dampMag = Math.sqrt(mean[gRIndex] ** 2 + mean[gIIndex] ** 2) / 16384;
+  return { mean, variance, omega, damping: Math.min(1, dampMag) };
+}
+
+/**
+ * likeness between two fingerprints. fast O(DIGEST_COEFS) comparison that
+ * doesn't require block alignment. useful for "is this the same hand" checks
+ * before committing to full block-level comparison. variance-weighted: only
+ * coefficients with actual spread in either signature contribute.
+ */
+export function fingerprintLikeness(a: EigenFingerprint, b: EigenFingerprint): number {
+  let dist = 0, weight = 0;
+  for (let j = 0; j < DIGEST_COEFS; j++) {
+    const pooledStd = Math.sqrt((a.variance[j] + b.variance[j]) / 2);
+    if (pooledStd < 1) continue;
+    dist += Math.min(1, Math.abs(a.mean[j] - b.mean[j]) / (pooledStd * 3));
+    weight++;
+  }
+  return weight > 0 ? 1 - dist / weight : 0;
+}
+
+// ── comparison (quantized, for seal compatibility) ────────────────────────────
+
+export interface CompareResult {
+  blocksA: number;
+  blocksB: number;
+  compared: number;
+  shape: number;
+  speed: number;
+  pressure: number;
+  overall: number;
+  perBlock: Array<{ shape: boolean; speed: boolean; pressure: boolean }>;
+}
+
+export function compareBlocks(
+  a: EigenMotion,
+  b: EigenMotion,
+  strictness: SealStrictness,
+): CompareResult {
+  const n = Math.min(a.n, b.n);
+  if (n === 0) {
+    return {
+      blocksA: a.n, blocksB: b.n, compared: 0,
+      shape: 0, speed: 0, pressure: 0, overall: 0, perBlock: [],
+    };
+  }
+
+  const digestA = buildDigest(a, strictness);
+  const digestB = buildDigest(b, strictness);
+  const viewA = new DataView(digestA.buffer);
+  const viewB = new DataView(digestB.buffer);
+
+  const perBlock: CompareResult["perBlock"] = [];
+  let shapeHits = 0, speedHits = 0, pressureHits = 0;
+
+  for (let i = 0; i < n; i++) {
+    const off = i * DIGEST_BYTES_PER_BLOCK;
+    const eq = (o: number) => viewA.getInt16(off + o, true) === viewB.getInt16(off + o, true);
+    const shape = DIGEST_AXIS_OFFSETS.shape.every(eq);
+    const speed = DIGEST_AXIS_OFFSETS.speed.every(eq);
+    const pressure = DIGEST_AXIS_OFFSETS.pressure.every(eq);
+    if (shape) shapeHits++;
+    if (speed) speedHits++;
+    if (pressure) pressureHits++;
+    perBlock.push({ shape, speed, pressure });
+  }
+
+  return {
+    blocksA: a.n, blocksB: b.n, compared: n,
+    shape: shapeHits / n, speed: speedHits / n, pressure: pressureHits / n,
+    overall: (shapeHits + speedHits + pressureHits) / (n * 3),
+    perBlock,
+  };
 }
 
 /** human-readable label for a continuous slider value (0-100). */

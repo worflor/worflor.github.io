@@ -87,6 +87,7 @@
  *   [scK,scG]   zigzag varint deltas from baseline (if FEAT_SIDECAR)
  *   [cplW]      zigzag varint (if FEAT_COUPLING)
  *   [mkR..mgI]  zigzag varint (if FEAT_MICRO)
+ *   [tiltK,tiltG,azimK,azimG] zigzag varint (if chMask=0b00, full stylus)
  *
  * data region (all blocks, channel-major):
  *   for each block: [ch0_pt0..ch0_ptN, ch1_pt0..ch1_ptN, ...]
@@ -177,6 +178,10 @@ export interface GlyphBlock {
     mgR: number;
     mgI: number;
     microResiduals: Int32Array | null;
+    tiltK: number;
+    tiltG: number;
+    azimK: number;
+    azimG: number;
 }
 
 export type GlyphSeed = number[];
@@ -254,6 +259,14 @@ function w(): GlyphWasm {
 
 function gval(g: WebAssembly.Global): number { return (g as any).value as number; }
 function sval(g: WebAssembly.Global, v: number): void { (g as any).value = v; }
+
+// capture sidecar K/G atomically after a fitSidecar call.
+// fitSidecar writes to shared globals m.scK/m.scG which get overwritten
+// on the next call, so this helper makes the read-after-write explicit.
+function captureSidecar(m: any, start: number, len: number, chOff: number): [number, number] {
+    m.fitSidecar(start, len, chOff);
+    return [gval(m.scK), gval(m.scG)];
+}
 
 // ── codec ─────────────────────────────────────────────────────────────────────
 
@@ -492,6 +505,10 @@ export class GlyphCodec {
             mgR: 0,
             mgI: 0,
             microResiduals: null,
+            tiltK: 0,
+            tiltG: 0,
+            azimK: 0,
+            azimG: 0,
         };
     }
 
@@ -553,6 +570,12 @@ export class GlyphCodec {
             cost += vszCost(zzEnc(block.mkI));
             cost += vszCost(zzEnc(block.mgR));
             cost += vszCost(zzEnc(block.mgI));
+        }
+        if (chMask === 0b00) {
+            cost += vszCost(zzEnc(block.tiltK));
+            cost += vszCost(zzEnc(block.tiltG));
+            cost += vszCost(zzEnc(block.azimK));
+            cost += vszCost(zzEnc(block.azimG));
         }
 
         if ((block.features & FEAT_MICRO) && block.microResiduals) {
@@ -759,8 +782,7 @@ export class GlyphCodec {
                 }
 
                 // candidate 2: independent fit
-                m.fitSidecar(i - 2, len + 2, 8);
-                const indepK = gval(m.scK), indepG = gval(m.scG);
+                const [indepK, indepG] = captureSidecar(m, i - 2, len + 2, 8);
                 sval(m.kR, useKR); sval(m.kI, useKI);
                 sval(m.gR, useGR); sval(m.gI, useGI);
                 const indepCost = m.encodeBlockSc(i, len, bestMode, indepK, indepG);
@@ -903,6 +925,12 @@ export class GlyphCodec {
 
             } // end if (baseCost > 4) feature trial gate
 
+            let tiltK = 0, tiltG = 0, azimK = 0, azimG = 0;
+            if (len >= 4) {
+                [tiltK, tiltG] = captureSidecar(m, i - 2, len + 2, 12);
+                [azimK, azimG] = captureSidecar(m, i - 2, len + 2, 16);
+            }
+
             // ── build block ──
 
             let block: GlyphBlock = {
@@ -915,6 +943,7 @@ export class GlyphCodec {
                 cplW,
                 mkR, mkI, mgR, mgI,
                 microResiduals,
+                tiltK, tiltG, azimK, azimG,
             };
 
             const defaultRawCost = this.estimateRawBlockCost(block, hasPrev, prevKR, prevKI, prevGR, prevGI);
@@ -929,6 +958,10 @@ export class GlyphCodec {
                     LIN_GI
                 );
                 if (ballisticRawCost <= defaultRawCost) {
+                    ballisticBlock.tiltK = tiltK;
+                    ballisticBlock.tiltG = tiltG;
+                    ballisticBlock.azimK = azimK;
+                    ballisticBlock.azimG = azimG;
                     block = ballisticBlock;
                 }
             }
@@ -1128,6 +1161,12 @@ export class GlyphCodec {
                 this.pushSigned(meta, b.mgR);
                 this.pushSigned(meta, b.mgI);
             }
+            if (chMask === 0b00) {
+                this.pushSigned(meta, b.tiltK);
+                this.pushSigned(meta, b.tiltG);
+                this.pushSigned(meta, b.azimK);
+                this.pushSigned(meta, b.azimG);
+            }
 
             // ── data (residuals, channel-major) ──
             // track varint byte count per channel for stride calculation
@@ -1303,6 +1342,14 @@ export class GlyphCodec {
                     mgI = this.readSigned(raw, mOff);
                 }
 
+                let tiltK = 0, tiltG = 0, azimK = 0, azimG = 0;
+                if (chMask === 0b00) {
+                    tiltK = this.readSigned(raw, mOff);
+                    tiltG = this.readSigned(raw, mOff);
+                    azimK = this.readSigned(raw, mOff);
+                    azimG = this.readSigned(raw, mOff);
+                }
+
                 const residuals = new Int32Array(count * CH);
                 let microResiduals: Int32Array | null = null;
 
@@ -1324,6 +1371,7 @@ export class GlyphCodec {
                     mode, kR, kI, gR, gI, residuals,
                     features, scK, scG, cplW,
                     mkR, mkI, mgR, mgI, microResiduals,
+                    tiltK, tiltG, azimK, azimG,
                 });
 
                 if (lane !== GlyphLane.DEFAULT) {
