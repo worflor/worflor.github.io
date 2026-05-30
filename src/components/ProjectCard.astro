@@ -116,7 +116,8 @@ const htmlDescription = parseMarkdown(description);
     var countEl = el.querySelector('.star-count');
     if (countEl) {
       countEl.textContent = String(stars);
-      el.style.display = 'flex';
+      el.classList.remove('hidden');
+      el.classList.add('flex');
     }
   }
 
