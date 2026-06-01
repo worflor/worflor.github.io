@@ -4,10 +4,28 @@ import { projectsPageContent } from "../config";
 import ProjectCard from "../components/ProjectCard.astro";
 import ConceptCard from "../components/ConceptCard.astro";
 import { getLoadingPriority } from "../utils/helpers";
+import type { Project } from "../types/config";
 
 const allProjects = projectsPageContent.projects;
-const mainProjects = allProjects.filter((p) => !p.status || p.status === "private-beta");
-const conceptProjects = allProjects.filter((p) => p.status === "concept" || p.status === "closed-dev-alpha");
+
+// three tiers, ordered most-real to most-speculative so the page reads top-down
+// on mobile and keeps the sticky concepts sidebar on desktop. the section is its
+// own axis: status drives the badge, group decides placement. the default derives
+// from status, so only the intentional exceptions (hindsight) set group by hand.
+const groupOf = (p: Project): "shipped" | "private" | "concept" =>
+  p.group ?? (p.status === "concept" ? "concept" : p.status ? "private" : "shipped");
+
+const shippedProjects = allProjects.filter((p) => groupOf(p) === "shipped");
+const privateProjects = allProjects.filter((p) => groupOf(p) === "private");
+const conceptProjects = allProjects.filter((p) => groupOf(p) === "concept");
+
+// the private tier reads as two unlabelled spatial clusters: the closed dev
+// instruments, then beta-stage products. split on status, the real line between
+// them, and let whitespace carry the distinction.
+const privateClusters = [
+  privateProjects.filter((p) => p.status === "closed-dev-alpha"),
+  privateProjects.filter((p) => p.status === "private-beta"),
+].filter((cluster) => cluster.length > 0);
 ---
 
 <Layout seo={projectsPageContent.seo}>
@@ -16,21 +34,47 @@ const conceptProjects = allProjects.filter((p) => p.status === "concept" || p.st
     <p class="opacity-60 mb-10">{projectsPageContent.subtitle}</p>
 
     <div class:list={["projects-layout", { "projects-layout--has-concepts": conceptProjects.length > 0 }]}>
-      <div class="projects-main grid grid-cols-1 group">
-        {
-          mainProjects.map((project, index) => (
-            <ProjectCard {...project} loading={getLoadingPriority(index)} />
-          ))
-        }
+      <div class="projects-main">
+        <section class="projects-shipped-section" aria-labelledby="shipped-heading">
+          <div class="section-header">
+            <h2 id="shipped-heading" class="section-title">Shipped</h2>
+            <p class="section-subtitle">out in the open.</p>
+          </div>
+          <div class="projects-shipped grid grid-cols-1 group">
+            {
+              shippedProjects.map((project, index) => (
+                <ProjectCard {...project} loading={getLoadingPriority(index)} />
+              ))
+            }
+          </div>
+        </section>
+
+        {privateProjects.length > 0 && (
+          <section class="projects-private" aria-labelledby="private-heading">
+            <div class="section-header">
+              <h2 id="private-heading" class="section-title">Behind the scenes</h2>
+              <p class="section-subtitle">working tools, not yet released.</p>
+            </div>
+            <div class="private-tier">
+              {privateClusters.map((cluster) => (
+                <div class="private-cluster group">
+                  {cluster.map((project) => (
+                    <ProjectCard {...project} variant="compact" />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
 
       {conceptProjects.length > 0 && (
         <aside class="projects-concepts" aria-labelledby="concepts-heading">
-          <div class="concepts-header">
-            <h2 id="concepts-heading" class="concepts-title">Concepts</h2>
-            <p class="concepts-subtitle">research stage. design first, code later.</p>
+          <div class="section-header">
+            <h2 id="concepts-heading" class="section-title">Concepts</h2>
+            <p class="section-subtitle">research stage. design first, code later.</p>
           </div>
-          <div class="grid grid-cols-1 gap-[var(--space-sm)] group">
+          <div class="concepts-track group">
             {conceptProjects.map((project) => (
               <ConceptCard {...project} />
             ))}
@@ -56,6 +100,14 @@ const conceptProjects = allProjects.filter((p) => p.status === "concept" || p.st
     gap: var(--space-xl);
   }
 
+  /* shipped cards then the behind-the-scenes tier, stacked with breathing room */
+  .projects-main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xl);
+    min-width: 0;
+  }
+
   @container (min-width: 52rem) {
     .projects-layout--has-concepts {
       grid-template-columns: minmax(0, 1fr) 16rem;
@@ -69,13 +121,14 @@ const conceptProjects = allProjects.filter((p) => p.status === "concept" || p.st
     }
   }
 
-  .concepts-header {
+  /* quiet field-label header, shared by the behind-the-scenes and concepts tiers */
+  .section-header {
     margin-bottom: var(--space-md);
     padding-bottom: var(--space-sm);
     border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.08);
   }
 
-  .concepts-title {
+  .section-title {
     font-size: calc(var(--text-sm) * 0.85);
     font-weight: 600;
     letter-spacing: 0.12em;
@@ -84,11 +137,64 @@ const conceptProjects = allProjects.filter((p) => p.status === "concept" || p.st
     margin: 0;
   }
 
-  .concepts-subtitle {
+  .section-subtitle {
     margin-top: 0.4rem;
     font-size: var(--text-sm);
     opacity: 0.4;
     line-height: 1.45;
+  }
+
+  /* behind-the-scenes: two clusters split only by whitespace. the larger gap sits
+     between sm (within a cluster) and xl (between tiers), so it reads as a subgroup,
+     not a new section. */
+  .private-tier {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+  }
+
+  /* auto-fit so a lone card (alpha-math) spans full width while a pair sits 2-up,
+     and the layout still adapts if either cluster grows */
+  .private-cluster {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+    gap: var(--space-sm);
+  }
+
+  /* concepts: a horizontal swipe rail on mobile (cards peek to invite the swipe),
+     a vertical sticky sidebar on desktop. matches the action-bar scroll pattern. */
+  .concepts-track {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    overflow-x: auto;
+    /* proximity, not mandatory: a card growing on expand won't yank the scroll */
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: var(--space-xs);
+  }
+
+  .concepts-track::-webkit-scrollbar {
+    display: none;
+  }
+
+  .concepts-track > :global(*) {
+    flex: 0 0 min(78%, 15rem);
+    scroll-snap-align: start;
+  }
+
+  @container (min-width: 52rem) {
+    .concepts-track {
+      display: grid;
+      grid-template-columns: 1fr;
+      overflow: visible;
+      padding-bottom: 0;
+    }
+
+    .concepts-track > :global(*) {
+      flex: initial;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

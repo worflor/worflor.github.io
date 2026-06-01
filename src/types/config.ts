@@ -91,10 +91,17 @@ export type Project = {
   title: string;
   description: string;
   image?: string;
+  // optional month label shown before the year, e.g. "May" -> "May 2026"
+  month?: string;
   year: string;
   url: string;
   github?: string;
+  // the dev-status badge shown on the card
   status?: "private-beta" | "concept" | "closed-dev-alpha";
+  // which section the card lives in. its own axis: a closed-dev-alpha can be a
+  // finished private tool ("private") or exploratory r&d ("concept"). defaults
+  // are derived from status in projects.astro; set this only to override.
+  group?: "private" | "concept";
 };
 
 export type ProjectPageContent = {

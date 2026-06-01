@@ -5,27 +5,66 @@ import { parseMarkdown } from "../utils/helpers";
 type Props = Project;
 
 const { title, description, url, status } = Astro.props;
-const htmlDescription = parseMarkdown(description);
 const isExternal = /^https?:\/\//.test(url);
+const statusLabel = status === "closed-dev-alpha" ? "closed dev alpha" : "concept";
+
+// split the opener (first beat, before the first <br>) from the rest, so the card
+// shows a one-line teaser collapsed and only reveals the full pitch once opened.
+const [openerRaw, ...restRaw] = description.split(/<br\s*\/?>/i);
+const openerHtml = parseMarkdown(openerRaw.trim());
+const restHtml = restRaw.length ? parseMarkdown(restRaw.join("<br>").trim()) : "";
+const restId = `concept-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
 ---
 
-<a
-  href={url}
-  target={isExternal ? "_blank" : "_self"}
-  rel={isExternal ? "noopener noreferrer" : undefined}
-  aria-label={`View concept: ${title}`}
-  class="concept-card interactive block stagger-in"
->
-  <div class="concept-card-header">
-    <p class="concept-card-title">{title}</p>
-    <span class="project-status">
-      {status === "closed-dev-alpha" ? "closed dev alpha" : "concept"}
-    </span>
-  </div>
-  <div class="concept-card-body">
-    <Fragment set:html={htmlDescription} />
-  </div>
-</a>
+<div class:list={["concept-card interactive stagger-in", { "is-expandable": restHtml }]}>
+  {restHtml ? (
+    <>
+      <button
+        type="button"
+        class="concept-card-header concept-card-toggle"
+        aria-expanded="false"
+        aria-controls={restId}
+      >
+        <span class="concept-card-title">{title}</span>
+        <span class="project-status">{statusLabel}</span>
+        <span class="concept-card-chevron" aria-hidden="true"></span>
+      </button>
+
+      <a
+        href={url}
+        target={isExternal ? "_blank" : "_self"}
+        rel={isExternal ? "noopener noreferrer" : undefined}
+        aria-label={`View concept: ${title}`}
+        class="concept-card-link"
+      >
+        <div class="concept-card-body">
+          <Fragment set:html={openerHtml} />
+        </div>
+        <div class="concept-card-rest" id={restId}>
+          <div class="concept-card-rest-inner">
+            <Fragment set:html={restHtml} />
+          </div>
+        </div>
+      </a>
+    </>
+  ) : (
+    <a
+      href={url}
+      target={isExternal ? "_blank" : "_self"}
+      rel={isExternal ? "noopener noreferrer" : undefined}
+      aria-label={`View concept: ${title}`}
+      class="concept-card-link"
+    >
+      <div class="concept-card-header">
+        <span class="concept-card-title">{title}</span>
+        <span class="project-status">{statusLabel}</span>
+      </div>
+      <div class="concept-card-body">
+        <Fragment set:html={openerHtml} />
+      </div>
+    </a>
+  )}
+</div>
 
 <style>
   .concept-card {
@@ -43,7 +82,9 @@ const isExternal = /^https?:\/\//.test(url);
     background-color: rgb(var(--color-text-rgb) / 0.02);
   }
 
-  .concept-card:active {
+  /* press feedback only when the body link is pressed, never on the toggle, so
+     opening/closing doesn't recoil the whole card while the expand is animating */
+  .concept-card:has(.concept-card-link:active) {
     transform: scale(var(--scale-active));
     transition-duration: var(--duration-fast);
   }
@@ -56,6 +97,37 @@ const isExternal = /^https?:\/\//.test(url);
     margin-bottom: 0.4rem;
   }
 
+  /* the header doubles as the open/close control; strip native button chrome */
+  .concept-card-toggle {
+    appearance: none;
+    -webkit-appearance: none;
+    background: none;
+    border: none;
+    margin: 0 0 0.4rem;
+    padding: 0;
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    /* keep the control row on one line so the chevron never wraps to its own row */
+    flex-wrap: nowrap;
+  }
+
+  .concept-card-toggle:focus-visible {
+    outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
+    outline-offset: 3px;
+    border-radius: var(--radius-xs);
+  }
+
+  /* titles are short enough that this ellipsis is only a safety net, but it keeps
+     a long title from shoving the pill or chevron onto a second line */
+  .concept-card-toggle .concept-card-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .concept-card-title {
     font-weight: 500;
     font-size: var(--text-sm);
@@ -63,9 +135,99 @@ const isExternal = /^https?:\/\//.test(url);
     min-width: 0;
   }
 
+  /* quiet chevron that flips when the card is open */
+  .concept-card-chevron {
+    flex-shrink: 0;
+    margin-left: auto;
+    width: 0.45rem;
+    height: 0.45rem;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    opacity: 0.3;
+    transition:
+      transform var(--duration-normal) var(--ease-out),
+      opacity var(--duration-normal) var(--ease-out);
+  }
+
+  .concept-card-toggle:hover .concept-card-chevron {
+    opacity: 0.55;
+  }
+
+  .concept-card[data-open] .concept-card-chevron {
+    transform: rotate(225deg);
+    opacity: 0.55;
+  }
+
+  /* the body is the link to the project; quiet lift on hover so it reads as one */
+  .concept-card-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+
   .concept-card-body {
     font-size: var(--text-sm);
     opacity: 0.55;
     line-height: 1.55;
+    transition: opacity var(--duration-normal) var(--ease-out);
+  }
+
+  .concept-card-link:hover .concept-card-body {
+    opacity: 0.78;
+  }
+
+  /* the rest collapses to nothing by default and animates open via grid rows */
+  .concept-card-rest {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows var(--duration-normal) var(--ease-out);
+  }
+
+  .concept-card[data-open] .concept-card-rest {
+    grid-template-rows: 1fr;
+  }
+
+  .concept-card-rest-inner {
+    overflow: hidden;
+    min-height: 0;
+    font-size: var(--text-sm);
+    opacity: 0.55;
+    line-height: 1.55;
+    padding-top: 0.5rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .concept-card-rest,
+    .concept-card-chevron,
+    .concept-card-body {
+      transition: none;
+    }
   }
 </style>
+
+<script>
+  function initConceptCards() {
+    document.querySelectorAll<HTMLElement>(".concept-card.is-expandable").forEach(function (card) {
+      if (card.dataset.bound === "1") return;
+      card.dataset.bound = "1";
+
+      var toggle = card.querySelector(".concept-card-toggle");
+      if (!toggle) return;
+
+      // header toggles open/closed; the body link navigates on its own.
+      toggle.addEventListener("click", function () {
+        var isOpen = card.dataset.open === "1";
+        if (isOpen) {
+          delete card.dataset.open;
+          toggle!.setAttribute("aria-expanded", "false");
+        } else {
+          card.dataset.open = "1";
+          toggle!.setAttribute("aria-expanded", "true");
+        }
+      });
+    });
+  }
+
+  document.addEventListener("astro:page-load", initConceptCards);
+</script>
