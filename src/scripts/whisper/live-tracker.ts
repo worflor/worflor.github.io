@@ -91,8 +91,6 @@ const TRACKER_INTENT_TYPE = "whisper-intent";
 const TRACKER_MATCH_ACK_TYPE = "whisper-match-ack";
 const TRACKER_OFFER_CODE_TYPE = "whisper-offer-code";
 const TRACKER_ANSWER_CODE_TYPE = "whisper-answer-code";
-const SIMULTANEOUS_MESSAGE_TTL_MS = 30_000;
-const MAX_CLOCK_SKEW_MS = 60_000;
 
 // Concurrent tracker socket budget (module-scoped, survives pool teardown).
 let liveSockets = 0;
@@ -451,10 +449,13 @@ function compareAttemptOrder(
   return `${localPeerId}:${localAttemptId}`.localeCompare(`${remotePeerId}:${remoteAttemptId}`);
 }
 
-function isFreshIssuedAt(issuedAt: unknown, now = Date.now()): issuedAt is number {
-  if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt)) return false;
-  const age = now - issuedAt;
-  return age >= -MAX_CLOCK_SKEW_MS && age <= SIMULTANEOUS_MESSAGE_TTL_MS;
+// issuedAt is validated for shape only. we deliberately do NOT reject on a
+// wall-clock age window: the two devices' clocks are independent and unsynced,
+// so a stamped TTL silently froze out any peer whose clock drifted. replay
+// within a rendezvous is already prevented by seenMessages, and cross-session
+// bleed by sessionTag, so an absolute-time gate is pure fragility here.
+function isValidIssuedAt(issuedAt: unknown): issuedAt is number {
+  return typeof issuedAt === "number" && Number.isFinite(issuedAt);
 }
 
 /* ── Shared helpers ──────────────────────────────────────── */
@@ -787,7 +788,6 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
     let lockPeerId = "";
     let lockAttemptId = "";
     let lockPeerSessionTag = "";
-    let lockIssuedAt = 0;
     let lockInfoHash = "";
     let rendezvousId = "";
     let currentOfferCode: string | null = null;
@@ -833,30 +833,19 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       remoteAttemptId: string,
       remoteSessionTag: string,
       infoHash: string,
-      issuedAt: number,
     ): boolean => {
       if (!remotePeerId || !remoteAttemptId || !remoteSessionTag) return false;
-      if (!lockPeerId) {
-        lockPeerId = remotePeerId;
-        lockAttemptId = remoteAttemptId;
-        lockPeerSessionTag = remoteSessionTag;
-        lockIssuedAt = issuedAt;
-        lockInfoHash = infoHash || hashes[0];
-        rendezvousId = createRendezvousId(peerId, attemptId, remotePeerId, remoteAttemptId);
-        opts.callbacks.onLog("relay attempt locked to peer");
-        return true;
-      }
-      if (lockPeerId !== remotePeerId) return false;
-      if (lockPeerSessionTag === remoteSessionTag) return true;
-      if (offerCreationStarted || acceptStarted) return false;
-      if (issuedAt <= lockIssuedAt) return false;
-      opts.callbacks.onLog("replacing locked peer with newer relay attempt");
+      // sticky lock: once locked, only the original peer+sessionTag is honored.
+      // the old "replace with a newer attempt" branch let the two sides diverge
+      // on which session was authoritative, so they matched then deadlocked
+      // rejecting each other's offer/answer as "a different session".
+      if (lockPeerId) return lockPeerId === remotePeerId && lockPeerSessionTag === remoteSessionTag;
       lockPeerId = remotePeerId;
       lockAttemptId = remoteAttemptId;
       lockPeerSessionTag = remoteSessionTag;
-      lockIssuedAt = issuedAt;
       lockInfoHash = infoHash || hashes[0];
       rendezvousId = createRendezvousId(peerId, attemptId, remotePeerId, remoteAttemptId);
+      opts.callbacks.onLog("relay attempt locked to peer");
       return true;
     };
 
@@ -933,8 +922,8 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       opts.callbacks.onLog("ignoring relay payload for a different session");
     };
 
-    const logStaleRelayIntent = (): void => {
-      opts.callbacks.onLog("ignoring stale relay intent");
+    const logMalformedRelayIntent = (): void => {
+      opts.callbacks.onLog("ignoring malformed relay intent");
     };
 
     const startOfferCreation = (): void => {
@@ -971,15 +960,15 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       const infoHash = typeof msg.info_hash === "string" ? msg.info_hash : hashes[0];
       const remoteOfferId = String(msg.offer_id ?? "");
 
-      if (!payload?.attemptId || !payload.sessionTag || !isFreshIssuedAt(payload.issuedAt)) {
-        logStaleRelayIntent();
+      if (!payload?.attemptId || !payload.sessionTag || !isValidIssuedAt(payload.issuedAt)) {
+        logMalformedRelayIntent();
         return;
       }
       if (!remotePeerId || !remoteOfferId) return;
       if (remotePeerId === peerId) return;
       if (toPeerId && toPeerId !== peerId) return;
       if (!rememberSeen(seenMessages, `intent|${remotePeerId}|${remoteOfferId}|${payload.attemptId}|${payload.sessionTag}`)) return;
-      if (!lockPeer(remotePeerId, payload.attemptId, payload.sessionTag, infoHash, payload.issuedAt)) return;
+      if (!lockPeer(remotePeerId, payload.attemptId, payload.sessionTag, infoHash)) return;
 
       const becomeAnswerer = (): void => {
         role = "answerer";
@@ -1008,6 +997,7 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
             if (!accepted) {
               lockPeerId = "";
               lockAttemptId = "";
+              lockPeerSessionTag = "";
               lockInfoHash = "";
               rendezvousId = "";
               opts.callbacks.onLog("peer ignored, still listening");
@@ -1042,11 +1032,7 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       const toPeerId = String(msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
 
-      if (!payload?.rendezvousId || !payload.fromAttemptId || !payload.fromSessionTag || !payload.toSessionTag) return;
-      if (!isFreshIssuedAt(payload.issuedAt)) {
-        logStaleRelayIntent();
-        return;
-      }
+      if (!payload?.rendezvousId || !payload.fromAttemptId || !payload.fromSessionTag || !payload.toSessionTag || !isValidIssuedAt(payload.issuedAt)) return;
       if (!remotePeerId || remotePeerId === peerId) return;
       if (toPeerId && toPeerId !== peerId) return;
       if (payload.toSessionTag !== sessionTag) {
@@ -1058,7 +1044,7 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
         return;
       }
       if (incomingOfferId !== intentOfferId) return;
-      if (!lockPeer(remotePeerId, payload.fromAttemptId, payload.fromSessionTag, typeof msg.info_hash === "string" ? msg.info_hash : hashes[0], payload.issuedAt)) return;
+      if (!lockPeer(remotePeerId, payload.fromAttemptId, payload.fromSessionTag, typeof msg.info_hash === "string" ? msg.info_hash : hashes[0])) return;
       if (payload.rendezvousId !== rendezvousId) return;
 
       role = "offerer";
@@ -1076,11 +1062,7 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       const toPeerId = String(offer.to_peer_id ?? msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
 
-      if (!payload?.rendezvousId || !payload.code || !payload.fromSessionTag || !payload.toSessionTag) return;
-      if (!isFreshIssuedAt(payload.issuedAt)) {
-        logStaleRelayIntent();
-        return;
-      }
+      if (!payload?.rendezvousId || !payload.code || !payload.fromSessionTag || !payload.toSessionTag || !isValidIssuedAt(payload.issuedAt)) return;
       if (!remotePeerId || remotePeerId !== lockPeerId) return;
       if (toPeerId && toPeerId !== peerId) return;
       if (payload.toSessionTag !== sessionTag) {
@@ -1130,11 +1112,7 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       const toPeerId = String(msg.to_peer_id ?? "");
       const incomingOfferId = String(msg.offer_id ?? "");
 
-      if (!payload?.rendezvousId || !payload.code || !payload.fromSessionTag || !payload.toSessionTag) return;
-      if (!isFreshIssuedAt(payload.issuedAt)) {
-        logStaleRelayIntent();
-        return;
-      }
+      if (!payload?.rendezvousId || !payload.code || !payload.fromSessionTag || !payload.toSessionTag || !isValidIssuedAt(payload.issuedAt)) return;
       if (!remotePeerId || remotePeerId !== lockPeerId) return;
       if (toPeerId && toPeerId !== peerId) return;
       if (payload.toSessionTag !== sessionTag) {

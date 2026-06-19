@@ -37,7 +37,7 @@ class FakeTrackerWebSocket {
   static instances: FakeTrackerWebSocket[] = [];
   static lastRendezvousId = "";
   static lastLiveOfferId = "";
-  static scenario: "normal" | "stale-intent" = "normal";
+  static scenario: "normal" | "old-timestamp" = "normal";
   static CONNECTING = 0;
   static OPEN = 1;
   static CLOSING = 2;
@@ -90,16 +90,14 @@ class FakeTrackerWebSocket {
       const remoteSessionTag = "peer-remote-session";
       const remoteAttemptId = "remote-attempt";
 
-      if (FakeTrackerWebSocket.scenario === "stale-intent" && !this.sentFreshIntent) {
-        const staleIntent = `whisper-intent:${encodePayload({
-          attemptId: remoteAttemptId,
-          sessionTag: "peer-remote-old",
-          issuedAt: Date.now() - 90_000,
-        })}`;
-        const freshIntent = `whisper-intent:${encodePayload({
+      if (FakeTrackerWebSocket.scenario === "old-timestamp" && !this.sentFreshIntent) {
+        // an intent stamped well outside the old 30s TTL must still be honored.
+        // device clocks are independent and unsynced, so a wall-clock age gate
+        // silently froze out drifted peers — that was the connection regression.
+        const oldIntent = `whisper-intent:${encodePayload({
           attemptId: remoteAttemptId,
           sessionTag: remoteSessionTag,
-          issuedAt: Date.now(),
+          issuedAt: Date.now() - 90_000,
         })}`;
         this.sentFreshIntent = true;
         this.sentMatchAck = true;
@@ -111,21 +109,9 @@ class FakeTrackerWebSocket {
             data: JSON.stringify({
               offer: {
                 type: "offer",
-                sdp: staleIntent,
+                sdp: oldIntent,
               },
-              offer_id: "remote-intent-stale",
-              peer_id: "peer-remote",
-              to_peer_id: msg.peer_id,
-              info_hash: msg.info_hash,
-            }),
-          });
-          this.onmessage?.call(this, {
-            data: JSON.stringify({
-              offer: {
-                type: "offer",
-                sdp: freshIntent,
-              },
-              offer_id: "remote-intent-fresh",
+              offer_id: "remote-intent-old",
               peer_id: "peer-remote",
               to_peer_id: msg.peer_id,
               info_hash: msg.info_hash,
@@ -235,7 +221,7 @@ function closeAllFakeSockets(): void {
   for (const ws of FakeTrackerWebSocket.instances) ws.close(1000);
 }
 
-function installFakeWebSocket(scenario: "normal" | "stale-intent" = "normal"): void {
+function installFakeWebSocket(scenario: "normal" | "old-timestamp" = "normal"): void {
   FakeTrackerWebSocket.instances = [];
   FakeTrackerWebSocket.lastRendezvousId = "";
   FakeTrackerWebSocket.lastLiveOfferId = "";
@@ -332,8 +318,8 @@ describe("live-tracker cleanup", () => {
     }
   });
 
-  it("simultaneous rendezvous ignores stale intents and still completes", async () => {
-    installFakeWebSocket("stale-intent");
+  it("simultaneous rendezvous honors clock-skewed intents and still completes", async () => {
+    installFakeWebSocket("old-timestamp");
     const ac = new AbortController();
     const logs: string[] = [];
 
@@ -350,7 +336,8 @@ describe("live-tracker cleanup", () => {
     });
 
     assert.ok(result.relay);
-    assert.ok(logs.some((line) => line.includes("ignoring stale relay intent")));
+    // the old wall-clock gate would have dropped this peer; it must not anymore.
+    assert.ok(!logs.some((line) => line.includes("ignoring")));
     result.relay.destroy();
   });
 });
