@@ -181,8 +181,8 @@ function assertExactRoundTrip(pts: Int32Array, label: string): void {
     }
 }
 
-function countModes(blocks: { mode: GlyphMode }[]): [number, number, number, number] {
-    const m: [number, number, number, number] = [0, 0, 0, 0];
+function countModes(blocks: { mode: GlyphMode }[]): [number, number, number, number, number] {
+    const m: [number, number, number, number, number] = [0, 0, 0, 0, 0];
     for (const b of blocks) m[b.mode]++;
     return m;
 }
@@ -1794,6 +1794,8 @@ describe("glyph codec: wire format robustness", () => {
             tiltG: 0,
             azimK: 0,
             azimG: 0,
+            gaK: null,
+            gaG: null,
         }));
 
         const packed = GlyphCodec.pack(blocks);
