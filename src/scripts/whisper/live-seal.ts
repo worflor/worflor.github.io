@@ -483,10 +483,22 @@ function normalizePosition(t: Trajectory): Trajectory {
 // extract trajectory from blocks via zero-seed reconstruction. the resulting
 // curve differs from the original (zero seeds ≠ original seeds), but is
 // deterministic and consistent for comparison between two block sets.
-export function trajectoryFromBlocks(blocks: GlyphBlock[]): Trajectory {
+// reconstruct the trajectory from blocks. when the original stroke's seed
+// points are supplied, the decode is lossless and yields the true geometry,
+// which is invariant to the predictor mode each block chose (harmonic, repeat,
+// velrot, ...) — the right basis for a shape signature. without seeds it falls
+// back to a zero-seed dynamics replay, which is mode-dependent and only suitable
+// for coarse structural probes.
+export function trajectoryFromBlocks(blocks: GlyphBlock[], seedPoints?: Int32Array): Trajectory {
   if (blocks.length === 0) return { n: 0, x: new Float32Array(0), y: new Float32Array(0), p: new Float32Array(0) };
-  const zeroSeed = [0, 0, 0, 0, 0];
-  const raw = GlyphCodec.decode(blocks, zeroSeed, zeroSeed);
+  const C = GLYPH_CHANNELS;
+  const seed2 = seedPoints && seedPoints.length >= 2 * C
+    ? [seedPoints[0], seedPoints[1], seedPoints[2], seedPoints[3], seedPoints[4]]
+    : [0, 0, 0, 0, 0];
+  const seed1 = seedPoints && seedPoints.length >= 2 * C
+    ? [seedPoints[C], seedPoints[C + 1], seedPoints[C + 2], seedPoints[C + 3], seedPoints[C + 4]]
+    : [0, 0, 0, 0, 0];
+  const raw = GlyphCodec.decode(blocks, seed1, seed2);
   const total = raw.length / GLYPH_CHANNELS;
   // skip first 2 samples (seeds) to avoid transient
   const start = 2;

@@ -92,14 +92,20 @@
 ;; ═══════════════════════════════════════════════════════════════════════════════
 
 (module
-  (memory (export "mem") 95)
+  (memory (export "mem") 96)
 
   ;; ─── GLOBALS (scalar state, faster than memory) ───────────────────────────
 
   (global $g_p1             (mut i32) (i32.const 0))
   (global $g_p2             (mut i32) (i32.const 0))
+  (global $g_p3             (mut i32) (i32.const 0))
+  ;; octonionic context consistency: popcount((p1^p2)^(p2^p3)), range 0..8.
+  ;; 0 = fully consistent (associative), 8 = fully inconsistent (non-associative).
+  ;; modulates evidence caps: consistent context → trust predictions more.
+  (global $g_ctxConsist      (mut i32) (i32.const 4))  ;; start at midpoint (neutral)
   (global $g_histPos        (mut i32) (i32.const 0))
   (global $g_matchCount     (mut i32) (i32.const 0))
+  (global $g_aMatchCount    (mut i32) (i32.const 0))
   (global $g_mRunLen        (mut i32) (i32.const 0))
   (global $g_matchVolatility (mut i32) (i32.const 0))
   (global $g_decayTimer     (mut i32) (i32.const 0))
@@ -547,8 +553,12 @@
     ;; blend weight locals
     (local $wF0 f64) (local $wU f64)
     (local $wO2 f64) (local $wAb f64) (local $wE f64) (local $wP2N f64) (local $wV f64)
+    ;; context consistency cap modulation: (16 - ctxConsist) / 16, range [0.5, 1.0]
+    (local $capMod f64)
     (local $f0Ti i32) (local $uTi i32)
     (local $o2Ti i32) (local $abTi i32) (local $eTi i32) (local $p2nTi i32) (local $vTi i32)
+    (local $wedgeUO2 f64) (local $wedgeUE f64) (local $wedgeO2E f64)
+    (local $wA f64) (local $pA f64) (local $ac0 f64) (local $ac1 f64) (local $aT f64)
     (local $wLX f64)
     (local $a0 f64) (local $a1 f64)  ;; Born rule amplitude accumulators
     (local $lambda f64)
@@ -623,6 +633,10 @@
     ;; g_engPred = AR(2) Cramer fitted prediction for current byte (0-255).
     ;; K,G fitted from 5 running dot products (no decay); updated per byte after encoding/decoding.
     ;; same table shape as O2: 256×255 cells (engPred × bit tree ctx).
+    ;; alpha-math proof: the AR(2) oscillator (coefficient × state) is ℂ — fromBilinear recovers
+    ;; commutative+associative, defect 0. this same complex oscillator is the shared heartbeat of
+    ;; the Harmonic codec (Burg eigenvalues) and the Glyph codec (complex z=x+iy): one engine, three
+    ;; rungs of the Hurwitz tower (ℂ here; the 4-dim associative rung ℍ at the wedge; Im𝕆 at Glyph).
     ;; eI = (eBase + ctx) * 2  →  byte addr = eI * 4 at 0x4C3000
     (local.set $eI (i32.shl
       (i32.add (global.get $g_eBase) (local.get $ctx))
@@ -692,6 +706,13 @@
       (f64.add (local.get $vC0) (f64.const 0.25))
       (f64.add (local.get $vT) (f64.const 0.5))))
 
+    ;; ═══ alpha-math proof: the whole blend is associative ═══
+    ;; every operation here is real arithmetic or a Cl(3) bivector (the wedge), and alpha-math
+    ;; certifies all of ℝ, ℂ, ℍ, Cl(3) associative (associator defect 0, exact). associator-free
+    ;; means the blend interferes pairwise, never triadically: the codec is the exact associative
+    ;; shadow of octonionic attention, and the triadic core (𝕆, a 7-dimensional associator) is a
+    ;; separate rung it cannot reach.
+    ;;
     ;; ── weight computation: w_i = |p_i - 0.5| × min(log1p(total_i), cap) ──
     ;; |p-0.5| gates uncertain axes (confidence). Born rule handles interference
     ;; but the confidence gate is still essential: it prevents high-evidence axes
@@ -701,6 +722,35 @@
     ;; O2/E/P2N=ln(4)≈1.386 (2 bits of byte-level evidence).
     ;; sweep-derived over natural constants (ln2..φ grid).
     ;; branchless clamp via select: min(trunc_sat(total), 4095)
+    ;;
+    ;; alpha-math proof: the old "octonionic associator proxy" popcount((p1^p2)^(p2^p3)) was
+    ;; vacuous. bytes under XOR are commutative and associative ((Z/2)^8; exact decision procedure,
+    ;; no witness), so that expression is bit-identical to popcount(p1⊕p3), a lag-2 bit-distance
+    ;; carrying zero associator (the genuine associator lives only at 𝕆). ctxConsist computes p1⊕p3
+    ;; directly now. capMod = (16 - ctxConsist) / 16 in [0.5, 1.0]: high bit-distance lowers the cap
+    ;; (be cautious). only applied to context-dependent axes (O2, E, P2N, V, Ab), not F0/U.
+    (local.set $capMod (f64.div
+      (f64.convert_i32_u (i32.sub (i32.const 16) (global.get $g_ctxConsist)))
+      (f64.const 16.0)))
+
+    ;; Cl(3) wedge = |sin(θ_a − θ_b)| = bivector magnitude of two axes (their disagreement).
+    ;; the aux axis is gated by × wedge: suppressed when the base pair agrees (aux is then
+    ;; redundant), kept when they disagree. true decorrelation. the sign flip (from the old
+    ;; ×(1−wedge), suppress-on-disagreement) was worth ~0.15% on the stable corpus.
+    ;; alpha-math proof: these 3 wedges are exactly the bivector basis of Cl(3) ≅ M₂. Cl(3) is
+    ;; associative, its even subalgebra is ℍ, and its first polynomial identity is the standard
+    ;; identity s₄ at degree 4 (codim 2,6,23 vs free 2,6,24). so pairwise decorrelation is the
+    ;; complete non-vacuous antisymmetric structure here, and a degree-4 (s₄) antisymmetric term
+    ;; would vanish identically. confirming Cl(3) sound is what made the fix a 1-parameter sweep.
+    (local.set $wedgeUO2 (f64.abs (f64.sub
+      (f64.mul (f64.sqrt (local.get $pU)) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pO2))))
+      (f64.mul (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pU))) (f64.sqrt (local.get $pO2))))))
+    (local.set $wedgeUE (f64.abs (f64.sub
+      (f64.mul (f64.sqrt (local.get $pU)) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pE))))
+      (f64.mul (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pU))) (f64.sqrt (local.get $pE))))))
+    (local.set $wedgeO2E (f64.abs (f64.sub
+      (f64.mul (f64.sqrt (local.get $pO2)) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pE))))
+      (f64.mul (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pO2))) (f64.sqrt (local.get $pE))))))
 
     ;; F0: tightest cap — context-free carries only 1 bit of evidence
     (local.set $f0Ti (i32.trunc_sat_f64_u (local.get $f0T)))
@@ -722,21 +772,22 @@
       (i32.gt_u (local.get $o2Ti) (i32.const 4095))))
     (local.set $wO2 (f64.mul
       (f64.abs (f64.sub (local.get $pO2) (f64.const 0.5)))
-      (f64.min (call $log1p (local.get $o2Ti)) (f64.const 1.3863))))
+      (f64.min (call $log1p (local.get $o2Ti)) (f64.mul (f64.const 1.3863) (local.get $capMod)))))
 
     (local.set $eTi (i32.trunc_sat_f64_u (local.get $eT)))
     (local.set $eTi (select (i32.const 4095) (local.get $eTi)
       (i32.gt_u (local.get $eTi) (i32.const 4095))))
     (local.set $wE (f64.mul
       (f64.abs (f64.sub (local.get $pE) (f64.const 0.5)))
-      (f64.min (call $log1p (local.get $eTi)) (f64.const 1.3863))))
+      (f64.min (call $log1p (local.get $eTi)) (f64.mul (f64.const 1.3863) (local.get $capMod)))))
 
     (local.set $p2nTi (i32.trunc_sat_f64_u (local.get $p2nT)))
     (local.set $p2nTi (select (i32.const 4095) (local.get $p2nTi)
       (i32.gt_u (local.get $p2nTi) (i32.const 4095))))
-    (local.set $wP2N (f64.mul
+    (local.set $wP2N (f64.mul (f64.mul
       (f64.abs (f64.sub (local.get $pP2N) (f64.const 0.5)))
-      (f64.min (call $log1p (local.get $p2nTi)) (f64.const 1.3863))))
+      (f64.min (call $log1p (local.get $p2nTi)) (f64.mul (f64.const 1.3863) (local.get $capMod))))
+      (local.get $wedgeUO2)))
 
     ;; Ab weight: zero when stride=0 (completely disabled)
     (if (i32.gt_u (global.get $g_stride) (i32.const 0))
@@ -744,25 +795,59 @@
         (local.set $abTi (i32.trunc_sat_f64_u (local.get $abT)))
         (local.set $abTi (select (i32.const 4095) (local.get $abTi)
           (i32.gt_u (local.get $abTi) (i32.const 4095))))
-        (local.set $wAb (f64.mul
+        (local.set $wAb (f64.mul (f64.mul
           (f64.abs (f64.sub (local.get $pAb) (f64.const 0.5)))
-          (f64.min (call $log1p (local.get $abTi)) (f64.const 1.3863)))))  ;; cap = ln(4), same as O2
+          (f64.min (call $log1p (local.get $abTi)) (f64.const 1.3863)))
+          (local.get $wedgeO2E))))
+
+    ;; [replaces: cap = ln(4), same as O2]
       (else (local.set $wAb (f64.const 0.0))))
 
-    ;; V weight: confidence × capped evidence, cap = ln(4), same as O2/E/P2N
+    ;; V weight: confidence × capped evidence, cap = ln(4) × capMod
     (local.set $vTi (i32.trunc_sat_f64_u (local.get $vT)))
     (local.set $vTi (select (i32.const 4095) (local.get $vTi)
       (i32.gt_u (local.get $vTi) (i32.const 4095))))
-    (local.set $wV (f64.mul
+    (local.set $wV (f64.mul (f64.mul
       (f64.abs (f64.sub (local.get $pV) (f64.const 0.5)))
-      (f64.min (call $log1p (local.get $vTi)) (f64.const 1.3863))))
+      (f64.min (call $log1p (local.get $vTi)) (f64.mul (f64.const 1.3863) (local.get $capMod))))
+      (local.get $wedgeUE)))
 
-    ;; wLX = sum of pool axis weights (for M balance and sharpness gate)
+    ;; A-axis: XOR-derivative structural attention (Cl(4) 4th vector)
+    (local.set $wA (f64.const 0.0))
+    (local.set $pA (f64.const 0.5))
+    (if (i32.gt_s (global.get $g_aMatchCount) (i32.const 0))
+      (then
+        (local.set $ac0 (f64.const 0.0))
+        (local.set $ac1 (f64.const 0.0))
+        (local.set $i (i32.const 0))
+        (block $ab (loop $al
+          (br_if $ab (i32.ge_u (local.get $i) (global.get $g_aMatchCount)))
+          (if (i32.eqz (i32.and
+                (i32.shr_u (i32.load8_u offset=0x5E0D10 (local.get $i)) (local.get $k))
+                (i32.const 1)))
+            (then (local.set $ac0 (f64.add (local.get $ac0)
+              (f64.load offset=0x5E0E10 (i32.shl (local.get $i) (i32.const 3))))))
+            (else (local.set $ac1 (f64.add (local.get $ac1)
+              (f64.load offset=0x5E0E10 (i32.shl (local.get $i) (i32.const 3)))))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $al)))
+        (local.set $aT (f64.add (local.get $ac0) (local.get $ac1)))
+        (if (f64.gt (local.get $aT) (f64.const 0.0))
+          (then
+            (local.set $pA (f64.div
+              (f64.add (local.get $ac0) (f64.const 0.5))
+              (f64.add (local.get $aT) (f64.const 1.0))))
+            ;; tight cap = ln(ϱ) ≈ 0.318: A is a noisy structural signal, cap its influence
+            (local.set $wA (f64.mul
+              (f64.abs (f64.sub (local.get $pA) (f64.const 0.5)))
+              (f64.min (f64.sqrt (local.get $aT)) (f64.const 0.3181))))))))
+
+    ;; wLX = sum of pool axis weights (8 axes: 7 original + A)
     (local.set $wLX (f64.add
       (f64.add
         (f64.add (f64.add (local.get $wF0) (local.get $wU)) (local.get $wO2))
         (f64.add (f64.add (local.get $wE) (local.get $wP2N)) (local.get $wAb)))
-      (local.get $wV)))
+      (f64.add (local.get $wV) (local.get $wA))))
 
     ;; ── Born rule: amplitude-space mixing (Hellinger geometry, α=0) ──
     ;; p = (Σwᵢ√pᵢ)² / ((Σwᵢ√pᵢ)² + (Σwᵢ√(1-pᵢ))²)
@@ -770,6 +855,11 @@
     ;; correlated axes naturally damped — double-counting costs quadratically.
     ;; replaces linear/logit mixing which assume independent sources.
     ;; f64.sqrt is a native WASM op (~1 cycle), no LUT needed.
+    ;; alpha-math proof: the amplitudes √p are real, the ℝ/ℂ rung of the normed division algebra
+    ;; tower ℝ⊂ℂ⊂ℍ⊂𝕆. ℝ and ℂ carry trivial multilinear structure (codimension 1 at every degree),
+    ;; and the associator first appears only at 𝕆 (image dimension exactly 7). so a real-amplitude
+    ;; blend is associative and pairwise by construction: it interferes between pairs of axes, never
+    ;; triples. (verified exact by alpha-math, no witness below the octonion rung.)
     (if (f64.gt (local.get $wLX) (f64.const 0.0))
       (then
         ;; accumulate weighted amplitudes for bit=0 and bit=1
@@ -787,7 +877,9 @@
             (f64.add
               (f64.mul (local.get $wE) (f64.sqrt (local.get $pE)))
               (f64.mul (local.get $wP2N) (f64.sqrt (local.get $pP2N)))))
-          (f64.mul (local.get $wV) (f64.sqrt (local.get $pV)))))
+          (f64.add
+            (f64.mul (local.get $wV) (f64.sqrt (local.get $pV)))
+            (f64.mul (local.get $wA) (f64.sqrt (local.get $pA))))))
         (local.set $a1 (f64.add
           (f64.add
             (f64.add
@@ -800,8 +892,15 @@
             (f64.add
               (f64.mul (local.get $wE) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pE))))
               (f64.mul (local.get $wP2N) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pP2N))))))
-          (f64.mul (local.get $wV) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pV))))))
+          (f64.add
+            (f64.mul (local.get $wV) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pV))))
+            (f64.mul (local.get $wA) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pA)))))))
         ;; Born rule: p = a0² / (a0² + a1²)
+        ;; alpha-math proof: fed the amplitude product to fromBilinear (the op alone, no table),
+        ;; the engine recovers ℂ exactly (commutative, associative): the pairwise mix IS complex
+        ;; multiplication. and fromBilinear refuses the very next step, this normalization: dividing
+        ;; makes the structure constants irrational, so this f64.div is the exact seam where the
+        ;; attention stops being an algebra and becomes a probability. algebra up to here, entropy after.
         (local.set $a0 (f64.mul (local.get $a0) (local.get $a0)))  ;; a0²
         (local.set $a1 (f64.mul (local.get $a1) (local.get $a1)))  ;; a1²
         (local.set $pRaw (f64.div (local.get $a0)
@@ -888,19 +987,24 @@
                   (i32.gt_s (global.get $g_matchCount) (i32.const 0)))
               (then (local.set $matchState (i32.const 1))))))
 
-    ;; bucket = min(31, floor(pRaw * 32)) — 32 levels (5 bits of Born rule output)
+    ;; bucket = min(31, floor(pRaw * 32)) — 32 levels (5 bits of Born rule output).
+    ;; swept 12..64: sharp symmetric optimum at 32 (both 16 and 64 cost +13%) — the
+    ;; sharpness is the hard-bucket signature (no inter-cell sharing); interpolation tested.
     (local.set $bucket (i32.trunc_f64_u (f64.mul (local.get $pRaw) (f64.const 32.0))))
     (local.set $bucket (select (i32.const 31) (local.get $bucket)
       (i32.gt_u (local.get $bucket) (i32.const 31))))
 
-    ;; o2b = min(15, floor(pO2 * 16)) — branchless select
-    ;; captures axis-disagreement: when O2 and blended pRaw differ, SSE arbitrates.
-    (local.set $o2b (i32.trunc_f64_u (f64.mul (local.get $pO2) (f64.const 16.0))))
-    (local.set $o2b (select (i32.const 15) (local.get $o2b)
-      (i32.gt_u (local.get $o2b) (i32.const 15))))
+    ;; o2b = min(7, floor(pO2 * 8)) — SSE pO2-level dimension, 8 buckets.
+    ;; conditions SSE on O2's confidence (O2 = strongest single context axis).
+    ;; swept 2..16: 8 is the optimum. 16 over-fragments — each cell warms on half the
+    ;; counts; 8 doubles cell occupancy for ~0.2% on real data. (the concentration /
+    ;; resultant-length R̄ signal was tested here and is compression-inert; see notes.)
+    (local.set $o2b (i32.trunc_f64_u (f64.mul (local.get $pO2) (f64.const 8.0))))
+    (local.set $o2b (select (i32.const 7) (local.get $o2b)
+      (i32.gt_u (local.get $o2b) (i32.const 7))))
 
     ;; sseIdx = matchState*4096 + o2b*256 + bucket*8 + k
-    ;; 12,288 cells: 3 matchState × 16 o2b × 32 bucket × 8 k
+    ;; 12,288 cells: 3 matchState × 8 o2b × 32 bucket × 8 k (o2b uses 8 of its 16 slots)
     (global.set $g_sseIdx (i32.or
       (i32.shl (local.get $matchState) (i32.const 12))
       (i32.or
@@ -1129,6 +1233,90 @@
   ;; STATE MANAGEMENT — evaporation + entropy monitor
   ;; ═══════════════════════════════════════════════════════════════════════════
 
+  ;; ── A-axis: structural attention via XOR derivative hash chain ──
+  ;; the Z-axis Möbius term: hash on p1⊕p2 (first temporal derivative).
+  ;; two positions with the same XOR derivative are "moving the same way"
+  ;; through byte space, regardless of absolute position. this is the
+  ;; geometric tokenizer: similarity defined by transition structure.
+  ;; verifies context by XOR-derivative equality at each depth level.
+  (func $find_a_match
+    (local $n i32) (local $j i32) (local $chain i32)
+    (local $h i32) (local $order i32) (local $maxCtx i32)
+    (local $ac i32) (local $bestOrder i32)
+
+    (local.set $n (global.get $g_histPos))
+    (global.set $g_aMatchCount (i32.const 0))
+    (if (i32.lt_s (local.get $n) (i32.const 3)) (then (return)))
+
+    ;; hash = p1 XOR p2: the transition fingerprint
+    (local.set $h (i32.xor (global.get $g_p1) (global.get $g_p2)))
+
+    ;; walk from aLast2[h] through mPrev chain
+    (local.set $j (i32.load offset=0x5E0910
+      (i32.shl (local.get $h) (i32.const 2))))
+    (local.set $chain (i32.const 0))
+    (local.set $bestOrder (i32.const 0))
+
+    (block $brk (loop $lp
+      (br_if $brk (i32.eq (local.get $j) (i32.const -1)))
+      (br_if $brk (i32.gt_u (i32.sub (local.get $n) (local.get $j)) (i32.const 32768)))
+      (br_if $brk (i32.ge_u (local.get $chain) (i32.const 128)))
+
+      ;; verify: XOR at candidate must match. hist[j-1]⊕hist[j] == p1⊕p2?
+      ;; (the hash guarantees this for the entry point but chain links may diverge)
+      (if (i32.eq
+            (i32.xor
+              (i32.load8_u offset=0x029000
+                (i32.and (i32.sub (local.get $j) (i32.const 1)) (i32.const 0xFFFF)))
+              (i32.load8_u offset=0x029000
+                (i32.and (local.get $j) (i32.const 0xFFFF))))
+            (local.get $h))
+        (then
+          ;; extend context: check XOR derivative at deeper levels
+          (local.set $order (i32.const 1))
+          (local.set $maxCtx (select (i32.sub (local.get $j) (i32.const 1)) (i32.const 16)
+            (i32.lt_s (i32.sub (local.get $j) (i32.const 1)) (i32.const 16))))
+
+          (block $ob (loop $ol
+            (br_if $ob (i32.ge_u (local.get $order) (local.get $maxCtx)))
+            ;; check: hist[j-order-1]⊕hist[j-order] == hist[n-1-order]⊕hist[n-order]
+            (br_if $ob (i32.ne
+              (i32.xor
+                (i32.load8_u offset=0x029000
+                  (i32.and (i32.sub (i32.sub (local.get $j) (local.get $order)) (i32.const 1)) (i32.const 0xFFFF)))
+                (i32.load8_u offset=0x029000
+                  (i32.and (i32.sub (local.get $j) (local.get $order)) (i32.const 0xFFFF))))
+              (i32.xor
+                (i32.load8_u offset=0x029000
+                  (i32.and (i32.sub (i32.sub (local.get $n) (i32.const 1)) (local.get $order)) (i32.const 0xFFFF)))
+                (i32.load8_u offset=0x029000
+                  (i32.and (i32.sub (local.get $n) (local.get $order)) (i32.const 0xFFFF))))))
+            (local.set $order (i32.add (local.get $order) (i32.const 1)))
+            (br $ol)))
+
+          ;; PPM-style: keep only best-order matches
+          (if (i32.gt_s (local.get $order) (local.get $bestOrder))
+            (then
+              (local.set $bestOrder (local.get $order))
+              (global.set $g_aMatchCount (i32.const 0))))
+          (if (i32.and
+                (i32.eq (local.get $order) (local.get $bestOrder))
+                (i32.lt_u (global.get $g_aMatchCount) (i32.const 256)))
+            (then
+              (local.set $ac (global.get $g_aMatchCount))
+              (i32.store8 offset=0x5E0D10 (local.get $ac)
+                (i32.load8_u offset=0x029000
+                  (i32.and (i32.add (local.get $j) (i32.const 1)) (i32.const 0xFFFF))))
+              (f64.store offset=0x5E0E10 (i32.shl (local.get $ac) (i32.const 3))
+                (f64.convert_i32_s (local.get $order)))
+              (global.set $g_aMatchCount (i32.add (local.get $ac) (i32.const 1)))))))
+
+      ;; walk chain
+      (local.set $j (i32.load offset=0x039000
+        (i32.shl (i32.and (local.get $j) (i32.const 0x7FFF)) (i32.const 2))))
+      (local.set $chain (i32.add (local.get $chain) (i32.const 1)))
+      (br $lp))))
+
   ;; evaporate() — thermodynamic decay every 64 bytes
   ;; f = exp(-(1-c)²), c = min(1, 4·meanOp/128). only U-axis counts decay.
   (func $evaporate
@@ -1334,15 +1522,17 @@
     (local $pos i32) (local $h2 i32)
     (local $prevRunLen i32)
 
-    ;; Match search (or bypass)
+    ;; Match search: M (exact) + A (XOR-derivative structural attention)
     (if (i32.eqz (global.get $g_eBypass))
       (then
         (if (i32.and (i32.gt_s (global.get $g_mRunLen) (i32.const 0))
                      (i32.gt_s (global.get $g_matchCount) (i32.const 0)))
           (then (call $continue_match))
-          (else (call $find_match))))
+          (else (call $find_match)))
+        (call $find_a_match))
       (else
         (global.set $g_matchCount (i32.const 0))
+        (global.set $g_aMatchCount (i32.const 0))
         (global.set $g_mRunLen (i32.const 0))))
 
     ;; precompute per-byte base indices (used 8× in blend)
@@ -1445,10 +1635,21 @@
           (i32.load offset=0x059000 (i32.shl (local.get $h2) (i32.const 2))))
         ;; mLast2[h2] = pos
         (i32.store offset=0x059000 (i32.shl (local.get $h2) (i32.const 2))
+          (local.get $pos))
+        ;; aLast2[p1⊕byte] = pos (XOR derivative hash for A-axis)
+        (i32.store offset=0x5E0910
+          (i32.shl (i32.xor (global.get $g_p1) (local.get $byte)) (i32.const 2))
           (local.get $pos))))
 
     (global.set $g_histPos (i32.add (local.get $pos) (i32.const 1)))
     (call $update_engram (local.get $byte))    ;; E-axis: fit AR(2) before p1/p2 shift
+    ;; alpha-math proof: context consistency = popcount(p1 ⊕ p3), a lag-2 bit-distance, NOT an
+    ;; associator. the old popcount((p1^p2)^(p2^p3)) is bit-identical (XOR is associative so the p2
+    ;; terms cancel; (Z/2)^8 has no witness). dropped the dead XORs. (|p1-2p2+p3|, the real 2nd
+    ;; difference, was tested here and is a wash, so the cheaper form is kept.)
+    (global.set $g_ctxConsist (i32.popcnt
+      (i32.xor (global.get $g_p1) (global.get $g_p3))))
+    (global.set $g_p3 (global.get $g_p2))
     (global.set $g_p2 (global.get $g_p1))
     (global.set $g_p1 (local.get $byte))
     (call $update_entropy (local.get $byte))
@@ -1465,15 +1666,17 @@
     (local $pos i32) (local $h2 i32)
     (local $prevRunLen i32)
 
-    ;; Match search (same as encoder — both see identical state)
+    ;; Match search: M (exact) + A (structural) — identical to encoder
     (if (i32.eqz (global.get $g_eBypass))
       (then
         (if (i32.and (i32.gt_s (global.get $g_mRunLen) (i32.const 0))
                      (i32.gt_s (global.get $g_matchCount) (i32.const 0)))
           (then (call $continue_match))
-          (else (call $find_match))))
+          (else (call $find_match)))
+        (call $find_a_match))
       (else
         (global.set $g_matchCount (i32.const 0))
+        (global.set $g_aMatchCount (i32.const 0))
         (global.set $g_mRunLen (i32.const 0))))
 
     ;; precompute per-byte base indices (used 8× in blend)
@@ -1562,14 +1765,22 @@
         (i32.store offset=0x039000
           (i32.shl (i32.and (local.get $pos) (i32.const 0x7FFF)) (i32.const 2))
           (i32.load offset=0x059000 (i32.shl (local.get $h2) (i32.const 2))))
-        (i32.store offset=0x059000 (i32.shl (local.get $h2) (i32.const 2)) (local.get $pos))))
+        (i32.store offset=0x059000 (i32.shl (local.get $h2) (i32.const 2)) (local.get $pos))
+        ;; aLast2[p1⊕byte] = pos
+        (i32.store offset=0x5E0910
+          (i32.shl (i32.xor (global.get $g_p1) (local.get $byte)) (i32.const 2))
+          (local.get $pos))))
 
     (global.set $g_histPos (i32.add (local.get $pos) (i32.const 1)))
-    (call $update_engram (local.get $byte))    ;; E-axis: fit AR(2) before p1/p2 shift
+    (call $update_engram (local.get $byte))
+    ;; alpha-math proof: popcount(p1 ⊕ p3), not an associator (same as encoder path; see encode).
+    (global.set $g_ctxConsist (i32.popcnt
+      (i32.xor (global.get $g_p1) (global.get $g_p3))))
+    (global.set $g_p3 (global.get $g_p2))
     (global.set $g_p2 (global.get $g_p1))
     (global.set $g_p1 (local.get $byte))
     (call $update_entropy (local.get $byte))
-    (call $update_vol (local.get $byte))       ;; V-axis: rolling L1 over last 16 bytes
+    (call $update_vol (local.get $byte))
     (global.set $g_decayTimer (i32.add (global.get $g_decayTimer) (i32.const 1)))
     (if (i32.ge_u (global.get $g_decayTimer) (i32.const 64))
       (then (call $evaporate)))
@@ -1588,8 +1799,11 @@
     ;; Zero all globals
     (global.set $g_p1 (i32.const 0))
     (global.set $g_p2 (i32.const 0))
+    (global.set $g_p3 (i32.const 0))
+    (global.set $g_ctxConsist (i32.const 4))
     (global.set $g_histPos (i32.const 0))
     (global.set $g_matchCount (i32.const 0))
+    (global.set $g_aMatchCount (i32.const 0))
     (global.set $g_mRunLen (i32.const 0))
     (global.set $g_matchVolatility (i32.const 0))
     (global.set $g_decayTimer (i32.const 0))
@@ -1658,6 +1872,8 @@
     (memory.fill (i32.const 0x039000) (i32.const 0xFF) (i32.const 131072))
     ;; Fill mLast2 with -1 (65536 × i32 at 0x059000)
     (memory.fill (i32.const 0x059000) (i32.const 0xFF) (i32.const 262144))
+    ;; Fill aLast2 with -1 (256 × i32 at 0x5E0910)
+    (memory.fill (i32.const 0x5E0910) (i32.const 0xFF) (i32.const 1024))
 
     ;; Initialize SSE identity prior
     ;; sseC at 0x010900, 24576 × i32

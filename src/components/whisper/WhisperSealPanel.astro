@@ -133,7 +133,7 @@
         <div class="seal-match-slot-head">
           <span class="seal-match-slot-tag">A</span>
           <span class="seal-match-slot-info" data-match-info>0 blk</span>
-          <label class="seal-mini-btn seal-match-load-btn"><input type="file" accept=".glyph" data-match-file hidden />load</label>
+          <label class="seal-mini-btn seal-match-load-btn"><input type="file" accept=".gwyph" data-match-file hidden />load</label>
           <button class="seal-mini-btn" data-match-clear type="button">clear</button>
         </div>
         <div class="seal-canvas-wrap seal-match-canvas-wrap">
@@ -150,7 +150,7 @@
         <div class="seal-match-slot-head">
           <span class="seal-match-slot-tag">B</span>
           <span class="seal-match-slot-info" data-match-info>0 blk</span>
-          <label class="seal-mini-btn seal-match-load-btn"><input type="file" accept=".glyph" data-match-file hidden />load</label>
+          <label class="seal-mini-btn seal-match-load-btn"><input type="file" accept=".gwyph" data-match-file hidden />load</label>
           <button class="seal-mini-btn" data-match-clear type="button">clear</button>
         </div>
         <div class="seal-canvas-wrap seal-match-canvas-wrap">
@@ -212,6 +212,7 @@
     type Trajectory,
   } from "../../scripts/whisper/live-seal";
   import { GlyphCodec, GLYPH_CHANNELS, type GlyphBlock } from "../../scripts/whisper/live-wasm-glyph";
+  import { parseGwyphPayload } from "../../scripts/whisper/live-gwyph";
 
   interface CapturedPoint {
     x: number;
@@ -951,6 +952,10 @@
         strokes: CapturedPoint[][];
         blocks: GlyphBlock[];
         loaded: boolean;
+        // when a signature file is loaded, its exact reconstructed geometry
+        // (multi-stroke, true seeds) lives here so the comparison uses real
+        // shape rather than a seedless replay.
+        loadedTraj: (Trajectory & { breaks: number[] }) | null;
         clear(): void;
       }
 
@@ -968,10 +973,12 @@
           strokes: [],
           blocks: [],
           loaded: false,
+          loadedTraj: null,
           clear() {
             slot.strokes.length = 0;
             slot.blocks = [];
             slot.loaded = false;
+            slot.loadedTraj = null;
             active = null;
             hint.textContent = "draw or load .glyph";
             hint.hidden = false;
@@ -988,7 +995,8 @@
         }
 
         function syncInfo() {
-          info.textContent = `${slot.blocks.length} blk`;
+          if (slot.loaded && slot.loadedTraj) info.textContent = `${slot.loadedTraj.n} pts`;
+          else info.textContent = `${slot.blocks.length} blk`;
         }
 
         function resize() {
@@ -1007,11 +1015,28 @@
         function redraw() {
           fillBg();
           if (slot.loaded) {
-            mctx.fillStyle = "rgb(var(--chromatic-cyan) / 0.15)";
-            mctx.font = `${Math.max(11, ch * 0.12)}px monospace`;
-            mctx.textAlign = "center";
-            mctx.textBaseline = "middle";
-            mctx.fillText(`${slot.blocks.length} blocks from file`, cw / 2, ch / 2);
+            // draw the actual reconstructed signature, not a text placeholder
+            const t = slot.loadedTraj;
+            if (t && t.n >= 2) {
+              const breakSet = new Set(t.breaks);
+              mctx.strokeStyle = "rgba(0, 230, 230, 0.85)";
+              mctx.lineWidth = 2;
+              mctx.lineCap = "round";
+              mctx.lineJoin = "round";
+              mctx.beginPath();
+              mctx.moveTo(t.x[0] * cw, t.y[0] * ch);
+              for (let i = 1; i < t.n; i++) {
+                if (breakSet.has(i)) { mctx.stroke(); mctx.beginPath(); mctx.moveTo(t.x[i] * cw, t.y[i] * ch); }
+                else mctx.lineTo(t.x[i] * cw, t.y[i] * ch);
+              }
+              mctx.stroke();
+            } else {
+              mctx.fillStyle = "rgb(var(--chromatic-cyan) / 0.15)";
+              mctx.font = `${Math.max(11, ch * 0.12)}px monospace`;
+              mctx.textAlign = "center";
+              mctx.textBaseline = "middle";
+              mctx.fillText(`${slot.blocks.length} blocks from file`, cw / 2, ch / 2);
+            }
             return;
           }
           for (const s of slot.strokes) {
@@ -1093,7 +1118,20 @@
           if (!f) return;
           try {
             const bytes = new Uint8Array(await f.arrayBuffer());
-            slot.blocks = GlyphCodec.unpack(bytes);
+            // decode through the existing .gwyph path: it stores per-stroke seeds
+            // + packed blocks and reconstructs the exact geometry, stroke by stroke.
+            const glyph = parseGwyphPayload(bytes);
+            if (!glyph) throw new Error("not a gwyph");
+            const xs: number[] = [], ys: number[] = [], ps: number[] = [];
+            const breaks: number[] = [];
+            for (const st of glyph.strokes) {
+              if (st.type !== "pen" || st.points.length < 2) continue;
+              if (xs.length > 0) breaks.push(xs.length);
+              for (const pt of st.points) { xs.push(pt.x); ys.push(pt.y); ps.push(pt.p); }
+            }
+            if (xs.length < 2) throw new Error("empty");
+            slot.blocks = [];
+            slot.loadedTraj = { n: xs.length, x: Float32Array.from(xs), y: Float32Array.from(ys), p: Float32Array.from(ps), breaks };
             slot.strokes.length = 0;
             slot.loaded = true;
             hint.textContent = f.name;
@@ -1101,7 +1139,7 @@
             redraw();
             syncInfo();
           } catch {
-            hint.textContent = "invalid .glyph";
+            hint.textContent = "invalid .gwyph";
             hint.hidden = false;
           }
           fileInput.value = "";
@@ -1192,6 +1230,9 @@
 
       function slotTrajectory(slot: MatchSlot): SlotTrajectory {
         if (slot.loaded) {
+          // use the exact reconstructed geometry (true seeds, per-stroke), not a
+          // seedless single-stroke replay. falls back only for legacy files.
+          if (slot.loadedTraj) return slot.loadedTraj;
           const t = trajectoryFromBlocks(slot.blocks);
           return { ...t, breaks: [] };
         }

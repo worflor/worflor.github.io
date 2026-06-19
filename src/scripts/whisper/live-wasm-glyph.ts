@@ -114,6 +114,7 @@
  */
 
 import { encode0D, decode0D, createInstance, type LogosCodec } from './live-wasm-logos';
+import { fitMatrix3, predictMatrix3, type Mat3 } from './ga-predictor';
 
 // cached Logos instance for micro trial comparison. avoids recompiling
 // the WASM module per block (~1-5ms saved per micro trial).
@@ -140,11 +141,23 @@ export enum GlyphMode {
     // prediction is lossless on integers). zero coefficient cost.
     // wire encoding: repeat=1, mode=1 (previously unused combination).
     BACKWARD = 3,
+    // Cl(3) geometric algebra: 3×3 matrix AR(2) on (x, y, pressure).
+    // predicts all three channels jointly via v[n] = M_K·v[n-1] - M_G·v[n-2].
+    // captures pressure-curvature correlation that the split approach misses.
+    GA = 4,
 }
 
 export enum GlyphLane {
     DEFAULT = 0,
     BALLISTIC = 1,
+    // velrot: the eigenmotion restricted to eigenvalues {1, e^{i eps}} — a
+    // single turning-rate coefficient (sin eps) instead of four K/G values.
+    // 2D only (x,y); witness channels keep the default harmonic path.
+    VELROT = 2,
+    // GA: Cl(3) — a 3x3 matrix AR(2) coding (x, y, pressure) jointly. carries
+    // 18 coefficients (M_K, M_G) on the wire; tilt/azimuth stay linear. couples
+    // pressure to position dynamics. rarely cheapest, but lossless and correct.
+    GA = 3,
 }
 
 // feature flags for v2 wire format
@@ -152,6 +165,7 @@ const FEAT_DELTA    = 1 << 0;
 const FEAT_SIDECAR  = 1 << 1;
 const FEAT_COUPLING = 1 << 2;
 const FEAT_MICRO    = 1 << 3;
+const FEAT_GA       = 1 << 4;
 
 export interface GlyphCoeffs {
     kR: number;
@@ -182,6 +196,13 @@ export interface GlyphBlock {
     tiltG: number;
     azimK: number;
     azimG: number;
+    // Cl(3) GA mode: 3×3 matrices M_K, M_G as Q14 fixed-point (row-major)
+    gaK: Int16Array | null;
+    gaG: Int16Array | null;
+    // velrot lane: the single turning-rate coefficient sin(eps) in Q14. when
+    // present (lane === VELROT) the x,y oscillator's K,G are reconstructed from
+    // it (K = 1 + e^{i eps}, G = e^{i eps}); witness channels are unchanged.
+    velSin?: number;
 }
 
 export type GlyphSeed = number[];
@@ -193,7 +214,7 @@ export interface GlyphEncodeOptions {
 
 // ── inlined WASM binary ─────────────────────────────────────────────────────
 
-const WASM_B64 = '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AbchByAEKAIAEAG3IQggBEEEaigCABABtyEJIAUoAgAQAbchCiAFQQRqKAIAEAG3IQsgDCAIIAiiIAkgCaKgoCEMIA0gCCAKoiAJIAuioKAhDSAOIAkgCqIgCCALoqGgIQ4gDyAKIAqiIAsgC6KgoCEPIBAgBiAIoiAHIAmioKAhECARIAcgCKIgBiAJoqGgIREgEiAGIAqiIAcgC6KgoCESIBMgByAKoiAGIAuioaAhEyABQQFqIQEMAAsLIAwgD6VEje21oPfGsD6iIRogDCAaoCEMIA8gGqAhDyAMIA+iIA0gDaIgDiAOoqChIRQgFJlEoMLr/ktItDljBEBBACQKQQAkC0EAJAxBACQNDwtEAAAAAAAA8D8gFKMhFSAQIA+iIA0gEqIgDiAToqChIBWiIRYgESAPoiANIBOiIA4gEqKhoSAVoiEXIAwgEqIgECANoiARIA6ioaGaIBWiIRggDCAToiAQIA6iIBEgDaKgoZogFaIhGSAWRAAAAAAAANBAop6qEAMhHSAXRAAAAAAAANBAop6qEAMhHiAYRAAAAAAAANBAop6qEAMhHyAZRAAAAAAAANBAop6qEAMhICAftyAft6IgILcgILeioCEbIBtEAAAAAAAAsEFkBEBEAAAAAAAA0EAgG5+jIRwgH7cgHKKeqiEfICC3IByinqohIAsgHbcgHbeiIB63IB63oqAhGyAbRAAAAAAAANBBZARARAAAAAAAAOBAIBufoyEcIB23IByinqohHSAetyAcop6qIR4LIB0kCiAeJAsgHyQMICAkDQuWAwEUf0EAIRBBgMACIQJBwMICIQMjCiERIwshEiMMIRMjDSEUIAIoAgAQASEIIAJBBGooAgAQASEJIAJBFGooAgAQASEGIAJBGGooAgAQASEHIAMgCBAANgIAIANBBGogCRAANgIAIBAgCBAAEAJqIAkQABACaiEQIANBCGohAyADIAYQADYCACADQQRqIAcQADYCACAQIAYQABACaiAHEAAQAmohECADQQhqIQNBAiEBAkADQCABIABODQFBgMACIAFBFGxqIQIgAigCABABIQQgAkEEaigCABABIQUgEbcgBreiIBK3IAe3oqEgE7cgCLeiIBS3IAm3oqGhRAAAAAAAABA/op78AiEKIBG3IAe3oiAStyAGt6KgIBO3IAm3oiAUtyAIt6KgoUQAAAAAAAAQP6Ke/AIhCyAEIAprIQwgBSALayENIAwQACEOIA0QACEPIAMgDjYCACADQQRqIA82AgAgECAOEAJqIA8QAmohECAGIQggByEJIAQhBiAFIQcgA0EIaiEDIAFBAWohAQwACwsgEAvJAQEKf0EUIQtBACEKQQAhAwJAA0AgAyABTg0BIApBgMACIANBBGxqKAIAEAJqIQogA0EBaiEDDAALCyAAQQFrIQICQANAIAJBAUgNAUEAIQMCQANAIAMgAU4NAUGAwAIgAiALbGogA0EEbGohBEGAwAIgAkEBayALbGogA0EEbGohBSAEKAIAEAEhBiAFKAIAEAEhByAGIAdrIQggCBAAIQkgBCAJNgIAIAogCRACaiEKIANBAWohAwwACwsgAkEBayECDAALCyAKC4UBAQh/QRQhCUEBIQICQANAIAIgAE4NAUEAIQMCQANAIAMgAU4NAUGAwAIgAiAJbGogA0EEbGohBEGAwAIgAkEBayAJbGogA0EEbGohBSAEKAIAEAEhBiAFKAIAEAEhByAGIAdqIQggBCAIEAA2AgAgA0EBaiEDDAALCyACQQFqIQIMAAsLC8kCAQ1/QYDAAiEGQcDCAiEHIAcoAgAQASEMIAdBBGooAgAQASENIAYgDBAANgIAIAZBBGogDRAANgIAIABBAUwEQA8LIAdBCGooAgAQASEKIAdBDGooAgAQASELIAZBFGogChAANgIAIAZBGGogCxAANgIAQQIhBQJAA0AgBSAATg0BQcDCAiAFQQhsaiEHIAcoAgAQASEQIAdBBGooAgAQASERIAG3IAq3oiACtyALt6KhIAO3IAy3oiAEtyANt6KhoUQAAAAAAAAQP6Ke/AIhDiABtyALt6IgArcgCreioCADtyANt6IgBLcgDLeioKFEAAAAAAAAED+invwCIQ8gDiAQaiEIIA8gEWohCUGAwAIgBUEUbGohBiAGIAgQADYCACAGQQRqIAkQADYCACAKIQwgCyENIAghCiAJIQsgBUEBaiEFDAALCws=';
+const WASM_B64 = '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AADQQKKeqhADIR4gGEQAAAAAAADQQKKeqhADIR8gGUQAAAAAAADQQKKeqhADISAgH7cgH7eiICC3ICC3oqAhGyAbRAAAAAAAALBBZARARAAAAAAAANBAIBufoyEcIB+3IByinqohHyAgtyAcop6qISALIB23IB23oiAetyAet6KgIRsgG0QAAAAAAADQQWQEQEQAAAAAAADgQCAbn6MhHCAdtyAcop6qIR0gHrcgHKKeqiEeCyAdJAogHiQLIB8kDCAgJA0LlgMBFH9BACEQQYDAAiECQcDCAiEDIwohESMLIRIjDCETIw0hFCACKAIAEAEhCCACQQRqKAIAEAEhCSACQRRqKAIAEAEhBiACQRhqKAIAEAEhByADIAgQADYCACADQQRqIAkQADYCACAQIAgQABACaiAJEAAQAmohECADQQhqIQMgAyAGEAA2AgAgA0EEaiAHEAA2AgAgECAGEAAQAmogBxAAEAJqIRAgA0EIaiEDQQIhAQJAA0AgASAATg0BQYDAAiABQRRsaiECIAIoAgAQASEEIAJBBGooAgAQASEFIBG3IAa3oiAStyAHt6KhIBO3IAi3oiAUtyAJt6KhoUQAAAAAAAAQP6Ke/AIhCiARtyAHt6IgErcgBreioCATtyAJt6IgFLcgCLeioKFEAAAAAAAAED+invwCIQsgBCAKayEMIAUgC2shDSAMEAAhDiANEAAhDyADIA42AgAgA0EEaiAPNgIAIBAgDhACaiAPEAJqIRAgBiEIIAchCSAEIQYgBSEHIANBCGohAyABQQFqIQEMAAsLIBALyQEBCn9BFCELQQAhCkEAIQMCQANAIAMgAU4NASAKQYDAAiADQQRsaigCABACaiEKIANBAWohAwwACwsgAEEBayECAkADQCACQQFIDQFBACEDAkADQCADIAFODQFBgMACIAIgC2xqIANBBGxqIQRBgMACIAJBAWsgC2xqIANBBGxqIQUgBCgCABABIQYgBSgCABABIQcgBiAHayEIIAgQACEJIAQgCTYCACAKIAkQAmohCiADQQFqIQMMAAsLIAJBAWshAgwACwsgCguFAQEIf0EUIQlBASECAkADQCACIABODQFBACEDAkADQCADIAFODQFBgMACIAIgCWxqIANBBGxqIQRBgMACIAJBAWsgCWxqIANBBGxqIQUgBCgCABABIQYgBSgC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';
 
 // ── WASM module singleton ─────────────────────────────────────────────────────
 
@@ -214,7 +235,10 @@ interface GlyphWasm {
     mgR: WebAssembly.Global;
     mgI: WebAssembly.Global;
     cplW: WebAssembly.Global;
+    velSin: WebAssembly.Global;
     fit: (start: number, len: number) => void;
+    fitVelrot: (start: number, len: number) => void;
+    velrotKG: (sinQ: number) => void;
     encodeBlock: (start: number, len: number, mode: number) => number;
     decodeBlock: (cursor: number, count: number, mode: number,
                   kR: number, kI: number, gR: number, gI: number) => void;
@@ -509,6 +533,7 @@ export class GlyphCodec {
             tiltG: 0,
             azimK: 0,
             azimG: 0,
+            gaK: null, gaG: null,
         };
     }
 
@@ -558,6 +583,16 @@ export class GlyphCodec {
             cost += this.coeffDeltaCost(block.kR, block.kI, block.gR, block.gI, refKR, refKI, refGR, refGI);
         }
 
+        if (block.lane === GlyphLane.VELROT) {
+            // one turning-rate coefficient (absolute; pack delta-codes it)
+            cost += vszCost(zzEnc(block.velSin ?? 0));
+        }
+
+        if (block.lane === GlyphLane.GA && block.gaK && block.gaG) {
+            // 18 matrix coefficients (absolute; pack delta-codes them)
+            for (let j = 0; j < 9; j++) cost += vszCost(zzEnc(block.gaK[j])) + vszCost(zzEnc(block.gaG[j]));
+        }
+
         if (block.features & FEAT_SIDECAR) {
             cost += vszCost(zzEnc(block.scK - 32768));
             cost += vszCost(zzEnc(block.scG - 16384));
@@ -593,7 +628,37 @@ export class GlyphCodec {
         return cost;
     }
 
+    // public entry: handles strokes of any length by encoding in windows that
+    // fit the fixed WASM POINTS buffer, then concatenating. short strokes take
+    // the single-window fast path unchanged.
     static encode(points: Int32Array, prev?: GlyphCoeffs, opts?: GlyphEncodeOptions): GlyphBlock[] {
+        const WINDOW = 2048; // WASM POINTS buffer capacity (points, incl. 2 seeds)
+        const totalPts = Math.floor(points.length / CH);
+        if (totalPts <= WINDOW) return this.encodeWindow(points, prev, opts);
+
+        // long stroke: encode in windows of WINDOW points that overlap by the 2
+        // seed points, so the data blocks tile the stroke with no gap. each
+        // window starts without a coefficient reference, so its first block is
+        // never REPEAT/BACKWARD (which would need a cross-window reference whose
+        // decoded value differs from the encoded one). every block thus carries
+        // explicit coefficients, and pack/unpack preserve those values across the
+        // whole concatenated list, so the stream decodes as one sequence. only
+        // the first window honours the caller's `prev`.
+        const blocks: GlyphBlock[] = [];
+        let dataStart = 2;
+        let first = true;
+        while (dataStart < totalPts) {
+            const seedStart = dataStart - 2;
+            const winEnd = Math.min(seedStart + WINDOW, totalPts);
+            const winBlocks = this.encodeWindow(points.subarray(seedStart * CH, winEnd * CH), first ? prev : undefined, opts);
+            for (const b of winBlocks) blocks.push(b);
+            first = false;
+            dataStart = winEnd;
+        }
+        return blocks;
+    }
+
+    private static encodeWindow(points: Int32Array, prev?: GlyphCoeffs, opts?: GlyphEncodeOptions): GlyphBlock[] {
         const m = w();
         const maxPts = 2048;
         const nPts = Math.min(Math.floor(points.length / CH), maxPts);
@@ -668,6 +733,21 @@ export class GlyphCodec {
                 bCost -= 8; // zero coefficient cost (decoder derives via fit)
             }
 
+            // velrot: the eigenmotion restricted to eigenvalues {1, e^{i eps}},
+            // a constrained harmonic carrying one turning-rate coefficient
+            // (sin eps) instead of four K/G values. predicted exactly like a
+            // harmonic block, so witness channels and phase-2 features compose
+            // unchanged. it runs LAST, so RESID holds velrot residuals after this
+            // point and any other winner re-encodes below.
+            m.fitVelrot(i - 2, len + 2);
+            const vSin = gval(m.velSin);
+            const vCost = m.encodeBlock(i, len, GlyphMode.HARMONIC);
+            const vErr = gval(m.errSum);
+            const vKR = gval(m.kR), vKI = gval(m.kI), vGR = gval(m.gR), vGI = gval(m.gI);
+            // drop the 8-byte harmonic coeff assumption, add the 1-byte extended
+            // header and the single velSin varint (absolute; pack delta-codes it).
+            const vAdjCost = vCost - 8 + 1 + vszCost(zzEnc(vSin));
+
             // compute coefficient delta costs for harmonic
             // try delta from previous AND delta from LINEAR baseline, pick cheaper
             const refKR = hasPrev ? prevKR : LIN_KR;
@@ -681,53 +761,45 @@ export class GlyphCodec {
             // subtract 8 and add actual varint delta cost.
             const hAdjCost = hCost - 8 + coeffCost;
 
-            // pick cheapest mode. track the last trial that wrote RESID to skip
-            // redundant re-encode when the winner is already in the buffer.
-            // trial order: harmonic → linear → repeat → backward
-            // last writer: backward > repeat > linear (harmonic is before linear)
+            // pick cheapest mode. velrot ran last, so RESID currently holds its
+            // residuals; any non-velrot winner re-encodes below.
             let bestCost = hAdjCost, bestErr = hErr, bestMode = GlyphMode.HARMONIC;
-            let lastResidWriter = -1; // -1 = harmonic, 0 = linear, 1 = repeat, 2 = backward
+            let bestIsVelrot = false;
             if (lCost < bestCost || (lCost === bestCost && lErr <= bestErr)) {
-                bestCost = lCost; bestErr = lErr; bestMode = GlyphMode.LINEAR;
+                bestCost = lCost; bestErr = lErr; bestMode = GlyphMode.LINEAR; bestIsVelrot = false;
             }
-            lastResidWriter = 0; // linear was the last unconditional write
             if (rCost < bestCost || (rCost === bestCost && rErr <= bestErr)) {
-                bestCost = rCost; bestErr = rErr; bestMode = GlyphMode.REPEAT;
+                bestCost = rCost; bestErr = rErr; bestMode = GlyphMode.REPEAT; bestIsVelrot = false;
             }
-            if (prevWasNonLinear) lastResidWriter = 1; // repeat ran after linear
             if (bCost < bestCost && bErr <= hErr * 2) {
-                bestCost = bCost; bestErr = bErr; bestMode = GlyphMode.BACKWARD;
+                bestCost = bCost; bestErr = bErr; bestMode = GlyphMode.BACKWARD; bestIsVelrot = false;
             }
-            if (prevBlockStart >= 0 && prevBlockLen >= 3) lastResidWriter = 2;
+            if (vAdjCost < bestCost) {
+                bestCost = vAdjCost; bestErr = vErr; bestMode = GlyphMode.HARMONIC; bestIsVelrot = true;
+            }
 
-            // re-encode only if the winner isn't already the last RESID writer
+            // restore RESID to the winner's residuals. velrot is already resident
+            // (it was the last encode); every other winner re-encodes.
             let useKR = 0, useKI = 0, useGR = 0, useGI = 0;
-            const needReencode = !(
-                (bestMode === GlyphMode.LINEAR && lastResidWriter === 0) ||
-                (bestMode === GlyphMode.REPEAT && lastResidWriter === 1) ||
-                (bestMode === GlyphMode.BACKWARD && lastResidWriter === 2)
-            );
-            if (bestMode === GlyphMode.HARMONIC) {
+            if (bestIsVelrot) {
+                useKR = vKR; useKI = vKI; useGR = vGR; useGI = vGI;
+            } else if (bestMode === GlyphMode.HARMONIC) {
                 sval(m.kR, hKR); sval(m.kI, hKI);
                 sval(m.gR, hGR); sval(m.gI, hGI);
                 m.encodeBlock(i, len, GlyphMode.HARMONIC);
                 useKR = hKR; useKI = hKI; useGR = hGR; useGI = hGI;
             } else if (bestMode === GlyphMode.BACKWARD) {
+                sval(m.kR, bKR); sval(m.kI, bKI);
+                sval(m.gR, bGR); sval(m.gI, bGI);
+                m.encodeBlock(i, len, GlyphMode.HARMONIC);
                 useKR = bKR; useKI = bKI; useGR = bGR; useGI = bGI;
-                if (needReencode) {
-                    sval(m.kR, bKR); sval(m.kI, bKI);
-                    sval(m.gR, bGR); sval(m.gI, bGI);
-                    m.encodeBlock(i, len, GlyphMode.HARMONIC);
-                }
             } else if (bestMode === GlyphMode.REPEAT) {
+                sval(m.kR, prevKR); sval(m.kI, prevKI);
+                sval(m.gR, prevGR); sval(m.gI, prevGI);
+                m.encodeBlock(i, len, GlyphMode.REPEAT);
                 useKR = prevKR; useKI = prevKI; useGR = prevGR; useGI = prevGI;
-                if (needReencode) {
-                    sval(m.kR, prevKR); sval(m.kI, prevKI);
-                    sval(m.gR, prevGR); sval(m.gI, prevGI);
-                    m.encodeBlock(i, len, GlyphMode.REPEAT);
-                }
             } else {
-                if (needReencode) m.encodeBlock(i, len, GlyphMode.LINEAR);
+                m.encodeBlock(i, len, GlyphMode.LINEAR);
             }
 
             // copy primary residuals + detect pressure in one pass
@@ -770,7 +842,11 @@ export class GlyphCodec {
             //   1. coupled: use the oscillator's kR/gR (same dynamics, may cost
             //      less overhead if kR/gR happen to be close to the optimal pressure k/g)
             //   2. independent: fit k/g to pressure data directly
-            if (hasPressure && len >= 4 && bestMode !== GlyphMode.LINEAR) {
+            // pressure dynamics are independent of the position mode, so the
+            // sidecar is tried for every mode including LINEAR (the dominant case
+            // for real ink). on a linear block the coupled candidate degrades to
+            // linear-pressure and simply loses; the independent fit does the work.
+            if (hasPressure && len >= 4) {
                 // candidate 1: coupled (oscillator's kR/gR for pressure)
                 sval(m.kR, useKR); sval(m.kI, useKI);
                 sval(m.gR, useGR); sval(m.gI, useGI);
@@ -933,10 +1009,17 @@ export class GlyphCodec {
 
             // ── build block ──
 
+            // linear blocks ignore K,G on decode (and never serialise them), so a
+            // near-straight stroke would otherwise carry a zero eigenmotion and be
+            // indistinguishable from any other straight stroke. store the velrot-
+            // fitted eigenmotion there instead: a curvature descriptor that gives
+            // the seal/gesture engine a real shape signal at no cost to decode/pack.
+            const isLin = bestMode === GlyphMode.LINEAR;
             let block: GlyphBlock = {
-                lane: GlyphLane.DEFAULT,
+                lane: bestIsVelrot ? GlyphLane.VELROT : GlyphLane.DEFAULT,
                 mode: bestMode,
-                kR: useKR, kI: useKI, gR: useGR, gI: useGI,
+                kR: isLin ? vKR : useKR, kI: isLin ? vKI : useKI,
+                gR: isLin ? vGR : useGR, gI: isLin ? vGI : useGI,
                 residuals,
                 features,
                 scK, scG,
@@ -944,6 +1027,8 @@ export class GlyphCodec {
                 mkR, mkI, mgR, mgI,
                 microResiduals,
                 tiltK, tiltG, azimK, azimG,
+                gaK: null, gaG: null,
+                velSin: bestIsVelrot ? vSin : undefined,
             };
 
             const defaultRawCost = this.estimateRawBlockCost(block, hasPrev, prevKR, prevKI, prevGR, prevGI);
@@ -966,9 +1051,84 @@ export class GlyphCodec {
                 }
             }
 
+            // ── phase 3: Cl(3) GA trial ──
+            // fits a 3×3 matrix predictor on (x, y, pressure) jointly.
+            // only fires when the block has pressure variation (otherwise the
+            // split approach already handles it optimally).
+            if (len >= 4 && hasPressure) {
+                const gaFit = fitMatrix3(points, i, len, CH);
+                // Q14 quantize: M_Kq = round(M_K * 16384), M_Gq = round(M_G * 16384)
+                // then delta-encode M_Kq from identity (diagonal - 16384, off-diag - 0)
+                const Q14 = 16384;
+                const gaKq = new Int16Array(9);
+                const gaGq = new Int16Array(9);
+                const gaKdelta = new Int16Array(9); // for wire encoding
+                for (let j = 0; j < 9; j++) {
+                    gaKq[j] = Math.max(-32768, Math.min(32767, roundEven(gaFit.M_K[j] * Q14)));
+                    gaGq[j] = Math.max(-32768, Math.min(32767, roundEven(gaFit.M_G[j] * Q14)));
+                    const diag = (j === 0 || j === 4 || j === 8) ? Q14 : 0;
+                    gaKdelta[j] = gaKq[j] - diag;
+                }
+                // recompute residuals with QUANTIZED matrices (integer prediction)
+                const gaResiduals = new Int32Array(len * CH);
+                // at extreme coordinate magnitudes the quantized GA matrix can
+                // diverge and produce a residual outside int32; storing it in the
+                // Int32Array would truncate and break losslessness. guard exactly
+                // as the ballistic lane does and reject GA if it overflows.
+                let gaValid = true;
+                for (let n = 0; n < len; n++) {
+                    const idx = i + n;
+                    // Q14 matrix prediction: pred_c = Σ(M_Kq[c][j] * v1[j] - M_Gq[c][j] * v2[j]) / Q14
+                    for (let c = 0; c < 3; c++) {
+                        let pred = 0;
+                        for (let j = 0; j < 3; j++) {
+                            pred += gaKq[c * 3 + j] * points[(idx - 1) * CH + j]
+                                  - gaGq[c * 3 + j] * points[(idx - 2) * CH + j];
+                        }
+                        const diff = points[idx * CH + c] - roundEven(pred / Q14);
+                        if (diff < I32_MIN || diff > I32_MAX) gaValid = false;
+                        gaResiduals[n * CH + c] = diff;
+                    }
+                    // tilt/azimuth: linear prediction
+                    gaResiduals[n * CH + 3] = points[idx * CH + 3] - (2 * points[(idx - 1) * CH + 3] - points[(idx - 2) * CH + 3]);
+                    gaResiduals[n * CH + 4] = points[idx * CH + 4] - (2 * points[(idx - 1) * CH + 4] - points[(idx - 2) * CH + 4]);
+                }
+                // estimate GA cost in varint bytes
+                let gaCost = 2;
+                for (let j = 0; j < 9; j++) {
+                    gaCost += vszCost(zzEnc(gaKdelta[j]));
+                    gaCost += vszCost(zzEnc(gaGq[j]));
+                }
+                const gaChMask = this.detectChMask(gaResiduals, len);
+                const gaWireCh = this.maskChannels(gaChMask);
+                for (let c = 0; c < gaWireCh; c++) {
+                    for (let n = 0; n < len; n++) gaCost += vszCost(zzEnc(gaResiduals[n * CH + c]));
+                }
+                const currentCost = this.estimateRawBlockCost(block, hasPrev, prevKR, prevKI, prevGR, prevGI);
+                // GA rides its own lane (GlyphLane.GA): the 18 matrix coefficients
+                // are delta-coded on the wire and the block round-trips bit-exact.
+                // gaValid rejects the rare extreme-magnitude block whose residual
+                // would overflow int32. tilt/azimuth are coded linearly, so no
+                // witness coefficients are carried.
+                if (gaValid && gaCost < currentCost) {
+                    block = {
+                        lane: GlyphLane.GA,
+                        mode: GlyphMode.GA,
+                        kR: 0, kI: 0, gR: 0, gI: 0,
+                        residuals: gaResiduals,
+                        features: 0,
+                        scK: 0, scG: 0, cplW: 0,
+                        mkR: 0, mkI: 0, mgR: 0, mgI: 0,
+                        microResiduals: null,
+                        tiltK: 0, tiltG: 0, azimK: 0, azimG: 0,
+                        gaK: gaKq, gaG: gaGq,
+                    };
+                }
+            }
+
             blocks.push(block);
 
-            if (block.lane !== GlyphLane.DEFAULT || block.mode === GlyphMode.LINEAR) {
+            if (block.lane !== GlyphLane.DEFAULT || block.mode === GlyphMode.LINEAR || block.mode === GlyphMode.GA) {
                 hasPrev = false;
             } else {
                 prevKR = block.kR; prevKI = block.kI;
@@ -990,7 +1150,33 @@ export class GlyphCodec {
         const out = new Int32Array(total * CH);
         out[0] = seed2[0]; out[1] = seed2[1]; out[2] = seed2[2]; out[3] = seed2[3]; out[4] = seed2[4];
         out[5] = seed1[0]; out[6] = seed1[1]; out[7] = seed1[2]; out[8] = seed1[3]; out[9] = seed1[4];
-        this.decodeBlocks(blocks, out, 2);
+
+        // the WASM POINTS buffer holds 2048 points, so reconstruct in windows of
+        // the same 2046-data-point stride that encode used. encode made each
+        // window's first block self-contained (never REPEAT/BACKWARD), so each
+        // window decodes from a fresh reference, re-seeded by the previous two
+        // reconstructed points. short strokes are a single window (fast path).
+        const DATA = 2048 - 2; // data points per window
+        if (total - 2 <= DATA) { this.decodeBlocks(blocks, out, 2); return out; }
+
+        let bi = 0, outPt = 2;
+        while (bi < blocks.length) {
+            const winBlocks: GlyphBlock[] = [];
+            let winPts = 0;
+            while (bi < blocks.length && winPts + blocks[bi].residuals.length / CH <= DATA) {
+                winPts += blocks[bi].residuals.length / CH;
+                winBlocks.push(blocks[bi]);
+                bi++;
+            }
+            const buf = new Int32Array((winPts + 2) * CH);
+            for (let c = 0; c < CH; c++) {
+                buf[c] = out[(outPt - 2) * CH + c];
+                buf[CH + c] = out[(outPt - 1) * CH + c];
+            }
+            this.decodeBlocks(winBlocks, buf, 2);
+            out.set(buf.subarray(2 * CH, (winPts + 2) * CH), outPt * CH);
+            outPt += winPts;
+        }
         return out;
     }
 
@@ -1023,6 +1209,38 @@ export class GlyphCodec {
                 continue;
             }
 
+            // GA mode: Q14 integer 3×3 matrix prediction on (x, y, p)
+            if (b.mode === GlyphMode.GA && b.gaK && b.gaG) {
+                const Q14 = 16384;
+                for (let n = 0; n < count; n++) {
+                    const idx = cursor + n;
+                    const off = idx * CH;
+                    for (let c = 0; c < 3; c++) {
+                        let pred = 0;
+                        for (let j = 0; j < 3; j++) {
+                            pred += b.gaK[c * 3 + j] * heap[pointsOff + (idx - 1) * CH + j]
+                                  - b.gaG[c * 3 + j] * heap[pointsOff + (idx - 2) * CH + j];
+                        }
+                        heap[pointsOff + off + c] = roundEven(pred / Q14) + b.residuals[n * CH + c];
+                    }
+                    heap[pointsOff + off + 3] = (2 * heap[pointsOff + (idx - 1) * CH + 3] - heap[pointsOff + (idx - 2) * CH + 3]) + b.residuals[n * CH + 3];
+                    heap[pointsOff + off + 4] = (2 * heap[pointsOff + (idx - 1) * CH + 4] - heap[pointsOff + (idx - 2) * CH + 4]) + b.residuals[n * CH + 4];
+                }
+                decHasPrev = false;
+                prevCursor = cursor;
+                prevCount = count;
+                cursor += count;
+                continue;
+            }
+
+            // velrot: reconstruct K,G from the single turning-rate coefficient.
+            // identical computation on encode and decode, so the harmonic
+            // predictor below sees exactly the K,G the encoder used.
+            if (b.lane === GlyphLane.VELROT) {
+                m.velrotKG(b.velSin ?? 0);
+                b.kR = gval(m.kR); b.kI = gval(m.kI);
+                b.gR = gval(m.gR); b.gI = gval(m.gI);
+            } else
             // resolve K/G for backward and repeat modes.
             // this runs DURING decode (not unpack) so backward-derived K/G
             // are available for subsequent repeat blocks.
@@ -1069,8 +1287,10 @@ export class GlyphCodec {
             } else {
                 m.decodeBlock(cursor, count, wasmMode, b.kR, b.kI, b.gR, b.gI);
             }
-            // update K/G tracking for subsequent repeat blocks
-            if (b.mode !== GlyphMode.LINEAR) {
+            // update K/G tracking for subsequent repeat blocks. velrot is
+            // excluded: its K,G are derived from velSin, not a repeat reference
+            // (matching encode/pack, where hasPrev is cleared after a velrot block).
+            if (b.mode !== GlyphMode.LINEAR && b.lane !== GlyphLane.VELROT) {
                 decPrevKR = b.kR; decPrevKI = b.kI;
                 decPrevGR = b.gR; decPrevGI = b.gI;
                 decHasPrev = true;
@@ -1118,6 +1338,10 @@ export class GlyphCodec {
         const data: number[] = [];
         let prevKR = LIN_KR, prevKI = LIN_KI, prevGR = LIN_GR, prevGI = LIN_GI;
         let hasPrevCoeffs = false;
+        let prevVelSin = 0; // delta reference for the velrot coefficient
+        // delta references for the GA matrices: M_K starts at identity, M_G at zero
+        let prevGaK = [LIN_GR, 0, 0, 0, LIN_GR, 0, 0, 0, LIN_GR];
+        let prevGaG = [0, 0, 0, 0, 0, 0, 0, 0, 0];
         let residPerChannel = 0; // total residual varint bytes per channel
 
         for (const b of blocks) {
@@ -1129,8 +1353,10 @@ export class GlyphCodec {
 
             const isRepeat = b.mode === GlyphMode.REPEAT;
             const isBackward = b.mode === GlyphMode.BACKWARD;
-            // backward: repeat=1, mode=1 (previously unused combination)
-            const modeBit = isBackward ? 1 : (isRepeat ? 0 : b.mode);
+            // backward: repeat=1, mode=1 (previously unused combination). lane-coded
+            // modes (GA) carry their mode in the ext byte's lane field, so the
+            // header modeBit is held at 0 to avoid colliding with the count bits.
+            const modeBit = b.lane === GlyphLane.GA ? 0 : (isBackward ? 1 : (isRepeat ? 0 : b.mode));
             const repeatBit = (isRepeat || isBackward) ? (1 << 5) : 0;
             const hasExt = b.features !== 0 || b.lane !== GlyphLane.DEFAULT;
             const headerChMask = hasExt ? 0b11 : chMask;
@@ -1146,6 +1372,21 @@ export class GlyphCodec {
                 const refGR = hasPrevCoeffs ? prevGR : LIN_GR;
                 const refGI = hasPrevCoeffs ? prevGI : LIN_GI;
                 this.pushCoeffDeltas(meta, b.kR, b.kI, b.gR, b.gI, refKR, refKI, refGR, refGI);
+            }
+
+            if (b.lane === GlyphLane.VELROT) {
+                // one turning-rate coefficient, delta-coded from the previous velrot block
+                this.pushSigned(meta, (b.velSin ?? 0) - prevVelSin);
+                prevVelSin = b.velSin ?? 0;
+            }
+
+            if (b.lane === GlyphLane.GA && b.gaK && b.gaG) {
+                // 18 matrix coefficients (M_K then M_G), delta-coded from the
+                // previous GA block (M_K from identity, M_G from zero initially).
+                for (let j = 0; j < 9; j++) this.pushSigned(meta, b.gaK[j] - prevGaK[j]);
+                for (let j = 0; j < 9; j++) this.pushSigned(meta, b.gaG[j] - prevGaG[j]);
+                prevGaK = Array.from(b.gaK);
+                prevGaG = Array.from(b.gaG);
             }
 
             if (b.features & FEAT_SIDECAR) {
@@ -1189,13 +1430,19 @@ export class GlyphCodec {
                 }
             }
 
-            if (b.lane === GlyphLane.DEFAULT && b.mode !== GlyphMode.LINEAR) {
+            // advance the coefficient-delta reference ONLY for harmonic blocks.
+            // backward/repeat coefficients are derived during decode (from decoded
+            // points), so they are unknown at unpack time — unpack therefore leaves
+            // the reference untouched across them, and pack must do the same or the
+            // next harmonic block's deltas decode against a mismatched baseline.
+            if (b.lane === GlyphLane.DEFAULT && b.mode === GlyphMode.HARMONIC) {
                 prevKR = b.kR; prevKI = b.kI;
                 prevGR = b.gR; prevGI = b.gI;
                 hasPrevCoeffs = true;
-            } else {
+            } else if (b.lane !== GlyphLane.DEFAULT || b.mode === GlyphMode.LINEAR) {
                 hasPrevCoeffs = false;
             }
+            // backward / repeat: leave prevKR and hasPrevCoeffs unchanged
         }
 
         if (meta.length === 0 && data.length === 0) return new Uint8Array(0);
@@ -1270,6 +1517,9 @@ export class GlyphCodec {
         const dOff = { v: metaLen };   // data cursor (starts after meta)
         let prevKR = LIN_KR, prevKI = LIN_KI, prevGR = LIN_GR, prevGI = LIN_GI;
         let hasPrevCoeffs = false;
+        let prevVelSin = 0; // delta reference for the velrot coefficient
+        const prevGaK = [LIN_GR, 0, 0, 0, LIN_GR, 0, 0, 0, LIN_GR]; // GA M_K delta ref (identity)
+        const prevGaG = [0, 0, 0, 0, 0, 0, 0, 0, 0];                // GA M_G delta ref (zero)
 
         try {
             while (mOff.v < metaLen) {
@@ -1295,8 +1545,24 @@ export class GlyphCodec {
                 const wireCh = this.maskChannels(chMask);
 
                 let kR = 0, kI = 0, gR = 0, gI = 0;
+                let velSin = 0;
+                let gaK: Int16Array | null = null, gaG: Int16Array | null = null;
                 let mode: GlyphMode;
-                if (lane !== GlyphLane.DEFAULT) {
+                if (lane === GlyphLane.VELROT) {
+                    // velrot: one delta-coded turning-rate coefficient. predicted
+                    // as harmonic; K,G reconstructed from velSin during decodeBlocks.
+                    mode = GlyphMode.HARMONIC;
+                    velSin = this.readSigned(raw, mOff) + prevVelSin;
+                    prevVelSin = velSin;
+                    hasPrevCoeffs = false;
+                } else if (lane === GlyphLane.GA) {
+                    // GA: 18 delta-coded matrix coefficients (M_K then M_G)
+                    mode = GlyphMode.GA;
+                    gaK = new Int16Array(9); gaG = new Int16Array(9);
+                    for (let j = 0; j < 9; j++) { gaK[j] = this.readSigned(raw, mOff) + prevGaK[j]; prevGaK[j] = gaK[j]; }
+                    for (let j = 0; j < 9; j++) { gaG[j] = this.readSigned(raw, mOff) + prevGaG[j]; prevGaG[j] = gaG[j]; }
+                    hasPrevCoeffs = false;
+                } else if (lane !== GlyphLane.DEFAULT) {
                     mode = GlyphMode.LINEAR;
                     hasPrevCoeffs = false;
                 } else if (isRepeat && modeBit === 1) {
@@ -1372,6 +1638,8 @@ export class GlyphCodec {
                     features, scK, scG, cplW,
                     mkR, mkI, mgR, mgI, microResiduals,
                     tiltK, tiltG, azimK, azimG,
+                    gaK, gaG,
+                    velSin,
                 });
 
                 if (lane !== GlyphLane.DEFAULT) {
@@ -1397,7 +1665,6 @@ export class GlyphCodec {
 export class GlyphStreamEncoder {
     private buffer = new Int32Array(GLYPH_BLOCK_SIZE * CH + CH * 2);
     private head = 2;
-    private prev: GlyphCoeffs | undefined;
     constructor(seed: GlyphSeed) {
         for (let c = 0; c < CH; c++) {
             this.buffer[c] = seed[c];
@@ -1409,13 +1676,12 @@ export class GlyphStreamEncoder {
         for (let c = 0; c < CH; c++) this.buffer[base + c] = values[c];
         this.head++;
         if (this.head === GLYPH_BLOCK_SIZE + 2) {
-            const blocks = GlyphCodec.encode(this.buffer, this.prev, { adaptiveSegmentation: false });
-            const last = blocks[blocks.length - 1];
-            if (last && last.mode !== GlyphMode.LINEAR) {
-                this.prev = { kR: last.kR, kI: last.kI, gR: last.gR, gI: last.gI };
-            } else {
-                this.prev = undefined;
-            }
+            // each chunk is self-contained: no cross-chunk coefficient state. the
+            // decoder unpacks every chunk from the LINEAR baseline, so carrying
+            // coefficients here would delta-code against a reference the decoder
+            // never sees (silent corruption on curved strokes). the point seeds
+            // below preserve prediction continuity; coefficients do not need to.
+            const blocks = GlyphCodec.encode(this.buffer, undefined, { adaptiveSegmentation: false });
             const bytes = GlyphCodec.pack(blocks);
             const s1off = (this.head - 1) * CH;
             const s2off = (this.head - 2) * CH;
@@ -1432,7 +1698,7 @@ export class GlyphStreamEncoder {
         if (this.head <= 2) return null;
         return GlyphCodec.pack(GlyphCodec.encode(
             this.buffer.slice(0, this.head * CH),
-            this.prev,
+            undefined,
             { adaptiveSegmentation: false }
         ));
     }

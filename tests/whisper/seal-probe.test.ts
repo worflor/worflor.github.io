@@ -45,7 +45,10 @@ function lineStroke(x0: number, y0: number, dx: number, dy: number, n: number) {
 function makeStroke(pts: Int32Array): SignatureStroke { return { points: pts }; }
 function makeStrokes(pts: Int32Array): SignatureStroke[] { return [makeStroke(pts)]; }
 function trajFrom(pts: Int32Array): Trajectory {
-  return trajectoryFromBlocks(encodeAllBlocks(makeStrokes(pts)));
+  // pass the stroke's real seed points so the trajectory is reconstructed as
+  // true (lossless) geometry, independent of which predictor mode each block
+  // chose — the correct basis for a shape-similarity comparison.
+  return trajectoryFromBlocks(encodeAllBlocks(makeStrokes(pts)), pts);
 }
 
 // ── 1. codec determinism ────────────────────────────────────────────────────

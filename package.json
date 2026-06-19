@@ -8,6 +8,9 @@
     "start": "astro dev",
     "test": "npm run test:whisper",
     "test:whisper": "node scripts/run-whisper-tests.mjs",
+    "test:gamerquiz": "node scripts/run-gamerquiz-tests.mjs",
+    "check:gamerquiz": "tsc -p tsconfig.gamerquiz.json",
+    "gamerquiz": "tsx src/lib/gamerquiz/cli.ts",
     "build": "npm run test:whisper && astro check && astro build",
     "preview": "astro preview",
     "astro": "astro"

@@ -284,12 +284,14 @@ describe("glyph codec: geometric fidelity", () => {
 
 describe("glyph codec: mode selection", () => {
 
-    it("chooses harmonic or repeat for tight circles", () => {
+    it("chooses an oscillator mode (not linear) for tight circles", () => {
         const pts = circle(5000, 5000, 5000, 2 + GLYPH_BLOCK_SIZE * 2);
         const blocks = GlyphCodec.encode(pts, undefined, { adaptiveSegmentation: false });
         const [h, l, r] = countModes(blocks);
+        // a curve must be coded by the oscillator (harmonic / repeat / backward /
+        // velrot), never by constant-velocity linear extrapolation.
         assert.ok(l === 0, `tight circle should not use linear mode, got ${l} linear blocks`);
-        assert.ok(h + r === blocks.length, "all blocks should be harmonic or repeat");
+        assertExactRoundTrip(pts, "tight-circle");
     });
 
     it("chooses linear for perfectly straight lines", () => {
@@ -299,12 +301,17 @@ describe("glyph codec: mode selection", () => {
         assert.ok(h === 0 && r === 0, `line should only use linear, got h=${h} r=${r}`);
     });
 
-    it("uses repeat mode on constant-curvature arcs", () => {
+    it("reuses coefficients on constant-curvature arcs", () => {
         const pts = circle(5000, 5000, 8000, 2 + GLYPH_BLOCK_SIZE * 4);
         const blocks = GlyphCodec.encode(pts);
         const [h, l, r] = countModes(blocks);
-        assert.ok(h + r === blocks.length, `all blocks should be harmonic/repeat, got l=${l}`);
-        assert.ok(r >= 1, `constant curvature should produce at least 1 repeat block, got ${r}`);
+        const velrot = blocks.filter(b => b.lane === GlyphLane.VELROT).length;
+        // constant curvature should never fall back to linear, and should exploit
+        // its constant turning rate via coefficient reuse: a repeat block (copies
+        // the previous K/G) or a velrot block (one shared turning-rate coefficient).
+        assert.ok(l === 0, `constant curvature should not use linear, got l=${l}`);
+        assert.ok(r + velrot >= 1, `expected repeat or velrot reuse, got r=${r} velrot=${velrot}`);
+        assertExactRoundTrip(pts, "constant-curvature-arc");
     });
 
     it("mixes modes on compound trajectories (curve + line + curve)", () => {
@@ -687,7 +694,7 @@ describe("glyph codec: streaming equivalence", () => {
         }
     });
 
-    it("streaming encoder carries repeat state across emissions", () => {
+    it("streaming a full circle across many emissions decodes bit-exact", () => {
         const r = 8000, n = 2 + GLYPH_BLOCK_SIZE * 4;
         const seed: GlyphSeed = [
             Math.round(5000 + r),
@@ -698,6 +705,7 @@ describe("glyph codec: streaming equivalence", () => {
         const enc = new GlyphStreamEncoder(seed);
         const dec = new GlyphStreamDecoder(seed);
         const allDecoded: number[] = [];
+        const original: number[] = [];
         let totalEmissions = 0;
 
         for (let i = 0; i < n - 2; i++) {
@@ -706,6 +714,7 @@ describe("glyph codec: streaming equivalence", () => {
             vals[0] = Math.round(5000 + r * Math.cos(theta));
             vals[1] = Math.round(5000 + r * Math.sin(theta));
             vals[2] = 16000;
+            for (let c = 0; c < CH; c++) original.push(vals[c]);
             const chunk = enc.push(vals);
             if (chunk) {
                 totalEmissions++;
@@ -722,6 +731,10 @@ describe("glyph codec: streaming equivalence", () => {
 
         assert.ok(totalEmissions >= 3, `expected ≥3 emissions, got ${totalEmissions}`);
         assert.equal(allDecoded.length, (n - 2) * CH, "all points decoded");
+        // a curved stream produces non-linear blocks; every value must survive
+        for (let i = 0; i < allDecoded.length; i++) {
+            assert.equal(allDecoded[i], original[i], `stream value mismatch at index ${i}`);
+        }
     });
 
     it("flush emits correct partial block", () => {
@@ -2069,7 +2082,11 @@ describe("glyph codec: encoder/decoder agreement", () => {
             for (let i = 0; i < blocks.length; i++) {
                 assert.equal(unpacked[i].lane, blocks[i].lane, `block ${i} lane mismatch`);
                 assert.equal(unpacked[i].mode, blocks[i].mode, `block ${i} mode mismatch`);
-                if (blocks[i].mode === GlyphMode.HARMONIC) {
+                if (blocks[i].lane === GlyphLane.VELROT) {
+                    // velrot carries one turning-rate coefficient on the wire, not
+                    // K/G (those are reconstructed from it at decode time).
+                    assert.equal(unpacked[i].velSin, blocks[i].velSin, `block ${i} velSin mismatch`);
+                } else if (blocks[i].mode === GlyphMode.HARMONIC) {
                     assert.equal(unpacked[i].kR, blocks[i].kR, `block ${i} kR mismatch`);
                     assert.equal(unpacked[i].kI, blocks[i].kI, `block ${i} kI mismatch`);
                     assert.equal(unpacked[i].gR, blocks[i].gR, `block ${i} gR mismatch`);
@@ -2147,6 +2164,125 @@ describe("glyph codec: encoder/decoder agreement", () => {
         for (let i = 0; i < streamPts.length; i++) {
             assert.equal(streamPts[i], batchDecoded[CH * 2 + i],
                 `stream/batch diverge at ${i}`);
+        }
+    });
+});
+
+describe("long strokes exceeding the WASM point buffer", () => {
+    // regression: encode/decode share a fixed 2048-point WASM buffer; strokes
+    // longer than that were silently truncated. both sides now window in a
+    // shared 2046-data-point stride. these cross that boundary several times.
+    function roundTrips(pts: Int32Array): boolean {
+        const { seed1, seed2 } = seedsFrom(pts);
+        const decoded = GlyphCodec.decode(GlyphCodec.unpack(GlyphCodec.pack(GlyphCodec.encode(pts))), seed1, seed2);
+        if (decoded.length !== pts.length) return false;
+        for (let i = 0; i < pts.length; i++) if (decoded[i] !== pts[i]) return false;
+        return true;
+    }
+    it("round-trips curved strokes far past 2048 points, bit-exact", () => {
+        for (const n of [2049, 2050, 4094, 4095, 4096, 6144, 8193, 12000]) {
+            const p = new Int32Array(n * CH);
+            for (let i = 0; i < n; i++) {
+                p[i * CH] = Math.round(4000 + 2000 * Math.cos(i * 0.05));
+                p[i * CH + 1] = Math.round(4000 + 2000 * Math.sin(i * 0.05));
+                p[i * CH + 2] = Math.round(8000 + 4000 * Math.sin(i * 0.1));
+            }
+            assert.ok(roundTrips(p), `curved n=${n}`);
+        }
+    });
+    it("round-trips a long random walk past the buffer", () => {
+        const n = 5000, p = new Int32Array(n * CH);
+        let x = 0, y = 0, s = 12345;
+        const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+        for (let i = 0; i < n; i++) { x += Math.round((rnd() * 2 - 1) * 300); y += Math.round((rnd() * 2 - 1) * 300); p[i * CH] = x; p[i * CH + 1] = y; }
+        assert.ok(roundTrips(p), "random walk n=5000");
+    });
+});
+
+describe("stream path: curved + witness strokes round-trip", () => {
+    // regression: the stream encoder used to carry coefficient state across
+    // chunks while the decoder unpacked each chunk fresh, silently corrupting
+    // curved strokes (which produce non-linear blocks). chunks are now
+    // self-contained; this exercises the cases the single sinusoid test missed.
+    function streamRoundTrips(pts: Int32Array): boolean {
+        for (let c = 0; c < CH; c++) pts[c] = pts[CH + c]; // single-seed convention
+        const seed = [pts[CH], pts[CH + 1], pts[CH + 2], pts[CH + 3], pts[CH + 4]] as unknown as Parameters<typeof GlyphCodec.decode>[1];
+        const enc = new GlyphStreamEncoder(seed);
+        const dec = new GlyphStreamDecoder(seed);
+        const out: number[] = [];
+        const n = pts.length / CH;
+        for (let i = 2; i < n; i++) {
+            const chunk = enc.push(pts.subarray(i * CH, i * CH + CH));
+            if (chunk) { const d = dec.decode(chunk); for (let j = 0; j < d.length; j++) out.push(d[j]); }
+        }
+        const tail = enc.flush();
+        if (tail) { const d = dec.decode(tail); for (let j = 0; j < d.length; j++) out.push(d[j]); }
+        if (out.length !== (n - 2) * CH) return false;
+        for (let i = 0; i < out.length; i++) if (out[i] !== pts[2 * CH + i]) return false;
+        return true;
+    }
+
+    it("round-trips multi-chunk circular arcs (non-linear blocks)", () => {
+        for (const [R, turn] of [[2000, 0.15], [6000, -0.08], [800, 0.4], [9000, 0.03]] as const) {
+            const n = 90, p = new Int32Array(n * CH);
+            for (let i = 0; i < n; i++) { p[i * CH] = Math.round(4000 + R * Math.cos(i * turn)); p[i * CH + 1] = Math.round(4000 + R * Math.sin(i * turn)); }
+            assert.ok(streamRoundTrips(p), `arc R=${R} turn=${turn}`);
+        }
+    });
+
+    it("round-trips curved strokes carrying pressure across chunk boundaries", () => {
+        const n = 100, p = new Int32Array(n * CH);
+        for (let i = 0; i < n; i++) {
+            p[i * CH] = Math.round(5000 + 3000 * Math.cos(i * 0.12));
+            p[i * CH + 1] = Math.round(5000 + 3000 * Math.sin(i * 0.12));
+            p[i * CH + 2] = Math.round(8000 + 5000 * Math.sin(i * 0.3));
+        }
+        assert.ok(streamRoundTrips(p), "curved + pressure");
+    });
+});
+
+describe("GA lane (Cl(3) joint x,y,pressure)", () => {
+    // a large-scale rotational stroke with pressure is where the 3x3 matrix
+    // predictor becomes cheapest and the GA lane gets selected. deterministic
+    // seeded witness channels (mulberry32) so the test is reproducible.
+    function gaStroke(n: number): Int32Array {
+        let s = 0x9e3779b9 >>> 0;
+        const rng = () => { s = (s + 0x6d2b79f5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+        const p = new Int32Array(n * CH), S = 5e8;
+        for (let i = 0; i < n; i++) {
+            const t = (i / n) * 6.28318 * 3;
+            p[i * CH] = Math.round(Math.sin(t) * S);
+            p[i * CH + 1] = Math.round(Math.cos(t * 1.3) * S);
+            p[i * CH + 2] = Math.round(rng() * 16000); // pressure
+            p[i * CH + 3] = Math.round((rng() * 2 - 1) * 4000);
+            p[i * CH + 4] = Math.round((rng() * 2 - 1) * 8000);
+        }
+        return p;
+    }
+
+    it("selects the GA lane on joint position/pressure motion", () => {
+        const blocks = GlyphCodec.encode(gaStroke(80));
+        const ga = blocks.filter((b) => b.lane === GlyphLane.GA);
+        assert.ok(ga.length > 0, "expected at least one GA-lane block");
+        for (const b of ga) {
+            assert.ok(b.gaK && b.gaK.length === 9, "GA block carries 9 M_K coefficients");
+            assert.ok(b.gaG && b.gaG.length === 9, "GA block carries 9 M_G coefficients");
+        }
+    });
+
+    it("round-trips GA blocks bit-exact through pack/unpack/decode", () => {
+        for (const n of [40, 64, 80, 120]) assertExactRoundTrip(gaStroke(n), `GA n=${n}`);
+    });
+
+    it("preserves GA matrix coefficients through pack/unpack", () => {
+        const blocks = GlyphCodec.encode(gaStroke(80));
+        const restored = GlyphCodec.unpack(GlyphCodec.pack(blocks));
+        for (let i = 0; i < blocks.length; i++) {
+            if (blocks[i].lane !== GlyphLane.GA) continue;
+            for (let j = 0; j < 9; j++) {
+                assert.equal(restored[i].gaK![j], blocks[i].gaK![j], `M_K[${j}] block ${i}`);
+                assert.equal(restored[i].gaG![j], blocks[i].gaG![j], `M_G[${j}] block ${i}`);
+            }
         }
     });
 });
