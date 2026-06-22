@@ -31,7 +31,10 @@ if (image) {
   } catch {}
 }
 
-const htmlDescription = parseMarkdown(description);
+// the behind-the-scenes tier stays dense: compact cards show only the opener
+// (the first beat, before the first <br>) so they don't tower over the page.
+const compactOpener = description.split(/<br\s*\/?>/i)[0].trim();
+const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
 ---
 
 <a
@@ -42,7 +45,7 @@ const htmlDescription = parseMarkdown(description);
   class:list={[
     "interactive stagger-in",
     isCompact
-      ? "project-compact flex flex-col"
+      ? "project-compact flex items-start"
       : "py-[var(--space-md)] flex flex-wrap gap-[var(--space-md)] card-hover",
   ]}
 >
@@ -51,7 +54,7 @@ const htmlDescription = parseMarkdown(description);
       class:list={[
         "bg-[var(--color-border)] rounded-[var(--radius-lg)]",
         isCompact
-          ? "w-full"
+          ? "w-[4.5rem] shrink-0 self-start"
           : "w-[var(--size-thumbnail-md)] min-w-0 shrink-0 self-start",
       ]}
     >
@@ -80,8 +83,8 @@ const htmlDescription = parseMarkdown(description);
       )}
     </div>
   )}
-  <div class:list={["flex flex-col justify-start", isCompact ? "w-full" : "flex-1 min-w-[14rem]"]}>
-    <div class="flex items-baseline gap-1 mb-2 flex-wrap">
+  <div class:list={["flex flex-col justify-start", isCompact ? "flex-1 min-w-0" : "flex-1 min-w-[14rem]"]}>
+    <div class:list={["flex items-baseline gap-1 flex-wrap", isCompact ? "mb-1" : "mb-2"]}>
       <p class="font-medium min-w-0">{title}</p>
       <span class="opacity-60 tabular-nums shrink-0 whitespace-nowrap">· {month ? `${month} ` : ""}{year}</span>
       {status && (
@@ -99,7 +102,7 @@ const htmlDescription = parseMarkdown(description);
         </span>
       )}
     </div>
-    <div class="opacity-60 text-[length:var(--text-sm)]">
+    <div class:list={["opacity-60 text-[length:var(--text-sm)]", { "[&>p]:line-clamp-2": isCompact }]}>
       <Fragment set:html={htmlDescription} />
     </div>
   </div>
@@ -110,7 +113,7 @@ const htmlDescription = parseMarkdown(description);
      mirrors the concept-card surface so the two secondary tiers read as kin. */
   .project-compact {
     gap: var(--space-sm);
-    padding: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
     border: 1px solid rgb(var(--color-text-rgb) / 0.08);
     border-radius: var(--radius-md);
     transition:

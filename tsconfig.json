@@ -4,5 +4,12 @@
     "types": ["@webgpu/types"]
   },
   "include": [".astro/types.d.ts", "**/*"],
-  "exclude": ["dist", "rag_tests/**/*", "scripts/**/*", "src/scripts/whisper/test-*.ts"]
+  "exclude": [
+    "dist",
+    "rag_tests/**/*",
+    "scripts/**/*",
+    "projects/**/*",
+    "src/scripts/whisper/glyph-bench/**/*",
+    "src/scripts/whisper/test-*.ts"
+  ]
 }

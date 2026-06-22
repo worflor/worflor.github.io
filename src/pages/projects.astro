@@ -3,10 +3,12 @@ import Layout from "../layouts/Layout.astro";
 import { projectsPageContent } from "../config";
 import ProjectCard from "../components/ProjectCard.astro";
 import ConceptCard from "../components/ConceptCard.astro";
+import PublicationCard from "../components/PublicationCard.astro";
 import { getLoadingPriority } from "../utils/helpers";
 import type { Project } from "../types/config";
 
 const allProjects = projectsPageContent.projects;
+const publications = projectsPageContent.publications ?? [];
 
 // three tiers, ordered most-real to most-speculative so the page reads top-down
 // on mobile and keeps the sticky concepts sidebar on desktop. the section is its
@@ -30,7 +32,7 @@ const privateClusters = [
 
 <Layout seo={projectsPageContent.seo}>
   <section class="mt-8 projects-page">
-    <h1 class="page-title">Projects</h1>
+    <h1 class="page-title">Endeavours</h1>
     <p class="opacity-60 mb-10">{projectsPageContent.subtitle}</p>
 
     <div class:list={["projects-layout", { "projects-layout--has-concepts": conceptProjects.length > 0 }]}>
@@ -62,6 +64,20 @@ const privateClusters = [
                     <ProjectCard {...project} variant="compact" />
                   ))}
                 </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {publications.length > 0 && (
+          <section class="projects-publications" aria-labelledby="sidequests-heading">
+            <div class="section-header">
+              <h2 id="sidequests-heading" class="section-title">Side Quests</h2>
+              <p class="section-subtitle">papers and other detours.</p>
+            </div>
+            <div class="publications-list">
+              {publications.map((pub) => (
+                <PublicationCard {...pub} />
               ))}
             </div>
           </section>
@@ -158,6 +174,13 @@ const privateClusters = [
   .private-cluster {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+    gap: var(--space-sm);
+  }
+
+  /* side quests: publications, stacked like the behind-the-scenes cards */
+  .publications-list {
+    display: flex;
+    flex-direction: column;
     gap: var(--space-sm);
   }
 

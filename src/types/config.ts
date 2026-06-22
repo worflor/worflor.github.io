@@ -104,10 +104,27 @@ export type Project = {
   group?: "private" | "concept";
 };
 
+// a published paper. everything renders from the arxiv id: the abstract, pdf,
+// and doi links derive from it procedurally, and a live citation count fetches
+// client-side (mirrors the github-stars auto-gen on ProjectCard).
+export type Publication = {
+  title: string;
+  authors: string;
+  // arxiv identifier, e.g. "2606.01668" — all links derive from this
+  arxivId: string;
+  // primary category, e.g. "math.CV"
+  category?: string;
+  // human-readable label, e.g. "June 2026"
+  date: string;
+  // one-line teaser (markdown allowed)
+  teaser?: string;
+};
+
 export type ProjectPageContent = {
   seo: SEOInfo;
   subtitle: string;
   projects: Project[];
+  publications?: Publication[];
 };
 
 export type BlogPageContent = {

@@ -22,7 +22,7 @@ export const navBarLinks: NavBarLink[] = [
     url: "/about",
   },
   {
-    title: "Projects",
+    title: "Endeavours",
     url: "/projects",
   },
   {
@@ -65,7 +65,7 @@ export const homePageContent: HomePageContent = {
   socialLinks: socialLinks.filter(link => link.title !== "LinkedIn"),
   links: [
     {
-      title: "My Projects",
+      title: "Endeavours",
       url: "/projects",
     },
     {
@@ -141,7 +141,7 @@ Oh, *knowledge*. <3`,
     description: ``,
     links: [
       {
-        title: "Projects",
+        title: "Endeavours",
         url: "/projects",
         icon: "woflo:projects",
       },
@@ -185,7 +185,7 @@ Oh, *knowledge*. <3`,
 // projects
 export const projectsPageContent: ProjectPageContent = {
   seo: {
-    title: "Projects | woflo",
+    title: "Endeavours | woflo",
     description: "Endeavours.",
     image: identity.logo,
   },
@@ -300,6 +300,17 @@ export const projectsPageContent: ProjectPageContent = {
       image: "/images/morithon.webp",
       year: "2024",
       url: "https://dhafo.itch.io/morithon",
+    },
+  ],
+  publications: [
+    {
+      title: "ϱ: The Self-Referential Fixed Point of the Complex Exponential",
+      authors: "Michael Bickford",
+      arxivId: "2606.01668",
+      category: "math.CV",
+      date: "June 2026",
+      teaser:
+        "The complex exponential has a unique fixed point ϱ ≈ 0.318 + 1.337i, the solution of exp(z) = z in the strip 0 < Im z < π, and the geometry that unfolds once you take it seriously.",
     },
   ],
 };

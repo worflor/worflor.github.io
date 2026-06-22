@@ -1,0 +1,205 @@
+---
+import type { Publication } from "../types/config";
+import { parseMarkdown } from "../utils/helpers";
+
+type Props = Publication;
+
+const { title, authors, arxivId, category, date, teaser } = Astro.props;
+
+// every link derives from the id: hand it the arxiv id, get the rest for free.
+const absUrl = `https://arxiv.org/abs/${arxivId}`;
+const pdfUrl = `https://arxiv.org/pdf/${arxivId}`;
+const doiUrl = `https://doi.org/10.48550/arXiv.${arxivId}`;
+
+const meta = [authors, `arXiv:${arxivId}`, category, date].filter(Boolean).join(" · ");
+const teaserHtml = teaser ? parseMarkdown(teaser) : "";
+---
+
+<article class="publication-card interactive stagger-in">
+  <div class="publication-header">
+    <h3 class="publication-title">
+      <a href={absUrl} target="_blank" rel="noopener noreferrer">{title}</a>
+    </h3>
+    <!-- a live citation count, fetched client-side; stays hidden until the paper
+         earns its first one. mirrors the github-stars auto-gen on ProjectCard. -->
+    <span class="publication-citations" data-arxiv={arxivId} hidden>
+      <svg class="publication-cite-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg>
+      <span class="cite-count"></span>
+    </span>
+  </div>
+
+  <p class="publication-meta">{meta}</p>
+
+  {teaserHtml && (
+    <div class="publication-teaser">
+      <Fragment set:html={teaserHtml} />
+    </div>
+  )}
+
+  <div class="publication-links">
+    <a href={absUrl} target="_blank" rel="noopener noreferrer">abstract</a>
+    <a href={pdfUrl} target="_blank" rel="noopener noreferrer">pdf</a>
+    <a href={doiUrl} target="_blank" rel="noopener noreferrer">doi</a>
+  </div>
+</article>
+
+<style>
+  /* mirrors the concept-card / compact-project surface so the tiers read as kin */
+  .publication-card {
+    padding: var(--space-md);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-md);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background-color var(--duration-normal) var(--ease-out);
+  }
+
+  .publication-card:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.18);
+    background-color: rgb(var(--color-text-rgb) / 0.02);
+  }
+
+  .publication-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .publication-title {
+    font-weight: 500;
+    font-size: var(--text-sm);
+    margin: 0;
+    min-width: 0;
+  }
+
+  .publication-title a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .publication-title a:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .publication-citations {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    font-size: calc(var(--text-sm) * 0.85);
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* the attribute selector outranks the base display, so the badge truly hides */
+  .publication-citations[hidden] {
+    display: none;
+  }
+
+  .publication-cite-icon {
+    width: 0.8rem;
+    height: 0.8rem;
+  }
+
+  .publication-meta {
+    margin: 0.4rem 0 0;
+    font-size: calc(var(--text-sm) * 0.85);
+    opacity: 0.45;
+    line-height: 1.5;
+  }
+
+  .publication-teaser {
+    margin-top: 0.5rem;
+    font-size: var(--text-sm);
+    opacity: 0.6;
+    line-height: 1.55;
+  }
+
+  .publication-links {
+    display: flex;
+    gap: var(--space-md);
+    margin-top: var(--space-sm);
+    font-size: calc(var(--text-sm) * 0.9);
+  }
+
+  .publication-links a {
+    color: inherit;
+    opacity: 0.55;
+    text-decoration: none;
+    transition: opacity var(--duration-normal) var(--ease-out);
+  }
+
+  .publication-links a:hover {
+    opacity: 0.9;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+</style>
+
+<script>
+  // citations move slowly; a day-long cache keeps the api untouched on revisits.
+  var CITE_TTL_MS = 1000 * 60 * 60 * 24;
+  var CITE_KEY = "arxiv-citations-cache-v1";
+
+  function readCiteCache(): Record<string, { n: number; ts: number }> {
+    try {
+      var raw = localStorage.getItem(CITE_KEY);
+      if (!raw) return {};
+      var parsed = JSON.parse(raw) as Record<string, { n: number; ts: number }>;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeCiteCache(cache: Record<string, { n: number; ts: number }>) {
+    try {
+      localStorage.setItem(CITE_KEY, JSON.stringify(cache));
+    } catch {}
+  }
+
+  function showCitations(el: HTMLElement, n: number) {
+    // a fresh paper has none; only surface the badge once it earns one.
+    if (n <= 0) return;
+    var countEl = el.querySelector(".cite-count");
+    if (!countEl) return;
+    countEl.textContent = n === 1 ? "1 citation" : String(n) + " citations";
+    el.removeAttribute("hidden");
+  }
+
+  function bootPublications() {
+    var cache = readCiteCache();
+    var now = Date.now();
+
+    document.querySelectorAll(".publication-citations").forEach(function (el) {
+      if (!(el instanceof HTMLElement)) return;
+      var id = el.getAttribute("data-arxiv");
+      if (!id) return;
+      const arxivId: string = id;
+
+      var cached = cache[arxivId];
+      if (cached && typeof cached.n === "number" && now - cached.ts < CITE_TTL_MS) {
+        showCitations(el, cached.n);
+        return;
+      }
+
+      fetch(`https://api.semanticscholar.org/graph/v1/paper/arXiv:${arxivId}?fields=citationCount`, {
+        headers: { Accept: "application/json" },
+      })
+        .then(function (res) {
+          return res.ok ? res.json() : null;
+        })
+        .then(function (data) {
+          if (data && typeof data.citationCount === "number") {
+            cache[arxivId] = { n: data.citationCount, ts: Date.now() };
+            writeCiteCache(cache);
+            showCitations(el, data.citationCount);
+          }
+        })
+        .catch(function () {});
+    });
+  }
+
+  document.addEventListener("astro:page-load", bootPublications);
+</script>

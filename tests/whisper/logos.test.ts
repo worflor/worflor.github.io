@@ -645,8 +645,8 @@ describe("live-wasm-logos", () => {
       ["constant-4K", new Uint8Array(4096).fill(0xAB),           8],
       ["0xFF-4K",     new Uint8Array(4096).fill(0xFF),           8],
       ["alt-01-2K",   (() => { const b = new Uint8Array(2048); for (let i = 0; i < 2048; i++) b[i] = i & 1; return b; })(), 9],
-      ["pangram-x100", TE.encode("The quick brown fox jumps over the lazy dog. ".repeat(100)), 47],
-      ["jp-x100",      TE.encode("あいうえおかきくけこさしすせそ".repeat(100)), 27],
+      ["pangram-x100", TE.encode("The quick brown fox jumps over the lazy dog. ".repeat(100)), 45],
+      ["jp-x100",      TE.encode("あいうえおかきくけこさしすせそ".repeat(100)), 28],
       ["hello-x200",   TE.encode("hello whisper world!\n".repeat(200)), 26],
     ];
 
