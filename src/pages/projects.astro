@@ -37,6 +37,20 @@ const privateClusters = [
 
     <div class:list={["projects-layout", { "projects-layout--has-concepts": conceptProjects.length > 0 }]}>
       <div class="projects-main">
+        {publications.length > 0 && (
+          <section class="projects-publications" aria-labelledby="sidequests-heading">
+            <div class="section-header">
+              <h2 id="sidequests-heading" class="section-title">Side Quests</h2>
+              <p class="section-subtitle">papers and other detours.</p>
+            </div>
+            <div class="publications-list">
+              {publications.map((pub) => (
+                <PublicationCard {...pub} />
+              ))}
+            </div>
+          </section>
+        )}
+
         <section class="projects-shipped-section" aria-labelledby="shipped-heading">
           <div class="section-header">
             <h2 id="shipped-heading" class="section-title">Shipped</h2>
@@ -64,20 +78,6 @@ const privateClusters = [
                     <ProjectCard {...project} variant="compact" />
                   ))}
                 </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {publications.length > 0 && (
-          <section class="projects-publications" aria-labelledby="sidequests-heading">
-            <div class="section-header">
-              <h2 id="sidequests-heading" class="section-title">Side Quests</h2>
-              <p class="section-subtitle">papers and other detours.</p>
-            </div>
-            <div class="publications-list">
-              {publications.map((pub) => (
-                <PublicationCard {...pub} />
               ))}
             </div>
           </section>
