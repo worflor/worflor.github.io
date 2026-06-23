@@ -1,0 +1,403 @@
+---
+import type { ResearchArtifact } from "../types/config";
+import { parseMarkdown } from "../utils/helpers";
+
+type Props = ResearchArtifact;
+
+const { title, subtitle, takeaway, parts, duality } = Astro.props;
+
+const takeawayHtml = parseMarkdown(takeaway);
+const dualityHtml = parseMarkdown(duality);
+const partsRendered = parts.map((p) => ({ ...p, html: parseMarkdown(p.blurb) }));
+const restId = `artifact-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
+---
+
+<div class="artifact-card interactive stagger-in">
+  <button
+    type="button"
+    class="artifact-toggle"
+    aria-expanded="false"
+    aria-controls={restId}
+  >
+    <span class="artifact-title">{title}</span>
+    <span class="artifact-chevron" aria-hidden="true"></span>
+  </button>
+
+  {subtitle && <p class="artifact-subtitle">{subtitle}</p>}
+
+  <div class="artifact-takeaway">
+    <Fragment set:html={takeawayHtml} />
+  </div>
+
+  <div class="artifact-rest" id={restId}>
+    <div class="artifact-rest-inner">
+      <div class="artifact-parts">
+        {partsRendered.map((p, i) => (
+          <div class="artifact-part">
+            <span class:list={["artifact-blob", `artifact-blob--${p.motion}`]} aria-hidden="true">
+              {i === 0 && (
+                <svg class="artifact-numeral" viewBox="0 0 28 32" fill="none">
+                  <defs>
+                    <filter id={`${restId}-rough-1`} x="-35%" y="-35%" width="170%" height="170%">
+                      <feTurbulence type="turbulence" baseFrequency="0.05" numOctaves="2" seed="7" result="n" />
+                      <feDisplacementMap in="SourceGraphic" in2="n" scale="1.5" xChannelSelector="R" yChannelSelector="G" />
+                    </filter>
+                  </defs>
+                  <g filter={`url(#${restId}-rough-1)`} stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M8 10.6 Q11 8 13.9 5.1 C14.7 12 13.3 20 13.9 27.2" />
+                    <path d="M8.4 27.4 Q14 26.1 19.6 27.5" />
+                  </g>
+                </svg>
+              )}
+              {i === 1 && (
+                <svg class="artifact-numeral" viewBox="0 0 28 32" fill="none">
+                  <defs>
+                    <filter id={`${restId}-rough-2`} x="-35%" y="-35%" width="170%" height="170%">
+                      <feTurbulence type="turbulence" baseFrequency="0.05" numOctaves="2" seed="13" result="n" />
+                      <feDisplacementMap in="SourceGraphic" in2="n" scale="1.5" xChannelSelector="R" yChannelSelector="G" />
+                    </filter>
+                  </defs>
+                  <g filter={`url(#${restId}-rough-2)`} stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M7 10 C7 5.5 12 4 15.2 6 C18 7.7 17.3 11.5 14 14.5 C11.5 18 9 22 7.3 26.2" />
+                    <path d="M6.8 26.4 Q14 25.2 20 26.8" />
+                  </g>
+                </svg>
+              )}
+              {i > 1 && <span class="artifact-numeral-fallback">{i + 1}</span>}
+            </span>
+            <div class="artifact-part-body">
+              <p class="artifact-part-name">{p.name}</p>
+              <div class="artifact-part-blurb"><Fragment set:html={p.html} /></div>
+              <span class="artifact-status">
+                <span class="artifact-status-dot" aria-hidden="true"></span>{p.status}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div class="artifact-duality"><Fragment set:html={dualityHtml} /></div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* shares the concept-card surface so the research tier reads as kin */
+  .artifact-card {
+    padding: var(--space-md);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-md);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background-color var(--duration-normal) var(--ease-out);
+  }
+
+  .artifact-card:hover {
+    border-color: rgb(var(--color-text-rgb) / 0.18);
+    background-color: rgb(var(--color-text-rgb) / 0.02);
+  }
+
+  /* the title row doubles as the open/close control */
+  .artifact-toggle {
+    appearance: none;
+    -webkit-appearance: none;
+    background: none;
+    border: none;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+
+  /* a comfortable tap target on touch / stylus devices, tight on desktop */
+  @media (any-pointer: coarse) {
+    .artifact-toggle {
+      min-height: var(--touch-target);
+    }
+  }
+
+  .artifact-toggle:active .artifact-title {
+    opacity: 0.7;
+  }
+
+  .artifact-toggle:focus-visible {
+    outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
+    outline-offset: 3px;
+    border-radius: var(--radius-xs);
+  }
+
+  .artifact-title {
+    font-weight: 600;
+    font-size: var(--text-base);
+    min-width: 0;
+  }
+
+  .artifact-chevron {
+    flex-shrink: 0;
+    margin-left: auto;
+    width: 0.45rem;
+    height: 0.45rem;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    opacity: 0.3;
+    transition:
+      transform var(--duration-normal) var(--ease-out),
+      opacity var(--duration-normal) var(--ease-out);
+  }
+
+  .artifact-toggle:hover .artifact-chevron {
+    opacity: 0.55;
+  }
+
+  .artifact-card[data-open] .artifact-chevron {
+    transform: rotate(225deg);
+    opacity: 0.55;
+  }
+
+  .artifact-subtitle {
+    margin: 0.25rem 0 0;
+    font-size: var(--text-sm);
+    font-style: italic;
+    opacity: 0.4;
+  }
+
+  .artifact-takeaway {
+    margin-top: 0.5rem;
+    font-size: var(--text-sm);
+    opacity: 0.62;
+    line-height: 1.55;
+    transition: opacity var(--duration-normal) var(--ease-out);
+  }
+
+  /* brighten on hover, matching the concept-card body */
+  .artifact-card:hover .artifact-takeaway {
+    opacity: 0.8;
+  }
+
+  /* the rest collapses to nothing and animates open via grid rows;
+     same timing as the concept-card expand for consistency */
+  .artifact-rest {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows var(--duration-normal) var(--ease-out);
+  }
+
+  .artifact-card[data-open] .artifact-rest {
+    grid-template-rows: 1fr;
+  }
+
+  .artifact-rest-inner {
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .artifact-parts {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding-top: var(--space-md);
+  }
+
+  .artifact-part {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+
+  .artifact-part-body {
+    min-width: 0;
+  }
+
+  .artifact-part-name {
+    margin: 0 0 0.25rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .artifact-part-blurb {
+    font-size: var(--text-sm);
+    opacity: 0.6;
+    line-height: 1.55;
+  }
+
+  .artifact-status {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+    font-size: calc(var(--text-sm) * 0.9);
+    opacity: 0.45;
+    line-height: 1.4;
+  }
+
+  .artifact-status-dot {
+    flex-shrink: 0;
+    width: 0.4rem;
+    height: 0.4rem;
+    margin-top: 0.05rem;
+    border-radius: var(--radius-full);
+    background: rgb(var(--color-text-rgb) / 0.35);
+    align-self: center;
+  }
+
+  .artifact-duality {
+    margin-top: var(--space-md);
+    padding-top: var(--space-sm);
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    font-size: var(--text-sm);
+    font-style: italic;
+    opacity: 0.5;
+    line-height: 1.55;
+  }
+
+  /* reset marked's wrapping <p> margins inside set:html regions */
+  .artifact-takeaway :global(p),
+  .artifact-part-blurb :global(p),
+  .artifact-duality :global(p) {
+    margin: 0;
+  }
+
+  /* ── the inner mark: a hand-drawn numeral in the site's chromatic split,
+     wrapped in the ambient ring it condenses into (1) or streams out of (2) ── */
+  .artifact-blob {
+    position: relative;
+    flex-shrink: 0;
+    width: 2.25rem;
+    height: 2.25rem;
+    margin-top: 0.05rem;
+    display: grid;
+    place-items: center;
+  }
+
+  /* an abstract, blurred blob sits behind the numeral — organic border-radius,
+     never a circle, so the asymmetric breathing reads as intentional, not broken */
+  .artifact-blob::after {
+    content: "";
+    position: absolute;
+    inset: 8%;
+    z-index: 0;
+    filter: blur(2px);
+  }
+
+  .artifact-numeral,
+  .artifact-numeral-fallback {
+    position: relative;
+    z-index: 1;
+    width: 1.45rem;
+    height: 1.65rem;
+    /* the site's chromatic aberration: cyan offset left, red offset right */
+    filter:
+      drop-shadow(calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)))
+      drop-shadow(var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity)));
+    transition: filter var(--duration-normal) var(--ease-out);
+  }
+
+  .artifact-numeral-fallback {
+    display: grid;
+    place-items: center;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    font-weight: 700;
+  }
+
+  /* wick = 1, cyan, blob breathes inward */
+  .artifact-blob--condense {
+    color: rgb(var(--chromatic-cyan));
+  }
+  .artifact-blob--condense::after {
+    background: rgb(var(--chromatic-cyan) / 0.2);
+    border-radius: 63% 37% 47% 53% / 61% 51% 49% 39%;
+    animation:
+      artifact-breathe-in 4s var(--ease-out) infinite,
+      artifact-morph-1 9s ease-in-out infinite;
+  }
+  @keyframes artifact-breathe-in {
+    0%, 100% { transform: scale(1); opacity: 0.4; }
+    50% { transform: scale(0.7); opacity: 0.85; }
+  }
+  @keyframes artifact-morph-1 {
+    0%, 100% { border-radius: 63% 37% 47% 53% / 61% 51% 49% 39%; }
+    50% { border-radius: 46% 54% 58% 42% / 47% 57% 43% 53%; }
+  }
+
+  /* seance = 2, red, blob breathes outward */
+  .artifact-blob--stream {
+    color: rgb(var(--chromatic-red));
+  }
+  .artifact-blob--stream::after {
+    background: rgb(var(--chromatic-red) / 0.2);
+    border-radius: 40% 60% 56% 44% / 49% 41% 59% 51%;
+    animation:
+      artifact-breathe-out 4.6s var(--ease-out) infinite,
+      artifact-morph-2 11s ease-in-out infinite;
+  }
+  @keyframes artifact-breathe-out {
+    0%, 100% { transform: scale(0.92); opacity: 0.4; }
+    50% { transform: scale(1.22); opacity: 0.85; }
+  }
+  @keyframes artifact-morph-2 {
+    0%, 100% { border-radius: 40% 60% 56% 44% / 49% 41% 59% 51%; }
+    50% { border-radius: 58% 42% 44% 56% / 55% 51% 49% 45%; }
+  }
+
+  /* hover surfaces a stronger split — mirrors the tool-action chromatic behaviour */
+  @media (hover: hover) and (pointer: fine) {
+    .artifact-card:hover .artifact-numeral,
+    .artifact-card:hover .artifact-numeral-fallback {
+      filter:
+        drop-shadow(calc(-2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.7))
+        drop-shadow(calc(2 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-red) / 0.7));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .artifact-rest {
+      transition: none;
+    }
+    .artifact-blob::after {
+      animation: none;
+      opacity: 0.4;
+      transform: none;
+    }
+    .artifact-numeral,
+    .artifact-numeral-fallback {
+      transition: none;
+    }
+  }
+</style>
+
+<script>
+  function initArtifactCards() {
+    document.querySelectorAll<HTMLElement>(".artifact-card").forEach(function (card) {
+      if (card.dataset.bound === "1") return;
+      card.dataset.bound = "1";
+
+      const toggle = card.querySelector(".artifact-toggle");
+      if (!toggle) return;
+
+      toggle.addEventListener("click", function () {
+        const isOpen = card.dataset.open === "1";
+        if (isOpen) {
+          delete card.dataset.open;
+          toggle.setAttribute("aria-expanded", "false");
+        } else {
+          card.dataset.open = "1";
+          toggle.setAttribute("aria-expanded", "true");
+        }
+      });
+    });
+  }
+
+  document.addEventListener("astro:page-load", initArtifactCards);
+</script>

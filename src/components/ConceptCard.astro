@@ -110,8 +110,22 @@ const restId = `concept-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").r
     color: inherit;
     text-align: left;
     cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
     /* keep the control row on one line so the chevron never wraps to its own row */
     flex-wrap: nowrap;
+  }
+
+  /* a comfortable tap target on touch / stylus devices, tight on desktop */
+  @media (any-pointer: coarse) {
+    .concept-card-toggle {
+      min-height: var(--touch-target);
+    }
+  }
+
+  .concept-card-toggle:active .concept-card-title {
+    opacity: 0.7;
   }
 
   .concept-card-toggle:focus-visible {
@@ -168,13 +182,13 @@ const restId = `concept-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").r
 
   .concept-card-body {
     font-size: var(--text-sm);
-    opacity: 0.55;
-    line-height: 1.55;
+    opacity: 0.62;
+    line-height: 1.6;
     transition: opacity var(--duration-normal) var(--ease-out);
   }
 
   .concept-card-link:hover .concept-card-body {
-    opacity: 0.78;
+    opacity: 0.82;
   }
 
   /* the rest collapses to nothing by default and animates open via grid rows */
@@ -188,17 +202,45 @@ const restId = `concept-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").r
     grid-template-rows: 1fr;
   }
 
+  /* the deeper read settles in: a quiet fade + drift once the card opens, set off
+     by a short hairline (clipped away while collapsed) so it reads as elaboration */
   .concept-card-rest-inner {
+    position: relative;
     overflow: hidden;
     min-height: 0;
+    padding-top: 0.7rem;
     font-size: var(--text-sm);
-    opacity: 0.55;
-    line-height: 1.55;
-    padding-top: 0.5rem;
+    line-height: 1.6;
+    opacity: 0;
+    transform: translateY(0.3rem);
+    transition:
+      opacity var(--duration-slow) var(--ease-out),
+      transform var(--duration-slow) var(--ease-out);
+  }
+
+  .concept-card-rest-inner::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1.75rem;
+    height: 1px;
+    background: rgb(var(--color-text-rgb) / 0.12);
+  }
+
+  .concept-card[data-open] .concept-card-rest-inner {
+    opacity: 0.6;
+    transform: translateY(0);
+    transition-delay: 70ms;
+  }
+
+  .concept-card[data-open] .concept-card-link:hover .concept-card-rest-inner {
+    opacity: 0.8;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .concept-card-rest,
+    .concept-card-rest-inner,
     .concept-card-chevron,
     .concept-card-body {
       transition: none;

@@ -120,11 +120,32 @@ export type Publication = {
   teaser?: string;
 };
 
+// one half of a research artifact. each part renders with an inline immersive
+// "blob" whose motion encodes its idea: condense (knowledge pulled together from
+// nothing) or stream (a dense mass read out into the open).
+export type ArtifactPart = {
+  name: string;
+  blurb: string; // markdown allowed
+  status: string; // honest "where it's at now" line
+  motion: "condense" | "stream";
+};
+
+// a thing built to the edge of an idea: real, runnable, deliberately unfinished.
+// collapsed shows the takeaway; opened reveals the parts and how they relate.
+export type ResearchArtifact = {
+  title: string;
+  subtitle?: string;
+  takeaway: string; // the collapsed line (markdown allowed)
+  parts: ArtifactPart[];
+  duality: string; // how the parts answer each other (markdown allowed)
+};
+
 export type ProjectPageContent = {
   seo: SEOInfo;
   subtitle: string;
   projects: Project[];
   publications?: Publication[];
+  artifacts?: ResearchArtifact[];
 };
 
 export type BlogPageContent = {

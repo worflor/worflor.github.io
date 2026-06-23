@@ -4,11 +4,13 @@ import { projectsPageContent } from "../config";
 import ProjectCard from "../components/ProjectCard.astro";
 import ConceptCard from "../components/ConceptCard.astro";
 import PublicationCard from "../components/PublicationCard.astro";
+import ArtifactCard from "../components/ArtifactCard.astro";
 import { getLoadingPriority } from "../utils/helpers";
 import type { Project } from "../types/config";
 
 const allProjects = projectsPageContent.projects;
 const publications = projectsPageContent.publications ?? [];
+const artifacts = projectsPageContent.artifacts ?? [];
 
 // three tiers, ordered most-real to most-speculative so the page reads top-down
 // on mobile and keeps the sticky concepts sidebar on desktop. the section is its
@@ -65,6 +67,20 @@ const privateClusters = [
           </div>
         </section>
 
+        {artifacts.length > 0 && (
+          <section class="projects-artifacts" aria-labelledby="artifacts-heading">
+            <div class="section-header">
+              <h2 id="artifacts-heading" class="section-title">Artifacts</h2>
+              <p class="section-subtitle">built to the edge of an idea, then set down till the tea comes.</p>
+            </div>
+            <div class="artifacts-list">
+              {artifacts.map((artifact) => (
+                <ArtifactCard {...artifact} />
+              ))}
+            </div>
+          </section>
+        )}
+
         {privateProjects.length > 0 && (
           <section class="projects-private" aria-labelledby="private-heading">
             <div class="section-header">
@@ -112,7 +128,9 @@ const privateClusters = [
 
   .projects-layout {
     display: grid;
-    grid-template-columns: 1fr;
+    /* minmax(0, 1fr) (not bare 1fr) so the horizontal concepts rail can't force
+       the column wider than the viewport on narrow screens */
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-xl);
   }
 
@@ -177,8 +195,9 @@ const privateClusters = [
     gap: var(--space-sm);
   }
 
-  /* side quests: publications, stacked like the behind-the-scenes cards */
-  .publications-list {
+  /* side quests + artifacts: stacked like the behind-the-scenes cards */
+  .publications-list,
+  .artifacts-list {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);

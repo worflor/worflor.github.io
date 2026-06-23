@@ -210,24 +210,6 @@ export const projectsPageContent: ProjectPageContent = {
       url: "/whisper?live",
     },
     {
-      title: "Seance",
-      description: "Run any LLM straight from your SSD. The weights never load into RAM.<br>A tiny oscillator predicts where each layer is headed and skips the heavy math when it's right, about 96% of the time on a 9B model, output identical.<br>197KB of Rust and the realization that an LLM's forward pass is mostly decompression.",
-      image: "/images/seance-cover.svg",
-      month: "May",
-      year: "2026",
-      url: "/contact?project=seance",
-      status: "private-beta",
-    },
-    {
-      title: "Wick",
-      description: "Give it a folder and ask. Wick answers in about a millisecond, and when the answer isn't there, it says so instead of making one up.<br>Every reply even arrives with a posture: decisive, exploring, reaching, or flinching. One Rust binary and a SQLite file.",
-      image: "/images/wick-cover.svg",
-      month: "April",
-      year: "2026",
-      url: "/contact?project=wick",
-      status: "private-beta",
-    },
-    {
       title: "alpha-math",
       description:
         "AlphaFold, but for algebra.<br>Hand it any algebra and it uncovers the laws it obeys, including ones nobody had written down, then proves each one exactly.",
@@ -311,6 +293,32 @@ export const projectsPageContent: ProjectPageContent = {
       date: "June 2026",
       teaser:
         "The complex exponential has a unique fixed point ϱ ≈ 0.318 + 1.337i, the solution of exp(z) = z in the strip 0 < Im z < π, and the geometry that unfolds once you take it seriously.",
+    },
+  ],
+  artifacts: [
+    {
+      title: "Wick & Seance",
+      subtitle: "two sides of the same coin.",
+      takeaway:
+        "wick is a corpusless corpus; seance reads a model's raw weights like one. two takes on the same heresy: cold weights, cold corpus; hot math, hot attention. and they raised each other.",
+      parts: [
+        {
+          name: "wick",
+          motion: "condense",
+          blurb:
+            "point it at a folder, ask, and back comes a focused packet of *your own* passages, each tagged with why it's there. one SQLite file, no embedding server, no GPU, no model download. it trains the semantic space on your corpus and runs heat-kernel diffusion over the document graph (math from the 1800s), so it reads structure flat embeddings miss, and it'll even tell you what's *missing*. ~1ms warm.",
+          status: "real and running, paused at “works, not yet right” while i chase the piece it's still missing",
+        },
+        {
+          name: "seance",
+          motion: "stream",
+          blurb:
+            "run any LLM straight off cold SSD. no GPU, no framework, zero weights in RAM. a 197KB rust binary memory-maps the weights and reads them one matmul at a time, so a 9B model (19GB on disk) runs in under 2MB of RAM, across 12 models and 10 architecture families. it's IO-bound today (~0.5–14 tok/s), but speed scales *linearly* with drive bandwidth: no diminishing returns, no cliff. a RAM runtime goes “fast → doesn't run” the moment a model outgrows memory; seance goes “fast → a bit slower.” push compute closer to storage and it laps the traditional runtimes.",
+          status: "proof of concept, ahead of its hardware. taught me more about how weights behave than anything i've read",
+        },
+      ],
+      duality:
+        "seance turns weights into a readable corpus, which is exactly the thing wick pretends to have. each one's question was the other's answer.",
     },
   ],
 };
