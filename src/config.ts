@@ -297,10 +297,10 @@ export const projectsPageContent: ProjectPageContent = {
   ],
   artifacts: [
     {
-      title: "Wick & Seance",
+      title: "Wick & Séance",
       subtitle: "two sides of the same coin.",
       takeaway:
-        "wick is a corpusless corpus; seance reads a model's raw weights like one. two takes on the same heresy: cold weights, cold corpus; hot math, hot attention. and they raised each other.",
+        "wick is a corpusless corpus; séance reads a model's raw weights like one. two takes on the same heresy: cold weights, cold corpus; hot math, hot attention. and they raised each other.",
       parts: [
         {
           name: "wick",
@@ -310,15 +310,15 @@ export const projectsPageContent: ProjectPageContent = {
           status: "real and running, paused at “works, not yet right” while i chase the piece it's still missing",
         },
         {
-          name: "seance",
+          name: "séance",
           motion: "stream",
           blurb:
-            "run any LLM straight off cold SSD. no GPU, no framework, zero weights in RAM. a 197KB rust binary memory-maps the weights and reads them one matmul at a time, so a 9B model (19GB on disk) runs in under 2MB of RAM, across 12 models and 10 architecture families. it's IO-bound today (~0.5–14 tok/s), but speed scales *linearly* with drive bandwidth: no diminishing returns, no cliff. a RAM runtime goes “fast → doesn't run” the moment a model outgrows memory; seance goes “fast → a bit slower.” push compute closer to storage and it laps the traditional runtimes.",
+            "run any LLM straight off cold SSD. no GPU, no framework, zero weights in RAM. a 197KB rust binary memory-maps the weights and reads them one matmul at a time, so a 9B model (19GB on disk) runs in under 2MB of RAM, across 12 models and 10 architecture families. it's IO-bound today (~0.5–14 tok/s), but speed scales *linearly* with drive bandwidth: no diminishing returns, no cliff. a RAM runtime goes “fast → doesn't run” the moment a model outgrows memory; séance goes “fast → a bit slower.” push compute closer to storage and it laps the traditional runtimes.",
           status: "proof of concept, ahead of its hardware. taught me more about how weights behave than anything i've read",
         },
       ],
       duality:
-        "seance turns weights into a readable corpus, which is exactly the thing wick pretends to have. each one's question was the other's answer.",
+        "séance turns weights into a readable corpus, which is exactly the thing wick pretends to have. each one's question was the other's answer.",
     },
   ],
 };
