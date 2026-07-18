@@ -266,7 +266,7 @@ export interface NodeRecord {
 
 /** construct a CampfireNode wired to a fake transport bound to `net`,
  *  recording every callback into arrays on the returned record. */
-export function makeNode(net: VirtualNet, name: string): NodeRecord {
+export function makeNode(net: VirtualNet, name: string, opts: { ringRepairIntervalMs?: number; beaconCheckMs?: number; beaconIdleMs?: number } = {}): NodeRecord {
   const idx = net.nextNodeIdx();
   const states: CampfireState[] = [];
   const stateDetails: Array<{ state: CampfireState; detail?: string }> = [];
@@ -294,7 +294,12 @@ export function makeNode(net: VirtualNet, name: string): NodeRecord {
     onSeatDiverged: (peerId, reason) => { diverged.push({ hex: toHex(peerId), reason }); },
   };
 
-  const node = new CampfireNode(callbacks, { sessionFactory });
+  const node = new CampfireNode(callbacks, {
+    sessionFactory,
+    ringRepairIntervalMs: opts.ringRepairIntervalMs,
+    beaconCheckMs: opts.beaconCheckMs,
+    beaconIdleMs: opts.beaconIdleMs,
+  });
 
   return { net, idx, name, node, states, stateDetails, messages, logs, peersSeen, diverged };
 }

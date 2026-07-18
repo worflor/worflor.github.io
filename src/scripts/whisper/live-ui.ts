@@ -4857,6 +4857,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const sysEl = document.createElement("span");
       sysEl.className = "wl-msg-system";
       sysEl.textContent = msg.text ?? "";
+      // connection-lifecycle notices render as a seam in the timeline (a
+      // hairline scar across the chat) rather than a floating pill: the
+      // interruption is an event that happened to the timeline, not a
+      // message inside it. the seam shimmers while recovery is live (css
+      // keys off .wl-recovering on the surface) and settles to a quiet
+      // scar once the moment passes.
+      if (/reconnect/i.test(msg.text ?? "")) {
+        div.classList.add("wl-msg--seam");
+      }
       div.appendChild(sysEl);
     }
 
@@ -5801,7 +5810,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatInput.placeholder = "reconnecting...";
         opts.fpChip.classList.remove("wl-fp-chip--verified");
         opts.fpChip.classList.add("wl-fp-chip--recovering");
-        addChatMessage({ type: "system", direction: "system", text: "connection interrupted, reconnecting...", timestamp: Date.now() });
+        addChatMessage({ type: "system", direction: "system", text: "reconnecting…", timestamp: Date.now() });
         break;
 
       case "disconnected": {

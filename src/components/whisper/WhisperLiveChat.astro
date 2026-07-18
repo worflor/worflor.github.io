@@ -1092,6 +1092,79 @@
     background: rgb(var(--color-text-rgb) / 0.02);
   }
 
+  /* connection seam: an interruption is a scar in the timeline, not a
+     message in it. a grey hairline runs the full width with the words
+     resting quietly in the gap; no pill, no border, background-blended. */
+  :global(.wl-chat-messages) :global(.wl-msg--seam) {
+    display: flex;
+    /* the base .wl-msg is a column; the seam is a row so the hairlines sit
+       on either side of the label instead of stacking above and below it. */
+    flex-direction: row;
+    align-items: center;
+    gap: 0.6rem;
+    /* override .wl-msg--system's center-shrink so the seam spans the full
+       width and the hairlines get room on either side of the label. */
+    align-self: stretch;
+    width: 100%;
+    max-width: none;
+    margin: 0.3rem 0;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg--seam)::before,
+  :global(.wl-chat-messages) :global(.wl-msg--seam)::after {
+    content: "";
+    flex: 1 1 0;
+    height: 1px;
+    min-width: 1.5rem;
+    background: rgb(var(--color-text-rgb) / 0.18);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg--seam .wl-msg-system) {
+    padding: 0;
+    border: none;
+    background: none;
+    border-radius: 0;
+    color: rgb(var(--color-text-rgb) / 0.3);
+    letter-spacing: 0.04em;
+    font-variant: small-caps;
+    flex: 0 0 auto;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg--seam .wl-msg-time) {
+    display: none;
+  }
+
+  /* while recovery is actually running, the scar is alive: a faint amber
+     current travels the hairline. once the surface leaves wl-recovering
+     the seam settles to plain grey. */
+  :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam)::before,
+  :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam)::after {
+    background: linear-gradient(
+      90deg,
+      rgb(var(--color-text-rgb) / 0.09) 0%,
+      rgb(var(--tool-status-warning) / 0.45) 50%,
+      rgb(var(--color-text-rgb) / 0.09) 100%
+    );
+    background-size: 200% 100%;
+    animation: wl-seam-current 2.2s ease-in-out infinite;
+  }
+
+  :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam .wl-msg-system) {
+    color: rgb(var(--tool-status-warning) / 0.6);
+  }
+
+  @keyframes wl-seam-current {
+    0% { background-position: 150% 0; }
+    100% { background-position: -50% 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam)::before,
+    :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam)::after {
+      animation: none;
+    }
+  }
+
   /* Hide timestamp on grouped messages — show only on the last in a run */
   :global(.wl-chat-messages)
     :global(.wl-msg--self:has(+ .wl-msg--self) .wl-msg-time),

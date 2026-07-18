@@ -216,10 +216,25 @@ export class CampfireNode {
   // Callbacks + transport injection
   private cb: CampfireCallbacks;
   private sessionFactory: CampfireSessionFactory;
+  // recovery cadences (ring repair + auto-beacon), injectable so tests drive
+  // them fast and deterministically instead of racing the real wall clock,
+  // which starves and flakes under full-suite load. production keeps the real
+  // values; nothing but a test ever passes these.
+  private ringRepairIntervalMs: number;
+  private beaconCheckMs: number;
+  private beaconIdleMs: number;
 
-  constructor(callbacks: CampfireCallbacks, options?: { sessionFactory?: CampfireSessionFactory }) {
+  constructor(callbacks: CampfireCallbacks, options?: {
+    sessionFactory?: CampfireSessionFactory;
+    ringRepairIntervalMs?: number;
+    beaconCheckMs?: number;
+    beaconIdleMs?: number;
+  }) {
     this.cb = callbacks;
     this.sessionFactory = options?.sessionFactory ?? defaultSessionFactory;
+    this.ringRepairIntervalMs = options?.ringRepairIntervalMs ?? RING_REPAIR_INTERVAL;
+    this.beaconCheckMs = options?.beaconCheckMs ?? BEACON_CHECK_INTERVAL;
+    this.beaconIdleMs = options?.beaconIdleMs ?? BEACON_IDLE_MS;
   }
 
   get state(): CampfireState { return this._state; }
@@ -1405,7 +1420,7 @@ export class CampfireNode {
         if (!seatHex) continue;
         void this.broadcastToNeighbors(buildRingWant(this.peerId, hexDecode(seatHex), want.fromSeq, want.toSeq));
       }
-    }, RING_REPAIR_INTERVAL);
+    }, this.ringRepairIntervalMs);
   }
 
   private stopRingRepair(): void {
@@ -1416,7 +1431,7 @@ export class CampfireNode {
     this.stopBeacon();
     this.beaconTimer = setInterval(() => {
       void this.maybeSendBeacon();
-    }, BEACON_CHECK_INTERVAL);
+    }, this.beaconCheckMs);
   }
 
   private stopBeacon(): void {
@@ -1427,7 +1442,7 @@ export class CampfireNode {
    *  advance their frontier and stay reachable for view reconstruction. */
   private async maybeSendBeacon(): Promise<void> {
     if (this._state !== "active" || !this.currentEpoch) return;
-    const idle = this.receivedSinceOwnSend > 0 && Date.now() - this.lastOwnSendAt > BEACON_IDLE_MS;
+    const idle = this.receivedSinceOwnSend > 0 && Date.now() - this.lastOwnSendAt > this.beaconIdleMs;
     if (this.receivedSinceOwnSend < BEACON_MSG_THRESHOLD && !idle) return;
 
     const epochId = this.currentEpoch.epochId;

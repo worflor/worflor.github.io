@@ -46,6 +46,7 @@ import {
   loopExpand,
 } from "./live-loop";
 import { sdpToCode, codeToSdp, canonicalizeSdpForTranscript } from "./live-sdp";
+import { packLocalSdp, unpackLocalSdp } from "./live-qr-sdp";
 import {
   CTRL_OP,
   encodeCtrl,
@@ -494,6 +495,10 @@ export class WhisperLiveSession {
   private consecutiveDecryptFailures = 0;
   /** PBKDF2-stretched phrase root (wipeable bytes, never store the raw string). */
   private phraseRoot: Uint8Array | null = null;
+  // in-person local mode: the handshake codes are packed via live-qr-sdp
+  // (tiny, host-only, no phrase) instead of the relayed sdpToCode envelope,
+  // so the whole exchange fits a scannable QR and never touches the internet.
+  private useLocalCodec = false;
   private transportMode: TransportMode = "naked";
   private assembler = new ChunkAssembler();
   private incomingFiles = new Map<number, IncomingFileTransfer>();
@@ -1009,10 +1014,19 @@ export class WhisperLiveSession {
   }
 
   private async buildTranscriptHash(peerPubKeyRaw: Uint8Array): Promise<Uint8Array> {
-    const localSdp = this.pc?.localDescription?.sdp;
+    let localSdp = this.pc?.localDescription?.sdp;
     const remoteSdp = this.pc?.remoteDescription?.sdp;
     if (!localSdp || !remoteSdp || !this.localEphPublicKey) {
       throw new Error("handshake transcript incomplete");
+    }
+    // local mode transports a stripped-and-rebuilt SDP, so our own local
+    // description differs from the canonical form the peer reconstructed from
+    // our QR payload (regenerated candidate foundation/priority, dropped
+    // cruft). round-trip our local SDP through the same codec so both sides
+    // transcript over the identical bytes. the remote SDP is already the
+    // rebuilt form (setRemoteDescription received the unpacked payload).
+    if (this.useLocalCodec) {
+      localSdp = unpackLocalSdp(packLocalSdp(localSdp, this.isOfferer)).sdp;
     }
     const offerSdp = this.isOfferer ? localSdp : remoteSdp;
     const answerSdp = this.isOfferer ? remoteSdp : localSdp;
@@ -1119,9 +1133,11 @@ export class WhisperLiveSession {
     this.onLog("gathering network candidates...");
     await this.waitForICE();
 
-    const code = await sdpToCode(this.pc.localDescription!.sdp, "offer", this.phraseRoot ?? undefined);
+    const code = this.useLocalCodec
+      ? packLocalSdp(this.pc.localDescription!.sdp, true)
+      : await sdpToCode(this.pc.localDescription!.sdp, "offer", this.phraseRoot ?? undefined);
 
-    this.onLog(`offer code ready${this.phraseRoot ? " (sealed)" : ""}`);
+    this.onLog(`offer code ready${this.useLocalCodec ? " (local)" : this.phraseRoot ? " (sealed)" : ""}`);
     this.setState("waiting-for-answer");
 
     return code;
@@ -1132,7 +1148,9 @@ export class WhisperLiveSession {
     if (!this.pc) throw new Error("No connection, create offer first");
 
     this.onLog("applying answer code...");
-    const sdp = await codeToSdp(answerCode, "answer", this.phraseRoot ?? undefined);
+    const sdp = this.useLocalCodec
+      ? unpackLocalSdp(answerCode).sdp
+      : await codeToSdp(answerCode, "answer", this.phraseRoot ?? undefined);
     await this.pc.setRemoteDescription({ type: "answer", sdp });
     await this.flushPendingRemoteIce();
     this.emitRelaySignal({ kind: "answer-ack" });
@@ -1146,7 +1164,9 @@ export class WhisperLiveSession {
     this.setState("answering");
     this.onLog("accepting offer code...");
 
-    const offerSDP = await codeToSdp(offerCode, "offer", this.phraseRoot ?? undefined);
+    const offerSDP = this.useLocalCodec
+      ? unpackLocalSdp(offerCode).sdp
+      : await codeToSdp(offerCode, "offer", this.phraseRoot ?? undefined);
 
     this.pc = new RTCPeerConnection(await this.buildRtcConfig());
     this.setupPeerConnection(this.pc);
@@ -1165,13 +1185,40 @@ export class WhisperLiveSession {
     this.onLog("gathering network candidates...");
     await this.waitForICE();
 
-    const answerCode = await sdpToCode(this.pc.localDescription!.sdp, "answer", this.phraseRoot ?? undefined);
+    const answerCode = this.useLocalCodec
+      ? packLocalSdp(this.pc.localDescription!.sdp, false)
+      : await sdpToCode(this.pc.localDescription!.sdp, "answer", this.phraseRoot ?? undefined);
 
-    this.onLog(`answer code ready${this.phraseRoot ? " (sealed)" : ""}`);
+    this.onLog(`answer code ready${this.useLocalCodec ? " (local)" : this.phraseRoot ? " (sealed)" : ""}`);
     this.setState("connecting");
     this.onLog("connecting peer-to-peer...");
 
     return answerCode;
+  }
+
+  /* ── In-person local mode (QR pairing, no server, no phrase) ──
+   * these mirror createOffer/acceptOffer/applyAnswer but pack the SDP with
+   * live-qr-sdp so the codes fit a scannable QR, and force host-only ICE by
+   * passing no phrase (which leaves the config at WHISPER_LIVE_RTC_LOCAL_ONLY,
+   * no STUN/TURN). the QR carries the DTLS fingerprint, so scanning it IS the
+   * authentication — no relay, no emoji-compare needed. */
+
+  /** Peer A (local): create a host-only offer, returned as a compact QR payload. */
+  async createLocalOffer(): Promise<string> {
+    this.useLocalCodec = true;
+    return this.createOffer();
+  }
+
+  /** Peer B (local): accept a scanned offer payload, return a compact answer payload. */
+  async acceptLocalOffer(offerPayload: string): Promise<string> {
+    this.useLocalCodec = true;
+    return this.acceptOffer(offerPayload);
+  }
+
+  /** Peer A (local): apply the scanned answer payload to finish the bond. */
+  async applyLocalAnswer(answerPayload: string): Promise<void> {
+    this.useLocalCodec = true;
+    return this.applyAnswer(answerPayload);
   }
 
   /** Wait for ICE gathering to complete or timeout. */
