@@ -662,14 +662,70 @@
     background: rgb(10 10 10 / 0.85);
   }
 
-  /* Emoji inside chip — compact */
+  /* Emoji inside chip — compact. one span per grapheme (see setChipEmoji in
+     live-ui.ts) so the row can compress stylistically instead of wrapping:
+     stickers overlap as it narrows, then collapse to a 2x2 grid. */
   :global(.wl-fp-chip-emoji) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15em;
     font-size: var(--text-sm);
-    letter-spacing: 0.15em;
     line-height: 1;
     white-space: nowrap;
     filter: saturate(0.4) opacity(0.6);
     transition: filter var(--duration-normal) var(--ease-out);
+  }
+
+  :global(.wl-fp-emoji-glyph) {
+    display: inline-flex;
+    line-height: 1;
+    transform-origin: center;
+    transition:
+      margin var(--duration-normal) var(--ease-spring),
+      transform var(--duration-normal) var(--ease-spring);
+  }
+
+  /* scrapbook stage: the stickers slide over one another and tilt, later
+     ones stacking on top, so a crowded chip reads as layered rather than
+     overflowing. */
+  @media (max-width: 400px) {
+    :global(.wl-fp-chip-emoji) {
+      gap: 0;
+    }
+    :global(.wl-fp-emoji-glyph) {
+      margin-left: -0.34em;
+      transform: rotate(var(--rot, 0deg));
+      z-index: var(--i, 0);
+    }
+    :global(.wl-fp-emoji-glyph:first-child) {
+      margin-left: 0;
+    }
+  }
+
+  /* tightest stage: collapse the stack into a 2x2 grid. the glyphs shrink so
+     two rows occupy the same vertical space one row did — the chip never
+     grows taller, it only trades width for a denser square. */
+  @media (max-width: 330px) {
+    :global(.wl-fp-chip-emoji) {
+      display: grid;
+      grid-template-columns: repeat(2, auto);
+      grid-auto-rows: 0.8em;
+      align-content: center;
+      justify-items: center;
+      gap: 0;
+      font-size: calc(var(--text-sm) * 0.62);
+      line-height: 0.8;
+    }
+    :global(.wl-fp-emoji-glyph) {
+      margin-left: 0;
+      transform: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.wl-fp-emoji-glyph) {
+      transition: none;
+    }
   }
   :global(.wl-fp-chip--verified .wl-fp-chip-emoji) {
     filter: saturate(1) opacity(0.85);

@@ -5849,17 +5849,43 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  // split into grapheme clusters so multi-codepoint emoji (skin tones,
+  // zwj sequences, variation selectors) stay whole.
+  const emojiGraphemes = (emoji: string): string[] =>
+    emoji ? Array.from(new Intl.Segmenter().segment(emoji), (s) => s.segment) : [];
+
+  // the chip emoji renders one span per grapheme, each tagged with its index
+  // and a deterministic scrapbook rotation, so the css can overlap them like
+  // stickers (and collapse to a 2x2 grid) as the header narrows, instead of
+  // ever wrapping the row.
+  function setChipEmoji(emoji: string): void {
+    const parts = emojiGraphemes(emoji);
+    opts.fpChipEmoji.replaceChildren(
+      ...parts.map((glyph, i) => {
+        const span = document.createElement("span");
+        span.className = "wl-fp-emoji-glyph";
+        span.textContent = glyph;
+        span.style.setProperty("--i", String(i));
+        // alternating, gently varied tilt: -3, 4, -3, 5, ... deterministic.
+        const rot = (i % 2 === 0 ? -1 : 1) * (3 + (i % 3));
+        span.style.setProperty("--rot", `${rot}deg`);
+        return span;
+      }),
+    );
+    opts.fpChipEmoji.dataset.count = String(parts.length);
+  }
+
   function handleFingerprint(emoji: string): void {
     // wrap each emoji in its own span so the verify panel can stagger them in
     opts.fingerprintDisplay.replaceChildren(
-      ...Array.from(emoji, (glyph) => {
+      ...emojiGraphemes(emoji).map((glyph) => {
         const span = document.createElement("span");
         span.className = "wl-fingerprint-glyph";
         span.textContent = glyph;
         return span;
       }),
     );
-    opts.fpChipEmoji.textContent = emoji;
+    setChipEmoji(emoji);
   }
 
   let peerNickname = "";
@@ -5879,7 +5905,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.fpChip.classList.remove("wl-fp-chip--verified", "wl-fp-chip--recovering");
     applyNickname("");
     opts.fpNicknameInput.value = "";
-    opts.fpChipEmoji.textContent = "";
+    setChipEmoji("");
     opts.fpNicknameInput.parentElement?.classList.remove("wl-fp-wrap--editing");
   }
 
