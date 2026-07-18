@@ -88,7 +88,10 @@ class FakeTrackerWebSocket {
         issuedAt: number;
       }>(intentPayload);
       const remoteSessionTag = "peer-remote-session";
-      const remoteAttemptId = "remote-attempt";
+      // unique per local attempt, as production attempt ids are: the
+      // tracker's ghost denylist refuses identities from settled attempts,
+      // so a fixed fixture id would read as a ghost across scenarios.
+      const remoteAttemptId = `remote-attempt-${localIntent.attemptId}`;
 
       if (FakeTrackerWebSocket.scenario === "old-timestamp" && !this.sentFreshIntent) {
         // an intent stamped well outside the old 30s TTL must still be honored.

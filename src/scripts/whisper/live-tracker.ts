@@ -454,8 +454,34 @@ function compareAttemptOrder(
 // so a stamped TTL silently froze out any peer whose clock drifted. replay
 // within a rendezvous is already prevented by seenMessages, and cross-session
 // bleed by sessionTag, so an absolute-time gate is pure fragility here.
+/** deliberately shape-only: a wall-clock freshness gate lived here once
+ *  (30s ttl) and silently froze out peers with drifted device clocks —
+ *  see the old-timestamp regression test. ghost messages from previous
+ *  rendezvous are excluded by identity (recentGhosts below), never by
+ *  comparing unsynced clocks. */
 function isValidIssuedAt(issuedAt: unknown): issuedAt is number {
   return typeof issuedAt === "number" && Number.isFinite(issuedAt);
+}
+
+/** identities from this page's previous rendezvous attempts. a new attempt
+ *  must never lock onto an echo of a dead one: the tracker can replay a
+ *  prior session's intent, and locking onto that ghost while the real peer
+ *  handshakes fresh is the intermittent "handshake proof mismatch" on
+ *  reconnect. keyed by peerId|attemptId so a peer retrying with a fresh
+ *  attempt is welcomed while its stale echoes are refused. capped. */
+const recentGhosts = new Set<string>();
+
+export function rememberRendezvousGhost(peerId: string, attemptId: string): void {
+  if (!peerId || !attemptId) return;
+  if (recentGhosts.size >= 64) {
+    const oldest = recentGhosts.values().next().value;
+    if (oldest !== undefined) recentGhosts.delete(oldest);
+  }
+  recentGhosts.add(`${peerId}|${attemptId}`);
+}
+
+function isRendezvousGhost(peerId: string, attemptId: string): boolean {
+  return recentGhosts.has(`${peerId}|${attemptId}`);
 }
 
 /* ── Shared helpers ──────────────────────────────────────── */
@@ -804,6 +830,10 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
     const finish = (result?: LiveRendezvousResult, error?: Error): void => {
       if (settled) return;
       settled = true;
+      // this attempt's identities are ghosts from here on: a later attempt
+      // on this page must never lock onto their tracker echoes.
+      rememberRendezvousGhost(peerId, attemptId);
+      if (lockPeerId && lockAttemptId) rememberRendezvousGhost(lockPeerId, lockAttemptId);
       if (totalTimer) clearTimeout(totalTimer);
       totalAc.signal.removeEventListener("abort", onAbort);
       opts.signal?.removeEventListener("abort", onExternalAbort);
@@ -967,6 +997,7 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       if (!remotePeerId || !remoteOfferId) return;
       if (remotePeerId === peerId) return;
       if (toPeerId && toPeerId !== peerId) return;
+      if (isRendezvousGhost(remotePeerId, payload.attemptId)) return; // echo of a dead attempt
       if (!rememberSeen(seenMessages, `intent|${remotePeerId}|${remoteOfferId}|${payload.attemptId}|${payload.sessionTag}`)) return;
       if (!lockPeer(remotePeerId, payload.attemptId, payload.sessionTag, infoHash)) return;
 
@@ -1034,6 +1065,7 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
 
       if (!payload?.rendezvousId || !payload.fromAttemptId || !payload.fromSessionTag || !payload.toSessionTag || !isValidIssuedAt(payload.issuedAt)) return;
       if (!remotePeerId || remotePeerId === peerId) return;
+      if (isRendezvousGhost(remotePeerId, payload.fromAttemptId)) return; // echo of a dead attempt
       if (toPeerId && toPeerId !== peerId) return;
       if (payload.toSessionTag !== sessionTag) {
         logDifferentSession();
