@@ -806,21 +806,33 @@ const seo = {
       <div class="whisper-op-live" id="wl-section">
         <div class="wl-head whisper-panel" aria-label="Whisper Live status">
           <div class="wl-head-title-row">
-            <h2 class="wl-head-title">
-              Whisper Live <span
+            <h2 class="wl-head-title">Whisper Live</h2>
+            <div class="wl-fp-wrap">
+              <span
                 class="wl-e2e-badge"
                 role="note"
                 tabindex="0"
                 aria-label="end-to-end encrypted, peer-to-peer"
-                ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p·e2e<span
-                  class="wl-e2e-tip"
-                  role="tooltip">sealed end-to-end with a Kizuna bond<span
+              >
+                <span class="wl-e2e-dot" aria-hidden="true"
+                  ><svg
+                    class="wl-e2e-glyph"
+                    viewBox="0 0 20 14"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    aria-hidden="true"
+                    ><circle cx="7" cy="7" r="4.1"></circle><circle
+                      cx="13"
+                      cy="7"
+                      r="4.1"></circle></svg
+                ></span>
+                <span class="wl-e2e-tip" role="tooltip"
+                  >sealed end-to-end with a Kizuna bond<span
                     class="wl-e2e-tip-stats"
                     aria-hidden="true"></span></span
-                ></span
-              >
-            </h2>
-            <div class="wl-fp-wrap">
+                >
+              </span>
               <button
                 id="wl-fp-chip"
                 class="wl-fp-chip"
@@ -2704,20 +2716,15 @@ const seo = {
     color: rgb(var(--color-text-rgb) / 0.86);
   }
 
+  /* the e2e badge is no longer a pill of its own: it is a surgical status
+     pip that lives inside the fingerprint chip's wrapper, its dot carrying
+     the whole meaning (color + glow + tooltip). the wrapper (.wl-fp-wrap)
+     is what visually encloses the pip and the emoji/name together as one
+     unit. see .wl-fp-wrap below. */
   .wl-e2e-badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.25em;
-    font-size: var(--whisper-text-hairline);
-    font-weight: 700;
     line-height: 1;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: rgb(var(--color-text-rgb) / 0.18);
-    background: rgb(var(--color-text-rgb) / 0.04);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.06);
-    border-radius: var(--whisper-radius-tight);
-    padding: calc(var(--space-xs) * 0.15) calc(var(--space-xs) * 0.45);
     vertical-align: middle;
     user-select: none;
     position: relative;
@@ -2815,64 +2822,125 @@ const seo = {
     display: none;
   }
 
+  /* the pip is the kizuna bond itself: two interlocking rings, two peers
+     sealed. it wears the site's chromatic split and takes the connection's
+     color. the left ring leans cyan, the right red, so at rest it already
+     carries the rgb-split signature; the state color washes over both. */
   .wl-e2e-dot {
-    width: 0.3em;
-    height: 0.3em;
-    border-radius: var(--radius-full);
-    background: rgb(var(--color-text-rgb) / 0.24);
+    display: inline-flex;
+    align-items: center;
+    color: rgb(var(--color-text-rgb) / 0.3);
     flex: 0 0 auto;
+    transition: color var(--duration-normal) var(--ease-out),
+      filter var(--duration-normal) var(--ease-out);
   }
 
-  .whisper-op-live.wl-connected .wl-e2e-badge {
-    color: rgb(var(--chromatic-cyan));
-    border-color: rgb(var(--chromatic-cyan) / 0.35);
-    background: rgb(var(--chromatic-cyan) / 0.06);
+  .wl-e2e-glyph {
+    width: 1.25em;
+    height: 0.9em;
+    overflow: visible;
+  }
+
+  /* the two rings split chromatically: a hair of cyan on one, red on the
+     other, so the bond shimmers the way the rest of whisper does. */
+  .wl-e2e-glyph circle:first-child {
+    filter: drop-shadow(-0.6px 0 rgb(var(--chromatic-cyan) / 0.5));
+  }
+  .wl-e2e-glyph circle:last-child {
+    filter: drop-shadow(0.6px 0 rgb(var(--chromatic-red) / 0.4));
   }
 
   .whisper-op-live.wl-connected .wl-e2e-dot {
-    background: rgb(var(--chromatic-cyan));
-    box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.45);
+    color: rgb(var(--chromatic-cyan));
+    filter: drop-shadow(0 0 3px rgb(var(--chromatic-cyan) / 0.5));
   }
 
-  /* relayed path (TURN fallback) — tint the dot toward the same violet used for
+  /* relayed path (TURN fallback) — the bond leans to the violet used for
      other "external assist" affordances, in place of the direct-path cyan */
   .whisper-op-live.wl-connected .wl-e2e-badge[data-path="relayed"] .wl-e2e-dot {
-    background: rgb(var(--tool-action-load));
-    box-shadow: 0 0 6px rgb(var(--tool-action-load) / 0.45);
-  }
-
-  .whisper-op-live.wl-preview .wl-e2e-badge {
-    color: rgb(var(--color-text-rgb) / 0.18);
-    border-color: rgb(var(--color-text-rgb) / 0.06);
-    background: rgb(var(--color-text-rgb) / 0.04);
+    color: rgb(var(--tool-action-load));
+    filter: drop-shadow(0 0 3px rgb(var(--tool-action-load) / 0.5));
   }
 
   .whisper-op-live.wl-preview .wl-e2e-dot {
-    background: rgb(var(--color-text-rgb) / 0.24);
-    box-shadow: none;
+    color: rgb(var(--color-text-rgb) / 0.3);
+    filter: none;
   }
 
-  .whisper-op-live.wl-recovering .wl-e2e-badge {
-    animation: wl-badge-amber-flash 1.1s ease-in-out infinite;
-  }
-
+  /* recovering: the bond strains amber, its glow breathing while the link
+     tries to re-seal. the resting cyan/red ring-split is neutralized here so
+     the amber reads clean rather than fighting the chromatic tint. */
   .whisper-op-live.wl-recovering .wl-e2e-dot {
-    background: rgb(var(--tool-status-warning));
-    box-shadow: 0 0 6px rgb(var(--tool-status-warning) / 0.45);
+    color: rgb(var(--tool-status-warning));
+    animation: wl-e2e-bond-pulse 1.1s ease-in-out infinite;
   }
 
-  @keyframes wl-badge-amber-flash {
+  .whisper-op-live.wl-recovering .wl-e2e-glyph circle {
+    filter: none;
+  }
+
+  @keyframes wl-e2e-bond-pulse {
     0%,
     100% {
-      color: rgb(var(--tool-status-warning) / 0.5);
-      border-color: rgb(var(--tool-status-warning) / 0.18);
-      background: rgb(var(--tool-status-warning) / 0.04);
+      filter: drop-shadow(0 0 1px rgb(var(--tool-status-warning) / 0.3));
+      opacity: 0.7;
     }
     50% {
-      color: rgb(var(--tool-status-warning));
-      border-color: rgb(var(--tool-status-warning) / 0.4);
-      background: rgb(var(--tool-status-warning) / 0.1);
+      filter: drop-shadow(0 0 5px rgb(var(--tool-status-warning) / 0.7));
+      opacity: 1;
     }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .whisper-op-live.wl-recovering .wl-e2e-dot {
+      animation: none;
+    }
+  }
+
+  /* the fingerprint wrapper is now the unit the e2e pip belongs to: the pip
+     leads, the emoji/name follows, and the whole thing reads as one chip.
+     the pip tucks toward the chip so it sits at its leading edge rather than
+     floating beside it, and the chip's own border carries the e2e color so
+     the encryption state visibly wraps the peer's identity. */
+  .wl-head-title-row .wl-fp-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    min-width: 0;
+    position: relative;
+  }
+
+  .wl-head-title-row .wl-e2e-badge {
+    /* tuck the pip against the chip's leading edge. */
+    margin-right: -0.55em;
+    z-index: 1;
+    padding-left: 0.5em;
+    /* the pip only means something once there is an identity to secure, so
+       it appears with the chip. a lone pip at idle reads as a stray dot. */
+    display: none;
+  }
+
+  :global(.whisper-op-live.wl-connected) .wl-head-title-row .wl-e2e-badge,
+  :global(.whisper-op-live.wl-recovering) .wl-head-title-row .wl-e2e-badge,
+  :global(.whisper-op-live.wl-preview) .wl-head-title-row .wl-e2e-badge {
+    display: inline-flex;
+  }
+
+  :global(.whisper-op-live.wl-connected) .wl-head-title-row :global(.wl-fp-chip) {
+    padding-left: 1.25em;
+    border-color: rgb(var(--chromatic-cyan) / 0.32);
+  }
+
+  :global(.whisper-op-live.wl-connected)
+    .wl-head-title-row
+    :global(.wl-e2e-badge[data-path="relayed"]
+    ~ .wl-fp-chip) {
+    border-color: rgb(var(--tool-action-load) / 0.32);
+  }
+
+  :global(.whisper-op-live.wl-recovering) .wl-head-title-row :global(.wl-fp-chip) {
+    padding-left: 1.25em;
+    border-color: rgb(var(--tool-status-warning) / 0.32);
   }
 
   .wl-head-right {

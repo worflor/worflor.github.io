@@ -999,13 +999,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   composerOverlay.appendChild(reactionComposer.field);
   // the composer auto-commits on a single glyph, so the drawer needs no
   // confirm — what it needs is an intuitive way back out. same circle
-  // anatomy, back semantics. mousedown so the input never blurs first.
+  // anatomy, back semantics. plain click: a back action has no blur to
+  // race, and click is the one activation ios safari always delivers.
   const markBackBtn = document.createElement("button");
   markBackBtn.type = "button";
   markBackBtn.className = "wl-react-custom-commit";
   markBackBtn.textContent = "‹";
   markBackBtn.setAttribute("aria-label", "close the mark editor");
-  markBackBtn.addEventListener("mousedown", (e) => { e.preventDefault(); reactionComposer.reset(); }, { signal });
+  markBackBtn.addEventListener("click", (e) => { e.stopPropagation(); reactionComposer.reset(); }, { signal });
   reactionComposer.field.appendChild(markBackBtn);
   reactionComposer.field.querySelector("input")?.setAttribute("tabindex", "-1");
   shelfRow.appendChild(composerOverlay);
@@ -1158,6 +1159,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (isDragging) dragTarget.click();
       } else if (isDragging) {
         collapseActions();
+      } else {
+        // a quick tap. this pointerdown called preventDefault (needed for the
+        // press-and-drag gesture), and ios safari refuses to synthesize the
+        // compatibility click after a prevented pointerdown, so the click
+        // handler below never runs on touch. handle the toggle here and mark
+        // it handled so the desktop click (which does fire) doesn't double it.
+        actionWasHandledByDrag = true;
+        if (actionContainer.hasAttribute("data-expanded")) collapseActions();
+        else expandActions();
       }
     };
 
