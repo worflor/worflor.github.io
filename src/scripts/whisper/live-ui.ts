@@ -2220,13 +2220,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     if (opts.relayConnectBtn) {
+      // qrArmActive wins over everything else here: while a QR-armed wait
+      // is running the button reads "waiting..." (setRelayQrWaiting owns
+      // that label) and must stay disabled regardless of busy/flareActive —
+      // this line only ever touches .disabled, never the label, so there's
+      // no fight between the two.
       opts.relayConnectBtn.disabled = busy || flareActive || qrArmActive;
     }
 
     if (opts.relayQrToggleBtn) {
+      const hasPhrase = opts.phraseInput.value.trim().length > 0;
       // stays clickable while qrArmActive so the armed wait can be closed;
       // only blocked by a concurrent *manual* connect (busy, not qr-driven).
-      opts.relayQrToggleBtn.disabled = busy && !qrArmActive;
+      // an empty phrase blocks opening (nothing to encode) but never traps
+      // an already-open panel — that must always stay closable.
+      opts.relayQrToggleBtn.disabled = (busy && !qrArmActive) || (!hasPhrase && !relayQrState.value);
     }
 
     if (flareFireBtn) {
@@ -5758,9 +5766,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       relayActive = false;
       if (silent) {
         // a peer showed up — leave the silent wait and join the normal
-        // connecting/verify/chat flow like a manual connect would.
+        // connecting/verify/chat flow like a manual connect would. Close
+        // the qr panel outright (not just the ember/label): the phase is
+        // leaving idle for good, the QR must not linger open behind it.
         qrArmActive = false;
+        qrArmedPhrase = "";
         setRelayQrWaiting(false);
+        closeRelayQrPanel();
         setBusy(true);
         showPhase(opts.connectingSection);
         opts.connectingStatus.textContent = "connecting directly...";
@@ -5779,7 +5791,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
     } catch (err) {
       relayActive = false;
-      if (silent) { qrArmActive = false; setRelayQrWaiting(false); }
+      // same reasoning as the success branch above: an errored silent wait
+      // is also leaving idle (for the error phase), so the panel closes.
+      if (silent) { qrArmActive = false; qrArmedPhrase = ""; setRelayQrWaiting(false); closeRelayQrPanel(); }
       if (aborted()) return;
       destroyCurrentSession();
       const raw = errMsg(err);
@@ -5811,8 +5825,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * in `silent` mode: same underlying race, no phase switch while waiting.
    */
 
+  /** single source of truth for "a QR-armed wait is live right now": the
+   *  breathing ember next to the status line, and the Connect button's own
+   *  role — the armed QR IS the pending connect, so the button says so
+   *  instead of sitting there reading "Connect" as if nothing's happening.
+   *  updateControls only ever touches relayConnectBtn.disabled, never its
+   *  label, so there's nothing here for it to fight. */
   function setRelayQrWaiting(waiting: boolean): void {
     if (opts.relayQrEmber) opts.relayQrEmber.style.display = waiting ? "" : "none";
+    if (opts.relayConnectBtn) {
+      opts.relayConnectBtn.textContent = waiting ? "waiting..." : "Connect";
+      opts.relayConnectBtn.classList.toggle("wl-relay-connect--waiting", waiting);
+    }
+    // qrArmActive feeds the disabled states in updateControls; resync now
+    // rather than waiting for the next unrelated call.
+    updateControls();
   }
 
   function extinguishQrArm(): void {
@@ -5828,6 +5855,37 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   const relayQrState = { value: false };
+
+  /** shows the qr panel and kicks off its spring-bloom entrance. A double
+   *  rAF makes sure the browser paints the collapsed (0fr / opacity 0)
+   *  resting state before the --open class flips the transitionable
+   *  properties, so the animation actually plays instead of snapping. */
+  function openRelayQrPanel(): void {
+    const panel = opts.relayQrPanel;
+    if (!panel) return;
+    panel.classList.remove("wl-relay-qr-panel--open");
+    panel.style.display = "";
+    panel.setAttribute("aria-hidden", "false");
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => panel.classList.add("wl-relay-qr-panel--open"));
+    });
+  }
+
+  /** hides the qr panel instantly (no closing animation, per spec) and
+   *  resets every bit of DOM state the toggle/updateControls read, so a
+   *  later re-open always starts clean. Doesn't touch relayAbort — callers
+   *  that own an in-flight controller (handleRelayConnect's own success/
+   *  error branches) are responsible for that themselves. */
+  function closeRelayQrPanel(): void {
+    relayQrState.value = false;
+    const panel = opts.relayQrPanel;
+    if (panel) {
+      panel.classList.remove("wl-relay-qr-panel--open");
+      panel.style.display = "none";
+      panel.setAttribute("aria-hidden", "true");
+    }
+    if (opts.relayQrToggleBtn) opts.relayQrToggleBtn.setAttribute("aria-expanded", "false");
+  }
 
   /** renderQrToCanvas swaps in a saveable <img> and hides the canvas — undo
    *  that so a cleared phrase doesn't leave a stale QR visible above the
@@ -5877,12 +5935,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }, 500);
   }
 
+  /** the relay toggle is an icon-only glyph button, not the shared
+   *  "Show QR"/"Hide QR" text pill (setQrExpanded, used by offer/answer) —
+   *  reusing that helper here would stomp the inline <svg> via textContent,
+   *  so this is a dedicated open/close pair instead. */
   function setRelayQrExpanded(expanded: boolean): void {
     if (!opts.relayQrPanel || !opts.relayQrToggleBtn) return;
-    setQrExpanded(expanded, opts.relayQrPanel, opts.relayQrToggleBtn, relayQrState);
     if (expanded) {
+      relayQrState.value = true;
+      opts.relayQrToggleBtn.setAttribute("aria-expanded", "true");
+      openRelayQrPanel();
       refreshRelayQr();
     } else {
+      closeRelayQrPanel();
       extinguishQrArm();
     }
   }
@@ -6132,8 +6197,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   // editing the phrase extinguishes the armed wait immediately; a short
   // debounce then re-renders + re-arms for the new phrase, so the QR stays
-  // live without hammering the relay tracker on every keystroke.
+  // live without hammering the relay tracker on every keystroke. Also keeps
+  // the toggle's empty-phrase disabled state in sync as the user types.
   opts.phraseInput.addEventListener("input", () => {
+    updateControls();
     if (!relayQrState.value) return;
     extinguishQrArm();
     scheduleRelayQrRefresh();

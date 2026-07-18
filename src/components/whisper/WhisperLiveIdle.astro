@@ -26,32 +26,60 @@
           type="button"
           class="whisper-mini-btn wl-primary">Connect</button
         >
+        <button
+          id="wl-relay-qr-toggle"
+          type="button"
+          class="whisper-mini-btn wl-relay-qr-toggle"
+          aria-label="show as qr code"
+          aria-expanded="false"
+        >
+          <svg
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.3"
+            class="wl-relay-qr-toggle-icon"
+            aria-hidden="true"
+          >
+            <!-- 2x2 finder-corner motif: three open corners, one solid data dot -->
+            <rect x="1.3" y="1.3" width="4.4" height="4.4" rx="0.9"></rect>
+            <rect x="10.3" y="1.3" width="4.4" height="4.4" rx="0.9"></rect>
+            <rect x="1.3" y="10.3" width="4.4" height="4.4" rx="0.9"></rect>
+            <rect
+              x="11.3"
+              y="11.3"
+              width="2.4"
+              height="2.4"
+              rx="0.5"
+              fill="currentColor"
+              stroke="none"
+            ></rect>
+          </svg>
+        </button>
       </div>
     </label>
-    <div class="wl-live-qr-toggle-row">
-      <button
-        id="wl-relay-qr-toggle"
-        type="button"
-        class="whisper-mini-btn"
-        aria-expanded="false">Show QR</button
-      >
-      <span
-        id="wl-relay-qr-ember"
-        class="wl-flare-ember wl-relay-qr-ember"
-        aria-hidden="true"
-        style="display:none"
-      ></span>
-    </div>
-    <div id="wl-relay-qr-panel" class="wl-live-qr-wrap" style="display:none">
-      <canvas
-        id="wl-relay-qr-canvas"
-        class="ws-seal-qr-canvas"
-        data-qr-size="132"
-        aria-label="QR code that connects a scanning peer using this phrase"
-      ></canvas>
-      <p id="wl-relay-qr-status" class="ws-seal-hint wl-live-qr-status">
-        they scan, you connect.
-      </p>
+    <div id="wl-relay-qr-panel" class="wl-relay-qr-panel" style="display:none" aria-hidden="true">
+      <div class="wl-relay-qr-rows">
+        <div class="wl-relay-qr-bloom">
+          <div class="wl-relay-qr-card">
+            <canvas
+              id="wl-relay-qr-canvas"
+              class="ws-seal-qr-canvas wl-relay-qr-canvas"
+              data-qr-size="180"
+              aria-label="QR code that connects a scanning peer using this phrase"
+            ></canvas>
+          </div>
+          <p class="wl-relay-qr-waiting">
+            <span id="wl-relay-qr-status">they scan, you connect.</span>
+            <span
+              id="wl-relay-qr-ember"
+              class="wl-relay-qr-ember"
+              aria-hidden="true"
+              style="display:none"
+            ></span>
+          </p>
+        </div>
+      </div>
     </div>
     <p class="wl-relay-hint">
       the relay that matches you is blind. it never sees your messages.
@@ -326,11 +354,143 @@
     line-height: 1.4;
   }
 
-  /* QR flare handoff toggle — the ember reuses the Signal Flare pulse
-     animation defined below (Signal Flare panel section) to mean the same
-     thing here: a background rendezvous is quietly waiting for a peer. */
+  /* ── QR handoff toggle — a compact square glyph button seated inline
+     with Connect, not a wide pill on its own row. Active/open state gets
+     the same cyan tint + chromatic split as the draw-surface tool icons. */
+  .wl-relay-qr-toggle {
+    width: var(--touch-target);
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .wl-relay-qr-toggle-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .wl-relay-qr-toggle[aria-expanded="true"] {
+    color: rgb(var(--chromatic-cyan));
+    border-color: rgb(var(--chromatic-cyan) / 0.4);
+    background: rgb(var(--chromatic-cyan) / 0.08);
+    box-shadow:
+      0 0 0 1px rgb(var(--color-text-rgb) / 0.06),
+      -1px 0 0 rgb(var(--chromatic-cyan) / 0.3),
+      1px 0 0 rgb(var(--chromatic-red) / 0.3);
+  }
+
+  /* ── QR handoff panel — the outer row collapses to zero height at rest
+     (grid-template-rows 0fr → 1fr) so opening animates smoothly; the inner
+     bloom fades + scales in on top of that. Closing skips both: the toggle
+     wiring drops straight to display:none so there's no lagging collapse. */
+  .wl-relay-qr-panel {
+    margin-top: calc(var(--space-xs) * 0.3);
+  }
+
+  .wl-relay-qr-rows {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows var(--duration-normal) var(--ease-spring);
+  }
+
+  .wl-relay-qr-panel--open .wl-relay-qr-rows {
+    grid-template-rows: 1fr;
+  }
+
+  .wl-relay-qr-bloom {
+    overflow: hidden;
+    min-height: 0;
+    display: grid;
+    justify-items: center;
+    gap: var(--space-md);
+    padding-block: var(--space-md);
+    opacity: 0;
+    transform: scale(0.96);
+    transform-origin: top center;
+    transition:
+      opacity var(--duration-normal) var(--ease-spring),
+      transform var(--duration-normal) var(--ease-spring);
+  }
+
+  .wl-relay-qr-panel--open .wl-relay-qr-bloom {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  /* the QR sits inside its own white card so it reads as a floated object
+     against the void, not a block pasted onto the panel */
+  .wl-relay-qr-card {
+    background: #fff;
+    padding: 10px;
+    border-radius: calc(var(--whisper-radius-soft) + 2px);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    box-shadow: var(--edge-highlight), 0 12px 48px rgb(0 0 0 / 0.5);
+    max-width: min(200px, 60vw);
+  }
+
+  .wl-relay-qr-card :global(.wl-relay-qr-canvas) {
+    display: block;
+    border: none;
+    background: none;
+    max-width: 100%;
+    height: auto;
+  }
+
+  .wl-relay-qr-waiting {
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45em;
+    font-size: var(--whisper-text-meta);
+    color: var(--whisper-muted);
+  }
+
+  /* cyan breathing dot — reads as "still waiting for a scan," distinct
+     from the Signal Flare ember's warmer, longer-lived-presence pulse */
   .wl-relay-qr-ember {
-    margin-left: calc(var(--space-xs) * 0.5);
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-full);
+    background: rgb(var(--chromatic-cyan));
+    box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.5);
+    animation: wl-relay-qr-breathe 2.4s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes wl-relay-qr-breathe {
+    0%,
+    100% {
+      opacity: 0.4;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  /* Connect button while a QR-armed wait is running: the armed QR IS the
+     pending connect, so the button says so instead of sitting idle. */
+  .wl-relay-connect-row .wl-relay-connect--waiting {
+    animation: wl-relay-qr-breathe 2.4s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    /* opacity only: the row-height snap and the scale bloom both drop out,
+       leaving a plain fade for the entrance */
+    .wl-relay-qr-rows {
+      transition: none;
+    }
+
+    .wl-relay-qr-bloom {
+      transform: none;
+      transition: opacity var(--duration-fast) linear;
+    }
+
+    .wl-relay-qr-ember,
+    .wl-relay-connect-row .wl-relay-connect--waiting {
+      animation: none;
+    }
   }
 
   /* ── Mode switch link ──────────────────────────────────── */
