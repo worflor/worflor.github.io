@@ -72,6 +72,14 @@ export function normalizeReactionGlyph(raw: string): string | null {
 
 export interface ReactionComposer {
   element: HTMLDivElement;
+  /** The always-visible toggle button ("mark" pill). Exposed so callers can
+   *  relocate it out of `element` into their own layout (e.g. a fixed row)
+   *  without touching the commit/reset/open logic below. */
+  button: HTMLButtonElement;
+  /** The expanding input field (preview glyph + text input). Exposed for the
+   *  same reason as `button` — callers may want to host it separately, e.g.
+   *  in an overlay panel instead of inline next to the button. */
+  field: HTMLElement;
   reset: () => void;
   open: () => void;
 }
@@ -192,7 +200,7 @@ export function createReactionComposer({
   field.append(preview, input);
   wrap.append(button, field);
 
-  return { element: wrap, reset, open };
+  return { element: wrap, button, field, reset, open };
 }
 
 export function q(root: ParentNode, id: string): HTMLElement | null {

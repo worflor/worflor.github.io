@@ -760,10 +760,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   // Collapse an action container and sync its toggle button's aria-expanded.
-  // Used by per-message closures and the global dismiss handlers below.
+  // Used by per-message closures and the global dismiss handlers below. The
+  // toggle button lives outside `c` now (it's a row item, not an overlay
+  // child — see the fixed-geometry restructure above), so it's reached via
+  // the shared shelf ancestor rather than a descendant query.
   const closeActionContainer = (c: HTMLElement) => {
     c.removeAttribute("data-expanded");
-    c.querySelector<HTMLElement>(".wl-action-btn-toggle")?.setAttribute("aria-expanded", "false");
+    c.setAttribute("aria-hidden", "true");
+    c.querySelectorAll<HTMLElement>("button").forEach(b => b.setAttribute("tabindex", "-1"));
+    const shelf = c.closest(".wl-react-shelf");
+    shelf?.removeAttribute("data-actions-open");
+    shelf?.querySelector<HTMLElement>(".wl-action-btn-toggle")?.setAttribute("aria-expanded", "false");
   };
 
   const allExpanded = () =>
@@ -774,7 +781,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }, { passive: true, signal });
 
   window.addEventListener("pointerdown", (e) => {
-    allExpanded().forEach(c => { if (!c.contains(e.target as Node)) closeActionContainer(c); });
+    allExpanded().forEach(c => {
+      if (c.contains(e.target as Node)) return;
+      // the toggle is a sibling of `c`, not a descendant — exempt it too so
+      // tapping it to close doesn't get raced by this outside-tap handler.
+      if (c.closest(".wl-react-shelf")?.querySelector(".wl-action-btn-toggle") === e.target) return;
+      closeActionContainer(c);
+    });
   }, { signal });
 
   window.addEventListener("keydown", (e) => {
@@ -889,6 +902,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const el = msgById.get(msgId);
     if (!el) return;
     el.classList.add("wl-msg--seen");
+    if (shelfTarget?.msgId === msgId) updateShelfCaption();
   }
 
   /** Max distinct emoji reactions tracked per message. Keeps the UI elegant. */
@@ -902,6 +916,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * opening it never pushes later messages down and needs neither negative
    * margins nor an overflow-x scroll hack — it scrolls with the message
    * list for free, since it's a normal child of the scrolling element.
+   *
+   * Fixed geometry: the shelf's outer box is measured once at open (see
+   * positionReactionShelf) and never resizes again while open. The button
+   * row never wraps (flex-wrap: nowrap) and neither the ⋮ actions nor the
+   * mark composer grow it — both open as absolutely-positioned overlays
+   * that sit on top of the row instead of pushing it wider. Nothing the
+   * user is about to tap may move underneath them.
    */
   interface ShelfTarget {
     msgId: number;
@@ -920,6 +941,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   reactionShelf.setAttribute("aria-label", "React");
   opts.chatMessages.appendChild(reactionShelf);
 
+  // the single fixed-height row: quick-picks, the mark button, the ⋮ toggle.
+  // position:relative so the action/composer overlays below can lay
+  // themselves over it exactly (inset: 0) without ever affecting its size.
+  const shelfRow = document.createElement("div");
+  shelfRow.className = "wl-shelf-row";
+  reactionShelf.appendChild(shelfRow);
+
+  // quick-pick emoji buttons live in their own wrapper so they can dim as a
+  // unit while an overlay is open, independent of the mark/⋮ buttons beside them.
+  const quickPicksWrap = document.createElement("div");
+  quickPicksWrap.className = "wl-shelf-quickpicks";
+  shelfRow.appendChild(quickPicksWrap);
+
   const reactionComposer: ReactionComposer = createReactionComposer({
     host: reactionShelf,
     signal,
@@ -932,14 +966,56 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       closeReactionShelf();
     },
   });
-  reactionShelf.appendChild(reactionComposer.element);
+  // the mark button stays put in the row; its expanding input field is
+  // relocated into an overlay further down (composerOverlay) so opening it
+  // never grows the row. composer.element (their original shared wrap) is
+  // deliberately left unattached — only its two children get mounted, each
+  // in its own home. commit/reset/open logic in ui-helpers is untouched.
+  shelfRow.appendChild(reactionComposer.button);
 
   // ── Shared action menu (⋮ → Copy / Edit) ────────────────────────
   // Built once, retargeted on open via configureActionContainer(). Only
   // shown for messages with text; edit only for own text messages.
+  // wl-react-action-container is the functional/query class (existing
+  // collapse plumbing below matches on it); wl-shelf-overlay is the visual
+  // treatment shared with the mark composer's overlay.
   const actionContainer = document.createElement("div");
-  actionContainer.className = "wl-react-action-container";
+  actionContainer.className = "wl-react-action-container wl-shelf-overlay wl-shelf-overlay--actions";
   actionContainer.style.display = "none";
+  actionContainer.setAttribute("aria-hidden", "true");
+  shelfRow.appendChild(actionContainer);
+
+  // the mark composer's expanding field is relocated here — full row width,
+  // transform+opacity only, same overlay pattern as the actions panel above.
+  const composerOverlay = document.createElement("div");
+  composerOverlay.className = "wl-shelf-overlay wl-shelf-overlay--mark";
+  composerOverlay.setAttribute("aria-hidden", "true");
+  composerOverlay.appendChild(reactionComposer.field);
+  reactionComposer.field.querySelector("input")?.setAttribute("tabindex", "-1");
+  shelfRow.appendChild(composerOverlay);
+
+  // sync the composer overlay's a11y/focus state to ui-helpers' own
+  // data-glyph-open attribute (set by its internal open()/reset()) without
+  // touching that commit/reset/open logic — the attribute is the only hook
+  // available from the outside.
+  const composerA11yObserver = new MutationObserver(() => {
+    const isOpen = reactionShelf.hasAttribute("data-glyph-open");
+    composerOverlay.setAttribute("aria-hidden", isOpen ? "false" : "true");
+    const input = reactionComposer.field.querySelector<HTMLInputElement>("input");
+    if (input) {
+      if (isOpen) input.removeAttribute("tabindex");
+      else input.setAttribute("tabindex", "-1");
+    }
+  });
+  composerA11yObserver.observe(reactionShelf, { attributes: true, attributeFilter: ["data-glyph-open"] });
+  signal.addEventListener("abort", () => composerA11yObserver.disconnect(), { once: true });
+
+  // slim status caption — always present while the shelf is open, part of
+  // the geometry measured once at open time. Never appears/disappears on
+  // its own; see updateShelfCaption().
+  const shelfCaption = document.createElement("div");
+  shelfCaption.className = "wl-shelf-caption";
+  reactionShelf.appendChild(shelfCaption);
 
   let actionCollapseTimer: ReturnType<typeof setTimeout> | null = null;
   let actionCopyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -985,8 +1061,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   actionToggleBtn.innerHTML = CHEVRON_SVG;
 
   const expandActions = () => {
+    // mutual exclusion: the actions panel and the mark composer are both
+    // full-row overlays — only one may be visible at a time.
+    reactionComposer.reset();
     actionContainer.setAttribute("data-expanded", "");
+    actionContainer.setAttribute("aria-hidden", "false");
+    actionContainer.querySelectorAll<HTMLElement>("button").forEach(b => b.removeAttribute("tabindex"));
     actionToggleBtn.setAttribute("aria-expanded", "true");
+    reactionShelf.setAttribute("data-actions-open", "");
     scheduleActionCollapse();
   };
 
@@ -1094,6 +1176,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   copyBtn.type = "button";
   copyBtn.className = "wl-action-split wl-action-copy-btn";
   copyBtn.setAttribute("aria-label", "Copy message");
+  copyBtn.setAttribute("tabindex", "-1"); // not reachable until the overlay opens — see expandActions/closeActionContainer
   copyBtn.innerHTML = COPY_SVG;
 
   copyBtn.addEventListener("click", async (e: MouseEvent) => {
@@ -1125,6 +1208,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   editBtn.type = "button";
   editBtn.className = "wl-action-split wl-action-edit-btn";
   editBtn.setAttribute("aria-label", "Edit message");
+  editBtn.setAttribute("tabindex", "-1"); // not reachable until the overlay opens — see expandActions/closeActionContainer
   editBtn.innerHTML = EDIT_SVG;
 
   editBtn.addEventListener("click", (e: MouseEvent) => {
@@ -1165,8 +1249,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.chatInput.focus();
   }, { signal });
 
-  actionContainer.append(copyBtn, actionToggleBtn);
-  reactionShelf.appendChild(actionContainer);
+  // actionContainer + composerOverlay were already mounted into shelfRow
+  // above (fixed geometry is established before either overlay's contents
+  // exist). copyBtn joins the overlay; the toggle is a row item in its own
+  // right, not an overlay child, so it stays visible and clickable while
+  // the overlay animates on top of the rest of the row.
+  actionContainer.appendChild(copyBtn);
+  shelfRow.appendChild(actionToggleBtn);
+
+  // mutual exclusion, the other direction: opening the mark composer
+  // collapses the actions panel if it happens to be open. (expandActions()
+  // above already resets the composer when actions open.)
+  reactionComposer.button.addEventListener("click", () => {
+    if (actionContainer.hasAttribute("data-expanded")) collapseActions();
+  }, { signal });
 
   /** Retarget the shared action container to the message about to be shown. */
   function configureActionContainer(msgText: string | null, isSelfMsg: boolean): void {
@@ -1176,6 +1272,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     actionToggleBtn.innerHTML = CHEVRON_SVG;
     if (actionCopyFeedbackTimer) { clearTimeout(actionCopyFeedbackTimer); actionCopyFeedbackTimer = null; }
 
+    // the toggle is a row item now, independent of the overlay it drives —
+    // hide it alongside the overlay when there's nothing to act on.
+    actionToggleBtn.style.display = msgText ? "" : "none";
     actionContainer.style.display = msgText ? "" : "none";
     if (isSelfMsg) delete actionContainer.dataset.copyOnly;
     else actionContainer.dataset.copyOnly = "";
@@ -1187,18 +1286,25 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  /** Quick-pick count: the full set normally, trimmed on narrow viewports so
+   *  the single fixed row still fits min(88vw, 22rem) without ever wrapping
+   *  (see .wl-react-shelf / .wl-shelf-row). */
+  function quickPickLimit(): number {
+    return window.innerWidth <= 380 ? 3 : 5;
+  }
+
   /** Rebuild the quick-pick emoji buttons for the message about to be shown.
    *  Cheap enough to redo per-open now that there's only ever one shelf. */
   function rebuildQuickPicks(msgId: number): void {
-    while (reactionShelf.firstChild && reactionShelf.firstChild !== reactionComposer.element) {
-      reactionShelf.removeChild(reactionShelf.firstChild);
-    }
+    while (quickPicksWrap.firstChild) quickPicksWrap.removeChild(quickPicksWrap.firstChild);
     const predefined = ["👍", "👎", "❤️", "😂"];
     const lastUsedRaw = localStorage.getItem("wl-last-reaction");
     const lastUsed = lastUsedRaw ? normalizeReactionGlyph(lastUsedRaw) : null;
     if (lastUsed && !predefined.includes(lastUsed)) predefined.push(lastUsed);
 
-    predefined.forEach((emoji) => {
+    const picks = predefined.slice(0, quickPickLimit());
+
+    picks.forEach((emoji) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "wl-react-btn";
@@ -1210,7 +1316,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         localStorage.setItem("wl-last-reaction", emoji);
         closeReactionShelf();
       }, { signal });
-      reactionShelf.insertBefore(btn, reactionComposer.element);
+      quickPicksWrap.appendChild(btn);
     });
   }
 
@@ -1269,6 +1375,40 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     reactionShelf.classList.remove("wl-react-shelf--open");
   }
 
+  /** Format `bytes` the way the shelf caption wants it: lowercase, one
+   *  decimal for kb/mb (e.g. "184 b", "2.1 kb", "4.0 mb") — reuses
+   *  formatSize's thresholds/rounding, just cased down. */
+  function formatShelfBytes(bytes: number): string {
+    return formatSize(bytes).toLowerCase();
+  }
+
+  /** Derive the caption text for the currently open shelf target. Self
+   *  messages report their own send/delivery lifecycle; peer messages just
+   *  confirm receipt. Byte count comes from div.dataset.wlBytes, set once
+   *  in addChatMessage(). */
+  function formatShelfCaption(target: ShelfTarget): string {
+    const bytes = Number(target.msgEl.dataset.wlBytes) || 0;
+    const sizeStr = formatShelfBytes(bytes);
+    if (!target.isSelfMsg) return `${sizeStr} · received`;
+
+    let state: string;
+    if (send.acks.has(target.msgId)) state = "sending";
+    else if (target.msgEl.classList.contains("wl-msg--seen")) state = "seen";
+    else if (target.msgEl.classList.contains("wl-msg--delivered")) state = "delivered · unseen";
+    else state = "sent";
+    return `${sizeStr} · ${state}`;
+  }
+
+  /** Refresh the caption in place. Called on open, and again from the ack/
+   *  seen handlers below so a shelf left open through a state change
+   *  (sending → delivered → seen) doesn't go stale. No MutationObserver —
+   *  handleAck() and markSeen() are the only two places those classes ever
+   *  change, so hooking them directly is cheaper and simpler. */
+  function updateShelfCaption(): void {
+    if (!shelfTarget) return;
+    shelfCaption.textContent = formatShelfCaption(shelfTarget);
+  }
+
   /** Open the shelf for `msgEl`, anchored to `bubbleEl`. */
   function openReactionShelf(msgEl: HTMLElement, bubbleEl: HTMLElement): void {
     const msgIdRaw = msgEl.dataset.msgId;
@@ -1289,6 +1429,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     configureActionContainer(msgText, isSelfMsg);
 
     shelfTarget = { msgId, msgEl, bubbleEl, msgText, isSelfMsg };
+    updateShelfCaption();
     positionReactionShelf(msgEl, bubbleEl);
 
     msgEl.setAttribute("data-shelf-open", "");
@@ -1420,6 +1561,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const originalTitle = document.title;
   let unreadCount = 0;
   let hasFocus = document.hasFocus();
+  // peer messages that arrived while the tab was hidden or unfocused: their
+  // SEEN receipts wait here until attention genuinely returns.
+  const pendingSeen = new Set<number>();
+  const flushPendingSeen = () => {
+    if (document.hidden || !hasFocus || !session || pendingSeen.size === 0) return;
+    for (const msgId of pendingSeen) {
+      session.sendCtrl(CTRL_OP.SEEN, encodeSeenPayload(msgId));
+    }
+    pendingSeen.clear();
+  };
   type ComposeIntent = "idle" | "connecting" | "ready" | "typing" | "error" | "drop";
   const chatCompose = opts.chatInput.closest<HTMLElement>(".wl-chat-compose");
   let composeIntentTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1739,6 +1890,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (send.acks.delete(msgId) && send.acks.size === 0) {
         send.timestamps.delete(msgId);
         sendDelivered();
+        if (shelfTarget?.msgId === msgId) updateShelfCaption();
       }
     }, 5000);
   }
@@ -1770,6 +1922,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     // Check if the ack was successfully deleted (meaning it was actually in flight)
     const wasInFlight = send.acks.delete(msgId);
+    if (shelfTarget?.msgId === msgId) updateShelfCaption();
 
     if (send.acks.size === 0 && send.phase === "in-flight") {
       sendDelivered();
@@ -3871,9 +4024,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * live card — name, mono byte counter, energy track, cancel — keyed by
    * transferId. Inbound cards get replaced in place by the real file/media
    * message once the assembled blob arrives (mirrors the peer-draw-preview
-   * merge above). Outbound cards settle into the normal sent-file card once
-   * the last chunk goes out — chunked sends never keep a local blob, so
-   * there's no download link to settle into, just a quiet "delivered" mark.
+   * merge above). Outbound cards settle into a quiet "delivered" mark first,
+   * then (see morphOutboundTransferCard) morph into the same download
+   * affordance the receiver gets, fed by the retained `file` below — a File
+   * is disk-backed, so holding the reference costs nothing regardless of
+   * transfer size, unlike keeping the raw bytes.
    */
   interface TransferCardState {
     transferId: number;
@@ -3889,9 +4044,25 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // last cumulative bytesSent applied to this outbound card — lets onSendProgress
     // disambiguate between multiple in-flight sends that happen to share a totalBytes.
     bytesSent: number;
+    // outbound only — the local File handle the user picked, retained so the sender
+    // can render/download their own completed transfer. never read into memory here;
+    // just a reference, released in clearChatArtifacts (see outboundFileRefs).
+    file?: File;
   }
 
   const transferCards = new Map<number, TransferCardState>();
+
+  // outbound transfer cards that are holding a retained File reference, so
+  // clearChatArtifacts can null them out and let the underlying handle (and any
+  // detached DOM it's still closed over) be garbage collected on chat clear.
+  const outboundFileRefs = new Set<TransferCardState>();
+
+  // set immediately before calling session.sendFile(file) and consumed inside the
+  // synchronous prefix of onSendStart (which fires before sendFileChunked's first
+  // await) — the one hop needed to thread the File from the send entry point into
+  // the transfer card it triggers, without changing WhisperLiveSession's callback
+  // signature.
+  let pendingOutboundFile: File | null = null;
 
   /** True if any card (either direction) hasn't settled yet — delivered/cancelled cards
    *  are pruned from transferCards as soon as they resolve, so this is just a scan over
@@ -4092,6 +4263,85 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     state.cardEl.appendChild(badge);
     transferCards.delete(transferId);
     maybeReleaseTransferWakeLock();
+    // give "delivered" a beat to register, then morph into the real download
+    // affordance — see morphOutboundTransferCard.
+    if (state.file) setTimeout(() => morphOutboundTransferCard(state, badge), 1200);
+  }
+
+  /** Lazily save a retained outbound File — the object URL is created on click
+   *  rather than up front, so a completed multi-GB transfer never holds a live
+   *  blob URL open just in case the sender revisits it. Mirrors downloadGlyphAsPng's
+   *  create → click → revoke shape. */
+  function downloadRetainedFile(file: File, fileName: string): void {
+    const url = URL.createObjectURL(file);
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  /** 1.2s after an outbound chunked transfer settles as "delivered", morph the
+   *  card's action area into the same download affordance the receiver's finished
+   *  card gets for the identical file — reuses detectMedia + renderMediaMessage,
+   *  the exact same construction the receive path uses for image/video/glyph, fed
+   *  a synthetic self message whose fileBlob is the retained File (a File IS a
+   *  Blob, so no bytes are read here). Generic (non-media) files keep the card's
+   *  existing name/size row and only grow a download link, matching the class the
+   *  receiver's generic-file row uses. The badge fades out, the affordance fades
+   *  in — opacity only, so the media case's own thumbnail is the only thing that
+   *  grows the card; the generic case swaps in place with no shift at all. */
+  function morphOutboundTransferCard(state: TransferCardState, badge: HTMLElement): void {
+    const file = state.file;
+    if (!file || !state.wrapEl.isConnected) return;
+
+    const msg: LiveMessage = {
+      type: "file", direction: "self",
+      fileName: state.fileName, fileSize: state.totalBytes, fileType: file.type,
+      fileBlob: file, timestamp: Date.now(),
+    };
+    const isMedia = detectMedia(msg) !== null;
+
+    const buildAffordance = (): HTMLElement => {
+      if (isMedia) return renderMediaMessage(msg, signal, null);
+      // generic file: same "download" wording/class as the receiver's card, but a
+      // lazy click-time object URL instead of an eager one (see downloadRetainedFile).
+      const link = document.createElement("a");
+      link.className = "wl-msg-file-download";
+      link.href = "#";
+      link.textContent = "download";
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (state.file) downloadRetainedFile(state.file, state.fileName);
+      }, { signal });
+      return link;
+    };
+
+    const swapIn = (): void => {
+      if (!state.wrapEl.isConnected) return;
+      const fresh = buildAffordance();
+      if (!reduceMotion) fresh.style.opacity = "0";
+      if (isMedia) {
+        state.wrapEl.replaceChild(fresh, state.cardEl);
+        state.cardEl = fresh;
+      } else {
+        state.cardEl.appendChild(fresh);
+      }
+      if (reduceMotion) return;
+      fresh.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 180, easing: "ease" })
+        .finished.then(() => { fresh.style.opacity = ""; }).catch(() => { fresh.style.opacity = ""; });
+    };
+
+    if (reduceMotion) {
+      badge.remove();
+      swapIn();
+      return;
+    }
+    const fadeOut = badge.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 150, easing: "ease", fill: "forwards" });
+    fadeOut.finished.then(() => { badge.remove(); swapIn(); }).catch(() => { badge.remove(); swapIn(); });
   }
 
   function addChatMessage(msg: LiveMessage): void {
@@ -4533,7 +4783,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const timeEl = document.createElement("time");
     timeEl.className = "wl-msg-time";
     timeEl.dateTime = String(msg.timestamp);
-    timeEl.textContent = formatTime(msg.timestamp);
+    // the timestamp text lives in its own span so the 12h/24h toggle can
+    // rewrite it without destroying siblings (the receipt dot lives here too).
+    const timeTextEl = document.createElement("span");
+    timeTextEl.className = "wl-msg-time-text";
+    timeTextEl.textContent = formatTime(msg.timestamp);
+    timeEl.appendChild(timeTextEl);
     div.appendChild(timeEl);
 
     // tiny sent/delivered/seen dot for self text + file bubbles — a subtle
@@ -4595,6 +4850,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     if (msg.msgId !== undefined) {
       div.dataset.msgId = String(msg.msgId);
+      // byte count for the reaction shelf's status caption (see
+      // formatShelfCaption) — derived once here rather than re-measured at
+      // shelf-open time, since msg.text/fileData may already be gone by then.
+      if (msg.type === "text") {
+        div.dataset.wlBytes = String(new TextEncoder().encode(msg.text ?? "").length);
+      } else if (msg.type === "file" && msg.fileSize != null) {
+        div.dataset.wlBytes = String(msg.fileSize);
+      }
       msgById.set(msg.msgId, div);
       const allowReactions = !isTransientDrawPreviewMessage(div);
       if (allowReactions) {
@@ -4635,9 +4898,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       else if (msg.type === "text") haptic("msg-received");
       bumpUnread();
       nudgeAudio();
-      // Send SEEN immediately if tab is focused.
-      if (!document.hidden && msg.msgId !== undefined && session) {
-        session.sendCtrl(CTRL_OP.SEEN, encodeSeenPayload(msg.msgId));
+      // honest SEEN: only when the tab is visible AND the window focused —
+      // otherwise the receipt would claim eyes that were not here. deferred
+      // msgIds flush the moment attention genuinely returns.
+      if (msg.msgId !== undefined) {
+        if (!document.hidden && hasFocus && session) {
+          session.sendCtrl(CTRL_OP.SEEN, encodeSeenPayload(msg.msgId));
+        } else {
+          pendingSeen.add(msg.msgId);
+        }
       }
     }
     updateControls();
@@ -5250,7 +5519,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         }
       },
       onSendStart: (transferId, fileName, totalBytes) => {
-        buildTransferCard("out", transferId, fileName, totalBytes);
+        const card = buildTransferCard("out", transferId, fileName, totalBytes);
+        // fires synchronously within sendFileChunked's pre-await prefix, so whatever
+        // sendFileToChat staged in pendingOutboundFile right before calling
+        // session.sendFile() is still the file for *this* transfer.
+        if (pendingOutboundFile) {
+          card.file = pendingOutboundFile;
+          outboundFileRefs.add(card);
+        }
       },
       onReceiveProgress: (transferId, receivedBytes, totalBytes, fileName) => {
         const state = transferCards.get(transferId) ?? buildTransferCard("in", transferId, fileName, totalBytes);
@@ -5334,7 +5610,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // During relay/flare exchange, suppress intermediate session states that would
     // overwrite the UI. The handler manages the connecting phase display itself
     // and clears the active flag before terminal states fire.
-    if (relayActive || flareActive) {
+    // a session that actually went live is exempt: its death is a real event
+    // that must always run the terminal teardown, no matter what a stale
+    // relay/flare flag claims. swallowing it leaves a half-dead session whose
+    // state poisons the next connect in the same tab.
+    const wasLive = currentLiveState === "live" || currentLiveState === "recovering";
+    if ((relayActive || flareActive) && !wasLive) {
       const suppressed: readonly LiveState[] = [
         "offering", "waiting-for-answer", "answering", "connecting", "disconnected",
       ];
@@ -5439,6 +5720,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           : "no trace remains.";
         enterPhase(opts.disconnectedSection, "session ended", false, false);
         resetFpChip();
+        // the session died here, so its corpse dies here too: destroy it now
+        // instead of waiting for the next connect to sweep it up, and drop any
+        // stale relay/flare flags so nothing from this session can suppress or
+        // color events in the next one. in-flight ack bookkeeping resets with
+        // it; session two reuses msgIds from zero and must never compare
+        // against session one's numbers.
+        destroyCurrentSession();
+        relayActive = false;
+        flareActive = false;
+        send.acks.clear();
+        send.timestamps.clear();
+        send.phase = "idle";
         break;
       }
 
@@ -5499,7 +5792,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (editingMsgId != null) exitEditMode();
     closeReactionShelf();
     msgById.clear();
+    pendingSeen.clear();
     transferCards.clear();
+    // drop retained outbound File handles so a settled multi-GB transfer's card
+    // (and whatever DOM it's still closed over) can be garbage collected once the
+    // chat is wiped below — the morph/download closures check state.file first,
+    // so nulling it here is enough to disarm them.
+    for (const state of outboundFileRefs) state.file = undefined;
+    outboundFileRefs.clear();
     // the map was cleared without settling cards, so the wake lock must drop here
     releaseTransferWakeLock();
     revokeObjectUrls();
@@ -5540,6 +5840,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     destroyCurrentSession();
     composing = false;
+    send.acks.clear();
+    send.timestamps.clear();
+    send.phase = "idle";
     stopIdleKeepAlive();
     if (typingSendTimer) { clearTimeout(typingSendTimer); typingSendTimer = null; }
     hidePeerTyping();
@@ -6527,7 +6830,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     localStorage.setItem("wl-time-12h", use12h ? "1" : "0");
     for (const el of opts.chatMessages.querySelectorAll<HTMLTimeElement>(".wl-msg-time")) {
       const ts = Number(el.dateTime);
-      if (ts) el.textContent = formatTime(ts);
+      if (!ts) continue;
+      // rewrite only the text span: the receipt dot is a sibling inside
+      // <time> and must survive the format toggle.
+      const textEl = el.querySelector<HTMLElement>(".wl-msg-time-text");
+      if (textEl) textEl.textContent = formatTime(ts);
+      else el.textContent = formatTime(ts);
     }
   }, { signal });
 
@@ -7538,6 +7846,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       return;
     }
     sendBeginFill();
+    // staged for onSendStart to pick up if this turns into a chunked transfer —
+    // see the comment there. cleared unconditionally below; small/non-chunked
+    // sends never consume it (they already carry fileData on their self-echo).
+    pendingOutboundFile = file;
     try {
       const msgId = await session.sendFile(file);
       sendInFlight(msgId);
@@ -7546,6 +7858,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       haptic("send-failed");
       appendLog(`${label} send failed: ${errMsg(err)}`);
       pulseComposeIntent("error", 1100);
+    } finally {
+      pendingOutboundFile = null;
     }
   }
 
@@ -7636,8 +7950,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }, { signal });
 
-  window.addEventListener("focus", () => { hasFocus = true; clearUnread(); }, { signal });
+  window.addEventListener("focus", () => { hasFocus = true; clearUnread(); flushPendingSeen(); }, { signal });
   window.addEventListener("blur", () => { hasFocus = false; }, { signal });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) flushPendingSeen(); }, { signal });
   window.addEventListener("resize", syncPeerPreviewLayout, { signal });
   window.visualViewport?.addEventListener("resize", syncPeerPreviewLayout, { signal });
   window.addEventListener("whisper-live-reset-request", handleExternalResetRequest as EventListener, { signal });
@@ -7685,19 +8000,42 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // One-shot — removed immediately so a later funnel switch or view-
   // transition re-init never re-fires it. Harmless if empty/undecodable:
   // that just leaves the phrase input blank and live mode already open.
+  const applyQrHandoff = (phrase: string): void => {
+    if (!phrase || session) return;
+    opts.phraseInput.value = phrase;
+    if (opts.relayAssistToggle) {
+      opts.relayAssistToggle.checked = true;
+      applyModeSwitch("relay");
+    }
+    setTimeout(() => { if (!aborted() && !session) void handleRelayConnect(true); }, 100);
+  };
+
   const qrHandoffPhrase = sessionStorage.getItem("wl-qr-phrase");
   if (qrHandoffPhrase !== null) {
     sessionStorage.removeItem("wl-qr-phrase");
-    const handoffPhrase = qrHandoffPhrase.trim();
-    if (handoffPhrase && !session) {
-      opts.phraseInput.value = handoffPhrase;
-      if (opts.relayAssistToggle) {
-        opts.relayAssistToggle.checked = true;
-        applyModeSwitch("relay");
-      }
-      setTimeout(() => { if (!aborted() && !session) void handleRelayConnect(true); }, 100);
-    }
+    applyQrHandoff(qrHandoffPhrase.trim());
   }
+
+  // a flare can also land on a tab that is already open: qr scanners reuse
+  // the existing tab, which only fires hashchange (the deep-link script in
+  // whisper.astro runs once at document load and never again). decode the
+  // fragment here and run the same one-shot path so a hot tab connects as
+  // smoothly as a cold one. a live session wins over an incoming flare.
+  window.addEventListener("hashchange", () => {
+    const h = window.location.hash;
+    if (!h.startsWith("#wl:")) return;
+    history.replaceState({}, "", window.location.pathname + window.location.search);
+    if (aborted() || session) return;
+    try {
+      const b64 = h.slice(4).replace(/-/g, "+").replace(/_/g, "/");
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      applyQrHandoff(new TextDecoder().decode(bytes).trim());
+    } catch {
+      // undecodable fragment: nothing to apply
+    }
+  }, { signal });
 
   void getQrScannerCapability().then((capability) => {
     if (aborted()) return;
