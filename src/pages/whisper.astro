@@ -2904,20 +2904,29 @@ const seo = {
      the encryption state visibly wraps the peer's identity. */
   .wl-head-title-row .wl-fp-wrap {
     display: inline-flex;
-    align-items: center;
+    align-items: stretch;
     gap: 0;
     min-width: 0;
     position: relative;
   }
 
+  /* the bond wears its own little chamber: an iris box adhered to the
+     chip's leading edge, split-button anatomy. it owns three walls; the
+     chip's left border is the shared hairline between them, so the two
+     boxes read as one instrument. hidden until there is an identity to
+     secure (a lone iris at idle reads as a stray artifact). */
   .wl-head-title-row .wl-e2e-badge {
-    /* tuck the pip against the chip's leading edge. */
-    margin-right: -0.55em;
-    z-index: 1;
-    padding-left: 0.5em;
-    /* the pip only means something once there is an identity to secure, so
-       it appears with the chip. a lone pip at idle reads as a stray dot. */
     display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.42em;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-right: none;
+    border-radius: var(--whisper-radius-soft) 0 0 var(--whisper-radius-soft);
+    background: rgb(10 10 10 / 0.6);
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
   }
 
   :global(.whisper-op-live.wl-connected) .wl-head-title-row .wl-e2e-badge,
@@ -2926,9 +2935,30 @@ const seo = {
     display: inline-flex;
   }
 
-  :global(.whisper-op-live.wl-connected) .wl-head-title-row :global(.wl-fp-chip) {
-    padding-left: 1.25em;
+  /* the chip flattens its leading corners to receive the iris. */
+  :global(.whisper-op-live.wl-connected) .wl-head-title-row :global(.wl-fp-chip),
+  :global(.whisper-op-live.wl-recovering) .wl-head-title-row :global(.wl-fp-chip),
+  :global(.whisper-op-live.wl-preview) .wl-head-title-row :global(.wl-fp-chip) {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+
+  /* state colors wash over the whole instrument: iris walls, shared
+     hairline, and chip border together. */
+  :global(.whisper-op-live.wl-connected) .wl-head-title-row .wl-e2e-badge {
     border-color: rgb(var(--chromatic-cyan) / 0.32);
+    background: rgb(var(--chromatic-cyan) / 0.05);
+  }
+
+  :global(.whisper-op-live.wl-connected) .wl-head-title-row :global(.wl-fp-chip) {
+    border-color: rgb(var(--chromatic-cyan) / 0.32);
+  }
+
+  :global(.whisper-op-live.wl-connected)
+    .wl-head-title-row
+    .wl-e2e-badge[data-path="relayed"] {
+    border-color: rgb(var(--tool-action-load) / 0.32);
+    background: rgb(var(--tool-action-load) / 0.05);
   }
 
   :global(.whisper-op-live.wl-connected)
@@ -2938,8 +2968,12 @@ const seo = {
     border-color: rgb(var(--tool-action-load) / 0.32);
   }
 
+  :global(.whisper-op-live.wl-recovering) .wl-head-title-row .wl-e2e-badge {
+    border-color: rgb(var(--tool-status-warning) / 0.32);
+    background: rgb(var(--tool-status-warning) / 0.05);
+  }
+
   :global(.whisper-op-live.wl-recovering) .wl-head-title-row :global(.wl-fp-chip) {
-    padding-left: 1.25em;
     border-color: rgb(var(--tool-status-warning) / 0.32);
   }
 
@@ -3368,9 +3402,11 @@ const seo = {
   }
 
   @media (max-width: 420px) {
-    /* Emoji chip drops below title */
+    /* title and identity chip share one line always: the chip's name
+       ellipsizes rather than the row breaking (the old drop-below-title
+       layout read as a bug once the bond iris joined the chip). */
     .wl-head-title-row {
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
     }
 
     .wl-head-title {
@@ -3568,11 +3604,12 @@ const seo = {
   }
 
   @media (max-width: 700px) {
-    /* narrow: title and controls share the first row, the peer chip
-       gets its own quiet second line. */
+    /* narrow: the iris-led identity chip stays on the title line (the old
+       drop-to-second-line layout read as a bug once the bond joined the
+       chip). the name ellipsizes inside minmax(0,1fr) instead of breaking. */
     :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-fp-wrap) {
-      grid-column: 1 / -1;
-      grid-row: 2;
+      grid-column: 2;
+      grid-row: 1;
     }
 
     /* the chip row needs a touch more room above the divider */
