@@ -125,29 +125,32 @@ export function createReactionComposer({
   input.setAttribute("aria-label", inputLabel);
 
   let isComposing = false;
-  let composeSession = 0;
-  let committedSession = -1;
+  // Latches once a glyph has been committed for the current open session, so
+  // the "input" auto-commit and the "compositionend"/Enter fallback commit
+  // can never both fire for the same session. Cleared on every reset (which
+  // open() always runs first), so each fresh session starts uncommitted.
+  let committed = false;
 
   const listenerOptions = signal ? { signal } : undefined;
 
   function reset(): void {
     isComposing = false;
+    committed = false;
     host.removeAttribute(REACTION_GLYPH_OPEN_ATTR);
     input.value = "";
     preview.textContent = REACTION_GLYPH_PLACEHOLDER;
   }
 
   function commit(): void {
-    if (committedSession === composeSession) return;
+    if (committed) return;
     const glyph = normalizeReactionGlyph(input.value);
     if (!glyph) return;
-    committedSession = composeSession;
+    committed = true;
     preview.textContent = glyph;
     onCommit(glyph);
   }
 
   function open(): void {
-    composeSession += 1;
     reset();
     host.setAttribute(REACTION_GLYPH_OPEN_ATTR, "");
     requestAnimationFrame(() => input.focus());
@@ -239,7 +242,11 @@ export async function copyToClipboard(text: string): Promise<void> {
 
 /** Format a timestamp as `HH:MM:SS` in local time. */
 function logTimestamp(): string {
-  return new Date().toISOString().slice(11, 19);
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
 }
 
 /** Append a timestamped line to a shared log `<pre>` and auto-scroll. */

@@ -27,7 +27,9 @@ const CONT_DATA_OFFSET = 1;
  * Exact wire-byte estimate for chunkMessagePrefixed without materializing chunks.
  */
 export function estimateChunkedPrefixedSize(payloadBytes: number): number {
-  const len = Math.max(0, payloadBytes | 0);
+  // Math.floor, not | 0: the bitwise-or coerces through a 32-bit signed int and
+  // wraps negative for payloads over 2 GB, which real file transfers exceed.
+  const len = Math.max(0, Math.floor(payloadBytes));
   if (len <= CHUNK_SIZE) return 2 + len; // prefix + single type + payload
 
   const startPayload = Math.min(CHUNK_SIZE - START_TOTAL_LENGTH_BYTES, len);

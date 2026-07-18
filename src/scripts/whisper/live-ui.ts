@@ -462,6 +462,15 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
 /* ── Init ─────────────────────────────────────────────────── */
 
 export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
+  // ── Shared hold-gesture timing ──
+  // unifies the scattered 250ms/300ms hold thresholds used across the media
+  // popover, action-drag, mic, and paste-hold gestures into one constant.
+  const HOLD_SHORT_MS = 280;   // press-and-hold threshold before a gesture "arms"
+  const HOLD_CONFIRM_MS = 500; // hold-to-confirm threshold (mic-cancel first arm)
+  const DISARM_MS = 2000;      // armed confirm state auto-reverts after this long
+  const ICON_SWAP_MS = 110;    // cross-fade duration for toggle icon swaps
+  const RAF_SETTLE_MS = 1000;  // compose-activity rAF loop idles out after this long quiet
+
   const ac = new AbortController();
   const { signal } = ac;
   const liveSurface = document.getElementById("wl-section");
@@ -634,15 +643,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const srcEl = msgById.get(editingMsgId);
     srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.remove("wl-msg--editing");
 
-    // Revert the toggle button if it was morphed into the edit icon
-    const toggleBtn = srcEl?.querySelector<HTMLElement>(".wl-action-btn-toggle");
-    if (toggleBtn && toggleBtn.classList.contains("wl-toggle--is-editing")) {
-      toggleBtn.classList.remove("wl-toggle--is-editing");
-      toggleBtn.classList.add("wl-toggle--swapping");
+    // Revert the shared action toggle if it was morphed into the edit icon.
+    // (actionToggleBtn is the one shared instance — see the reaction-shelf
+    // block below — so this no longer needs to look it up per-message.)
+    if (actionToggleBtn.classList.contains("wl-toggle--is-editing")) {
+      actionToggleBtn.classList.remove("wl-toggle--is-editing");
+      actionToggleBtn.classList.add("wl-toggle--swapping");
       setTimeout(() => {
-        toggleBtn.innerHTML = CHEVRON_SVG;
-        toggleBtn.classList.remove("wl-toggle--swapping");
-      }, 110);
+        actionToggleBtn.innerHTML = CHEVRON_SVG;
+        actionToggleBtn.classList.remove("wl-toggle--swapping");
+      }, ICON_SWAP_MS);
     }
 
     if (restoreDraft) {
@@ -703,18 +713,23 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // ── Clear-history (voted operation) ─────────────────────────
 
   function executeClearHistory(): void {
-    const msgs = Array.from(opts.chatMessages.children) as HTMLElement[];
-    if (msgs.length === 0 || (msgs.length === 1 && msgs[0].classList.contains("wl-chat-empty"))) {
+    // Scope to real message elements — the container also permanently hosts
+    // the shared reaction shelf (see below), which isn't a message.
+    const msgs = Array.from(opts.chatMessages.querySelectorAll<HTMLElement>(":scope > .wl-msg"));
+    if (msgs.length === 0) {
       updateControls();
       return;
     }
     haptic("clear-history");
+    closeReactionShelf();
     msgs.forEach((el, i) => el.style.setProperty("--msg-idx", String(Math.min(i, 10))));
     opts.chatMessages.dataset.clearing = "1";
     setTimeout(() => {
       delete opts.chatMessages.dataset.clearing;
       clearNode(opts.chatMessages);
       if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
+      // clearNode() wipes every child, including the shelf — reseat it.
+      opts.chatMessages.appendChild(reactionShelf);
       updateControls();
     }, 320);
   }
@@ -796,39 +811,425 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /** Max distinct emoji reactions tracked per message. Keeps the UI elegant. */
   const MAX_REACTIONS = 5;
-  const reactionComposers = new WeakMap<HTMLElement, ReactionComposer>();
 
-  function closeReactionShelf(el: Element | null): void {
-    if (!(el instanceof HTMLElement)) return;
-    reactionComposers.get(el)?.reset();
-    el.removeAttribute("data-shelf-open");
+  /* ── Shared reaction shelf ───────────────────────────────────────
+   * ONE shelf for the whole chat, instead of one per message. It's an
+   * absolutely-positioned child of #wl-chat-messages (which is therefore
+   * position:relative — see WhisperLiveChat.astro), anchored via inline
+   * top/left to whichever bubble was last tapped. Being out of flow means
+   * opening it never pushes later messages down and needs neither negative
+   * margins nor an overflow-x scroll hack — it scrolls with the message
+   * list for free, since it's a normal child of the scrolling element.
+   */
+  interface ShelfTarget {
+    msgId: number;
+    msgEl: HTMLElement;
+    bubbleEl: HTMLElement;
+    msgText: string | null; // trimmed bubble text; null hides the action container
+    isSelfMsg: boolean;
   }
+  let shelfTarget: ShelfTarget | null = null;
 
-  function scrollReactionShelfIntoView(msgEl: HTMLElement): void {
-    const shelf = msgEl.querySelector<HTMLElement>(".wl-react-shelf");
-    if (!shelf) return;
-    const scroller = opts.chatMessages;
-    const scrollerRect = scroller.getBoundingClientRect();
-    const shelfRect = shelf.getBoundingClientRect();
-    // Keep a little extra breathing room so the shelf doesn't hug the bottom edge.
-    const pad = 18;
+  const SHELF_GAP = 6; // px between the bubble edge and the shelf
 
-    let deltaY = 0;
-    if (shelfRect.bottom > scrollerRect.bottom - pad) {
-      deltaY = shelfRect.bottom - (scrollerRect.bottom - pad);
-    } else if (shelfRect.top < scrollerRect.top + pad) {
-      deltaY = shelfRect.top - (scrollerRect.top + pad);
+  const reactionShelf = document.createElement("div");
+  reactionShelf.className = "wl-react-shelf";
+  reactionShelf.setAttribute("role", "toolbar");
+  reactionShelf.setAttribute("aria-label", "React");
+  opts.chatMessages.appendChild(reactionShelf);
+
+  const reactionComposer: ReactionComposer = createReactionComposer({
+    host: reactionShelf,
+    signal,
+    onCommit: (glyph) => {
+      // Composer is a single shared instance — route to whatever the shelf
+      // is currently anchored to instead of a message baked in at build time.
+      if (!shelfTarget) return;
+      toggleSelfReaction(shelfTarget.msgId, glyph);
+      localStorage.setItem("wl-last-reaction", glyph);
+      closeReactionShelf();
+    },
+  });
+  reactionShelf.appendChild(reactionComposer.element);
+
+  // ── Shared action menu (⋮ → Copy / Edit) ────────────────────────
+  // Built once, retargeted on open via configureActionContainer(). Only
+  // shown for messages with text; edit only for own text messages.
+  const actionContainer = document.createElement("div");
+  actionContainer.className = "wl-react-action-container";
+  actionContainer.style.display = "none";
+
+  let actionCollapseTimer: ReturnType<typeof setTimeout> | null = null;
+  let actionCopyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let actionHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let actionDragAborter: AbortController | null = null;
+  let actionActivePointerId = -1;
+  let actionWasHandledByDrag = false;
+
+  const cancelActionHoldTimer = () => {
+    if (actionHoldTimer) { clearTimeout(actionHoldTimer); actionHoldTimer = null; }
+  };
+
+  signal.addEventListener("abort", () => {
+    if (actionCollapseTimer) { clearTimeout(actionCollapseTimer); actionCollapseTimer = null; }
+    if (actionCopyFeedbackTimer) { clearTimeout(actionCopyFeedbackTimer); actionCopyFeedbackTimer = null; }
+    cancelActionHoldTimer();
+    actionDragAborter?.abort();
+    actionDragAborter = null;
+  }, { once: true });
+
+  const scheduleActionCollapse = (ms = 5000) => {
+    if (actionCollapseTimer) clearTimeout(actionCollapseTimer);
+    actionCollapseTimer = setTimeout(() => {
+      closeActionContainer(actionContainer);
+      actionCollapseTimer = null;
+    }, ms);
+  };
+
+  const cancelActionCollapse = () => {
+    if (actionCollapseTimer) { clearTimeout(actionCollapseTimer); actionCollapseTimer = null; }
+  };
+
+  const collapseActions = () => {
+    cancelActionCollapse();
+    closeActionContainer(actionContainer);
+  };
+
+  const actionToggleBtn = document.createElement("button");
+  actionToggleBtn.type = "button";
+  actionToggleBtn.className = "wl-react-btn wl-action-btn-toggle";
+  actionToggleBtn.setAttribute("aria-label", "Message actions");
+  actionToggleBtn.setAttribute("aria-expanded", "false");
+  actionToggleBtn.innerHTML = CHEVRON_SVG;
+
+  const expandActions = () => {
+    actionContainer.setAttribute("data-expanded", "");
+    actionToggleBtn.setAttribute("aria-expanded", "true");
+    scheduleActionCollapse();
+  };
+
+  // Pause the auto-collapse timer while the pointer is inside the container
+  actionContainer.addEventListener("pointerenter", cancelActionCollapse, { signal });
+  actionContainer.addEventListener("pointerleave", () => {
+    if (actionContainer.hasAttribute("data-expanded")) scheduleActionCollapse(3000);
+  }, { signal });
+
+  const handleActionPointerAbort = (e: PointerEvent) => {
+    if (e.pointerId !== actionActivePointerId) return;
+    cancelActionHoldTimer();
+    actionActivePointerId = -1;
+    if (actionDragAborter) { actionDragAborter.abort(); actionDragAborter = null; }
+  };
+
+  actionToggleBtn.addEventListener("pointerdown", (e: PointerEvent) => {
+    if (e.button !== 0 || actionActivePointerId !== -1) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    actionActivePointerId = e.pointerId;
+    try { actionToggleBtn.setPointerCapture(e.pointerId); } catch { }
+
+    let isDragging = false;
+    actionWasHandledByDrag = false;
+
+    if (actionDragAborter) actionDragAborter.abort();
+    actionDragAborter = new AbortController();
+    const dragSignal = actionDragAborter.signal;
+
+    let dragTarget: HTMLElement | null = null;
+
+    actionHoldTimer = setTimeout(() => {
+      isDragging = true;
+      if (!actionContainer.hasAttribute("data-expanded")) expandActions();
+      haptic("reaction");
+      try {
+        if (actionToggleBtn.hasPointerCapture(actionActivePointerId)) {
+          actionToggleBtn.releasePointerCapture(actionActivePointerId);
+        }
+      } catch { }
+    }, HOLD_SHORT_MS);
+
+    window.addEventListener("pointermove", (mvE: PointerEvent) => {
+      if (!isDragging) return;
+      actionWasHandledByDrag = true;
+
+      const el = document.elementFromPoint(mvE.clientX, mvE.clientY);
+      const btn = el?.closest(".wl-action-split") as HTMLElement | null;
+
+      if (dragTarget !== btn) {
+        dragTarget?.classList.remove("wl-action--drag-hover");
+        if (btn) {
+          btn.classList.add("wl-action--drag-hover");
+          haptic("reaction");
+        }
+        dragTarget = btn;
+      }
+    }, { signal: dragSignal });
+
+    const finishDrag = (upE: PointerEvent) => {
+      if (upE.pointerId !== actionActivePointerId) return;
+      cancelActionHoldTimer();
+      actionActivePointerId = -1;
+      actionDragAborter?.abort();
+      actionDragAborter = null;
+
+      if (dragTarget) {
+        dragTarget.classList.remove("wl-action--drag-hover");
+        if (isDragging) dragTarget.click();
+      } else if (isDragging) {
+        collapseActions();
+      }
+    };
+
+    window.addEventListener("pointerup", finishDrag, { signal: dragSignal });
+    window.addEventListener("pointercancel", handleActionPointerAbort, { signal: dragSignal });
+    actionToggleBtn.addEventListener("lostpointercapture", handleActionPointerAbort, { signal: dragSignal });
+  }, { signal });
+
+  actionToggleBtn.addEventListener("click", (e: MouseEvent) => {
+    e.stopPropagation();
+    if (actionWasHandledByDrag) {
+      actionWasHandledByDrag = false;
+      return;
     }
-    if (Math.abs(deltaY) < 1) return;
-    scroller.scrollBy({ top: deltaY, behavior: "smooth" });
+    if (actionContainer.hasAttribute("data-expanded")) {
+      collapseActions();
+    } else {
+      expandActions();
+    }
+  }, { signal });
+
+  // Cross-fade SVG icon swap: fade out → swap innerHTML → fade back in
+  const swapToggleIcon = (newHtml: string) => {
+    actionToggleBtn.classList.add("wl-toggle--swapping");
+    setTimeout(() => {
+      actionToggleBtn.innerHTML = newHtml;
+      actionToggleBtn.classList.remove("wl-toggle--swapping");
+    }, ICON_SWAP_MS);
+  };
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "wl-action-split wl-action-copy-btn";
+  copyBtn.setAttribute("aria-label", "Copy message");
+  copyBtn.innerHTML = COPY_SVG;
+
+  copyBtn.addEventListener("click", async (e: MouseEvent) => {
+    e.stopPropagation();
+    if (signal.aborted || !shelfTarget?.msgText) return;
+    cancelActionCollapse();
+
+    if (actionCopyFeedbackTimer) { clearTimeout(actionCopyFeedbackTimer); actionCopyFeedbackTimer = null; }
+
+    try {
+      await copyToClipboard(shelfTarget.msgText);
+      haptic("copied");
+
+      collapseActions();
+      actionToggleBtn.dataset.copied = "";
+      swapToggleIcon(CHECK_SVG);
+
+      actionCopyFeedbackTimer = setTimeout(() => {
+        delete actionToggleBtn.dataset.copied;
+        swapToggleIcon(CHEVRON_SVG);
+        actionCopyFeedbackTimer = null;
+      }, 1800);
+    } catch {
+      collapseActions();
+    }
+  }, { signal });
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "wl-action-split wl-action-edit-btn";
+  editBtn.setAttribute("aria-label", "Edit message");
+  editBtn.innerHTML = EDIT_SVG;
+
+  editBtn.addEventListener("click", (e: MouseEvent) => {
+    e.stopPropagation();
+    if (signal.aborted || !shelfTarget) return;
+    const { msgId, msgText } = shelfTarget;
+    collapseActions();
+    haptic("reaction");
+
+    if (editingMsgId != null) exitEditMode();
+
+    emitCleared();
+    preEditInputValue = opts.chatInput.value;
+    preEditPlaceholder = opts.chatInput.placeholder;
+    editingMsgId = msgId;
+
+    const srcEl = msgById.get(msgId);
+    const targetText = srcEl
+      ?.querySelector<HTMLElement>(".wl-msg-text")
+      ?.textContent
+      ?? msgText
+      ?? "";
+
+    opts.chatInput.value = targetText;
+    opts.chatInput.placeholder = "editing...";
+    opts.chatInput.closest(".wl-chat-compose")?.setAttribute("data-editing", "1");
+    srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.add("wl-msg--editing");
+
+    // Morph the toggle button into the edit icon!
+    actionToggleBtn.classList.add("wl-toggle--is-editing");
+    swapToggleIcon(EDIT_SVG);
+
+    updateControls();
+    opts.chatInput.focus();
+  }, { signal });
+
+  actionContainer.append(copyBtn, actionToggleBtn);
+  reactionShelf.appendChild(actionContainer);
+
+  /** Retarget the shared action container to the message about to be shown. */
+  function configureActionContainer(msgText: string | null, isSelfMsg: boolean): void {
+    collapseActions();
+    delete actionToggleBtn.dataset.copied;
+    actionToggleBtn.classList.remove("wl-toggle--is-editing");
+    actionToggleBtn.innerHTML = CHEVRON_SVG;
+    if (actionCopyFeedbackTimer) { clearTimeout(actionCopyFeedbackTimer); actionCopyFeedbackTimer = null; }
+
+    actionContainer.style.display = msgText ? "" : "none";
+    if (isSelfMsg) delete actionContainer.dataset.copyOnly;
+    else actionContainer.dataset.copyOnly = "";
+
+    if (isSelfMsg) {
+      if (editBtn.parentElement !== actionContainer) actionContainer.appendChild(editBtn);
+    } else {
+      editBtn.remove();
+    }
   }
 
-  function openReactionShelf(msgEl: HTMLElement): void {
-    msgEl.setAttribute("data-shelf-open", "");
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => scrollReactionShelfIntoView(msgEl));
+  /** Rebuild the quick-pick emoji buttons for the message about to be shown.
+   *  Cheap enough to redo per-open now that there's only ever one shelf. */
+  function rebuildQuickPicks(msgId: number): void {
+    while (reactionShelf.firstChild && reactionShelf.firstChild !== reactionComposer.element) {
+      reactionShelf.removeChild(reactionShelf.firstChild);
+    }
+    const predefined = ["👍", "👎", "❤️", "😂"];
+    const lastUsedRaw = localStorage.getItem("wl-last-reaction");
+    const lastUsed = lastUsedRaw ? normalizeReactionGlyph(lastUsedRaw) : null;
+    if (lastUsed && !predefined.includes(lastUsed)) predefined.push(lastUsed);
+
+    predefined.forEach((emoji) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "wl-react-btn";
+      btn.textContent = emoji;
+      btn.setAttribute("aria-label", `React with ${emoji}`);
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleSelfReaction(msgId, emoji);
+        localStorage.setItem("wl-last-reaction", emoji);
+        closeReactionShelf();
+      }, { signal });
+      reactionShelf.insertBefore(btn, reactionComposer.element);
     });
   }
+
+  /** Position the shared shelf against `bubbleEl`, flipping above it when
+   *  the bubble sits in the bottom quarter of the visible scroll viewport. */
+  function positionReactionShelf(msgEl: HTMLElement, bubbleEl: HTMLElement): void {
+    const container = opts.chatMessages;
+    const isSelf = msgEl.classList.contains("wl-msg--self");
+
+    // the shelf always opens under the message. that placement is the
+    // product: tactile, predictable, the same spot every time. when the
+    // bubble is the last message, the shelf extends the scroll overflow
+    // and a nudge below reveals it, exactly like the old in-flow strip.
+    // rect math against the container, converted into content space via
+    // scrollTop: message wrappers are positioned elements themselves, so
+    // offsetTop chains stop at .wl-msg and cannot be trusted here. the
+    // shelf is a child of the scroll content, so it scrolls for free.
+    const shelfH = reactionShelf.offsetHeight;
+    const shelfW = reactionShelf.offsetWidth;
+    const c = container.getBoundingClientRect();
+    const b = bubbleEl.getBoundingClientRect();
+    const top = b.bottom - c.top + container.scrollTop + SHELF_GAP;
+
+    const cs = getComputedStyle(container);
+    const padLeft = parseFloat(cs.paddingLeft) || 0;
+    const padRight = parseFloat(cs.paddingRight) || 0;
+    let left = isSelf
+      ? b.right - c.left - shelfW
+      : b.left - c.left;
+    const maxLeft = container.clientWidth - shelfW - padRight;
+    left = Math.max(padLeft, Math.min(left, maxLeft));
+
+    reactionShelf.style.top = `${top}px`;
+    reactionShelf.style.left = `${left}px`;
+    reactionShelf.style.transformOrigin = `top ${isSelf ? "right" : "left"}`;
+
+    // reveal the shelf when it opens past the visible bottom edge
+    const shelfBottom = top + shelfH + SHELF_GAP;
+    const visibleBottom = container.scrollTop + container.clientHeight;
+    if (shelfBottom > visibleBottom) {
+      container.scrollTo({
+        top: shelfBottom - container.clientHeight,
+        behavior: reduceMotion ? "auto" : "smooth",
+      });
+    }
+  }
+
+  /** Close the shelf (no-op if nothing is open) and drop the target refs. */
+  function closeReactionShelf(): void {
+    if (shelfTarget) {
+      shelfTarget.msgEl.removeAttribute("data-shelf-open");
+      shelfTarget = null;
+    }
+    reactionComposer.reset();
+    collapseActions();
+    reactionShelf.classList.remove("wl-react-shelf--open");
+  }
+
+  /** Open the shelf for `msgEl`, anchored to `bubbleEl`. */
+  function openReactionShelf(msgEl: HTMLElement, bubbleEl: HTMLElement): void {
+    const msgIdRaw = msgEl.dataset.msgId;
+    if (msgIdRaw === undefined) return;
+    const msgId = Number(msgIdRaw);
+
+    if (shelfTarget && shelfTarget.msgEl !== msgEl) {
+      shelfTarget.msgEl.removeAttribute("data-shelf-open");
+    }
+    reactionComposer.reset();
+
+    const msgText = bubbleEl.classList.contains("wl-msg-text")
+      ? (bubbleEl.textContent?.trim() || null)
+      : null;
+    const isSelfMsg = msgEl.classList.contains("wl-msg--self");
+
+    rebuildQuickPicks(msgId);
+    configureActionContainer(msgText, isSelfMsg);
+
+    shelfTarget = { msgId, msgEl, bubbleEl, msgText, isSelfMsg };
+    positionReactionShelf(msgEl, bubbleEl);
+
+    msgEl.setAttribute("data-shelf-open", "");
+    reactionShelf.classList.add("wl-react-shelf--open");
+  }
+
+  /** Brief shake/dim pulse on the shelf when a reaction is rejected (cap reached). */
+  function pulseReactionShelfCap(): void {
+    reactionShelf.classList.remove("wl-react-shelf--capped");
+    void reactionShelf.offsetWidth;
+    reactionShelf.classList.add("wl-react-shelf--capped");
+  }
+
+  // Content reflow (image loads, waveform reveal, etc.) can shift a
+  // message's offsetTop after the shelf has already been positioned against
+  // it. Rather than chase every possible reflow source, close the shelf
+  // whenever the container's own box resizes — #wl-chat-messages hugs its
+  // content up to its max-height clamp, so this also catches most in-flow
+  // reflows for free, plus viewport/breakpoint changes (the clamp is vw-
+  // based). Once scrolling kicks in (container pinned at max-height),
+  // further content-only reflow won't retrigger this — accepted as a small,
+  // self-healing gap: the shelf just closes a beat early on the next tap.
+  const shelfReflowObserver = new ResizeObserver(() => {
+    if (shelfTarget) closeReactionShelf();
+  });
+  shelfReflowObserver.observe(opts.chatMessages);
+  signal.addEventListener("abort", () => shelfReflowObserver.disconnect(), { once: true });
 
   function isTransientDrawPreviewMessage(el: HTMLElement | null | undefined): boolean {
     if (!el) return false;
@@ -875,7 +1276,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function removeReaction(msgId: number, emoji: string, who: "self" | "peer"): void {
     const el = msgById.get(msgId);
     if (!el || isTransientDrawPreviewMessage(el)) return;
-    const pill = el.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    const normEmoji = normalizeReactionGlyph(emoji);
+    if (!normEmoji) return;
+    const pill = el.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(normEmoji)}"]`);
     if (!pill) return;
     pill.dataset[who] = "0";
     updateReactionPill(pill);
@@ -899,22 +1302,32 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function toggleSelfReaction(msgId: number, emoji: string): void {
     const el = msgById.get(msgId);
     if (!el || isTransientDrawPreviewMessage(el)) return;
-    haptic("reaction");
-    const pill = el?.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(emoji)}"]`);
+    const normEmoji = normalizeReactionGlyph(emoji);
+    if (!normEmoji) return;
+    const bar = el.querySelector<HTMLElement>(".wl-msg-reactions");
+    const pill = bar?.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(normEmoji)}"]`);
     const isUnreact = pill?.dataset.self === "1";
+    // A new pill would push the bar past the cap. An existing pill just
+    // gaining the self flag is always fine. Check before sending anything
+    // so a capped reaction never reaches the peer while staying local-only.
+    if (!isUnreact && !pill && bar && bar.children.length >= MAX_REACTIONS) {
+      pulseReactionShelfCap();
+      return;
+    }
+    haptic("reaction");
     if (session) {
       // Live: send over the wire
       if (isUnreact) {
-        session.sendCtrl(CTRL_OP.UNREACT, encodeReactPayload(msgId, emoji));
-        removeReaction(msgId, emoji, "self");
+        session.sendCtrl(CTRL_OP.UNREACT, encodeReactPayload(msgId, normEmoji));
+        removeReaction(msgId, normEmoji, "self");
       } else {
-        session.sendCtrl(CTRL_OP.REACT, encodeReactPayload(msgId, emoji));
-        applyReaction(msgId, emoji, "self");
+        session.sendCtrl(CTRL_OP.REACT, encodeReactPayload(msgId, normEmoji));
+        applyReaction(msgId, normEmoji, "self");
       }
     } else {
       // Preview mode: local-only reaction, no network
-      if (isUnreact) removeReaction(msgId, emoji, "self");
-      else applyReaction(msgId, emoji, "self");
+      if (isUnreact) removeReaction(msgId, normEmoji, "self");
+      else applyReaction(msgId, normEmoji, "self");
     }
   }
 
@@ -930,6 +1343,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let composeActivityVelocity = 0;
   let composeActivityRaf = 0;
   let composeActivityLastTick = 0;
+  let composeActivitySettledSince = 0; // ts a quiet frame first landed, 0 = still animating
+  let composeActivityRafWasRunning = false; // preserved across a document.hidden pause
   let composeFlow = 0;
   // Send energy — 3-phase animation driven by real networking events.
   const send = {
@@ -1148,10 +1563,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // keep loop alive while anything is in motion
     const absCV = composeActivityVelocity < 0 ? -composeActivityVelocity : composeActivityVelocity;
     const absSV = send.velocity < 0 ? -send.velocity : send.velocity;
-    if (composeActivity > 0.006 || composeActivityTarget > 0.006
+    const stillActive = composeActivity > 0.006 || composeActivityTarget > 0.006
       || absCV > 0.006
       || send.energy > 0.006 || absSV > 0.006
-      || t.intensity > 0.006 || t.amplitude > 0.006) {
+      || t.intensity > 0.006 || t.amplitude > 0.006;
+
+    if (stillActive) {
+      composeActivitySettledSince = 0;
+      composeActivityRaf = requestAnimationFrame(stepComposeActivity);
+      return;
+    }
+
+    // Quiet frame — hold the loop open for RAF_SETTLE_MS before fully stopping, so a
+    // value dithering right at the epsilon boundary doesn't thrash start/stop every
+    // few frames. Idle throttle: once settled that long, the rAF loop actually exits.
+    if (!composeActivitySettledSince) composeActivitySettledSince = ts;
+    if (ts - composeActivitySettledSince < RAF_SETTLE_MS) {
       composeActivityRaf = requestAnimationFrame(stepComposeActivity);
       return;
     }
@@ -1162,15 +1589,30 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     send.phase = "idle"; send.acks.clear(); send.timestamps.clear(); send.peakEnergy = 0;
     t.intensity = 0; t.idle = false; t.phaseVelocity = 0; t.amplitude = 0; t.sustain = 0; t.speed = 0;
     syncCSSVars();
-    composeActivityRaf = 0; composeActivityLastTick = 0;
+    composeActivityRaf = 0; composeActivityLastTick = 0; composeActivitySettledSince = 0;
   }
 
   /** Kick the rAF loop if not already running. Single gate for all animation. */
   function ensureRaf(): void {
-    if (!composeActivityRaf && chatCompose && !reduceMotion) {
+    if (!composeActivityRaf && chatCompose && !reduceMotion && !document.hidden) {
+      composeActivitySettledSince = 0;
       composeActivityRaf = requestAnimationFrame(stepComposeActivity);
     }
   }
+
+  // Pause the loop while the tab is hidden — rAF wouldn't fire anyway on most
+  // browsers, but this also stops us burning a stale huge dt on resume, and
+  // resumes only if it was actually mid-animation when hidden fired.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      composeActivityRafWasRunning = !!composeActivityRaf;
+      if (composeActivityRaf) { cancelAnimationFrame(composeActivityRaf); composeActivityRaf = 0; }
+    } else if (composeActivityRafWasRunning) {
+      composeActivityRafWasRunning = false;
+      composeActivityLastTick = 0;
+      ensureRaf();
+    }
+  }, { signal });
 
   function exciteComposeActivity(boost: number): void {
     if (!chatCompose || reduceMotion) return;
@@ -1321,6 +1763,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       liveSurface.classList.toggle("wl-connected", el === opts.chatSection);
       liveSurface.classList.remove("wl-preview", "wl-recovering");
     }
+    // stage mode: the chat takes the theatre, page chrome recedes
+    const entering = el === opts.chatSection;
+    const wasStaged = document.documentElement.classList.contains("wl-stage");
+    document.documentElement.classList.toggle("wl-stage", entering);
+    if (entering && !wasStaged) {
+      // frame the stage: on desktop the panel sits mid-page, so bring it into view
+      // once the stage layout has applied. mobile is position fixed and unaffected.
+      requestAnimationFrame(() => {
+        liveSurface?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      });
+    }
   }
 
   function showPhase(el: HTMLElement): void {
@@ -1363,18 +1816,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       : "Image QR import unavailable here";
     opts.joinQrImageBtn.setAttribute("aria-label", opts.joinQrImageBtn.title);
 
-    const shareLabel = liveCapabilities.shareSheet ? "Share" : "Copy";
-    const shareTitle = liveCapabilities.shareSheet
-      ? "Share this code using a system share sheet"
-      : "Share sheet unavailable here. This will copy instead";
+    // no share sheet here: hide the Share button rather than relabel it "Copy"
+    // next to a real Copy button (that read as a duplicate control)
     for (const [btn, kind] of [
       [opts.offerShareBtn, "offer code"],
       [opts.answerShareBtn, "answer code"],
     ] as const) {
       if (!btn) continue;
-      btn.textContent = shareLabel;
-      btn.title = shareTitle;
-      btn.setAttribute("aria-label", `${shareLabel.toLowerCase()} ${kind}`);
+      btn.style.display = liveCapabilities.shareSheet ? "" : "none";
+      btn.textContent = "Share";
+      btn.title = "Share this code using a system share sheet";
+      btn.setAttribute("aria-label", `share ${kind}`);
     }
 
     const micTitle = micSupported
@@ -1704,8 +2156,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.chatMicBtn.disabled = editingMsgId != null ? false : (busy || !canChat || !micSupported);
     opts.chatMicCancel.disabled = busy || !canChat || !micSupported;
     opts.chatMicSend.disabled = busy || !canChat || !micSupported;
-    const hasChatMessages = opts.chatMessages.children.length > 0
-      && !(opts.chatMessages.children.length === 1 && opts.chatMessages.firstElementChild?.classList.contains("wl-chat-empty"));
+    // Query real messages directly — the container also permanently hosts
+    // the shared reaction shelf, which .children.length would count too.
+    const hasChatMessages = opts.chatMessages.querySelector(".wl-msg") !== null;
     opts.chatMediaClear.disabled = busy || !hasChatMessages;
 
     opts.confirmBtn.disabled = busy || !hasSession;
@@ -2336,6 +2789,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   /** Build the thumbnail container for an image or video. */
+  /** Clamp a natural media aspect ratio into sane thumbnail bounds and cap upscale of
+   *  tiny sources — otherwise a 1x1 image stretches to fill the whole bubble width,
+   *  or an extreme-aspect image blows the bubble out into a sliver. object-fit: contain
+   *  on the media element then letterboxes any gap between the clamped ratio and the
+   *  image's true ratio instead of distorting it. */
+  function applyMediaThumbAspect(thumb: HTMLElement, naturalWidth: number, naturalHeight: number): void {
+    if (naturalWidth <= 0 || naturalHeight <= 0) return;
+    const ratio = Math.min(1.9, Math.max(0.6, naturalWidth / naturalHeight));
+    thumb.style.setProperty("--wl-media-aspect", String(ratio));
+    // never upscale a tiny source beyond ~6x its native size
+    thumb.style.setProperty("--wl-media-max-w", `${Math.max(naturalWidth, naturalHeight) * 6}px`);
+  }
+
   function createMediaThumbnail(
     kind: MediaKind, src: string, alt: string, onError: () => void,
     sig: AbortSignal,
@@ -2353,6 +2819,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       img.addEventListener("load", () => {
         img.style.transition = "opacity 180ms ease";
         img.style.opacity = "1";
+        applyMediaThumbAspect(thumb, img.naturalWidth, img.naturalHeight);
       }, { once: true, signal: sig });
       img.addEventListener("error", onError, { once: true, signal: sig });
       thumb.appendChild(img);
@@ -2368,6 +2835,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       video.addEventListener("loadeddata", () => {
         video.style.transition = "opacity 180ms ease";
         video.style.opacity = "1";
+        applyMediaThumbAspect(thumb, video.videoWidth, video.videoHeight);
       }, { once: true, signal: sig });
       video.addEventListener("error", onError, { once: true, signal: sig });
 
@@ -3284,6 +3752,185 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   /** Maps global msgId → message DOM element for ACK delivery, SEEN, and REACT lookups. */
   const msgById = new Map<number, HTMLElement>();
 
+  /* ── Chunked file-transfer progress cards ──────────────────
+   * Sends/receives over ~4 MB stream as application-level chunks (see
+   * FILE_CHUNK_SIZE in live.ts). While a transfer is in flight we render a
+   * live card — name, mono byte counter, energy track, cancel — keyed by
+   * transferId. Inbound cards get replaced in place by the real file/media
+   * message once the assembled blob arrives (mirrors the peer-draw-preview
+   * merge above). Outbound cards settle into the normal sent-file card once
+   * the last chunk goes out — chunked sends never keep a local blob, so
+   * there's no download link to settle into, just a quiet "delivered" mark.
+   */
+  interface TransferCardState {
+    transferId: number;
+    direction: "in" | "out";
+    wrapEl: HTMLElement;
+    cardEl: HTMLElement;
+    bytesEl: HTMLElement;
+    trackEl: HTMLElement | null;
+    cancelBtn: HTMLButtonElement | null;
+    fileName: string;
+    totalBytes: number;
+    settled: boolean;
+  }
+
+  const transferCards = new Map<number, TransferCardState>();
+  // the one chunked send whose cumulative progress we're currently animating —
+  // onSendProgress is shared with per-wire-frame progress for every message
+  // type, so we gate on totalBytes matching this transfer's known file size.
+  let activeOutboundTransferId: number | null = null;
+
+  function formatTransferBytes(current: number, total: number): string {
+    return `${formatSize(current)} / ${formatSize(total)}`;
+  }
+
+  /** Build a live progress card and drop it into the chat like a normal message bubble. */
+  function buildTransferCard(direction: "in" | "out", transferId: number, fileName: string, totalBytes: number): TransferCardState {
+    const wrapEl = document.createElement("div");
+    wrapEl.className = `wl-msg wl-msg--${direction === "in" ? "peer" : "self"}`;
+    wrapEl.dataset.transferId = String(transferId);
+
+    const cardEl = document.createElement("div");
+    cardEl.className = "wl-msg-file wl-msg-transfer";
+    cardEl.dataset.transferState = "active";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "wl-msg-file-name";
+    nameEl.textContent = fileName;
+
+    const bytesEl = document.createElement("span");
+    bytesEl.className = "wl-msg-file-size wl-transfer-bytes";
+    bytesEl.textContent = formatTransferBytes(0, totalBytes);
+
+    const trackEl = document.createElement("div");
+    trackEl.className = "wl-transfer-track";
+    const fillEl = document.createElement("div");
+    fillEl.className = "wl-transfer-fill";
+    trackEl.appendChild(fillEl);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "wl-transfer-cancel";
+    cancelBtn.setAttribute("aria-label", "Cancel transfer");
+    cancelBtn.textContent = "×";
+    cancelBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (direction === "in") session?.cancelIncomingTransfer(transferId);
+      else session?.cancelFileTransfer(transferId);
+    }, { signal });
+
+    cardEl.append(nameEl, bytesEl, trackEl, cancelBtn);
+    wrapEl.appendChild(cardEl);
+
+    const timeEl = document.createElement("time");
+    timeEl.className = "wl-msg-time";
+    const now = Date.now();
+    timeEl.dateTime = String(now);
+    timeEl.textContent = formatTime(now);
+    wrapEl.appendChild(timeEl);
+
+    if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
+    opts.chatMessages.appendChild(wrapEl);
+    if (direction === "out") {
+      requestAnimationFrame(() => {
+        opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
+      });
+    } else {
+      smartScroll();
+    }
+
+    const state: TransferCardState = {
+      transferId, direction, wrapEl, cardEl, bytesEl, trackEl, cancelBtn,
+      fileName, totalBytes, settled: false,
+    };
+    transferCards.set(transferId, state);
+    return state;
+  }
+
+  function updateTransferCardProgress(state: TransferCardState, current: number, total: number): void {
+    if (state.settled) return;
+    const ratio = total > 0 ? Math.min(1, current / total) : 0;
+    state.wrapEl.style.setProperty("--wl-transfer-ratio", String(ratio));
+    state.bytesEl.textContent = formatTransferBytes(Math.min(current, total), total);
+  }
+
+  /** Find a live card awaiting resolution that matches an incoming/outgoing file message. */
+  function findPendingTransferCard(direction: "in" | "out", fileName: string, fileSize: number | undefined): TransferCardState | null {
+    for (const state of transferCards.values()) {
+      if (state.settled || state.direction !== direction) continue;
+      if (state.fileName !== fileName) continue;
+      if (fileSize !== undefined && state.totalBytes !== fileSize) continue;
+      return state;
+    }
+    return null;
+  }
+
+  /** Strip the live progress affordances, leaving whatever settled card state remains. */
+  function retireTransferChrome(state: TransferCardState): void {
+    state.trackEl?.remove();
+    state.cancelBtn?.remove();
+    state.trackEl = null;
+    state.cancelBtn = null;
+  }
+
+  function collapseTransferCancelled(transferId: number): void {
+    const state = transferCards.get(transferId);
+    if (!state || state.settled) return;
+    state.settled = true;
+    retireTransferChrome(state);
+    state.cardEl.dataset.transferState = "cancelled";
+    state.bytesEl.textContent = "transfer cancelled";
+    transferCards.delete(transferId);
+    if (activeOutboundTransferId === transferId) activeOutboundTransferId = null;
+  }
+
+  /** Re-attach live progress chrome to the settled self-file card that just replaced
+   *  the outbound placeholder, so the remaining chunks keep animating it in place. */
+  function rehostOutboundTransferChrome(state: TransferCardState, newWrapEl: HTMLElement, newCardEl: HTMLElement): void {
+    state.wrapEl = newWrapEl;
+    state.cardEl = newCardEl;
+    newWrapEl.dataset.transferId = String(state.transferId);
+    const bytesEl = newCardEl.querySelector<HTMLElement>(".wl-msg-file-size");
+    if (bytesEl) {
+      bytesEl.classList.add("wl-transfer-bytes");
+      state.bytesEl = bytesEl;
+    }
+    const trackEl = document.createElement("div");
+    trackEl.className = "wl-transfer-track";
+    const fillEl = document.createElement("div");
+    fillEl.className = "wl-transfer-fill";
+    trackEl.appendChild(fillEl);
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "wl-transfer-cancel";
+    cancelBtn.setAttribute("aria-label", "Cancel transfer");
+    cancelBtn.textContent = "×";
+    cancelBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      session?.cancelFileTransfer(state.transferId);
+    }, { signal });
+    newCardEl.append(trackEl, cancelBtn);
+    state.trackEl = trackEl;
+    state.cancelBtn = cancelBtn;
+    newCardEl.dataset.transferState = "active";
+    updateTransferCardProgress(state, 0, state.totalBytes);
+  }
+
+  function settleOutboundTransferDelivered(transferId: number): void {
+    const state = transferCards.get(transferId);
+    if (!state || state.settled) return;
+    state.settled = true;
+    retireTransferChrome(state);
+    state.cardEl.dataset.transferState = "delivered";
+    const badge = document.createElement("span");
+    badge.className = "wl-transfer-delivered";
+    badge.textContent = "delivered";
+    state.cardEl.appendChild(badge);
+    transferCards.delete(transferId);
+    if (activeOutboundTransferId === transferId) activeOutboundTransferId = null;
+  }
+
   function addChatMessage(msg: LiveMessage): void {
     // Hide empty-state hint on first real message
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
@@ -3342,6 +3989,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       peerLiveTimeEl = null;
     }
 
+    // ── Chunked-transfer card resolution ──
+    // Inbound: the assembled file/media message replaces the live progress card.
+    // Outbound: the chunk-0 self echo (no fileData — see sendFileChunked) replaces
+    // the placeholder card, which then gets its progress chrome re-hosted below.
+    const resolvingInboundTransfer =
+      msg.direction === "peer" && msg.type === "file" && hasFilePayload(msg)
+        ? findPendingTransferCard("in", msg.fileName ?? "file", msg.fileSize)
+        : null;
+    const resolvingOutboundTransfer =
+      msg.direction === "self" && msg.type === "file" && !hasFilePayload(msg)
+        ? findPendingTransferCard("out", msg.fileName ?? "file", msg.fileSize)
+        : null;
+    const resolvingTransferWasNearBottom = resolvingInboundTransfer ? isNearBottom() : false;
+
     const div = document.createElement("div");
     div.className = `wl-msg wl-msg--${msg.direction}`;
 
@@ -3349,9 +4010,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const textEl = document.createElement("span");
       textEl.className = "wl-msg-text";
       textEl.textContent = msg.text ?? "";
-
-      // Native Context Menu fallback (can keep default behavior if simple,
-      // but we remove custom prevention logic)
       div.appendChild(textEl);
     } else if (isRenderableAudioMessage(msg)) {
       const fileData = msg.fileData;
@@ -3707,6 +4365,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     timeEl.textContent = formatTime(msg.timestamp);
     div.appendChild(timeEl);
 
+    // tiny sent/delivered/seen dot for self text + file bubbles — a subtle
+    // status glyph, no checkmarks. wl-msg--delivered / wl-msg--seen classes
+    // land on `div` itself (see handleAck / markSeen) and drive its look via CSS.
+    // Nested inside timeEl so it sits inline right after the timestamp text.
+    if (msg.direction === "self" && (msg.type === "text" || msg.type === "file")) {
+      const receiptEl = document.createElement("span");
+      receiptEl.className = "wl-msg-receipt";
+      receiptEl.setAttribute("aria-hidden", "true");
+      timeEl.appendChild(receiptEl);
+    }
+
     if (msg.direction === "peer") hidePeerTyping();
 
     // draw → message dissolve: cross-fade with the draw overlay's 200 ms
@@ -3721,6 +4390,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     if (replacePeerPreview && replacePeerPreview.parentElement === opts.chatMessages) {
       opts.chatMessages.replaceChild(div, replacePeerPreview);
+    } else if (resolvingInboundTransfer && resolvingInboundTransfer.wrapEl.parentElement === opts.chatMessages) {
+      opts.chatMessages.replaceChild(div, resolvingInboundTransfer.wrapEl);
+      resolvingInboundTransfer.settled = true;
+      transferCards.delete(resolvingInboundTransfer.transferId);
+    } else if (resolvingOutboundTransfer && resolvingOutboundTransfer.wrapEl.parentElement === opts.chatMessages) {
+      opts.chatMessages.replaceChild(div, resolvingOutboundTransfer.wrapEl);
+      const newFileCard = div.querySelector<HTMLElement>(".wl-msg-file");
+      if (newFileCard) rehostOutboundTransferChrome(resolvingOutboundTransfer, div, newFileCard);
     } else {
       opts.chatMessages.appendChild(div);
     }
@@ -3733,7 +4410,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       });
     } else if (msg.direction === "system") {
       smartScroll();
-    } else if (replacePeerPreview && replacePreviewWasNearBottom) {
+    } else if (
+      (replacePeerPreview && replacePreviewWasNearBottom)
+      || (resolvingInboundTransfer && resolvingTransferWasNearBottom)
+    ) {
       requestAnimationFrame(() => {
         opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
       });
@@ -3746,299 +4426,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       msgById.set(msg.msgId, div);
       const allowReactions = !isTransientDrawPreviewMessage(div);
       if (allowReactions) {
-
-        // ── Reaction shelf — hidden until message is tapped ──
-        // The shelf has zero visual presence at rest; CSS transitions it in
-        // when data-shelf-open is present on the parent .wl-msg element.
-        const shelf = document.createElement("div");
-        shelf.className = "wl-react-shelf";
-        shelf.setAttribute("role", "toolbar");
-        shelf.setAttribute("aria-label", "React");
-
-        // Predefined + last-used quick-picks
-        const predefined = ["👍", "👎", "❤️", "😂"];
-        const lastUsed = localStorage.getItem("wl-last-reaction");
-        if (lastUsed && !predefined.includes(lastUsed)) predefined.push(lastUsed);
-
-        predefined.forEach((emoji) => {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "wl-react-btn";
-          btn.textContent = emoji;
-          btn.setAttribute("aria-label", `React with ${emoji}`);
-          btn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            toggleSelfReaction(msg.msgId!, emoji);
-            localStorage.setItem("wl-last-reaction", emoji);
-            closeReactionShelf(div);
-          }, { signal });
-          shelf.appendChild(btn);
-        });
-
-        const composer = createReactionComposer({
-          host: div,
-          signal,
-          onCommit: (glyph) => {
-            if (msg.msgId === undefined) return;
-            toggleSelfReaction(msg.msgId, glyph);
-            localStorage.setItem("wl-last-reaction", glyph);
-            closeReactionShelf(div);
-          },
-        });
-        reactionComposers.set(div, composer);
-        shelf.appendChild(composer.element);
-
-        // ── Per-message action menu (⋮ → Copy / Edit) ──────────────
-        // Only shown for text messages (not audio, file, etc.)
-        const msgText = msg.text?.trim();
-        if (msgText) {
-          const actionContainer = document.createElement("div");
-          actionContainer.className = "wl-react-action-container";
-
-          const isSelfMsg = msg.direction === "self" && msg.msgId !== undefined;
-          if (!isSelfMsg) actionContainer.dataset.copyOnly = "";
-
-          let collapseTimer: ReturnType<typeof setTimeout> | null = null;
-          let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
-          let actionHoldTimer: ReturnType<typeof setTimeout> | null = null;
-          let dragAborter: AbortController | null = null;
-          let activePointerId = -1;
-          let wasHandledByDrag = false;
-
-          const cancelHoldTimer = () => {
-            if (actionHoldTimer) { clearTimeout(actionHoldTimer); actionHoldTimer = null; }
-          };
-
-          signal.addEventListener("abort", () => {
-            if (collapseTimer) { clearTimeout(collapseTimer); collapseTimer = null; }
-            if (copyFeedbackTimer) { clearTimeout(copyFeedbackTimer); copyFeedbackTimer = null; }
-            cancelHoldTimer();
-            dragAborter?.abort();
-            dragAborter = null;
-          }, { once: true });
-
-          const scheduleCollapse = (ms = 5000) => {
-            if (collapseTimer) clearTimeout(collapseTimer);
-            collapseTimer = setTimeout(() => {
-              closeActionContainer(actionContainer);
-              collapseTimer = null;
-            }, ms);
-          };
-
-          const cancelCollapse = () => {
-            if (collapseTimer) { clearTimeout(collapseTimer); collapseTimer = null; }
-          };
-
-          const collapse = () => {
-            cancelCollapse();
-            closeActionContainer(actionContainer);
-          };
-
-          // ── Toggle button (>) ──────────────────────────────────
-          const actionToggleBtn = document.createElement("button");
-          actionToggleBtn.type = "button";
-          actionToggleBtn.className = "wl-react-btn wl-action-btn-toggle";
-          actionToggleBtn.setAttribute("aria-label", "Message actions");
-          actionToggleBtn.setAttribute("aria-expanded", "false");
-          actionToggleBtn.innerHTML = CHEVRON_SVG;
-
-          const expand = () => {
-            allExpanded().forEach(c => { if (c !== actionContainer) closeActionContainer(c); });
-            actionContainer.setAttribute("data-expanded", "");
-            actionToggleBtn.setAttribute("aria-expanded", "true");
-            scheduleCollapse();
-          };
-
-          // Pause the auto-collapse timer while the pointer is inside the container
-          actionContainer.addEventListener("pointerenter", cancelCollapse, { signal });
-          actionContainer.addEventListener("pointerleave", () => {
-            if (actionContainer.hasAttribute("data-expanded")) scheduleCollapse(3000);
-          }, { signal });
-
-          const handlePointerAbort = (e: PointerEvent) => {
-            if (e.pointerId !== activePointerId) return;
-            cancelHoldTimer();
-            activePointerId = -1;
-            if (dragAborter) { dragAborter.abort(); dragAborter = null; }
-          };
-
-          actionToggleBtn.addEventListener("pointerdown", (e: PointerEvent) => {
-            if (e.button !== 0 || activePointerId !== -1) return;
-            e.preventDefault();
-            e.stopPropagation();
-
-            activePointerId = e.pointerId;
-            try { actionToggleBtn.setPointerCapture(e.pointerId); } catch { }
-
-            let isDragging = false;
-            wasHandledByDrag = false;
-
-            if (dragAborter) dragAborter.abort();
-            dragAborter = new AbortController();
-            const dragSignal = dragAborter.signal;
-
-            let dragTarget: HTMLElement | null = null;
-
-            actionHoldTimer = setTimeout(() => {
-              isDragging = true;
-              if (!actionContainer.hasAttribute("data-expanded")) expand();
-              haptic("reaction");
-              try {
-                if (actionToggleBtn.hasPointerCapture(activePointerId)) {
-                  actionToggleBtn.releasePointerCapture(activePointerId);
-                }
-              } catch { }
-            }, 250);
-
-            window.addEventListener("pointermove", (mvE: PointerEvent) => {
-              if (!isDragging) return;
-              wasHandledByDrag = true;
-
-              const el = document.elementFromPoint(mvE.clientX, mvE.clientY);
-              const btn = el?.closest(".wl-action-split") as HTMLElement | null;
-
-              if (dragTarget !== btn) {
-                dragTarget?.classList.remove("wl-action--drag-hover");
-                if (btn) {
-                  btn.classList.add("wl-action--drag-hover");
-                  haptic("reaction");
-                }
-                dragTarget = btn;
-              }
-            }, { signal: dragSignal });
-
-            const finishDrag = (upE: PointerEvent) => {
-              if (upE.pointerId !== activePointerId) return;
-              cancelHoldTimer();
-              activePointerId = -1;
-              dragAborter?.abort();
-              dragAborter = null;
-
-              if (dragTarget) {
-                dragTarget.classList.remove("wl-action--drag-hover");
-                if (isDragging) dragTarget.click();
-              } else if (isDragging) {
-                collapse();
-              }
-            };
-
-            window.addEventListener("pointerup", finishDrag, { signal: dragSignal });
-            window.addEventListener("pointercancel", handlePointerAbort, { signal: dragSignal });
-            actionToggleBtn.addEventListener("lostpointercapture", handlePointerAbort, { signal: dragSignal });
-          }, { signal });
-
-          actionToggleBtn.addEventListener("click", (e: MouseEvent) => {
-            e.stopPropagation();
-            if (wasHandledByDrag) {
-              wasHandledByDrag = false;
-              return;
-            }
-            if (actionContainer.hasAttribute("data-expanded")) {
-              collapse();
-            } else {
-              expand();
-            }
-          }, { signal });
-          // Cross-fade SVG icon swap: fade out → swap innerHTML → fade back in
-          const SWAP_MS = 110;
-          const swapIcon = (newHtml: string) => {
-            actionToggleBtn.classList.add("wl-toggle--swapping");
-            setTimeout(() => {
-              actionToggleBtn.innerHTML = newHtml;
-              actionToggleBtn.classList.remove("wl-toggle--swapping");
-            }, SWAP_MS);
-          };
-          const copyBtn = document.createElement("button");
-          copyBtn.type = "button";
-          copyBtn.className = "wl-action-split wl-action-copy-btn";
-          copyBtn.setAttribute("aria-label", "Copy message");
-          copyBtn.innerHTML = COPY_SVG;
-
-          copyBtn.addEventListener("click", async (e: MouseEvent) => {
-            e.stopPropagation();
-            if (signal.aborted) return;
-            cancelCollapse();
-
-            if (copyFeedbackTimer) { clearTimeout(copyFeedbackTimer); copyFeedbackTimer = null; }
-
-            try {
-              await copyToClipboard(msgText);
-              haptic("copied");
-
-              collapse();
-              actionToggleBtn.dataset.copied = "";
-              swapIcon(CHECK_SVG);
-
-              copyFeedbackTimer = setTimeout(() => {
-                delete actionToggleBtn.dataset.copied;
-                swapIcon(CHEVRON_SVG);
-                copyFeedbackTimer = null;
-              }, 1800);
-            } catch {
-              collapse();
-            }
-          }, { signal });
-
-          actionContainer.appendChild(copyBtn);
-          actionContainer.appendChild(actionToggleBtn);
-
-          // ── Edit button (right side, self messages only) ───────
-          if (isSelfMsg) {
-            const editBtn = document.createElement("button");
-            editBtn.type = "button";
-            editBtn.className = "wl-action-split wl-action-edit-btn";
-            editBtn.setAttribute("aria-label", "Edit message");
-            editBtn.innerHTML = EDIT_SVG;
-
-            editBtn.addEventListener("click", (e: MouseEvent) => {
-              e.stopPropagation();
-              if (signal.aborted || msg.msgId == null) return;
-              collapse();
-              haptic("reaction");
-
-              if (editingMsgId != null) exitEditMode();
-
-              emitCleared();
-              preEditInputValue = opts.chatInput.value;
-              preEditPlaceholder = opts.chatInput.placeholder;
-              editingMsgId = msg.msgId;
-
-              const srcEl = msgById.get(msg.msgId);
-              const targetText = srcEl
-                ?.querySelector<HTMLElement>(".wl-msg-text")
-                ?.textContent
-                ?? msgText;
-
-              opts.chatInput.value = targetText;
-              opts.chatInput.placeholder = "editing...";
-              opts.chatInput.closest(".wl-chat-compose")?.setAttribute("data-editing", "1");
-              srcEl?.querySelector<HTMLElement>(".wl-msg-text")?.classList.add("wl-msg--editing");
-
-              // Morph the toggle button into the edit icon!
-              actionToggleBtn.classList.add("wl-toggle--is-editing");
-              swapIcon(EDIT_SVG);
-
-              updateControls();
-              opts.chatInput.focus();
-            }, { signal });
-
-            actionContainer.appendChild(editBtn);
-          }
-
-          shelf.appendChild(actionContainer);
-        }
-
-        div.appendChild(shelf);
-
-        // Tap the message bubble to reveal / hide the shelf.
-        // One shelf at a time: close the previously open one first.
+        // Tap the message bubble to open/close the shared reaction shelf,
+        // retargeting it to this message. The shelf itself is built once
+        // (see the reaction-shelf block above) — it lives outside the
+        // message flow, so opening it here never touches this div's layout.
         div.addEventListener("click", (e) => {
           const target = e.target as HTMLElement;
-          // Ignore clicks on shelf buttons themselves (handled above)
-          if (target.closest(".wl-react-shelf")) return;
-          // Ignore clicks on reaction pills
+          // Ignore clicks on reaction pills (separate, in-bubble, untouched)
           if (target.closest(".wl-reaction")) return;
-          // Keep media/audio controls interactive; non-control regions should open shelf.
+          // Keep media/audio controls interactive; non-control regions open the shelf.
           if (target.closest(".wl-audio-play-btn")) return;
           if (target.closest(".wl-audio-dl-btn")) return;
           if (target.closest(".wl-msg-file-download")) return;
@@ -4048,11 +4444,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           if (target.closest(".wl-media-dl")) return;
           // Ignore clicks on timestamps (which toggle time format)
           if (target.closest(".wl-msg-time")) return;
-          const isOpen = div.hasAttribute("data-shelf-open");
-          // Close any globally open shelf
-          const prev = opts.chatMessages.querySelector("[data-shelf-open]");
-          if (prev) closeReactionShelf(prev);
-          if (!isOpen) openReactionShelf(div);
+
+          if (shelfTarget?.msgEl === div) {
+            closeReactionShelf();
+          } else {
+            const bubbleEl = (div.firstElementChild as HTMLElement | null) ?? div;
+            openReactionShelf(div, bubbleEl);
+          }
         }, { signal });
       } else {
         div.dataset.reactionsDisabled = "true";
@@ -4405,10 +4803,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     switch (ev.kind) {
       case "begin": {
         if (!isFiniteNorm(ev.start.x) || !isFiniteNorm(ev.start.y) || !isFinitePressure(ev.start.p)) break;
-        if (!peerBaseImage && !peerBaseAssembly) {
-          peerStrokeSpaceW = 0;
-          peerStrokeSpaceH = 0;
-        }
+        // stroke-space dims now come from the presence event that opens the
+        // stream (blank and annotate alike), so there is no need to zero
+        // them here since presence always precedes the first begin of a session.
         removeLegacyPeerOverlays();
         ensurePeerCanvas();
         bringPeerPreviewToBottom();
@@ -4521,6 +4918,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           ensurePeerCanvas();
           bringPeerPreviewToBottom();
           setPeerLiveDrawState("active");
+          // stamp the thumb with the sender's canvas aspect right away since
+          // blank draws have no other dims signal until the stroke settles,
+          // and without this the preview defaults to the CSS 4:3 fallback.
+          if (ev.logicalW > 0 && ev.logicalH > 0) {
+            peerStrokeSpaceW = ev.logicalW;
+            peerStrokeSpaceH = ev.logicalH;
+            const thumb = peerLiveMsgEl?.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
+            if (thumb) {
+              thumb.style.aspectRatio = `${ev.logicalW} / ${ev.logicalH}`;
+              schedulePeerRerender();
+            }
+          }
         }
         break;
       case "base-start": {
@@ -4639,7 +5048,30 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onLog: appendLog,
       onPeerTyping: handlePeerCompose,
       onAck: handleAck,
-      onSendProgress: (sent, total) => sendProgress(sent / total),
+      onSendProgress: (sent, total) => {
+        sendProgress(sent / total);
+        // onSendProgress is shared with per-wire-frame progress for every message
+        // type — only treat it as file-cumulative progress when the total matches
+        // the active transfer's known file size (a single chunk's wire total never does).
+        if (activeOutboundTransferId != null) {
+          const state = transferCards.get(activeOutboundTransferId);
+          if (state && total === state.totalBytes) {
+            updateTransferCardProgress(state, sent, total);
+            if (sent >= total) settleOutboundTransferDelivered(activeOutboundTransferId);
+          }
+        }
+      },
+      onSendStart: (transferId, fileName, totalBytes) => {
+        buildTransferCard("out", transferId, fileName, totalBytes);
+        activeOutboundTransferId = transferId;
+      },
+      onReceiveProgress: (transferId, receivedBytes, totalBytes, fileName) => {
+        const state = transferCards.get(transferId) ?? buildTransferCard("in", transferId, fileName, totalBytes);
+        updateTransferCardProgress(state, receivedBytes, totalBytes);
+      },
+      onTransferCancelled: (transferId) => {
+        collapseTransferCancelled(transferId);
+      },
       onConnectionStats: handleConnectionStats,
       onCtrl: handleCtrl,
       onEdit: (id, text) => handleEdit(id, text),
@@ -4833,7 +5265,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function handleFingerprint(emoji: string): void {
-    opts.fingerprintDisplay.textContent = emoji;
+    // wrap each emoji in its own span so the verify panel can stagger them in
+    opts.fingerprintDisplay.replaceChildren(
+      ...Array.from(emoji, (glyph) => {
+        const span = document.createElement("span");
+        span.className = "wl-fingerprint-glyph";
+        span.textContent = glyph;
+        return span;
+      }),
+    );
     opts.fpChipEmoji.textContent = emoji;
   }
 
@@ -4864,10 +5304,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   function clearChatArtifacts(): void {
     if (editingMsgId != null) exitEditMode();
+    closeReactionShelf();
     msgById.clear();
+    transferCards.clear();
+    activeOutboundTransferId = null;
     revokeObjectUrls();
     clearNode(opts.chatMessages);
     if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
+    // clearNode() wipes every child, including the shared shelf — reseat it.
+    opts.chatMessages.appendChild(reactionShelf);
   }
 
   function releaseTerminalSessionUi(): void {
@@ -5821,7 +6266,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       mediaHoldTimer = setTimeout(() => {
         mediaDragMode = true;
         openPopover();
-      }, 250);
+      }, HOLD_SHORT_MS);
     }, { signal });
 
     // pointer move: highlight option under finger during drag.
@@ -6509,7 +6954,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         pasteHoldTimer = null;
         sendMessage();
         clearPasteState();
-      }, 300);
+      }, HOLD_SHORT_MS);
     }
   }, { signal });
 
@@ -6553,7 +6998,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     micHoldTimer = setTimeout(() => {
       micHoldMode = true;
       startRecording();
-    }, 300);
+    }, HOLD_SHORT_MS);
   }, { signal });
 
   opts.chatMicBtn.addEventListener("pointerup", (e) => {
@@ -6584,10 +7029,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   opts.chatMicBtn.addEventListener("lostpointercapture", handlePointerAbort, { signal });
 
   // Suppress context menu on mic button — long-press on touch would otherwise
-  // show the browser context menu, fighting the 300ms hold-to-record gesture.
+  // show the browser context menu, fighting the hold-to-record gesture.
   opts.chatMicBtn.addEventListener("contextmenu", (e) => { e.preventDefault(); }, { signal });
 
-  // Cancel requires confirmation: first tap arms, second tap (or hold 500ms) confirms.
+  // Cancel requires confirmation: first tap arms, second tap (or hold) confirms.
   let cancelArmed = false;
   let cancelArmTimer: ReturnType<typeof setTimeout> | null = null;
   let cancelHoldTimer: ReturnType<typeof setTimeout> | null = null;
@@ -6609,7 +7054,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       cancelHoldFired = true;
       disarmCancel();
       cancelRecording();
-    }, cancelArmed ? 300 : 500);
+    }, cancelArmed ? HOLD_SHORT_MS : HOLD_CONFIRM_MS);
   }, { signal });
 
   opts.chatMicCancel.addEventListener("pointerup", () => {
@@ -6622,7 +7067,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       cancelArmed = true;
       opts.chatMicCancel.setAttribute("data-armed", "");
       opts.chatMicCancel.setAttribute("aria-label", "Tap again to discard recording");
-      cancelArmTimer = setTimeout(disarmCancel, 2000);
+      cancelArmTimer = setTimeout(disarmCancel, DISARM_MS);
       return;
     }
     disarmCancel();
@@ -6827,8 +7272,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // Close any open reaction shelf when clicking outside the chat messages area
   document.addEventListener("click", (e) => {
     if (opts.chatMessages.contains(e.target as Node)) return;
-    const open = opts.chatMessages.querySelector("[data-shelf-open]");
-    if (open) closeReactionShelf(open);
+    closeReactionShelf();
   }, { signal });
 
   /* ── Teardown ───────────────────────────────────────────── */

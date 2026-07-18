@@ -153,7 +153,9 @@
       aria-live="polite"
       aria-relevant="additions"
     >
-      <p class="wl-chat-empty" id="wl-chat-empty"></p>
+      <p class="wl-chat-empty" id="wl-chat-empty">
+        the channel is open. only the two of you can hear it.
+      </p>
     </div>
 
     <div class="wl-chat-compose">
@@ -374,6 +376,48 @@
               </div>
             </div>
           </div>
+          <div class="wl-media-divider"></div>
+          <button
+            id="wl-media-voice"
+            type="button"
+            class="wl-media-option wl-media-option--soon"
+            disabled
+            title="coming soon"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4.5 2.5c-.8 0-1.5.7-1.5 1.5 0 5.5 4.5 10 10 10 .8 0 1.5-.7 1.5-1.5v-1.8c0-.4-.3-.8-.7-.9l-2.3-.6c-.3-.1-.7 0-.9.3l-.8 1c-1.5-.8-2.8-2.1-3.6-3.6l1-.8c.3-.2.4-.6.3-.9l-.6-2.3c-.1-.4-.5-.7-.9-.7H4.5z"></path>
+            </svg>
+            voice
+          </button>
+          <button
+            id="wl-media-call-video"
+            type="button"
+            class="wl-media-option wl-media-option--soon"
+            disabled
+            title="coming soon"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M2 5a1.5 1.5 0 011.5-1.5h5A1.5 1.5 0 0110 5v6a1.5 1.5 0 01-1.5 1.5h-5A1.5 1.5 0 012 11V5z"></path>
+              <path d="M10 7l3.3-2v6L10 9"></path>
+            </svg>
+            video
+          </button>
         </div>
         <input
           id="wl-chat-file-input"
@@ -456,10 +500,11 @@
     border: 1px solid rgb(var(--color-text-rgb) / 0.14);
     border-radius: var(--whisper-radius-soft);
     background: rgb(var(--color-text-rgb) / 0.02);
+    box-shadow: var(--edge-highlight);
     font-family: var(--whisper-font-mono);
     font-size: var(--whisper-text-compact);
     line-height: 1.5;
-    color: rgb(var(--color-text-rgb) / 0.72);
+    color: rgb(var(--chromatic-cyan) / 0.65);
     word-break: break-all;
     white-space: pre-wrap;
     max-height: 6rem;
@@ -483,12 +528,47 @@
     letter-spacing: 0.02em;
   }
 
+  /* chromatic ring: cyan leading arc (base spinner) + red trailing echo,
+     scoped to this phase only so the shared .wl-spinner elsewhere is untouched */
+  #wl-connecting-section .wl-spinner {
+    position: relative;
+    border-top-color: rgb(var(--chromatic-cyan) / 0.85);
+  }
+
+  #wl-connecting-section .wl-spinner::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 2px solid transparent;
+    border-bottom-color: rgb(var(--chromatic-red) / 0.4);
+    border-radius: var(--radius-full);
+    animation: wl-connecting-spin 0.8s linear infinite;
+    animation-delay: -0.15s;
+  }
+
+  @keyframes wl-connecting-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   /* ── Fingerprint verify ─────────────────────────────────── */
   .wl-verify-panel {
     display: grid;
     gap: var(--space-sm);
     text-align: center;
     padding: var(--space-lg);
+    animation: wl-verify-glow 6s ease-in-out infinite;
+  }
+
+  /* sacred-moment breathing: very slow, very faint cyan glow around the check */
+  @keyframes wl-verify-glow {
+    0%, 100% {
+      box-shadow: var(--edge-highlight), 0 0 22px rgb(var(--chromatic-cyan) / 0.04);
+    }
+    50% {
+      box-shadow: var(--edge-highlight), 0 0 30px rgb(var(--chromatic-cyan) / 0.09);
+    }
   }
 
   .wl-fingerprint {
@@ -497,6 +577,33 @@
     letter-spacing: 0.3em;
     line-height: 1.4;
     user-select: none;
+  }
+
+  /* each emoji glyph is wrapped in a span by handleFingerprint() so it can stagger in */
+  :global(.wl-fingerprint-glyph) {
+    display: inline-block;
+    opacity: 0;
+    transform: scale(0.6);
+    animation: wl-fingerprint-in var(--duration-slow) var(--ease-spring) forwards;
+  }
+  :global(.wl-fingerprint-glyph:nth-child(1)) {
+    animation-delay: 0ms;
+  }
+  :global(.wl-fingerprint-glyph:nth-child(2)) {
+    animation-delay: 70ms;
+  }
+  :global(.wl-fingerprint-glyph:nth-child(3)) {
+    animation-delay: 140ms;
+  }
+  :global(.wl-fingerprint-glyph:nth-child(4)) {
+    animation-delay: 210ms;
+  }
+
+  @keyframes wl-fingerprint-in {
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 
   .wl-verify-actions {
@@ -665,9 +772,17 @@
   }
 
   :global(.wl-chat-messages) {
+    /* offsetParent anchor for the shared reaction shelf (see .wl-react-shelf
+       below) — message divs and the shelf are direct children, so this is
+       the coordinate space live-ui.ts positions the shelf in. */
+    position: relative;
     min-height: 16rem;
     max-height: clamp(32rem, 28rem + 12vw, 56rem);
     overflow-y: auto;
+    /* the shelf clamps itself to stay within bounds horizontally; this is
+       just a backstop so it (or anything else) can never force a horizontal
+       scrollbar on the whole message list. */
+    overflow-x: hidden;
     scroll-behavior: auto;
     padding: calc(var(--space-sm) * 0.92);
     display: flex;
@@ -719,7 +834,19 @@
     color: rgb(var(--color-text-rgb) / 0.22);
     user-select: none;
     pointer-events: none;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.06em;
+    animation: wl-empty-in 1.2s var(--ease-out) both;
+  }
+
+  @keyframes wl-empty-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wl-chat-empty {
+      animation: none;
+    }
   }
 
   :global(.wl-chat-messages.wl-chat-drop-active) {
@@ -731,7 +858,6 @@
     --msg-bg: rgb(var(--color-text-rgb) / 0.04);
     --msg-border: rgb(var(--color-text-rgb) / 0.12);
     --msg-text-color: rgb(var(--color-text-rgb) / 0.82);
-    --msg-shadow: none;
     display: flex;
     flex-direction: column;
     gap: 0.18rem;
@@ -752,7 +878,6 @@
     );
     --msg-border: rgb(var(--chromatic-cyan) / 0.2);
     --msg-text-color: rgb(var(--color-text-rgb) / 0.88);
-    --msg-shadow: none;
     align-self: flex-end;
     align-items: flex-end;
     animation-name: wl-msg-in-right;
@@ -767,7 +892,6 @@
     );
     --msg-border: rgb(var(--ring-base) / 0.2);
     --msg-text-color: rgb(var(--color-text-rgb) / 0.88);
-    --msg-shadow: none;
     align-self: flex-start;
     align-items: flex-start;
   }
@@ -959,32 +1083,124 @@
     user-select: none;
   }
 
-  /* ── Reaction shelf — hidden until message is tapped ──────── */
-  /* Zero chrome at rest: invisible, collapsed, pointer events off */
-  :global(.wl-chat-messages) :global(.wl-react-shelf) {
-    display: flex;
-    align-items: center;
-    gap: 0.22rem;
-    padding: 0.4rem 0.2rem;
-    margin-top: -0.4rem;
-    margin-bottom: -0.4rem;
-    max-height: 0;
-    opacity: 0;
-    overflow: visible;
-    transform: translateY(-3px);
-    transition:
-      max-height 200ms cubic-bezier(0.16, 1, 0.3, 1),
-      opacity 160ms ease,
-      transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
-    pointer-events: none;
+  /* ── Delivery receipt dot — sits inline right after the timestamp ── */
+  /* sent: hollow ring. delivered: filled, dim. seen: filled cyan, soft pop. */
+  :global(.wl-msg-receipt) {
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    margin-left: 0.32em;
+    vertical-align: middle;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.3);
+    background: transparent;
+    transition: background 200ms ease, border-color 200ms ease;
   }
 
-  /* Shelf open: slides down from under the bubble */
-  :global(.wl-chat-messages) :global([data-shelf-open] .wl-react-shelf) {
-    max-height: 3.4rem;
+  :global(.wl-msg--delivered) :global(.wl-msg-receipt) {
+    border-color: transparent;
+    background: rgb(var(--color-text-rgb) / 0.32);
+  }
+
+  :global(.wl-msg--seen) :global(.wl-msg-receipt) {
+    border-color: transparent;
+    background: rgb(var(--chromatic-cyan) / 0.85);
+    animation: wl-receipt-pop 200ms ease;
+  }
+
+  @keyframes wl-receipt-pop {
+    0% { transform: scale(1); }
+    45% { transform: scale(1.9); }
+    100% { transform: scale(1); }
+  }
+
+  /* ── Reaction shelf — ONE shared instance for the whole chat ──────
+   * Absolutely positioned inside #wl-chat-messages (position:relative,
+   * see above) and anchored to whichever bubble was tapped; live-ui.ts
+   * sets top/left/transform-origin per open. Being out of flow means
+   * opening it never pushes later messages down and needs no negative
+   * margins to hug the bubble. flex-wrap absorbs any overflow onto a
+   * second row instead of spilling past the viewport edge, so there's
+   * no need for the old per-bubble overflow-x scroll hack either.
+   * Zero footprint at rest: transparent, unscaled, no pointer events. */
+  :global(.wl-chat-messages) :global(.wl-react-shelf) {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.22rem;
+    padding: 0.36rem 0.5rem;
+    max-width: min(88vw, 22rem);
+    border-radius: var(--whisper-radius-medium);
+    background: rgb(10 10 10 / 0.92);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow:
+      0 18px 30px -24px rgb(0 0 0 / 0.92),
+      inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
+    opacity: 0;
+    transform: scale(0.94);
+    pointer-events: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* The transition lives only on this modifier, not the base rule, so
+     opening springs in (transition value is picked up on the same recalc
+     that changes opacity/transform) but removing the class — closing —
+     reverts with no transition at all: instant, per spec. */
+  :global(.wl-chat-messages) :global(.wl-react-shelf--open) {
     opacity: 1;
-    transform: translateY(0);
+    transform: scale(1);
     pointer-events: auto;
+    transition:
+      opacity var(--duration-fast) var(--ease-spring),
+      transform var(--duration-fast) var(--ease-spring);
+  }
+
+  /* Quick-pick buttons stagger in (direct children only — not the nested
+     custom-composer button or the action-menu icons). Capped at 5:
+     4 hardcoded + 1 deduped last-used. */
+  :global(.wl-chat-messages) :global(.wl-react-shelf--open > .wl-react-btn) {
+    animation: wl-react-pick-in var(--duration-fast) var(--ease-spring) both;
+  }
+  :global(.wl-chat-messages) :global(.wl-react-shelf--open > .wl-react-btn:nth-child(2)) { animation-delay: 20ms; }
+  :global(.wl-chat-messages) :global(.wl-react-shelf--open > .wl-react-btn:nth-child(3)) { animation-delay: 40ms; }
+  :global(.wl-chat-messages) :global(.wl-react-shelf--open > .wl-react-btn:nth-child(4)) { animation-delay: 60ms; }
+  :global(.wl-chat-messages) :global(.wl-react-shelf--open > .wl-react-btn:nth-child(5)) { animation-delay: 80ms; }
+
+  @keyframes wl-react-pick-in {
+    from { opacity: 0; transform: translateY(4px) scale(0.85); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.wl-chat-messages) :global(.wl-react-shelf--open) {
+      transition: opacity var(--duration-fast) linear;
+      transform: scale(1) !important;
+    }
+    :global(.wl-chat-messages) :global(.wl-react-shelf--open > .wl-react-btn) {
+      animation: none !important;
+      opacity: 1 !important;
+      transform: none !important;
+    }
+  }
+
+  /* Reject pulse — brief shake/dim when a reaction is capped (mirrors ws-reject-pulse) */
+  @keyframes wl-react-shelf-capped {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-3px); }
+    40% { transform: translateX(3px); }
+    60% { transform: translateX(-2px); }
+    80% { transform: translateX(2px); }
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-shelf--capped) {
+    animation: wl-react-shelf-capped 280ms ease-out;
   }
 
   /* Individual emoji quick-pick + more button */
@@ -1351,6 +1567,93 @@
     color: rgb(var(--msg-accent) / 0.9);
   }
 
+  /* ── Chunked file-transfer progress card ───────────────────
+   * live send/receive state rendered as an energy fill, not a spinner —
+   * .wl-transfer-track/.wl-transfer-fill mirror the composer's send-energy
+   * language but stay self-contained (own custom property, own transition). */
+  :global(.wl-chat-messages) :global(.wl-msg-transfer) {
+    min-width: 12rem;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-bytes) {
+    font-family: var(--whisper-font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg-file[data-transfer-state="active"]) {
+    position: relative;
+    padding-right: 2.1rem;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-track) {
+    position: relative;
+    height: 3px;
+    border-radius: 999px;
+    background: rgb(var(--color-text-rgb) / 0.08);
+    overflow: hidden;
+    margin-top: calc(var(--space-xs) * 0.3);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-fill) {
+    position: absolute;
+    inset: 0;
+    width: calc(var(--wl-transfer-ratio, 0) * 100%);
+    background: rgb(var(--chromatic-cyan) / 0.55);
+    transition: width var(--duration-fast) linear;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg--peer .wl-transfer-fill) {
+    background: rgb(var(--pride-purple) / 0.5);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-cancel) {
+    position: absolute;
+    top: 0.42rem;
+    right: 0.42rem;
+    width: 1.3rem;
+    height: 1.3rem;
+    min-width: 1.3rem;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: rgb(var(--color-text-rgb) / 0.5);
+    font-size: 0.7rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition:
+      background var(--duration-fast) ease,
+      border-color var(--duration-fast) ease,
+      color var(--duration-fast) ease;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-cancel:hover) {
+    background: rgb(var(--chromatic-red) / 0.14);
+    border-color: rgb(var(--chromatic-red) / 0.4);
+    color: rgb(var(--chromatic-red) / 0.85);
+  }
+
+  /* cancelled — quiet, no drama: dim the whole card, drop the byte counter
+     to a plain italic label, no red/error treatment */
+  :global(.wl-chat-messages) :global(.wl-msg-file[data-transfer-state="cancelled"]) {
+    opacity: 0.5;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg-file[data-transfer-state="cancelled"] .wl-transfer-bytes) {
+    font-style: italic;
+    font-family: inherit;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-delivered) {
+    font-size: var(--whisper-text-fine);
+    color: rgb(var(--tool-status-success) / 0.75);
+  }
+
   /* ── Audio player ─────────────────────────────────────────── */
   :global(.wl-chat-messages) :global(.wl-msg-audio) {
     display: flex;
@@ -1530,12 +1833,20 @@
     overflow: hidden;
     background: rgb(var(--msg-accent) / 0.05);
     min-height: 3rem;
+    min-width: 4rem;
+    /* set from JS once natural dims are known (clamped to a sane portrait/
+       landscape range) — falls back to a generic 4:3 box before load so the
+       bubble doesn't jump. max-width caps upscale of tiny sources (e.g. a
+       1x1 image) to ~6x their native size instead of stretching to fill. */
+    aspect-ratio: var(--wl-media-aspect, 4 / 3);
+    max-width: min(100%, var(--wl-media-max-w, 100%));
+    max-height: 22rem;
     touch-action: manipulation;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
-    transition: filter 180ms ease;
+    transition: filter 180ms ease, aspect-ratio var(--duration-normal) var(--ease-out);
   }
 
   :global(.wl-chat-messages) :global(.wl-media-thumb:hover) {
@@ -1573,7 +1884,8 @@
   :global(.wl-chat-messages) :global(.wl-media-video) {
     display: block;
     width: 100%;
-    max-height: 22rem;
+    height: 100%;
+    margin-inline: auto;
     object-fit: contain;
     background: rgb(0 0 0 / 0.15);
   }
@@ -1654,6 +1966,22 @@
 
   :global(.wl-chat-messages) :global(.wl-media-dl:active) {
     transform: scale(0.92);
+  }
+
+  /* ── z-index sanity ────────────────────────────────────────── */
+  /* the draw overlay and lightbox are appended straight to
+     document.body and painted at z-index 10000/9999, so the site
+     action bar (z-index 40) should never out-stack them on its own.
+     in practice a mode switch can leave the action bar visible via
+     a leftover inline style (e.g. the seal bar bled into live mode),
+     which wins over a plain stylesheet rule regardless of z-index —
+     so guard by presence, not by mode, and this applies everywhere,
+     not just stage mode. */
+  :global(:root:has(.wl-draw) .action-bar),
+  :global(:root:has(.wl-draw) .tool-actions-shell),
+  :global(:root:has(.wl-lightbox) .action-bar),
+  :global(:root:has(.wl-lightbox) .tool-actions-shell) {
+    display: none !important;
   }
 
   /* ── Lightbox overlay ──────────────────────────────────────── */
@@ -2450,7 +2778,8 @@
     position: absolute;
     bottom: calc(100% + 0.4rem);
     left: 50%;
-    transform: translateX(-50%);
+    transform-origin: bottom right;
+    transform: translateX(-50%) scale(0.96);
     flex-direction: column;
     gap: 0.2rem;
     padding: 0.3rem;
@@ -2464,10 +2793,8 @@
       inset 0 1px 0 rgb(var(--color-text-rgb) / 0.02);
     z-index: 100;
     opacity: 0;
-    transform: translateX(-50%) translateY(4px);
-    transition:
-      opacity 140ms ease,
-      transform 140ms ease;
+    /* no transition here: display:none removes the element from the render
+       tree the instant --open drops, so closing is already instant */
     touch-action: none;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
@@ -2477,7 +2804,43 @@
   :global(.wl-media-popover.--open) {
     display: flex;
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateX(-50%) scale(1);
+    transition:
+      opacity var(--duration-fast) var(--ease-spring),
+      transform var(--duration-fast) var(--ease-spring);
+  }
+
+  /* stagger-in: each option rises in ~30ms after the last, capped at 6 */
+  @keyframes wl-media-option-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  :global(.wl-media-popover.--open) :global(.wl-media-option) {
+    animation: wl-media-option-in var(--duration-fast) var(--ease-out) both;
+  }
+  :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(2)) { animation-delay: 30ms; }
+  :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(3)) { animation-delay: 60ms; }
+  :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(4)) { animation-delay: 90ms; }
+  :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(5)) { animation-delay: 120ms; }
+  :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(6)) { animation-delay: 150ms; }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.wl-media-popover.--open) {
+      transition: opacity var(--duration-fast) linear;
+      transform: translateX(-50%) scale(1) !important;
+    }
+    :global(.wl-media-popover.--open) :global(.wl-media-option) {
+      animation: none !important;
+      opacity: 1 !important;
+      transform: none !important;
+    }
   }
 
   :global(.wl-media-option) {
@@ -2524,6 +2887,13 @@
     height: 1px;
     margin: 0.1rem 0.5rem;
     background: rgb(var(--color-text-rgb) / 0.06);
+  }
+
+  /* ── "Coming soon" options — future call slots, dimmed and inert ── */
+  :global(.wl-media-option--soon) {
+    opacity: 0.35;
+    cursor: default;
+    pointer-events: none;
   }
 
   /* ── Alpha menu button in popover ────────────────────── */
@@ -3108,35 +3478,81 @@
     }
   }
 
-  /* Message entrance: peer slides from left, self from right, system fades */
+  /* message entrance: spring snap, offset+shrink, one overshoot, settle.
+     peer slides from left, self from right, system centers in place.
+     the first third carries a 1px chromatic split shadow that fades into
+     the resting (shadow-less) bubble as the snap settles. */
   @keyframes wl-msg-in {
-    from {
+    0% {
       opacity: 0;
-      transform: translateX(-6px);
+      transform: translateX(-6px) translateY(8px) scale(0.97);
+      box-shadow:
+        -1px 0 0 rgb(var(--chromatic-cyan) / 0.35),
+        1px 0 0 rgb(var(--chromatic-red) / 0.35);
     }
-    to {
+    36% {
       opacity: 1;
-      transform: translateX(0);
+      box-shadow: none;
+    }
+    65% {
+      transform: translateX(0) translateY(0) scale(1.008);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) translateY(0) scale(1);
+      box-shadow: none;
     }
   }
   @keyframes wl-msg-in-right {
-    from {
+    0% {
       opacity: 0;
-      transform: translateX(6px);
+      transform: translateX(6px) translateY(8px) scale(0.97);
+      box-shadow:
+        -1px 0 0 rgb(var(--chromatic-cyan) / 0.35),
+        1px 0 0 rgb(var(--chromatic-red) / 0.35);
     }
-    to {
+    36% {
       opacity: 1;
-      transform: translateX(0);
+      box-shadow: none;
+    }
+    65% {
+      transform: translateX(0) translateY(0) scale(1.008);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) translateY(0) scale(1);
+      box-shadow: none;
     }
   }
   @keyframes wl-msg-in-center {
+    0% {
+      opacity: 0;
+      transform: translateY(8px) scale(0.97);
+      box-shadow:
+        -1px 0 0 rgb(var(--chromatic-cyan) / 0.35),
+        1px 0 0 rgb(var(--chromatic-red) / 0.35);
+    }
+    36% {
+      opacity: 1;
+      box-shadow: none;
+    }
+    65% {
+      transform: translateY(0) scale(1.008);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      box-shadow: none;
+    }
+  }
+
+  /* reduced-motion fallback: opacity only, no offset/scale/shadow */
+  @keyframes wl-msg-in-reduced {
     from {
       opacity: 0;
-      transform: scale(0.97);
     }
     to {
       opacity: 1;
-      transform: scale(1);
     }
   }
 
@@ -3146,10 +3562,19 @@
       animation: none;
     }
 
+    #wl-connecting-section .wl-spinner::after {
+      animation: none;
+    }
+
+    /* keep the fade, drop the spring scale */
+    :global(.wl-fingerprint-glyph) {
+      transform: none !important;
+      animation-delay: 0ms !important;
+    }
+
     .wl-chat-compose,
     .wl-chat-text-input,
-    .wl-chat-send-btn,
-    :global(.wl-chat-messages) :global(.wl-msg) {
+    .wl-chat-send-btn {
       animation: none !important;
       transition-duration: 0ms !important;
       transform: none !important;
@@ -3161,6 +3586,14 @@
         0 0,
         0 0,
         0 0 !important;
+    }
+
+    /* opacity-only fade in: no offset, scale, or chromatic shadow */
+    :global(.wl-chat-messages) :global(.wl-msg) {
+      animation: wl-msg-in-reduced var(--duration-normal, 180ms) ease both !important;
+      transition-duration: 0ms !important;
+      transform: none !important;
+      box-shadow: none !important;
     }
     .wl-chat-compose::before,
     .wl-chat-compose::after {
@@ -3215,17 +3648,49 @@
     text-align: center;
   }
 
+  /* the session is over: give the closing line room, no rush */
+  :global(.whisper-panel.wl-end-panel) {
+    gap: var(--space-md);
+    padding: var(--space-xl) var(--space-lg);
+  }
+
   :global(.wl-end-text) {
     margin: 0;
     color: var(--whisper-muted);
     font-size: var(--text-sm);
     font-style: italic;
+    letter-spacing: 0.08em;
+    text-shadow:
+      calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.12),
+      var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / 0.1);
+    animation: wl-fade-in 600ms var(--ease-out) both;
+  }
+
+  /* "Start over": shrink out of the grid's full-width stretch into a quiet ghost */
+  :global(.whisper-panel.wl-end-panel) :global(.whisper-mini-btn) {
+    justify-self: center;
+    width: auto;
+    margin-top: var(--space-xs);
   }
 
   .wl-error-text {
     margin: 0;
+    padding: calc(var(--space-xs) * 0.7) var(--space-sm);
+    border: 1px solid rgb(var(--chromatic-red) / 0.3);
+    border-radius: var(--whisper-radius-soft);
+    background: rgb(var(--chromatic-red) / 0.08);
     color: rgb(var(--chromatic-red));
     font-size: var(--text-sm);
+    animation: wl-fade-in var(--duration-slow) var(--ease-out) both;
+  }
+
+  @keyframes wl-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 
   /* ── Responsive ────────────────────────────────────────── */
@@ -3357,21 +3822,22 @@
     z-index: 10000;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    background: rgb(0 0 0 / 0.92);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    align-items: stretch;
+    gap: 0.6rem;
+    /* true void: fully opaque, no page ghosting through, with an ambient
+       vignette layered on top so the void reads as depth, not a flat slab */
+    background-color: var(--color-bg);
+    background-image: var(--ambient-vignette);
     touch-action: none;
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
     -webkit-tap-highlight-color: transparent;
-    padding: env(safe-area-inset-top) env(safe-area-inset-right)
-      env(safe-area-inset-bottom) env(safe-area-inset-left);
+    padding: calc(0.6rem + env(safe-area-inset-top)) calc(0.6rem + env(safe-area-inset-right))
+      calc(0.6rem + env(safe-area-inset-bottom)) calc(0.6rem + env(safe-area-inset-left));
+    /* opacity only transitions on the way in (declared on .--open below) —
+       closing drops the class and snaps instantly, no transition to reverse */
     opacity: 0;
-    transition: opacity 200ms ease;
   }
 
   :global(.wl-draw *) {
@@ -3383,18 +3849,65 @@
 
   :global(.wl-draw.--open) {
     opacity: 1;
+    transition: opacity var(--duration-normal) ease;
+  }
+
+  @keyframes wl-draw-canvas-in {
+    from { scale: 0.985; }
+    to { scale: 1; }
+  }
+
+  @keyframes wl-draw-toolbar-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* entrance choreography keyed to the overlay's mount: the overlay itself
+     fades, the canvas settles in slightly after, the toolbar rises in last.
+     scoped to .--open so closing (class removed) reverts instantly — no
+     reverse-playing animation to wait out. canvas uses the standalone
+     `scale` property (not `transform`) so it never fights the pinch-zoom
+     pan/zoom transform the draw logic applies inline to this same element. */
+  :global(.wl-draw.--open .wl-draw-canvas-wrapper) {
+    animation: wl-draw-canvas-in var(--duration-normal) var(--ease-spring) 60ms both;
+  }
+
+  :global(.wl-draw.--open .wl-draw-toolbar) {
+    animation: wl-draw-toolbar-in var(--duration-normal) var(--ease-spring) 120ms both;
+  }
+
+  /* stage fills the space above the toolbar and centers the canvas within
+     it, so a small (letterboxed) canvas doesn't leave the toolbar floating
+     mid-page. the toolbar instead sits pinned at the true bottom. */
+  :global(.wl-draw-stage) {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
   }
 
   :global(.wl-draw-canvas-wrapper) {
     position: relative;
-    border-radius: var(--whisper-radius-tight);
-    box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
+    border-radius: var(--whisper-radius-soft);
+    /* hairline presence + top edge light + a deep soft drop so the canvas
+       floats above the void instead of reading as an undefined flat slab */
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    box-shadow: var(--edge-highlight), 0 12px 48px rgb(0 0 0 / 0.5);
     overflow: hidden;
     /* Explicit baseline so toolbar/controls at z-index:1 always paint above */
     z-index: 0;
-    /* Safety net: clip canvas before it can push the toolbar off-screen.
-       dvh excludes mobile browser chrome; env() accounts for notch/home bar. */
-    max-height: calc(100dvh - 7rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    /* safety net: the stage already bounds this via flex, this just caps
+       desktop growth so a very tall viewport doesn't make the canvas loom. */
+    max-width: 100%;
+    max-height: min(86vh, 100%);
   }
 
   :global(.wl-draw-bg-canvas) {
@@ -3421,26 +3934,34 @@
     width: 2.75rem;
     height: 2.75rem;
     border-radius: 50%;
-    border: 1px solid rgb(255 255 255 / 0.1);
-    background: rgb(255 255 255 / 0.06);
-    color: rgb(255 255 255 / 0.6);
+    /* quiet hairline-ring pill language: transparent at rest, dim icon,
+       brightens on hover — matches the site's ghost-button family */
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    background: transparent;
+    color: rgb(var(--color-text-rgb) / 0.55);
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     transition:
-      background 200ms ease,
-      color 200ms ease,
-      border-color 200ms ease,
+      background var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
+      box-shadow var(--duration-normal) var(--ease-out),
       transform 120ms ease;
     padding: 0;
     -webkit-tap-highlight-color: transparent;
   }
 
   :global(.wl-draw-close:hover) {
-    background: rgb(255 255 255 / 0.12);
-    color: rgb(255 255 255 / 0.9);
-    border-color: rgb(255 255 255 / 0.22);
+    background: rgb(var(--color-text-rgb) / 0.06);
+    color: rgb(var(--color-text-rgb) / 0.9);
+    border-color: rgb(var(--color-text-rgb) / 0.24);
+    /* the standard chromatic hover split, as a ring instead of text-shadow
+       since this is an icon-only control */
+    box-shadow:
+      -1px 0 0 rgb(var(--chromatic-cyan) / 0.3),
+      1px 0 0 rgb(var(--chromatic-red) / 0.3);
   }
 
   :global(.wl-draw-close:active) {
@@ -3506,18 +4027,60 @@
   :global(.wl-draw-toolbar) {
     display: flex;
     align-items: center;
+    justify-content: center;
+    align-self: center;
+    flex-shrink: 0;
     gap: 0.5rem;
     padding: 0.4rem 0.75rem;
     border-radius: 9999px;
-    background: rgb(255 255 255 / 0.06);
-    border: 1px solid rgb(255 255 255 / 0.08);
+    /* hairline-border pill language, matching the chat composer */
+    background: rgb(var(--color-text-rgb) / 0.06);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     /* Always above the canvas regardless of canvas CSS transform state */
     position: relative;
     z-index: 1;
   }
 
+  /* one coherent row: [colors + custom] [eraser] | [undo redo] | [send].
+     the tail group carries the eraser through send and grows to fill
+     leftover row width so send can anchor to the right edge — whether it
+     shares a line with the colors group (wide) or drops to its own
+     second line (narrow, wrapped; see the responsive block below). */
+  :global(.wl-draw-group) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+
+  :global(.wl-draw-group-colors) {
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  :global(.wl-draw-tail) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+  }
+
+  :global(.wl-draw-divider) {
+    align-self: stretch;
+    width: 1px;
+    min-height: 1.2rem;
+    margin: 0.1rem 0;
+    background: rgb(var(--color-text-rgb) / 0.1);
+    flex-shrink: 0;
+  }
+
   :global(.wl-draw-hint) {
     display: none;
+    align-self: center;
     min-height: 1.1rem;
     max-width: min(92vw, 32rem);
     padding: 0.1rem 0.5rem;
@@ -3587,7 +4150,11 @@
 
   :global(.wl-draw-color.--active) {
     border-color: rgb(255 255 255 / 0.8);
-    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.15);
+    /* a whisper of the chromatic split on the selected swatch ring */
+    box-shadow:
+      0 0 0 1px rgb(255 255 255 / 0.15),
+      -1px 0 0 rgb(var(--chromatic-cyan) / 0.22),
+      1px 0 0 rgb(var(--chromatic-red) / 0.22);
     transform: none;
     opacity: 1;
   }
@@ -3609,22 +4176,25 @@
     transform: none;
   }
 
+  /* eraser: quiet ghost circle, 44px hit at every width — hairline ring,
+     dim icon brightening on hover/active, chromatic split ring when armed */
   :global(.wl-draw-tool) {
-    width: 1.7rem;
-    height: 1.7rem;
+    width: 2.75rem;
+    height: 2.75rem;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 0;
     border-radius: 50%;
-    border: none;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     background: transparent;
-    color: rgb(255 255 255 / 0.5);
+    color: rgb(var(--color-text-rgb) / 0.9);
+    opacity: 0.55;
     cursor: pointer;
     transition:
-      color 200ms ease,
-      background 200ms ease,
-      opacity 200ms ease,
+      opacity var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out),
       transform 120ms ease;
     flex-shrink: 0;
     touch-action: manipulation;
@@ -3635,8 +4205,9 @@
   }
 
   :global(.wl-draw-tool:hover) {
-    color: rgb(255 255 255 / 0.9);
-    background: rgb(255 255 255 / 0.1);
+    opacity: 1;
+    background: rgb(var(--color-text-rgb) / 0.06);
+    border-color: rgb(var(--color-text-rgb) / 0.2);
   }
 
   :global(.wl-draw-tool:active) {
@@ -3644,8 +4215,13 @@
   }
 
   :global(.wl-draw-tool.--active) {
-    color: rgb(255 255 255 / 0.95);
-    background: rgb(255 255 255 / 0.15);
+    opacity: 1;
+    border-color: rgb(var(--color-text-rgb) / 0.3);
+    /* the chromatic split ring, matching the selected color swatch */
+    box-shadow:
+      0 0 0 1px rgb(var(--color-text-rgb) / 0.15),
+      -1px 0 0 rgb(var(--chromatic-cyan) / 0.28),
+      1px 0 0 rgb(var(--chromatic-red) / 0.28);
   }
 
   :global(.wl-draw-tool.--size-host) {
@@ -3654,30 +4230,33 @@
   }
 
   :global(.wl-draw-tool.--dragging) {
-    color: rgb(255 255 255 / 0.9);
-    background: rgb(255 255 255 / 0.1);
+    opacity: 1;
+    background: rgb(var(--color-text-rgb) / 0.08);
     transform: none !important;
   }
 
+  /* live brush-width indicator, dot dims/brightens with the parent icon */
   :global(.wl-draw-size-pip) {
     display: block;
     width: 4px;
     height: 4px;
     border-radius: 50%;
     background: currentColor;
-    opacity: 0.5;
+    opacity: 0.6;
     pointer-events: none;
     flex-shrink: 0;
     transition:
-      width 0.12s ease,
-      height 0.12s ease;
+      width var(--duration-fast) ease,
+      height var(--duration-fast) ease;
   }
 
-  /* Undo/Redo joint pill */
+  /* Undo/Redo — quiet ghost pill: transparent, hairline ring, dim icons
+     that brighten on hover/active instead of the old heavy gray fill */
   :global(.wl-draw-undoredo) {
     display: flex;
     align-items: center;
-    background: rgb(255 255 255 / 0.06);
+    background: transparent;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     border-radius: 9999px;
     flex-shrink: 0;
   }
@@ -3692,12 +4271,12 @@
     padding: 0;
     border: none;
     background: transparent;
-    color: rgb(255 255 255 / 0.5);
+    color: rgb(var(--color-text-rgb) / 0.9);
+    opacity: 0.55;
     cursor: pointer;
     transition:
-      color 200ms ease,
-      background 200ms ease,
-      opacity 200ms ease;
+      opacity var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out);
     touch-action: manipulation;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
@@ -3714,40 +4293,66 @@
 
   :global(.wl-draw-undo:hover),
   :global(.wl-draw-redo:hover) {
-    color: rgb(255 255 255 / 0.9);
-    background: rgb(255 255 255 / 0.1);
+    opacity: 1;
+    background: rgb(var(--color-text-rgb) / 0.06);
   }
 
   :global(.wl-draw-undo:active),
   :global(.wl-draw-redo:active) {
-    opacity: 0.7;
+    opacity: 0.8;
   }
 
   :global(.wl-draw-undo:disabled),
   :global(.wl-draw-redo:disabled) {
-    opacity: 0.3;
+    opacity: 0.25;
     pointer-events: none;
   }
 
+  /* custom color "+": same 44px circular hit + hairline ring as the eraser;
+     becomes a real swatch (bg set inline by JS) once a custom color is picked */
   :global(.wl-draw-color-custom) {
+    width: 2.75rem;
+    height: 2.75rem;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
     background: transparent;
-    color: rgb(255 255 255 / 0.4);
+    color: rgb(var(--color-text-rgb) / 0.55);
     display: flex;
     align-items: center;
     justify-content: center;
     touch-action: manipulation;
+    transition:
+      opacity var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
   }
 
-  :global(.wl-draw-color-custom:hover),
+  :global(.wl-draw-color-custom:hover) {
+    color: rgb(var(--color-text-rgb) / 0.9);
+    background: rgb(var(--color-text-rgb) / 0.06);
+    border-color: rgb(var(--color-text-rgb) / 0.2);
+  }
+
   :global(.wl-draw-color-custom:active),
   :global(.wl-draw-color-custom.--active) {
-    border-color: rgb(255 255 255 / 0.8);
+    color: rgb(var(--color-text-rgb) / 0.9);
+    border-color: rgb(var(--color-text-rgb) / 0.3);
+    box-shadow:
+      0 0 0 1px rgb(var(--color-text-rgb) / 0.15),
+      -1px 0 0 rgb(var(--chromatic-cyan) / 0.22),
+      1px 0 0 rgb(var(--chromatic-red) / 0.22);
     transform: none !important;
     opacity: 1 !important;
   }
 
   :global(.wl-draw-send) {
-    padding: 0.35rem 0.85rem;
+    /* teal pill, but sized to the same touch-target/padding family as the
+       chat composer's send button */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--touch-target);
+    padding: 0 0.9rem;
     border-radius: 9999px;
     border: 1px solid rgb(var(--chromatic-cyan, 0 200 255) / 0.42);
     background: linear-gradient(
@@ -3756,19 +4361,23 @@
       rgb(var(--chromatic-cyan, 0 200 255) / 0.12) 100%
     );
     color: rgb(var(--chromatic-cyan, 0 200 255));
-    font-size: calc(var(--text-sm, 0.875rem) * 0.85);
+    font-family: var(--font-body);
+    font-size: var(--text-sm, 0.875rem);
     font-weight: 500;
     cursor: pointer;
     transition:
-      border-color 200ms ease,
-      background 200ms ease,
-      opacity 200ms ease,
+      border-color var(--duration-normal) var(--ease-out),
+      background var(--duration-normal) var(--ease-out),
+      opacity var(--duration-normal) var(--ease-out),
       transform 120ms ease;
     touch-action: manipulation;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
+    flex-shrink: 0;
+    /* anchors to the tail group's right edge — see .wl-draw-tail above */
+    margin-left: auto;
   }
 
   :global(.wl-draw-send:hover) {
@@ -3826,16 +4435,28 @@
   /* ── Responsive draw ────────────────────────────────────── */
   @media (max-width: 520px) {
     :global(.wl-draw-toolbar) {
+      /* full-width bottom row, pinned above the safe-area inset */
+      align-self: stretch;
+      width: 100%;
       flex-wrap: wrap;
       border-radius: 1rem;
       justify-content: center;
       gap: 0.35rem;
-      padding: 0.35rem 0.5rem;
+      padding: 0.5rem;
+      padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
     }
 
     :global(.wl-draw-color) {
       width: 1.3rem;
       height: 1.3rem;
+    }
+
+    /* keep palette swatches compact; the eraser and custom color "+" are
+       already a 44px circular hit at every width (see base rules above) */
+    :global(.wl-draw-undo),
+    :global(.wl-draw-redo) {
+      min-width: 2.75rem;
+      min-height: 2.75rem;
     }
 
     :global(.wl-draw-hint) {
@@ -3845,13 +4466,27 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    :global(.wl-draw) {
-      transition: none !important;
+    /* opacity only: keep the overlay's own fade, strip the scale/rise
+       entrance choreography and every hover/press micro-transition below */
+    :global(.wl-draw.--open) {
+      transition: opacity var(--duration-fast) linear !important;
+    }
+
+    :global(.wl-draw-canvas-wrapper) {
+      animation: none !important;
+      scale: 1 !important;
+    }
+
+    :global(.wl-draw-toolbar) {
+      animation: none !important;
+      transform: none !important;
+      opacity: 1 !important;
     }
 
     :global(.wl-draw-close),
     :global(.wl-draw-touch-toggle),
     :global(.wl-draw-color),
+    :global(.wl-draw-color-custom),
     :global(.wl-draw-tool),
     :global(.wl-draw-undo),
     :global(.wl-draw-redo),

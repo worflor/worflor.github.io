@@ -300,4 +300,43 @@ describe("live-draw-stream", () => {
     assert.equal(tracker.apply(chunkB).applied, true);
     assert.equal(tracker.apply(endBase).applied, true);
   });
+
+  it("round-trips presence frames with canvas dims, with and without strokeId", () => {
+    const withStroke: DrawStreamEvent = {
+      kind: "presence",
+      seq: 30,
+      active: true,
+      strokeId: 5,
+      logicalW: 720,
+      logicalH: 1280,
+    };
+    const withoutStroke: DrawStreamEvent = {
+      kind: "presence",
+      seq: 31,
+      active: false,
+      logicalW: 1024,
+      logicalH: 768,
+    };
+
+    const encWith = encodeDrawStreamEvent(withStroke);
+    const encWithout = encodeDrawStreamEvent(withoutStroke);
+
+    // fixed header (6) + active/hasStroke (2) + logicalW/logicalH (4) [+ strokeId (2)]
+    assert.equal(encWith.length, 14);
+    assert.equal(encWithout.length, 12);
+
+    const decWith = decodeDrawStreamEvent(encWith);
+    assert.ok(decWith && decWith.kind === "presence");
+    assert.equal(decWith.active, true);
+    assert.equal(decWith.strokeId, 5);
+    assert.equal(decWith.logicalW, 720);
+    assert.equal(decWith.logicalH, 1280);
+
+    const decWithout = decodeDrawStreamEvent(encWithout);
+    assert.ok(decWithout && decWithout.kind === "presence");
+    assert.equal(decWithout.active, false);
+    assert.equal(decWithout.strokeId, undefined);
+    assert.equal(decWithout.logicalW, 1024);
+    assert.equal(decWithout.logicalH, 768);
+  });
 });

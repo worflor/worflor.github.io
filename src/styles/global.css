@@ -353,6 +353,16 @@
   }
 }
 
+/* whisper stage mode: the chat takes the theatre, so the floating
+   site action bar is suppressed outright. a bar left visible by an
+   inline style bleeding in from another whisper mode (e.g. seal)
+   would otherwise still float over the stage — !important wins
+   against that inline style on purpose. */
+:root.wl-stage .action-bar,
+:root.wl-stage .tool-actions-shell {
+  display: none !important;
+}
+
 /* inscriptions in the spectral plane. not buttons on a surface,
    but text that exists within the computational substrate. */
 .tool-action-btn {

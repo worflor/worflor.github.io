@@ -9,9 +9,12 @@
  *     0x20  STREAM_STATE  [flags:1B]  — bit0=audio, bit1=video, bit2=screen
  *     0x30–0x3F  session policy     (future)
  *   0x80–0xFF  payload-bearing ops (bit 7 = 1)
- *     0x81  SEEN    [msgId:4B LE]
- *     0x82  REACT   [msgId:4B LE][emoji:utf8]
- *     0x83  UNREACT [msgId:4B LE][emoji:utf8]
+ *     0x81  SEEN        [msgId:4B LE]
+ *     0x82  REACT       [msgId:4B LE][emoji:utf8]
+ *     0x83  UNREACT     [msgId:4B LE][emoji:utf8]
+ *     0x84  FILE_CANCEL [transferId:4B LE][role:1B]
+ *       role 0 = sender aborting its own outbound transfer
+ *       role 1 = receiver rejecting an inbound transfer
  *
  * Frame format (payload after LIVE_MSG.CTRL type byte):
  *   [0]       opcode      (1B)
@@ -31,7 +34,16 @@ export const CTRL_OP = {
   SEEN: 0x81,  // payload: [msgId:4B LE]
   REACT: 0x82,  // payload: [msgId:4B LE][emoji:utf8]
   UNREACT: 0x83,  // payload: [msgId:4B LE][emoji:utf8]
+  FILE_CANCEL: 0x84,  // payload: [transferId:4B LE][role:1B]
   DRAW_STREAM: 0x90, // payload: draw-stream binary frame (live-draw-stream.ts)
+} as const;
+
+/** FILE_CANCEL role byte — whose transfer the cancel frame originated from. */
+export const FILE_CANCEL_ROLE = {
+  /** the sender is aborting its own outbound transfer. */
+  SENDER: 0,
+  /** the receiver is rejecting an inbound transfer. */
+  RECEIVER: 1,
 } as const;
 
 export const VOTE_TOPIC = {
@@ -280,5 +292,23 @@ export function decodeReactPayload(payload: Uint8Array): { msgId: number; emoji:
   return {
     msgId: new DataView(payload.buffer, payload.byteOffset).getUint32(0, true),
     emoji: first.segment,
+  };
+}
+
+/* ── FILE_CANCEL payload encoding ────────────────────────── */
+
+/** FILE_CANCEL payload: 4-byte transferId (LE) + 1-byte role (see FILE_CANCEL_ROLE). */
+export function encodeFileCancelPayload(transferId: number, role: number): Uint8Array {
+  const buf = new Uint8Array(5);
+  new DataView(buf.buffer).setUint32(0, transferId, true);
+  buf[4] = role & 0xFF;
+  return buf;
+}
+
+export function decodeFileCancelPayload(payload: Uint8Array): { transferId: number; role: number } | null {
+  if (payload.length < 5) return null;
+  return {
+    transferId: new DataView(payload.buffer, payload.byteOffset).getUint32(0, true),
+    role: payload[4],
   };
 }

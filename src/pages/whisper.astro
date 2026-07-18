@@ -24,7 +24,7 @@ const seo = {
     data-breadcrumb-controller
   >
     <!-- ── Hero ─────────────────────────────────────────────── -->
-    <section class="mt-8 content-section whisper-intro">
+    <section class="mt-8 content-section whisper-intro wl-stage-fade">
       <div class="whisper-title-row">
         <h1 class="page-title whisper-title" id="whisper-title">Whisper</h1>
         <span class="whisper-alpha-badge" id="whisper-alpha-badge">ALPHA</span>
@@ -35,7 +35,7 @@ const seo = {
     </section>
 
     <!-- ── Mode Selector ────────────────────────────────────── -->
-    <section class="mt-[var(--space-md)] content-section">
+    <section class="mt-[var(--space-md)] content-section wl-stage-fade">
       <div class="whisper-mode-bar" role="group" aria-label="Whisper mode">
         <button
           class="whisper-mode-btn whisper-mode-btn--active"
@@ -197,7 +197,7 @@ const seo = {
     </section>
 
     <!-- ── Operation Panel ──────────────────────────────────── -->
-    <section class="mt-[var(--space-sm)] content-section">
+    <section class="mt-[var(--space-sm)] content-section wl-stage-column">
       <!-- Solo mode content (embed / extract / hunt) -->
       <div class="whisper-op-solo">
         <div class="whisper-panel">
@@ -896,7 +896,7 @@ const seo = {
 
     <!-- ── Runtime Log ──────────────────────────────────────── -->
     <section
-      class="mt-[var(--space-sm)] content-section whisper-section--shared"
+      class="mt-[var(--space-sm)] content-section whisper-section--shared wl-stage-log-wrap"
     >
       <div class="whisper-log-wrap" id="whisper-log-wrap">
         <div
@@ -929,7 +929,7 @@ const seo = {
     </section>
     <!-- ── Insights ─────────────────────────────────────────── -->
     <section
-      class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section"
+      class="mt-[var(--space-lg)] mb-[var(--space-xl)] content-section wl-stage-fade"
     >
       <div class="whisper-insights">
         <h2 class="insights-title">what is this?</h2>
@@ -2796,11 +2796,6 @@ const seo = {
     box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.45);
   }
 
-  .whisper-op-live.wl-connected .wl-status-chip,
-  .whisper-op-live.wl-recovering .wl-status-chip {
-    display: none;
-  }
-
   .whisper-op-live.wl-preview .wl-e2e-badge {
     color: rgb(var(--color-text-rgb) / 0.18);
     border-color: rgb(var(--color-text-rgb) / 0.06);
@@ -2923,28 +2918,6 @@ const seo = {
     display: none;
   }
 
-  .wl-status-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5em;
-    min-width: 0;
-    overflow: hidden;
-    padding: calc(var(--space-xs) * 0.5) calc(var(--space-xs) * 0.75);
-    border-radius: var(--whisper-radius-soft);
-    border: 1px solid rgb(var(--color-text-rgb) / 0.1);
-    background: rgb(10 10 10 / 0.9);
-    color: rgb(var(--color-text-rgb) / 0.62);
-  }
-
-  .wl-status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: var(--radius-full);
-    background: rgb(var(--color-text-rgb) / 0.24);
-    box-shadow: 0 0 0 2px rgb(var(--color-text-rgb) / 0.06);
-    flex: 0 0 auto;
-  }
-
   .wl-status-text {
     font-size: calc(var(--text-sm) * 0.9);
     letter-spacing: 0.03em;
@@ -2955,11 +2928,6 @@ const seo = {
 
   .wl-status-text.whisper-status--ready {
     color: rgb(var(--chromatic-cyan));
-  }
-
-  .wl-status-chip:has(.wl-status-text.whisper-status--ready) .wl-status-dot {
-    background: rgb(var(--chromatic-cyan));
-    box-shadow: 0 0 8px rgb(var(--chromatic-cyan) / 0.25);
   }
 
   :global(.wl-grid) {
@@ -3319,6 +3287,262 @@ const seo = {
     :global(.wl-create-btn):active {
       background: rgb(var(--chromatic-cyan) / 0.16);
       border-color: rgb(var(--chromatic-cyan) / 0.5);
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════
+     Whisper Live — Stage Mode
+     wl-stage is toggled on <html> exactly while the chat phase
+     (#wl-chat-section) is the visible phase. every rule below is
+     scoped :root.wl-stage .whisper-page[data-mode="live"] (or, for
+     the site header which lives outside .whisper-page, a :has()
+     guard on :root) so nothing leaks into carrier/signature modes
+     or other pages. selectors are wrapped in :global() throughout —
+     :root is never rendered by this component, so a scoped selector
+     starting there would never match. .wl-stage-fade / .wl-stage-
+     log-wrap / .wl-stage-column are style-only hooks added to the
+     hero, mode tabs, insights and runtime-log sections, and to the
+     op-panel column. */
+
+  @keyframes wl-stage-panel-in {
+    from {
+      opacity: 0;
+      transform: scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  /* site header slides away in stage mode. it lives outside
+     .whisper-page (sibling in <body>), so it can only be reached
+     from :root — :has() checks the live chat is actually active. */
+  /* important beats the scroll auto-hide script, which writes an inline
+     transform on the header every scroll tick. */
+  :global(:root.wl-stage:has(.whisper-page[data-mode="live"]) .site-header) {
+    transform: translateY(-100%) !important;
+    transition: transform var(--duration-slow) var(--ease-out);
+    pointer-events: none;
+  }
+
+  /* mode tabs must always stay clickable — dimmed chrome or not,
+     the user needs a way out of stage mode. */
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .whisper-mode-bar) {
+    pointer-events: auto;
+  }
+
+  @media (max-width: 700px) {
+    /* mobile: the live section becomes the viewport. hero, tabs,
+       insights and the runtime log are chrome — collapse them. */
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-stage-fade),
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-stage-log-wrap) {
+      display: none;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] #wl-section) {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      margin: 0;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right)
+        env(safe-area-inset-bottom) env(safe-area-inset-left);
+      background: var(--color-bg);
+      gap: 0;
+      animation: wl-stage-panel-in var(--duration-slow) var(--ease-spring) both;
+    }
+
+    /* wl-head becomes the chat's own compact header, pinned at the
+       top of the stage. */
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-head) {
+      flex: 0 0 auto;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-phase--chat) {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-panel) {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-radius: 0;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-messages) {
+      flex: 1 1 auto;
+      min-height: 0;
+      max-height: none;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-compose) {
+      flex: 0 0 auto;
+    }
+  }
+
+  @media (min-width: 701px) {
+    /* tablet + desktop share this: normal document flow, but the
+       chat panel gets real height instead of the clamp()-based one. */
+    :global(:root.wl-stage .whisper-page[data-mode="live"] #wl-section) {
+      animation: wl-stage-panel-in var(--duration-slow) var(--ease-spring) both;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-panel) {
+      display: flex;
+      flex-direction: column;
+      height: min(78vh, 54rem);
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-messages) {
+      flex: 1 1 auto;
+      min-height: 0;
+      max-height: none;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-compose) {
+      flex: 0 0 auto;
+    }
+  }
+
+  /* breathing room when the stage entrance scrolls the section into view */
+  :global(:root.wl-stage .whisper-page[data-mode="live"] #wl-section) {
+    scroll-margin-top: var(--space-lg);
+  }
+
+  /* stage header compacts to a single intentional row: title and badge,
+     peer chip, then controls pushed right. the subtitle is chrome the
+     e2e badge already covers, so it goes. */
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-head) {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    align-items: center;
+  }
+
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-head-title-row) {
+    display: contents;
+  }
+
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-head-subtitle) {
+    display: none;
+  }
+
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-head-title) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-fp-wrap) {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: start;
+    min-width: 0;
+  }
+
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-head-right) {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  @media (max-width: 700px) {
+    /* narrow: title and controls share the first row, the peer chip
+       gets its own quiet second line. */
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-fp-wrap) {
+      grid-column: 1 / -1;
+      grid-row: 2;
+    }
+
+    /* the chip row needs a touch more room above the divider */
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-head) {
+      padding-bottom: calc(var(--space-sm) * 0.9);
+    }
+  }
+
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .cf-btn-verbose) {
+    display: none;
+  }
+
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .cf-head-btn) {
+    min-height: 2.25rem;
+    padding: 0.3rem 0.7rem;
+  }
+
+  /* header controls quiet down to ghost pills inside the stage */
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .cf-head-btn) {
+    background: transparent;
+    border-color: rgb(var(--color-text-rgb) / 0.1);
+    color: rgb(var(--color-text-rgb) / 0.55);
+    transition:
+      color var(--duration-normal) var(--ease-out),
+      border-color var(--duration-normal) var(--ease-out);
+  }
+
+  :global(:root.wl-stage .whisper-page[data-mode="live"] .cf-head-btn:hover:not(:disabled)) {
+    color: rgb(var(--color-text-rgb) / 0.9);
+    border-color: rgb(var(--color-text-rgb) / 0.22);
+  }
+
+  @media (min-width: 701px) and (max-width: 1100px) {
+    /* tablet: generous height like mobile, but horizontal margins
+       and the page header stay put; chrome is not dimmed here. */
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-panel) {
+      height: min(88vh, 60rem);
+    }
+  }
+
+  @media (min-width: 1101px) {
+    /* desktop: don't go full-bleed. centered column, dimmed chrome,
+       a vignette behind the panel so it floats in the void. */
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-stage-column) {
+      max-width: min(760px, 92vw);
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"]) {
+      background-image: var(--ambient-vignette);
+      background-repeat: no-repeat;
+      background-position: center top;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-stage-fade) {
+      opacity: 0.25;
+      pointer-events: none;
+      transition: opacity var(--duration-slow) var(--ease-out);
+    }
+
+    /* re-open the hole the tabs need to stay clickable through. */
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-stage-fade .whisper-mode-bar) {
+      pointer-events: auto;
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-stage-log-wrap) {
+      opacity: 0.35;
+      transition: opacity var(--duration-slow) var(--ease-out);
+    }
+
+    :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-stage-log-wrap:hover) {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    /* collapse the scene-change to opacity-only, no scale/slide. */
+    @keyframes wl-stage-panel-in {
+      from {
+        opacity: 0;
+      }
+      to {
+        opacity: 1;
+      }
+    }
+
+    :global(:root.wl-stage:has(.whisper-page[data-mode="live"]) .site-header) {
+      transition: none;
     }
   }
 

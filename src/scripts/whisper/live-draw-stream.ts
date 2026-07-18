@@ -66,6 +66,10 @@ export interface DrawStreamPresenceEvent {
   seq: number;
   active: boolean;
   strokeId?: number;
+  /** current drawing-space size (canvas logical px), same space as begin/glyph
+   * normalized coords scale into. always present, since both ends run this codec. */
+  logicalW: number;
+  logicalH: number;
 }
 
 export type DrawBaseMime = "image/jpeg" | "image/webp" | "image/png";
@@ -232,12 +236,14 @@ export function encodeDrawStreamEvent(evt: DrawStreamEvent): Uint8Array {
     }
     case "presence": {
       const hasStroke = typeof evt.strokeId === "number";
-      const out = new Uint8Array(hasStroke ? 10 : 8);
+      const out = new Uint8Array(hasStroke ? 14 : 12);
       const view = new DataView(out.buffer);
       writeBaseHeader(view, DRAW_STREAM_KIND.PRESENCE, evt.seq);
       view.setUint8(6, evt.active ? 1 : 0);
       view.setUint8(7, hasStroke ? 1 : 0);
-      if (hasStroke) view.setUint16(8, (evt.strokeId as number) & 0xffff, true);
+      view.setUint16(8, Math.max(0, Math.min(65535, Math.round(evt.logicalW))), true);
+      view.setUint16(10, Math.max(0, Math.min(65535, Math.round(evt.logicalH))), true);
+      if (hasStroke) view.setUint16(12, (evt.strokeId as number) & 0xffff, true);
       return out;
     }
     case "base-start": {
@@ -319,17 +325,19 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
     case DRAW_STREAM_KIND.REDO:
       return bytes.length === 6 ? { kind: "redo", seq } : null;
     case DRAW_STREAM_KIND.PRESENCE: {
-      if (bytes.length !== 8 && bytes.length !== 10) return null;
+      if (bytes.length !== 12 && bytes.length !== 14) return null;
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       const active = view.getUint8(6) === 1;
       const hasStroke = view.getUint8(7) === 1;
-      if (hasStroke && bytes.length !== 10) return null;
-      if (!hasStroke && bytes.length !== 8) return null;
+      if (hasStroke && bytes.length !== 14) return null;
+      if (!hasStroke && bytes.length !== 12) return null;
       return {
         kind: "presence",
         seq,
         active,
-        strokeId: hasStroke ? view.getUint16(8, true) : undefined,
+        logicalW: view.getUint16(8, true),
+        logicalH: view.getUint16(10, true),
+        strokeId: hasStroke ? view.getUint16(12, true) : undefined,
       };
     }
     case DRAW_STREAM_KIND.BASE_START: {

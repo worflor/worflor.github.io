@@ -367,6 +367,13 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   canvasWrapper.className = "wl-draw-canvas-wrapper";
   canvasWrapper.append(bgCanvas, drawingCanvas);
 
+  // stage fills the space above the toolbar and centers the canvas within
+  // it, so the toolbar can pin to the true bottom of the viewport instead
+  // of floating mid-page next to a letterboxed canvas.
+  const stage = document.createElement("div");
+  stage.className = "wl-draw-stage";
+  stage.append(canvasWrapper);
+
   const toolbar = document.createElement("div");
   toolbar.className = "wl-draw-toolbar";
 
@@ -450,10 +457,35 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   touchToggleBtn.setAttribute("aria-label", "Touch draw on");
   touchToggleBtn.title = "Touch draw on";
 
-  // Flat toolbar — no separators, no groups. Gap handles spacing.
+  // Toolbar composition: [colors + custom] [eraser] | [undo redo] | [send].
+  // Grouped into wrapper divs so CSS can place divider hairlines and let
+  // the row wrap responsively without depending on flat sibling order.
   // Fill tool hidden from toolbar (keyboard B only) — icon is not self-explanatory.
-  toolbar.append(...colorBtns, customColorBtn, eraserBtn, undoRedoGroup, sendBtn);
-  overlay.append(canvasWrapper, toolbar, hint, closeBtn, touchToggleBtn, colorInput);
+  const colorsGroup = document.createElement("div");
+  colorsGroup.className = "wl-draw-group wl-draw-group-colors";
+  colorsGroup.append(...colorBtns, customColorBtn);
+
+  const toolGroup = document.createElement("div");
+  toolGroup.className = "wl-draw-group wl-draw-group-tool";
+  toolGroup.append(eraserBtn);
+
+  const dividerA = document.createElement("div");
+  dividerA.className = "wl-draw-divider";
+  dividerA.setAttribute("aria-hidden", "true");
+
+  const dividerB = document.createElement("div");
+  dividerB.className = "wl-draw-divider";
+  dividerB.setAttribute("aria-hidden", "true");
+
+  // tail group grows to fill leftover row width so send can anchor to the
+  // right edge, whether it shares a line with the colors group (desktop)
+  // or drops onto its own second line (narrow, wrapped).
+  const tailGroup = document.createElement("div");
+  tailGroup.className = "wl-draw-tail";
+  tailGroup.append(toolGroup, dividerA, undoRedoGroup, dividerB, sendBtn);
+
+  toolbar.append(colorsGroup, tailGroup);
+  overlay.append(stage, toolbar, hint, closeBtn, touchToggleBtn, colorInput);
 
   /* ── Canvas setup ──────────────────────────────────────── */
 
@@ -470,7 +502,22 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       const w = gwyphBasePayload.logicalW, h = gwyphBasePayload.logicalH;
       return { srcAspect: w / h || 4 / 3, srcNatW: w, srcNatH: h };
     }
-    if (isBlank || config.gwyphBase) return { srcAspect: 4 / 3, srcNatW: 1066, srcNatH: 800 };
+    if (isBlank || config.gwyphBase) {
+      // blank canvas has no real source proportions to respect, so match
+      // the viewport's own orientation instead: a portrait phone gets a
+      // portrait canvas rather than a hardcoded 4:3 landscape strip that
+      // only ever fills a third of the screen. clamped so it never goes
+      // edge-to-edge thin; annotate/gwyph-edit (real media) below still
+      // keep their true aspect.
+      const vw = window.visualViewport?.width ?? window.innerWidth;
+      const vh = window.visualViewport?.height ?? window.innerHeight;
+      const aspect = Math.min(4 / 3, Math.max(0.6, (vw / vh) || 4 / 3));
+      const long = 1200;
+      const short = Math.round(long * Math.min(aspect, 1 / aspect));
+      const natW = aspect >= 1 ? long : short;
+      const natH = aspect >= 1 ? short : long;
+      return { srcAspect: aspect, srcNatW: natW, srcNatH: natH };
+    }
     const media = config.mediaEl!;
     const srcNatW = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
     const srcNatH = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
@@ -2156,13 +2203,19 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     const vp = window.visualViewport;
     const vph = vp?.height ?? window.innerHeight;
     const vpw = vp?.width  ?? window.innerWidth;
-    const safeTop = parseFloat(getComputedStyle(overlay).paddingTop)    || 0;
-    const safeBot = parseFloat(getComputedStyle(overlay).paddingBottom) || 0;
+    const overlayStyle = getComputedStyle(overlay);
+    const safeTop   = parseFloat(overlayStyle.paddingTop)    || 0;
+    const safeBot   = parseFloat(overlayStyle.paddingBottom) || 0;
+    const safeLeft  = parseFloat(overlayStyle.paddingLeft)   || 0;
+    const safeRight = parseFloat(overlayStyle.paddingRight)  || 0;
     const toolbarH = toolbar.getBoundingClientRect().height;
-    const gapPx    = parseFloat(getComputedStyle(overlay).gap) || 12;
+    const gapPx    = parseFloat(overlayStyle.gap) || 12;
     const overhead = toolbarH + gapPx * 2 + safeTop + safeBot + 24;
+    // side margin tracks the overlay's own (safe-area-aware) padding plus a
+    // small fixed breathing room, instead of a flat guess
+    const sideMargin = safeLeft + safeRight + 16;
 
-    const { w, h } = computeLogicalSize(vpw - 48, vph - overhead);
+    const { w, h } = computeLogicalSize(vpw - sideMargin, vph - overhead);
     logicalW = w;
     logicalH = h;
 
@@ -2200,6 +2253,11 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       showHint("Pinch to zoom. Two-finger tap undo, three-finger tap redo.", DRAW_HINT_ONBOARD_MS);
       drawHintShown = true;
     }
+    // announce the drawing-space aspect up front so the peer's live preview
+    // (which has no other way to know a blank canvas's orientation before
+    // strokes settle into a glyph) can size itself correctly from the start
+    // instead of falling back to a 4:3 box.
+    callbacks.onEvent?.({ kind: "presence", active: true, logicalW, logicalH });
     void emitAnnotateBaseSnapshot();
   });
 }

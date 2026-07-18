@@ -46,7 +46,15 @@ import {
   loopExpand,
 } from "./live-loop";
 import { sdpToCode, codeToSdp, canonicalizeSdpForTranscript } from "./live-sdp";
-import { CTRL_OP, encodeCtrl, decodeCtrl, decodeStreamState } from "./live-ctrl";
+import {
+  CTRL_OP,
+  encodeCtrl,
+  decodeCtrl,
+  decodeStreamState,
+  FILE_CANCEL_ROLE,
+  encodeFileCancelPayload,
+  decodeFileCancelPayload,
+} from "./live-ctrl";
 import {
   type DrawStreamEvent,
   DrawStreamTracker,
@@ -159,6 +167,15 @@ export interface WhisperLiveCallbacks {
   onAck?: (msgId: number) => void;
   /** Progress during chunked send (file transfers). */
   onSendProgress?: (bytesSent: number, totalBytes: number) => void;
+  /** Fires once, synchronously, when a chunked outbound file transfer starts —
+   *  lets the UI attach a cancel control to the outbound card, keyed by transferId. */
+  onSendStart?: (transferId: number, fileName: string, totalBytes: number) => void;
+  /** Progress during chunked receive (file transfers). Fires on the first chunk
+   *  (so the UI can render the incoming card immediately) and periodically thereafter,
+   *  throttled the same way as onSendProgress, plus unconditionally on the last chunk. */
+  onReceiveProgress?: (transferId: number, receivedBytes: number, totalBytes: number, fileName: string) => void;
+  /** A chunked file transfer (in either direction) was cancelled, locally or by the peer. */
+  onTransferCancelled?: (transferId: number, by: "local" | "peer", direction: "in" | "out") => void;
   /** Periodic connection quality stats (fires each heartbeat cycle). */
   onConnectionStats?: (stats: ConnectionStats) => void;
   /** Incoming control frame from peer. */
@@ -454,6 +471,8 @@ interface IncomingFileTransfer {
   chunks: Map<number, Blob>;
   receivedBytes: number;
   firstMsgId: number;
+  /** performance.now() of the last onReceiveProgress emission, for throttling. */
+  lastProgressEmit: number;
 }
 
 export class WhisperLiveSession {
@@ -475,6 +494,10 @@ export class WhisperLiveSession {
   private transportMode: TransportMode = "naked";
   private assembler = new ChunkAssembler();
   private incomingFiles = new Map<number, IncomingFileTransfer>();
+  /** transferIds we (as receiver) rejected or dropped — stragglers still in flight are silently ignored. */
+  private cancelledIncomingTransfers = new Set<number>();
+  /** transferIds we (as sender) or our peer (as receiver) cancelled — checked between chunks in sendFileChunked. */
+  private cancelledOutgoingTransfers = new Set<number>();
   private engine: WhisperEngine | null = null;
   private isOfferer = false;
   /** Total messages sent this session — never resets unlike ratchet nSend. */
@@ -560,6 +583,9 @@ export class WhisperLiveSession {
   onPeerTyping: WhisperLiveCallbacks["onPeerTyping"];
   onAck: WhisperLiveCallbacks["onAck"];
   onSendProgress: WhisperLiveCallbacks["onSendProgress"];
+  onSendStart: WhisperLiveCallbacks["onSendStart"];
+  onReceiveProgress: WhisperLiveCallbacks["onReceiveProgress"];
+  onTransferCancelled: WhisperLiveCallbacks["onTransferCancelled"];
   onConnectionStats: WhisperLiveCallbacks["onConnectionStats"];
   onCtrl: WhisperLiveCallbacks["onCtrl"];
   onDrawStream: WhisperLiveCallbacks["onDrawStream"];
@@ -594,6 +620,9 @@ export class WhisperLiveSession {
     this.onPeerTyping = callbacks.onPeerTyping;
     this.onAck = callbacks.onAck;
     this.onSendProgress = callbacks.onSendProgress;
+    this.onSendStart = callbacks.onSendStart;
+    this.onReceiveProgress = callbacks.onReceiveProgress;
+    this.onTransferCancelled = callbacks.onTransferCancelled;
     this.onConnectionStats = callbacks.onConnectionStats;
     this.onCtrl = callbacks.onCtrl;
     this.onDrawStream = callbacks.onDrawStream;
@@ -919,6 +948,8 @@ export class WhisperLiveSession {
       transfer.chunks.clear();
     }
     this.incomingFiles.clear();
+    this.cancelledIncomingTransfers.clear();
+    this.cancelledOutgoingTransfers.clear();
   }
 
   private resetSessionState(): void {
@@ -1765,6 +1796,10 @@ export class WhisperLiveSession {
                 }
               }
             }
+            if (frame.opcode === CTRL_OP.FILE_CANCEL) {
+              const cancel = decodeFileCancelPayload(frame.payload);
+              if (cancel) this.handleFileCancel(cancel.transferId, cancel.role);
+            }
           }
           break;
         }
@@ -1963,7 +1998,12 @@ export class WhisperLiveSession {
     }
     const { transferId, chunkIndex, totalChunks, totalFileSize, fileName, fileType, chunkData } = part;
 
+    // dropped locally (we rejected it) or the peer aborted it — ignore any stragglers
+    // still in flight without recreating transfer state.
+    if (this.cancelledIncomingTransfers.has(transferId)) return;
+
     let transfer = this.incomingFiles.get(transferId);
+    const isNewTransfer = !transfer;
     if (!transfer) {
       if (chunkIndex !== 0) {
         // Chunk 0 carries the metadata — if it arrives out of order we can't reconstruct.
@@ -1979,6 +2019,7 @@ export class WhisperLiveSession {
         chunks: new Map(),
         receivedBytes: 0,
         firstMsgId: msgId,
+        lastProgressEmit: 0,
       };
       this.incomingFiles.set(transferId, transfer);
     }
@@ -1990,7 +2031,18 @@ export class WhisperLiveSession {
     transfer.chunks.set(chunkIndex, new Blob([chunkData]));
     transfer.receivedBytes += chunkData.length;
 
-    if (transfer.chunks.size < transfer.totalChunks) return; // still waiting
+    const isLastChunk = transfer.chunks.size >= transfer.totalChunks;
+    if (this.onReceiveProgress) {
+      const now = performance.now();
+      // always emit on the first chunk (so the UI can render the card immediately)
+      // and on the last chunk (so the UI can settle at 100%); otherwise throttle.
+      if (isNewTransfer || isLastChunk || now - transfer.lastProgressEmit >= SEND_PROGRESS_INTERVAL_MS) {
+        this.onReceiveProgress(transferId, transfer.receivedBytes, transfer.totalSize, transfer.fileName);
+        transfer.lastProgressEmit = now;
+      }
+    }
+
+    if (!isLastChunk) return; // still waiting
 
     // all chunks received — assemble into a single Blob (no JS heap copy).
     this.incomingFiles.delete(transferId);
@@ -2009,6 +2061,26 @@ export class WhisperLiveSession {
       fileType: transfer.fileType,
       timestamp: Date.now(),
     });
+  }
+
+  /**
+   * Handle a peer FILE_CANCEL frame.
+   * role SENDER   — peer aborted the transfer it was sending us: drop our inbound state.
+   * role RECEIVER — peer rejected the transfer we were sending it: abort our outbound loop.
+   */
+  private handleFileCancel(transferId: number, role: number): void {
+    if (role === FILE_CANCEL_ROLE.SENDER) {
+      const transfer = this.incomingFiles.get(transferId);
+      if (transfer) {
+        transfer.chunks.clear();
+        this.incomingFiles.delete(transferId);
+      }
+      this.cancelledIncomingTransfers.add(transferId);
+      this.onTransferCancelled?.(transferId, "peer", "in");
+    } else if (role === FILE_CANCEL_ROLE.RECEIVER) {
+      this.cancelledOutgoingTransfers.add(transferId);
+      this.onTransferCancelled?.(transferId, "peer", "out");
+    }
   }
 
   /* ── Kizuna membrane helpers ─────────────────────────────── */
@@ -2196,6 +2268,29 @@ export class WhisperLiveSession {
     return sentMsgId;
   }
 
+  /** Cancel an in-flight outbound chunked transfer we initiated. Aborts the send
+   *  loop between chunks, tells the peer via CTRL so it drops its partial state,
+   *  and always resolves cleanly (no throw) — sendFileChunked simply stops early. */
+  cancelFileTransfer(transferId: number): void {
+    this.cancelledOutgoingTransfers.add(transferId);
+    this.sendCtrl(CTRL_OP.FILE_CANCEL, encodeFileCancelPayload(transferId, FILE_CANCEL_ROLE.SENDER));
+    this.onTransferCancelled?.(transferId, "local", "out");
+  }
+
+  /** Reject/drop an in-flight inbound chunked transfer. Releases the partial chunk
+   *  blobs we already hold, tells the peer via CTRL so it stops sending, and marks
+   *  the transferId so any stragglers still in flight are silently ignored. */
+  cancelIncomingTransfer(transferId: number): void {
+    const transfer = this.incomingFiles.get(transferId);
+    if (transfer) {
+      transfer.chunks.clear();
+      this.incomingFiles.delete(transferId);
+    }
+    this.cancelledIncomingTransfers.add(transferId);
+    this.sendCtrl(CTRL_OP.FILE_CANCEL, encodeFileCancelPayload(transferId, FILE_CANCEL_ROLE.RECEIVER));
+    this.onTransferCancelled?.(transferId, "local", "in");
+  }
+
   /** Send a large file as sequential application-level 4 MB chunks.
    *  Each chunk is independently encrypted. The sender only holds one chunk
    *  in memory at a time — peak allocation is O(chunk) not O(file). */
@@ -2206,37 +2301,47 @@ export class WhisperLiveSession {
     let firstMsgId = -1;
     let bytesSent = 0;
 
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * FILE_CHUNK_SIZE;
-      const end = Math.min(start + FILE_CHUNK_SIZE, file.size);
-      // file.slice() reads only this byte range — does not load the whole file.
-      const chunkBytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
-      const chunkIdx = i;
-      const chunkLen = chunkBytes.length;
+    this.onSendStart?.(transferId, file.name, file.size);
 
-      // Chunked file transfer = single user action — skip rate shaping
-      await this.enqueueSend(async () => {
-        if (!await this.canSend()) return;
-        const plaintext = encodeFilePartPlaintext(
-          transferId, chunkIdx, totalChunks, file.size, chunkBytes,
-          chunkIdx === 0 ? file.name : undefined,
-          chunkIdx === 0 ? file.type : undefined,
-        );
-        const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE_PART);
-        if (msgId < 0) return;
-        if (chunkIdx === 0) {
-          firstMsgId = msgId;
-          // Show self-entry immediately. fileData is omitted — we don't keep
-          // 500 MB of our own file in memory just for a self-view download link.
-          this.onMessage({
-            type: "file", direction: "self",
-            msgId, fileName: file.name, fileSize: file.size, fileType: file.type,
-            timestamp: Date.now(),
-          });
-        }
-        bytesSent += chunkLen;
-        if (this.onSendProgress) this.onSendProgress(bytesSent, file.size);
-      }, true);
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        // checked between chunks — cancelled either locally or by the peer rejecting.
+        if (this.cancelledOutgoingTransfers.has(transferId)) break;
+
+        const start = i * FILE_CHUNK_SIZE;
+        const end = Math.min(start + FILE_CHUNK_SIZE, file.size);
+        // file.slice() reads only this byte range — does not load the whole file.
+        const chunkBytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
+        const chunkIdx = i;
+        const chunkLen = chunkBytes.length;
+
+        // Chunked file transfer = single user action — skip rate shaping
+        await this.enqueueSend(async () => {
+          if (this.cancelledOutgoingTransfers.has(transferId)) return; // cancelled while queued
+          if (!await this.canSend()) return;
+          const plaintext = encodeFilePartPlaintext(
+            transferId, chunkIdx, totalChunks, file.size, chunkBytes,
+            chunkIdx === 0 ? file.name : undefined,
+            chunkIdx === 0 ? file.type : undefined,
+          );
+          const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE_PART);
+          if (msgId < 0) return;
+          if (chunkIdx === 0) {
+            firstMsgId = msgId;
+            // Show self-entry immediately. fileData is omitted — we don't keep
+            // 500 MB of our own file in memory just for a self-view download link.
+            this.onMessage({
+              type: "file", direction: "self",
+              msgId, fileName: file.name, fileSize: file.size, fileType: file.type,
+              timestamp: Date.now(),
+            });
+          }
+          bytesSent += chunkLen;
+          if (this.onSendProgress) this.onSendProgress(bytesSent, file.size);
+        }, true);
+      }
+    } finally {
+      this.cancelledOutgoingTransfers.delete(transferId);
     }
     return firstMsgId;
   }
