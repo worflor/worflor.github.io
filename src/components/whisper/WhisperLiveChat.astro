@@ -776,10 +776,11 @@
        below) — message divs and the shelf are direct children, so this is
        the coordinate space live-ui.ts positions the shelf in. */
     position: relative;
-    /* compact floor: the chat starts small and earns its height as messages
-       arrive, growing naturally until the max, then scrolling. a tall empty
-       void reads as abandoned; a snug one reads as a room waiting. */
-    min-height: 9rem;
+    /* compact floor: the chat starts at roughly half its full height and
+       earns the rest as messages arrive, growing naturally until the max,
+       then scrolling. a tall empty void reads as abandoned; a half-set room
+       reads as waiting. */
+    min-height: 16rem;
     max-height: clamp(32rem, 28rem + 12vw, 56rem);
     overflow-y: auto;
     /* the shelf clamps itself to stay within bounds horizontally; this is
@@ -1471,10 +1472,17 @@
      a swap. Each overlay dims the quick-picks plus whichever of mark/⋮
      isn't the one currently driving it. */
   :global(.wl-chat-messages) :global(.wl-react-shelf[data-actions-open] .wl-shelf-quickpicks),
-  :global(.wl-chat-messages) :global(.wl-react-shelf[data-actions-open] .wl-react-btn--custom),
-  :global(.wl-chat-messages) :global(.wl-react-shelf[data-glyph-open] .wl-shelf-quickpicks),
-  :global(.wl-chat-messages) :global(.wl-react-shelf[data-glyph-open] .wl-action-btn-toggle) {
+  :global(.wl-chat-messages) :global(.wl-react-shelf[data-actions-open] .wl-react-btn--custom) {
     opacity: 0.25;
+    pointer-events: none;
+  }
+
+  /* mark drawer: the row beneath fades to almost nothing — a half-visible
+     toggle behind the input reads as a phantom misaligned button. */
+  :global(.wl-chat-messages) :global(.wl-react-shelf[data-glyph-open] .wl-shelf-quickpicks),
+  :global(.wl-chat-messages) :global(.wl-react-shelf[data-glyph-open] .wl-react-btn--custom),
+  :global(.wl-chat-messages) :global(.wl-react-shelf[data-glyph-open] .wl-action-btn-toggle) {
+    opacity: 0.08;
     pointer-events: none;
   }
 
@@ -1566,9 +1574,35 @@
     gap: 0.3rem;
     width: 100%;
     border-radius: 9999px;
-    border: 1px solid rgb(var(--color-text-rgb) / 0.16);
-    background: rgb(var(--color-text-rgb) / 0.03);
-    padding: 0.14rem 0.4rem 0.14rem 0.16rem;
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.3);
+    /* solid, not translucent: the drawer must never show fuzzy row buttons
+       through its own input surface. */
+    background: rgb(10 10 10 / 0.94);
+    padding: 0.14rem 0.16rem;
+  }
+
+  /* the explicit confirm inside the field: same circle language as the
+     preview glyph on the far side, centered on the shared axis. */
+  :global(.wl-chat-messages) :global(.wl-react-custom-commit) {
+    width: 1.45rem;
+    height: 1.45rem;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.34);
+    background: rgb(var(--chromatic-cyan) / 0.09);
+    color: rgb(var(--chromatic-cyan) / 0.85);
+    font-size: 0.72rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-spring);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-custom-commit:hover) {
+    background: rgb(var(--chromatic-cyan) / 0.18);
+    transform: scale(var(--scale-hover-lg));
   }
 
   :global(.wl-chat-messages) :global(.wl-react-custom-preview) {

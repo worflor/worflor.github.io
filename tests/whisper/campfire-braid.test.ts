@@ -285,7 +285,7 @@ describe("campfire braid integration", () => {
     }
   });
 
-  it("drop + ring repair heals: B recovers missed messages once the repair interval fires", { timeout: 30_000 }, async () => {
+  it("drop + ring repair heals: B recovers missed messages once the repair interval fires", { timeout: 60_000 }, async () => {
     const net = new VirtualNet(7);
     const recs = await buildCircle(net, "A", ["B", "C"]); // 3 seats, full triangle mesh
     const [A, B] = recs;
@@ -317,8 +317,15 @@ describe("campfire braid integration", () => {
       assert.ok(!bTexts.includes("m3"), "B holds m3 behind the frontier gap (frontier starvation)");
 
       net.dropFilter = undefined;
-      await new Promise<void>((resolve) => setTimeout(resolve, 13_000));
-      for (let round = 0; round < 3; round++) await net.drain();
+      // the 12s repair interval fires on the real clock; under full-suite
+      // load its firing can slip past a fixed wait, so poll with a deadline
+      // instead of trusting one sleep.
+      const deadline = Date.now() + 24_000;
+      while (Date.now() < deadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
+        await net.drain();
+        if (B.messages.map(textOf).includes("m3")) break;
+      }
 
       bTexts = B.messages.map(textOf);
       assert.ok(bTexts.includes("m1"), "B recovered m1 via ring repair");

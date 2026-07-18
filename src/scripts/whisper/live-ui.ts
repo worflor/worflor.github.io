@@ -754,8 +754,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!el.querySelector(".wl-msg-edited")) {
       const tag = document.createElement("span");
       tag.className = "wl-msg-edited";
-      tag.textContent = "(edited)";
-      el.appendChild(tag);
+      tag.textContent = "· (edited)";
+      // the meta row is one derived line: time text, then the edit tag,
+      // then the receipt. appending to the message div instead would land
+      // the tag under whatever rendered last (reactions included), which
+      // reads as clutter, not metadata.
+      const timeEl = el.querySelector<HTMLElement>(".wl-msg-time");
+      if (timeEl) timeEl.insertBefore(tag, timeEl.querySelector(".wl-msg-receipt"));
+      else el.appendChild(tag);
     }
   }
 
@@ -991,6 +997,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   composerOverlay.className = "wl-shelf-overlay wl-shelf-overlay--mark";
   composerOverlay.setAttribute("aria-hidden", "true");
   composerOverlay.appendChild(reactionComposer.field);
+  // explicit confirm inside the field: touch keyboards make enter an
+  // awkward ask, and the drawer reads complete with a real affirm target.
+  // mousedown, not click, so the input never blurs before the commit runs.
+  const markCommitBtn = document.createElement("button");
+  markCommitBtn.type = "button";
+  markCommitBtn.className = "wl-react-custom-commit";
+  markCommitBtn.textContent = "✓";
+  markCommitBtn.setAttribute("aria-label", "commit this mark");
+  markCommitBtn.addEventListener("mousedown", (e) => { e.preventDefault(); reactionComposer.commit(); }, { signal });
+  reactionComposer.field.appendChild(markCommitBtn);
   reactionComposer.field.querySelector("input")?.setAttribute("tabindex", "-1");
   shelfRow.appendChild(composerOverlay);
 
@@ -3997,18 +4013,38 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   /* ── Smart scroll ──────────────────────────────────────── */
 
+  // following the newest message is owned state, not an inference. reading
+  // scrollTop at append time races the previous smooth scroll: mid-animation
+  // the position looks like the user scrolled away and the follow silently
+  // breaks under rapid messages. instead, only a genuine user gesture unpins
+  // (wheel up, touch drag), returning to the bottom repins, and programmatic
+  // scrolls are fenced so their own scroll events never masquerade as intent.
+  let pinnedToBottom = true;
+  let programmaticScrollUntil = 0;
+
   function isNearBottom(): boolean {
     const el = opts.chatMessages;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
   }
 
+  function anchorToBottom(behavior: ScrollBehavior): void {
+    programmaticScrollUntil = performance.now() + (behavior === "smooth" ? 700 : 180);
+    opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior });
+  }
+
+  opts.chatMessages.addEventListener("wheel", (e) => {
+    if (e.deltaY < 0) pinnedToBottom = false;
+  }, { passive: true, signal });
+  opts.chatMessages.addEventListener("touchmove", () => {
+    pinnedToBottom = false;
+  }, { passive: true, signal });
+  opts.chatMessages.addEventListener("scroll", () => {
+    if (performance.now() < programmaticScrollUntil) return;
+    pinnedToBottom = isNearBottom();
+  }, { passive: true, signal });
+
   function smartScroll(): void {
-    if (isNearBottom()) {
-      opts.chatMessages.scrollTo({
-        top: opts.chatMessages.scrollHeight,
-        behavior: "smooth",
-      });
-    }
+    if (pinnedToBottom) anchorToBottom("smooth");
   }
 
   /* ── Chat rendering ───────────────────────────────────── */
@@ -4177,9 +4213,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
     opts.chatMessages.appendChild(wrapEl);
     if (direction === "out") {
-      requestAnimationFrame(() => {
-        opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
-      });
+      pinnedToBottom = true;
+      requestAnimationFrame(() => anchorToBottom("instant"));
     } else {
       smartScroll();
     }
@@ -4381,7 +4416,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       && msg.type === "file"
       && !!media
       && (media.kind === "glyph" || media.kind === "image");
-    const replacePreviewWasNearBottom = replacePeerPreview ? isNearBottom() : false;
+    const replacePreviewWasNearBottom = replacePeerPreview ? (pinnedToBottom || isNearBottom()) : false;
     if (replacePeerPreview) {
       peerActiveStroke = null;
       peerActivePoints = [];
@@ -4418,7 +4453,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       msg.direction === "self" && msg.type === "file" && msg.transferId != null
         ? transferCards.get(msg.transferId) ?? null
         : null;
-    const resolvingTransferWasNearBottom = resolvingInboundTransfer ? isNearBottom() : false;
+    const resolvingTransferWasNearBottom = resolvingInboundTransfer ? (pinnedToBottom || isNearBottom()) : false;
 
     const div = document.createElement("div");
     div.className = `wl-msg wl-msg--${msg.direction}`;
@@ -4829,21 +4864,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       opts.chatMessages.appendChild(div);
     }
 
-    // Self → always snap to bottom (deferred so layout includes the new node)
-    // System/Peer → smooth-scroll if already near bottom
+    // Self → sending is following: repin and snap (deferred so layout
+    // includes the new node). System/Peer → smooth-follow while pinned.
     if (msg.direction === "self") {
-      requestAnimationFrame(() => {
-        opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
-      });
+      pinnedToBottom = true;
+      requestAnimationFrame(() => anchorToBottom("instant"));
     } else if (msg.direction === "system") {
       smartScroll();
     } else if (
       (replacePeerPreview && replacePreviewWasNearBottom)
       || (resolvingInboundTransfer && resolvingTransferWasNearBottom)
     ) {
-      requestAnimationFrame(() => {
-        opts.chatMessages.scrollTo({ top: opts.chatMessages.scrollHeight, behavior: "instant" });
-      });
+      requestAnimationFrame(() => anchorToBottom("instant"));
     } else if (msg.direction === "peer") {
       smartScroll();
     }

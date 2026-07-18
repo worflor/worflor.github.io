@@ -82,6 +82,10 @@ export interface ReactionComposer {
   field: HTMLElement;
   reset: () => void;
   open: () => void;
+  /** commit whatever glyph is currently typed, exactly as enter would.
+   *  exposed so hosts can add an explicit confirm affordance (touch
+   *  keyboards make enter an awkward ask). */
+  commit: () => void;
 }
 
 export interface CreateReactionComposerOptions {
@@ -200,7 +204,7 @@ export function createReactionComposer({
   field.append(preview, input);
   wrap.append(button, field);
 
-  return { element: wrap, button, field, reset, open };
+  return { element: wrap, button, field, reset, open, commit };
 }
 
 export function q(root: ParentNode, id: string): HTMLElement | null {

@@ -3442,8 +3442,10 @@ const seo = {
     :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-panel) {
       display: flex;
       flex-direction: column;
-      /* max, not fixed: a young conversation keeps the panel snug and it
-         grows with the messages until it fills the stage, then scrolls. */
+      /* half-set floor, max ceiling: a young conversation opens the panel at
+         half the stage and it grows with the messages until it fills it,
+         then scrolls. */
+      min-height: min(39vh, 27rem);
       max-height: min(78vh, 54rem);
     }
 
@@ -3539,6 +3541,7 @@ const seo = {
     /* tablet: generous ceiling like mobile, but horizontal margins
        and the page header stay put; chrome is not dimmed here. */
     :global(:root.wl-stage .whisper-page[data-mode="live"] .wl-chat-panel) {
+      min-height: min(44vh, 30rem);
       max-height: min(88vh, 60rem);
     }
   }
