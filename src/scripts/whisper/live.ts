@@ -2714,6 +2714,47 @@ export class WhisperLiveSession {
     } catch { /* stats unavailable */ }
   }
 
+  /** On-demand snapshot of the live path (direct vs relayed) and RTT, for UI surfaces
+   *  like the e2e badge tooltip. Independent of the periodic heartbeat stats above —
+   *  callers poll this at their own cadence. Never throws; returns nulls when the
+   *  connection or its stats are unavailable. */
+  async getConnectionStats(): Promise<{ path: "direct" | "relayed" | null; rttMs: number | null }> {
+    if (!this.pc) return { path: null, rttMs: null };
+    try {
+      const stats = await this.pc.getStats();
+      let pair: any = null;
+
+      // preferred: the transport's selected pair, resolved through selectedCandidatePairId
+      for (const report of stats.values()) {
+        if (report.type === "transport" && report.selectedCandidatePairId) {
+          const selected = stats.get(report.selectedCandidatePairId);
+          if (selected && selected.type === "candidate-pair") { pair = selected; break; }
+        }
+      }
+      // fallback: a candidate-pair that succeeded and was nominated
+      if (!pair) {
+        for (const report of stats.values()) {
+          if (report.type === "candidate-pair" && report.state === "succeeded" && report.nominated) {
+            pair = report;
+            break;
+          }
+        }
+      }
+      if (!pair) return { path: null, rttMs: null };
+
+      const rttMs = pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null;
+
+      const localCand = pair.localCandidateId ? stats.get(pair.localCandidateId) : null;
+      const remoteCand = pair.remoteCandidateId ? stats.get(pair.remoteCandidateId) : null;
+      const isRelay = localCand?.candidateType === "relay" || remoteCand?.candidateType === "relay";
+      const path: "direct" | "relayed" = isRelay ? "relayed" : "direct";
+
+      return { path, rttMs };
+    } catch {
+      return { path: null, rttMs: null };
+    }
+  }
+
   /* ── Cleanup ─────────────────────────────────────────────── */
 
   private cleanupConnection(): void {

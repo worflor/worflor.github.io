@@ -307,6 +307,28 @@ const seo = {
                                 urlParams.has("embed") ? "embed" :
                                 urlParams.has("extract") ? "extract" :
                                 urlParams.has("seal") ? "seal" : null;
+
+                // QR flare handoff: #wl:<base64url(phrase)> forces live mode,
+                // same mechanism as ?live above. the phrase can't ride in
+                // location.search (there isn't one) or survive past the
+                // replaceState below (which strips the fragment too), so it
+                // hands off through sessionStorage instead — read once, as a
+                // one-shot, near the end of live-ui.ts's init.
+                var wlHash = location.hash;
+                if (wlHash.indexOf("#wl:") === 0) {
+                  paramMode = "live";
+                  try {
+                    var wlB64 = wlHash.slice(4).replace(/-/g, "+").replace(/_/g, "/");
+                    var wlBin = atob(wlB64);
+                    var wlBytes = new Uint8Array(wlBin.length);
+                    for (var wi = 0; wi < wlBin.length; wi++) wlBytes[wi] = wlBin.charCodeAt(wi);
+                    var wlPhrase = new TextDecoder().decode(wlBytes).trim();
+                    if (wlPhrase) sessionStorage.setItem("wl-qr-phrase", wlPhrase);
+                  } catch (e) {
+                    // undecodable fragment: still fall back to opening live mode
+                  }
+                }
+
                 if (paramMode) {
                   sessionStorage.setItem("whisper-mode", paramMode);
                   history.replaceState({}, "", location.pathname);
@@ -792,7 +814,9 @@ const seo = {
                 aria-label="end-to-end encrypted, peer-to-peer"
                 ><span class="wl-e2e-dot" aria-hidden="true"></span>p2p·e2e<span
                   class="wl-e2e-tip"
-                  role="tooltip">sealed end-to-end with a Kizuna bond</span
+                  role="tooltip">sealed end-to-end with a Kizuna bond<span
+                    class="wl-e2e-tip-stats"
+                    aria-hidden="true"></span></span
                 ></span
               >
             </h2>
@@ -2777,6 +2801,20 @@ const seo = {
     }
   }
 
+  /* live connection stats line, second row of the tooltip — empty until polled */
+  .wl-e2e-tip-stats {
+    display: block;
+    margin-top: calc(var(--space-xs) * 0.3);
+    font-family: var(--whisper-font-mono);
+    font-size: var(--whisper-text-hairline);
+    letter-spacing: 0.02em;
+    color: rgb(var(--color-text-rgb) / 0.5);
+  }
+
+  .wl-e2e-tip-stats:empty {
+    display: none;
+  }
+
   .wl-e2e-dot {
     width: 0.3em;
     height: 0.3em;
@@ -2794,6 +2832,13 @@ const seo = {
   .whisper-op-live.wl-connected .wl-e2e-dot {
     background: rgb(var(--chromatic-cyan));
     box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.45);
+  }
+
+  /* relayed path (TURN fallback) — tint the dot toward the same violet used for
+     other "external assist" affordances, in place of the direct-path cyan */
+  .whisper-op-live.wl-connected .wl-e2e-badge[data-path="relayed"] .wl-e2e-dot {
+    background: rgb(var(--tool-action-load));
+    box-shadow: 0 0 6px rgb(var(--tool-action-load) / 0.45);
   }
 
   .whisper-op-live.wl-preview .wl-e2e-badge {

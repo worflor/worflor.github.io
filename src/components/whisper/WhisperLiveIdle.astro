@@ -28,6 +28,31 @@
         >
       </div>
     </label>
+    <div class="wl-live-qr-toggle-row">
+      <button
+        id="wl-relay-qr-toggle"
+        type="button"
+        class="whisper-mini-btn"
+        aria-expanded="false">Show QR</button
+      >
+      <span
+        id="wl-relay-qr-ember"
+        class="wl-flare-ember wl-relay-qr-ember"
+        aria-hidden="true"
+        style="display:none"
+      ></span>
+    </div>
+    <div id="wl-relay-qr-panel" class="wl-live-qr-wrap" style="display:none">
+      <canvas
+        id="wl-relay-qr-canvas"
+        class="ws-seal-qr-canvas"
+        data-qr-size="132"
+        aria-label="QR code that connects a scanning peer using this phrase"
+      ></canvas>
+      <p id="wl-relay-qr-status" class="ws-seal-hint wl-live-qr-status">
+        they scan, you connect.
+      </p>
+    </div>
     <p class="wl-relay-hint">
       the relay that matches you is blind. it never sees your messages.
     </p>
@@ -299,6 +324,13 @@
     font-size: var(--whisper-text-meta);
     color: rgb(var(--color-text-rgb) / 0.42);
     line-height: 1.4;
+  }
+
+  /* QR flare handoff toggle — the ember reuses the Signal Flare pulse
+     animation defined below (Signal Flare panel section) to mean the same
+     thing here: a background rendezvous is quietly waiting for a peer. */
+  .wl-relay-qr-ember {
+    margin-left: calc(var(--space-xs) * 0.5);
   }
 
   /* ── Mode switch link ──────────────────────────────────── */

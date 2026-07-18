@@ -174,6 +174,13 @@ export interface WhisperLiveUIOptions {
   relayAssistToggle?: HTMLInputElement;
   relayConnectBtn?: HTMLButtonElement;
 
+  /* Relay QR flare handoff (optional — resolver won't block if missing) */
+  relayQrToggleBtn?: HTMLButtonElement;
+  relayQrPanel?: HTMLElement;
+  relayQrCanvas?: HTMLCanvasElement;
+  relayQrStatus?: HTMLElement;
+  relayQrEmber?: HTMLElement;
+
   /** TURN pool for bond-seeded relay selection. Passed through to WhisperLiveSession. */
   turnPool?: RTCIceServer[];
 }
@@ -262,6 +269,11 @@ const WHISPER_LIVE_IDS = {
   errorRetryBtn: "wl-error-retry",
   relayAssistToggle: "wl-relay-assist",
   relayConnectBtn: "wl-relay-connect",
+  relayQrToggleBtn: "wl-relay-qr-toggle",
+  relayQrPanel: "wl-relay-qr-panel",
+  relayQrCanvas: "wl-relay-qr-canvas",
+  relayQrStatus: "wl-relay-qr-status",
+  relayQrEmber: "wl-relay-qr-ember",
 } as const;
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -355,6 +367,22 @@ function extractLiveCodeCandidate(raw: string, expectedKind?: LiveQrKind): strin
   const fallback = text.match(/[A-Za-z0-9_-]{48,}/);
   if (!fallback) return null;
   return fallback[0];
+}
+
+/* ── QR flare handoff ────────────────────────────────────────
+ * fragment format: #wl:<base64url(phrase)>. the phrase rides in the URL
+ * fragment (never sent to a server, never touches the relay) so scanning
+ * the QR both forces live mode and hands over the shared phrase in one
+ * shot — see whisper.astro's deep-link script for the decode side. */
+function base64UrlEncode(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function buildWlFlareUrl(phrase: string): string {
+  return `${window.location.origin}${window.location.pathname}#wl:${base64UrlEncode(phrase)}`;
 }
 
 /* ── Preview seed ────────────────────────────────────────── */
@@ -453,10 +481,22 @@ export function resolveWhisperLiveUIOptions(root: ParentNode = document): Whispe
   const relayAssistToggle = inp(I.relayAssistToggle);
   const relayConnectBtn = btn(I.relayConnectBtn);
 
+  // Relay QR flare handoff elements — optional
+  const relayQrToggleBtn = btn(I.relayQrToggleBtn);
+  const relayQrPanel = el(I.relayQrPanel);
+  const relayQrCanvas = root.querySelector<HTMLCanvasElement>(`#${I.relayQrCanvas}`);
+  const relayQrStatus = el(I.relayQrStatus);
+  const relayQrEmber = el(I.relayQrEmber);
+
   return {
     ...r,
     ...(relayAssistToggle ? { relayAssistToggle } : {}),
     ...(relayConnectBtn ? { relayConnectBtn } : {}),
+    ...(relayQrToggleBtn ? { relayQrToggleBtn } : {}),
+    ...(relayQrPanel ? { relayQrPanel } : {}),
+    ...(relayQrCanvas ? { relayQrCanvas } : {}),
+    ...(relayQrStatus ? { relayQrStatus } : {}),
+    ...(relayQrEmber ? { relayQrEmber } : {}),
   } as WhisperLiveUIOptions;
 }
 
@@ -477,6 +517,41 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const liveSurface = document.getElementById("wl-section");
   let session: WhisperLiveSession | null = null;
   let relayHandle: TrackerRelayHandle | null = null;
+
+  // ── E2E badge live connection stats (path + rtt), polled only while connected ──
+  const e2eStatsEl = liveSurface?.querySelector<HTMLElement>(".wl-e2e-tip-stats") ?? null;
+  const e2eBadgeEl = liveSurface?.querySelector<HTMLElement>(".wl-e2e-badge") ?? null;
+  let e2eStatsTimer: ReturnType<typeof setInterval> | null = null;
+
+  function stopE2eStatsPoll(): void {
+    if (e2eStatsTimer) { clearInterval(e2eStatsTimer); e2eStatsTimer = null; }
+    if (e2eStatsEl) e2eStatsEl.textContent = "";
+    if (e2eBadgeEl) delete e2eBadgeEl.dataset.path;
+  }
+  signal.addEventListener("abort", stopE2eStatsPoll, { once: true });
+
+  async function pollE2eStats(): Promise<void> {
+    const activeSession = session;
+    if (!activeSession || !e2eStatsEl) return;
+    const stats = await activeSession.getConnectionStats();
+    // session torn down or state moved on while the stats promise was in flight
+    if (session !== activeSession || currentLiveState !== "live") return;
+    if (!stats.path) {
+      e2eStatsEl.textContent = "";
+      if (e2eBadgeEl) delete e2eBadgeEl.dataset.path;
+      return;
+    }
+    const rttPart = stats.rttMs != null ? `${stats.rttMs}ms` : "--";
+    e2eStatsEl.textContent = `${stats.path} · ${rttPart}`;
+    if (e2eBadgeEl) e2eBadgeEl.dataset.path = stats.path;
+  }
+
+  function startE2eStatsPoll(): void {
+    stopE2eStatsPoll();
+    if (!session || !e2eStatsEl) return; // preview mode (no session) never shows stats
+    void pollE2eStats();
+    e2eStatsTimer = setInterval(() => { void pollE2eStats(); }, 5000);
+  }
   const objectUrls = new Set<string>();
   let busy = false;
 
@@ -2145,7 +2220,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     if (opts.relayConnectBtn) {
-      opts.relayConnectBtn.disabled = busy || flareActive;
+      opts.relayConnectBtn.disabled = busy || flareActive || qrArmActive;
+    }
+
+    if (opts.relayQrToggleBtn) {
+      // stays clickable while qrArmActive so the armed wait can be closed;
+      // only blocked by a concurrent *manual* connect (busy, not qr-driven).
+      opts.relayQrToggleBtn.disabled = busy && !qrArmActive;
     }
 
     if (flareFireBtn) {
@@ -3804,6 +3885,67 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   const transferCards = new Map<number, TransferCardState>();
 
+  /** True if any card (either direction) hasn't settled yet — delivered/cancelled cards
+   *  are pruned from transferCards as soon as they resolve, so this is just a scan over
+   *  whatever's left in flight, never more than a couple of entries in practice. Backs
+   *  the beforeunload guard and the screen wake lock. */
+  function hasActiveTransfers(): boolean {
+    for (const state of transferCards.values()) {
+      if (!state.settled) return true;
+    }
+    return false;
+  }
+
+  /* ── Screen wake lock ── keep the display on for the duration of a chunked
+   * transfer so a phone screen timeout doesn't stall an in-progress send/receive.
+   * Feature-detected (Firefox has no navigator.wakeLock); acquisition failures
+   * (e.g. NotAllowedError when the tab isn't visible) are silent no-ops — the
+   * transfer still runs, we just can't guarantee the screen stays lit for it.
+   */
+  let wakeLockSentinel: WakeLockSentinel | null = null;
+
+  async function acquireTransferWakeLock(): Promise<void> {
+    if (wakeLockSentinel || !("wakeLock" in navigator)) return;
+    try {
+      const sentinel = await navigator.wakeLock.request("screen");
+      wakeLockSentinel = sentinel;
+      sentinel.addEventListener("release", () => {
+        if (wakeLockSentinel === sentinel) wakeLockSentinel = null;
+      }, { signal });
+    } catch {
+      wakeLockSentinel = null;
+    }
+  }
+
+  function releaseTransferWakeLock(): void {
+    const sentinel = wakeLockSentinel;
+    if (!sentinel) return;
+    wakeLockSentinel = null; // clear first — guards re-entrant release from the "release" listener above
+    sentinel.release().catch(() => {});
+  }
+
+  /** Called after any card settles (delivered/cancelled/replaced) — drops the lock
+   *  once nothing's left in flight. */
+  function maybeReleaseTransferWakeLock(): void {
+    if (!hasActiveTransfers()) releaseTransferWakeLock();
+  }
+
+  // Wake locks auto-release when the tab is hidden — reclaim it on return if a
+  // transfer is still going.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !wakeLockSentinel && hasActiveTransfers()) {
+      void acquireTransferWakeLock();
+    }
+  }, { signal });
+
+  // Warn before leaving mid-transfer — standard cross-browser confirm pattern, browsers
+  // render their own generic text so the returnValue string itself is ignored.
+  window.addEventListener("beforeunload", (e) => {
+    if (!hasActiveTransfers()) return;
+    e.preventDefault();
+    e.returnValue = "";
+  }, { signal });
+
   function formatTransferBytes(current: number, total: number): string {
     return `${formatSize(current)} / ${formatSize(total)}`;
   }
@@ -3868,6 +4010,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       fileName, totalBytes, settled: false, bytesSent: 0,
     };
     transferCards.set(transferId, state);
+    void acquireTransferWakeLock();
     return state;
   }
 
@@ -3894,6 +4037,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     state.cardEl.dataset.transferState = "cancelled";
     state.bytesEl.textContent = "transfer cancelled";
     transferCards.delete(transferId);
+    maybeReleaseTransferWakeLock();
   }
 
   /** Re-attach live progress chrome to the settled self-file card that just replaced
@@ -3939,6 +4083,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     badge.textContent = "delivered";
     state.cardEl.appendChild(badge);
     transferCards.delete(transferId);
+    maybeReleaseTransferWakeLock();
   }
 
   function addChatMessage(msg: LiveMessage): void {
@@ -4412,6 +4557,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       opts.chatMessages.replaceChild(div, resolvingInboundTransfer.wrapEl);
       resolvingInboundTransfer.settled = true;
       transferCards.delete(resolvingInboundTransfer.transferId);
+      maybeReleaseTransferWakeLock();
     } else if (resolvingOutboundTransfer && resolvingOutboundTransfer.wrapEl.parentElement === opts.chatMessages) {
       opts.chatMessages.replaceChild(div, resolvingOutboundTransfer.wrapEl);
       const newFileCard = div.querySelector<HTMLElement>(".wl-msg-file");
@@ -5243,9 +5389,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatInput.focus();
         opts.fpChip.classList.remove("wl-fp-chip--recovering");
         opts.fpChip.classList.add("wl-fp-chip--verified");
+        startE2eStatsPoll();
         break;
 
       case "silent": {
+        stopE2eStatsPoll();
         enterPhase(opts.silentSection, "shared secret ready for Whisper password mode", false, false);
         const secret = session?.getSharedSecret();
         if (secret) opts.silentSecret.textContent = secret;
@@ -5253,6 +5401,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
 
       case "recovering":
+        stopE2eStatsPoll();
         showPhase(opts.chatSection);
         liveSurface?.classList.add("wl-recovering");
         updateStatus("");
@@ -5268,6 +5417,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         break;
 
       case "disconnected": {
+        stopE2eStatsPoll();
         if (relayHandle) {
           relayHandle.destroy();
           relayHandle = null;
@@ -5285,6 +5435,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
 
       case "error":
+        stopE2eStatsPoll();
         if (relayHandle) {
           relayHandle.destroy();
           relayHandle = null;
@@ -5341,6 +5492,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     closeReactionShelf();
     msgById.clear();
     transferCards.clear();
+    // the map was cleared without settling cards, so the wake lock must drop here
+    releaseTransferWakeLock();
     revokeObjectUrls();
     clearNode(opts.chatMessages);
     if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
@@ -5396,6 +5549,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     delete opts.funnelCampfireBtn.dataset.voteState;
     setOfferQrExpanded(false);
     setAnswerQrExpanded(false);
+    setRelayQrExpanded(false);
     resetFpChip();
     showPhase(opts.liveSection);
     if (opts.relayAssistToggle) applyModeSwitch(currentIdleMode);
@@ -5424,6 +5578,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let relayActive = false;
   /** Set when the last error came from relay flow — error retry preserves phrase. */
   let lastErrorWasRelay = false;
+
+  /** True while a QR-armed silent relay wait (handleRelayConnect's `silent`
+   *  mode, see below) is racing in the background. Blocks a concurrent
+   *  manual Connect click on the shared relayAbort/relayActive pair. */
+  let qrArmActive = false;
+  /** Phrase the relay QR panel last rendered/armed for — lets refreshRelayQr()
+   *  skip a redundant re-render+re-arm when the phrase hasn't changed. */
+  let qrArmedPhrase = "";
+  let relayQrDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   /* ── Signal Flare ────────────────────────────────────────── */
 
@@ -5486,6 +5649,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     currentIdleMode = mode;
     const cfg = IDLE_MODE_CONFIG[mode];
 
+    // Leaving the relay panel also leaves any QR-armed wait behind it
+    if (mode !== "relay") setRelayQrExpanded(false);
+
     // Panel visibility
     relayPanel.style.display = mode === "relay" ? "" : "none";
     if (flarePanel) flarePanel.style.display = mode === "flare" ? "" : "none";
@@ -5533,7 +5699,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return raw;
   }
 
-  async function handleRelayConnect(auto = false): Promise<void> {
+  async function handleRelayConnect(auto = false, relayOpts: { silent?: boolean } = {}): Promise<void> {
     if (!passGate(auto)) return;
     const phrase = opts.phraseInput.value.trim();
     if (!phrase) {
@@ -5544,15 +5710,23 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       return;
     }
 
-    setBusy(true);
+    const silent = relayOpts.silent ?? false;
+
+    if (!silent) setBusy(true);
     relayActive = true;
     relayAbort = new AbortController();
     const relaySignal = relayAbort.signal;
 
-    showPhase(opts.connectingSection);
-    opts.connectingStatus.textContent = "preparing...";
-    updateStatus("connecting...");
-    setLogActive(true);
+    if (silent) {
+      // QR-armed wait: stay on the relay panel with the QR showing — no
+      // phase switch, just the ember pulse (setRelayQrWaiting, below).
+      setRelayQrWaiting(true);
+    } else {
+      showPhase(opts.connectingSection);
+      opts.connectingStatus.textContent = "preparing...";
+      updateStatus("connecting...");
+      setLogActive(true);
+    }
 
     opts.externalAssistToggle.checked = true;
     try {
@@ -5561,7 +5735,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const callbacks = {
         onStatus: (msg: string) => {
           if (aborted()) return;
-          opts.connectingStatus.textContent = msg;
+          if (!silent) opts.connectingStatus.textContent = msg;
           updateStatus(msg);
         },
         onLog: (msg: string) => {
@@ -5582,6 +5756,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (aborted() || !session) return;
 
       relayActive = false;
+      if (silent) {
+        // a peer showed up — leave the silent wait and join the normal
+        // connecting/verify/chat flow like a manual connect would.
+        qrArmActive = false;
+        setRelayQrWaiting(false);
+        setBusy(true);
+        showPhase(opts.connectingSection);
+        opts.connectingStatus.textContent = "connecting directly...";
+        updateStatus("connecting...");
+        setLogActive(true);
+      }
       attachRelayHandle(result.relay);
 
       if (result.role === "offerer" && result.peerAnswerCode) {
@@ -5594,14 +5779,111 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
     } catch (err) {
       relayActive = false;
+      if (silent) { qrArmActive = false; setRelayQrWaiting(false); }
       if (aborted()) return;
       destroyCurrentSession();
       const raw = errMsg(err);
+      if (raw === "Aborted") return;
       appendLog(`relay error: ${raw}`);
       lastErrorWasRelay = true;
       handleStateChange("error", friendlyRelayError(raw));
     } finally {
       relayAbort = null;
+    }
+  }
+
+  /* ── QR flare handoff ──────────────────────────────────────
+   * Shows a QR of #wl:<base64url(phrase)> next to the relay phrase field.
+   * Scanning it opens live mode on that phrase and auto-fires a relay
+   * connect (see whisper.astro's fragment handoff + the sessionStorage
+   * consume block near the end of this file's init).
+   *
+   * On the shower's side this deliberately arms relay's plain
+   * "simultaneous" race, not Signal Flare's listener mode. Flare's wait
+   * (handleFlareConnect, below) ends in an onPeerArrived confirmation step
+   * gated on the Accept/Ignore buttons that live inside the hidden flare
+   * panel. Reusing flare's wait half without also reusing its confirmation
+   * half would mean either duplicating flare's arrived-state UI here or
+   * silently auto-accepting — quietly changing Signal Flare's opt-in
+   * security semantics everywhere flare is used. Relay's simultaneous mode
+   * already has no confirmation gate; that no-confirmation race IS "QR
+   * auto-connects the scanner", so the toggle just arms handleRelayConnect
+   * in `silent` mode: same underlying race, no phase switch while waiting.
+   */
+
+  function setRelayQrWaiting(waiting: boolean): void {
+    if (opts.relayQrEmber) opts.relayQrEmber.style.display = waiting ? "" : "none";
+  }
+
+  function extinguishQrArm(): void {
+    const wasActive = qrArmActive;
+    qrArmActive = false;
+    qrArmedPhrase = "";
+    setRelayQrWaiting(false);
+    if (wasActive && relayAbort) {
+      relayActive = false;
+      relayAbort.abort();
+      relayAbort = null;
+    }
+  }
+
+  const relayQrState = { value: false };
+
+  /** renderQrToCanvas swaps in a saveable <img> and hides the canvas — undo
+   *  that so a cleared phrase doesn't leave a stale QR visible above the
+   *  "type a phrase first" hint. */
+  function clearRelayQrVisual(): void {
+    const canvas = opts.relayQrCanvas;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.style.display = "";
+    const img = document.getElementById(`${canvas.id}--img`);
+    if (img instanceof HTMLImageElement) img.style.display = "none";
+  }
+
+  function refreshRelayQr(): void {
+    if (!relayQrState.value || !opts.relayQrPanel) return;
+    const phrase = opts.phraseInput.value.trim();
+    if (!phrase) {
+      extinguishQrArm();
+      clearRelayQrVisual();
+      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "type a phrase first, then show qr.";
+      return;
+    }
+    if (phrase === qrArmedPhrase && qrArmActive) return;
+
+    extinguishQrArm();
+    if (opts.relayQrCanvas) {
+      try {
+        renderQrToCanvas(opts.relayQrCanvas, buildWlFlareUrl(phrase));
+        if (opts.relayQrStatus) opts.relayQrStatus.textContent = "they scan, you connect.";
+      } catch {
+        if (opts.relayQrStatus) opts.relayQrStatus.textContent = "QR preview unavailable in this browser.";
+      }
+    }
+
+    qrArmActive = true;
+    qrArmedPhrase = phrase;
+    void handleRelayConnect(false, { silent: true });
+  }
+
+  function scheduleRelayQrRefresh(): void {
+    if (!relayQrState.value) return;
+    if (relayQrDebounceTimer) clearTimeout(relayQrDebounceTimer);
+    relayQrDebounceTimer = setTimeout(() => {
+      relayQrDebounceTimer = null;
+      refreshRelayQr();
+    }, 500);
+  }
+
+  function setRelayQrExpanded(expanded: boolean): void {
+    if (!opts.relayQrPanel || !opts.relayQrToggleBtn) return;
+    setQrExpanded(expanded, opts.relayQrPanel, opts.relayQrToggleBtn, relayQrState);
+    if (expanded) {
+      refreshRelayQr();
+    } else {
+      extinguishQrArm();
     }
   }
 
@@ -5834,10 +6116,27 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   opts.phraseInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && opts.relayAssistToggle?.checked && !busy) {
+    if (e.key === "Enter" && opts.relayAssistToggle?.checked && !busy && !qrArmActive) {
       e.preventDefault();
       void handleRelayConnect();
     }
+  }, { signal });
+
+  // ── QR flare handoff event listeners ──
+
+  if (opts.relayQrToggleBtn) {
+    opts.relayQrToggleBtn.addEventListener("click", () => {
+      setRelayQrExpanded(!relayQrState.value);
+    }, { signal });
+  }
+
+  // editing the phrase extinguishes the armed wait immediately; a short
+  // debounce then re-renders + re-arms for the new phrase, so the QR stays
+  // live without hammering the relay tracker on every keystroke.
+  opts.phraseInput.addEventListener("input", () => {
+    if (!relayQrState.value) return;
+    extinguishQrArm();
+    scheduleRelayQrRefresh();
   }, { signal });
 
   // ── Flare event listeners ──
@@ -7296,6 +7595,27 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     setTimeout(() => { if (!aborted()) void handleFlareConnect(true); }, 100);
   }
 
+  // QR flare handoff: whisper.astro's deep-link script decodes any
+  // #wl:<base64url(phrase)> fragment, forces live mode, and hands the
+  // phrase off here through sessionStorage (the fragment is stripped
+  // before this module even starts loading, so it can't be read directly).
+  // One-shot — removed immediately so a later funnel switch or view-
+  // transition re-init never re-fires it. Harmless if empty/undecodable:
+  // that just leaves the phrase input blank and live mode already open.
+  const qrHandoffPhrase = sessionStorage.getItem("wl-qr-phrase");
+  if (qrHandoffPhrase !== null) {
+    sessionStorage.removeItem("wl-qr-phrase");
+    const handoffPhrase = qrHandoffPhrase.trim();
+    if (handoffPhrase && !session) {
+      opts.phraseInput.value = handoffPhrase;
+      if (opts.relayAssistToggle) {
+        opts.relayAssistToggle.checked = true;
+        applyModeSwitch("relay");
+      }
+      setTimeout(() => { if (!aborted() && !session) void handleRelayConnect(true); }, 100);
+    }
+  }
+
   void getQrScannerCapability().then((capability) => {
     if (aborted()) return;
     liveQrSupported = capability.supported;
@@ -7307,6 +7627,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   showPhase(opts.liveSection);
   setOfferQrExpanded(false);
   setAnswerQrExpanded(false);
+  setRelayQrExpanded(false);
   updateControls();
 
   // Close any open reaction shelf when clicking outside the chat messages area
@@ -7328,6 +7649,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       relayAbort = null;
     }
     extinguishFlare();
+    extinguishQrArm();
+    if (relayQrDebounceTimer) { clearTimeout(relayQrDebounceTimer); relayQrDebounceTimer = null; }
     stopJoinQrScan("teardown");
     if (session) {
       session.disconnect();
@@ -7350,5 +7673,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     clearVote.destroy();
     campfireVote.destroy();
     revokeObjectUrls();
+    releaseTransferWakeLock();
   };
 }
