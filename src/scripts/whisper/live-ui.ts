@@ -6297,7 +6297,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (opts.relayQrCanvas) {
       try {
         renderQrToCanvas(opts.relayQrCanvas, buildWlFlareUrl(phrase));
-        if (opts.relayQrStatus) opts.relayQrStatus.textContent = "they scan, you connect.";
+        if (opts.relayQrStatus) opts.relayQrStatus.textContent = "scan and connect.";
       } catch {
         if (opts.relayQrStatus) opts.relayQrStatus.textContent = "QR preview unavailable in this browser.";
       }

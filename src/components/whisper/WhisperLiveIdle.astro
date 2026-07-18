@@ -70,7 +70,7 @@
             ></canvas>
           </div>
           <p class="wl-relay-qr-waiting">
-            <span id="wl-relay-qr-status">they scan, you connect.</span>
+            <span id="wl-relay-qr-status">scan and connect.</span>
             <span
               id="wl-relay-qr-ember"
               class="wl-relay-qr-ember"
@@ -375,7 +375,12 @@
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
     border-left-color: rgb(var(--color-text-rgb) / 0.1);
-    /* default speaks the same cyan as connect: one action, two doors */
+  }
+
+  /* default speaks the same cyan as connect: one action, two doors.
+     only while actually clickable — a disabled door must not glow like
+     an open one (it enables once a phrase is typed, same as connect). */
+  .wl-relay-qr-toggle:not(:disabled) {
     color: rgb(var(--chromatic-cyan) / 0.7);
     border-top-color: rgb(var(--chromatic-cyan) / 0.24);
     border-right-color: rgb(var(--chromatic-cyan) / 0.24);
