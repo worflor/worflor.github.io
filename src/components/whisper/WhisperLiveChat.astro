@@ -1134,6 +1134,18 @@
     display: none;
   }
 
+  /* healed: the interruption reconnected. the label empties and the two line
+     halves join into one continuous, quiet hairline — a settled scar, not a
+     status. compresses its own vertical space so a run of blips reads as a
+     few faint lines, never a stack of words. */
+  :global(.wl-chat-messages) :global(.wl-msg--seam-healed) {
+    gap: 0;
+    margin: 0.14rem 0;
+  }
+  :global(.wl-chat-messages) :global(.wl-msg--seam-healed .wl-msg-system) {
+    display: none;
+  }
+
   /* while recovery is actually running, the scar is alive: a faint amber
      current travels the hairline. once the surface leaves wl-recovering
      the seam settles to plain grey. */
@@ -1782,6 +1794,62 @@
     user-select: none;
   }
 
+  /* presence row: the reactions already on the message, sitting between the
+     picks and the caption. hidden entirely when empty (so it never pads a
+     fresh message and the shelf geometry stays honest); a hairline above
+     separates it from the pick row when it fills. instant, not animated, so
+     the once-at-open geometry measurement includes its true height. */
+  :global(.wl-chat-messages) :global(.wl-shelf-reactions) {
+    display: none;
+    flex-wrap: wrap;
+    gap: 0.2rem;
+    margin: 0.14rem 0 0.02rem;
+    padding-top: 0.22rem;
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.08);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-shelf--has-reactions .wl-shelf-reactions) {
+    display: flex;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-shelf-react-chip) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.18em;
+    font-size: 0.82rem;
+    line-height: 1;
+    padding: 0.1rem 0.3rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.12);
+    background: rgb(var(--color-text-rgb) / 0.04);
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+  }
+  :global(.wl-chat-messages) :global(.wl-shelf-react-chip:active) { transform: scale(0.9); }
+
+  :global(.wl-chat-messages) :global(.wl-shelf-react-chip--self) {
+    border-color: rgb(var(--chromatic-cyan) / 0.35);
+    background: rgb(var(--chromatic-cyan) / 0.09);
+  }
+  :global(.wl-chat-messages) :global(.wl-shelf-react-chip--peer) {
+    border-color: rgb(var(--pride-purple) / 0.3);
+    background: rgb(var(--pride-purple) / 0.07);
+  }
+  :global(.wl-chat-messages) :global(.wl-shelf-react-chip--self.wl-shelf-react-chip--peer) {
+    border-color: rgb(var(--chromatic-cyan) / 0.4);
+    background: linear-gradient(90deg, rgb(var(--chromatic-cyan) / 0.1), rgb(var(--pride-purple) / 0.08));
+  }
+
+  :global(.wl-chat-messages) :global(.wl-shelf-react-n) {
+    font-family: var(--whisper-font-mono, monospace);
+    font-size: 0.62rem;
+    font-variant-numeric: tabular-nums;
+    color: rgb(var(--color-text-rgb) / 0.6);
+  }
+  :global(.wl-chat-messages) :global(.wl-shelf-react-chip--self .wl-shelf-react-n) {
+    color: rgb(var(--chromatic-cyan) / 0.85);
+  }
+
   /* ── Reaction pills (placed below message after reacting) ── */
   :global(.wl-chat-messages) :global(.wl-msg-reactions) {
     display: flex;
@@ -1791,6 +1859,9 @@
   }
 
   :global(.wl-chat-messages) :global(.wl-reaction) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.22em;
     font-size: var(--text-sm);
     padding: 0.07rem 0.32rem;
     border-radius: 9999px;
@@ -1802,6 +1873,32 @@
       border-color 120ms ease,
       transform 80ms ease;
     line-height: 1.4;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-reaction-glyph) {
+    line-height: 1;
+  }
+
+  /* the tally: a hairline-divided count that only exists once more than one
+     person has reacted. mono so the digit sits like a small readout, not a
+     chat character. */
+  :global(.wl-chat-messages) :global(.wl-reaction-count) {
+    display: none;
+    font-family: var(--whisper-font-mono, monospace);
+    font-size: 0.72em;
+    font-variant-numeric: tabular-nums;
+    color: rgb(var(--color-text-rgb) / 0.6);
+    padding-left: 0.22em;
+    border-left: 1px solid rgb(var(--color-text-rgb) / 0.18);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-reaction--multi .wl-reaction-count) {
+    display: inline;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-reaction--self .wl-reaction-count) {
+    color: rgb(var(--chromatic-cyan) / 0.85);
+    border-left-color: rgb(var(--chromatic-cyan) / 0.3);
   }
 
   :global(.wl-chat-messages) :global(.wl-reaction:hover) {

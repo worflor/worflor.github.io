@@ -1041,6 +1041,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   composerA11yObserver.observe(reactionShelf, { attributes: true, attributeFilter: ["data-glyph-open"] });
   signal.addEventListener("abort", () => composerA11yObserver.disconnect(), { once: true });
 
+  // presence row — the reactions already on this message, shown between the
+  // pick row and the status caption. reads left to right as "who is already
+  // here", each glyph tinted by whether it is yours; tapping one toggles it.
+  // empty (and zero-height) until a message with reactions opens the shelf.
+  const shelfReactions = document.createElement("div");
+  shelfReactions.className = "wl-shelf-reactions";
+  reactionShelf.appendChild(shelfReactions);
+
   // slim status caption — always present while the shelf is open, part of
   // the geometry measured once at open time. Never appears/disappears on
   // its own; see updateShelfCaption().
@@ -1477,6 +1485,42 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     shelfCaption.textContent = formatShelfCaption(shelfTarget);
   }
 
+  // mirror the target message's reactions into the shelf's presence row: one
+  // compact chip per emoji, tinted for who reacted, a count when more than
+  // one. tapping toggles yours — the same gesture as the pills below, but
+  // reachable without dismissing the shelf.
+  function updateShelfReactions(): void {
+    shelfReactions.replaceChildren();
+    if (!shelfTarget) return;
+    const pills = shelfTarget.msgEl.querySelectorAll<HTMLElement>(".wl-msg-reactions .wl-reaction");
+    for (const src of pills) {
+      const emoji = src.dataset.emoji ?? "";
+      if (!emoji) continue;
+      const hasSelf = src.dataset.self === "1";
+      const hasPeer = src.dataset.peer === "1";
+      const n = (hasSelf ? 1 : 0) + (hasPeer ? 1 : 0);
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "wl-shelf-react-chip";
+      chip.classList.toggle("wl-shelf-react-chip--self", hasSelf);
+      chip.classList.toggle("wl-shelf-react-chip--peer", hasPeer);
+      const g = document.createElement("span");
+      g.className = "wl-reaction-glyph";
+      g.textContent = emoji;
+      chip.appendChild(g);
+      if (n > 1) {
+        const c = document.createElement("span");
+        c.className = "wl-shelf-react-n";
+        c.textContent = String(n);
+        chip.appendChild(c);
+      }
+      const targetId = shelfTarget.msgId;
+      chip.addEventListener("click", (e) => { e.stopPropagation(); toggleSelfReaction(targetId, emoji); });
+      shelfReactions.appendChild(chip);
+    }
+    reactionShelf.classList.toggle("wl-react-shelf--has-reactions", shelfReactions.childElementCount > 0);
+  }
+
   /** Open the shelf for `msgEl`, anchored to `bubbleEl`. */
   function openReactionShelf(msgEl: HTMLElement, bubbleEl: HTMLElement): void {
     const msgIdRaw = msgEl.dataset.msgId;
@@ -1498,6 +1542,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     shelfTarget = { msgId, msgEl, bubbleEl, msgText, isSelfMsg };
     updateShelfCaption();
+    updateShelfReactions();
     positionReactionShelf(msgEl, bubbleEl);
 
     msgEl.setAttribute("data-shelf-open", "");
@@ -1545,7 +1590,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!bar) {
       bar = document.createElement("div");
       bar.className = "wl-msg-reactions";
-      el.appendChild(bar);
+      // reactions belong between the bubble and the time/edited row, not after
+      // it — the metadata is always the last line under a message.
+      const timeEl = el.querySelector<HTMLElement>(".wl-msg-time");
+      if (timeEl) el.insertBefore(bar, timeEl);
+      else el.appendChild(bar);
     }
     let pill = bar.querySelector<HTMLElement>(`[data-emoji="${CSS.escape(normEmoji)}"]`);
     if (!pill) {
@@ -1558,7 +1607,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       pill.dataset.emoji = normEmoji;
       pill.dataset.self = "0";
       pill.dataset.peer = "0";
-      pill.textContent = normEmoji;
+      // glyph and count live in their own spans so the count can appear and
+      // vanish without disturbing the emoji.
+      const glyph = document.createElement("span");
+      glyph.className = "wl-reaction-glyph";
+      glyph.textContent = normEmoji;
+      const count = document.createElement("span");
+      count.className = "wl-reaction-count";
+      count.setAttribute("aria-hidden", "true");
+      pill.append(glyph, count);
       pill.addEventListener("click", () => toggleSelfReaction(msgId, normEmoji));
       bar.appendChild(pill);
       // Remove entering class after animation completes so it's reusable
@@ -1566,6 +1623,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     pill.dataset[who] = "1";
     updateReactionPill(pill);
+    if (shelfTarget?.msgId === msgId) updateShelfReactions();
   }
 
   function removeReaction(msgId: number, emoji: string, who: "self" | "peer"): void {
@@ -1580,6 +1638,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (pill.dataset.self === "0" && pill.dataset.peer === "0") pill.remove();
     const bar = el.querySelector(".wl-msg-reactions");
     if (bar && !bar.hasChildNodes()) bar.remove();
+    if (shelfTarget?.msgId === msgId) updateShelfReactions();
   }
 
   function updateReactionPill(pill: HTMLElement): void {
@@ -1587,6 +1646,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const hasPeer = pill.dataset.peer === "1";
     pill.classList.toggle("wl-reaction--self", hasSelf);
     pill.classList.toggle("wl-reaction--peer", hasPeer);
+    // count = distinct reactors. for 1:1 that is you + them (up to 2); the
+    // number only shows once more than one person has reacted, so a single
+    // reaction stays a clean glyph. the self ring says which one is yours.
+    const n = (hasSelf ? 1 : 0) + (hasPeer ? 1 : 0);
+    const countEl = pill.querySelector<HTMLElement>(".wl-reaction-count");
+    if (countEl) {
+      countEl.textContent = n > 1 ? String(n) : "";
+      pill.classList.toggle("wl-reaction--multi", n > 1);
+    }
+    // an accessible label carries the who/how-many that the visual conveys.
+    const emoji = pill.dataset.emoji ?? "";
+    pill.setAttribute("aria-label",
+      hasSelf && hasPeer ? `${emoji}, you and them` :
+      hasSelf ? `${emoji}, you reacted` :
+      hasPeer ? `${emoji}, they reacted` : emoji);
   }
 
   /**
@@ -1677,6 +1751,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     speed: 0,           // 0→1 instantaneous motion speed
   };
   let currentLiveState: LiveState = "idle";
+  // the single reconnect seam for the current interruption. one incident = one
+  // seam, kept while recovery flaps and settled to a quiet scar on reconnect,
+  // instead of stacking a fresh "reconnecting" line on every recovery tick.
+  let reconnectSeamEl: HTMLElement | null = null;
 
   /* ── Environment sensing ───────────────────────────────── */
   // Derive behavioral flags from browser signals. These adapt the UX
@@ -5799,6 +5877,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         haptic("connected");
         enterPhase(opts.chatSection, "", false, false);
         liveSurface?.classList.remove("wl-recovering");
+        // the interruption healed: settle its seam into a quiet, label-less
+        // scar (a continuous hairline), and release the ref so a future drop
+        // starts a fresh seam instead of reusing this one.
+        if (reconnectSeamEl?.isConnected) {
+          reconnectSeamEl.classList.add("wl-msg--seam-healed");
+          const label = reconnectSeamEl.querySelector<HTMLElement>(".wl-msg-system");
+          if (label) label.textContent = "";
+        }
+        reconnectSeamEl = null;
         opts.chatInput.disabled = false;
         opts.chatInput.placeholder = "whisper something...";
         opts.chatInput.focus();
@@ -5828,7 +5915,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.chatInput.placeholder = "reconnecting...";
         opts.fpChip.classList.remove("wl-fp-chip--verified");
         opts.fpChip.classList.add("wl-fp-chip--recovering");
-        addChatMessage({ type: "system", direction: "system", text: "reconnecting…", timestamp: Date.now() });
+        // one seam per interruption: while recovery flaps we keep pulsing the
+        // existing seam rather than stacking a new line each tick.
+        if (!reconnectSeamEl || !reconnectSeamEl.isConnected) {
+          addChatMessage({ type: "system", direction: "system", text: "reconnecting…", timestamp: Date.now() });
+          const seams = opts.chatMessages.querySelectorAll<HTMLElement>(".wl-msg--seam");
+          reconnectSeamEl = seams.length ? seams[seams.length - 1] : null;
+        }
         break;
 
       case "disconnected": {
@@ -5945,6 +6038,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     closeReactionShelf();
     msgById.clear();
     pendingSeen.clear();
+    reconnectSeamEl = null;
     transferCards.clear();
     // drop retained outbound File handles so a settled multi-GB transfer's card
     // (and whatever DOM it's still closed over) can be garbage collected once the
@@ -5980,6 +6074,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function resetToIdle(): void {
     releaseTerminalSessionUi();
     relayActive = false;
+    localModeActive = false;
+    localRole = "none";
     lastErrorWasRelay = false;
     lastErrorWasFlare = false;
     if (relayAbort) {
@@ -6418,12 +6514,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    * panel, the flare fragment handoff, and renderQrToCanvas untouched. */
 
   let localModeActive = false;
+  // my role in the current in-person exchange. both people start "offering"
+  // (each shows their own code); whoever scans the other's offer first
+  // commits to "answering" and abandons their own offer. this resolves the
+  // symmetric collision where both are showing codes.
+  let localRole: "none" | "offering" | "answering" = "none";
 
   // toggle the visual "local mode" affordances: the purple QR segment and the
   // same-network hint. keyed off a data attribute so the css owns the look.
   function setLocalMode(on: boolean): void {
     if (localModeActive === on) return;
     localModeActive = on;
+    if (!on) localRole = "none";
     relayConnectRow?.toggleAttribute("data-local", on);
     if (relayHint) {
       relayHint.textContent = on
@@ -6432,26 +6534,29 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  const localConnected = (): boolean => currentLiveState === "live" || currentLiveState === "silent";
+
   async function startLocalQrOffer(): Promise<void> {
-    if (session) return;
+    if (session && localConnected()) return;
     setLocalMode(true);
+    localRole = "offering";
     try {
       destroyCurrentSession();
       session = createSession();
       const offer = await session.createLocalOffer();
       const url = buildWlLocalUrl(offer);
       if (opts.relayQrCanvas) { opts.relayQrCanvas.dataset.wlLocalUrl = url; renderQrToCanvas(opts.relayQrCanvas, url); }
-      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "have them scan this. then scan their reply.";
+      // both people see this. whoever scans the other's code first flips to
+      // the answerer and shows a reply; the other then scans that reply.
+      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "step 1 · one of you scans the other's code.";
     } catch (err) {
       if (opts.relayQrStatus) opts.relayQrStatus.textContent = "couldn't start in-person mode.";
       appendLog(`local offer failed: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }
 
-  // a scanned #wl-local payload: the role byte decides. an offer means we are
-  // the answerer (accept it, show our reply QR back); an answer means we are
-  // the offerer completing the bond. same handler for cold-load, hot-tab
-  // hashchange, and in-app scan — one path.
+  // a scanned #wl-local payload: the role byte decides. same handler for
+  // cold-load, hot-tab hashchange, and in-app scan — one path.
   async function applyLocalHandoff(payload: string): Promise<void> {
     let kind: "offer" | "answer";
     try {
@@ -6459,22 +6564,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     } catch {
       return; // not a valid local payload
     }
+    if (localConnected()) return; // already bonded, ignore stray scans
 
     if (kind === "answer") {
-      // we offered; this is their reply. our session must still be alive —
-      // it is, because a hot-tab scan is a hashchange, not a reload.
-      if (!session) return;
+      // their reply to the offer i am showing. only the offerer applies it.
+      if (localRole !== "offering" || !session) return;
       setLocalMode(true);
       try {
         await session.applyLocalAnswer(payload);
+        if (opts.relayQrStatus) opts.relayQrStatus.textContent = "connecting…";
       } catch (err) {
         appendLog(`local answer failed: ${err instanceof Error ? err.message : "unknown"}`);
       }
       return;
     }
 
-    // an offer: we are the answerer. don't clobber a live session.
-    if (session) return;
+    // an offer: i become the answerer, even if i was showing my own offer
+    // (the symmetric case — both had codes up). abandon my offer, accept
+    // theirs, and show the reply for them to scan back.
+    if (localRole === "answering") return; // already committed as answerer
+    localRole = "answering";
     setLocalMode(true);
     if (opts.relayAssistToggle) { opts.relayAssistToggle.checked = true; applyModeSwitch("relay"); }
     setRelayQrExpanded(true);
@@ -6484,7 +6593,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const answer = await session.acceptLocalOffer(payload);
       const url = buildWlLocalUrl(answer);
       if (opts.relayQrCanvas) { opts.relayQrCanvas.dataset.wlLocalUrl = url; renderQrToCanvas(opts.relayQrCanvas, url); }
-      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "show this reply back to them.";
+      // this is the last step: the other phone must scan THIS reply to finish.
+      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "step 2 · now have them scan this reply.";
     } catch (err) {
       if (opts.relayQrStatus) opts.relayQrStatus.textContent = "couldn't accept their code.";
       appendLog(`local accept failed: ${err instanceof Error ? err.message : "unknown"}`);
@@ -6505,6 +6615,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     } else {
       closeRelayQrPanel();
       extinguishQrArm();
+      // closing the panel leaves in-person mode: drop the purple + the hint,
+      // and tear down any pending local offer that never completed.
+      if (localModeActive && !localConnected()) {
+        setLocalMode(false);
+        destroyCurrentSession();
+      }
     }
   }
 
