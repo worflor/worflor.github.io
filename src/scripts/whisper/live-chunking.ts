@@ -116,19 +116,29 @@ export function chunkMessagePrefixed(data: Uint8Array, prefix: number): Uint8Arr
 export class ChunkAssembler {
   private chunks: Uint8Array[] = [];
   private receiving = false;
+  // peer-declared total from the start chunk, not used to pre-allocate, only to
+  // validate the assembled result against what the peer claimed on CHUNK_END.
+  private declaredTotalLength = 0;
 
   /** Feed a chunk. Returns the complete message when all chunks received, or null if incomplete. */
   feed(chunk: Uint8Array): Uint8Array | null {
     const type = chunk[0];
 
     if (type === CHUNK_SINGLE) {
+      // a single-frame message arriving mid-reassembly means the peer abandoned the
+      // in-progress multi-chunk message: drop that partial state, don't merge it in.
+      if (this.receiving) this.reset();
       return chunk.subarray(SINGLE_DATA_OFFSET);
     }
 
     if (type === CHUNK_START) {
-      // Don't pre-allocate from peer-declared totalLength — just start collecting
       this.reset();
+      if (chunk.length < START_DATA_OFFSET) return null; // truncated, no length field to read: drop
       this.receiving = true;
+      // don't pre-allocate from peer-declared totalLength, just start collecting,
+      // but remember it to validate the assembled result against on CHUNK_END.
+      this.declaredTotalLength = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+        .getUint32(1, true); // offset 1: type(1) precedes totalLength(4)
       const payload = chunk.subarray(START_DATA_OFFSET); // skip type(1) + totalLength(4)
       if (payload.length > 0) this.chunks.push(payload.slice());
       return null;
@@ -141,10 +151,12 @@ export class ChunkAssembler {
       if (type === CHUNK_END) {
         // Concatenate all collected payloads — bounded by what peer actually sent
         const parts = this.chunks;
+        const declared = this.declaredTotalLength;
         this.reset();
-        if (parts.length === 1) return parts[0];
         let total = 0;
         for (const p of parts) total += p.length;
+        if (total !== declared) return null; // declared length mismatch: drop, never hand a corrupt buffer to decrypt
+        if (parts.length === 1) return parts[0];
         const result = new Uint8Array(total);
         let offset = 0;
         for (const p of parts) { result.set(p, offset); offset += p.length; }
@@ -158,5 +170,6 @@ export class ChunkAssembler {
   reset(): void {
     this.chunks = [];
     this.receiving = false;
+    this.declaredTotalLength = 0;
   }
 }

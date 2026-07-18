@@ -4,10 +4,14 @@ import { randomUint32 } from "./_helpers/generators.js";
 import {
   CTRL_OP,
   FILE_CANCEL_ROLE,
+  VOTE_TOPIC,
+  VoteTopic,
   encodeCtrl,
   decodeCtrl,
   encodeFileCancelPayload,
   decodeFileCancelPayload,
+  encodeVotePayload,
+  decodeVotePayload,
 } from "../../src/scripts/whisper/live-ctrl.js";
 import { estimateChunkedPrefixedSize } from "../../src/scripts/whisper/live-chunking.js";
 
@@ -146,5 +150,175 @@ describe("estimateChunkedPrefixedSize — large payload (| 0 truncation fix)", (
     // The old `| 0` happened to floor small positive fractions too — this guards
     // the *replacement* stays correct, not just the large-value regression.
     assert.equal(estimateChunkedPrefixedSize(99.9), manualEstimate(99));
+  });
+});
+
+describe("VOTE/CANCEL round-aware ctrl frame", () => {
+  describe("encodeVotePayload/decodeVotePayload", () => {
+    it("round-trips topic + round for boundary values", () => {
+      for (const topic of [0, 1, 2, 255]) {
+        for (const round of [0, 1, 128, 255]) {
+          const encoded = encodeVotePayload(topic, round);
+          assert.equal(encoded.length, 2, "payload is always 2 bytes");
+          const decoded = decodeVotePayload(encoded);
+          assert.ok(decoded, `decode failed for topic=${topic} round=${round}`);
+          assert.equal(decoded.topic, topic);
+          assert.equal(decoded.round, round);
+        }
+      }
+    });
+
+    it("round wraps mod 256 when encoding an out-of-range value", () => {
+      const encoded = encodeVotePayload(VOTE_TOPIC.CLEAR, 256 + 5);
+      assert.equal(encoded[1], 5);
+    });
+
+    it("rejects a payload shorter than 2 bytes", () => {
+      assert.equal(decodeVotePayload(new Uint8Array(0)), null);
+      assert.equal(decodeVotePayload(new Uint8Array(1)), null);
+    });
+
+    it("tolerates a trailing byte beyond the 2-byte payload", () => {
+      const buf = new Uint8Array([VOTE_TOPIC.CLEAR, 7, 0xAA, 0xBB]);
+      const decoded = decodeVotePayload(buf);
+      assert.ok(decoded);
+      assert.equal(decoded.topic, VOTE_TOPIC.CLEAR);
+      assert.equal(decoded.round, 7);
+    });
+
+    it("full CTRL frame round-trip matches the wire path (encodeCtrl -> decodeCtrl -> decodeVotePayload)", () => {
+      const frame = encodeCtrl(CTRL_OP.VOTE, encodeVotePayload(VOTE_TOPIC.CAMPFIRE, 3));
+      assert.equal(frame[1], 2, "VOTE payload length byte is always 2");
+      const ctrl = decodeCtrl(frame);
+      assert.ok(ctrl);
+      assert.equal(ctrl.opcode, CTRL_OP.VOTE);
+      const vote = decodeVotePayload(ctrl.payload);
+      assert.ok(vote);
+      assert.equal(vote.topic, VOTE_TOPIC.CAMPFIRE);
+      assert.equal(vote.round, 3);
+    });
+  });
+
+  // pure FSM tests: two independent VoteTopic instances stand in for the two
+  // peers, wired by hand exactly the way live-ui.ts wires session.sendCtrl /
+  // handleCtrl. castLocal()'s wire send uses `.round` before calling castLocal,
+  // and receivePeer(round)/receivePeerCancel(round) take the decoded round byte.
+  describe("VoteTopic FSM: round convergence", () => {
+    function makeTopic(onExecute: () => void) {
+      return new VoteTopic({ timeoutMs: 60_000, onExecute, onState: () => {} });
+    }
+
+    it("plain convergence: both cast, no cancel, both sides execute and bump round", () => {
+      let execA = 0, execB = 0;
+      const a = makeTopic(() => execA++);
+      const b = makeTopic(() => execB++);
+
+      const roundA = a.round; // read before castLocal, as the wire send site does
+      assert.equal(a.castLocal(), false, "A alone doesn't cross a 2-party threshold");
+
+      assert.equal(b.receivePeer(roundA), false, "B hasn't voted yet, still short");
+      assert.equal(b.castLocal(), true, "B's own cast crosses threshold");
+      assert.equal(execB, 1);
+
+      assert.equal(a.receivePeer(roundA), true, "A converges on receiving B's vote");
+      assert.equal(execA, 1);
+
+      assert.equal(a.round, 1, "A's round bumped after execute");
+      assert.equal(b.round, 1, "B's round bumped after execute");
+    });
+
+    it("crossing cancel: peer's completing VOTE arrives after a local cancel, local still converges", () => {
+      // this is the exact divergence the audit flagged: B commits to executing
+      // because it already saw A's vote, before A's CANCEL (sent after A changed
+      // its mind) has a chance to arrive. A must still execute to match B, even
+      // though A's own live vote state was retracted first.
+      let execA = 0, execB = 0;
+      const a = makeTopic(() => execA++);
+      const b = makeTopic(() => execB++);
+
+      const round = a.round;
+      a.castLocal(); // → sends VOTE(topic, round) to B
+
+      b.receivePeer(round); // B sees A's vote, not yet enough alone
+      assert.equal(b.castLocal(), true, "B's cast crosses threshold and executes on B's side");
+      assert.equal(execB, 1);
+      // B's own VOTE(topic, round) is now conceptually "on the wire" to A.
+
+      a.cancelLocal(); // A changes its mind locally BEFORE B's vote arrives
+      assert.equal(a.localVoted, false, "A's live vote flag is retracted");
+
+      // B's already-sent VOTE(topic, round) now arrives at A.
+      assert.equal(a.receivePeer(round), true,
+        "A converges with B's already-executed decision despite the local cancel");
+      assert.equal(execA, 1);
+
+      assert.equal(a.round, 1);
+      assert.equal(b.round, 1);
+    });
+
+    it("a CANCEL for an already-executed round is a no-op", () => {
+      let exec = 0;
+      const a = makeTopic(() => exec++);
+      const round = a.round;
+      a.castLocal();
+      assert.equal(a.receivePeer(round), true, "peer's vote crosses threshold");
+      assert.equal(a.round, round + 1, "round advanced past the executed round");
+
+      const stateBefore = a.state;
+      a.receivePeerCancel(round); // stale, arrives for the now-resolved round
+      assert.equal(a.state, stateBefore, "no-op: state unchanged");
+      assert.equal(exec, 1, "no second execution");
+    });
+
+    it("receivePeer/receivePeerCancel ignore a round that hasn't been reached yet", () => {
+      let exec = 0;
+      const a = makeTopic(() => exec++);
+      assert.equal(a.receivePeer(a.round + 1), false, "future round is ignored, not treated as current");
+      assert.equal(exec, 0);
+      assert.equal(a.state, "idle");
+    });
+
+    it("receivePeerCancel decrements tally and transitions back to idle for the current round", () => {
+      let exec = 0;
+      const a = makeTopic(() => exec++);
+      const round = a.round;
+      a.receivePeer(round); // peer votes first, not enough alone
+      assert.equal(a.state, "pending-in");
+      a.receivePeerCancel(round);
+      assert.equal(a.state, "idle");
+      assert.equal(exec, 0);
+    });
+
+    it("round wraps mod 256 across repeated execute cycles", () => {
+      let exec = 0;
+      const a = makeTopic(() => exec++);
+      const b = makeTopic(() => {});
+      for (let i = 0; i < 300; i++) {
+        const round = a.round;
+        assert.equal(a.round, b.round, `rounds stay in lockstep at cycle ${i}`);
+        a.castLocal();
+        b.receivePeer(round);
+        b.castLocal();
+        a.receivePeer(round);
+      }
+      assert.equal(exec, 300);
+      assert.equal(a.round, 300 & 0xFF, "round wraps mod 256");
+    });
+  });
+
+  describe("sendSealed ctrl counter atomicity (live.ts)", () => {
+    it.skip("counter and chain only commit after dc.send() succeeds", () => {
+      // not unit-testable in isolation: sendSealed is a private method on
+      // WhisperLiveSession closing over live RTCDataChannel state, the CTRL AEAD
+      // chain (kdfChainDirect/importCtrlKey/sealCtrl), and an internal
+      // sealedSendQueue promise chain. Exercising the fix (a throw from kdf/
+      // import/seal/send must never advance ctrlSendCounter or ctrlChainSend)
+      // needs a live two-party session with an injectable failing DataChannel,
+      // which belongs in an integration/e2e harness, not a pure unit test.
+      // verified by code review instead: live.ts sendSealed now reads `counter`
+      // and commits `this.ctrlChainSend` / `this.ctrlSendCounter` only after
+      // `this.dc.send(wire)` returns without throwing, and the dc-not-open /
+      // nonce-exhausted early returns happen before `counter` is even read.
+    });
   });
 });

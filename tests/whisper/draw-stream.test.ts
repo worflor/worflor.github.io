@@ -339,4 +339,57 @@ describe("live-draw-stream", () => {
     assert.equal(decWithout.logicalW, 1024);
     assert.equal(decWithout.logicalH, 768);
   });
+
+  it("tracker clears dangling stroke/base state on presence active:false", () => {
+    const tracker = new DrawStreamTracker();
+
+    const begin: DrawStreamEvent = {
+      kind: "begin",
+      seq: 1,
+      strokeId: 9,
+      tool: "pen",
+      color: "#00ffff",
+      width: 4,
+      start: normPoint(0.1, 0.2, 0.5) as any,
+    };
+    assert.equal(tracker.apply(begin).applied, true);
+    assert.equal(tracker.snapshot().peerActive, true);
+    assert.equal(tracker.snapshot().activeStrokeId, 9);
+
+    const start: DrawStreamEvent = {
+      kind: "base-start",
+      seq: 2,
+      snapshotId: 3,
+      width: 400,
+      height: 300,
+      mime: "image/png",
+      chunkCount: 1,
+    };
+    assert.equal(tracker.apply(start).applied, true);
+    assert.equal(tracker.snapshot().activeBaseSnapshotId, 3);
+
+    // the surface closed mid-stroke (X button, Escape, or a discarded draw)
+    // without ever sending an "end" — presence:false must still clear the
+    // dangling stroke and in-flight base snapshot so a later stream from
+    // the same peer starts clean.
+    const closed: DrawStreamEvent = {
+      kind: "presence",
+      seq: 3,
+      active: false,
+      logicalW: 400,
+      logicalH: 300,
+    };
+    assert.equal(tracker.apply(closed).applied, true);
+    assert.equal(tracker.snapshot().peerActive, false);
+    assert.equal(tracker.snapshot().activeStrokeId, null);
+    assert.equal(tracker.snapshot().activeBaseSnapshotId, null);
+  });
+
+  // note: the undo/redo "streamed" gating that keeps fill (unstreamed) ops
+  // from desyncing the peer's stroke stack lives entirely in live-draw.ts's
+  // closure-local state (per-stroke `streamed` flag checked before emitting
+  // a DrawStreamEvent at all) — there is no wire-format or codec difference
+  // to round-trip here. undo/redo frames are encoded identically regardless
+  // of which local op triggered them, so that gating is UI-state logic and
+  // isn't observable/testable at this codec level.
 });

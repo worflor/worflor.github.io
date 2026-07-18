@@ -214,17 +214,19 @@ describe("live-ctrl", () => {
       assert.equal(vote.state, "idle");
       assert.equal(vote.localVoted, false);
 
+      const round = vote.round;
       const didExecute1 = vote.castLocal();
       assert.equal(didExecute1, false);
       assert.equal(vote.state, "pending-out");
       assert.equal(vote.localVoted, true);
       assert.ok(states.includes("pending-out"), "onState called with pending-out");
 
-      const didExecute2 = vote.receivePeer();
+      const didExecute2 = vote.receivePeer(round);
       assert.equal(didExecute2, true);
       assert.equal(executed, true);
       assert.equal(vote.state, "idle");
       assert.equal(vote.localVoted, false);
+      assert.equal(vote.round, round + 1, "round bumped after execute");
 
       vote.destroy();
     });
@@ -236,7 +238,8 @@ describe("live-ctrl", () => {
         onState: () => {},
       });
 
-      const didExecute1 = vote.receivePeer();
+      const round = vote.round;
+      const didExecute1 = vote.receivePeer(round);
       assert.equal(didExecute1, false);
       assert.equal(vote.state, "pending-in");
 
@@ -264,15 +267,16 @@ describe("live-ctrl", () => {
       vote.destroy();
     });
 
-    it("cancelPeer with local still voted → pending-out", () => {
+    it("receivePeerCancel with local still voted → pending-out", () => {
       const vote = new VoteTopic({
         onExecute: () => {},
         onState: () => {},
       });
 
-      vote.castLocal();     // local votes → pending-out
-      vote.receivePeer();   // peer votes → both voted → executes (threshold met)
-      // After execution, state is idle. Test cancelPeer independently:
+      const round = vote.round;
+      vote.castLocal();          // local votes → pending-out
+      vote.receivePeer(round);   // peer votes → both voted → executes (threshold met)
+      // After execution, state is idle. Test receivePeerCancel independently:
       vote.destroy();
 
       // New instance: peer votes first, then cancel
@@ -280,8 +284,9 @@ describe("live-ctrl", () => {
         onExecute: () => {},
         onState: () => {},
       });
-      vote2.receivePeer();     // peer votes → pending-in
-      vote2.castLocal();       // local votes → threshold met → execute
+      const round2 = vote2.round;
+      vote2.receivePeer(round2);   // peer votes → pending-in
+      vote2.castLocal();           // local votes → threshold met → execute
       vote2.destroy();
 
       // Test cancel mid-vote:
@@ -289,25 +294,27 @@ describe("live-ctrl", () => {
         onExecute: () => { assert.fail("should not execute"); },
         onState: () => {},
       });
-      vote3.receivePeer();     // pending-in
-      vote3.cancelPeer();      // peer cancels → should revert
+      const round3 = vote3.round;
+      vote3.receivePeer(round3);        // pending-in
+      vote3.receivePeerCancel(round3);  // peer cancels → should revert
       assert.equal(vote3.state, "idle");
       vote3.destroy();
     });
 
-    it("cancelPeer preserves local vote → pending-out", () => {
+    it("receivePeerCancel preserves local vote → pending-out", () => {
       let executed = false;
       const vote = new VoteTopic({
         onExecute: () => { executed = true; },
         onState: () => {},
       });
 
+      const round = vote.round;
       vote.castLocal();       // pending-out
       // Peer would push to execute, but let's manually test cancel:
       // We need to test: local voted, peer votes → execute. So test with cancel BEFORE peer.
       assert.equal(vote.state, "pending-out");
-      // cancelPeer when no peer vote — no-op (peer count stays 0)
-      vote.cancelPeer();
+      // receivePeerCancel when no peer vote: no-op (peer count stays 0)
+      vote.receivePeerCancel(round);
       assert.equal(vote.state, "pending-out"); // local still voted
       assert.equal(executed, false);
       vote.destroy();
@@ -320,10 +327,11 @@ describe("live-ctrl", () => {
         onState: () => {},
       });
 
+      const round = vote.round;
       vote.castLocal();
       const result = vote.castLocal(); // second call — should return false (already voted)
       assert.equal(result, false, "double cast returns false");
-      vote.receivePeer(); // now threshold met
+      vote.receivePeer(round); // now threshold met
       assert.equal(executeCount, 1, "executed exactly once");
       vote.destroy();
     });
@@ -389,8 +397,15 @@ describe("live-ctrl", () => {
 
       vote.castLocal();      // idle → pending-out
       vote.cancelLocal();    // pending-out → idle
-      vote.receivePeer();    // idle → pending-in
-      vote.cancelPeer();     // pending-in → idle
+      // reset clears the sticky "voted this round" flag left by castLocal. without
+      // it, receivePeer below would see "I voted this round" and converge/execute
+      // immediately instead of exercising the plain pending-in → idle transition.
+      // state is already idle here so this doesn't itself push another "idle".
+      vote.reset();
+
+      const round = vote.round;
+      vote.receivePeer(round);          // idle → pending-in
+      vote.receivePeerCancel(round);    // pending-in → idle
 
       assert.deepStrictEqual(states, ["pending-out", "idle", "pending-in", "idle"]);
 

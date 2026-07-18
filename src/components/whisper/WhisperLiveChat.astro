@@ -1677,6 +1677,12 @@
     box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.024);
   }
 
+  /* Decode failed — quiet dead state, not a hover-teasing dead button */
+  :global(.wl-chat-messages) :global(.wl-audio-play-btn[aria-disabled="true"]) {
+    opacity: 0.35;
+    cursor: default;
+  }
+
   :global(.wl-chat-messages) :global(.wl-audio-play-btn) {
     width: 1.7rem;
     height: 1.7rem;

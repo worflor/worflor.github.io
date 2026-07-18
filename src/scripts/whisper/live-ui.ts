@@ -19,6 +19,7 @@ import {
   CTRL_OP, VOTE_TOPIC, VoteTopic,
   encodeSeenPayload, decodeSeenPayload,
   encodeReactPayload, decodeReactPayload,
+  encodeVotePayload, decodeVotePayload,
 } from "./live-ctrl";
 import {
   q,
@@ -522,6 +523,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let clipFiles: File[] = [];
   let pastePending = false;
   let pasteHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let pasteHoldFired = false; // true when hold already sent — swallow the trailing click
 
   function cacheClipText(text: string | undefined | null): void {
     if (text && text.trim()) { clipText = text.trim(); clipFiles = []; }
@@ -664,6 +666,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     chatCompose?.removeAttribute("data-editing");
     editingMsgId = null;
+    if (!micSupported) opts.chatMicWrap.setAttribute("data-hidden", "");
     updateControls();
   }
 
@@ -721,15 +724,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       return;
     }
     haptic("clear-history");
+    if (editingMsgId != null) exitEditMode();
+    stopAllAudio();
     closeReactionShelf();
     msgs.forEach((el, i) => el.style.setProperty("--msg-idx", String(Math.min(i, 10))));
     opts.chatMessages.dataset.clearing = "1";
     setTimeout(() => {
       delete opts.chatMessages.dataset.clearing;
-      clearNode(opts.chatMessages);
-      if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
-      // clearNode() wipes every child, including the shelf — reseat it.
-      opts.chatMessages.appendChild(reactionShelf);
+      // full teardown of chat state, not just the DOM — same helper the
+      // terminal-session paths use, so clearing history never leaves stale
+      // msgById/transferCards/object-URL entries behind.
+      clearChatArtifacts();
       updateControls();
     }, 320);
   }
@@ -774,15 +779,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function handleCtrl(opcode: number, payload: Uint8Array): void {
     switch (opcode) {
       case CTRL_OP.VOTE: {
-        const topic = payload.length >= 1 ? payload[0] : 0;
-        if (topic === VOTE_TOPIC.CLEAR) clearVote.receivePeer();
-        else if (topic === VOTE_TOPIC.CAMPFIRE) campfireVote.receivePeer();
+        const vote = decodeVotePayload(payload);
+        if (!vote) break;
+        if (vote.topic === VOTE_TOPIC.CLEAR) clearVote.receivePeer(vote.round);
+        else if (vote.topic === VOTE_TOPIC.CAMPFIRE) campfireVote.receivePeer(vote.round);
         break;
       }
       case CTRL_OP.CANCEL: {
-        const topic = payload.length >= 1 ? payload[0] : 0;
-        if (topic === VOTE_TOPIC.CLEAR) clearVote.cancelPeer();
-        else if (topic === VOTE_TOPIC.CAMPFIRE) campfireVote.cancelPeer();
+        const vote = decodeVotePayload(payload);
+        if (!vote) break;
+        if (vote.topic === VOTE_TOPIC.CLEAR) clearVote.receivePeerCancel(vote.round);
+        else if (vote.topic === VOTE_TOPIC.CAMPFIRE) campfireVote.receivePeerCancel(vote.round);
         break;
       }
       case CTRL_OP.SEEN: {
@@ -1049,7 +1056,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     e.stopPropagation();
     if (signal.aborted || !shelfTarget) return;
     const { msgId, msgText } = shelfTarget;
-    collapseActions();
+    closeReactionShelf();
     haptic("reaction");
 
     if (editingMsgId != null) exitEditMode();
@@ -1058,6 +1065,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     preEditInputValue = opts.chatInput.value;
     preEditPlaceholder = opts.chatInput.placeholder;
     editingMsgId = msgId;
+    // the mic wrap is hidden entirely when mic capture isn't supported, but it's
+    // also the edit-cancel (X) affordance in edit mode — force it visible for the
+    // duration of the edit so there's still a way to back out.
+    if (!micSupported) opts.chatMicWrap.removeAttribute("data-hidden");
 
     const srcEl = msgById.get(msgId);
     const targetText = srcEl
@@ -1712,6 +1723,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const myId = ++previewSendId;
     let t = 0;
     const step = () => {
+      if (signal.aborted) return;
       t += 0.12;
       sendProgress(Math.min(1, t));
       if (t < 1) { requestAnimationFrame(step); return; }
@@ -1720,6 +1732,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       send.peakEnergy = send.energy;
       send.inflightStart = Date.now();
       setTimeout(() => {
+        if (signal.aborted) return;
         if (myId === previewSendId && send.phase === "in-flight") sendDelivered();
       }, 100 + Math.random() * 80);
     };
@@ -2897,6 +2910,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let micCaptureWatchdog: ReturnType<typeof setTimeout> | null = null;
   let micRecorder: MediaRecorder | null = null;
   let micRecorderChunks: Blob[] = [];
+  // set whenever a recording is silently torn down (cancel, recovery, teardown) so a
+  // stopRecording() already in flight (awaiting extraction) knows to drop its result
+  // instead of sending stale audio. cleared when a fresh recording actually starts.
+  let recordingCancelled = false;
 
   const micSupported = !!navigator.mediaDevices?.getUserMedia && liveCapabilities.audioContext;
   if (!micSupported) opts.chatMicWrap.setAttribute("data-hidden", "");
@@ -3072,6 +3089,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function startRecording(): void {
     if (!micSupported || micPending || recordingStream) return;
 
+    recordingCancelled = false;
     micPending = true;
     haptic("recording-start");
     navigator.mediaDevices.getUserMedia({ audio: VOICE_CONSTRAINTS }).then(async (stream) => {
@@ -3278,6 +3296,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   function stopRecordingSilently(closeAudioContext = false): void {
+    recordingCancelled = true;
     teardownRecordingUI();
     pcmChunks = [];
     cleanupRecordingStream();
@@ -3292,6 +3311,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     pcmChunks = [];
     const recovered = await extractPcmFromRecorder();
     cleanupRecordingStream();
+
+    // A cancel (or a recovery-triggered stopRecordingSilently) may have landed while
+    // the awaits above were in flight — don't resurrect and send audio for a recording
+    // the user already discarded.
+    if (recordingCancelled) return;
 
     // Discard sub-500ms squeaks
     if (elapsed < 500) return;
@@ -3773,13 +3797,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     fileName: string;
     totalBytes: number;
     settled: boolean;
+    // last cumulative bytesSent applied to this outbound card — lets onSendProgress
+    // disambiguate between multiple in-flight sends that happen to share a totalBytes.
+    bytesSent: number;
   }
 
   const transferCards = new Map<number, TransferCardState>();
-  // the one chunked send whose cumulative progress we're currently animating —
-  // onSendProgress is shared with per-wire-frame progress for every message
-  // type, so we gate on totalBytes matching this transfer's known file size.
-  let activeOutboundTransferId: number | null = null;
 
   function formatTransferBytes(current: number, total: number): string {
     return `${formatSize(current)} / ${formatSize(total)}`;
@@ -3842,7 +3865,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     const state: TransferCardState = {
       transferId, direction, wrapEl, cardEl, bytesEl, trackEl, cancelBtn,
-      fileName, totalBytes, settled: false,
+      fileName, totalBytes, settled: false, bytesSent: 0,
     };
     transferCards.set(transferId, state);
     return state;
@@ -3853,17 +3876,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const ratio = total > 0 ? Math.min(1, current / total) : 0;
     state.wrapEl.style.setProperty("--wl-transfer-ratio", String(ratio));
     state.bytesEl.textContent = formatTransferBytes(Math.min(current, total), total);
-  }
-
-  /** Find a live card awaiting resolution that matches an incoming/outgoing file message. */
-  function findPendingTransferCard(direction: "in" | "out", fileName: string, fileSize: number | undefined): TransferCardState | null {
-    for (const state of transferCards.values()) {
-      if (state.settled || state.direction !== direction) continue;
-      if (state.fileName !== fileName) continue;
-      if (fileSize !== undefined && state.totalBytes !== fileSize) continue;
-      return state;
-    }
-    return null;
   }
 
   /** Strip the live progress affordances, leaving whatever settled card state remains. */
@@ -3882,7 +3894,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     state.cardEl.dataset.transferState = "cancelled";
     state.bytesEl.textContent = "transfer cancelled";
     transferCards.delete(transferId);
-    if (activeOutboundTransferId === transferId) activeOutboundTransferId = null;
   }
 
   /** Re-attach live progress chrome to the settled self-file card that just replaced
@@ -3928,7 +3939,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     badge.textContent = "delivered";
     state.cardEl.appendChild(badge);
     transferCards.delete(transferId);
-    if (activeOutboundTransferId === transferId) activeOutboundTransferId = null;
   }
 
   function addChatMessage(msg: LiveMessage): void {
@@ -3993,13 +4003,17 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Inbound: the assembled file/media message replaces the live progress card.
     // Outbound: the chunk-0 self echo (no fileData — see sendFileChunked) replaces
     // the placeholder card, which then gets its progress chrome re-hosted below.
+    // resolve chunked-transfer cards by transferId (set on inbound assemblies and
+    // the outbound chunk-0 self-echo — see LiveMessage.transferId); small files sent
+    // via sendRaw never get a card, so an absent transferId just falls through to a
+    // normal append below.
     const resolvingInboundTransfer =
-      msg.direction === "peer" && msg.type === "file" && hasFilePayload(msg)
-        ? findPendingTransferCard("in", msg.fileName ?? "file", msg.fileSize)
+      msg.direction === "peer" && msg.type === "file" && msg.transferId != null
+        ? transferCards.get(msg.transferId) ?? null
         : null;
     const resolvingOutboundTransfer =
-      msg.direction === "self" && msg.type === "file" && !hasFilePayload(msg)
-        ? findPendingTransferCard("out", msg.fileName ?? "file", msg.fileSize)
+      msg.direction === "self" && msg.type === "file" && msg.transferId != null
+        ? transferCards.get(msg.transferId) ?? null
         : null;
     const resolvingTransferWasNearBottom = resolvingInboundTransfer ? isNearBottom() : false;
 
@@ -4212,7 +4226,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           waveform = extractWaveformFromPcm(pcmData, numBars);
           revealWaveform();
         } catch {
-          // Decoding failed — keep placeholder bars
+          // Decoding failed — mark the play control unavailable instead of
+          // leaving it looking clickable with nothing behind it.
+          playBtn.setAttribute("aria-disabled", "true");
+          playBtn.title = "audio unavailable";
         }
       });
 
@@ -4228,6 +4245,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
 
       playBtn.addEventListener("click", async () => {
+        if (playBtn.getAttribute("aria-disabled") === "true") return; // decode failed
         if (!pcmData || !opusBlobUrl) return; // not decoded yet
 
         if (isPlaying) {
@@ -4908,11 +4926,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       case "presence":
         if (!ev.active) {
-          peerActivePoints = [];
-          peerActiveStroke = null;
-          peerRerender();
-          peerBaseAssembly = null;
-          setPeerLiveDrawState("idle");
+          // the sender's surface closed. if the live preview never got
+          // merged into a finalized message (addChatMessage nulls
+          // peerLiveMsgEl the moment that merge happens — see
+          // replacePeerPreview), it means the sender discarded the drawing
+          // without sending: drop the preview entirely rather than leaving
+          // a phantom "sent" drawing on screen, and clear peerLiveMsgEl so
+          // no later unrelated peer file message can hijack the slot via
+          // the isWhisperGlyph backstop. if a merge already happened,
+          // peerLiveMsgEl is already null here and this is a harmless
+          // no-op — tolerant of presence:false arriving either before or
+          // after the sent file, since the two are not ordered relative
+          // to each other on the wire.
+          resetPeerLivePreview();
         } else {
           removeLegacyPeerOverlays();
           ensurePeerCanvas();
@@ -5050,20 +5076,27 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onAck: handleAck,
       onSendProgress: (sent, total) => {
         sendProgress(sent / total);
-        // onSendProgress is shared with per-wire-frame progress for every message
-        // type — only treat it as file-cumulative progress when the total matches
-        // the active transfer's known file size (a single chunk's wire total never does).
-        if (activeOutboundTransferId != null) {
-          const state = transferCards.get(activeOutboundTransferId);
-          if (state && total === state.totalBytes) {
-            updateTransferCardProgress(state, sent, total);
-            if (sent >= total) settleOutboundTransferDelivered(activeOutboundTransferId);
-          }
+        // onSendProgress is shared between two signals: per-chunk cumulative progress
+        // for chunked file sends (total === file.size) and per-wire-frame progress for
+        // every message type (total = encrypted frame size, which in practice never
+        // equals a real file size). Route cumulative updates to the outbound card with
+        // the matching totalBytes; if several in-flight sends happen to share that exact
+        // size, each transfer's bytesSent is monotonic, so pick whichever candidate's
+        // last known bytesSent sits closest below (never above) the new value.
+        let candidate: TransferCardState | null = null;
+        for (const state of transferCards.values()) {
+          if (state.direction !== "out" || state.settled || state.totalBytes !== total) continue;
+          if (state.bytesSent > sent) continue;
+          if (!candidate || state.bytesSent > candidate.bytesSent) candidate = state;
+        }
+        if (candidate) {
+          candidate.bytesSent = sent;
+          updateTransferCardProgress(candidate, sent, total);
+          if (sent >= total) settleOutboundTransferDelivered(candidate.transferId);
         }
       },
       onSendStart: (transferId, fileName, totalBytes) => {
         buildTransferCard("out", transferId, fileName, totalBytes);
-        activeOutboundTransferId = transferId;
       },
       onReceiveProgress: (transferId, receivedBytes, totalBytes, fileName) => {
         const state = transferCards.get(transferId) ?? buildTransferCard("in", transferId, fileName, totalBytes);
@@ -5224,6 +5257,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         liveSurface?.classList.add("wl-recovering");
         updateStatus("");
         setLogActive(true);
+        stopRecordingSilently(); // mic must not stay hot across a reconnect
         opts.chatSendBtn.disabled = true;
         opts.chatMediaBtn.disabled = true;
         opts.chatInput.disabled = true;
@@ -5307,7 +5341,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     closeReactionShelf();
     msgById.clear();
     transferCards.clear();
-    activeOutboundTransferId = null;
     revokeObjectUrls();
     clearNode(opts.chatMessages);
     if (chatEmpty) opts.chatMessages.appendChild(chatEmpty);
@@ -5323,6 +5356,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     closeDrawSurface();
     resetPeerLivePreview();
     clearChatArtifacts();
+    // a vote (clear or campfire) mid-flight when the session ends is meaningless —
+    // there's no peer left to resolve it against.
+    clearVote.reset();
+    campfireVote.reset();
   }
 
   /* ── Reset to idle ─────────────────────────────────────── */
@@ -5759,11 +5796,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     if (campfireVote.state === "pending-out") {
       campfireVote.cancelLocal();
-      session.sendCtrl(CTRL_OP.CANCEL, new Uint8Array([VOTE_TOPIC.CAMPFIRE]));
+      session.sendCtrl(CTRL_OP.CANCEL, encodeVotePayload(VOTE_TOPIC.CAMPFIRE, campfireVote.round));
       return;
     }
     if (campfireVote.localVoted) return;
-    session.sendCtrl(CTRL_OP.VOTE, new Uint8Array([VOTE_TOPIC.CAMPFIRE]));
+    session.sendCtrl(CTRL_OP.VOTE, encodeVotePayload(VOTE_TOPIC.CAMPFIRE, campfireVote.round));
     campfireVote.castLocal();
   }, { signal });
 
@@ -6063,12 +6100,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       exitEditMode();
       return;
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       sendMessage();
     }
     // Preview mode: Shift+Enter simulates a peer message
-    if (e.key === "Enter" && e.shiftKey && !session) {
+    if (e.key === "Enter" && e.shiftKey && !session && !e.isComposing) {
       e.preventDefault();
       const peerText = opts.chatInput.value.trim();
       opts.chatInput.value = "";
@@ -6948,10 +6985,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   opts.chatPasteBtn.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || opts.chatPasteBtn.disabled) return;
+    pasteHoldFired = false;
     if (pastePending) {
       // content already pasted — hold sends immediately
       pasteHoldTimer = setTimeout(() => {
         pasteHoldTimer = null;
+        pasteHoldFired = true;
         sendMessage();
         clearPasteState();
       }, HOLD_SHORT_MS);
@@ -6963,6 +7002,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }, { signal });
 
   opts.chatPasteBtn.addEventListener("click", async () => {
+    if (pasteHoldFired) { pasteHoldFired = false; return; }
     if (opts.chatPasteBtn.disabled) return;
 
     if (pastePending) {
@@ -7094,11 +7134,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
     if (clearVote.state === "pending-out") {
       clearVote.cancelLocal();
-      session.sendCtrl(CTRL_OP.CANCEL, new Uint8Array([VOTE_TOPIC.CLEAR]));
+      session.sendCtrl(CTRL_OP.CANCEL, encodeVotePayload(VOTE_TOPIC.CLEAR, clearVote.round));
       return;
     }
     if (clearVote.localVoted) return;
-    session.sendCtrl(CTRL_OP.VOTE, new Uint8Array([VOTE_TOPIC.CLEAR]));
+    session.sendCtrl(CTRL_OP.VOTE, encodeVotePayload(VOTE_TOPIC.CLEAR, clearVote.round));
     clearVote.castLocal();
   }, { signal });
 
@@ -7305,6 +7345,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     stopRecordingSilently(true);
     stopAllAudio();
     closeMediaLightbox();
+    document.documentElement.classList.remove("wl-stage");
     document.title = originalTitle;
     clearVote.destroy();
     campfireVote.destroy();

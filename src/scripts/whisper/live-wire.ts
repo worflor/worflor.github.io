@@ -237,6 +237,13 @@ export function decodeFilePartPlaintext(data: Uint8Array): FilePartHeader {
   const chunkIndex = v.getUint32(4, true);
   const totalChunks = v.getUint32(8, true);
   const totalFileSize = v.getFloat64(12, true);
+  // reject before any transfer state gets created downstream: a totalChunks=0 or
+  // out-of-range chunk 0 would otherwise permanently strand an IncomingFileTransfer.
+  if (totalChunks < 1) throw new Error("file part: totalChunks must be at least 1");
+  if (chunkIndex >= totalChunks) throw new Error("file part: chunkIndex out of range");
+  if (!Number.isFinite(totalFileSize) || totalFileSize < 0 || totalFileSize > 2 ** 53) {
+    throw new Error("file part: invalid totalFileSize");
+  }
   if (chunkIndex === 0) {
     if (data.length < 22) throw new Error("file part first chunk too short");
     const nameLen = v.getUint16(20, true);

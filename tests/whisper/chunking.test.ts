@@ -275,7 +275,7 @@ describe("live-chunking", () => {
       }
     });
 
-    it("oversized declared totalLen does not cause OOM (assembler ignores declared length)", () => {
+    it("oversized declared totalLen does not cause OOM, and the mismatch is rejected", () => {
       const assembler = new ChunkAssembler();
       // Craft a START chunk claiming totalLen = 4GB but only providing 10 bytes of payload
       const startChunk = new Uint8Array(5 + 10);
@@ -292,13 +292,13 @@ describe("live-chunking", () => {
       endChunk[0] = CHUNK_END;
       for (let i = 0; i < 5; i++) endChunk[1 + i] = 0x61 + i;
 
+      // actual assembled bytes (15) never match the declared 4GB, so the assembler must
+      // drop the message rather than hand a corrupt/truncated buffer to the decrypt path.
       const complete = assembler.feed(endChunk);
-      assert.ok(complete, "should reassemble from actual bytes");
-      // Total should be 10 + 5 = 15 bytes, NOT 4GB
-      assert.equal(complete!.length, 15, "result size = actual bytes, not declared totalLen");
+      assert.equal(complete, null, "declared/actual length mismatch is dropped, not returned");
     });
 
-    it("mismatched totalLen in header doesn't affect reassembly", () => {
+    it("mismatched totalLen in header is dropped on CHUNK_END", () => {
       // Build a real multi-chunk message
       const data = randomBytes(20000);
       const chunks = chunkMessagePrefixed(data, 0x20);
@@ -311,13 +311,53 @@ describe("live-chunking", () => {
       assembler.feed(startChunk);
       for (let i = 1; i < chunks.length; i++) {
         const result = assembler.feed(chunks[i].subarray(1));
-        if (result) {
-          // Reassembly should succeed based on actual data, not declared length
-          assertBytesEqual(result, data, "corrupted totalLen doesn't affect data integrity");
-          return;
+        if (i === chunks.length - 1) {
+          // CHUNK_END: 20000 assembled bytes != declared 999999, must drop.
+          assert.equal(result, null, "corrupted totalLen causes the assembled message to be dropped");
+        } else {
+          assert.equal(result, null, "intermediate chunks never return early");
         }
       }
-      assert.fail("should have reassembled");
+    });
+
+    it("valid totalLen still reassembles correctly (declared matches actual)", () => {
+      const data = randomBytes(20000);
+      const chunks = chunkMessagePrefixed(data, 0x20);
+      const assembler = new ChunkAssembler();
+      let result: Uint8Array | null = null;
+      for (const chunk of chunks) {
+        result = assembler.feed(chunk.subarray(1));
+        if (result) break;
+      }
+      assert.ok(result, "should reassemble when declared length matches actual");
+      assertBytesEqual(result!, data, "content matches");
+    });
+
+    it("CHUNK_SINGLE arriving mid-reassembly resets in-progress state instead of merging", () => {
+      const partial = randomBytes(20000);
+      const partialChunks = chunkMessagePrefixed(partial, 0x20);
+      const single = randomBytes(50);
+      const singleChunks = chunkMessagePrefixed(single, 0x20); // exactly 1 chunk (CHUNK_SINGLE)
+      assert.equal(singleChunks.length, 1);
+
+      const assembler = new ChunkAssembler();
+      // feed only the START of the large message, leaving the assembler mid-reassembly
+      assembler.feed(partialChunks[0].subarray(1));
+
+      // a single-frame message now arrives (e.g. a small text message interleaved
+      // with an in-flight file transfer). it must return its own payload immediately
+      // and blow away the abandoned partial state, not silently swallow it.
+      const result = assembler.feed(singleChunks[0].subarray(1));
+      assert.ok(result, "single-frame message returns immediately");
+      assertBytesEqual(result!, single, "single-frame content is correct, not merged with the partial");
+
+      // the partial message's remaining chunks, if fed now, must not resurrect old state:
+      // there's no START in this tail alone, so continuing it should fail to reassemble.
+      let stragglerResult: Uint8Array | null = null;
+      for (let i = 1; i < partialChunks.length; i++) {
+        stragglerResult = assembler.feed(partialChunks[i].subarray(1));
+      }
+      assert.equal(stragglerResult, null, "orphaned continuation chunks from the abandoned message go nowhere");
     });
   });
 });

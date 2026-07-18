@@ -11,6 +11,8 @@ import {
   parseHeader,
   encodeFilePlaintext,
   decodeFilePlaintext,
+  encodeFilePartPlaintext,
+  decodeFilePartPlaintext,
 } from "../../src/scripts/whisper/live-wire.js";
 
 function randomSalt(): Uint8Array { return randomBytes(4); }
@@ -413,6 +415,80 @@ describe("live-wire", () => {
       const encoded = encodeFilePlaintext(name, "application/pdf", new Uint8Array([0x41]));
       const decoded = decodeFilePlaintext(encoded);
       assert.equal(decoded.fileName, name, "Unicode preserved");
+    });
+  });
+
+  describe("FILE_PART header (encodeFilePartPlaintext/decodeFilePartPlaintext)", () => {
+    it("round-trips chunk 0 with name/type/data", () => {
+      const data = randomBytes(1000);
+      const encoded = encodeFilePartPlaintext(42, 0, 3, 50000, data, "video.mp4", "video/mp4");
+      const decoded = decodeFilePartPlaintext(encoded);
+      assert.equal(decoded.transferId, 42);
+      assert.equal(decoded.chunkIndex, 0);
+      assert.equal(decoded.totalChunks, 3);
+      assert.equal(decoded.totalFileSize, 50000);
+      assert.equal(decoded.fileName, "video.mp4");
+      assert.equal(decoded.fileType, "video/mp4");
+      assertBytesEqual(decoded.chunkData, data, "chunk 0 data");
+    });
+
+    it("round-trips a non-zero chunk index without name/type fields", () => {
+      const data = randomBytes(500);
+      const encoded = encodeFilePartPlaintext(42, 2, 3, 50000, data);
+      const decoded = decodeFilePartPlaintext(encoded);
+      assert.equal(decoded.chunkIndex, 2);
+      assert.equal(decoded.fileName, undefined);
+      assertBytesEqual(decoded.chunkData, data, "chunk 2 data");
+    });
+
+    it("rejects totalChunks = 0, a zero-chunk transfer would strand an IncomingFileTransfer forever", () => {
+      const encoded = encodeFilePartPlaintext(1, 0, 0, 100, randomBytes(10));
+      assert.throws(() => decodeFilePartPlaintext(encoded), /totalChunks/);
+    });
+
+    it("rejects chunkIndex >= totalChunks", () => {
+      const encoded = encodeFilePartPlaintext(1, 5, 3, 100, randomBytes(10));
+      assert.throws(() => decodeFilePartPlaintext(encoded), /chunkIndex/);
+    });
+
+    it("accepts chunkIndex === totalChunks - 1 (the last valid chunk)", () => {
+      const encoded = encodeFilePartPlaintext(1, 2, 3, 100, randomBytes(10));
+      const decoded = decodeFilePartPlaintext(encoded);
+      assert.equal(decoded.chunkIndex, 2);
+    });
+
+    it("rejects NaN totalFileSize", () => {
+      const encoded = encodeFilePartPlaintext(1, 0, 1, NaN, randomBytes(10));
+      assert.throws(() => decodeFilePartPlaintext(encoded), /totalFileSize/);
+    });
+
+    it("rejects negative totalFileSize", () => {
+      const encoded = encodeFilePartPlaintext(1, 0, 1, -5, randomBytes(10));
+      assert.throws(() => decodeFilePartPlaintext(encoded), /totalFileSize/);
+    });
+
+    it("rejects Infinity totalFileSize", () => {
+      const encoded = encodeFilePartPlaintext(1, 0, 1, Infinity, randomBytes(10));
+      assert.throws(() => decodeFilePartPlaintext(encoded), /totalFileSize/);
+    });
+
+    it("rejects totalFileSize beyond 2^53", () => {
+      const encoded = encodeFilePartPlaintext(1, 0, 1, 2 ** 53 + 1024, randomBytes(10));
+      assert.throws(() => decodeFilePartPlaintext(encoded), /totalFileSize/);
+    });
+
+    it("accepts totalFileSize exactly at 2^53 (the documented boundary)", () => {
+      const encoded = encodeFilePartPlaintext(1, 0, 1, 2 ** 53, randomBytes(10));
+      const decoded = decodeFilePartPlaintext(encoded);
+      assert.equal(decoded.totalFileSize, 2 ** 53);
+    });
+
+    it("all validation runs before any transfer state would be created (chunk 0, totalChunks 0)", () => {
+      // the pathological combination the audit called out directly: chunk 0 of a
+      // declared-zero-chunk transfer must never reach live.ts's handleFilePartMessage
+      // in a way that creates an IncomingFileTransfer.
+      const encoded = encodeFilePartPlaintext(7, 0, 0, 0, randomBytes(1), "x.bin", "application/octet-stream");
+      assert.throws(() => decodeFilePartPlaintext(encoded), /totalChunks/);
     });
   });
 });

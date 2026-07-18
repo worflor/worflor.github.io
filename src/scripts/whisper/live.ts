@@ -135,6 +135,9 @@ export interface LiveMessage {
    * Zero wire overhead — derived from per-side send/recv totals + role.
    */
   msgId?: number;
+  /** Chunked file transfer id, set for FILE_PART assemblies (inbound and the outbound
+   *  chunk-0 self-echo) so the UI can resolve progress cards by id instead of name+size. */
+  transferId?: number;
   text?: string;
   fileName?: string;
   fileSize?: number;
@@ -498,6 +501,9 @@ export class WhisperLiveSession {
   private cancelledIncomingTransfers = new Set<number>();
   /** transferIds we (as sender) or our peer (as receiver) cancelled — checked between chunks in sendFileChunked. */
   private cancelledOutgoingTransfers = new Set<number>();
+  /** transferIds actively being sent via sendFileChunked, letting an incoming FILE_CANCEL(RECEIVER)
+   *  be validated against a real in-flight send instead of blindly trusting the peer's transferId. */
+  private outgoingTransfersInFlight = new Set<number>();
   private engine: WhisperEngine | null = null;
   private isOfferer = false;
   /** Total messages sent this session — never resets unlike ratchet nSend. */
@@ -721,36 +727,46 @@ export class WhisperLiveSession {
 
   private sealedSendQueue: Promise<void> = Promise.resolve();
 
-  /** Send a frame sealed with the CTRL cipher. Serialized to preserve counter order. */
+  /** Send a frame sealed with the CTRL cipher. Serialized to preserve counter order.
+   *  counter + chain consumption both happen inside the queued body, and only commit
+   *  after dc.send succeeds: a throw anywhere upstream (kdf/import/seal/send) must
+   *  never advance ctrlChainSend without the frame actually going out, or the receiver
+   *  can never derive a matching key again. */
   private sendSealed(type: number, payload?: Uint8Array): void {
-    if (!this.ctrlChainSend) return; // drop — never send CTRL/ACK/TYPING in plaintext
-    if (this.ctrlSendCounter >= 0xFFFFFFFF) return; // nonce space exhausted — drop silently
+    if (!this.ctrlChainSend) return; // drop, never send CTRL/ACK/TYPING in plaintext
     const inner = payload
       ? (() => { const b = new Uint8Array(1 + payload.length); b[0] = type; b.set(payload, 1); return b; })()
       : new Uint8Array([type]);
     const dirBit = this.isOfferer ? 0 : 1;
-    const counter = this.ctrlSendCounter++;
     this.sealedSendQueue = this.sealedSendQueue
       .then(async () => {
-        if (!this.dc || this.dc.readyState !== "open" || !this.ctrlChainSend) return;
+        if (!this.dc || this.dc.readyState !== "open" || !this.ctrlChainSend) return; // burn nothing, dc not open
+        if (this.ctrlSendCounter >= 0xFFFFFFFF) return; // nonce space exhausted, drop silently, no counter burned
+        const counter = this.ctrlSendCounter; // reserved only once send below actually succeeds
         const [newChain, msgKey] = await kdfChainDirect(this.ctrlChainSend);
-        const aad = this.ctrlChainSend.slice();  // capture old chain key as AAD before wipe
-        this.ctrlChainSend.fill(0);
-        this.ctrlChainSend = newChain;
+        const aad = this.ctrlChainSend.slice();  // capture old chain key as AAD, chain itself untouched until commit
         const ck = await importCtrlKey(msgKey);
         msgKey.fill(0);
         let sealed: Uint8Array;
         try {
           sealed = await sealCtrl(ck, inner, counter, dirBit, aad);
         } finally {
-          aad.fill(0);  // always wipe — even if sealCtrl throws
+          aad.fill(0);  // always wipe, even if sealCtrl throws
         }
-        if (this.dc?.readyState === "open") {
-          const wire = new Uint8Array(1 + sealed.length);
-          wire[0] = LIVE_MSG.SEALED;
-          wire.set(sealed, 1);
+        if (!this.dc || this.dc.readyState !== "open" || !this.ctrlChainSend) { newChain.fill(0); return; } // session moved on while sealing
+        const wire = new Uint8Array(1 + sealed.length);
+        wire[0] = LIVE_MSG.SEALED;
+        wire.set(sealed, 1);
+        try {
           this.dc.send(wire);
+        } catch (sendErr) {
+          newChain.fill(0);
+          throw sendErr; // counter + chain stay exactly where they were, nothing was actually sent
         }
+        // commit only now: the frame is genuinely on the wire.
+        this.ctrlChainSend.fill(0);
+        this.ctrlChainSend = newChain;
+        this.ctrlSendCounter = counter + 1;
       })
       .catch(() => {});
   }
@@ -776,6 +792,18 @@ export class WhisperLiveSession {
 
   private wipeBytes(bytes: Uint8Array | null): void {
     if (bytes) bytes.fill(0);
+  }
+
+  /** Add to a cancelled-transfer id set, evicting the oldest entry once it grows past
+   *  64, since a long session must not let these sets grow unbounded. Sets preserve
+   *  insertion order, so the first key is always the oldest (FIFO). */
+  private addCancelledTransferId(set: Set<number>, id: number): void {
+    if (set.has(id)) return;
+    set.add(id);
+    if (set.size > 64) {
+      const oldest = set.values().next().value;
+      if (oldest !== undefined) set.delete(oldest);
+    }
   }
 
   private isSessionCurrent(generation: number): boolean {
@@ -950,6 +978,7 @@ export class WhisperLiveSession {
     this.incomingFiles.clear();
     this.cancelledIncomingTransfers.clear();
     this.cancelledOutgoingTransfers.clear();
+    this.outgoingTransfersInFlight.clear();
   }
 
   private resetSessionState(): void {
@@ -1844,6 +1873,10 @@ export class WhisperLiveSession {
         // try loop-derived skipped key first (defense-in-depth; never fires with ordered SCTP).
         let messageKey = this.takeSkippedLoopKey(skippedLoopKeys, pubKeyHex, header.counter);
         let didDHRatchet = false;
+        // every position skipMessagesWithLoopState advances past corresponds to one message
+        // the peer actually sent (its nSentTotal ticked for each). nRecvTotal must mirror
+        // that count exactly, or the global msgId numbering drifts out of lockstep forever.
+        let recvSkipped = 0;
 
         if (!messageKey) {
           // check if this is a new DH ratchet key
@@ -1851,7 +1884,9 @@ export class WhisperLiveSession {
             if (!header.pubKey) return; // DH ratchet needs the actual key bytes
             // new DH ratchet — skip remaining messages in current receive chain
             if (ratchetState.chainKeyRecv && loopStateRecv) {
+              const beforeSkip = ratchetState.nRecv;
               loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.prevChainLen);
+              recvSkipped += ratchetState.nRecv - beforeSkip;
             }
             await dhRatchetStep(ratchetState, header.pubKey.slice());
             // reinit both loop states from the new DH-derived chain keys
@@ -1864,7 +1899,9 @@ export class WhisperLiveSession {
           // advance loop and ratchet counter to the message's position
           // (with ordered SCTP, skip count is always 0 — loop body never executes)
           if (!loopStateRecv) throw new Error("No receiving loop state");
+          const beforeSkip = ratchetState.nRecv;
           loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.counter);
+          recvSkipped += ratchetState.nRecv - beforeSkip;
 
           // derive this message's key via loopStep — speculative until decrypt succeeds
           const stepResult = await loopStep(loopStateRecv);
@@ -1893,6 +1930,26 @@ export class WhisperLiveSession {
           throw decryptErr;
         }
         messageKey.fill(0);
+
+        // session may have been torn down/regenerated during the awaits above (decrypt,
+        // skip-derivation, DH step). check before touching nRecvTotal: a stale session's
+        // counter must never be mutated, and no further awaits occur before commit below
+        // so one check here covers the rest of this function too.
+        if (!this.isSessionCurrent(generation)) {
+          this.wipeRatchetState(ratchetState);
+          this.wipeLoopState(loopStateSend);
+          this.wipeLoopState(loopStateRecv);
+          this.wipeSkippedLoopKeys(skippedLoopKeys);
+          return;
+        }
+
+        // reserve this message's msgId slot (plus any skipped ones) now: the peer's
+        // nSentTotal already moved past them at send time, authenticated by GCM above.
+        // count it here, before decompress, so a decode failure below still counts,
+        // otherwise every future msgId would be off by one, forever, from this point on.
+        this.nRecvTotal += recvSkipped;
+        const msgId = this.nRecvTotal * 2 + (this.isOfferer ? 1 : 0);
+        this.nRecvTotal++;
 
         // decompress: first 4 bytes are decodedLen (LE uint32), rest is loop-encoded plaintext
         if (compressedPayload.length < 4) throw new Error("ciphertext too short");
@@ -1924,9 +1981,6 @@ export class WhisperLiveSession {
         if (didDHRatchet) this.onLog("bond renewed");
 
         this.consecutiveDecryptFailures = 0; // reset on successful decrypt+decompress
-
-        const msgId = this.nRecvTotal * 2 + (this.isOfferer ? 1 : 0);
-        this.nRecvTotal++;
 
         const ackPayload = new Uint8Array(4);
         new DataView(ackPayload.buffer).setUint32(0, msgId, true);
@@ -2055,6 +2109,7 @@ export class WhisperLiveSession {
       type: "file",
       direction: "peer",
       msgId: transfer.firstMsgId,
+      transferId,
       fileName: transfer.fileName,
       fileSize: transfer.totalSize,
       fileBlob: assembled,
@@ -2067,18 +2122,20 @@ export class WhisperLiveSession {
    * Handle a peer FILE_CANCEL frame.
    * role SENDER   — peer aborted the transfer it was sending us: drop our inbound state.
    * role RECEIVER — peer rejected the transfer we were sending it: abort our outbound loop.
+   * both roles are validated against real local state first: an unknown or already
+   * finished transferId is silently ignored rather than fabricating cancellation state.
    */
   private handleFileCancel(transferId: number, role: number): void {
     if (role === FILE_CANCEL_ROLE.SENDER) {
       const transfer = this.incomingFiles.get(transferId);
-      if (transfer) {
-        transfer.chunks.clear();
-        this.incomingFiles.delete(transferId);
-      }
-      this.cancelledIncomingTransfers.add(transferId);
+      if (!transfer) return; // unknown or already-completed transfer, nothing to cancel
+      transfer.chunks.clear();
+      this.incomingFiles.delete(transferId);
+      this.addCancelledTransferId(this.cancelledIncomingTransfers, transferId);
       this.onTransferCancelled?.(transferId, "peer", "in");
     } else if (role === FILE_CANCEL_ROLE.RECEIVER) {
-      this.cancelledOutgoingTransfers.add(transferId);
+      if (!this.outgoingTransfersInFlight.has(transferId)) return; // no such outbound send in flight
+      this.addCancelledTransferId(this.cancelledOutgoingTransfers, transferId);
       this.onTransferCancelled?.(transferId, "peer", "out");
     }
   }
@@ -2272,7 +2329,7 @@ export class WhisperLiveSession {
    *  loop between chunks, tells the peer via CTRL so it drops its partial state,
    *  and always resolves cleanly (no throw) — sendFileChunked simply stops early. */
   cancelFileTransfer(transferId: number): void {
-    this.cancelledOutgoingTransfers.add(transferId);
+    this.addCancelledTransferId(this.cancelledOutgoingTransfers, transferId);
     this.sendCtrl(CTRL_OP.FILE_CANCEL, encodeFileCancelPayload(transferId, FILE_CANCEL_ROLE.SENDER));
     this.onTransferCancelled?.(transferId, "local", "out");
   }
@@ -2286,7 +2343,7 @@ export class WhisperLiveSession {
       transfer.chunks.clear();
       this.incomingFiles.delete(transferId);
     }
-    this.cancelledIncomingTransfers.add(transferId);
+    this.addCancelledTransferId(this.cancelledIncomingTransfers, transferId);
     this.sendCtrl(CTRL_OP.FILE_CANCEL, encodeFileCancelPayload(transferId, FILE_CANCEL_ROLE.RECEIVER));
     this.onTransferCancelled?.(transferId, "local", "in");
   }
@@ -2302,6 +2359,7 @@ export class WhisperLiveSession {
     let bytesSent = 0;
 
     this.onSendStart?.(transferId, file.name, file.size);
+    this.outgoingTransfersInFlight.add(transferId);
 
     try {
       for (let i = 0; i < totalChunks; i++) {
@@ -2333,6 +2391,7 @@ export class WhisperLiveSession {
             this.onMessage({
               type: "file", direction: "self",
               msgId, fileName: file.name, fileSize: file.size, fileType: file.type,
+              transferId,
               timestamp: Date.now(),
             });
           }
@@ -2342,6 +2401,7 @@ export class WhisperLiveSession {
       }
     } finally {
       this.cancelledOutgoingTransfers.delete(transferId);
+      this.outgoingTransfersInFlight.delete(transferId);
     }
     return firstMsgId;
   }

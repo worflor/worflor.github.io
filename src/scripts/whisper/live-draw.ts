@@ -59,8 +59,11 @@ function pointToSeed(pt: Point): GlyphSeed {
   return GLYPH_CHANNEL_NAMES.map(ch => Math.round(pt[ch] * 32767));
 }
 
-interface PenStroke { type: "pen"; points: Point[]; color: string; width: number; penId: string; }
-interface FillStroke { type: "fill"; seedX: number; seedY: number; color: string; tolerance: number; }
+// streamed marks whether the op went out over the wire (begin/glyph/end for
+// pen, nothing for fill) — undo/redo consult it so they only echo a stream
+// event for ops the peer actually has a copy of.
+interface PenStroke { type: "pen"; points: Point[]; color: string; width: number; penId: string; streamed: boolean; }
+interface FillStroke { type: "fill"; seedX: number; seedY: number; color: string; tolerance: number; streamed: boolean; }
 type StrokeEntry = PenStroke | FillStroke;
 
 type ToolId = "pen" | "eraser" | "fill" | "eyedropper";
@@ -340,6 +343,35 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     }
     pointerPressureCache.clear();
     activePenPointerId = -1;
+
+    // any pen stroke still mid-flight when the surface closes must be closed
+    // out on the wire too — otherwise the peer's peerActiveStroke never gets
+    // an "end" to match its last "glyph" and dangles forever.
+    if (currentStroke) {
+      flushPoints();
+      finalizeCurrentStrokeTail();
+      if (currentStroke.points.length > 0 && callbacks.onEvent) {
+        if (strokeEncoder) {
+          const tail = strokeEncoder.flush();
+          if (tail) callbacks.onEvent({ kind: "glyph", strokeId: nextStrokeId, data: tail });
+        }
+        callbacks.onEvent({ kind: "end", strokeId: nextStrokeId });
+      }
+      currentStroke = null;
+      lastPoint = null;
+      hasLastRenderMid = false;
+      strokeSampler = null;
+      strokeEncoder = null;
+      pendingPoints.length = 0;
+      activePointerId = -1;
+    }
+    // presence:false is the only close signal on the wire — fires on every
+    // close path (X, Escape, parent abort, and after a successful Send,
+    // which also routes through closeDraw). the receiver is tolerant of it
+    // arriving either before or after the sent file, since the two travel
+    // over independently queued sealed-send pipelines.
+    callbacks.onEvent?.({ kind: "presence", active: false, logicalW, logicalH });
+
     unlockDrawBodyScroll();
     overlay.classList.remove("--open");
     overlay.addEventListener("transitionend", () => overlay.remove(), { once: true });
@@ -794,6 +826,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       color: style.color,
       width: style.width,
       penId: style.penId,
+      streamed: !!callbacks.onEvent,
     };
     hasLastRenderMid = false;
     pendingPoints.length = 0;
@@ -1233,13 +1266,17 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
 
   function undo(): void {
     if (strokes.length === 0) return;
-    redoStack.push(strokes.pop()!);
+    const stroke = strokes.pop()!;
+    redoStack.push(stroke);
     while (checkpoints.length > 0 && checkpoints[checkpoints.length - 1]!.idx > strokes.length) {
       checkpoints.pop();
     }
     restoreToCheckpoint();
     updateToolbar();
-    if (callbacks.onEvent) callbacks.onEvent({ kind: "undo" });
+    // unstreamed ops (fills) were never mirrored to the peer, so undoing one
+    // must stay local-only — echoing "undo" here would pop an unrelated
+    // stroke off the peer's stack and desync the two canvases.
+    if (stroke.streamed && callbacks.onEvent) callbacks.onEvent({ kind: "undo" });
   }
 
   function redo(): void {
@@ -1249,7 +1286,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     renderStrokeOnCanvas(stroke);
     maybeCaptureCheckpoint();
     updateToolbar();
-    if (callbacks.onEvent) callbacks.onEvent({ kind: "redo" });
+    if (stroke.streamed && callbacks.onEvent) callbacks.onEvent({ kind: "redo" });
   }
 
   function commitStroke(stroke: StrokeEntry): void {
@@ -1269,6 +1306,9 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       seedY: canvasY,
       color: currentColor,
       tolerance: 2700,
+      // fill has no wire event kind — never streamed, so its undo/redo
+      // must stay silent on the peer channel.
+      streamed: false,
     };
     executeFill(stroke);
     commitStroke(stroke);
@@ -1491,6 +1531,7 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       color: currentColor,
       width: baseWidth * pen.widthScale,
       penId,
+      streamed: !!callbacks.onEvent,
     };
     lastPoint = startPt;
     hasLastRenderMid = false;
@@ -2042,8 +2083,15 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
     callbacks.onEvent({ kind: "base-end", snapshotId });
   }
 
+  // guards against a double-tap firing two send events before the surface
+  // closes — set synchronously on entry, before any await, and never reset
+  // since the surface tears down right after a successful send anyway.
+  let sendingDraw = false;
+
   sendBtn.addEventListener("click", async () => {
-    if (strokes.length === 0) return;
+    if (strokes.length === 0 || sendingDraw) return;
+    sendingDraw = true;
+    sendBtn.disabled = true;
 
     const baseName = resolveOutputName();
 
@@ -2055,9 +2103,9 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
       const baseStrokes: StrokeEntry[] = gwyphBasePayload.strokes.map(s =>
         s.type === "fill"
           ? { type: "fill", seedX: s.seedX * logicalW, seedY: s.seedY * logicalH,
-              color: s.color, tolerance: s.tolerance }
+              color: s.color, tolerance: s.tolerance, streamed: false }
           : { type: "pen", penId: s.tool, color: s.color, width: s.width * ws,
-              points: s.points },
+              points: s.points, streamed: false },
       );
       const payload = encodeGwyphPayload([...baseStrokes, ...strokes], gwyphBasePayload.mode);
       const payloadBuffer = new ArrayBuffer(payload.byteLength);

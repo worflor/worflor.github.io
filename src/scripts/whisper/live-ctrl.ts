@@ -3,9 +3,12 @@
  *
  * Opcode ranges:
  *   0x01–0x7F  signals  (bit 7 = 0)
- *     0x01  VOTE     [topic:1B]  — cast vote for topic
- *     0x02  CANCEL   [topic:1B]  — retract vote for topic
+ *     0x01  VOTE     [topic:1B][round:1B]  : cast vote for topic's round
+ *     0x02  CANCEL   [topic:1B][round:1B]  : retract vote for topic's round
  *       topic 0x01 = clear history, 0x02 = campfire
+ *       round is a per-topic mod-256 counter, bumped each time a vote executes,
+ *       letting both sides converge correctly even when a local cancel crosses an
+ *       already-committed peer vote for the same round (see VoteTopic below).
  *     0x20  STREAM_STATE  [flags:1B]  — bit0=audio, bit1=video, bit2=screen
  *     0x30–0x3F  session policy     (future)
  *   0x80–0xFF  payload-bearing ops (bit 7 = 1)
@@ -28,8 +31,8 @@
  */
 
 export const CTRL_OP = {
-  VOTE: 0x01,    // payload: [topic:1B]
-  CANCEL: 0x02,  // payload: [topic:1B]
+  VOTE: 0x01,    // payload: [topic:1B][round:1B]
+  CANCEL: 0x02,  // payload: [topic:1B][round:1B]
   STREAM_STATE: 0x20, // payload: [flags:1B] bit0=audio, bit1=video, bit2=screen, 0x00=off
   SEEN: 0x81,  // payload: [msgId:4B LE]
   REACT: 0x82,  // payload: [msgId:4B LE][emoji:utf8]
@@ -75,12 +78,24 @@ export function decodeCtrl(bytes: Uint8Array): { opcode: number; payload: Uint8A
  * Generic voted operation. Encapsulates the symmetric voting state machine:
  * both parties must agree before an action executes.
  *
+ * Rounds: each topic tracks a currentRound (mod 256), bumped only on execute.
+ * castLocal/cancelLocal always act on the current round, so read `.round` when
+ * building the wire payload so the peer knows which round a vote belongs to.
+ *
+ * Convergence: if the peer's VOTE for round R arrives after the local side
+ * cancelled its own vote for round R, the local side still executes, because the
+ * peer necessarily saw our vote before committing (that's why they crossed
+ * threshold), so their execution already happened and the cancel arrived too
+ * late to prevent it. A local sticky "voted this round" flag (independent of
+ * the live cancel/vote toggle) drives this: it's set by castLocal and only
+ * cleared by execute or reset, never by cancelLocal.
+ *
  * Usage:
  *   const clear = new VoteTopic({ parties: 2, timeoutMs: 30_000, onExecute, onState });
- *   // user clicks button  → clear.castLocal()   → returns { send: voteOpcode } or { execute: true }
- *   // peer sends vote     → clear.receivePeer()  → may trigger execute
- *   // user cancels        → clear.cancelLocal()  → returns { send: cancelOpcode }
- *   // peer cancels        → clear.cancelPeer()
+ *   // user clicks button  → session.sendCtrl(VOTE, encodeVotePayload(topic, clear.round)); clear.castLocal();
+ *   // peer sends vote     → clear.receivePeer(round)        → may trigger execute
+ *   // user cancels        → session.sendCtrl(CANCEL, encodeVotePayload(topic, clear.round)); clear.cancelLocal();
+ *   // peer cancels        → clear.receivePeerCancel(round)
  *   // session ends        → clear.reset()
  */
 export type VoteState = "idle" | "pending-out" | "pending-in";
@@ -112,7 +127,12 @@ export class VoteTopic {
 
   private _state: VoteState = "idle";
   private _local = false;
+  /** sticky: true once castLocal fires this round, cleared only by execute/reset,
+   *  NOT by cancelLocal. drives the crossing-cancel convergence rule (see class doc). */
+  private _localVotedThisRound = false;
   private _peer = 0;
+  /** per-topic round counter (wire byte, wraps mod 256). bumped only on execute. */
+  private _round = 0;
   private _maxPeer: number;
   private _localWeight: number;
   private _peerWeight: number;
@@ -135,6 +155,9 @@ export class VoteTopic {
 
   get state(): VoteState { return this._state; }
   get localVoted(): boolean { return this._local; }
+  /** The round a local castLocal()/cancelLocal() right now would apply to.
+   *  Read this when building the wire payload for VOTE/CANCEL. */
+  get round(): number { return this._round; }
 
   /**
    * Reconfigure weights and recalculate threshold.
@@ -150,10 +173,11 @@ export class VoteTopic {
     this.reset();
   }
 
-  /** Cast this client's vote. Returns true if threshold met (action executed). */
+  /** Cast this client's vote for the current round. Returns true if threshold met (action executed). */
   castLocal(): boolean {
     if (this._local) return false;
     this._local = true;
+    this._localVotedThisRound = true;
     if (this._tally() >= this.threshold) {
       this._execute();
       return true;
@@ -163,7 +187,9 @@ export class VoteTopic {
     return false;
   }
 
-  /** Retract this client's vote. */
+  /** Retract this client's vote for the current round. Does not clear the sticky
+   *  "voted this round" flag: a peer vote that already crossed threshold before
+   *  seeing this cancel must still converge (see receivePeer). */
   cancelLocal(): void {
     if (!this._local) return;
     this._local = false;
@@ -171,8 +197,19 @@ export class VoteTopic {
     this._transition(this._peer > 0 ? "pending-in" : "idle");
   }
 
-  /** Register a peer's vote. Returns true if threshold met (action executed). */
-  receivePeer(): boolean {
+  /**
+   * Register a peer's vote for `round`. Returns true if the action executed.
+   * Stale rounds (already resolved here) are no-ops. A round matching ours where
+   * we ever voted (even if since locally cancelled) converges immediately, since the
+   * peer only sent this because they'd already seen our vote and crossed
+   * threshold on their side before our cancel could reach them.
+   */
+  receivePeer(round: number): boolean {
+    if (round !== this._round) return false; // stale or ahead, SCTP ordering means this shouldn't happen
+    if (this._localVotedThisRound) {
+      this._execute();
+      return true;
+    }
     this._peer = Math.min(this._peer + 1, this._maxPeer);
     if (this._tally() >= this.threshold) {
       this._execute();
@@ -183,8 +220,10 @@ export class VoteTopic {
     return false;
   }
 
-  /** Register a peer's cancellation. */
-  cancelPeer(): void {
+  /** Register a peer's cancellation of `round`. A cancel for a round that already
+   *  executed here is a no-op: the action already happened, retracting is moot. */
+  receivePeerCancel(round: number): void {
+    if (round !== this._round) return; // already executed here, or not reached yet: no-op
     this._peer = Math.max(this._peer - 1, 0);
     if (this._tally() < this.threshold) {
       this._clearTimer();
@@ -192,9 +231,12 @@ export class VoteTopic {
     }
   }
 
-  /** Reset all state — call on disconnect / session teardown. */
+  /** Reset all state: call on disconnect / session teardown. Does not bump the
+   *  round: an abandoned/timed-out attempt never executed, so retrying the same
+   *  round number is safe. */
   reset(): void {
     this._local = false;
+    this._localVotedThisRound = false;
     this._peer = 0;
     this._clearTimer();
     this._transition("idle");
@@ -215,7 +257,9 @@ export class VoteTopic {
 
   private _execute(): void {
     this._local = false;
+    this._localVotedThisRound = false;
     this._peer = 0;
+    this._round = (this._round + 1) & 0xFF;
     this._clearTimer();
     this._state = "idle";
     this._onExecute();
@@ -233,6 +277,18 @@ export class VoteTopic {
   private _clearTimer(): void {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
   }
+}
+
+/* ── VOTE / CANCEL payload encoding ──────────────────────── */
+
+/** VOTE / CANCEL payload: 1-byte topic + 1-byte round (mod-256, see VoteTopic). */
+export function encodeVotePayload(topic: number, round: number): Uint8Array {
+  return new Uint8Array([topic & 0xFF, round & 0xFF]);
+}
+
+export function decodeVotePayload(payload: Uint8Array): { topic: number; round: number } | null {
+  if (payload.length < 2) return null;
+  return { topic: payload[0], round: payload[1] };
 }
 
 /* ── Stream state ───────────────────────────────────────── */
