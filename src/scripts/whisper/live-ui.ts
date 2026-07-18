@@ -968,7 +968,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       // is currently anchored to instead of a message baked in at build time.
       if (!shelfTarget) return;
       toggleSelfReaction(shelfTarget.msgId, glyph);
-      localStorage.setItem("wl-last-reaction", glyph);
+      rememberReaction(glyph);
       closeReactionShelf();
     },
   });
@@ -997,16 +997,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   composerOverlay.className = "wl-shelf-overlay wl-shelf-overlay--mark";
   composerOverlay.setAttribute("aria-hidden", "true");
   composerOverlay.appendChild(reactionComposer.field);
-  // explicit confirm inside the field: touch keyboards make enter an
-  // awkward ask, and the drawer reads complete with a real affirm target.
-  // mousedown, not click, so the input never blurs before the commit runs.
-  const markCommitBtn = document.createElement("button");
-  markCommitBtn.type = "button";
-  markCommitBtn.className = "wl-react-custom-commit";
-  markCommitBtn.textContent = "✓";
-  markCommitBtn.setAttribute("aria-label", "commit this mark");
-  markCommitBtn.addEventListener("mousedown", (e) => { e.preventDefault(); reactionComposer.commit(); }, { signal });
-  reactionComposer.field.appendChild(markCommitBtn);
+  // the composer auto-commits on a single glyph, so the drawer needs no
+  // confirm — what it needs is an intuitive way back out. same circle
+  // anatomy, back semantics. mousedown so the input never blurs first.
+  const markBackBtn = document.createElement("button");
+  markBackBtn.type = "button";
+  markBackBtn.className = "wl-react-custom-commit";
+  markBackBtn.textContent = "‹";
+  markBackBtn.setAttribute("aria-label", "close the mark editor");
+  markBackBtn.addEventListener("mousedown", (e) => { e.preventDefault(); reactionComposer.reset(); }, { signal });
+  reactionComposer.field.appendChild(markBackBtn);
   reactionComposer.field.querySelector("input")?.setAttribute("tabindex", "-1");
   shelfRow.appendChild(composerOverlay);
 
@@ -1302,11 +1302,33 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
-  /** Quick-pick count: the full set normally, trimmed on narrow viewports so
-   *  the single fixed row still fits min(88vw, 22rem) without ever wrapping
-   *  (see .wl-react-shelf / .wl-shelf-row). */
+  /** Quick-pick count derived from the space the row actually has, not a
+   *  viewport breakpoint. mirrors the shelf css: max-width min(88vw, 22rem),
+   *  buttons 1.85rem, gap 0.22rem, mark + toggle reserved, plus padding.
+   *  clamped 3..6 so the row is never empty and never crowds. */
   function quickPickLimit(): number {
-    return window.innerWidth <= 380 ? 3 : 5;
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const shelfMax = Math.min(0.88 * window.innerWidth, 22 * rem);
+    const btn = 1.85 * rem;
+    const gap = 0.22 * rem;
+    const reserved = 2 * (btn + gap) + 0.9 * rem; // mark + toggle + shelf padding
+    return Math.max(3, Math.min(6, Math.floor((shelfMax - reserved) / (btn + gap))));
+  }
+
+  /** recently used marks, most recent first, deduped, capped. committed
+   *  custom glyphs earn one-tap seats in the row instead of vanishing. */
+  function recentReactions(): string[] {
+    try {
+      const raw = localStorage.getItem("wl-recent-reactions");
+      if (raw) return (JSON.parse(raw) as string[]).filter((g) => typeof g === "string" && g);
+    } catch { /* fall through to legacy */ }
+    const legacy = localStorage.getItem("wl-last-reaction");
+    return legacy ? [legacy] : [];
+  }
+
+  function rememberReaction(glyph: string): void {
+    const next = [glyph, ...recentReactions().filter((g) => g !== glyph)].slice(0, 4);
+    localStorage.setItem("wl-recent-reactions", JSON.stringify(next));
   }
 
   /** Rebuild the quick-pick emoji buttons for the message about to be shown.
@@ -1314,9 +1336,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function rebuildQuickPicks(msgId: number): void {
     while (quickPicksWrap.firstChild) quickPicksWrap.removeChild(quickPicksWrap.firstChild);
     const predefined = ["👍", "👎", "❤️", "😂"];
-    const lastUsedRaw = localStorage.getItem("wl-last-reaction");
-    const lastUsed = lastUsedRaw ? normalizeReactionGlyph(lastUsedRaw) : null;
-    if (lastUsed && !predefined.includes(lastUsed)) predefined.push(lastUsed);
+    for (const raw of recentReactions()) {
+      const glyph = normalizeReactionGlyph(raw);
+      if (glyph && !predefined.includes(glyph)) predefined.push(glyph);
+    }
 
     const picks = predefined.slice(0, quickPickLimit());
 
@@ -1329,7 +1352,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         toggleSelfReaction(msgId, emoji);
-        localStorage.setItem("wl-last-reaction", emoji);
+        rememberReaction(emoji);
         closeReactionShelf();
       }, { signal });
       quickPicksWrap.appendChild(btn);
@@ -1369,13 +1392,18 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     reactionShelf.style.left = `${left}px`;
     reactionShelf.style.transformOrigin = `top ${isSelf ? "right" : "left"}`;
 
-    // reveal the shelf when it opens past the visible bottom edge
+    // reveal the shelf when it opens past the visible bottom edge. instant,
+    // not smooth: the shelf's own entrance is the animation, and easing the
+    // viewport underneath it reads as lag on the newest message (the most
+    // common reaction target). fenced so the pin listener never mistakes
+    // this correction for the user scrolling.
     const shelfBottom = top + shelfH + SHELF_GAP;
     const visibleBottom = container.scrollTop + container.clientHeight;
     if (shelfBottom > visibleBottom) {
+      programmaticScrollUntil = performance.now() + 180;
       container.scrollTo({
         top: shelfBottom - container.clientHeight,
-        behavior: reduceMotion ? "auto" : "smooth",
+        behavior: "auto",
       });
     }
   }
@@ -6182,7 +6210,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    *  updateControls only ever touches relayConnectBtn.disabled, never its
    *  label, so there's nothing here for it to fight. */
   function setRelayQrWaiting(waiting: boolean): void {
-    if (opts.relayQrEmber) opts.relayQrEmber.style.display = waiting ? "" : "none";
+    // the waiting text itself carries the liveness now: a slow chromatic
+    // shimmer instead of a separate blinking dot.
+    if (opts.relayQrEmber) opts.relayQrEmber.style.display = "none";
+    opts.relayQrStatus?.classList.toggle("wl-qr-waiting-live", waiting);
     if (opts.relayConnectBtn) {
       opts.relayConnectBtn.textContent = waiting ? "waiting..." : "Connect";
       opts.relayConnectBtn.classList.toggle("wl-relay-connect--waiting", waiting);

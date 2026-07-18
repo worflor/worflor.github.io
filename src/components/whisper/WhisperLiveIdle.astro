@@ -354,15 +354,43 @@
     line-height: 1.4;
   }
 
-  /* ── QR handoff toggle — a compact square glyph button seated inline
-     with Connect, not a wide pill on its own row. Active/open state gets
-     the same cyan tint + chromatic split as the draw-surface tool icons. */
+  /* ── Connect + QR: one split button. connect is the primary segment,
+     the qr glyph the secondary; a hairline divider separates them inside
+     one shared outline. the two remain separate buttons in the dom (their
+     handlers and the right-click preview binding stay untouched), the
+     fusion is purely visual. ── */
+  .wl-relay-connect-row :global(#wl-relay-connect) {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
   .wl-relay-qr-toggle {
     width: var(--touch-target);
     padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    /* swallow the row gap and overlap the borders into one wall */
+    margin-left: calc(var(--space-xs) * -0.5 - 1px);
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left-color: rgb(var(--color-text-rgb) / 0.1);
+    /* default speaks the same cyan as connect: one action, two doors */
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    border-top-color: rgb(var(--chromatic-cyan) / 0.24);
+    border-right-color: rgb(var(--chromatic-cyan) / 0.24);
+    border-bottom-color: rgb(var(--chromatic-cyan) / 0.24);
+  }
+
+  /* armed wait: the qr segment turns the sync green the chat's live
+     preview outline wears when a drawing lands. same token, same meaning:
+     something is actively synced and listening. */
+  .wl-relay-connect-row :global(.wl-relay-connect--waiting) ~ .wl-relay-qr-toggle {
+    color: rgb(var(--tool-status-success));
+    border-top-color: rgb(var(--tool-status-success) / 0.45);
+    border-right-color: rgb(var(--tool-status-success) / 0.45);
+    border-bottom-color: rgb(var(--tool-status-success) / 0.45);
+    background: rgb(var(--tool-status-success) / 0.08);
   }
 
   .wl-relay-qr-toggle-icon {
@@ -446,17 +474,38 @@
     color: var(--whisper-muted);
   }
 
-  /* cyan breathing dot — reads as "still waiting for a scan," distinct
-     from the Signal Flare ember's warmer, longer-lived-presence pulse */
+  /* retired blinking dot: kept in markup for id stability, never shown.
+     the waiting text itself carries the liveness instead. */
   .wl-relay-qr-ember {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: var(--radius-full);
-    background: rgb(var(--chromatic-cyan));
-    box-shadow: 0 0 6px rgb(var(--chromatic-cyan) / 0.5);
-    animation: wl-relay-qr-breathe 2.4s ease-in-out infinite;
-    flex-shrink: 0;
+    display: none;
+  }
+
+  /* armed wait: the words breathe. a slow chromatic shimmer travels
+     through the text, the same split language the chat wears when a
+     message is seen. subtle motion that says "still listening". */
+  :global(.wl-qr-waiting-live) {
+    background: linear-gradient(
+      100deg,
+      rgb(var(--color-text-rgb) / 0.55) 0%,
+      rgb(var(--chromatic-cyan) / 0.95) 42%,
+      rgb(var(--color-text-rgb) / 0.9) 50%,
+      rgb(var(--chromatic-red) / 0.75) 58%,
+      rgb(var(--color-text-rgb) / 0.55) 100%
+    );
+    background-size: 280% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: wl-qr-waiting-shimmer 3.6s ease-in-out infinite;
+  }
+
+  @keyframes wl-qr-waiting-shimmer {
+    0% {
+      background-position: 120% 0;
+    }
+    100% {
+      background-position: -60% 0;
+    }
   }
 
   @keyframes wl-relay-qr-breathe {
@@ -480,6 +529,14 @@
        leaving a plain fade for the entrance */
     .wl-relay-qr-rows {
       transition: none;
+    }
+
+    /* the waiting shimmer settles to a static cyan tint */
+    :global(.wl-qr-waiting-live) {
+      animation: none;
+      background: none;
+      -webkit-text-fill-color: currentColor;
+      color: rgb(var(--chromatic-cyan) / 0.75);
     }
 
     .wl-relay-qr-bloom {
