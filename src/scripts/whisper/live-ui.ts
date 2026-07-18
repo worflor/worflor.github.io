@@ -5595,6 +5595,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
    *  skip a redundant re-render+re-arm when the phrase hasn't changed. */
   let qrArmedPhrase = "";
   let relayQrDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let relayQrRearmTimer: ReturnType<typeof setTimeout> | null = null;
 
   /* ── Signal Flare ────────────────────────────────────────── */
 
@@ -5791,12 +5792,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
     } catch (err) {
       relayActive = false;
-      // same reasoning as the success branch above: an errored silent wait
-      // is also leaving idle (for the error phase), so the panel closes.
+      const raw = errMsg(err);
+      // the rendezvous race times out after 45s with peer-not-found. while
+      // the qr panel is open that timeout is not a failure, it is a lap:
+      // the open panel is the user saying keep waiting, so quietly re-arm
+      // for another cycle instead of bouncing to the error phase.
+      if (silent && !aborted() && raw === "peer-not-found" && relayQrState.value) {
+        qrArmActive = false;
+        qrArmedPhrase = "";
+        destroyCurrentSession();
+        relayQrRearmTimer = setTimeout(() => {
+          relayQrRearmTimer = null;
+          if (relayQrState.value && !qrArmActive) refreshRelayQr();
+        }, 400);
+        return;
+      }
+      // any other errored silent wait is genuinely leaving idle (for the
+      // error phase), so the panel closes.
       if (silent) { qrArmActive = false; qrArmedPhrase = ""; setRelayQrWaiting(false); closeRelayQrPanel(); }
       if (aborted()) return;
       destroyCurrentSession();
-      const raw = errMsg(err);
       if (raw === "Aborted") return;
       appendLog(`relay error: ${raw}`);
       lastErrorWasRelay = true;
@@ -5846,6 +5861,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const wasActive = qrArmActive;
     qrArmActive = false;
     qrArmedPhrase = "";
+    if (relayQrRearmTimer) { clearTimeout(relayQrRearmTimer); relayQrRearmTimer = null; }
     setRelayQrWaiting(false);
     if (wasActive && relayAbort) {
       relayActive = false;
