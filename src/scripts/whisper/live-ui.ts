@@ -45,6 +45,7 @@ import {
   getQrScannerCapability,
   renderQrToCanvas,
 } from "./seal-qr";
+import { unpackLocalSdp } from "./live-qr-sdp";
 import { openDrawSurface, consumeDrawPreview } from "./live-draw";
 import { type DrawStreamEvent } from "./live-draw-stream";
 import { GlyphStreamDecoder, GLYPH_CHANNELS, GLYPH_CHANNEL_NAMES, type GlyphSeed, type GlyphChannelName } from "./live-wasm-glyph";
@@ -385,6 +386,14 @@ function buildWlFlareUrl(phrase: string): string {
   return `${window.location.origin}${window.location.pathname}#wl:${base64UrlEncode(phrase)}`;
 }
 
+// in-person mode reuses the exact same "scan a url, the site opens with the
+// code" mechanism as the flare, but the fragment carries a packed SDP
+// (already base64url, url-safe) instead of a phrase. the role (offer/answer)
+// is read from the payload itself, so it is one channel, not two.
+function buildWlLocalUrl(payload: string): string {
+  return `${window.location.origin}${window.location.pathname}#wl-local:${payload}`;
+}
+
 /* ── Preview seed ────────────────────────────────────────── */
 
 /**
@@ -521,6 +530,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // ── E2E badge live connection stats (path + rtt), polled only while connected ──
   const e2eStatsEl = liveSurface?.querySelector<HTMLElement>(".wl-e2e-tip-stats") ?? null;
   const e2eBadgeEl = liveSurface?.querySelector<HTMLElement>(".wl-e2e-badge") ?? null;
+  // in-person mode affordances: the connect row carries a data-local flag
+  // (drives the purple QR segment) and the hint swaps its copy.
+  const relayConnectRow = liveSurface?.querySelector<HTMLElement>(".wl-relay-connect-row") ?? null;
+  const relayHint = liveSurface?.querySelector<HTMLElement>(".wl-relay-hint") ?? null;
+  const RELAY_HINT_DEFAULT = relayHint?.textContent ?? "";
   let e2eStatsTimer: ReturnType<typeof setInterval> | null = null;
 
   function stopE2eStatsPoll(): void {
@@ -2436,12 +2450,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     if (opts.relayQrToggleBtn) {
-      const hasPhrase = opts.phraseInput.value.trim().length > 0;
-      // stays clickable while qrArmActive so the armed wait can be closed;
-      // only blocked by a concurrent *manual* connect (busy, not qr-driven).
-      // an empty phrase blocks opening (nothing to encode) but never traps
-      // an already-open panel — that must always stay closable.
-      opts.relayQrToggleBtn.disabled = (busy && !qrArmActive) || (!hasPhrase && !relayQrState.value);
+      // an empty phrase no longer blocks the toggle: it now MEANS in-person
+      // mode (the QR carries a local offer instead of a phrase). only a
+      // concurrent manual connect blocks it, and an armed wait keeps it
+      // clickable so the panel always stays closable.
+      opts.relayQrToggleBtn.disabled = (busy && !qrArmActive);
     }
 
     if (flareFireBtn) {
@@ -5722,8 +5735,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // that must always run the terminal teardown, no matter what a stale
     // relay/flare flag claims. swallowing it leaves a half-dead session whose
     // state poisons the next connect in the same tab.
+    // local (in-person) mode drives the session through offering/answering to
+    // build the QR, but the user must stay in the relay panel watching the QR,
+    // not get phased into the offer/answer screens. suppress the intermediate
+    // states just like the relay/flare paths do; "live" still flows through to
+    // open the chat once both sides scan.
     const wasLive = currentLiveState === "live" || currentLiveState === "recovering";
-    if ((relayActive || flareActive) && !wasLive) {
+    if ((relayActive || flareActive || localModeActive) && !wasLive) {
       const suppressed: readonly LiveState[] = [
         "offering", "waiting-for-answer", "answering", "connecting", "disconnected",
       ];
@@ -6360,11 +6378,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!relayQrState.value || !opts.relayQrPanel) return;
     const phrase = opts.phraseInput.value.trim();
     if (!phrase) {
-      extinguishQrArm();
-      clearRelayQrVisual();
-      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "type a phrase first, then show qr.";
+      // no phrase means in-person mode: same button, same panel, same scan —
+      // the QR just carries a local offer and never touches the internet.
+      void startLocalQrOffer();
       return;
     }
+    setLocalMode(false);
     if (phrase === qrArmedPhrase && qrArmActive) return;
 
     extinguishQrArm();
@@ -6389,6 +6408,87 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       relayQrDebounceTimer = null;
       refreshRelayQr();
     }, 500);
+  }
+
+  /* ── In-person local mode (empty-phrase QR, no server) ────
+   * one channel: the QR is a url with a #wl-local:<packed sdp> fragment.
+   * the other phone's native camera opens it (or an already-open tab gets a
+   * hashchange), the payload's own role byte says offer-or-answer, and the
+   * session's local-codec handshake methods do the rest. reuses the relay QR
+   * panel, the flare fragment handoff, and renderQrToCanvas untouched. */
+
+  let localModeActive = false;
+
+  // toggle the visual "local mode" affordances: the purple QR segment and the
+  // same-network hint. keyed off a data attribute so the css owns the look.
+  function setLocalMode(on: boolean): void {
+    if (localModeActive === on) return;
+    localModeActive = on;
+    relayConnectRow?.toggleAttribute("data-local", on);
+    if (relayHint) {
+      relayHint.textContent = on
+        ? "must be on the same network. no greater internet needed."
+        : RELAY_HINT_DEFAULT;
+    }
+  }
+
+  async function startLocalQrOffer(): Promise<void> {
+    if (session) return;
+    setLocalMode(true);
+    try {
+      destroyCurrentSession();
+      session = createSession();
+      const offer = await session.createLocalOffer();
+      const url = buildWlLocalUrl(offer);
+      if (opts.relayQrCanvas) { opts.relayQrCanvas.dataset.wlLocalUrl = url; renderQrToCanvas(opts.relayQrCanvas, url); }
+      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "have them scan this. then scan their reply.";
+    } catch (err) {
+      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "couldn't start in-person mode.";
+      appendLog(`local offer failed: ${err instanceof Error ? err.message : "unknown"}`);
+    }
+  }
+
+  // a scanned #wl-local payload: the role byte decides. an offer means we are
+  // the answerer (accept it, show our reply QR back); an answer means we are
+  // the offerer completing the bond. same handler for cold-load, hot-tab
+  // hashchange, and in-app scan — one path.
+  async function applyLocalHandoff(payload: string): Promise<void> {
+    let kind: "offer" | "answer";
+    try {
+      kind = unpackLocalSdp(payload).type;
+    } catch {
+      return; // not a valid local payload
+    }
+
+    if (kind === "answer") {
+      // we offered; this is their reply. our session must still be alive —
+      // it is, because a hot-tab scan is a hashchange, not a reload.
+      if (!session) return;
+      setLocalMode(true);
+      try {
+        await session.applyLocalAnswer(payload);
+      } catch (err) {
+        appendLog(`local answer failed: ${err instanceof Error ? err.message : "unknown"}`);
+      }
+      return;
+    }
+
+    // an offer: we are the answerer. don't clobber a live session.
+    if (session) return;
+    setLocalMode(true);
+    if (opts.relayAssistToggle) { opts.relayAssistToggle.checked = true; applyModeSwitch("relay"); }
+    setRelayQrExpanded(true);
+    try {
+      destroyCurrentSession();
+      session = createSession();
+      const answer = await session.acceptLocalOffer(payload);
+      const url = buildWlLocalUrl(answer);
+      if (opts.relayQrCanvas) { opts.relayQrCanvas.dataset.wlLocalUrl = url; renderQrToCanvas(opts.relayQrCanvas, url); }
+      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "show this reply back to them.";
+    } catch (err) {
+      if (opts.relayQrStatus) opts.relayQrStatus.textContent = "couldn't accept their code.";
+      appendLog(`local accept failed: ${err instanceof Error ? err.message : "unknown"}`);
+    }
   }
 
   /** the relay toggle is an icon-only glyph button, not the shared
@@ -8153,6 +8253,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     applyQrHandoff(qrHandoffPhrase.trim());
   }
 
+  // in-person handoff on a cold load (native camera opened a fresh tab): the
+  // deep-link script stashed the packed payload; route it the same way a
+  // hashchange would. one-shot.
+  const localHandoffPayload = sessionStorage.getItem("wl-local-payload");
+  if (localHandoffPayload !== null) {
+    sessionStorage.removeItem("wl-local-payload");
+    setTimeout(() => { if (!aborted()) void applyLocalHandoff(localHandoffPayload); }, 100);
+  }
+
   // a flare can also land on a tab that is already open: qr scanners reuse
   // the existing tab, which only fires hashchange (the deep-link script in
   // whisper.astro runs once at document load and never again). decode the
@@ -8160,6 +8269,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // smoothly as a cold one. a live session wins over an incoming flare.
   window.addEventListener("hashchange", () => {
     const h = window.location.hash;
+    // in-person handoff: the payload's role decides offer-vs-answer. crucially
+    // this is a hashchange, not a reload, so an offerer's session survives to
+    // receive the scanned-back answer.
+    if (h.startsWith("#wl-local:")) {
+      const payload = h.slice("#wl-local:".length);
+      history.replaceState({}, "", window.location.pathname + window.location.search);
+      if (aborted()) return;
+      void applyLocalHandoff(payload);
+      return;
+    }
     if (!h.startsWith("#wl:")) return;
     history.replaceState({}, "", window.location.pathname + window.location.search);
     if (aborted() || session) return;

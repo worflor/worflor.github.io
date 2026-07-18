@@ -327,6 +327,13 @@ const seo = {
                   } catch (e) {
                     // undecodable fragment: still fall back to opening live mode
                   }
+                } else if (wlHash.indexOf("#wl-local:") === 0) {
+                  // in-person handoff on a cold load: stash the packed payload
+                  // (already url-safe) for live-ui.ts to pick up and route by
+                  // its own role byte. same one-shot mechanism as the flare.
+                  paramMode = "live";
+                  var wlLocal = wlHash.slice("#wl-local:".length);
+                  if (wlLocal) sessionStorage.setItem("wl-local-payload", wlLocal);
                 }
 
                 if (paramMode) {

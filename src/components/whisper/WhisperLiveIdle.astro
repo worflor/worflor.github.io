@@ -380,6 +380,17 @@
   /* default speaks the same cyan as connect: one action, two doors.
      only while actually clickable — a disabled door must not glow like
      an open one (it enables once a phrase is typed, same as connect). */
+  /* in-person mode (empty phrase): the qr segment wears the violet used for
+     other local/offline affordances, so the door visibly changes character
+     from the cyan relay door to the purple same-network one. */
+  .wl-relay-connect-row[data-local] .wl-relay-qr-toggle:not(:disabled) {
+    color: rgb(var(--tool-action-load));
+    border-top-color: rgb(var(--tool-action-load) / 0.45);
+    border-right-color: rgb(var(--tool-action-load) / 0.45);
+    border-bottom-color: rgb(var(--tool-action-load) / 0.45);
+    background: rgb(var(--tool-action-load) / 0.08);
+  }
+
   .wl-relay-qr-toggle:not(:disabled) {
     color: rgb(var(--chromatic-cyan) / 0.7);
     border-top-color: rgb(var(--chromatic-cyan) / 0.24);
