@@ -4445,8 +4445,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         )
         ? peerLiveMsgEl
         : null;
+    // continuity beats ground truth: if the preview thumb never got its
+    // inline aspect stamped, fall back to the stroke-space dims the preview
+    // actually rendered with, so the final message matches the box it grew
+    // from instead of snapping to a differently derived size.
     const replacePeerPreviewAspectRatio =
-      replacePeerPreview?.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb")?.style.aspectRatio ?? "";
+      (replacePeerPreview?.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb")?.style.aspectRatio ?? "")
+      || (replacePeerPreview && peerStrokeSpaceW > 0 && peerStrokeSpaceH > 0
+        ? `${peerStrokeSpaceW} / ${peerStrokeSpaceH}`
+        : "");
     const replacePeerPreviewSnapshot = capturePeerDrawThumbSnapshot(replacePeerPreview);
     const mergePeerStreamFinal =
       !!replacePeerPreview
@@ -4889,6 +4896,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     if (replacePeerPreview && replacePeerPreview.parentElement === opts.chatMessages) {
       opts.chatMessages.replaceChild(div, replacePeerPreview);
+      // the peer's streamed drawing becomes the real message: give the swap
+      // the same dissolve the self path gets, so it reads as one continuous
+      // object settling rather than a hard node replacement.
+      if (mergePeerStreamFinal && !reduceMotion) {
+        div.style.animation = "none";
+        div.animate(
+          [{ opacity: 0.55, transform: "scale(0.985)" }, { opacity: 1, transform: "scale(1)" }],
+          { duration: 260, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "backwards" },
+        );
+      }
     } else if (resolvingInboundTransfer && resolvingInboundTransfer.wrapEl.parentElement === opts.chatMessages) {
       opts.chatMessages.replaceChild(div, resolvingInboundTransfer.wrapEl);
       resolvingInboundTransfer.settled = true;
@@ -5314,11 +5331,23 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     switch (ev.kind) {
       case "begin": {
         if (!isFiniteNorm(ev.start.x) || !isFiniteNorm(ev.start.y) || !isFinitePressure(ev.start.p)) break;
-        // stroke-space dims now come from the presence event that opens the
-        // stream (blank and annotate alike), so there is no need to zero
-        // them here since presence always precedes the first begin of a session.
         removeLegacyPeerOverlays();
         ensurePeerCanvas();
+        // every begin carries the sender's logical canvas size, so the
+        // preview box never depends on the presence event having won the
+        // race to the wire (a pointer landing before the sender's mount
+        // raf used to ship begin first, leaving the preview at the css 4:3
+        // fallback while the final message used the true aspect). presence
+        // remains authoritative when it already landed.
+        if (peerStrokeSpaceW <= 0 && ev.logicalW > 0 && ev.logicalH > 0) {
+          peerStrokeSpaceW = ev.logicalW;
+          peerStrokeSpaceH = ev.logicalH;
+          const beginThumb = peerLiveMsgEl?.querySelector<HTMLElement>(".wl-msg-peer-draw-thumb");
+          if (beginThumb) {
+            beginThumb.style.aspectRatio = `${ev.logicalW} / ${ev.logicalH}`;
+            schedulePeerRerender();
+          }
+        }
         bringPeerPreviewToBottom();
         setPeerLiveDrawState("active");
         if (peerLiveTimeEl) {

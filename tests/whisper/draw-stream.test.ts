@@ -46,6 +46,8 @@ describe("live-draw-stream", () => {
       color: "#44aaee",
       width: 3.5,
       start: normPoint(0.2, 0.4, 0.6) as any,
+      logicalW: 393,
+      logicalH: 652,
     };
 
     const sp = seed(0.2, 0.4, 0.6);
@@ -80,6 +82,10 @@ describe("live-draw-stream", () => {
     assert.equal(decodedBegin.strokeId, begin.strokeId);
     assert.equal(decodedBegin.tool, begin.tool);
     assert.equal(decodedBegin.color, begin.color);
+    // the logical canvas size rides every begin so the receiver's preview
+    // box never depends on presence-event ordering
+    assert.equal(decodedBegin.logicalW, 393);
+    assert.equal(decodedBegin.logicalH, 652);
 
     const decodedGlyph = decodeDrawStreamEvent(b2);
     assert.ok(decodedGlyph && decodedGlyph.kind === "glyph");
@@ -234,6 +240,8 @@ describe("live-draw-stream", () => {
       color: "#ffffff",
       width: 6,
       start: normPoint(0.3, 0.5, 0.8) as any,
+      logicalW: 800,
+      logicalH: 600,
     };
     const glyph: DrawStreamEvent = {
       kind: "glyph",
@@ -351,6 +359,8 @@ describe("live-draw-stream", () => {
       color: "#00ffff",
       width: 4,
       start: normPoint(0.1, 0.2, 0.5) as any,
+      logicalW: 390,
+      logicalH: 700,
     };
     assert.equal(tracker.apply(begin).applied, true);
     assert.equal(tracker.snapshot().peerActive, true);

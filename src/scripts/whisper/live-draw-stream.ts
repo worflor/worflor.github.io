@@ -31,6 +31,11 @@ export interface DrawStreamBeginEvent {
   color: string;
   width: number;
   start: DrawNormPoint;
+  /** the sender's logical canvas size, carried on every stroke begin so the
+   *  receiver's preview box never depends on the presence event having won
+   *  the race to the wire. 0 means unknown; the receiver ignores zeros. */
+  logicalW: number;
+  logicalH: number;
 }
 
 export interface DrawStreamGlyphEvent {
@@ -188,8 +193,8 @@ function readBaseHeader(bytes: Uint8Array): { kind: number; seq: number } | null
 export function encodeDrawStreamEvent(evt: DrawStreamEvent): Uint8Array {
   switch (evt.kind) {
     case "begin": {
-      // 14 fixed bytes + 2 bytes per channel
-      const out = new Uint8Array(14 + GLYPH_CHANNELS * 2);
+      // 14 fixed bytes + 2 bytes per channel + 4 bytes logical size
+      const out = new Uint8Array(14 + GLYPH_CHANNELS * 2 + 4);
       const view = new DataView(out.buffer);
       writeBaseHeader(view, DRAW_STREAM_KIND.BEGIN, evt.seq);
       view.setUint16(6, evt.strokeId & 0xffff, true);
@@ -202,6 +207,9 @@ export function encodeDrawStreamEvent(evt: DrawStreamEvent): Uint8Array {
       for (let c = 0; c < GLYPH_CHANNELS; c++) {
         view.setUint16(14 + c * 2, q16(evt.start[GLYPH_CHANNEL_NAMES[c]]), true);
       }
+      const tail = 14 + GLYPH_CHANNELS * 2;
+      view.setUint16(tail, clamp(Math.round(evt.logicalW), 0, 0xffff), true);
+      view.setUint16(tail + 2, clamp(Math.round(evt.logicalH), 0, 0xffff), true);
       return out;
     }
     case "glyph": {
@@ -283,7 +291,7 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
 
   switch (kind) {
     case DRAW_STREAM_KIND.BEGIN: {
-      if (bytes.length !== 14 + GLYPH_CHANNELS * 2) return null;
+      if (bytes.length !== 14 + GLYPH_CHANNELS * 2 + 4) return null;
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       const toolCode = view.getUint8(8);
       const tool: DrawTool | null = toolCode === 0 ? "pen" : (toolCode === 1 ? "eraser" : null);
@@ -293,6 +301,7 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
       for (let c = 0; c < GLYPH_CHANNELS; c++) {
         start[GLYPH_CHANNEL_NAMES[c]] = uq16(view.getUint16(14 + c * 2, true));
       }
+      const tail = 14 + GLYPH_CHANNELS * 2;
       return {
         kind: "begin",
         seq,
@@ -301,6 +310,8 @@ export function decodeDrawStreamEvent(bytes: Uint8Array): DrawStreamEvent | null
         color,
         width: view.getUint16(12, true) / 100,
         start,
+        logicalW: view.getUint16(tail, true),
+        logicalH: view.getUint16(tail + 2, true),
       };
     }
     case DRAW_STREAM_KIND.GLYPH: {

@@ -841,6 +841,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
         color: style.color,
         width: style.width,
         start: pt,
+        logicalW,
+        logicalH,
       });
     }
   }
@@ -1450,6 +1452,12 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
   }
 
   function onPointerDown(e: PointerEvent): void {
+    // the surface is interactive from the moment it mounts, but its logical
+    // size (and the presence frame announcing it) only exists after the
+    // mount raf runs. a stroke started in that gap would divide by a zero
+    // logical size and ship a begin event ahead of presence. ignore it; the
+    // raf fires within a frame and the very next touch draws normally.
+    if (logicalW <= 0 || logicalH <= 0) return;
     const ts = eventTs(e);
     if (e.pointerType === "mouse" && triggerNavMouseAction(e.button, ts)) {
       e.preventDefault();
@@ -1546,6 +1554,8 @@ export function openDrawSurface(config: DrawConfig, callbacks: DrawCallbacks): v
         color: currentColor,
         width: baseWidth * pen.widthScale,
         start: startPt,
+        logicalW,
+        logicalH,
       });
     }
   }
