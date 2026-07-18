@@ -1,12 +1,17 @@
 /**
  * Campfire: gossip-propagated group chat engine.
  *
- * CampfireNode manages the campfire lifecycle:
- *   - Root: create campfire, assign topology, distribute group keys, heartbeat
- *   - Peer: join campfire, gossip messages, handle group key rotations
+ * CampfireNode manages the campfire lifecycle over the braid crypto core
+ * (../live-braid.ts): every seat folds a shared epoch root and derives its
+ * own send chain from it, so there is no key distribution and no rotation
+ * ceremony. The neighbor graph is a pure function of the roster
+ * (./topology.ts) — "root" survives only as the genesis host and, while it
+ * holds seat zero, the single fold-writer (the elder). The circle persists
+ * as long as any seat remains; there is no root-authority kill switch.
  *
- * Every pairwise link is a WhisperLiveSession under the hood, using the
- * campfire flag (0x02) in the message header to distinguish campfire payloads.
+ * Every pairwise link is a WhisperLiveSession under the hood (or a fake
+ * satisfying CampfireSessionLike, for tests), using the campfire flag
+ * (0x02) in the message header to distinguish campfire payloads.
  */
 
 import {
@@ -16,82 +21,127 @@ import {
   type WhisperLiveCallbacks,
 } from "../live";
 
-import { TE, hkdf } from "../live-crypto";
+import { TE, constantTimeEqual } from "../live-crypto";
 import { randomBytes, sha256, concatBytes, toHex } from "../wasm";
+
+import {
+  braidFold,
+  braidInit,
+  braidSeal,
+  braidOpen,
+  braidWants,
+  braidWipe,
+  type BraidMessage,
+} from "../live-braid";
+
+import {
+  sortRoster,
+  computeTopology,
+  neighborsOf,
+  edgeOfferer,
+} from "./topology";
 
 import {
   type CampfireState,
   type CampfireRole,
   type CampfireCallbacks,
   type CampfirePeer,
-  type GroupKeyEpoch,
+  type BraidEpoch,
+  type CampfireSessionLike,
+  type CampfireSessionFactory,
   ContentType,
   CAMPFIRE_FLAG,
   PEER_ID_LEN,
-  GROUP_KEY_LEN,
-  ROOT_HEARTBEAT_INTERVAL,
-  ROOT_HEARTBEAT_TIMEOUT,
   KEY_GRACE_PERIOD,
   DEDUP_RING_SIZE,
   MAX_HOP_COUNT,
-} from "./types";
-
-import {
-  buildRootHeartbeat,
-  buildGroupMsg,
-  rewrapGroupMsg,
-  buildGroupKey,
-  buildPeerList,
-  buildJoinAnnounce,
-  buildLeaveAnnounce,
-  buildSdpRelay,
-  buildTopologyAssign,
-  buildDmSdpRelay,
-  buildRingWant,
-  buildCfReact,
-  parseRootHeartbeat,
-  parseGroupMsgHeader,
-  decryptGroupMsg,
-  parseJoinAnnounce,
-  parseLeaveAnnounce,
-  parseSdpRelay,
-  parseGroupKey,
-  parsePeerList,
-  parseTopologyAssign,
-  parseDmSdpRelay,
-  parseRingWant,
-  parseCfReact,
-} from "./wire";
-
-import {
-  CF_ROOT_HEARTBEAT,
   CF_GROUP_MSG,
   CF_JOIN_ANNOUNCE,
   CF_LEAVE_ANNOUNCE,
-  CF_TOPOLOGY_ASSIGN,
   CF_SDP_RELAY,
-  CF_GROUP_KEY,
   CF_PEER_LIST,
   CF_DM_SDP_RELAY,
   CF_RING_WANT,
   CF_REACT,
   CF_UNREACT,
+  CF_BRAID_FOLD,
+  CF_BRAID_WELCOME,
+  CF_JOIN_REQ,
+  CF_EDGE_RELEASE,
 } from "./types";
 
-import { CampfireTopology } from "./topology";
+import {
+  buildGroupMsg,
+  rewrapGroupMsg,
+  buildPeerList,
+  buildJoinAnnounce,
+  buildLeaveAnnounce,
+  buildSdpRelay,
+  buildDmSdpRelay,
+  buildRingWant,
+  buildCfReact,
+  buildBraidFold,
+  buildBraidWelcome,
+  buildJoinReq,
+  buildEdgeRelease,
+  parseGroupMsgHeader,
+  parseJoinAnnounce,
+  parseLeaveAnnounce,
+  parseSdpRelay,
+  parsePeerList,
+  parseDmSdpRelay,
+  parseRingWant,
+  parseCfReact,
+  parseBraidFold,
+  parseBraidWelcome,
+  parseJoinReq,
+  type ParsedBraidFold,
+} from "./wire";
 
 /* ═══════════════════════════════════════════════════════════════════
    Constants
    ═══════════════════════════════════════════════════════════════════ */
 
-const ZERO_SALT_32 = new Uint8Array(32);
-const GROUP_KEY_INFO = TE.encode("campfire-group-v1");
-
 /** SDP type codes used in relay messages. */
 const SDP_OFFER = 0x01;
 const SDP_ANSWER = 0x02;
+
 const RING_REPAIR_INTERVAL = 12_000;
-const RING_REPAIR_WINDOW = 32;
+
+const BEACON_CHECK_INTERVAL = 5_000;
+const BEACON_MSG_THRESHOLD = 24;
+const BEACON_IDLE_MS = 10_000;
+
+const PENDING_META_CAP = 512;
+
+const FOLD_REASON_JOIN = 1;
+const FOLD_REASON_LEAVE = 2;
+
+/** default session factory: the real WebRTC-backed transport. */
+const defaultSessionFactory: CampfireSessionFactory = (callbacks, opts) =>
+  new WhisperLiveSession(callbacks, opts);
+
+/* ═══════════════════════════════════════════════════════════════════
+   Local helpers
+   ═══════════════════════════════════════════════════════════════════ */
+
+function le32(n: number): Uint8Array {
+  const b = new Uint8Array(4);
+  b[0] = n & 0xFF;
+  b[1] = (n >>> 8) & 0xFF;
+  b[2] = (n >>> 16) & 0xFF;
+  b[3] = (n >>> 24) & 0xFF;
+  return b;
+}
+
+/** decode a lowercase hex seat id back into its raw bytes. seat ids are the
+ *  hex strings themselves (see live-braid.ts normalizeRoster), so this is a
+ *  pure, network-independent inverse of toHex — no allPeers lookup needed. */
+function hexDecode(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length >>> 1);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    CampfireNode
@@ -104,9 +154,10 @@ export class CampfireNode {
   private peerIdHex = "";
   private displayName = "";
 
-  // Group crypto
-  private currentEpoch: GroupKeyEpoch | null = null;
-  private previousEpoch: GroupKeyEpoch | null = null;
+  // Braid epoch state — replaces the old root-distributed symmetric group key.
+  private currentEpoch: BraidEpoch | null = null;
+  private previousEpoch: { epoch: BraidEpoch; expiresAt: number } | null = null;
+  private graceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Neighbor sessions (pairwise WebRTC links)
   private neighbors = new Map<string, CampfirePeer>();
@@ -114,53 +165,68 @@ export class CampfireNode {
   // Full peer list (all campfire members, not just neighbors)
   private allPeers = new Map<string, { peerId: Uint8Array; name: string }>();
 
-  // Root-only state
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private topology: CampfireTopology | null = null;
-  private heartbeatSeq = 0;
+  // Root-only bootstrap slot state (root remains the sole admission entry point)
+  private rootSlotCounter = 0;
 
-  // Peer-only state
-  private lastRootHeartbeat = 0;
-  private heartbeatWatchTimer: ReturnType<typeof setInterval> | null = null;
-  private bootstrapSession: WhisperLiveSession | null = null;
-  private assignedNeighborHexes = new Set<string>();
-  private meshNeighborsConnected = 0;
+  // Peer-only bootstrap state
+  private bootstrapSession: CampfireSessionLike | null = null;
 
-  // Gossip dedup
+  // Admissions: joinerHex -> the direct link that admitted them, awaiting a fold to welcome over.
+  private pendingAdmissions = new Map<string, { label: string; session: CampfireSessionLike }>();
+
+  // Epoch mutations (fold issue, fold apply, welcome adoption) run through one
+  // promise chain: interleaved awaits must never mint two folds for the same
+  // epoch id or apply folds against a half-rotated state.
+  private epochQueue: Promise<unknown> = Promise.resolve();
+  // Folds that arrived ahead of order (or before we were seated), keyed by
+  // their target epoch id, waiting for the chain to catch up.
+  private pendingFolds = new Map<number, ParsedBraidFold>();
+  // Joiners we've already kicked off admission for (issued a fold, or relayed a JOIN_REQ),
+  // guarding against redundant work while gossip settles — cleared once the fold lands.
+  private pendingJoinReqs = new Set<string>();
+
+  // Gossip dedup (shared ring: GROUP_MSG msgIds, BRAID_FOLD/RING_WANT/SDP content hashes)
   private seenMsgIds: string[] = [];
   private seenMsgSet = new Set<string>();
   // React dedup — key: "{senderHex}:{react|unreact}:{targetMsgIdHex}:{emoji}"
   private seenReacts = new Set<string>();
 
   // Ring/repair state
-  private seqBySender = new Map<string, number>();
-  private localSeq = 0;
   private recentBySeq = new Map<string, Uint8Array>();
   private repairTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Auto-beacon state
+  private beaconTimer: ReturnType<typeof setInterval> | null = null;
+  private receivedSinceOwnSend = 0;
+  private lastOwnSendAt = 0;
+
+  // Display metadata for delivered braid messages, keyed `${epochId}:${senderIdx}:${seq}`.
+  private pendingMeta = new Map<string, { msgId: Uint8Array; timestamp: number; hopCount: number; contentType: number }>();
+
   // DM side-channels
-  private dmSessions = new Map<string, WhisperLiveSession>();
-  private pendingDmSdp = new Map<string, { session: WhisperLiveSession; isOfferer: boolean }>();
+  private dmSessions = new Map<string, CampfireSessionLike>();
+  private pendingDmSdp = new Map<string, { session: CampfireSessionLike; isOfferer: boolean }>();
 
   // Mesh SDP handshakes
-  private pendingMeshSdp = new Map<string, { session: WhisperLiveSession; isOfferer: boolean }>();
+  private pendingMeshSdp = new Map<string, { session: CampfireSessionLike; isOfferer: boolean }>();
 
   // RTC config
   private useStun = false;
-  private rootSlotCounter = 0;
-  private rootPeerIdHex: string | null = null;
 
-  // Callbacks
+  // Callbacks + transport injection
   private cb: CampfireCallbacks;
+  private sessionFactory: CampfireSessionFactory;
 
-  constructor(callbacks: CampfireCallbacks) {
+  constructor(callbacks: CampfireCallbacks, options?: { sessionFactory?: CampfireSessionFactory }) {
     this.cb = callbacks;
+    this.sessionFactory = options?.sessionFactory ?? defaultSessionFactory;
   }
 
   get state(): CampfireState { return this._state; }
 
   private setState(state: CampfireState, detail?: string): void {
     this._state = state;
+    if (state === "active") this.startActiveLoops();
     this.cb.onStateChange(state, detail);
   }
 
@@ -170,6 +236,26 @@ export class CampfireNode {
 
   private get rtcConfig(): RTCConfiguration {
     return this.useStun ? WHISPER_LIVE_RTC_PUBLIC_STUN : WHISPER_LIVE_RTC_LOCAL_ONLY;
+  }
+
+  private startActiveLoops(): void {
+    this.startRingRepair();
+    this.startBeacon();
+  }
+
+  /** elder rule: the single fold-writer for the current epoch is roster[0].
+   *  `excludingHex`, when given, evaluates elder-ness against the roster
+   *  with that seat already removed (used when the leaver IS the elder). */
+  private isElderFor(excludingHex?: string): boolean {
+    if (!this.currentEpoch) return false;
+    const roster = excludingHex
+      ? this.currentEpoch.roster.filter((h) => h !== excludingHex)
+      : this.currentEpoch.roster;
+    return roster.length > 0 && roster[0] === this.peerIdHex;
+  }
+
+  private isElder(): boolean {
+    return this.isElderFor();
   }
 
   /* ── Campfire Creation (Root) ──────────────────────────── */
@@ -183,19 +269,19 @@ export class CampfireNode {
     this.setState("creating");
     this.log("creating room...");
 
-    // Initialize topology (Root-only)
-    this.topology = new CampfireTopology(this.peerId);
-
-    // Generate group key
-    const seed = randomBytes(32);
-    const groupKey = await hkdf(seed, ZERO_SALT_32, GROUP_KEY_INFO, GROUP_KEY_LEN);
-    seed.fill(0);
-    this.currentEpoch = { epoch: 1, key: groupKey, expiresAt: Infinity };
+    // genesis: fold seat zero into existence and seat ourselves in epoch 1.
+    const entropy = randomBytes(32);
+    const roster = [this.peerIdHex];
+    const root = await braidFold(null, entropy, 1, roster);
+    entropy.fill(0);
+    const braid = await braidInit(root, 1, roster, this.peerIdHex);
+    this.currentEpoch = { epochId: 1, roster, root, braid };
+    this.lastOwnSendAt = Date.now();
 
     // Add self to peer list
     this.allPeers.set(this.peerIdHex, { peerId: this.peerId, name: this.displayName });
 
-    // Create a WhisperLiveSession for the initial connection (Root waits for first peer)
+    // Create a session for the initial connection (host waits for first peer)
     const rootSession = this.createNeighborSession(this.nextRootSlotLabel());
 
     const offerCode = await rootSession.createOffer();
@@ -207,13 +293,10 @@ export class CampfireNode {
     this._pendingRootOffer = offerCode;
     this.cb.onRoomCodeUpdate?.(offerCode);
 
-    // Start heartbeat
-    this.startRootHeartbeat();
-
     return offerCode;
   }
 
-  private _pendingRootSession: WhisperLiveSession | null = null;
+  private _pendingRootSession: CampfireSessionLike | null = null;
   private _pendingRootOffer: string | null = null;
 
   private nextRootSlotLabel(): string {
@@ -240,7 +323,7 @@ export class CampfireNode {
     this.setState("connecting");
     this.log("joining room...");
 
-    // Create session to Root
+    // Create session to Root — no epoch until a BRAID_WELCOME arrives.
     const session = this.createNeighborSession("join-root");
     const answerCode = await session.acceptOffer(offerCode);
 
@@ -252,7 +335,7 @@ export class CampfireNode {
 
   /* ── Neighbor Session Factory ──────────────────────────── */
 
-  private createNeighborSession(label: string): WhisperLiveSession {
+  private createNeighborSession(label: string): CampfireSessionLike {
     const callbacks: WhisperLiveCallbacks = {
       onStateChange: (state, detail) => {
         if (state === "error" && detail) this.log(detail);
@@ -268,7 +351,7 @@ export class CampfireNode {
       onRawDecrypted: (plaintext) => this.handleCampfireMessage(plaintext, label),
     };
 
-    const session = new WhisperLiveSession(callbacks, {
+    const session = this.sessionFactory(callbacks, {
       rtcConfig: this.rtcConfig,
       autoConfirmFingerprint: true,
     });
@@ -278,11 +361,10 @@ export class CampfireNode {
 
   /* ── Neighbor Connected ────────────────────────────────── */
 
-  private handleNeighborConnected(label: string, session: WhisperLiveSession): void {
+  private handleNeighborConnected(label: string, session: CampfireSessionLike): void {
     if (this.role === "root" && label.startsWith("root-slot-")) {
-      // First peer joined, store as neighbor
-      // We'll get their peerId from the first message they send
-      // For now, generate a temporary ID. Root will assign real ID via PEER_LIST exchange
+      // First (or Nth) peer joined the host's bootstrap slot. Their real
+      // identity resolves once JOIN_ANNOUNCE arrives over this link.
       const tempId = new Uint8Array(PEER_ID_LEN);
       this.neighbors.set(label, {
         peerId: tempId,
@@ -293,13 +375,7 @@ export class CampfireNode {
         joinedAt: Date.now(),
       });
 
-      // Send PEER_LIST to the new peer
       this.sendPeerList(session);
-
-      // Send GROUP_KEY
-      if (this.currentEpoch) {
-        this.sendGroupKey(session, this.currentEpoch.epoch, this.currentEpoch.key);
-      }
 
       if (this._state !== "active") {
         this.setState("active");
@@ -308,28 +384,20 @@ export class CampfireNode {
       // Prepare next incoming connection slot
       this.prepareNextRootSlot();
     } else if (this.role === "peer" && label === "join-root") {
-      // Connected to Root
-      this.neighbors.set("root", {
-        peerId: new Uint8Array(PEER_ID_LEN), // Will be filled from PEER_LIST
-        peerIdHex: "root",
-        name: "Root",
+      // Connected to the host — stay in "connecting" until BRAID_WELCOME arrives.
+      // keyed by the session's own label so disconnect bookkeeping finds it.
+      this.neighbors.set("join-root", {
+        peerId: new Uint8Array(PEER_ID_LEN),
+        peerIdHex: "",
+        name: "host",
         session,
         connected: true,
         joinedAt: Date.now(),
       });
 
-      this.lastRootHeartbeat = Date.now();
-      this.startHeartbeatWatch();
-      this.startRingRepair();
-
-      if (this._state !== "active") {
-        this.setState("active");
-        this.log("connected to room");
-      }
-
       void this.sendToNeighbor(session, buildJoinAnnounce(this.peerId, this.displayName));
     } else if (label.startsWith("mesh-")) {
-      // Mesh neighbor connected — resolve full peer ID from label prefix
+      // Mesh neighbor connected — resolve full peer ID from label prefix.
       const prefix = label.slice(5); // strip "mesh-"
       let resolvedHex = "";
       let resolvedId = new Uint8Array(PEER_ID_LEN);
@@ -353,15 +421,12 @@ export class CampfireNode {
       });
       this.log(`mesh neighbor connected: ${resolvedName}`);
 
-      // Track mesh neighbor connections for bootstrap release
-      if (resolvedHex) {
-        this.meshNeighborsConnected++;
-        this.maybeReleaseBootstrap();
-      }
-
-      if (this._state === "active") this.startRingRepair();
+      // give the new edge a cross-check copy of our current epoch (step 7 of
+      // the join flow) and let topology re-derive the bootstrap decision.
+      void this.sendBraidWelcome(session);
+      void this.applyTopology();
     } else {
-      // Additional neighbor connected (topology expansion, other)
+      // Additional neighbor connected (unrecognized label, defensive fallback)
       this.neighbors.set(label, {
         peerId: new Uint8Array(PEER_ID_LEN),
         peerIdHex: label,
@@ -371,80 +436,48 @@ export class CampfireNode {
         joinedAt: Date.now(),
       });
       this.log("new neighbor connected");
-      if (this._state === "active") this.startRingRepair();
     }
   }
 
   private handleNeighborDisconnected(label: string): void {
     const neighbor = this.neighbors.get(label);
-    if (neighbor) {
-      neighbor.connected = false;
-      this.neighbors.delete(label);
-      this.log("neighbor disconnected");
+    if (!neighbor) return;
+    neighbor.connected = false;
+    this.neighbors.delete(label);
+    this.log("neighbor disconnected");
 
-      if (this.role === "root" && neighbor.peerIdHex && this.allPeers.has(neighbor.peerIdHex)) {
-        const leavingId = neighbor.peerId;
-        const leavingHex = neighbor.peerIdHex;
-        this.allPeers.delete(leavingHex);
-        this.cb.onPeerLeave(leavingId);
-        this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
-        const leaveWire = buildLeaveAnnounce(leavingId);
-        void this.broadcastToNeighbors(leaveWire);
+    // an announced release closes the edge without anyone leaving. the two
+    // ends of an edge can be an epoch apart when topology reconciliation
+    // drops it, so the peer's word beats our possibly stale roster math.
+    if (neighbor.released) return;
 
-        // Topology maintenance: remove node and rebalance
-        if (this.topology) {
-          const affected = this.topology.removeNode(leavingId);
-          const newEdges = this.topology.rebalanceAfterRemoval(affected);
-          for (const [peerA, peerB] of newEdges) {
-            const hexA = toHex(peerA);
-            const hexB = toHex(peerB);
-            // Send topology assign to both peers
-            const neighborA = this.findNeighborByHex(hexA);
-            const neighborB = this.findNeighborByHex(hexB);
-            if (neighborA?.session) {
-              void this.sendToNeighbor(neighborA.session, buildTopologyAssign([peerB]));
-            }
-            if (neighborB?.session) {
-              void this.sendToNeighbor(neighborB.session, buildTopologyAssign([peerA]));
-            }
-          }
-        }
+    // a joiner that loses its bootstrap before being seated has nothing left.
+    if (!this.currentEpoch) {
+      if (this.neighbors.size === 0 && this._state !== "ended" && this._state !== "idle") {
+        void this.endCampfire("the host slipped away before you were seated. nothing remains.");
       }
+      return;
     }
 
-    // If root peer loses connection, check if there are any neighbors left
-    if (this.role === "root") {
-      if (this.neighbors.size === 0 && this._state === "active") {
-        // All peers gone, but Root stays active (waiting for new joiners)
-      }
-    } else {
-      // If peer lost root connection and has no other neighbors, campfire ends
-      if (label === "join-root" || label === "root") {
-        this.bootstrapSession = null;
-        // Only end if we have no mesh neighbors
-        const meshNeighbors = Array.from(this.neighbors.keys()).filter(l => l.startsWith("mesh-"));
-        if (meshNeighbors.length === 0) {
-          this.log("lost connection to the room host");
-          this.endCampfire("root disconnected. the fire is out. nothing remains.");
-        } else {
-          this.log("bootstrap link to host released, mesh neighbors active");
-        }
-      }
-    }
-  }
+    // a dropped link only means departure when it was a real topology edge.
+    // bootstrap links get released intentionally once the mesh forms, and
+    // that release says nothing about the peer's presence in the circle.
+    if (!neighbor.peerIdHex || !this.allPeers.has(neighbor.peerIdHex)) return;
+    const topo = computeTopology(this.currentEpoch.roster);
+    if (!neighborsOf(topo, this.peerIdHex).includes(neighbor.peerIdHex)) return;
 
-  /** Release bootstrap connection to Root if Root isn't among assigned neighbors. */
-  private maybeReleaseBootstrap(): void {
-    if (this.role !== "peer" || !this.bootstrapSession) return;
-    if (this.meshNeighborsConnected < 1) return;
-    // If Root is among our assigned neighbors, keep the bootstrap
-    if (this.rootPeerIdHex && this.assignedNeighborHexes.has(this.rootPeerIdHex)) return;
-    // Root is NOT an assigned neighbor; release bootstrap
-    this.log("releasing bootstrap connection to host");
-    this.bootstrapSession.disconnect();
-    this.bootstrapSession = null;
-    this.neighbors.delete("root");
-    this.neighbors.delete("join-root");
+    // a topology neighbor really vanished: gossip the leave on their behalf
+    // and, if we are now the elder, fold them out of the epoch.
+    const leavingId = neighbor.peerId;
+    const leavingHex = neighbor.peerIdHex;
+    this.removePeerIfPresent(leavingHex);
+    void this.broadcastToNeighbors(buildLeaveAnnounce(leavingId));
+
+    if (this.currentEpoch.roster.includes(leavingHex) && this.isElderFor(leavingHex)) {
+      void this.issueFold(FOLD_REASON_LEAVE, leavingId);
+    }
+
+    // no root-death poetry: the fire persists as long as any seat remains.
   }
 
   /* ── Root: Prepare Next Connection Slot ─────────────── */
@@ -470,7 +503,7 @@ export class CampfireNode {
 
   /* ── Send Helpers ──────────────────────────────────────── */
 
-  private async sendToNeighbor(session: WhisperLiveSession, data: Uint8Array): Promise<void> {
+  private async sendToNeighbor(session: CampfireSessionLike, data: Uint8Array): Promise<void> {
     try {
       await session.sendEncryptedRaw(data, CAMPFIRE_FLAG);
     } catch (err) {
@@ -489,15 +522,21 @@ export class CampfireNode {
     await Promise.all(promises);
   }
 
-  private async sendPeerList(session: WhisperLiveSession): Promise<void> {
+  private async sendPeerList(session: CampfireSessionLike): Promise<void> {
     const peers = Array.from(this.allPeers.values());
     const data = buildPeerList(peers);
     await this.sendToNeighbor(session, data);
   }
 
-  private async sendGroupKey(session: WhisperLiveSession, epoch: number, key: Uint8Array): Promise<void> {
-    const data = buildGroupKey(epoch, key);
-    await this.sendToNeighbor(session, data);
+  /** send our current epoch (root + roster) plus a fresh peer list over one
+   *  link. used both by the admitter welcoming a fresh joiner and by every
+   *  member sending a cross-check copy over a newly connected mesh edge. */
+  private async sendBraidWelcome(session: CampfireSessionLike): Promise<void> {
+    if (!this.currentEpoch) return;
+    const rosterIds = this.currentEpoch.roster.map(hexDecode);
+    const wire = buildBraidWelcome(this.currentEpoch.epochId, this.peerId, this.currentEpoch.root, rosterIds);
+    await this.sendToNeighbor(session, wire);
+    await this.sendToNeighbor(session, buildPeerList(Array.from(this.allPeers.values())));
   }
 
   private rememberRecent(senderHex: string, seq: number, rawGroupPayload: Uint8Array): void {
@@ -510,9 +549,25 @@ export class CampfireNode {
     }
   }
 
-  private hexToPeerId(hex: string): Uint8Array {
+  private removePeerIfPresent(hex: string): void {
     const peer = this.allPeers.get(hex);
-    return peer ? new Uint8Array(peer.peerId) : new Uint8Array(PEER_ID_LEN);
+    if (!peer) return;
+    this.allPeers.delete(hex);
+    this.cb.onPeerLeave(peer.peerId);
+    this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
+  }
+
+  /** content-addressed dedup for gossip types with no other natural
+   *  termination condition (unlike JOIN/LEAVE_ANNOUNCE, which dedup via
+   *  allPeers presence, or GROUP_MSG, which dedups via msgId). the mesh
+   *  topology now has real cycles (ring + chords), so anything forwarded
+   *  unconditionally would flood forever without this. shares the same
+   *  ring as everything else — floods are rare relative to chat traffic. */
+  private async seenBefore(payload: Uint8Array): Promise<boolean> {
+    const id = await sha256(payload);
+    if (this.hasSeen(id)) return true;
+    this.markSeen(id);
+    return false;
   }
 
   /* ── Broadcast Message (User Action) ──────────────────── */
@@ -521,21 +576,20 @@ export class CampfireNode {
     if (this._state !== "active" || !this.currentEpoch) return;
 
     const plaintext = TE.encode(text);
-    const seq = ++this.localSeq;
-    const seqLe = new Uint8Array(4);
-    new DataView(seqLe.buffer).setUint32(0, seq, true);
-    const msgId = await sha256(concatBytes(this.peerId, seqLe, plaintext));
+    const epochId = this.currentEpoch.epochId;
+    const sealed = await braidSeal(this.currentEpoch.braid, plaintext);
+    const msgId = await sha256(concatBytes(this.peerId, le32(epochId), le32(sealed.seq), sealed.ciphertext));
     const displayId = new DataView(msgId.buffer, msgId.byteOffset, 4).getUint32(0, true);
 
-    const wire = await buildGroupMsg(
-      msgId, this.peerId,
-      Date.now(), 0, this.currentEpoch.epoch,
-      ContentType.Text, plaintext, this.currentEpoch.key,
+    const wire = buildGroupMsg(
+      msgId, this.peerId, sealed.seq, epochId, Date.now(), 0, ContentType.Text,
+      sealed.frontier, sealed.ciphertext,
     );
 
     this.markSeen(msgId);
-    this.seqBySender.set(this.peerIdHex, seq);
-    this.rememberRecent(this.peerIdHex, seq, wire.subarray(1));
+    this.rememberRecent(this.peerIdHex, sealed.seq, wire.subarray(1));
+    this.lastOwnSendAt = Date.now();
+    this.receivedSinceOwnSend = 0;
     await this.broadcastToNeighbors(wire);
 
     // Show locally
@@ -546,7 +600,7 @@ export class CampfireNode {
       senderIdHex: this.peerIdHex,
       timestamp: Date.now(),
       hopCount: 0,
-      epoch: this.currentEpoch.epoch,
+      epoch: epochId,
       contentType: ContentType.Text,
       plaintext,
     });
@@ -594,9 +648,6 @@ export class CampfireNode {
     const payload = plaintext.subarray(1);
 
     switch (subType) {
-      case CF_ROOT_HEARTBEAT:
-        await this.handleRootHeartbeat(payload);
-        break;
       case CF_GROUP_MSG:
         await this.handleGroupMsg(payload, fromLabel);
         break;
@@ -606,14 +657,8 @@ export class CampfireNode {
       case CF_LEAVE_ANNOUNCE:
         await this.handleLeaveAnnounce(payload, fromLabel);
         break;
-      case CF_TOPOLOGY_ASSIGN:
-        await this.handleTopologyAssign(payload);
-        break;
       case CF_SDP_RELAY:
         await this.handleSdpRelay(payload, fromLabel);
-        break;
-      case CF_GROUP_KEY:
-        this.handleGroupKeyMsg(payload);
         break;
       case CF_PEER_LIST:
         this.handlePeerListMsg(payload);
@@ -630,129 +675,151 @@ export class CampfireNode {
       case CF_UNREACT:
         await this.handleCfReact(plaintext, fromLabel, true);
         break;
+      case CF_BRAID_FOLD:
+        await this.handleBraidFold(payload, fromLabel);
+        break;
+      case CF_BRAID_WELCOME:
+        await this.handleBraidWelcome(payload, fromLabel);
+        break;
+      case CF_JOIN_REQ:
+        await this.handleJoinReq(payload, fromLabel);
+        break;
+      case CF_EDGE_RELEASE:
+        this.handleEdgeRelease(fromLabel);
+        break;
       default:
         break; // unknown message type, silently ignore
     }
   }
 
-  /* ── Message Handlers ──────────────────────────────────── */
-
-  private async handleRootHeartbeat(data: Uint8Array): Promise<void> {
-    const hb = parseRootHeartbeat(data);
-
-    // Dedup using rootPeerId + epoch + seq
-    const seqBytes = new Uint8Array(4);
-    new DataView(seqBytes.buffer).setUint32(0, hb.seq, true);
-    const dedupKey = concatBytes(hb.rootPeerId, new Uint8Array(new Uint32Array([hb.epoch]).buffer), seqBytes);
-    if (this.hasSeen(dedupKey)) return;
-    this.markSeen(dedupKey);
-
-    this.lastRootHeartbeat = Date.now();
-    this.rootPeerIdHex = toHex(hb.rootPeerId);
-
-    if (!this.allPeers.has(this.rootPeerIdHex)) {
-      this.allPeers.set(this.rootPeerIdHex, {
-        peerId: new Uint8Array(hb.rootPeerId),
-        name: "host",
-      });
-      this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
-    }
-
-    const rootLink = this.neighbors.get("join-root") ?? this.neighbors.get("root");
-    if (rootLink) {
-      rootLink.peerId = new Uint8Array(hb.rootPeerId);
-      rootLink.peerIdHex = this.rootPeerIdHex;
-      const known = this.allPeers.get(this.rootPeerIdHex);
-      if (known) rootLink.name = known.name;
-    }
-
-    // Forward to other neighbors (gossip)
-    const fullMsg = concatBytes(new Uint8Array([CF_ROOT_HEARTBEAT]), data);
-    await this.broadcastToNeighbors(fullMsg);
+  /** the peer on this edge is about to close it on purpose (topology
+   *  reconciliation, bootstrap release). point-to-point, never forwarded:
+   *  the mark only changes how we read this edge's coming disconnect. */
+  private handleEdgeRelease(fromLabel: string): void {
+    const neighbor = this.neighbors.get(fromLabel);
+    if (neighbor) neighbor.released = true;
   }
+
+  /* ── Braid Message Handler ──────────────────────────────── */
 
   private async handleGroupMsg(data: Uint8Array, fromLabel: string): Promise<void> {
     const parsed = parseGroupMsgHeader(data);
-    const senderHex = toHex(parsed.senderId);
 
-    // Dedup
     if (this.hasSeen(parsed.msgId)) return;
     this.markSeen(parsed.msgId);
 
-    const seq = (this.seqBySender.get(senderHex) ?? 0) + 1;
-    this.seqBySender.set(senderHex, seq);
-    this.rememberRecent(senderHex, seq, data);
+    if (parsed.hopCount >= MAX_HOP_COUNT) return; // max hops exceeded, silently drop
 
-    // Hop limit
-    if (parsed.hopCount >= MAX_HOP_COUNT) {
-      return; // max hops exceeded, silently drop
+    let target: BraidEpoch | null = null;
+    if (this.currentEpoch && parsed.epochId === this.currentEpoch.epochId) {
+      target = this.currentEpoch;
+    } else if (
+      this.previousEpoch &&
+      parsed.epochId === this.previousEpoch.epoch.epochId &&
+      Date.now() < this.previousEpoch.expiresAt
+    ) {
+      target = this.previousEpoch.epoch;
     }
 
-    // Try to decrypt with current or previous epoch key
-    let plaintext: Uint8Array | null = null;
-    let key: Uint8Array | null = null;
+    const forward = async (): Promise<void> => {
+      const rewrapped = rewrapGroupMsg(concatBytes(new Uint8Array([CF_GROUP_MSG]), data), parsed.hopCount + 1);
+      await this.broadcastToNeighbors(rewrapped, fromLabel);
+    };
 
-    if (this.currentEpoch && parsed.epoch === this.currentEpoch.epoch) {
-      key = this.currentEpoch.key;
-    } else if (this.previousEpoch && parsed.epoch === this.previousEpoch.epoch && Date.now() < this.previousEpoch.expiresAt) {
-      key = this.previousEpoch.key;
-    }
-
-    if (key) {
-      try {
-        plaintext = await decryptGroupMsg(parsed.ciphertext, parsed.nonce, key);
-      } catch {
-        this.log("message could not be decrypted");
-        return;
-      }
-    } else {
-      this.log("no key for this message, may have been sent before you joined");
+    if (!target) {
+      // wrong epoch entirely (too old, or we haven't caught up yet) — others
+      // further out in the mesh may still be able to use it.
+      await forward();
       return;
     }
 
-    // Deliver to UI
-    const displayId = new DataView(parsed.msgId.buffer, parsed.msgId.byteOffset, 4).getUint32(0, true);
-    this.cb.onMessage({
-      msgId: parsed.msgId,
-      displayId,
-      senderId: parsed.senderId,
-      senderIdHex: toHex(parsed.senderId),
-      timestamp: parsed.timestamp,
-      hopCount: parsed.hopCount,
-      epoch: parsed.epoch,
-      contentType: parsed.contentType,
-      plaintext,
-    });
+    const senderHex = toHex(parsed.senderId);
+    const senderIndex = target.roster.indexOf(senderHex);
+    if (senderIndex < 0) {
+      await forward();
+      return;
+    }
 
-    // Forward to other neighbors (gossip), re-wrap with incremented hop count
-    const rewrapped = rewrapGroupMsg(concatBytes(new Uint8Array([CF_GROUP_MSG]), data), parsed.hopCount + 1);
-    await this.broadcastToNeighbors(rewrapped, fromLabel);
+    const metaKey = `${target.epochId}:${senderIndex}:${parsed.seq}`;
+    this.pendingMeta.set(metaKey, {
+      msgId: parsed.msgId, timestamp: parsed.timestamp, hopCount: parsed.hopCount, contentType: parsed.contentType,
+    });
+    if (this.pendingMeta.size > PENDING_META_CAP) {
+      const oldest = this.pendingMeta.keys().next().value;
+      if (oldest !== undefined) this.pendingMeta.delete(oldest);
+    }
+
+    this.rememberRecent(senderHex, parsed.seq, data);
+
+    const braidMsg: BraidMessage = {
+      senderIndex, seq: parsed.seq, epochId: parsed.epochId,
+      frontier: parsed.frontier, ciphertext: parsed.ciphertext,
+    };
+    const result = await braidOpen(target.braid, braidMsg);
+
+    if (result.status === "delivered") {
+      this.receivedSinceOwnSend++;
+      for (const entry of result.delivered) {
+        const key = `${target.epochId}:${entry.senderIndex}:${entry.seq}`;
+        const meta = this.pendingMeta.get(key);
+        this.pendingMeta.delete(key);
+        const senderSeatHex = target.roster[entry.senderIndex];
+        const senderId = hexDecode(senderSeatHex);
+        const contentType = meta?.contentType ?? ContentType.Text;
+
+        if (entry.plaintext.length === 0 && contentType === ContentType.System) {
+          continue; // silent beacon — no UI event
+        }
+
+        const msgId = meta?.msgId
+          ?? await sha256(concatBytes(senderId, le32(target.epochId), le32(entry.seq)));
+        const displayId = new DataView(msgId.buffer, msgId.byteOffset, 4).getUint32(0, true);
+        this.cb.onMessage({
+          msgId,
+          displayId,
+          senderId,
+          senderIdHex: senderSeatHex,
+          timestamp: meta?.timestamp ?? Date.now(),
+          hopCount: meta?.hopCount ?? 0,
+          epoch: target.epochId,
+          contentType,
+          plaintext: entry.plaintext,
+        });
+      }
+    } else if (result.status === "held") {
+      for (const want of result.wants) {
+        const seatHex = target.roster[want.seatIndex];
+        if (!seatHex) continue;
+        await this.broadcastToNeighbors(buildRingWant(this.peerId, hexDecode(seatHex), want.fromSeq, want.toSeq));
+      }
+    } else if (result.status === "diverged") {
+      const seatHex = target.roster[result.seatIndex];
+      const name = this.allPeers.get(seatHex)?.name ?? seatHex.slice(0, 8);
+      this.log(`a thread frayed: ${name} fell out of sync`);
+      this.cb.onSeatDiverged?.(hexDecode(seatHex), result.reason);
+    }
+    // "ignored" — nothing to do.
+
+    await forward();
   }
 
+  /* ── Ring Repair (braid-driven) ────────────────────────── */
+
   private async handleRingWant(data: Uint8Array, fromLabel: string): Promise<void> {
+    if (await this.seenBefore(data)) return;
+
     const { originPeerId, targetPeerId, fromSeq, toSeq } = parseRingWant(data);
     const targetHex = toHex(targetPeerId);
+    const originHex = toHex(originPeerId);
 
-    if (targetHex === this.peerIdHex) {
-      const originHex = toHex(originPeerId);
-      const responder = this.findNeighborByHex(originHex);
-      if (!responder?.session) return;
-
+    // serve whatever we have cached, regardless of whether we are the
+    // target — this is the mesh healing power: anyone can repair anyone.
+    const responder = this.findNeighborByHex(originHex);
+    if (responder?.session) {
       for (let seq = fromSeq; seq <= toSeq; seq++) {
-        const key = `${this.peerIdHex}:${seq}`;
-        const raw = this.recentBySeq.get(key);
-        if (!raw) continue;
-        await this.sendToNeighbor(responder.session, raw);
+        const raw = this.recentBySeq.get(`${targetHex}:${seq}`);
+        if (raw) await this.sendToNeighbor(responder.session, raw);
       }
-      return;
-    }
-
-    if (this.role === "root") {
-      const peer = this.findNeighborByHex(targetHex);
-      if (peer?.session) {
-        await this.sendToNeighbor(peer.session, buildRingWant(originPeerId, targetPeerId, fromSeq, toSeq));
-      }
-      return;
     }
 
     await this.broadcastToNeighbors(buildRingWant(originPeerId, targetPeerId, fromSeq, toSeq), fromLabel);
@@ -793,6 +860,8 @@ export class CampfireNode {
     await this.broadcastToNeighbors(rewrapped, fromLabel);
   }
 
+  /* ── Join / Leave Announce ──────────────────────────────── */
+
   private async handleJoinAnnounce(data: Uint8Array, fromLabel: string): Promise<void> {
     const { peerId, name } = parseJoinAnnounce(data);
     const hex = toHex(peerId);
@@ -801,109 +870,377 @@ export class CampfireNode {
     if (this.allPeers.has(hex)) return; // already known
 
     this.allPeers.set(hex, { peerId: new Uint8Array(peerId), name });
-
-    if (this.role === "root") {
-      const from = this.neighbors.get(fromLabel);
-      if (from) {
-        from.peerId = new Uint8Array(peerId);
-        from.peerIdHex = hex;
-        from.name = name;
-      }
-
-      // Root: add to topology and assign neighbors
-      if (this.topology) {
-        const neighborIds = this.topology.selectNeighborsForNewPeer(peerId);
-        // Send TOPOLOGY_ASSIGN to the new peer
-        if (from?.session) {
-          void this.sendToNeighbor(from.session, buildTopologyAssign(neighborIds));
-        }
-      }
-    }
     this.cb.onPeerJoin(peerId, name);
     this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
     this.log(`${name} joined the room`);
 
-    // Forward gossip
-    const wire = buildJoinAnnounce(peerId, name);
-    await this.broadcastToNeighbors(wire, fromLabel);
+    // Forward gossip regardless of admission role.
+    await this.broadcastToNeighbors(buildJoinAnnounce(peerId, name), fromLabel);
+
+    // Admission: only the direct, not-yet-resolved host slot the joiner
+    // announced over makes us the admitter. announces that merely pass
+    // through other links (mesh edges, our own bootstrap) never do.
+    if (!fromLabel.startsWith("root-slot-")) return;
+    const from = this.neighbors.get(fromLabel);
+    if (from && !from.peerIdHex && from.session) {
+      from.peerId = new Uint8Array(peerId);
+      from.peerIdHex = hex;
+      from.name = name;
+      this.pendingAdmissions.set(hex, { label: fromLabel, session: from.session });
+
+      if (this.isElder()) {
+        if (!this.pendingJoinReqs.has(hex)) {
+          this.pendingJoinReqs.add(hex);
+          await this.issueFold(FOLD_REASON_JOIN, peerId);
+        }
+      } else if (!this.pendingJoinReqs.has(hex)) {
+        this.pendingJoinReqs.add(hex);
+        await this.broadcastToNeighbors(buildJoinReq(peerId, name));
+      }
+    }
   }
 
   private async handleLeaveAnnounce(data: Uint8Array, fromLabel: string): Promise<void> {
     const { peerId } = parseLeaveAnnounce(data);
     const hex = toHex(peerId);
 
-    if (!this.allPeers.has(hex)) return;
+    if (!this.allPeers.has(hex)) return; // already gone — also bounds the gossip flood
 
-    const peer = this.allPeers.get(hex);
-    this.allPeers.delete(hex);
-    this.cb.onPeerLeave(peerId);
-    this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
-    this.log(`${peer?.name ?? "someone"} left the room`);
+    const name = this.allPeers.get(hex)?.name ?? "someone";
+    this.removePeerIfPresent(hex);
+    this.log(`${name} left the room`);
 
     // Forward gossip
-    const wire = buildLeaveAnnounce(peerId);
-    await this.broadcastToNeighbors(wire, fromLabel);
+    await this.broadcastToNeighbors(buildLeaveAnnounce(peerId), fromLabel);
+
+    // the post-leave elder folds the departure out of the epoch.
+    if (this.currentEpoch?.roster.includes(hex) && this.isElderFor(hex)) {
+      await this.issueFold(FOLD_REASON_LEAVE, peerId);
+    }
   }
 
-  /* ── Topology Assign Handler ─────────────────────────── */
+  /* ── Join Request Relay (elder routing) ─────────────────── */
 
-  private async handleTopologyAssign(data: Uint8Array): Promise<void> {
-    const { neighborPeerIds } = parseTopologyAssign(data);
-    this.log(`topology assigned: ${neighborPeerIds.length} neighbor(s)`);
+  private async handleJoinReq(data: Uint8Array, fromLabel: string): Promise<void> {
+    if (await this.seenBefore(data)) return;
 
-    this.assignedNeighborHexes.clear();
-    for (const nId of neighborPeerIds) {
-      this.assignedNeighborHexes.add(toHex(nId));
+    const { joinerId, name } = parseJoinReq(data);
+    const hex = toHex(joinerId);
+
+    if (!this.currentEpoch || this.currentEpoch.roster.includes(hex)) return;
+
+    if (this.isElder()) {
+      if (!this.pendingJoinReqs.has(hex)) {
+        this.pendingJoinReqs.add(hex);
+        await this.issueFold(FOLD_REASON_JOIN, joinerId);
+      }
+      return;
     }
 
-    for (const neighborId of neighborPeerIds) {
-      const neighborHex = toHex(neighborId);
-      // Skip if already connected to this peer
-      if (this.findNeighborByHex(neighborHex)) continue;
-      // Skip if this is our root bootstrap (already connected)
-      if (this.rootPeerIdHex && neighborHex === this.rootPeerIdHex) continue;
+    // not the elder: keep flooding until it reaches them.
+    await this.broadcastToNeighbors(buildJoinReq(joinerId, name), fromLabel);
+  }
 
-      // Create mesh session and offer
-      const prefix = neighborHex.slice(0, 8);
-      const label = `mesh-${prefix}`;
+  /* ── Epoch Folds ─────────────────────────────────────────── */
+
+  private serializeEpoch<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.epochQueue.then(fn, fn);
+    this.epochQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  /** elder-only: mint a new epoch fold for a join or leave, apply it
+   *  locally through the same path every receiver uses, then broadcast it.
+   *  serialized: the roster and epoch id are re-read inside the queue so
+   *  two overlapping admissions mint sequential folds, never twins. */
+  private issueFold(reason: typeof FOLD_REASON_JOIN | typeof FOLD_REASON_LEAVE, subjectPeerId: Uint8Array): Promise<void> {
+    return this.serializeEpoch(async () => {
+      if (!this.currentEpoch) return;
+      const subjectHex = toHex(subjectPeerId);
+      if (reason === FOLD_REASON_JOIN && this.currentEpoch.roster.includes(subjectHex)) return;
+      if (reason === FOLD_REASON_LEAVE && !this.currentEpoch.roster.includes(subjectHex)) return;
+
+      const newEpochId = this.currentEpoch.epochId + 1;
+      const newRoster = reason === FOLD_REASON_JOIN
+        ? sortRoster([...this.currentEpoch.roster, subjectHex])
+        : this.currentEpoch.roster.filter((h) => h !== subjectHex);
+      if (newRoster.length === 0) return; // never fold to an empty circle
+
+      const entropy = randomBytes(32);
+      const rosterDigest = await sha256(concatBytes(...newRoster.map(hexDecode)));
+      const wire = buildBraidFold(newEpochId, reason, subjectPeerId, entropy, rosterDigest);
+      entropy.fill(0);
+
+      const payload = wire.subarray(1);
+      this.markSeen(await sha256(payload));
+
+      // broadcast only what actually took hold locally.
+      try {
+        if (await this.applyBraidFold(parseBraidFold(payload))) {
+          await this.broadcastToNeighbors(wire);
+        }
+      } catch (err) {
+        this.log(`fold failed: ${err instanceof Error ? err.message : "unknown"}`);
+      }
+    });
+  }
+
+  private async handleBraidFold(data: Uint8Array, fromLabel: string): Promise<void> {
+    if (await this.seenBefore(data)) return;
+
+    const fold = parseBraidFold(data);
+    await this.serializeEpoch(async () => {
+      this.rememberFold(fold);
+      await this.drainFolds();
+    });
+
+    // forward regardless: peers elsewhere in the mesh may be behind or
+    // ahead of us and still need this copy. dedup above bounds the flood.
+    const rewrapped = concatBytes(new Uint8Array([CF_BRAID_FOLD]), data);
+    await this.broadcastToNeighbors(rewrapped, fromLabel);
+  }
+
+  /** queue a fold for ordered application. the dedup ring already swallowed
+   *  duplicate copies, so a fold that arrives ahead of order must be kept or
+   *  the chain wedges: no second copy is coming. */
+  private rememberFold(fold: ParsedBraidFold): void {
+    if (this.currentEpoch && fold.newEpochId <= this.currentEpoch.epochId) return;
+    if (this.pendingFolds.size >= 16 && !this.pendingFolds.has(fold.newEpochId)) {
+      let maxKey = -1;
+      for (const k of this.pendingFolds.keys()) if (k > maxKey) maxKey = k;
+      if (fold.newEpochId >= maxKey) return; // farthest-future fold loses
+      this.pendingFolds.delete(maxKey);
+    }
+    this.pendingFolds.set(fold.newEpochId, fold);
+  }
+
+  /** apply queued folds in strict epoch order until the chain has a gap.
+   *  a seat with no epoch yet keeps its queue until a welcome seats it.
+   *  a fold that throws (rather than merely not applying) is poisoned;
+   *  it is dropped and the chain waits for whatever comes next. */
+  private async drainFolds(): Promise<void> {
+    while (this.currentEpoch) {
+      const next = this.pendingFolds.get(this.currentEpoch.epochId + 1);
+      if (!next) break;
+      this.pendingFolds.delete(next.newEpochId);
+      try {
+        if (!await this.applyBraidFold(next)) break;
+      } catch (err) {
+        this.log(`fold failed: ${err instanceof Error ? err.message : "unknown"}`);
+        break;
+      }
+    }
+    if (this.currentEpoch) {
+      for (const k of this.pendingFolds.keys()) {
+        if (k <= this.currentEpoch.epochId) this.pendingFolds.delete(k);
+      }
+    }
+  }
+
+  /** apply a parsed braid fold to local state: verify the roster digest,
+   *  fold the epoch root, rotate epoch state, then run post-fold topology
+   *  and admission bookkeeping. shared by the elder's own admission and by
+   *  every receiver — this IS "the same code path as receiving it".
+   *  returns whether the fold took hold. always called inside the epoch
+   *  queue; never call directly. */
+  private async applyBraidFold(fold: ParsedBraidFold): Promise<boolean> {
+    if (!this.currentEpoch) return false; // not seated yet; the fold stays queued
+    if (fold.newEpochId !== this.currentEpoch.epochId + 1) return false; // stale or out of order
+
+    const subjectHex = toHex(fold.subjectPeerId);
+    let newRoster: string[];
+    if (fold.reason === FOLD_REASON_JOIN) {
+      if (this.currentEpoch.roster.includes(subjectHex)) return false; // already a member
+      newRoster = sortRoster([...this.currentEpoch.roster, subjectHex]);
+    } else {
+      if (!this.currentEpoch.roster.includes(subjectHex)) return false; // already gone
+      newRoster = this.currentEpoch.roster.filter((h) => h !== subjectHex);
+    }
+    if (newRoster.length === 0) return false; // never fold to an empty circle
+
+    const expectedDigest = await sha256(concatBytes(...newRoster.map(hexDecode)));
+    if (toHex(expectedDigest) !== toHex(fold.rosterDigest)) {
+      this.log("a fold arrived that does not match the roster we computed. dropped.");
+      return false;
+    }
+
+    const newRoot = await braidFold(this.currentEpoch.root, fold.entropy, fold.newEpochId, newRoster);
+    const newBraid = await braidInit(newRoot, fold.newEpochId, newRoster, this.peerIdHex);
+
+    // rotate: the outgoing epoch survives a grace window for stragglers.
+    if (this.previousEpoch) braidWipe(this.previousEpoch.epoch.braid);
+    this.previousEpoch = { epoch: this.currentEpoch, expiresAt: Date.now() + KEY_GRACE_PERIOD };
+    this.currentEpoch = { epochId: fold.newEpochId, roster: newRoster, root: newRoot, braid: newBraid };
+    this.scheduleGraceExpiry();
+
+    if (fold.reason === FOLD_REASON_LEAVE) {
+      this.removePeerIfPresent(subjectHex);
+    }
+
+    // topology reconciliation creates webrtc offers (slow); never stall the
+    // epoch queue on it.
+    void this.applyTopology();
+
+    this.pendingJoinReqs.delete(subjectHex);
+    if (fold.reason === FOLD_REASON_JOIN) {
+      const pending = this.pendingAdmissions.get(subjectHex);
+      if (pending) {
+        this.pendingAdmissions.delete(subjectHex);
+        await this.sendBraidWelcome(pending.session);
+      }
+    }
+    return true;
+  }
+
+  private scheduleGraceExpiry(): void {
+    if (this.graceTimer) clearTimeout(this.graceTimer);
+    this.graceTimer = setTimeout(() => {
+      this.graceTimer = null;
+      if (this.previousEpoch && Date.now() >= this.previousEpoch.expiresAt) {
+        braidWipe(this.previousEpoch.epoch.braid);
+        this.previousEpoch = null;
+      }
+    }, KEY_GRACE_PERIOD + 50);
+  }
+
+  /* ── Braid Welcome (join adoption + cross-check) ────────── */
+
+  private async handleBraidWelcome(data: Uint8Array, _fromLabel: string): Promise<void> {
+    const { epochId, senderPeerId, root, roster: rosterIds } = parseBraidWelcome(data);
+    const rosterHex = sortRoster(rosterIds.map((id) => toHex(id)));
+
+    await this.serializeEpoch(async () => {
+      if (!this.currentEpoch) {
+        // first epoch this seat has ever seen: adopt it, then replay any
+        // folds that overtook the welcome on the way here. a welcome whose
+        // roster cannot seat us is fatal to the join, not to the process.
+        let braid;
+        try {
+          braid = await braidInit(root, epochId, rosterHex, this.peerIdHex);
+        } catch {
+          await this.endCampfire("the welcome had no seat for you. nothing remains.");
+          return;
+        }
+        this.currentEpoch = { epochId, roster: rosterHex, root, braid };
+        this.lastOwnSendAt = Date.now();
+
+        const senderHex = toHex(senderPeerId);
+        const link = this.neighbors.get("join-root") ?? this.neighbors.get("root");
+        if (link && !link.peerIdHex) {
+          link.peerIdHex = senderHex;
+          const known = this.allPeers.get(senderHex);
+          if (known) { link.peerId = new Uint8Array(known.peerId); link.name = known.name; }
+        }
+
+        if (this._state !== "active") {
+          this.setState("active");
+          this.log("connected to room");
+        }
+
+        await this.drainFolds();
+        void this.applyTopology();
+        return;
+      }
+
+      if (epochId === this.currentEpoch.epochId) {
+        // cross-check: an honest circle agrees on its shape.
+        const rootMatches = constantTimeEqual(root, this.currentEpoch.root);
+        const rosterMatches = rosterHex.length === this.currentEpoch.roster.length
+          && rosterHex.every((h, i) => h === this.currentEpoch!.roster[i]);
+        if (!rootMatches || !rosterMatches) {
+          await this.endCampfire("the circle would not agree on its shape. nothing remains.");
+        }
+      }
+
+      // welcome for an epoch we've moved past or haven't reached yet — ignore.
+    });
+  }
+
+  /* ── Topology (pure function of the roster) ─────────────── */
+
+  /** after every epoch change: recompute the roster's neighbor graph, offer
+   *  to peers we're now responsible for connecting to, drop mesh edges that
+   *  fell out of the graph, and decide whether the bootstrap/admission link
+   *  is still needed. */
+  private async applyTopology(): Promise<void> {
+    if (!this.currentEpoch) return;
+    const topo = computeTopology(this.currentEpoch.roster);
+    const mine = new Set(neighborsOf(topo, this.peerIdHex));
+
+    for (const hex of mine) {
+      if (this.findNeighborByHex(hex)) continue;
+      if (this.pendingMeshSdp.has(hex)) continue;
+      if (edgeOfferer(this.peerIdHex, hex) !== this.peerIdHex) continue; // wait for their offer instead
+
+      const label = `mesh-${hex.slice(0, 8)}`;
       const session = this.createNeighborSession(label);
       try {
         const offerCode = await session.createOffer();
-        this.pendingMeshSdp.set(neighborHex, { session, isOfferer: true });
-
-        // Send SDP relay through gossip
-        const wire = buildSdpRelay(neighborId, this.peerId, SDP_OFFER, offerCode);
+        this.pendingMeshSdp.set(hex, { session, isOfferer: true });
+        const wire = buildSdpRelay(hexDecode(hex), this.peerId, SDP_OFFER, offerCode);
         await this.broadcastToNeighbors(wire);
       } catch (err) {
         this.log(`mesh offer failed: ${err instanceof Error ? err.message : "unknown"}`);
       }
     }
+
+    for (const [label, peer] of Array.from(this.neighbors)) {
+      if (!label.startsWith("mesh-")) continue;
+      if (!peer.peerIdHex || mine.has(peer.peerIdHex)) continue;
+      // announce the release before closing: the peer may not have folded
+      // yet and must not read this drop as our departure.
+      if (peer.session) await this.sendToNeighbor(peer.session, buildEdgeRelease(this.peerId));
+      peer.session?.disconnect();
+      this.neighbors.delete(label);
+    }
+
+    await this.maybeReleaseBootstrap(mine);
   }
 
-  /* ── SDP Relay Handler ───────────────────────────────── */
+  /** Release the bootstrap/admission connection once it is no longer needed:
+   *  keep it while its peer is a real topology neighbor, or while we have no
+   *  other connected mesh neighbor to fall back on. */
+  private async maybeReleaseBootstrap(mine: Set<string>): Promise<void> {
+    if (this.role !== "peer" || !this.bootstrapSession) return;
+    const link = this.neighbors.get("join-root") ?? this.neighbors.get("root");
+    if (!link || !link.peerIdHex) return; // identity not resolved yet
+    if (mine.has(link.peerIdHex)) return; // still a real topology neighbor
+
+    const hasOtherMesh = Array.from(this.neighbors.keys()).some((l) => l.startsWith("mesh-"));
+    if (!hasOtherMesh) return; // don't strand ourselves
+
+    this.log("releasing bootstrap connection to host");
+    await this.sendToNeighbor(this.bootstrapSession, buildEdgeRelease(this.peerId));
+    this.bootstrapSession.disconnect();
+    this.bootstrapSession = null;
+    this.neighbors.delete("root");
+    this.neighbors.delete("join-root");
+  }
+
+  /* ── SDP Relay Handler (mesh edge creation) ─────────────── */
 
   private async handleSdpRelay(data: Uint8Array, fromLabel: string): Promise<void> {
+    if (await this.seenBefore(data)) return;
+
     const { targetPeerId, originPeerId, sdpType, sdpCode } = parseSdpRelay(data);
     const targetHex = toHex(targetPeerId);
-    const originHex = toHex(originPeerId);
 
     if (targetHex === this.peerIdHex) {
       // This SDP is for us
-      await this.handleIncomingMeshSdp(sdpType, sdpCode, originHex, originPeerId);
-    } else if (this.role === "root") {
-      // Root relays to the target peer directly if they're a neighbor
+      await this.handleIncomingMeshSdp(sdpType, sdpCode, toHex(originPeerId), originPeerId);
+      return;
+    }
+
+    if (this.role === "root") {
+      // Root relays directly to the target when it happens to be a neighbor.
       const targetPeer = this.findNeighborByHex(targetHex);
       if (targetPeer?.session) {
-        const wire = buildSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode);
-        await this.sendToNeighbor(targetPeer.session, wire);
+        await this.sendToNeighbor(targetPeer.session, buildSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode));
+        return;
       }
-    } else {
-      // Non-root: gossip-forward SDP relay
-      await this.broadcastToNeighbors(
-        buildSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode),
-        fromLabel,
-      );
     }
+
+    await this.broadcastToNeighbors(buildSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode), fromLabel);
   }
 
   /* ── Mesh SDP Handling ──────────────────────────────── */
@@ -938,58 +1275,36 @@ export class CampfireNode {
     }
   }
 
-  private handleGroupKeyMsg(data: Uint8Array): void {
-    const { epoch, groupKey } = parseGroupKey(data);
-    this.log("encryption key updated");
-
-    // Rotate keys
-    if (this.currentEpoch) {
-      this.previousEpoch = {
-        ...this.currentEpoch,
-        expiresAt: Date.now() + KEY_GRACE_PERIOD,
-      };
-    }
-    this.currentEpoch = { epoch, key: new Uint8Array(groupKey), expiresAt: Infinity };
-  }
-
   private handlePeerListMsg(data: Uint8Array): void {
     const { peers } = parsePeerList(data);
     for (const p of peers) {
       const hex = toHex(p.peerId);
       this.allPeers.set(hex, { peerId: new Uint8Array(p.peerId), name: p.name });
     }
-
-    if (this.role === "peer" && this.rootPeerIdHex) {
-      const rootLink = this.neighbors.get("join-root") ?? this.neighbors.get("root");
-      const rootPeer = this.allPeers.get(this.rootPeerIdHex);
-      if (rootLink && rootPeer) {
-        rootLink.peerId = new Uint8Array(rootPeer.peerId);
-        rootLink.peerIdHex = this.rootPeerIdHex;
-        rootLink.name = rootPeer.name;
-      }
-    }
     this.cb.onPeerListUpdate(Array.from(this.allPeers.values()));
   }
 
   private async handleDmSdpRelay(data: Uint8Array, fromLabel: string): Promise<void> {
+    if (await this.seenBefore(data)) return;
+
     const { targetPeerId, originPeerId, sdpType, sdpCode } = parseDmSdpRelay(data);
     const targetHex = toHex(targetPeerId);
-    const originHex = toHex(originPeerId);
 
     if (targetHex === this.peerIdHex) {
       // DM SDP is for us
-      await this.handleIncomingDmSdp(sdpType, sdpCode, originHex);
-    } else if (this.role === "root") {
-      // Root relays DM SDP
+      await this.handleIncomingDmSdp(sdpType, sdpCode, toHex(originPeerId));
+      return;
+    }
+
+    if (this.role === "root") {
       const targetPeer = this.findNeighborByHex(targetHex);
       if (targetPeer?.session) {
-        const wire = buildDmSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode);
-        await this.sendToNeighbor(targetPeer.session, wire);
+        await this.sendToNeighbor(targetPeer.session, buildDmSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode));
+        return;
       }
-    } else {
-      // Forward through mesh
-      await this.broadcastToNeighbors(buildDmSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode), fromLabel);
     }
+
+    await this.broadcastToNeighbors(buildDmSdpRelay(targetPeerId, originPeerId, sdpType, sdpCode), fromLabel);
   }
 
   /* ── SDP Handling (DM) ──────────────────────────────── */
@@ -1043,8 +1358,8 @@ export class CampfireNode {
     await session.sendText(text);
   }
 
-  private createDmSession(peerIdHex: string): WhisperLiveSession {
-    let sessionRef: WhisperLiveSession | null = null;
+  private createDmSession(peerIdHex: string): CampfireSessionLike {
+    let sessionRef: CampfireSessionLike | null = null;
     const callbacks: WhisperLiveCallbacks = {
       onStateChange: (state) => {
         if (state === "live") {
@@ -1063,14 +1378,14 @@ export class CampfireNode {
       onFingerprint: () => {},
       onMessage: (msg) => {
         if (msg.type === "text" && msg.text) {
-          const peerId = this.allPeers.get(peerIdHex)?.peerId ?? new Uint8Array(PEER_ID_LEN);
+          const peerId = this.allPeers.get(peerIdHex)?.peerId ?? hexDecode(peerIdHex);
           this.cb.onDmMessage(peerId, { type: "text", text: msg.text, timestamp: msg.timestamp });
         }
       },
       onLog: () => {},
     };
 
-    const session = new WhisperLiveSession(callbacks, {
+    const session = this.sessionFactory(callbacks, {
       rtcConfig: this.rtcConfig,
       autoConfirmFingerprint: true,
     });
@@ -1078,33 +1393,17 @@ export class CampfireNode {
     return session;
   }
 
-  /* ── Root Heartbeat ────────────────────────────────────── */
-
-  private startRootHeartbeat(): void {
-    this.stopRootHeartbeat();
-    this.heartbeatTimer = setInterval(async () => {
-      if (this._state !== "active" && this._state !== "waiting") return;
-      const epoch = this.currentEpoch?.epoch ?? 0;
-      const seq = ++this.heartbeatSeq;
-      const wire = buildRootHeartbeat(epoch, this.allPeers.size, this.peerId, seq);
-      await this.broadcastToNeighbors(wire);
-    }, ROOT_HEARTBEAT_INTERVAL);
-  }
-
-  private stopRootHeartbeat(): void {
-    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
-  }
+  /* ── Ring Repair + Auto-Beacon Timers ───────────────────── */
 
   private startRingRepair(): void {
     this.stopRingRepair();
     this.repairTimer = setInterval(() => {
-      if (this._state !== "active") return;
-      const ids = Array.from(this.allPeers.keys()).sort();
-      for (const hex of ids) {
-        if (hex === this.peerIdHex) continue;
-        const wantFrom = (this.seqBySender.get(hex) ?? 0) + 1;
-        const wantTo = wantFrom + RING_REPAIR_WINDOW - 1;
-        void this.broadcastToNeighbors(buildRingWant(this.peerId, this.hexToPeerId(hex), wantFrom, wantTo));
+      if (this._state !== "active" || !this.currentEpoch) return;
+      const wants = braidWants(this.currentEpoch.braid);
+      for (const want of wants) {
+        const seatHex = this.currentEpoch.roster[want.seatIndex];
+        if (!seatHex) continue;
+        void this.broadcastToNeighbors(buildRingWant(this.peerId, hexDecode(seatHex), want.fromSeq, want.toSeq));
       }
     }, RING_REPAIR_INTERVAL);
   }
@@ -1113,22 +1412,37 @@ export class CampfireNode {
     if (this.repairTimer) { clearInterval(this.repairTimer); this.repairTimer = null; }
   }
 
-  /* ── Peer Heartbeat Watch ──────────────────────────────── */
-
-  private startHeartbeatWatch(): void {
-    this.stopHeartbeatWatch();
-    this.lastRootHeartbeat = Date.now();
-    this.heartbeatWatchTimer = setInterval(() => {
-      if (this._state !== "active") return;
-      if (Date.now() - this.lastRootHeartbeat > ROOT_HEARTBEAT_TIMEOUT) {
-        this.log("room host went silent, session ending");
-        this.endCampfire("root went silent. the fire is out. nothing remains.");
-      }
-    }, ROOT_HEARTBEAT_INTERVAL);
+  private startBeacon(): void {
+    this.stopBeacon();
+    this.beaconTimer = setInterval(() => {
+      void this.maybeSendBeacon();
+    }, BEACON_CHECK_INTERVAL);
   }
 
-  private stopHeartbeatWatch(): void {
-    if (this.heartbeatWatchTimer) { clearInterval(this.heartbeatWatchTimer); this.heartbeatWatchTimer = null; }
+  private stopBeacon(): void {
+    if (this.beaconTimer) { clearInterval(this.beaconTimer); this.beaconTimer = null; }
+  }
+
+  /** send a silent, empty-payload group message so quiet seats still
+   *  advance their frontier and stay reachable for view reconstruction. */
+  private async maybeSendBeacon(): Promise<void> {
+    if (this._state !== "active" || !this.currentEpoch) return;
+    const idle = this.receivedSinceOwnSend > 0 && Date.now() - this.lastOwnSendAt > BEACON_IDLE_MS;
+    if (this.receivedSinceOwnSend < BEACON_MSG_THRESHOLD && !idle) return;
+
+    const epochId = this.currentEpoch.epochId;
+    const sealed = await braidSeal(this.currentEpoch.braid, new Uint8Array(0));
+    const msgId = await sha256(concatBytes(this.peerId, le32(epochId), le32(sealed.seq), sealed.ciphertext));
+    const wire = buildGroupMsg(
+      msgId, this.peerId, sealed.seq, epochId, Date.now(), 0, ContentType.System,
+      sealed.frontier, sealed.ciphertext,
+    );
+
+    this.markSeen(msgId);
+    this.rememberRecent(this.peerIdHex, sealed.seq, wire.subarray(1));
+    this.lastOwnSendAt = Date.now();
+    this.receivedSinceOwnSend = 0;
+    await this.broadcastToNeighbors(wire);
   }
 
   /* ── Utility ───────────────────────────────────────────── */
@@ -1156,19 +1470,15 @@ export class CampfireNode {
 
   /* ── Teardown ──────────────────────────────────────────── */
 
-  /** End the campfire (Root: kill switch, Peer: leave). */
+  /** End the campfire (voluntary leave, any role). */
   async endCampfire(reason?: string): Promise<void> {
     if (this._state === "ended" || this._state === "idle") return;
 
-    if (this.role === "root") {
-      // Broadcast leave announce for root
-      const wire = buildLeaveAnnounce(this.peerId);
-      await this.broadcastToNeighbors(wire);
-    }
+    await this.broadcastToNeighbors(buildLeaveAnnounce(this.peerId));
 
-    this.stopRootHeartbeat();
-    this.stopHeartbeatWatch();
     this.stopRingRepair();
+    this.stopBeacon();
+    if (this.graceTimer) { clearTimeout(this.graceTimer); this.graceTimer = null; }
 
     // Disconnect all neighbors
     for (const [, peer] of this.neighbors) {
@@ -1188,26 +1498,26 @@ export class CampfireNode {
     }
     this.dmSessions.clear();
 
-    // Wipe keys
+    // Wipe braid secrets
     if (this.currentEpoch) {
-      this.currentEpoch.key.fill(0);
+      braidWipe(this.currentEpoch.braid);
       this.currentEpoch = null;
     }
     if (this.previousEpoch) {
-      this.previousEpoch.key.fill(0);
+      braidWipe(this.previousEpoch.epoch.braid);
       this.previousEpoch = null;
     }
 
     this.pendingMeshSdp.clear();
-    this.topology = null;
+    this.pendingAdmissions.clear();
+    this.pendingJoinReqs.clear();
+    this.pendingFolds.clear();
+    this.pendingMeta.clear();
     this.allPeers.clear();
     this.seenMsgIds = [];
     this.seenMsgSet.clear();
     this.seenReacts.clear();
-    this.seqBySender.clear();
     this.recentBySeq.clear();
-    this.assignedNeighborHexes.clear();
-    this.meshNeighborsConnected = 0;
 
     this.setState("ended", reason ?? "session ended");
     this.log(reason ?? "session ended");

@@ -1,24 +1,17 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertBytesEqual } from "./_helpers/assertions.js";
-import { randomBytes, randomPeerId, randomMsgId, randomKey } from "./_helpers/generators.js";
+import { randomBytes, randomPeerId, randomMsgId } from "./_helpers/generators.js";
 import {
-  buildRootHeartbeat,
-  parseRootHeartbeat,
   buildGroupMsg,
   parseGroupMsgHeader,
-  decryptGroupMsg,
   rewrapGroupMsg,
   buildJoinAnnounce,
   parseJoinAnnounce,
   buildLeaveAnnounce,
   parseLeaveAnnounce,
-  buildTopologyAssign,
-  parseTopologyAssign,
   buildSdpRelay,
   parseSdpRelay,
-  buildGroupKey,
-  parseGroupKey,
   buildPeerList,
   parsePeerList,
   buildDmSdpRelay,
@@ -27,132 +20,109 @@ import {
   parseRingWant,
   buildCfReact,
   parseCfReact,
+  buildBraidFold,
+  parseBraidFold,
+  buildBraidWelcome,
+  parseBraidWelcome,
+  buildJoinReq,
+  parseJoinReq,
 } from "../../src/scripts/whisper/campfire/wire.js";
 import { CF_REACT, CF_UNREACT } from "../../src/scripts/whisper/campfire/types.js";
 
+/** Build a fake 5-byte frontier entry: [seatIndex 1B][seq 4B LE]. */
+function frontierEntry(seatIndex: number, seq: number): Uint8Array {
+  const b = new Uint8Array(5);
+  b[0] = seatIndex;
+  new DataView(b.buffer).setUint32(1, seq, true);
+  return b;
+}
+
+/** Build a fake self-describing frontier: [count 1B][entry 5B]*count. */
+function fakeFrontier(entries: Array<[number, number]>): Uint8Array {
+  const parts = [new Uint8Array([entries.length]), ...entries.map(([i, s]) => frontierEntry(i, s))];
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
 describe("campfire/wire", () => {
-  describe("RootHeartbeat", () => {
-    it("round-trip 20 random iterations", () => {
-      for (let i = 0; i < 20; i++) {
-        const epoch = Math.floor(Math.random() * 0xFFFFFFFF);
-        const peerCount = Math.floor(Math.random() * 256);
-        const rootPeerId = randomPeerId();
-        const seq = Math.floor(Math.random() * 0xFFFFFFFF);
-
-        const wire = buildRootHeartbeat(epoch, peerCount, rootPeerId, seq);
-        const parsed = parseRootHeartbeat(wire.subarray(1));
-
-        assert.equal(parsed.epoch, epoch, `epoch iter ${i}`);
-        assert.equal(parsed.peerCount, peerCount, `peerCount iter ${i}`);
-        assertBytesEqual(parsed.rootPeerId, rootPeerId, `rootPeerId iter ${i}`);
-        assert.equal(parsed.seq, seq, `seq iter ${i}`);
-      }
-    });
-
-    it("boundary values", () => {
-      for (const [epoch, peerCount, seq] of [[0, 0, 0], [0xFFFFFFFF, 255, 0xFFFFFFFF]]) {
-        const rootPeerId = randomPeerId();
-        const wire = buildRootHeartbeat(epoch, peerCount, rootPeerId, seq);
-        const parsed = parseRootHeartbeat(wire.subarray(1));
-        assert.equal(parsed.epoch, epoch);
-        assert.equal(parsed.peerCount, peerCount);
-        assert.equal(parsed.seq, seq);
-      }
-    });
-  });
-
   describe("GroupMsg", () => {
-    it("build + parse + decrypt round-trip (10 random iterations)", async () => {
+    it("build + parse round-trip, frontier with 0 entries (10 random iterations)", () => {
       for (let i = 0; i < 10; i++) {
         const msgId = randomMsgId();
         const senderId = randomPeerId();
+        const seq = Math.floor(Math.random() * 0xFFFFFFFF);
+        const epochId = Math.floor(Math.random() * 0xFFFF);
         const timestamp = Date.now() + Math.floor(Math.random() * 100000);
         const hopCount = Math.floor(Math.random() * 256);
-        const epoch = Math.floor(Math.random() * 0xFFFF);
         const contentType = Math.floor(Math.random() * 4);
-        const textLen = 1 + Math.floor(Math.random() * 200);
-        const plaintext = new TextEncoder().encode("x".repeat(textLen));
-        const groupKey = randomKey();
+        const frontier = fakeFrontier([]);
+        const ciphertextLen = 1 + Math.floor(Math.random() * 200);
+        const ciphertext = randomBytes(ciphertextLen);
 
-        const wire = await buildGroupMsg(msgId, senderId, timestamp, hopCount, epoch, contentType, plaintext, groupKey);
+        const wire = buildGroupMsg(msgId, senderId, seq, epochId, timestamp, hopCount, contentType, frontier, ciphertext);
         const parsed = parseGroupMsgHeader(wire.subarray(1));
 
         assertBytesEqual(parsed.msgId, msgId, `msgId iter ${i}`);
         assertBytesEqual(parsed.senderId, senderId, `senderId iter ${i}`);
+        assert.equal(parsed.seq, seq, `seq iter ${i}`);
+        assert.equal(parsed.epochId, epochId, `epochId iter ${i}`);
         assert.equal(parsed.hopCount, hopCount, `hopCount iter ${i}`);
-        assert.equal(parsed.epoch, epoch, `epoch iter ${i}`);
         assert.equal(parsed.contentType, contentType, `contentType iter ${i}`);
-
-        const decrypted = await decryptGroupMsg(parsed.ciphertext, parsed.nonce, groupKey);
-        assertBytesEqual(decrypted, plaintext, `plaintext iter ${i}`);
+        assertBytesEqual(parsed.frontier, frontier, `frontier iter ${i}`);
+        assertBytesEqual(parsed.ciphertext, ciphertext, `ciphertext iter ${i}`);
       }
     });
 
-    it("wrong key fails to decrypt", async () => {
+    it("round-trip, frontier with 1 entry", () => {
       const msgId = randomMsgId();
       const senderId = randomPeerId();
-      const groupKey = randomKey();
-      const wrongKey = randomKey();
-      const plaintext = new TextEncoder().encode("secret message");
+      const frontier = fakeFrontier([[0, 42]]);
+      const ciphertext = randomBytes(64);
 
-      const wire = await buildGroupMsg(msgId, senderId, Date.now(), 0, 1, 0, plaintext, groupKey);
+      const wire = buildGroupMsg(msgId, senderId, 7, 3, Date.now(), 0, 0, frontier, ciphertext);
       const parsed = parseGroupMsgHeader(wire.subarray(1));
 
-      await assert.rejects(
-        () => decryptGroupMsg(parsed.ciphertext, parsed.nonce, wrongKey),
-        "wrong key should fail to decrypt",
-      );
+      assertBytesEqual(parsed.frontier, frontier, "1-entry frontier");
+      assertBytesEqual(parsed.ciphertext, ciphertext, "ciphertext after 1-entry frontier");
     });
 
-    it("binary plaintext round-trip", async () => {
-      const plaintext = randomBytes(500);
-      const groupKey = randomKey();
-      const wire = await buildGroupMsg(randomMsgId(), randomPeerId(), Date.now(), 0, 1, 0, plaintext, groupKey);
+    it("round-trip, frontier with 3 entries", () => {
+      const msgId = randomMsgId();
+      const senderId = randomPeerId();
+      const frontier = fakeFrontier([[0, 1], [2, 99], [5, 0xFFFFFFFF]]);
+      const ciphertext = randomBytes(128);
+
+      const wire = buildGroupMsg(msgId, senderId, 12, 9, Date.now(), 3, 2, frontier, ciphertext);
       const parsed = parseGroupMsgHeader(wire.subarray(1));
-      const decrypted = await decryptGroupMsg(parsed.ciphertext, parsed.nonce, groupKey);
-      assertBytesEqual(decrypted, plaintext, "binary plaintext");
+
+      assertBytesEqual(parsed.frontier, frontier, "3-entry frontier");
+      assertBytesEqual(parsed.ciphertext, ciphertext, "ciphertext after 3-entry frontier");
+      assert.equal(parsed.hopCount, 3);
+      assert.equal(parsed.contentType, 2);
     });
 
-    it("tampered ciphertext rejects (integrity check)", async () => {
-      const plaintext = new TextEncoder().encode("campfire secret message");
-      const groupKey = randomKey();
-      const wire = await buildGroupMsg(randomMsgId(), randomPeerId(), Date.now(), 0, 1, 0, plaintext, groupKey);
+    it("binary ciphertext round-trip", () => {
+      const ciphertext = randomBytes(500);
+      const frontier = fakeFrontier([[1, 5]]);
+      const wire = buildGroupMsg(randomMsgId(), randomPeerId(), 1, 1, Date.now(), 0, 0, frontier, ciphertext);
       const parsed = parseGroupMsgHeader(wire.subarray(1));
-
-      // Flip a random byte in the ciphertext
-      const tampered = new Uint8Array(parsed.ciphertext);
-      const flipIdx = Math.floor(Math.random() * tampered.length);
-      tampered[flipIdx] ^= 0x01;
-      await assert.rejects(
-        () => decryptGroupMsg(tampered, parsed.nonce, groupKey),
-        "tampered ciphertext must fail decryption",
-      );
-    });
-
-    it("tampered nonce rejects", async () => {
-      const plaintext = randomBytes(100);
-      const groupKey = randomKey();
-      const wire = await buildGroupMsg(randomMsgId(), randomPeerId(), Date.now(), 0, 1, 0, plaintext, groupKey);
-      const parsed = parseGroupMsgHeader(wire.subarray(1));
-
-      const wrongNonce = new Uint8Array(parsed.nonce);
-      wrongNonce[0] ^= 0xFF;
-      await assert.rejects(
-        () => decryptGroupMsg(parsed.ciphertext, wrongNonce, groupKey),
-        "wrong nonce must fail decryption",
-      );
+      assertBytesEqual(parsed.ciphertext, ciphertext, "binary ciphertext");
     });
   });
 
   describe("rewrapGroupMsg", () => {
-    it("changes only hop count, preserves everything else", async () => {
+    it("changes only hop count, preserves everything else", () => {
       for (let i = 0; i < 5; i++) {
         const msgId = randomMsgId();
         const senderId = randomPeerId();
-        const groupKey = randomKey();
         const originalHop = Math.floor(Math.random() * 128);
         const newHop = Math.floor(Math.random() * 128) + 128;
-        const wire = await buildGroupMsg(msgId, senderId, Date.now(), originalHop, 1, 0, randomBytes(50), groupKey);
+        const frontier = fakeFrontier([[0, 3]]);
+        const ciphertext = randomBytes(50);
+        const wire = buildGroupMsg(msgId, senderId, 4, 2, Date.now(), originalHop, 0, frontier, ciphertext);
 
         const rewrapped = rewrapGroupMsg(wire, newHop);
         const parsed = parseGroupMsgHeader(rewrapped.subarray(1));
@@ -160,11 +130,15 @@ describe("campfire/wire", () => {
         assert.equal(parsed.hopCount, newHop, `hop updated iter ${i}`);
         assertBytesEqual(parsed.msgId, msgId, `msgId preserved iter ${i}`);
         assertBytesEqual(parsed.senderId, senderId, `senderId preserved iter ${i}`);
-
-        // Ciphertext should still decrypt with original key
-        const decrypted = await decryptGroupMsg(parsed.ciphertext, parsed.nonce, groupKey);
-        assert.ok(decrypted.length > 0, `ciphertext still valid iter ${i}`);
+        assertBytesEqual(parsed.ciphertext, ciphertext, `ciphertext preserved iter ${i}`);
       }
+    });
+
+    it("hopCount offset (65) matches the new layout", () => {
+      const wire = buildGroupMsg(randomMsgId(), randomPeerId(), 1, 1, Date.now(), 11, 0, fakeFrontier([]), randomBytes(10));
+      assert.equal(wire[65], 11, "hopCount byte lands at offset 65");
+      const rewrapped = rewrapGroupMsg(wire, 99);
+      assert.equal(rewrapped[65], 99, "rewrap writes the same offset");
     });
   });
 
@@ -196,20 +170,6 @@ describe("campfire/wire", () => {
     });
   });
 
-  describe("TopologyAssign", () => {
-    it("round-trip with 0, 1, 5, 20 peers", () => {
-      for (const count of [0, 1, 5, 20]) {
-        const ids = Array.from({ length: count }, () => randomPeerId());
-        const wire = buildTopologyAssign(ids);
-        const parsed = parseTopologyAssign(wire.subarray(1));
-        assert.equal(parsed.neighborPeerIds.length, count, `count=${count}`);
-        for (let i = 0; i < count; i++) {
-          assertBytesEqual(parsed.neighborPeerIds[i], ids[i], `peer ${i} in ${count}-list`);
-        }
-      }
-    });
-  });
-
   describe("SdpRelay", () => {
     it("round-trip 10 random iterations", () => {
       for (let i = 0; i < 10; i++) {
@@ -224,29 +184,6 @@ describe("campfire/wire", () => {
         assertBytesEqual(parsed.originPeerId, origin, `origin iter ${i}`);
         assert.equal(parsed.sdpType, sdpType, `sdpType iter ${i}`);
         assert.equal(parsed.sdpCode, sdpCode, `sdpCode iter ${i}`);
-      }
-    });
-  });
-
-  describe("GroupKey", () => {
-    it("round-trip 20 random iterations", () => {
-      for (let i = 0; i < 20; i++) {
-        const epoch = Math.floor(Math.random() * 0xFFFFFFFF);
-        const groupKey = randomKey();
-        const wire = buildGroupKey(epoch, groupKey);
-        const parsed = parseGroupKey(wire.subarray(1));
-        assert.equal(parsed.epoch, epoch, `epoch iter ${i}`);
-        assertBytesEqual(parsed.groupKey, groupKey, `groupKey iter ${i}`);
-      }
-    });
-
-    it("boundary epoch values", () => {
-      for (const epoch of [0, 1, 0xFFFFFFFF]) {
-        const groupKey = randomKey();
-        const wire = buildGroupKey(epoch, groupKey);
-        const parsed = parseGroupKey(wire.subarray(1));
-        assert.equal(parsed.epoch, epoch);
-        assertBytesEqual(parsed.groupKey, groupKey);
       }
     });
   });
@@ -386,6 +323,74 @@ describe("campfire/wire", () => {
       // Build manually: 32B msgId + 16B senderId + 1B hop + 0B emoji
       const buf = new Uint8Array(32 + 16 + 1);
       assert.equal(parseCfReact(buf), null, "no emoji bytes");
+    });
+  });
+
+  describe("BraidFold", () => {
+    it("round-trip 20 random iterations, both reasons", () => {
+      for (let i = 0; i < 20; i++) {
+        const newEpochId = Math.floor(Math.random() * 0xFFFFFFFF);
+        const reason = i % 2 === 0 ? 1 : 2;
+        const subjectPeerId = randomPeerId();
+        const entropy = randomBytes(32);
+        const rosterDigest = randomBytes(32);
+
+        const wire = buildBraidFold(newEpochId, reason, subjectPeerId, entropy, rosterDigest);
+        const parsed = parseBraidFold(wire.subarray(1));
+
+        assert.equal(parsed.newEpochId, newEpochId, `newEpochId iter ${i}`);
+        assert.equal(parsed.reason, reason, `reason iter ${i}`);
+        assertBytesEqual(parsed.subjectPeerId, subjectPeerId, `subjectPeerId iter ${i}`);
+        assertBytesEqual(parsed.entropy, entropy, `entropy iter ${i}`);
+        assertBytesEqual(parsed.rosterDigest, rosterDigest, `rosterDigest iter ${i}`);
+      }
+    });
+
+    it("boundary epoch values", () => {
+      for (const newEpochId of [0, 1, 0xFFFFFFFF]) {
+        const wire = buildBraidFold(newEpochId, 1, randomPeerId(), randomBytes(32), randomBytes(32));
+        const parsed = parseBraidFold(wire.subarray(1));
+        assert.equal(parsed.newEpochId, newEpochId);
+      }
+    });
+  });
+
+  describe("BraidWelcome", () => {
+    it("round-trip with 0, 1, 5, 20 roster entries", () => {
+      for (const count of [0, 1, 5, 20]) {
+        const epochId = Math.floor(Math.random() * 0xFFFFFFFF);
+        const senderPeerId = randomPeerId();
+        const root = randomBytes(32);
+        const roster = Array.from({ length: count }, () => randomPeerId());
+
+        const wire = buildBraidWelcome(epochId, senderPeerId, root, roster);
+        const parsed = parseBraidWelcome(wire.subarray(1));
+
+        assert.equal(parsed.epochId, epochId, `epochId count=${count}`);
+        assertBytesEqual(parsed.senderPeerId, senderPeerId, `senderPeerId count=${count}`);
+        assertBytesEqual(parsed.root, root, `root count=${count}`);
+        assert.equal(parsed.roster.length, count, `roster length count=${count}`);
+        for (let i = 0; i < count; i++) {
+          assertBytesEqual(parsed.roster[i], roster[i], `roster[${i}] count=${count}`);
+        }
+      }
+    });
+  });
+
+  describe("JoinReq", () => {
+    it("round-trip 20 iterations with various names", () => {
+      const names = [
+        "Alice", "Bob", "田中太郎", "José García", "Ünsal", "O'Brien",
+        "", "A", "x".repeat(100), "emoji 🎉", "null\x00byte",
+      ];
+      for (let i = 0; i < 20; i++) {
+        const joinerId = randomPeerId();
+        const name = names[i % names.length];
+        const wire = buildJoinReq(joinerId, name);
+        const parsed = parseJoinReq(wire.subarray(1));
+        assertBytesEqual(parsed.joinerId, joinerId, `joinerId iter ${i}`);
+        assert.equal(parsed.name, name, `name iter ${i}: "${name}"`);
+      }
     });
   });
 });

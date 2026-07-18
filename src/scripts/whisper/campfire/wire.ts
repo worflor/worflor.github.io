@@ -4,26 +4,31 @@
  * All campfire messages are carried inside the existing 0x20 encrypted
  * message type. The flags byte has bit1 (0x02) set to indicate campfire
  * content. The decrypted plaintext starts with a campfire sub-type byte
- * (0x50–0x5A), followed by sub-type-specific payload.
+ * (0x51–0x60), followed by sub-type-specific payload.
+ *
+ * This module is a pure framer: it has no crypto of its own. Group message
+ * ciphertext and frontier bytes come opaque from the braid core
+ * (../live-braid.ts); wire.ts only knows how to lay them out and read them
+ * back.
  */
 
-import { TE, TD, aesGcmEncrypt, aesGcmDecrypt } from "../live-crypto";
-import { concatBytes, randomBytes } from "../wasm";
+import { TE, TD } from "../live-crypto";
+import { concatBytes } from "../wasm";
 import {
-  CF_ROOT_HEARTBEAT,
   CF_GROUP_MSG,
   CF_JOIN_ANNOUNCE,
   CF_LEAVE_ANNOUNCE,
-  CF_TOPOLOGY_ASSIGN,
   CF_SDP_RELAY,
-  CF_GROUP_KEY,
   CF_PEER_LIST,
   CF_DM_SDP_RELAY,
   CF_RING_WANT,
   CF_REACT,
   CF_UNREACT,
+  CF_BRAID_FOLD,
+  CF_BRAID_WELCOME,
+  CF_JOIN_REQ,
+  CF_EDGE_RELEASE,
   PEER_ID_LEN,
-  GROUP_KEY_LEN,
   MSG_ID_LEN,
 } from "./types";
 
@@ -65,44 +70,37 @@ function readF64LE(data: Uint8Array, offset: number): number {
    Builders
    ═══════════════════════════════════════════════════════════════════ */
 
-/** 0x50 ROOT_HEARTBEAT: [epoch 4B][peerCount 2B][rootPeerId 16B][seq 4B] */
-export function buildRootHeartbeat(epoch: number, peerCount: number, rootPeerId: Uint8Array, seq: number): Uint8Array {
-  return concatBytes(new Uint8Array([CF_ROOT_HEARTBEAT]), u32LE(epoch), u16LE(peerCount), rootPeerId, u32LE(seq));
-}
-
 /**
- * 0x51 GROUP_MSG: [msgId 32B][senderId 16B][timestamp 8B]
- *                 [hopCount 1B][epoch 4B][nonce 12B][contentType 1B][ciphertext...]
+ * 0x51 GROUP_MSG: [msgId 32B][senderId 16B][seq 4B][epochId 4B][timestamp 8B]
+ *                 [hopCount 1B][contentType 1B][frontier: count 1B + 5B per entry][ciphertext ...]
  *
- * Sender names are NOT transported in GROUP_MSG. Names are local metadata from
- * JOIN_ANNOUNCE / PEER_LIST to keep the hot message path lightweight.
- * Content is encrypted with the group key (AES-256-GCM).
+ * msgId is computed by the caller as sha256(senderId || le32(epochId) ||
+ * le32(seq) || ciphertext). frontier and ciphertext come opaque from
+ * braidSeal — this builder does no encryption, so it is synchronous.
  */
-export async function buildGroupMsg(
-  msgId: Uint8Array, senderId: Uint8Array,
-  timestamp: number, hopCount: number, epoch: number,
-  contentType: number, plaintext: Uint8Array, groupKey: Uint8Array,
-): Promise<Uint8Array> {
-  const nonce = randomBytes(12);
-  const ciphertext = await aesGcmEncrypt(groupKey, plaintext, nonce);
+export function buildGroupMsg(
+  msgId: Uint8Array, senderId: Uint8Array, seq: number, epochId: number,
+  timestamp: number, hopCount: number, contentType: number,
+  frontier: Uint8Array, ciphertext: Uint8Array,
+): Uint8Array {
   return concatBytes(
     new Uint8Array([CF_GROUP_MSG]),
     msgId, senderId,
+    u32LE(seq),
+    u32LE(epochId),
     f64LE(timestamp),
-    new Uint8Array([hopCount]),
-    u32LE(epoch),
-    nonce,
-    new Uint8Array([contentType]),
+    new Uint8Array([hopCount, contentType]),
+    frontier,
     ciphertext,
   );
 }
 
-/** Re-wrap a GROUP_MSG for forwarding — increment hop count but keep the encrypted payload intact. */
+/** Re-wrap a GROUP_MSG for forwarding — increment hop count but keep the ciphertext intact. */
 export function rewrapGroupMsg(raw: Uint8Array, newHopCount: number): Uint8Array {
   // raw starts at sub-type byte 0x51
-  // [0] subtype | [1..32] msgId | [33..48] senderId
-  // [49..56] timestamp | [57] hopCount | ...
-  const hopOffset = 57;
+  // [0] subtype | [1..32] msgId | [33..48] senderId | [49..52] seq
+  // [53..56] epochId | [57..64] timestamp | [65] hopCount | ...
+  const hopOffset = 65;
   const out = new Uint8Array(raw);
   out[hopOffset] = newHopCount;
   return out;
@@ -118,13 +116,6 @@ export function buildLeaveAnnounce(peerId: Uint8Array): Uint8Array {
   return concatBytes(new Uint8Array([CF_LEAVE_ANNOUNCE]), peerId);
 }
 
-/** 0x54 TOPOLOGY_ASSIGN: [neighborCount 1B][...peerId 16B each] */
-export function buildTopologyAssign(neighborPeerIds: Uint8Array[]): Uint8Array {
-  const parts: Uint8Array[] = [new Uint8Array([CF_TOPOLOGY_ASSIGN]), new Uint8Array([neighborPeerIds.length])];
-  for (const id of neighborPeerIds) parts.push(id);
-  return concatBytes(...parts);
-}
-
 /** 0x55 SDP_RELAY: [targetPeerId 16B][originPeerId 16B][sdpType 1B][sdpCode...] */
 export function buildSdpRelay(targetPeerId: Uint8Array, originPeerId: Uint8Array, sdpType: number, sdpCode: string): Uint8Array {
   return concatBytes(
@@ -134,11 +125,6 @@ export function buildSdpRelay(targetPeerId: Uint8Array, originPeerId: Uint8Array
     new Uint8Array([sdpType]),
     TE.encode(sdpCode),
   );
-}
-
-/** 0x56 GROUP_KEY: [epoch 4B][groupKey 32B] (content is pairwise-encrypted by the outer channel). */
-export function buildGroupKey(epoch: number, groupKey: Uint8Array): Uint8Array {
-  return concatBytes(new Uint8Array([CF_GROUP_KEY]), u32LE(epoch), groupKey);
 }
 
 /** 0x57 PEER_LIST: [count 2B][...peerId 16B + nameLen 1B + name] */
@@ -202,45 +188,100 @@ export function buildCfReact(
   );
 }
 
+/**
+ * 0x5E BRAID_FOLD: [newEpochId 4B][reason 1B][subjectPeerId 16B][entropy 32B][rosterDigest 32B]
+ *
+ * reason: 1 = join, 2 = leave. subjectPeerId is the joiner or the leaver.
+ * entropy folds into the new epoch root (see live-braid.ts braidFold);
+ * rosterDigest lets every receiver verify its own recomputed roster before
+ * adopting the fold — it is sha256 over the concatenated raw id bytes of
+ * the new roster's sorted hex seat ids.
+ */
+export function buildBraidFold(
+  newEpochId: number, reason: number, subjectPeerId: Uint8Array,
+  entropy: Uint8Array, rosterDigest: Uint8Array,
+): Uint8Array {
+  return concatBytes(
+    new Uint8Array([CF_BRAID_FOLD]),
+    u32LE(newEpochId),
+    new Uint8Array([reason]),
+    subjectPeerId,
+    entropy,
+    rosterDigest,
+  );
+}
+
+/**
+ * 0x5F BRAID_WELCOME: [epochId 4B][senderPeerId 16B][root 32B][rosterCount 1B][...peerId 16B each]
+ *
+ * senderPeerId identifies who sent this welcome. It is needed the first
+ * time a joiner adopts an epoch: the bootstrap link it connects through has
+ * no other way to learn the sender's real id now that heartbeats are gone.
+ * Every later cross-check welcome (sent over an ordinary mesh edge) fills
+ * the same field with its own sender's id; it is only consulted on first
+ * adoption, never on the cross-check path.
+ */
+export function buildBraidWelcome(
+  epochId: number, senderPeerId: Uint8Array, root: Uint8Array, roster: Uint8Array[],
+): Uint8Array {
+  const parts: Uint8Array[] = [
+    new Uint8Array([CF_BRAID_WELCOME]),
+    u32LE(epochId),
+    senderPeerId,
+    root,
+    new Uint8Array([roster.length]),
+  ];
+  for (const id of roster) parts.push(id);
+  return concatBytes(...parts);
+}
+
+/** 0x60 JOIN_REQ: [joinerId 16B][nameUTF8...] — relayed toward the elder when
+ *  a non-elder member admits a joiner over its own direct link. */
+export function buildJoinReq(joinerId: Uint8Array, name: string): Uint8Array {
+  return concatBytes(new Uint8Array([CF_JOIN_REQ]), joinerId, TE.encode(name));
+}
+
+/**
+ * 0x61 EDGE_RELEASE: [senderPeerId 16B] — point-to-point over the closing
+ * edge, never gossiped. sent immediately before an intentional disconnect
+ * (topology reconciliation after a fold, bootstrap release) so the peer
+ * never mistakes the drop for a departure. epochs propagate asynchronously,
+ * so the two ends of an edge can disagree about whether it is still
+ * required; without this signal the lagging side would announce a spurious
+ * leave and get an innocent seat folded out of the circle.
+ */
+export function buildEdgeRelease(senderPeerId: Uint8Array): Uint8Array {
+  return concatBytes(new Uint8Array([CF_EDGE_RELEASE]), senderPeerId);
+}
+
+export interface ParsedEdgeRelease { senderPeerId: Uint8Array }
+export function parseEdgeRelease(data: Uint8Array): ParsedEdgeRelease {
+  return { senderPeerId: data.subarray(0, PEER_ID_LEN) };
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    Parsers
    ═══════════════════════════════════════════════════════════════════ */
 
-export interface ParsedRootHeartbeat { epoch: number; peerCount: number; rootPeerId: Uint8Array; seq: number }
-export function parseRootHeartbeat(data: Uint8Array): ParsedRootHeartbeat {
-  // data starts AFTER the sub-type byte
-  const seqOffset = 6 + PEER_ID_LEN;
-  return {
-    epoch: readU32LE(data, 0),
-    peerCount: readU16LE(data, 4),
-    rootPeerId: data.subarray(6, 6 + PEER_ID_LEN),
-    seq: data.length >= seqOffset + 4 ? readU32LE(data, seqOffset) : 0,
-  };
-}
-
 export interface ParsedGroupMsg {
   msgId: Uint8Array; senderId: Uint8Array;
-  timestamp: number; hopCount: number; epoch: number;
-  nonce: Uint8Array; contentType: number; ciphertext: Uint8Array;
+  seq: number; epochId: number; timestamp: number; hopCount: number; contentType: number;
+  frontier: Uint8Array; ciphertext: Uint8Array;
 }
 export function parseGroupMsgHeader(data: Uint8Array): ParsedGroupMsg {
   let o = 0;
   const msgId = data.subarray(o, o + MSG_ID_LEN); o += MSG_ID_LEN;
   const senderId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
+  const seq = readU32LE(data, o); o += 4;
+  const epochId = readU32LE(data, o); o += 4;
   const timestamp = readF64LE(data, o); o += 8;
   const hopCount = data[o]; o += 1;
-  const epoch = readU32LE(data, o); o += 4;
-  const nonce = data.subarray(o, o + 12); o += 12;
   const contentType = data[o]; o += 1;
+  const frontierCount = data[o];
+  const frontierLen = 1 + frontierCount * 5;
+  const frontier = data.subarray(o, o + frontierLen); o += frontierLen;
   const ciphertext = data.subarray(o);
-  return { msgId, senderId, timestamp, hopCount, epoch, nonce, contentType, ciphertext };
-}
-
-/** Decrypt a GROUP_MSG ciphertext with a group key. */
-export async function decryptGroupMsg(
-  ciphertext: Uint8Array, nonce: Uint8Array, groupKey: Uint8Array,
-): Promise<Uint8Array> {
-  return aesGcmDecrypt(groupKey, ciphertext, nonce);
+  return { msgId, senderId, seq, epochId, timestamp, hopCount, contentType, frontier, ciphertext };
 }
 
 export interface ParsedJoinAnnounce { peerId: Uint8Array; name: string }
@@ -256,18 +297,6 @@ export function parseLeaveAnnounce(data: Uint8Array): ParsedLeaveAnnounce {
   return { peerId: data.subarray(0, PEER_ID_LEN) };
 }
 
-export interface ParsedTopologyAssign { neighborPeerIds: Uint8Array[] }
-export function parseTopologyAssign(data: Uint8Array): ParsedTopologyAssign {
-  const count = data[0];
-  const ids: Uint8Array[] = [];
-  let o = 1;
-  for (let i = 0; i < count; i++) {
-    ids.push(data.subarray(o, o + PEER_ID_LEN));
-    o += PEER_ID_LEN;
-  }
-  return { neighborPeerIds: ids };
-}
-
 export interface ParsedSdpRelay { targetPeerId: Uint8Array; originPeerId: Uint8Array; sdpType: number; sdpCode: string }
 export function parseSdpRelay(data: Uint8Array): ParsedSdpRelay {
   return {
@@ -275,14 +304,6 @@ export function parseSdpRelay(data: Uint8Array): ParsedSdpRelay {
     originPeerId: data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2),
     sdpType: data[PEER_ID_LEN * 2],
     sdpCode: TD.decode(data.subarray(PEER_ID_LEN * 2 + 1)),
-  };
-}
-
-export interface ParsedGroupKey { epoch: number; groupKey: Uint8Array }
-export function parseGroupKey(data: Uint8Array): ParsedGroupKey {
-  return {
-    epoch: readU32LE(data, 0),
-    groupKey: data.subarray(4, 4 + GROUP_KEY_LEN),
   };
 }
 
@@ -355,4 +376,43 @@ export function parseCfReact(data: Uint8Array): ParsedCfReact | null {
   const first = new Intl.Segmenter().segment(raw)[Symbol.iterator]().next().value;
   if (!first?.segment) return null;
   return { targetMsgIdFull, senderId, hopCount, emoji: first.segment };
+}
+
+export interface ParsedBraidFold {
+  newEpochId: number; reason: number; subjectPeerId: Uint8Array;
+  entropy: Uint8Array; rosterDigest: Uint8Array;
+}
+export function parseBraidFold(data: Uint8Array): ParsedBraidFold {
+  let o = 0;
+  const newEpochId = readU32LE(data, o); o += 4;
+  const reason = data[o]; o += 1;
+  const subjectPeerId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
+  const entropy = data.subarray(o, o + 32); o += 32;
+  const rosterDigest = data.subarray(o, o + 32); o += 32;
+  return { newEpochId, reason, subjectPeerId, entropy, rosterDigest };
+}
+
+export interface ParsedBraidWelcome {
+  epochId: number; senderPeerId: Uint8Array; root: Uint8Array; roster: Uint8Array[];
+}
+export function parseBraidWelcome(data: Uint8Array): ParsedBraidWelcome {
+  let o = 0;
+  const epochId = readU32LE(data, o); o += 4;
+  const senderPeerId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
+  const root = data.subarray(o, o + 32); o += 32;
+  const count = data[o]; o += 1;
+  const roster: Uint8Array[] = [];
+  for (let i = 0; i < count; i++) {
+    roster.push(data.subarray(o, o + PEER_ID_LEN));
+    o += PEER_ID_LEN;
+  }
+  return { epochId, senderPeerId, root, roster };
+}
+
+export interface ParsedJoinReq { joinerId: Uint8Array; name: string }
+export function parseJoinReq(data: Uint8Array): ParsedJoinReq {
+  return {
+    joinerId: data.subarray(0, PEER_ID_LEN),
+    name: TD.decode(data.subarray(PEER_ID_LEN)),
+  };
 }
