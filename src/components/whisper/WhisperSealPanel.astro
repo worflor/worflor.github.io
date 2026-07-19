@@ -202,6 +202,7 @@
     compareBlocks,
     extractEigenMotion,
     likeness,
+    canonicalizeTrajectory,
     trajectoryFromBlocks,
     fingerprint,
     fingerprintLikeness,
@@ -1174,6 +1175,11 @@
         overlayCtx.fillStyle = "rgb(6, 8, 10)";
         overlayCtx.fillRect(0, 0, w, h);
 
+        // align both signatures into the canonical pose the likeness score uses, so a
+        // matching pair overlaps here instead of sitting at different angles or sizes.
+        const cA: SlotTrajectory = { ...canonicalizeTrajectory(tA), breaks: tA.breaks };
+        const cB: SlotTrajectory = { ...canonicalizeTrajectory(tB), breaks: tB.breaks };
+
         // normalize both trajectories into the same coordinate space
         function bounds(t: Trajectory) {
           let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -1185,7 +1191,7 @@
           }
           return { minX, maxX, minY, maxY };
         }
-        const bA = bounds(tA), bB = bounds(tB);
+        const bA = bounds(cA), bB = bounds(cB);
         const minX = Math.min(bA.minX, bB.minX);
         const maxX = Math.max(bA.maxX, bB.maxX);
         const minY = Math.min(bA.minY, bB.minY);
@@ -1220,8 +1226,8 @@
           overlayCtx.globalCompositeOperation = "source-over";
         }
 
-        drawTrajectory(tA, "rgba(0, 200, 220, 0.7)");
-        drawTrajectory(tB, "rgba(220, 160, 40, 0.7)");
+        drawTrajectory(cA, "rgba(0, 200, 220, 0.7)");
+        drawTrajectory(cB, "rgba(220, 160, 40, 0.7)");
       }
 
       interface SlotTrajectory extends Trajectory {

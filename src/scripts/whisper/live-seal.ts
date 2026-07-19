@@ -458,25 +458,52 @@ function downsample(t: Trajectory, maxN: number): Trajectory {
   return { n: maxN, x, y, p };
 }
 
-// normalize position: translate centroid to (0.5, 0.5), scale so max
-// extent fits [0,1]. makes comparison translation/scale invariant.
-function normalizePosition(t: Trajectory): Trajectory {
+// canonicalize a trajectory for pose-invariant comparison: translate the centroid
+// to (0.5, 0.5), rotate the principal axis (PCA) onto +x, then scale so the max
+// extent fits [0,1]. the rotation is proper, so handedness is preserved and a
+// mirrored signature still fails to match; the 180-degree ambiguity is fixed by the
+// stroke's temporal drift (first third to last third along the principal axis),
+// which is stable across redraws since a hand draws in a fixed order and does not
+// wobble on a near-symmetric shape the way a skewness test does. this is what makes
+// the likeness invariant to where, how big, and at what angle a signature was drawn,
+// the same pose invariance the eigenvalue carries — without discarding the position
+// detail that tells two different signatures apart.
+export function canonicalizeTrajectory(t: Trajectory): Trajectory {
+  if (t.n === 0) return t;
   let cx = 0, cy = 0;
   for (let i = 0; i < t.n; i++) { cx += t.x[i]; cy += t.y[i]; }
   cx /= t.n; cy /= t.n;
 
-  let maxExt = 0;
+  // principal axis from the 2x2 covariance of the centred points
+  let sxx = 0, syy = 0, sxy = 0;
   for (let i = 0; i < t.n; i++) {
-    maxExt = Math.max(maxExt, Math.abs(t.x[i] - cx), Math.abs(t.y[i] - cy));
+    const dx = t.x[i] - cx, dy = t.y[i] - cy;
+    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
   }
+  const phi = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const c = Math.cos(-phi), s = Math.sin(-phi);
+
+  // rotate onto +x
+  const rx = new Float32Array(t.n), ry = new Float32Array(t.n);
+  for (let i = 0; i < t.n; i++) {
+    const dx = t.x[i] - cx, dy = t.y[i] - cy;
+    rx[i] = dx * c - dy * s; ry[i] = dx * s + dy * c;
+  }
+  // resolve the 180-degree ambiguity by the temporal drift along the principal axis:
+  // if the last third sits to the -x side of the first third, flip a half turn so
+  // the drawing direction points +x (a proper rotation, so a mirror still fails).
+  const third = Math.max(1, Math.floor(t.n / 3));
+  let xFirst = 0, xLast = 0;
+  for (let i = 0; i < third; i++) xFirst += rx[i];
+  for (let i = t.n - third; i < t.n; i++) xLast += rx[i];
+  if (xLast < xFirst) for (let i = 0; i < t.n; i++) { rx[i] = -rx[i]; ry[i] = -ry[i]; }
+
+  let maxExt = 0;
+  for (let i = 0; i < t.n; i++) maxExt = Math.max(maxExt, Math.abs(rx[i]), Math.abs(ry[i]));
   const scale = maxExt > 1e-6 ? 0.5 / maxExt : 1;
 
-  const x = new Float32Array(t.n);
-  const y = new Float32Array(t.n);
-  for (let i = 0; i < t.n; i++) {
-    x[i] = (t.x[i] - cx) * scale + 0.5;
-    y[i] = (t.y[i] - cy) * scale + 0.5;
-  }
+  const x = new Float32Array(t.n), y = new Float32Array(t.n);
+  for (let i = 0; i < t.n; i++) { x[i] = rx[i] * scale + 0.5; y[i] = ry[i] * scale + 0.5; }
   return { n: t.n, x, y, p: t.p };
 }
 
@@ -524,9 +551,9 @@ export function likeness(a: Trajectory, b: Trajectory): LikenessResult {
     };
   }
 
-  // normalize position for translation/scale invariance
-  const na = normalizePosition(a);
-  const nb = normalizePosition(b);
+  // canonicalize pose for translation/scale/rotation invariance
+  const na = canonicalizeTrajectory(a);
+  const nb = canonicalizeTrajectory(b);
 
   // downsample to cap DTW at O(128^2)
   const sa = downsample(na, 128);

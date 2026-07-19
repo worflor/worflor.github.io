@@ -49,6 +49,12 @@ docs/
 # r&d project notes (concept drafts, prototypes, scratch)
 projects/
 
+# disabled post drafts (kept local, not public)
+drafts/
+
+# shelved r&d artifacts kept local (codec .wat/.wasm sources, bench harnesses, dormant codecs, unused cover/bench images)
+attic/
+
 # benchmark data
 public/benchmarks/
 

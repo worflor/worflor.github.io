@@ -210,6 +210,12 @@ export type GlyphSeed = number[];
 export interface GlyphEncodeOptions {
     // batch encode may cut before 16 on motion changes. streaming keeps fixed 16-point packets.
     adaptiveSegmentation?: boolean;
+    // restrict the eigenmotion the encoder may pick, for ablation. 'both' (default)
+    // lets each block choose the cheaper of full harmonic (4 coeffs) and velrot (1).
+    // 'velrot' forbids the 4-coeff harmonic/backward modes; 'harmonic' forbids velrot.
+    // decode is mode-agnostic, so this only narrows the encoder's search, never
+    // affects reconstruction.
+    eigenMode?: 'both' | 'velrot' | 'harmonic';
 }
 
 // ── inlined WASM binary ─────────────────────────────────────────────────────
@@ -667,6 +673,7 @@ export class GlyphCodec {
         const resid2Off = gval(m.RESID2) >> 2;
         const heap = new Int32Array(m.mem.buffer);
         const adaptiveSegmentation = opts?.adaptiveSegmentation ?? true;
+        const eigenMode = opts?.eigenMode ?? 'both';
 
         heap.set(points.subarray(0, nPts * CH), pointsOff);
 
@@ -763,7 +770,14 @@ export class GlyphCodec {
 
             // pick cheapest mode. velrot ran last, so RESID currently holds its
             // residuals; any non-velrot winner re-encodes below.
-            let bestCost = hAdjCost, bestErr = hErr, bestMode = GlyphMode.HARMONIC;
+            // ablation gate: narrow which eigenmotion the encoder may select.
+            // 'velrot' forbids the 4-coeff harmonic and backward modes; 'harmonic'
+            // forbids the 1-coeff velrot. linear and repeat stay available either way.
+            const hGate = eigenMode === 'velrot' ? Infinity : hAdjCost;
+            const bGate = eigenMode === 'velrot' ? Infinity : bCost;
+            const vGate = eigenMode === 'harmonic' ? Infinity : vAdjCost;
+
+            let bestCost = hGate, bestErr = hErr, bestMode = GlyphMode.HARMONIC;
             let bestIsVelrot = false;
             if (lCost < bestCost || (lCost === bestCost && lErr <= bestErr)) {
                 bestCost = lCost; bestErr = lErr; bestMode = GlyphMode.LINEAR; bestIsVelrot = false;
@@ -771,11 +785,11 @@ export class GlyphCodec {
             if (rCost < bestCost || (rCost === bestCost && rErr <= bestErr)) {
                 bestCost = rCost; bestErr = rErr; bestMode = GlyphMode.REPEAT; bestIsVelrot = false;
             }
-            if (bCost < bestCost && bErr <= hErr * 2) {
-                bestCost = bCost; bestErr = bErr; bestMode = GlyphMode.BACKWARD; bestIsVelrot = false;
+            if (bGate < bestCost && bErr <= hErr * 2) {
+                bestCost = bGate; bestErr = bErr; bestMode = GlyphMode.BACKWARD; bestIsVelrot = false;
             }
-            if (vAdjCost < bestCost) {
-                bestCost = vAdjCost; bestErr = vErr; bestMode = GlyphMode.HARMONIC; bestIsVelrot = true;
+            if (vGate < bestCost) {
+                bestCost = vGate; bestErr = vErr; bestMode = GlyphMode.HARMONIC; bestIsVelrot = true;
             }
 
             // restore RESID to the winner's residuals. velrot is already resident
