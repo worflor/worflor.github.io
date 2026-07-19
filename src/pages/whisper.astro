@@ -308,17 +308,19 @@ const seo = {
                                 urlParams.has("extract") ? "extract" :
                                 urlParams.has("seal") ? "seal" : null;
 
-                // QR flare handoff: #wl:<base64url(phrase)> forces live mode,
-                // same mechanism as ?live above. the phrase can't ride in
-                // location.search (there isn't one) or survive past the
-                // replaceState below (which strips the fragment too), so it
-                // hands off through sessionStorage instead — read once, as a
-                // one-shot, near the end of live-ui.ts's init.
+                // phrase handoff fragments force live mode, same mechanism as
+                // ?live above: #wl64:<base64url(phrase)> is the flare qr's
+                // machine shape, #wl:<phrase> is plain text for human fingers
+                // ("/whisper#wl:tacos" in the address bar connects on load).
+                // the phrase can't ride in location.search (there isn't one)
+                // or survive past the replaceState below (which strips the
+                // fragment too), so it hands off through sessionStorage —
+                // read once, as a one-shot, near the end of live-ui.ts's init.
                 var wlHash = location.hash;
-                if (wlHash.indexOf("#wl:") === 0) {
+                if (wlHash.indexOf("#wl64:") === 0) {
                   paramMode = "live";
                   try {
-                    var wlB64 = wlHash.slice(4).replace(/-/g, "+").replace(/_/g, "/");
+                    var wlB64 = wlHash.slice(6).replace(/-/g, "+").replace(/_/g, "/");
                     var wlBin = atob(wlB64);
                     var wlBytes = new Uint8Array(wlBin.length);
                     for (var wi = 0; wi < wlBin.length; wi++) wlBytes[wi] = wlBin.charCodeAt(wi);
@@ -326,6 +328,14 @@ const seo = {
                     if (wlPhrase) sessionStorage.setItem("wl-qr-phrase", wlPhrase);
                   } catch (e) {
                     // undecodable fragment: still fall back to opening live mode
+                  }
+                } else if (wlHash.indexOf("#wl:") === 0) {
+                  paramMode = "live";
+                  try {
+                    var wlPlain = decodeURIComponent(wlHash.slice(4)).trim();
+                    if (wlPlain) sessionStorage.setItem("wl-qr-phrase", wlPlain);
+                  } catch (e) {
+                    // malformed percent-encoding: still open live mode
                   }
                 } else if (wlHash.indexOf("#wl-local:") === 0) {
                   // in-person handoff on a cold load: stash the packed payload

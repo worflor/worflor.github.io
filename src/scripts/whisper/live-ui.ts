@@ -372,10 +372,14 @@ function extractLiveCodeCandidate(raw: string, expectedKind?: LiveQrKind): strin
 }
 
 /* ── QR flare handoff ────────────────────────────────────────
- * fragment format: #wl:<base64url(phrase)>. the phrase rides in the URL
- * fragment (never sent to a server, never touches the relay) so scanning
- * the QR both forces live mode and hands over the shared phrase in one
- * shot — see whisper.astro's deep-link script for the decode side. */
+ * two fragment shapes, both landing on the same auto-connect path:
+ *   #wl:<phrase>            plain text, made for human fingers in the address
+ *                           bar ("woflo.dev/whisper#wl:tacos" and you are
+ *                           connecting before the page settles)
+ *   #wl64:<base64url(phrase)>  machine shape, used by the flare qr so any
+ *                           phrase survives url encoding untouched
+ * the phrase rides in the URL fragment (never sent to a server, never touches
+ * the relay) — see whisper.astro's deep-link script for the cold-load decode. */
 function base64UrlEncode(text: string): string {
   const bytes = new TextEncoder().encode(text);
   let binary = "";
@@ -384,7 +388,7 @@ function base64UrlEncode(text: string): string {
 }
 
 function buildWlFlareUrl(phrase: string): string {
-  return `${window.location.origin}${window.location.pathname}#wl:${base64UrlEncode(phrase)}`;
+  return `${window.location.origin}${window.location.pathname}#wl64:${base64UrlEncode(phrase)}`;
 }
 
 // in-person mode reuses the exact same "scan a url, the site opens with the
@@ -8898,17 +8902,29 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       void applyLocalHandoff(payload);
       return;
     }
+    // #wl64: is the flare qr's encoded shape; #wl: is plain text typed by a
+    // human. both converge on the same auto-connect handoff.
+    if (h.startsWith("#wl64:")) {
+      history.replaceState({}, "", window.location.pathname + window.location.search);
+      if (aborted() || session) return;
+      try {
+        const b64 = h.slice("#wl64:".length).replace(/-/g, "+").replace(/_/g, "/");
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        applyQrHandoff(new TextDecoder().decode(bytes).trim());
+      } catch {
+        // undecodable fragment: nothing to apply
+      }
+      return;
+    }
     if (!h.startsWith("#wl:")) return;
     history.replaceState({}, "", window.location.pathname + window.location.search);
     if (aborted() || session) return;
     try {
-      const b64 = h.slice(4).replace(/-/g, "+").replace(/_/g, "/");
-      const bin = atob(b64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      applyQrHandoff(new TextDecoder().decode(bytes).trim());
+      applyQrHandoff(decodeURIComponent(h.slice("#wl:".length)).trim());
     } catch {
-      // undecodable fragment: nothing to apply
+      // malformed percent-encoding: nothing to apply
     }
   }, { signal });
 
