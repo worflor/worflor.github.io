@@ -543,7 +543,11 @@ export function trajectoryFromBlocks(blocks: GlyphBlock[], seedPoints?: Int32Arr
   return { n, x, y, p };
 }
 
-export function likeness(a: Trajectory, b: Trajectory): LikenessResult {
+// directed likeness. the DTW cost is symmetric, but its backtrace tie-breaking is
+// not, so the path-averaged scores depend slightly on argument order. the public
+// likeness() averages both directions to restore the symmetry a signature match
+// must have: which sample is the reference cannot change the score.
+function likenessDirected(a: Trajectory, b: Trajectory): LikenessResult {
   if (a.n < 2 || b.n < 2) {
     return {
       samplesA: a.n, samplesB: b.n, compared: 0,
@@ -647,6 +651,28 @@ export function likeness(a: Trajectory, b: Trajectory): LikenessResult {
     samplesA: a.n, samplesB: b.n, compared: pLen,
     shape, speed, pressure, overall,
     perStep,
+  };
+}
+
+export function likeness(a: Trajectory, b: Trajectory): LikenessResult {
+  if (a.n < 2 || b.n < 2) {
+    return {
+      samplesA: a.n, samplesB: b.n, compared: 0,
+      shape: 0, speed: 0, pressure: 0, overall: 0, perStep: [],
+    };
+  }
+  // symmetrize: average both directed passes so likeness(a, b) === likeness(b, a)
+  // by construction. keep the a->b warping path for perStep so the overlay the
+  // seal panel draws stays deterministic.
+  const ab = likenessDirected(a, b);
+  const ba = likenessDirected(b, a);
+  return {
+    samplesA: a.n, samplesB: b.n, compared: ab.compared,
+    shape: (ab.shape + ba.shape) / 2,
+    speed: (ab.speed + ba.speed) / 2,
+    pressure: (ab.pressure + ba.pressure) / 2,
+    overall: (ab.overall + ba.overall) / 2,
+    perStep: ab.perStep,
   };
 }
 
