@@ -166,10 +166,9 @@
         <span class="wl-call-join-hint">tap to join</span>
       </button>
       <div class="wl-call-live" role="group" aria-label="Call controls">
-        <span class="wl-call-dot" aria-hidden="true"></span>
-        <span id="wl-call-clock" class="wl-call-clock">0:00</span>
-        <span id="wl-call-note" class="wl-call-note"></span>
-        <button id="wl-call-mute" type="button" class="wl-call-btn wl-call-mute" aria-label="Mute microphone" aria-pressed="false">
+        <!-- the mic is a living waveform: your voice draws it, tapping it mutes.
+             it sits at the far end from leave so a mute can never misfire the exit. -->
+        <button id="wl-call-mute" type="button" class="wl-call-micwave" aria-label="Mute microphone" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="wl-call-mic-icon" aria-hidden="true">
             <!-- mic capsule + stand, mirrors #wl-chat-mic-btn's glyph grammar at 24-viewBox scale -->
             <rect x="9" y="3" width="6" height="11" rx="3"></rect>
@@ -178,7 +177,16 @@
             <!-- slash: css shows this only while muted -->
             <path class="wl-call-mute-slash" d="M5 5l14 14"></path>
           </svg>
+          <span class="wl-call-wave" aria-hidden="true">
+            <span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span><span class="wl-call-wave-bar"></span>
+            <!-- the x lands on the dead line when muted -->
+            <svg viewBox="0 0 10 10" class="wl-call-wave-x" aria-hidden="true"><path d="M2.4 2.4l5.2 5.2M7.6 2.4l-5.2 5.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg>
+          </span>
         </button>
+        <span id="wl-call-note" class="wl-call-note"></span>
+        <!-- the clock is the dashboard: elapsed time and the call's bytes, and the
+             digits glow with the peer's voice now that the dot is gone. -->
+        <span id="wl-call-clock" class="wl-call-clock">0:00</span>
         <button id="wl-call-leave" type="button" class="wl-call-btn wl-call-leave" aria-label="Leave call">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="wl-call-leave-icon" aria-hidden="true">
             <!-- handset arc, rotated to point downward: the "call" glyph laid to rest -->
@@ -2737,24 +2745,6 @@
     flex: none;
   }
 
-  /* the dot literally breathes with the peer's voice. */
-  :global(.wl-call-live) :global(.wl-call-dot) {
-    background: rgb(var(--chromatic-cyan) / 0.85);
-    box-shadow: 0 0 calc(2px + var(--wl-peer-level, 0) * 10px)
-      rgb(var(--chromatic-cyan) / calc(0.25 + var(--wl-peer-level, 0) * 0.55));
-    transform: scale(calc(1 + var(--wl-peer-level, 0) * 0.35));
-    transition:
-      transform 90ms linear,
-      box-shadow 90ms linear;
-  }
-
-  :global(.wl-call-strip[data-peer-muted]) :global(.wl-call-live) :global(.wl-call-dot) {
-    background: transparent;
-    box-shadow: none;
-    border: 1px solid rgb(var(--chromatic-cyan) / 0.4);
-    transform: none;
-  }
-
   /* invite mode: cyan but breathing slowly on its own. */
   :global(.wl-call-join) :global(.wl-call-dot) {
     background: rgb(var(--chromatic-cyan) / 0.85);
@@ -2771,9 +2761,17 @@
     }
   }
 
+  /* the clock doubles as the dashboard (elapsed · bytes) and carries the peer's
+     voice: the digits brighten and glow cyan as they speak. */
   :global(.wl-call-clock) {
-    color: rgb(var(--color-text-rgb) / 0.45);
+    color: rgb(var(--color-text-rgb) / calc(0.45 + var(--wl-peer-level, 0) * 0.3));
     font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 calc(var(--wl-peer-level, 0) * 9px)
+      rgb(var(--chromatic-cyan) / calc(var(--wl-peer-level, 0) * 0.85));
+    transition:
+      color 90ms linear,
+      text-shadow 90ms linear;
+    white-space: nowrap;
   }
 
   :global(.wl-call-note) {
@@ -2814,28 +2812,106 @@
     box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
   }
 
-  /* the mic glyph glows with your own voice: the "is it picking me up" tell. */
-  :global(.wl-call-mute) svg {
-    filter: drop-shadow(0 0 calc(var(--wl-mic-level, 0) * 6px) rgb(var(--chromatic-cyan) / 0.8));
+  /* the mic is a living waveform: eleven bars scroll your own voice, newest on
+     the right. the small glyph beside them keeps saying "this is the mic". */
+  :global(.wl-call-micwave) {
+    display: flex;
+    align-items: center;
+    gap: 0.32rem;
+    height: 1.5rem;
+    padding: 0 0.3rem;
+    flex: none;
+    background: none;
+    border: none;
+    cursor: pointer;
+    border-radius: var(--whisper-radius-tight, 0.35rem);
+  }
+
+  :global(.wl-call-micwave) :global(.wl-call-mic-icon) {
+    width: 11px;
+    height: 11px;
+    fill: none;
+    stroke: rgb(var(--color-text-rgb) / 0.5);
+    flex: none;
+  }
+
+  :global(.wl-call-micwave:focus-visible) {
+    outline: none;
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
+  }
+
+  :global(.wl-call-wave) {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 16px;
+  }
+
+  :global(.wl-call-wave-bar) {
+    width: 2px;
+    height: 14px;
+    border-radius: 1px;
+    background: rgb(var(--chromatic-cyan) / 0.8);
+    transform: scaleY(var(--b, 0.1));
+    transform-origin: center;
+    transition: transform 90ms linear, background 160ms ease;
+  }
+
+  :global(.wl-call-wave-x) {
+    display: none;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    transform: translate(-50%, -50%);
+    color: rgb(var(--chromatic-red) / 0.9);
   }
 
   :global(.wl-call-mute-slash) {
     display: none;
   }
 
-  :global(.wl-call-mute[aria-pressed="true"]) svg {
-    stroke: rgb(var(--color-text-rgb) / 0.35);
-    filter: none;
+  /* muted: the line goes dead. bars flatline red, the x lands on them, and the
+     slashed glyph keeps the meaning unmistakable. */
+  :global(.wl-call-micwave[aria-pressed="true"]) :global(.wl-call-mic-icon) {
+    stroke: rgb(var(--chromatic-red) / 0.7);
   }
 
-  :global(.wl-call-mute[aria-pressed="true"]) :global(.wl-call-mute-slash) {
+  :global(.wl-call-micwave[aria-pressed="true"]) :global(.wl-call-mute-slash) {
     display: inline;
+  }
+
+  :global(.wl-call-micwave[aria-pressed="true"]) :global(.wl-call-wave-bar) {
+    background: rgb(var(--chromatic-red) / 0.55);
+    transform: scaleY(0.08);
+  }
+
+  :global(.wl-call-micwave[aria-pressed="true"]) :global(.wl-call-wave-x) {
+    display: block;
   }
 
   :global(.wl-call-leave:hover) svg,
   :global(.wl-call-leave:active) svg {
     stroke: rgb(var(--chromatic-red) / 0.75);
   }
+
+  /* leaving takes two taps: the first arms the button, red and pulsing, and a
+     second within the window commits. anything else disarms it. */
+  :global(.wl-call-leave[data-armed]) svg {
+    stroke: rgb(var(--chromatic-red) / 0.9);
+  }
+
+  :global(.wl-call-leave[data-armed]) {
+    animation: wl-call-arm-pulse 0.9s ease-in-out infinite;
+  }
+
+  @keyframes wl-call-arm-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--chromatic-red) / 0); }
+    50% { box-shadow: 0 0 0 3px rgb(var(--chromatic-red) / 0.22); }
+  }
+
 
   /* button reset: the mode rule above owns display/layout, this owns paint. */
   :global(.wl-call-join) {
@@ -2875,6 +2951,16 @@
     :global(.wl-call-join) :global(.wl-call-dot) {
       animation: none;
       opacity: 0.7;
+    }
+    :global(.wl-call-wave-bar) {
+      transition: none;
+    }
+    :global(.wl-call-clock) {
+      transition: none;
+    }
+    :global(.wl-call-leave[data-armed]) {
+      animation: none;
+      box-shadow: 0 0 0 2px rgb(var(--chromatic-red) / 0.25);
     }
   }
 
@@ -3652,6 +3738,18 @@
 
   :global(.wl-media-option--active) svg {
     stroke: rgb(var(--chromatic-cyan) / 0.85);
+  }
+
+  /* an armed leave ("sure?") outranks everything above, hover included: the
+     compound selector plus source order keeps the row red until it disarms. */
+  :global(.wl-media-option.wl-media-option--armed),
+  :global(.wl-media-option.wl-media-option--armed:hover),
+  :global(.wl-media-option.wl-media-option--armed.--hover) {
+    color: rgb(var(--chromatic-red) / 0.85);
+  }
+
+  :global(.wl-media-option.wl-media-option--armed) svg {
+    stroke: rgb(var(--chromatic-red) / 0.85);
   }
 
   /* ── Divider in popover ───────────────────────────────── */

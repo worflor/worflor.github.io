@@ -5753,12 +5753,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         }
         if (!audio && was) {
           if (callState === "invite") callState = "off";
-          if (callState === "off") { healCallSeam(); callIncidentStart = null; }
+          if (callState === "off") { healCallSeam(); callIncidentStart = null; callBytesTotal = 0; }
         }
         updateCallUi();
       },
       // frames arriving before we join are dropped: listening starts only on join.
       onCallAudio: (_seq, blob) => {
+        // received bytes count toward the incident even before joining: the
+        // frames crossed the wire either way.
+        callBytesTotal += blob.length;
         if (callState === "joined") callEngine?.pushPeerFrame(blob);
       },
     }, {
@@ -7328,6 +7331,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const callNoteEl = document.getElementById("wl-call-note");
   const callMuteBtn = document.getElementById("wl-call-mute");
   const callLeaveBtn = document.getElementById("wl-call-leave");
+  // the mic waveform: eleven bars scroll the local voice, newest on the right.
+  const callWaveBars = callMuteBtn
+    ? Array.from(callMuteBtn.querySelectorAll<HTMLElement>(".wl-call-wave-bar"))
+    : [];
+  const callWaveHistory = new Array<number>(callWaveBars.length).fill(0);
   const mediaVoiceBtn = document.getElementById("wl-media-voice") as HTMLButtonElement | null;
   const mediaVoiceLabel = mediaVoiceBtn?.querySelector<HTMLElement>(".wl-media-option-label") ?? null;
   const mediaCallAudioBtn = document.getElementById("wl-media-call-audio") as HTMLButtonElement | null;
@@ -7344,6 +7352,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   let peerMuted = false;
   let callClockTimer: ReturnType<typeof setInterval> | null = null;
   let peerLevelResetTimer: ReturnType<typeof setTimeout> | null = null;
+  // call-audio bytes both directions for the current incident; shown live on the
+  // clock and scarred into the seam when the line closes.
+  let callBytesTotal = 0;
+  // leaving takes two taps: the first arms (red, pulsing), a second within the
+  // window commits, anything else disarms.
+  let callLeaveArmTimer: ReturnType<typeof setTimeout> | null = null;
   let volPeer = readStoredVol("wl-call-vol-peer");
   let volMic = readStoredVol("wl-call-vol-mic");
   // published by the media popover block below so updateCallUi can dismiss the call
@@ -7380,16 +7394,40 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const label = callSeamEl.querySelector<HTMLElement>(".wl-msg-system");
     if (label) {
       const dur = callIncidentStart !== null ? Date.now() - callIncidentStart : 0;
-      label.textContent = formatCallDuration(dur);
+      // the scar records the call: how long the line was open, and how much
+      // passed through it.
+      label.textContent = callBytesTotal > 0
+        ? `${formatCallDuration(dur)} · ${formatShelfBytes(callBytesTotal)}`
+        : formatCallDuration(dur);
     }
     callSeamEl = null;
+  }
+
+  // push one mic level (0..1) into the scrolling waveform. while muted the css
+  // owns the flatline, so the history just resets quietly underneath it.
+  function pushCallWaveLevel(level: number): void {
+    if (callWaveBars.length === 0) return;
+    callWaveHistory.shift();
+    callWaveHistory.push(level);
+    for (let i = 0; i < callWaveBars.length; i++) {
+      const v = Math.max(0.08, Math.min(1, callWaveHistory[i]));
+      callWaveBars[i].style.setProperty("--b", v.toFixed(3));
+    }
+  }
+
+  function resetCallWave(): void {
+    callWaveHistory.fill(0);
+    for (const bar of callWaveBars) bar.style.removeProperty("--b");
   }
 
   function startCallClock(): void {
     stopCallClock();
     const tick = (): void => {
       if (callClockEl && callJoinedAt !== null) {
-        callClockEl.textContent = formatCallDuration(Date.now() - callJoinedAt);
+        const dur = formatCallDuration(Date.now() - callJoinedAt);
+        callClockEl.textContent = callBytesTotal > 0
+          ? `${dur} · ${formatShelfBytes(callBytesTotal)}`
+          : dur;
       }
     };
     tick();
@@ -7413,7 +7451,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       else if (callState === "joined" && peerInCall && peerMuted) note = "they are muted";
       callNoteEl.textContent = note;
     }
-    if (callMuteBtn) callMuteBtn.setAttribute("aria-pressed", String(callEngine?.muted ?? false));
+    if (callMuteBtn) {
+      const muted = callEngine?.muted ?? false;
+      callMuteBtn.setAttribute("aria-pressed", String(muted));
+      callMuteBtn.setAttribute("aria-label", muted ? "Unmute microphone" : "Mute microphone");
+    }
+    if (callState !== "joined") disarmCallLeave();
     if (mediaVoiceBtn) mediaVoiceBtn.classList.toggle("wl-media-option--active", callState === "joined");
     if (mediaVoiceLabel) mediaVoiceLabel.textContent = callState === "joined" ? "leave call" : "voice";
     if (mediaCallAudioBtn) {
@@ -7433,9 +7476,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (currentLiveState !== "live" && currentLiveState !== "silent" && !previewMode) return;
 
     const engine = new CallEngine({
-      sendFrame: (blob) => session?.sendCallAudio(blob),
+      sendFrame: (blob) => {
+        callBytesTotal += blob.length;
+        session?.sendCallAudio(blob);
+      },
       onLocalLevel: (level) => {
-        callStrip?.style.setProperty("--wl-mic-level", Math.min(1, Math.max(0, level)).toFixed(3));
+        if (!callEngine?.muted) pushCallWaveLevel(Math.min(1, Math.max(0, level)));
       },
       onPeerLevel: (level) => {
         callStrip?.style.setProperty("--wl-peer-level", Math.min(1, Math.max(0, level)).toFixed(3));
@@ -7468,35 +7514,70 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     callIncidentStart ??= Date.now();
     engine.setPeerVolume(volPeer / 100);
     engine.setMicGain(volMic / 100);
+    // calls speak the same harmonic as voice notes, so the alpha slider is the
+    // one quality dial for both.
+    engine.setQuality(audioQuality);
     sendCallState();
     ensureCallSeam();
     updateCallUi();
     startCallClock();
   }
 
+  function disarmCallLeave(): void {
+    if (callLeaveArmTimer) { clearTimeout(callLeaveArmTimer); callLeaveArmTimer = null; }
+    if (callLeaveBtn?.hasAttribute("data-armed")) {
+      callLeaveBtn.removeAttribute("data-armed");
+      callLeaveBtn.setAttribute("aria-label", "Leave call");
+    }
+    if (mediaVoiceBtn?.classList.contains("wl-media-option--armed")) {
+      mediaVoiceBtn.classList.remove("wl-media-option--armed");
+      if (mediaVoiceLabel && callState === "joined") mediaVoiceLabel.textContent = "leave call";
+    }
+  }
+
+  function requestLeaveCall(): void {
+    if (callState !== "joined") return;
+    if (callLeaveBtn?.hasAttribute("data-armed")) {
+      disarmCallLeave();
+      leaveCall();
+      return;
+    }
+    callLeaveBtn?.setAttribute("data-armed", "");
+    callLeaveBtn?.setAttribute("aria-label", "Tap again to leave");
+    mediaVoiceBtn?.classList.add("wl-media-option--armed");
+    if (mediaVoiceLabel) mediaVoiceLabel.textContent = "sure?";
+    if (callLeaveArmTimer) clearTimeout(callLeaveArmTimer);
+    callLeaveArmTimer = setTimeout(() => { callLeaveArmTimer = null; disarmCallLeave(); }, 2600);
+  }
+
   function leaveCall(): void {
+    disarmCallLeave();
     callEngine?.stop();
     callEngine = null;
     callState = peerInCall ? "invite" : "off";
     callJoinedAt = null;
     stopCallClock();
+    resetCallWave();
     sendCallState();
-    if (callState === "off") { healCallSeam(); callIncidentStart = null; }
+    if (callState === "off") { healCallSeam(); callIncidentStart = null; callBytesTotal = 0; }
     updateCallUi();
   }
 
   // full teardown for session death (destroy/clear/onError). never touches the wire:
   // the session may already be gone.
   function teardownCall(): void {
+    disarmCallLeave();
     callEngine?.stop();
     callEngine = null;
     stopCallClock();
+    resetCallWave();
     peerInCall = false;
     peerMuted = false;
     if (callIncidentStart !== null) healCallSeam();
     callState = "off";
     callIncidentStart = null;
     callJoinedAt = null;
+    callBytesTotal = 0;
     updateCallUi();
   }
 
@@ -7573,10 +7654,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   callMuteBtn?.addEventListener("click", () => {
     if (!callEngine) return;
     callEngine.setMuted(!callEngine.muted);
+    // clear the scroll so unmuting starts from silence, not a stale ghost.
+    if (callEngine.muted) resetCallWave();
     sendCallState();
     updateCallUi();
   }, { signal });
-  callLeaveBtn?.addEventListener("click", () => leaveCall(), { signal });
+  callLeaveBtn?.addEventListener("click", () => requestLeaveCall(), { signal });
 
   if (callPanel) {
     const peerRow = callPanel.querySelector<HTMLElement>('.wl-call-vol-row[data-vol="peer"]');
@@ -7591,6 +7674,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   (globalThis as { __wlCall?: unknown }).__wlCall = {
     get stats() { return callEngine?.stats ?? null; },
     get state() { return callState; },
+    get bytes() { return callBytesTotal; },
   };
 
   updateCallUi();
@@ -7641,6 +7725,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (!mediaPopoverOpen) return;
       closeAlphaPanel();
       closeCallPanel();
+      // walking away from the popover stands down an armed leave.
+      disarmCallLeave();
       mediaPopoverOpen = false;
       popover.classList.remove("--open");
       for (const o of options) o.classList.remove("--hover");
@@ -7697,9 +7783,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     function pickVoice(): void {
+      if (callState === "joined") {
+        // two-tap leave here too: the first tap arms the row ("sure?") and keeps
+        // the popover open; the second commits and closes it.
+        const wasArmed = callLeaveBtn?.hasAttribute("data-armed") ?? false;
+        requestLeaveCall();
+        if (wasArmed) closePopover();
+        return;
+      }
       closePopover();
-      if (callState === "joined") leaveCall();
-      else void joinCall();
+      void joinCall();
     }
 
     function hitTestOption(x: number, y: number): HTMLButtonElement | null {
@@ -7950,6 +8043,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         const prev = audioQuality;
         if (q === prev && !dragging) return;
         audioQuality = q;
+        // a live call retunes on the next frame: one dial, both audio paths.
+        callEngine?.setQuality(q);
         applyVisuals(q);
         if (dragging && ((prev < 100 && q >= 100) || (prev >= 100 && q < 100))) {
           haptic("detent");

@@ -102,6 +102,9 @@ export class CallEngine {
   private _muted = false;
   private _micGainValue = 1;
   private _peerVolumeValue = 1;
+  /** harmonic quality for outgoing frames. the alpha slider owns this knob: calls
+   *  and voice notes are the same codec, so they share the same dial. */
+  private _quality = CALL_QUALITY;
 
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
@@ -265,6 +268,13 @@ export class CallEngine {
     if (this.micGain) this.micGain.gain.value = this._micGainValue;
   }
 
+  /** takes effect on the next captured frame; safe to call mid-call. a
+   *  non-finite value is ignored so garbage can never poison the encoder. */
+  setQuality(q: number): void {
+    if (!Number.isFinite(q)) return;
+    this._quality = Math.max(1, Math.min(100, Math.round(q)));
+  }
+
   pushPeerFrame(blob: Uint8Array): void {
     if (!this._running) return;
     this.decodeChain = this.decodeChain.then(async () => {
@@ -322,7 +332,7 @@ export class CallEngine {
     // no harmonic encryption key: the sealed wire layer already encrypts and
     // authenticates every frame; a second key layer buys nothing and costs cpu.
     const encodePromise = encodeHarmonic(frame, ctx.sampleRate, undefined, {
-      quality: CALL_QUALITY,
+      quality: this._quality,
       numChannels: 1,
     }).then(
       (blob) => ({ ok: true as const, blob }),
