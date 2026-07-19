@@ -7617,10 +7617,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     };
 
     track.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0 || rowPointerId !== -1) return;
+      if (e.button !== 0) return;
+      // self-heal a stale capture (ios can swallow the end events).
+      if (rowPointerId !== -1 && !track.hasPointerCapture(rowPointerId)) rowPointerId = -1;
+      if (rowPointerId !== -1) return;
       e.preventDefault();
       rowPointerId = e.pointerId;
-      track.setPointerCapture(e.pointerId);
+      try { track.setPointerCapture(e.pointerId); } catch { /* capture is best-effort */ }
       commit(e.clientX);
     }, { signal });
 
@@ -8329,11 +8332,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         let orbitPointerId = -1;
 
         orbitContainer.addEventListener("pointerdown", (e) => {
-          if (e.button !== 0 || orbitPointerId !== -1) return;
+          if (e.button !== 0) return;
+          // self-heal a stale drag: ios can swallow the end events (system
+          // gestures, app switches), leaving the recorded pointer captured on
+          // paper only. if the browser says the capture is gone, so is the drag.
+          if (orbitPointerId !== -1 && !orbitContainer.hasPointerCapture(orbitPointerId)) {
+            orbitPointerId = -1;
+            ptrDown = false;
+          }
+          if (orbitPointerId !== -1) return;
           if (audioQuality >= 100) return; // flat line: no interaction
           e.preventDefault();
           orbitPointerId = e.pointerId;
-          orbitContainer.setPointerCapture(e.pointerId);
+          try { orbitContainer.setPointerCapture(e.pointerId); } catch { /* capture is best-effort */ }
           ptrDown = true;
           [ptrX, ptrY] = clientToSvg(e.clientX, e.clientY);
           prevPtrX = ptrX; prevPtrY = ptrY;
@@ -8394,6 +8405,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           ptrDown = false;
         }, { signal });
 
+        orbitContainer.addEventListener("pointercancel", (e) => {
+          if (e.pointerId !== orbitPointerId) return;
+          orbitPointerId = -1;
+          ptrDown = false;
+        }, { signal });
+
         orbitContainer.addEventListener("lostpointercapture", () => {
           orbitPointerId = -1;
           ptrDown = false;
@@ -8405,11 +8422,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
 
       track.addEventListener("pointerdown", (e) => {
-        if (e.button !== 0 || sliderPointerId !== -1) return;
+        if (e.button !== 0) return;
+        // same self-heal as the orbit: a stale captured pointer must never
+        // leave the slider permanently deaf.
+        if (sliderPointerId !== -1 && !track.hasPointerCapture(sliderPointerId)) {
+          sliderPointerId = -1;
+          track.classList.remove("--dragging", "--fine");
+          section.classList.remove("--dragging");
+          qLabel.classList.remove("--active");
+        }
+        if (sliderPointerId !== -1) return;
         e.preventDefault();
         e.stopPropagation();
         sliderPointerId = e.pointerId;
-        track.setPointerCapture(e.pointerId);
+        try { track.setPointerCapture(e.pointerId); } catch { /* capture is best-effort */ }
         track.classList.add("--dragging");
         section.classList.add("--dragging");
         qLabel.classList.add("--active");
