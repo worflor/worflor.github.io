@@ -9,7 +9,7 @@
  *       round is a per-topic mod-256 counter, bumped each time a vote executes,
  *       letting both sides converge correctly even when a local cancel crosses an
  *       already-committed peer vote for the same round (see VoteTopic below).
- *     0x20  STREAM_STATE  [flags:1B]  — bit0=audio, bit1=video, bit2=screen
+ *     0x20  STREAM_STATE  [flags:1B]  — bit0=audio, bit1=video, bit2=screen, bit3=muted
  *     0x30–0x3F  session policy     (future)
  *   0x80–0xFF  payload-bearing ops (bit 7 = 1)
  *     0x81  SEEN        [msgId:4B LE]
@@ -297,19 +297,39 @@ export const STREAM_FLAG = {
   AUDIO: 0x01,
   VIDEO: 0x02,
   SCREEN: 0x04,
+  MUTED: 0x08, // bit3 = mic muted while in the call.
 } as const;
 
 export function encodeStreamState(flags: number): Uint8Array {
   return new Uint8Array([flags & 0xFF]);
 }
 
-export function decodeStreamState(payload: Uint8Array): { audio: boolean; video: boolean; screen: boolean } | null {
+export function decodeStreamState(payload: Uint8Array): { audio: boolean; video: boolean; screen: boolean; muted: boolean } | null {
   if (payload.length < 1) return null;
   return {
     audio: (payload[0] & STREAM_FLAG.AUDIO) !== 0,
     video: (payload[0] & STREAM_FLAG.VIDEO) !== 0,
     screen: (payload[0] & STREAM_FLAG.SCREEN) !== 0,
+    muted: (payload[0] & STREAM_FLAG.MUTED) !== 0,
   };
+}
+
+/* ── Call audio frame ────────────────────────────────────── */
+
+// call audio frame body (carried inside a LIVE_MSG.CALL_AUDIO sealed frame):
+//   [seq:2B LE][harmonic blob]
+// seq wraps mod 65536 so the receiver can order and detect gaps in real-time frames.
+export function encodeCallAudio(seq: number, blob: Uint8Array): Uint8Array {
+  const buf = new Uint8Array(2 + blob.length);
+  new DataView(buf.buffer).setUint16(0, seq & 0xFFFF, true);
+  buf.set(blob, 2);
+  return buf;
+}
+
+export function decodeCallAudio(bytes: Uint8Array): { seq: number; blob: Uint8Array } | null {
+  if (bytes.length < 3) return null;
+  const seq = new DataView(bytes.buffer, bytes.byteOffset).getUint16(0, true);
+  return { seq, blob: bytes.subarray(2) };
 }
 
 /* ── SEEN / REACT payload encoding ───────────────────────── */

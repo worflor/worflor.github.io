@@ -158,6 +158,40 @@
       </p>
     </div>
 
+    <!-- call strip: docks onto the chin while a line is open. data-mode: off | invite | live. -->
+    <div id="wl-call-strip" class="wl-call-strip" data-mode="off" hidden>
+      <button id="wl-call-join" type="button" class="wl-call-join">
+        <span class="wl-call-dot" aria-hidden="true"></span>
+        <span class="wl-call-join-label">line open</span>
+        <span class="wl-call-join-hint">tap to join</span>
+      </button>
+      <div class="wl-call-live" role="group" aria-label="Call controls">
+        <span class="wl-call-dot" aria-hidden="true"></span>
+        <span id="wl-call-clock" class="wl-call-clock">0:00</span>
+        <span id="wl-call-note" class="wl-call-note"></span>
+        <button id="wl-call-mute" type="button" class="wl-call-btn wl-call-mute" aria-label="Mute microphone" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="wl-call-mic-icon" aria-hidden="true">
+            <!-- mic capsule + stand, mirrors #wl-chat-mic-btn's glyph grammar at 24-viewBox scale -->
+            <rect x="9" y="3" width="6" height="11" rx="3"></rect>
+            <path d="M6 12a6 6 0 0012 0"></path>
+            <path d="M12 18v3"></path>
+            <!-- slash: css shows this only while muted -->
+            <path class="wl-call-mute-slash" d="M5 5l14 14"></path>
+          </svg>
+        </button>
+        <button id="wl-call-leave" type="button" class="wl-call-btn wl-call-leave" aria-label="Leave call">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="wl-call-leave-icon" aria-hidden="true">
+            <!-- handset arc, rotated to point downward: the "call" glyph laid to rest -->
+            <g transform="rotate(135 12 12)">
+              <path d="M6 6a8 8 0 0010 10"></path>
+              <path d="M3.7 6h3"></path>
+              <path d="M16 13v3"></path>
+            </g>
+          </svg>
+        </button>
+      </div>
+    </div>
+
     <div class="wl-chat-compose">
       <div class="wl-chat-input-wrap">
         <input
@@ -380,9 +414,7 @@
           <button
             id="wl-media-voice"
             type="button"
-            class="wl-media-option wl-media-option--soon"
-            disabled
-            title="coming soon"
+            class="wl-media-option"
           >
             <svg
               viewBox="0 0 16 16"
@@ -395,8 +427,43 @@
             >
               <path d="M4.5 2.5c-.8 0-1.5.7-1.5 1.5 0 5.5 4.5 10 10 10 .8 0 1.5-.7 1.5-1.5v-1.8c0-.4-.3-.8-.7-.9l-2.3-.6c-.3-.1-.7 0-.9.3l-.8 1c-1.5-.8-2.8-2.1-3.6-3.6l1-.8c.3-.2.4-.6.3-.9l-.6-2.3c-.1-.4-.5-.7-.9-.7H4.5z"></path>
             </svg>
-            voice
+            <span class="wl-media-option-label">voice</span>
           </button>
+          <button id="wl-media-call-audio" type="button" class="wl-media-option wl-media-call-audio" hidden>
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <!-- fader: two vertical tracks, offset thumbs -->
+              <line x1="4.5" y1="2" x2="4.5" y2="14"></line>
+              <circle cx="4.5" cy="6" r="1.5"></circle>
+              <line x1="11.5" y1="2" x2="11.5" y2="14"></line>
+              <circle cx="11.5" cy="10" r="1.5"></circle>
+            </svg>
+            <span class="wl-media-option-label">call audio</span>
+          </button>
+          <div id="wl-call-panel" class="wl-alpha-panel wl-call-panel" hidden>
+            <div class="wl-call-vol-row" data-vol="peer">
+              <span class="wl-call-vol-label">them</span>
+              <div class="wl-call-vol-track">
+                <div class="wl-call-vol-fill"></div>
+                <div class="wl-call-vol-thumb"></div>
+              </div>
+              <button type="button" class="wl-call-vol-value" id="wl-call-vol-peer-value" title="reset">100</button>
+            </div>
+            <div class="wl-call-vol-row" data-vol="mic">
+              <span class="wl-call-vol-label">you</span>
+              <div class="wl-call-vol-track">
+                <div class="wl-call-vol-fill"></div>
+                <div class="wl-call-vol-thumb"></div>
+              </div>
+              <button type="button" class="wl-call-vol-value" id="wl-call-vol-mic-value" title="reset">100</button>
+            </div>
+          </div>
           <button
             id="wl-media-call-video"
             type="button"
@@ -1108,6 +1175,9 @@
     width: 100%;
     max-width: none;
     margin: 0.3rem 0;
+    transition:
+      gap 320ms cubic-bezier(0.16, 1, 0.3, 1),
+      margin 320ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg--seam)::before,
@@ -1128,6 +1198,14 @@
     letter-spacing: 0.04em;
     font-variant: small-caps;
     flex: 0 0 auto;
+    max-width: 12rem;
+    overflow: hidden;
+    white-space: nowrap;
+    transition:
+      color 220ms ease,
+      opacity 220ms ease,
+      max-width 320ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   :global(.wl-chat-messages) :global(.wl-msg--seam .wl-msg-time) {
@@ -1143,37 +1221,84 @@
     margin: 0.14rem 0;
   }
   :global(.wl-chat-messages) :global(.wl-msg--seam-healed .wl-msg-system) {
-    display: none;
+    max-width: 0;
+    opacity: 0;
+    transform: scale(0.96);
   }
 
-  /* while recovery is actually running, the scar is alive: a faint amber
-     current travels the hairline. once the surface leaves wl-recovering
-     the seam settles to plain grey. */
-  :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam)::before,
-  :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam)::after {
+  /* only the current interruption is alive. its two currents begin beyond
+     the outer edges and travel inward together, disappearing into the label;
+     old healed seams remain quiet even during a later recovery. */
+  :global(.wl-chat-messages) :global(.wl-msg--seam-active)::before,
+  :global(.wl-chat-messages) :global(.wl-msg--seam-active)::after {
+    background:
+      linear-gradient(
+        90deg,
+        transparent 0%,
+        rgb(var(--tool-status-warning) / 0.12) 30%,
+        rgb(var(--tool-status-warning) / 0.5) 50%,
+        rgb(var(--tool-status-warning) / 0.12) 70%,
+        transparent 100%
+      ) -100% 0 / 55% 100% no-repeat,
+      rgb(var(--color-text-rgb) / 0.11);
+    animation: wl-seam-current 2.8s linear infinite;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg--seam-active)::after {
+    animation-direction: reverse;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-msg--seam-active .wl-msg-system) {
+    color: rgb(var(--tool-status-warning) / 0.58);
+  }
+
+  /* call seam: an open line is also a scar, marked while it lasts. it
+     inherits the base seam layout, hairlines, and small-caps label from
+     .wl-msg--seam above — only the current's color and the healed label's
+     behavior differ from a reconnect scar. */
+  :global(.wl-chat-messages) :global(.wl-msg--seam-call.wl-msg--seam-live)::before,
+  :global(.wl-chat-messages) :global(.wl-msg--seam-call.wl-msg--seam-live)::after {
     background: linear-gradient(
       90deg,
       rgb(var(--color-text-rgb) / 0.09) 0%,
-      rgb(var(--tool-status-warning) / 0.45) 50%,
+      rgb(var(--chromatic-cyan) / 0.4) 50%,
       rgb(var(--color-text-rgb) / 0.09) 100%
     );
     background-size: 200% 100%;
-    animation: wl-seam-current 2.2s ease-in-out infinite;
+    animation: wl-seam-current 2.6s linear infinite;
   }
 
-  :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam .wl-msg-system) {
-    color: rgb(var(--tool-status-warning) / 0.6);
+  /* the call's own terminal state: unlike a healed reconnect, the label
+     stays put and holds the call duration ("4:32"). hairlines stay at the
+     base seam alpha; nothing here animates. */
+  :global(.wl-chat-messages) :global(.wl-msg--seam-call-done .wl-msg-system) {
+    display: block;
+    font-family: var(--whisper-font-mono);
+    font-variant: normal;
+    font-size: 0.58rem;
+    color: rgb(var(--color-text-rgb) / 0.3);
+    letter-spacing: 0.04em;
   }
 
   @keyframes wl-seam-current {
-    0% { background-position: 150% 0; }
-    100% { background-position: -50% 0; }
+    from { background-position: -100% 0, 0 0; }
+    to { background-position: 200% 0, 0 0; }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam)::before,
-    :global(.wl-recovering .wl-chat-messages) :global(.wl-msg--seam)::after {
+    :global(.wl-chat-messages) :global(.wl-msg--seam),
+    :global(.wl-chat-messages) :global(.wl-msg--seam .wl-msg-system) {
+      transition: none;
+    }
+    :global(.wl-chat-messages) :global(.wl-msg--seam-active)::before,
+    :global(.wl-chat-messages) :global(.wl-msg--seam-active)::after {
       animation: none;
+      background: rgb(var(--tool-status-warning) / 0.24);
+    }
+    :global(.wl-chat-messages) :global(.wl-msg--seam-call.wl-msg--seam-live)::before,
+    :global(.wl-chat-messages) :global(.wl-msg--seam-call.wl-msg--seam-live)::after {
+      animation: none;
+      background: rgb(var(--chromatic-cyan) / 0.22);
     }
   }
 
@@ -2554,6 +2679,205 @@
     transform: scale(0.92);
   }
 
+  /* ── Call strip — docks onto the chin while a line is open ──────────── */
+  :global(.wl-call-strip) {
+    display: flex;
+    align-items: center;
+    min-height: 1.9rem;
+    padding: 0 0.55rem;
+    gap: 0.5rem;
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    font-family: var(--whisper-font-mono);
+    font-size: 0.62rem;
+    text-transform: lowercase;
+    animation: wl-call-strip-in var(--duration-fast) var(--ease-out) both;
+  }
+
+  /* honor the `hidden` attribute despite the display override above. */
+  :global(.wl-call-strip[hidden]) {
+    display: none;
+  }
+
+  @keyframes wl-call-strip-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  :global(.wl-call-join),
+  :global(.wl-call-live) {
+    display: none;
+  }
+
+  :global(.wl-call-strip[data-mode="invite"]) :global(.wl-call-join) {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  :global(.wl-call-strip[data-mode="live"]) :global(.wl-call-live) {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  :global(.wl-call-dot) {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    flex: none;
+  }
+
+  /* the dot literally breathes with the peer's voice. */
+  :global(.wl-call-live) :global(.wl-call-dot) {
+    background: rgb(var(--chromatic-cyan) / 0.85);
+    box-shadow: 0 0 calc(2px + var(--wl-peer-level, 0) * 10px)
+      rgb(var(--chromatic-cyan) / calc(0.25 + var(--wl-peer-level, 0) * 0.55));
+    transform: scale(calc(1 + var(--wl-peer-level, 0) * 0.35));
+    transition:
+      transform 90ms linear,
+      box-shadow 90ms linear;
+  }
+
+  :global(.wl-call-strip[data-peer-muted]) :global(.wl-call-live) :global(.wl-call-dot) {
+    background: transparent;
+    box-shadow: none;
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.4);
+    transform: none;
+  }
+
+  /* invite mode: cyan but breathing slowly on its own. */
+  :global(.wl-call-join) :global(.wl-call-dot) {
+    background: rgb(var(--chromatic-cyan) / 0.85);
+    animation: wl-call-breathe 2.4s ease-in-out infinite;
+  }
+
+  @keyframes wl-call-breathe {
+    0%,
+    100% {
+      opacity: 0.45;
+    }
+    50% {
+      opacity: 0.85;
+    }
+  }
+
+  :global(.wl-call-clock) {
+    color: rgb(var(--color-text-rgb) / 0.45);
+    font-variant-numeric: tabular-nums;
+  }
+
+  :global(.wl-call-note) {
+    flex: 1;
+    min-width: 0;
+    color: rgb(var(--color-text-rgb) / 0.3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  :global(.wl-call-btn) {
+    width: 1.5rem;
+    height: 1.5rem;
+    flex: none;
+    display: grid;
+    place-items: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    border-radius: var(--whisper-radius-tight, 0.35rem);
+  }
+
+  :global(.wl-call-btn) svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: rgb(var(--color-text-rgb) / 0.55);
+  }
+
+  :global(.wl-call-btn:hover) svg {
+    stroke: rgb(var(--color-text-rgb) / 0.85);
+  }
+
+  :global(.wl-call-btn:focus-visible) {
+    outline: none;
+    box-shadow: 0 0 0 2px rgb(var(--chromatic-cyan) / 0.12);
+  }
+
+  /* the mic glyph glows with your own voice: the "is it picking me up" tell. */
+  :global(.wl-call-mute) svg {
+    filter: drop-shadow(0 0 calc(var(--wl-mic-level, 0) * 6px) rgb(var(--chromatic-cyan) / 0.8));
+  }
+
+  :global(.wl-call-mute-slash) {
+    display: none;
+  }
+
+  :global(.wl-call-mute[aria-pressed="true"]) svg {
+    stroke: rgb(var(--color-text-rgb) / 0.35);
+    filter: none;
+  }
+
+  :global(.wl-call-mute[aria-pressed="true"]) :global(.wl-call-mute-slash) {
+    display: inline;
+  }
+
+  :global(.wl-call-leave:hover) svg,
+  :global(.wl-call-leave:active) svg {
+    stroke: rgb(var(--chromatic-red) / 0.75);
+  }
+
+  /* button reset: the mode rule above owns display/layout, this owns paint. */
+  :global(.wl-call-join) {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+
+  :global(.wl-call-join-label) {
+    font-variant: small-caps;
+    letter-spacing: 0.06em;
+    color: rgb(var(--color-text-rgb) / 0.55);
+  }
+
+  :global(.wl-call-join-hint) {
+    margin-left: auto;
+    color: rgb(var(--color-text-rgb) / 0.4);
+  }
+
+  :global(.wl-call-join:hover) :global(.wl-call-join-label) {
+    color: rgb(var(--color-text-rgb) / 0.8);
+  }
+
+  :global(.wl-call-join:hover) :global(.wl-call-dot) {
+    box-shadow: 0 0 5px rgb(var(--chromatic-cyan) / 0.5);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.wl-call-strip) {
+      animation: none;
+    }
+    :global(.wl-call-dot) {
+      transition: none;
+    }
+    :global(.wl-call-join) :global(.wl-call-dot) {
+      animation: none;
+      opacity: 0.7;
+    }
+  }
+
   :global(.wl-chat-compose) {
     --wl-activity: 0;
     --wl-velocity: 0;
@@ -3261,6 +3585,8 @@
   :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(4)) { animation-delay: 90ms; }
   :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(5)) { animation-delay: 120ms; }
   :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(6)) { animation-delay: 150ms; }
+  :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(7)) { animation-delay: 180ms; }
+  :global(.wl-media-popover.--open) :global(.wl-media-option:nth-child(8)) { animation-delay: 210ms; }
 
   @media (prefers-reduced-motion: reduce) {
     :global(.wl-media-popover.--open) {
@@ -3302,6 +3628,12 @@
     flex-shrink: 0;
   }
 
+  /* honor the `hidden` attribute despite the display override above: js
+     reveals this row only once a call is live. */
+  :global(.wl-media-call-audio[hidden]) {
+    display: none;
+  }
+
   :global(.wl-media-option:hover),
   :global(.wl-media-option.--hover) {
     background: rgb(var(--color-text-rgb) / 0.05);
@@ -3311,6 +3643,15 @@
 
   :global(.wl-media-option:active) {
     background: rgb(var(--color-text-rgb) / 0.08);
+  }
+
+  /* set by js while a call is live: the voice row that started it stays lit. */
+  :global(.wl-media-option--active) {
+    color: rgb(var(--chromatic-cyan) / 0.85);
+  }
+
+  :global(.wl-media-option--active) svg {
+    stroke: rgb(var(--chromatic-cyan) / 0.85);
   }
 
   /* ── Divider in popover ───────────────────────────────── */
@@ -3444,6 +3785,12 @@
     pointer-events: auto;
   }
 
+  /* honor the `hidden` attribute regardless of --open state: js reveals
+     this panel's trigger only once a call is live. */
+  :global(.wl-call-panel[hidden]) {
+    display: none;
+  }
+
   /* on narrow viewports, stack above the popover instead of beside it */
   @media (max-width: 360px) {
     :global(.wl-alpha-panel) {
@@ -3453,6 +3800,101 @@
       transform-origin: left bottom;
       min-width: 8rem;
     }
+  }
+
+  /* ── Call volume panel (submenu) — reuses .wl-alpha-panel's positioning
+     and open/close animation verbatim (that block is keyed on the class,
+     never on #wl-alpha-panel, so it already generalizes); only size and
+     row layout differ here. ── */
+  :global(.wl-call-panel) {
+    width: 11rem;
+    gap: 0.55rem;
+    padding: 0.55rem 0.7rem 0.6rem;
+  }
+
+  :global(.wl-call-vol-row) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--whisper-font-mono);
+    font-size: 0.6rem;
+    text-transform: lowercase;
+  }
+
+  :global(.wl-call-vol-label) {
+    width: 2.2rem;
+    color: rgb(var(--color-text-rgb) / 0.5);
+  }
+
+  :global(.wl-call-vol-track) {
+    position: relative;
+    flex: 1;
+    height: 2px;
+    border-radius: 999px;
+    background: rgb(var(--color-text-rgb) / 0.14);
+    cursor: pointer;
+    touch-action: none;
+  }
+
+  /* generous invisible hit area: a 2px track is not a fair drag target. */
+  :global(.wl-call-vol-track)::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1.2rem;
+    transform: translateY(-50%);
+  }
+
+  /* a faint center detent tick: 100 of 0..200 sits at the middle. */
+  :global(.wl-call-vol-track)::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 1px;
+    height: 6px;
+    transform: translate(-50%, -50%);
+    background: rgb(var(--color-text-rgb) / 0.25);
+  }
+
+  :global(.wl-call-vol-fill) {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 50%;
+    background: rgb(var(--chromatic-cyan) / 0.5);
+    border-radius: inherit;
+  }
+
+  :global(.wl-call-vol-thumb) {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    background: rgb(10 10 10);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.7);
+  }
+
+  :global(.wl-call-vol-value) {
+    width: 2rem;
+    text-align: right;
+    color: rgb(var(--color-text-rgb) / 0.45);
+    background: none;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+
+  /* js adds this once the value strays from the 100 (unity) rest point. */
+  :global(.wl-call-vol-value.--modified) {
+    color: rgb(var(--chromatic-cyan) / 0.8);
   }
 
   :global(.wl-alpha-section) {

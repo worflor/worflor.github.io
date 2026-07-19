@@ -52,6 +52,8 @@ import {
   encodeCtrl,
   decodeCtrl,
   decodeStreamState,
+  encodeCallAudio,
+  decodeCallAudio,
   FILE_CANCEL_ROLE,
   encodeFileCancelPayload,
   decodeFileCancelPayload,
@@ -186,8 +188,10 @@ export interface WhisperLiveCallbacks {
   onCtrl?: (opcode: number, payload: Uint8Array) => void;
   /** Parsed live-draw stream event from peer. */
   onDrawStream?: (event: DrawStreamEvent) => void;
-  /** Peer's audio/video/screen stream state changed. */
-  onStreamState?: (audio: boolean, video: boolean, screen: boolean) => void;
+  /** Real-time call audio frame from peer. seq wraps mod 65536; blob is a harmonic frame. */
+  onCallAudio?: (seq: number, blob: Uint8Array) => void;
+  /** Peer's audio/video/screen stream state changed, plus their mute flag. */
+  onStreamState?: (audio: boolean, video: boolean, screen: boolean, muted: boolean) => void;
   /** A message was edited (by self or peer). */
   onEdit?: (targetMsgId: number, newText: string, direction: "self" | "peer") => void;
 }
@@ -433,6 +437,7 @@ const LIVE_MSG = {
   ACK: 0x43,
   CTRL: 0x50,
   SEALED: 0x51,
+  CALL_AUDIO: 0x52, // real-time call audio frame, sealed transport.
 } as const;
 
 const LIVE_FLAG = {
@@ -444,6 +449,9 @@ const LIVE_FLAG = {
 /** Each application-layer file chunk is this many bytes of raw file data. */
 const FILE_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB
 const SEND_PROGRESS_INTERVAL_MS = 48;
+/** dc.bufferedAmount above this: drop the call audio frame at source. freshness
+ *  over completeness, a real-time voice frame is worthless once it queues behind a backlog. */
+const CALL_DROP_BUFFERED = 32768;
 
 function errorMessage(err: unknown, fallback = "unknown"): string {
   return err instanceof Error ? err.message : fallback;
@@ -518,6 +526,8 @@ export class WhisperLiveSession {
   private nextDrawStreamSeq = 0;
   private drawStreamSendQueue: Promise<void> = Promise.resolve();
   private drawStreamRecvTracker = new DrawStreamTracker();
+  /** per-session call-audio sequence counter, wraps mod 65536. */
+  private nextCallAudioSeq = 0;
 
   // Pubkey dedup — track last sent/received DH pubkey to elide from compact headers
   private lastSentPubKeyHex = "";
@@ -600,6 +610,7 @@ export class WhisperLiveSession {
   onConnectionStats: WhisperLiveCallbacks["onConnectionStats"];
   onCtrl: WhisperLiveCallbacks["onCtrl"];
   onDrawStream: WhisperLiveCallbacks["onDrawStream"];
+  onCallAudio: WhisperLiveCallbacks["onCallAudio"];
   onStreamState: WhisperLiveCallbacks["onStreamState"];
   onEdit: WhisperLiveCallbacks["onEdit"];
 
@@ -637,6 +648,7 @@ export class WhisperLiveSession {
     this.onConnectionStats = callbacks.onConnectionStats;
     this.onCtrl = callbacks.onCtrl;
     this.onDrawStream = callbacks.onDrawStream;
+    this.onCallAudio = callbacks.onCallAudio;
     this.onStreamState = callbacks.onStreamState;
     this.onEdit = callbacks.onEdit;
     this.rtcConfig = options.rtcConfig ?? WHISPER_LIVE_RTC_LOCAL_ONLY;
@@ -737,7 +749,7 @@ export class WhisperLiveSession {
    *  after dc.send succeeds: a throw anywhere upstream (kdf/import/seal/send) must
    *  never advance ctrlChainSend without the frame actually going out, or the receiver
    *  can never derive a matching key again. */
-  private sendSealed(type: number, payload?: Uint8Array): void {
+  private sendSealed(type: number, payload?: Uint8Array, freshUntil?: number): void {
     if (!this.ctrlChainSend) return; // drop, never send CTRL/ACK/TYPING in plaintext
     const inner = payload
       ? (() => { const b = new Uint8Array(1 + payload.length); b[0] = type; b.set(payload, 1); return b; })()
@@ -745,6 +757,9 @@ export class WhisperLiveSession {
     const dirBit = this.isOfferer ? 0 : 1;
     this.sealedSendQueue = this.sealedSendQueue
       .then(async () => {
+        // real-time frames carry a deadline: if the queue held this frame past its
+        // useful window, drop it here, before any counter or chain state is touched.
+        if (freshUntil !== undefined && Date.now() > freshUntil) return;
         if (!this.dc || this.dc.readyState !== "open" || !this.ctrlChainSend) return; // burn nothing, dc not open
         if (this.ctrlSendCounter >= 0xFFFFFFFF) return; // nonce space exhausted, drop silently, no counter burned
         const counter = this.ctrlSendCounter; // reserved only once send below actually succeeds
@@ -990,6 +1005,7 @@ export class WhisperLiveSession {
     this.nSentTotal = 0;
     this.nRecvTotal = 0;
     this.nextDrawStreamSeq = 0;
+    this.nextCallAudioSeq = 0;
     this.drawStreamRecvTracker = new DrawStreamTracker();
     this.ctrlSendCounter = 0;
     this.ctrlRecvCounter = 0;
@@ -1861,7 +1877,7 @@ export class WhisperLiveSession {
             if (this.onCtrl) this.onCtrl(frame.opcode, frame.payload);
             if (frame.opcode === CTRL_OP.STREAM_STATE && this.onStreamState) {
               const state = decodeStreamState(frame.payload);
-              if (state) this.onStreamState(state.audio, state.video, state.screen);
+              if (state) this.onStreamState(state.audio, state.video, state.screen, state.muted);
             }
             if (frame.opcode === CTRL_OP.DRAW_STREAM && this.onDrawStream) {
               const drawEvent = decodeDrawStreamEvent(frame.payload);
@@ -1877,6 +1893,11 @@ export class WhisperLiveSession {
               if (cancel) this.handleFileCancel(cancel.transferId, cancel.role);
             }
           }
+          break;
+        }
+        case LIVE_MSG.CALL_AUDIO: {
+          const frame = decodeCallAudio(innerPayload);
+          if (frame && this.onCallAudio) this.onCallAudio(frame.seq, frame.blob);
           break;
         }
         default:
@@ -2263,6 +2284,25 @@ export class WhisperLiveSession {
       .catch((err) => {
         this.onLog(`draw stream send failed: ${errorMessage(err)}`);
       });
+  }
+
+  /** send one real-time call audio frame. freshness over completeness: frames are
+   *  dropped, never queued, when the channel is congested. */
+  sendCallAudio(blob: Uint8Array): void {
+    if (!this.isLiveState()) return;
+    const dc = this.dc;
+    if (!dc || dc.readyState !== "open") return;
+    // drop the frame at source when the channel is backed up. this check runs before
+    // sendSealed enqueues, so a dropped frame never burns a seal counter, and we never
+    // wait on drain: a stale voice frame is worthless. sendSealed's own queued body
+    // still guards against the channel going unusable between enqueue and send.
+    if (dc.bufferedAmount > CALL_DROP_BUFFERED) return;
+    const seq = this.nextCallAudioSeq++ & 0xffff;
+    const payload = encodeCallAudio(seq, blob);
+    // the deadline covers the seal queue itself: if crypto contention holds the
+    // frame for more than about two frame durations, it dies in the queue instead
+    // of arriving as stale audio.
+    this.sendSealed(LIVE_MSG.CALL_AUDIO, payload, Date.now() + 160);
   }
 
   /** Wait for recovery to complete before sending. Returns false if destroyed. */

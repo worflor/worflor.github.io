@@ -15,8 +15,9 @@ import {
 } from "./live";
 import { encodeHarmonic, decodeHarmonic } from "./live-wasm-audio";
 import { dcBlock, inverseDcBlock, wavFromPcm } from "./live-audio-dsp";
+import { CallEngine } from "./live-call";
 import {
-  CTRL_OP, VOTE_TOPIC, VoteTopic,
+  CTRL_OP, VOTE_TOPIC, VoteTopic, STREAM_FLAG,
   encodeSeenPayload, decodeSeenPayload,
   encodeReactPayload, decodeReactPayload,
   encodeVotePayload, decodeVotePayload,
@@ -4508,7 +4509,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     fadeOut.finished.then(() => { badge.remove(); swapIn(); }).catch(() => { badge.remove(); swapIn(); });
   }
 
-  function addChatMessage(msg: LiveMessage): void {
+  function addChatMessage(msg: LiveMessage): HTMLElement | null {
     // Hide empty-state hint on first real message
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
 
@@ -4601,7 +4602,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       div.appendChild(textEl);
     } else if (isRenderableAudioMessage(msg)) {
       const fileData = msg.fileData;
-      if (!fileData) return;
+      if (!fileData) return null;
       /* ── Inline audio player with waveform ─────────────── */
       const audioEl = document.createElement("div");
       audioEl.className = "wl-msg-audio";
@@ -5097,6 +5098,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
     }
     updateControls();
+    return div;
   }
 
   /* ── Remote peer drawing overlay ─────────────────────────────── */
@@ -5738,6 +5740,27 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onCtrl: handleCtrl,
       onEdit: (id, text) => handleEdit(id, text),
       onDrawStream: (ev) => handleRemoteDraw(ev),
+      onStreamState: (audio, _video, _screen, muted) => {
+        const was = peerInCall;
+        peerInCall = audio;
+        peerMuted = muted;
+        if (audio && !was) {
+          // the peer opened the line: mark the incident and, if we are not already
+          // in it, surface the invite. the seam appears the moment either side opens.
+          callIncidentStart ??= Date.now();
+          if (callState === "off") callState = "invite";
+          ensureCallSeam();
+        }
+        if (!audio && was) {
+          if (callState === "invite") callState = "off";
+          if (callState === "off") { healCallSeam(); callIncidentStart = null; }
+        }
+        updateCallUi();
+      },
+      // frames arriving before we join are dropped: listening starts only on join.
+      onCallAudio: (_seq, blob) => {
+        if (callState === "joined") callEngine?.pushPeerFrame(blob);
+      },
     }, {
       rtcConfig,
       externalAssistPolicy,
@@ -5881,9 +5904,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         // scar (a continuous hairline), and release the ref so a future drop
         // starts a fresh seam instead of reusing this one.
         if (reconnectSeamEl?.isConnected) {
+          reconnectSeamEl.classList.remove("wl-msg--seam-active");
           reconnectSeamEl.classList.add("wl-msg--seam-healed");
           const label = reconnectSeamEl.querySelector<HTMLElement>(".wl-msg-system");
-          if (label) label.textContent = "";
+          if (label) label.setAttribute("aria-hidden", "true");
         }
         reconnectSeamEl = null;
         opts.chatInput.disabled = false;
@@ -5892,6 +5916,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         opts.fpChip.classList.remove("wl-fp-chip--recovering");
         opts.fpChip.classList.add("wl-fp-chip--verified");
         startE2eStatsPoll();
+        // the link is back: re-announce our call state so a peer that missed it while
+        // recovering reconverges (idempotent; a fresh connect sits at "off").
+        if (callState === "joined") sendCallState();
         break;
 
       case "silent": {
@@ -5918,9 +5945,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         // one seam per interruption: while recovery flaps we keep pulsing the
         // existing seam rather than stacking a new line each tick.
         if (!reconnectSeamEl || !reconnectSeamEl.isConnected) {
-          addChatMessage({ type: "system", direction: "system", text: "reconnecting…", timestamp: Date.now() });
-          const seams = opts.chatMessages.querySelectorAll<HTMLElement>(".wl-msg--seam");
-          reconnectSeamEl = seams.length ? seams[seams.length - 1] : null;
+          reconnectSeamEl = addChatMessage({
+            type: "system",
+            direction: "system",
+            text: "reconnecting…",
+            timestamp: Date.now(),
+          });
+          reconnectSeamEl?.classList.add("wl-msg--seam-active");
         }
         break;
 
@@ -6036,6 +6067,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function clearChatArtifacts(): void {
     if (editingMsgId != null) exitEditMode();
     closeReactionShelf();
+    // a call cannot outlive its session: tear the engine down and settle the seam
+    // before the timeline (seam included) is wiped below.
+    teardownCall();
     msgById.clear();
     pendingSeen.clear();
     reconnectSeamEl = null;
@@ -6476,7 +6510,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (!phrase) {
       // no phrase means in-person mode: same button, same panel, same scan —
       // the QR just carries a local offer and never touches the internet.
-      void startLocalQrOffer();
+      // never conjure a fresh offer while this panel is showing a reply QR:
+      // the answerer path opens this same panel via setRelayQrExpanded, and an
+      // orphan offer here would race (and stomp) the in-flight answer session.
+      if (localRole !== "answering") void startLocalQrOffer();
       return;
     }
     setLocalMode(false);
@@ -6538,12 +6575,19 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
   async function startLocalQrOffer(): Promise<void> {
     if (session && localConnected()) return;
+    // an in-flight answer owns the panel; a fresh offer would stomp it.
+    if (localRole === "answering") return;
     setLocalMode(true);
     localRole = "offering";
     try {
       destroyCurrentSession();
-      session = createSession();
-      const offer = await session.createLocalOffer();
+      const mySession = createSession();
+      session = mySession;
+      const offer = await mySession.createLocalOffer();
+      // the world may have moved while ice gathered: a scanned offer flips us
+      // to answerer and replaces the session. an abandoned offer must not
+      // paint its qr or touch the panel on the way out.
+      if (session !== mySession || localRole !== "offering") return;
       const url = buildWlLocalUrl(offer);
       if (opts.relayQrCanvas) { opts.relayQrCanvas.dataset.wlLocalUrl = url; renderQrToCanvas(opts.relayQrCanvas, url); }
       // both people see this. whoever scans the other's code first flips to
@@ -7252,6 +7296,305 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     btn.addEventListener("click", () => { if (!btn.disabled) setFn(!state.value); }, { signal });
   }
 
+  // ── Live call (voice intercom) ──────────────────────────────
+  // a call never leaves the chat: opening the line docks a hairline strip onto the
+  // chin and drops a seam into the timeline; the peer taps to join. incoming audio is
+  // never played until the local user joins (consent = joining). one incident = one
+  // seam, settled to a duration scar when the line closes, like reconnect scars.
+  //
+  // the lifecycle functions and dom refs live at the closure top level (not a nested
+  // block) so the createSession callbacks, the handleStateChange live branch, the
+  // teardown seams, and the media popover block below can all reach them.
+
+  // volume rows persist as ints 0..200 (100 = unity). clamp and default defensively
+  // so a hand-edited or absent key never poisons the gain.
+  const clampVolInt = (n: number): number =>
+    Number.isFinite(n) ? Math.max(0, Math.min(200, Math.round(n))) : 100;
+  const readStoredVol = (key: string): number => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? 100 : clampVolInt(parseInt(raw, 10));
+    } catch { return 100; }
+  };
+  // floor to whole seconds with a 0:00 lower bound, formatted m:ss.
+  const formatCallDuration = (ms: number): string => {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+  };
+
+  const callStrip = document.getElementById("wl-call-strip");
+  const callJoinBtn = document.getElementById("wl-call-join");
+  const callClockEl = document.getElementById("wl-call-clock");
+  const callNoteEl = document.getElementById("wl-call-note");
+  const callMuteBtn = document.getElementById("wl-call-mute");
+  const callLeaveBtn = document.getElementById("wl-call-leave");
+  const mediaVoiceBtn = document.getElementById("wl-media-voice") as HTMLButtonElement | null;
+  const mediaVoiceLabel = mediaVoiceBtn?.querySelector<HTMLElement>(".wl-media-option-label") ?? null;
+  const mediaCallAudioBtn = document.getElementById("wl-media-call-audio") as HTMLButtonElement | null;
+  const callPanel = document.getElementById("wl-call-panel");
+
+  let callState: "off" | "invite" | "joined" = "off";
+  let callEngine: CallEngine | null = null;
+  // ms epoch when the line first opened this incident (either side); drives the scar
+  // duration. callJoinedAt is my own join time and drives the live clock.
+  let callIncidentStart: number | null = null;
+  let callJoinedAt: number | null = null;
+  let callSeamEl: HTMLElement | null = null;
+  let peerInCall = false;
+  let peerMuted = false;
+  let callClockTimer: ReturnType<typeof setInterval> | null = null;
+  let peerLevelResetTimer: ReturnType<typeof setTimeout> | null = null;
+  let volPeer = readStoredVol("wl-call-vol-peer");
+  let volMic = readStoredVol("wl-call-vol-mic");
+  // published by the media popover block below so updateCallUi can dismiss the call
+  // panel when the call-audio trigger hides.
+  let closeCallSubPanel: () => void = () => {};
+
+  function sendCallState(): void {
+    if (!session) return;
+    const flags = (callState === "joined" ? STREAM_FLAG.AUDIO : 0)
+      | (callState === "joined" && callEngine?.muted ? STREAM_FLAG.MUTED : 0);
+    session.sendStreamState(flags);
+  }
+
+  // one seam per incident. the reconnect path classifies seams by /reconnect/i on the
+  // text, so "line open" never matches; the seam classes are added explicitly here.
+  function ensureCallSeam(): void {
+    if (callSeamEl?.isConnected) return;
+    const el = addChatMessage({
+      type: "system",
+      direction: "system",
+      text: "line open",
+      timestamp: Date.now(),
+    });
+    if (!el) return;
+    el.classList.add("wl-msg--seam", "wl-msg--seam-call", "wl-msg--seam-live");
+    callSeamEl = el;
+  }
+
+  // settle the live seam into a quiet scar labelled with the incident duration.
+  function healCallSeam(): void {
+    if (!callSeamEl?.isConnected) { callSeamEl = null; return; }
+    callSeamEl.classList.remove("wl-msg--seam-live");
+    callSeamEl.classList.add("wl-msg--seam-call-done");
+    const label = callSeamEl.querySelector<HTMLElement>(".wl-msg-system");
+    if (label) {
+      const dur = callIncidentStart !== null ? Date.now() - callIncidentStart : 0;
+      label.textContent = formatCallDuration(dur);
+    }
+    callSeamEl = null;
+  }
+
+  function startCallClock(): void {
+    stopCallClock();
+    const tick = (): void => {
+      if (callClockEl && callJoinedAt !== null) {
+        callClockEl.textContent = formatCallDuration(Date.now() - callJoinedAt);
+      }
+    };
+    tick();
+    callClockTimer = setInterval(tick, 1000);
+  }
+  function stopCallClock(): void {
+    if (callClockTimer) { clearInterval(callClockTimer); callClockTimer = null; }
+  }
+
+  // single idempotent projection of call state onto the strip + popover.
+  function updateCallUi(): void {
+    if (callStrip) {
+      callStrip.hidden = callState === "off" && !peerInCall;
+      callStrip.dataset.mode = callState === "joined" ? "live" : (peerInCall ? "invite" : "off");
+      if (peerInCall && peerMuted) callStrip.setAttribute("data-peer-muted", "");
+      else callStrip.removeAttribute("data-peer-muted");
+    }
+    if (callNoteEl) {
+      let note = "";
+      if (callState === "joined" && !peerInCall) note = "line open, waiting";
+      else if (callState === "joined" && peerInCall && peerMuted) note = "they are muted";
+      callNoteEl.textContent = note;
+    }
+    if (callMuteBtn) callMuteBtn.setAttribute("aria-pressed", String(callEngine?.muted ?? false));
+    if (mediaVoiceBtn) mediaVoiceBtn.classList.toggle("wl-media-option--active", callState === "joined");
+    if (mediaVoiceLabel) mediaVoiceLabel.textContent = callState === "joined" ? "leave call" : "voice";
+    if (mediaCallAudioBtn) {
+      const live = callState === "joined";
+      mediaCallAudioBtn.hidden = !live;
+      if (!live) closeCallSubPanel();
+    }
+  }
+
+  async function joinCall(): Promise<void> {
+    if (callState === "joined") return;
+    // a call needs a live session, or preview mode (the right-click preview seam adds
+    // wl-preview to the surface). in preview there is no session, so wire sends are
+    // simply skipped by the null-session guards while the engine still runs locally.
+    const previewMode = liveSurface?.classList.contains("wl-preview") ?? false;
+    // silent is a connected-but-quiet variant of live; the line can open from it.
+    if (currentLiveState !== "live" && currentLiveState !== "silent" && !previewMode) return;
+
+    const engine = new CallEngine({
+      sendFrame: (blob) => session?.sendCallAudio(blob),
+      onLocalLevel: (level) => {
+        callStrip?.style.setProperty("--wl-mic-level", Math.min(1, Math.max(0, level)).toFixed(3));
+      },
+      onPeerLevel: (level) => {
+        callStrip?.style.setProperty("--wl-peer-level", Math.min(1, Math.max(0, level)).toFixed(3));
+        // decay the peer glow to nothing after a short gap so a paused talker's dot
+        // does not stay lit on the last frame's level.
+        if (peerLevelResetTimer) clearTimeout(peerLevelResetTimer);
+        peerLevelResetTimer = setTimeout(() => {
+          callStrip?.style.setProperty("--wl-peer-level", "0");
+        }, 260);
+      },
+      onError: () => {
+        teardownCall();
+        addChatMessage({ type: "system", direction: "system", text: "microphone unavailable", timestamp: Date.now() });
+      },
+    });
+
+    // assign before awaiting so a teardown racing the mic prompt can stop the engine
+    // mid-start; engine.start() then resolves without ever running.
+    callEngine = engine;
+    try {
+      await engine.start();
+    } catch {
+      // the onError hook has already torn the engine down.
+      return;
+    }
+    if (callEngine !== engine || !engine.running) return;
+
+    callState = "joined";
+    callJoinedAt = Date.now();
+    callIncidentStart ??= Date.now();
+    engine.setPeerVolume(volPeer / 100);
+    engine.setMicGain(volMic / 100);
+    sendCallState();
+    ensureCallSeam();
+    updateCallUi();
+    startCallClock();
+  }
+
+  function leaveCall(): void {
+    callEngine?.stop();
+    callEngine = null;
+    callState = peerInCall ? "invite" : "off";
+    callJoinedAt = null;
+    stopCallClock();
+    sendCallState();
+    if (callState === "off") { healCallSeam(); callIncidentStart = null; }
+    updateCallUi();
+  }
+
+  // full teardown for session death (destroy/clear/onError). never touches the wire:
+  // the session may already be gone.
+  function teardownCall(): void {
+    callEngine?.stop();
+    callEngine = null;
+    stopCallClock();
+    peerInCall = false;
+    peerMuted = false;
+    if (callIncidentStart !== null) healCallSeam();
+    callState = "off";
+    callIncidentStart = null;
+    callJoinedAt = null;
+    updateCallUi();
+  }
+
+  // pointer-driven 0..200 track with a center detent at 100 (unity gain).
+  function wireVolRow(
+    row: HTMLElement,
+    key: string,
+    apply: (value: number) => void,
+    getValue: () => number,
+    setValue: (value: number) => void,
+  ): void {
+    const track = row.querySelector<HTMLElement>(".wl-call-vol-track");
+    const fill = row.querySelector<HTMLElement>(".wl-call-vol-fill");
+    const thumb = row.querySelector<HTMLElement>(".wl-call-vol-thumb");
+    const valueBtn = row.querySelector<HTMLButtonElement>(".wl-call-vol-value");
+    if (!track || !fill || !thumb || !valueBtn) return;
+
+    let rowPointerId = -1;
+
+    const render = (): void => {
+      const value = getValue();
+      const pct = value / 2; // 0..200 maps to 0..100 percent of the track
+      fill.style.width = `${pct}%`;
+      thumb.style.left = `${pct}%`;
+      valueBtn.textContent = String(value);
+      valueBtn.classList.toggle("--modified", value !== 100);
+    };
+
+    const commit = (clientX: number): void => {
+      const rect = track.getBoundingClientRect();
+      const frac = Math.max(0, Math.min(1, (clientX - rect.left) / (rect.width || 1)));
+      let value = Math.round(frac * 200);
+      if (Math.abs(value - 100) <= 5) value = 100; // snap to the center detent
+      setValue(value);
+      apply(value);
+      render();
+    };
+
+    track.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || rowPointerId !== -1) return;
+      e.preventDefault();
+      rowPointerId = e.pointerId;
+      track.setPointerCapture(e.pointerId);
+      commit(e.clientX);
+    }, { signal });
+
+    track.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== rowPointerId) return;
+      if (e.cancelable) e.preventDefault();
+      commit(e.clientX);
+    }, { signal });
+
+    const endDrag = (e: PointerEvent): void => {
+      if (e.pointerId !== rowPointerId) return;
+      rowPointerId = -1;
+      // persist only when the drag settles, not on every move.
+      try { localStorage.setItem(key, String(getValue())); } catch { /* storage blocked */ }
+    };
+    track.addEventListener("pointerup", endDrag, { signal });
+    track.addEventListener("pointercancel", endDrag, { signal });
+    track.addEventListener("lostpointercapture", endDrag, { signal });
+
+    valueBtn.addEventListener("click", () => {
+      setValue(100);
+      apply(100);
+      render();
+      try { localStorage.setItem(key, "100"); } catch { /* storage blocked */ }
+    }, { signal });
+
+    render();
+  }
+
+  callJoinBtn?.addEventListener("click", () => { void joinCall(); }, { signal });
+  callMuteBtn?.addEventListener("click", () => {
+    if (!callEngine) return;
+    callEngine.setMuted(!callEngine.muted);
+    sendCallState();
+    updateCallUi();
+  }, { signal });
+  callLeaveBtn?.addEventListener("click", () => leaveCall(), { signal });
+
+  if (callPanel) {
+    const peerRow = callPanel.querySelector<HTMLElement>('.wl-call-vol-row[data-vol="peer"]');
+    const micRow = callPanel.querySelector<HTMLElement>('.wl-call-vol-row[data-vol="mic"]');
+    if (peerRow) wireVolRow(peerRow, "wl-call-vol-peer",
+      (v) => callEngine?.setPeerVolume(v / 100), () => volPeer, (v) => { volPeer = v; });
+    if (micRow) wireVolRow(micRow, "wl-call-vol-mic",
+      (v) => callEngine?.setMicGain(v / 100), () => volMic, (v) => { volMic = v; });
+  }
+
+  // read-only debug handle for the playwright harness and on-device inspection.
+  (globalThis as { __wlCall?: unknown }).__wlCall = {
+    get stats() { return callEngine?.stats ?? null; },
+    get state() { return callState; },
+  };
+
+  updateCallUi();
+
   // ── Media button popover (file + draw + clear + alpha) ──────
   // supports: tap to toggle, tap-hold to open then drag-over option + release to pick.
   // alpha submenu opens to the side. dragging onto it preview-opens the panel;
@@ -7260,9 +7603,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const popover = opts.chatMediaPopover;
     const alphaPanel = opts.alphaPanel;
     const alphaBtn = opts.chatMediaAlpha;
-    const options = [opts.chatMediaFile, opts.chatMediaDraw, opts.chatMediaClear, alphaBtn] as const;
+    // voice joins the option list so the tap-hold drag-release path reaches it too.
+    const options: HTMLButtonElement[] = mediaVoiceBtn
+      ? [opts.chatMediaFile, opts.chatMediaDraw, opts.chatMediaClear, mediaVoiceBtn, alphaBtn]
+      : [opts.chatMediaFile, opts.chatMediaDraw, opts.chatMediaClear, alphaBtn];
     let mediaPopoverOpen = false;
     let alphaPanelOpen = false;
+    let callPanelOpen = false;
     let onAlphaOpen: (() => void) | null = null;
     let onAlphaClose: (() => void) | null = null;
     let mediaPointerId = -1;
@@ -7293,6 +7640,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     function closePopover(): void {
       if (!mediaPopoverOpen) return;
       closeAlphaPanel();
+      closeCallPanel();
       mediaPopoverOpen = false;
       popover.classList.remove("--open");
       for (const o of options) o.classList.remove("--hover");
@@ -7301,6 +7649,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     function toggleAlphaPanel(): void {
       if (alphaPanelOpen) { closeAlphaPanel(); return; }
+      closeCallPanel(); // one sub-panel open at a time
       if (!mediaPopoverOpen) openPopover();
       alphaPanelOpen = true;
       alphaPanel.classList.add("--open");
@@ -7308,6 +7657,25 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const jitter = -8 + Math.random() * 16;
       alphaBtn.style.setProperty("--iris-jitter", `${jitter.toFixed(1)}deg`);
       onAlphaOpen?.();
+    }
+
+    // the call volume panel reuses the alpha panel's --open animation, but it also
+    // carries the `hidden` attribute (its trigger only appears mid-call), so opening
+    // must clear hidden and closing must restore it.
+    function closeCallPanel(): void {
+      if (!callPanelOpen) return;
+      callPanelOpen = false;
+      if (callPanel) { callPanel.classList.remove("--open"); callPanel.hidden = true; }
+      mediaCallAudioBtn?.classList.remove("--active");
+    }
+
+    function toggleCallPanel(): void {
+      if (callPanelOpen) { closeCallPanel(); return; }
+      closeAlphaPanel(); // one sub-panel open at a time
+      if (!mediaPopoverOpen) openPopover();
+      callPanelOpen = true;
+      if (callPanel) { callPanel.hidden = false; callPanel.classList.add("--open"); }
+      mediaCallAudioBtn?.classList.add("--active");
     }
 
     function pickFile(): void {
@@ -7326,6 +7694,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     function pickClear(): void {
       if (opts.chatMediaClear.disabled) return;
       opts.chatMediaClear.click();
+    }
+
+    function pickVoice(): void {
+      closePopover();
+      if (callState === "joined") leaveCall();
+      else void joinCall();
     }
 
     function hitTestOption(x: number, y: number): HTMLButtonElement | null {
@@ -7386,6 +7760,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           || (alphaPanelOpen && pointInEl(e.clientX, e.clientY, alphaPanel));
         if (hit === opts.chatMediaFile) pickFile();
         else if (hit === opts.chatMediaDraw) pickDraw();
+        else if (hit === mediaVoiceBtn) pickVoice();
         else if (hit === opts.chatMediaClear) pickClear();
         else if (overAlpha) { /* already open from hover preview */ }
         else closePopover();
@@ -7411,12 +7786,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     opts.chatMediaDraw.addEventListener("click", () => pickDraw(), { signal });
     opts.chatMediaClear.addEventListener("click", () => closePopover(), { signal });
     alphaBtn.addEventListener("click", () => toggleAlphaPanel(), { signal });
+    mediaVoiceBtn?.addEventListener("click", () => pickVoice(), { signal });
+    mediaCallAudioBtn?.addEventListener("click", () => toggleCallPanel(), { signal });
 
     // close popover on outside click
     document.addEventListener("pointerdown", (e) => {
       if (!mediaPopoverOpen) return;
       const t = e.target as Node;
-      if (popover.contains(t) || opts.chatMediaBtn.contains(t) || alphaPanel.contains(t)) return;
+      if (popover.contains(t) || opts.chatMediaBtn.contains(t) || alphaPanel.contains(t)
+        || (callPanel?.contains(t) ?? false)) return;
       closePopover();
     }, { signal });
 
@@ -7426,6 +7804,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     // prevent slider interaction from closing the popover
     alphaPanel.addEventListener("pointerdown", (e) => e.stopPropagation(), { signal });
+    callPanel?.addEventListener("pointerdown", (e) => e.stopPropagation(), { signal });
+    // publish the call-panel closer so updateCallUi can dismiss it when the call-audio
+    // trigger hides at call end.
+    closeCallSubPanel = closeCallPanel;
 
     // ── Alpha panel: audio quality slider ──────────────────
     // physical track has a magnetic detent at q99. q100 is raw/lossless,
