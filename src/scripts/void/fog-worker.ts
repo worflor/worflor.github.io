@@ -49,11 +49,13 @@ type WorkerInMessage =
   | { readonly type: "setRevealMap"; readonly data: Float32Array };
 
 // Messages to main thread
+type FatalMessage = { type: "fatal"; message: string };
+
 type WorkerOutMessage =
   | { readonly type: "ready" }
   | { readonly type: "rendered"; readonly changed: boolean; readonly bitmap?: ImageBitmap }
   | { readonly type: "revealMap"; readonly data: Float32Array }
-  | { readonly type: "fogDirty"; readonly dirty: boolean };
+  | FatalMessage;
 
 // ============================================================================
 // CONSTANTS
@@ -353,7 +355,13 @@ function computeDecay(): void {
 // ============================================================================
 
 function render(): void {
-  if (!revealMap || !offscreen || !offscreenCtx || !imageData) return;
+  // Never leave without replying. The main thread gates every future render on
+  // a "rendered" message, so a silent return here deadlocked the fog for the
+  // rest of the session while still reporting itself healthy.
+  if (!revealMap || !offscreen || !offscreenCtx || !imageData) {
+    self.postMessage({ type: "rendered", changed: false } as WorkerOutMessage);
+    return;
+  }
 
   if (!fogDirty) {
     self.postMessage({ type: "rendered", changed: false } as WorkerOutMessage);
@@ -466,8 +474,13 @@ self.onmessage = (e: MessageEvent<WorkerInMessage>) => {
       default:
         break;
     }
-  } catch {
-    // Worker continues
+  } catch (err) {
+    // Swallowing here is why onerror never fired and the main thread never fell
+    // back. Say so, and unblock whatever was waiting on a reply.
+    try {
+      self.postMessage({ type: "rendered", changed: false } as WorkerOutMessage);
+    } catch { /* the port is gone; the watchdog covers it */ }
+    self.postMessage({ type: "fatal", message: String(err) } as WorkerOutMessage);
   }
 };
 

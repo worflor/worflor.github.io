@@ -43,11 +43,14 @@ let swapHookInstalled = false;
 const CAPABILITIES: Record<string, () => boolean> = {
   webgl: () => hasContext("webgl"),
   webgl2: () => hasContext("webgl2"),
-  webgpu: () => typeof navigator !== "undefined" && "gpu" in navigator,
+  // presence is not usability: a browser can expose navigator.gpu and have it
+  // be undefined, and `"gpu" in navigator` happily calls that supported. every
+  // check here asks for the thing itself, not for its name.
+  webgpu: () => typeof navigator !== "undefined" && !!(navigator as { gpu?: unknown }).gpu,
   wasm: () => typeof WebAssembly === "object" && typeof WebAssembly.instantiate === "function",
   worker: () => typeof Worker === "function",
   offscreen: () => typeof OffscreenCanvas === "function",
-  pointer: () => typeof window !== "undefined" && "PointerEvent" in window,
+  pointer: () => typeof window !== "undefined" && !!window.PointerEvent,
 };
 
 const LABELS: Record<string, string> = {
@@ -103,7 +106,13 @@ function missingCapabilities(artifact: HTMLElement): string[] {
   const required = (artifact.dataset.requires || "").split(/\s+/).filter(Boolean);
   return required.filter((name) => {
     const check = CAPABILITIES[name];
-    return typeof check === "function" ? !check() : false;
+    if (typeof check !== "function") {
+      // a name nobody implements used to count as satisfied, so a typo in
+      // `requires` silently disabled the whole gate. refuse instead.
+      console.warn(`[artifact] unknown capability "${name}" — treating as unavailable`);
+      return true;
+    }
+    return !check();
   });
 }
 

@@ -96,7 +96,11 @@ interface Debris {
 interface FissureSegment {
   x: number;
   y: number;
-  width?: number;
+  width: number;
+  /** smoothed light at this point, 0..1 */
+  lit: number;
+  /** monotonic high-water mark of lit: what the visitor has already seen */
+  seen: number;
 }
 
 interface FissureBounds {
@@ -197,7 +201,7 @@ interface GameInitOptions {
   toast: HTMLElement;
   tooltip: HTMLElement;
   pickupRing: HTMLCanvasElement;
-  homeBtn: HTMLButtonElement;
+  homeBtn: HTMLAnchorElement;
   resetBtn: HTMLButtonElement;
 }
 
@@ -260,7 +264,7 @@ type FogWorkerOutMessage =
   | { readonly type: "ready" }
   | { readonly type: "rendered"; readonly changed: boolean; readonly bitmap?: ImageBitmap }
   | { readonly type: "revealMap"; readonly data: Float32Array }
-  | { readonly type: "fogDirty"; readonly dirty: boolean };
+  | { readonly type: "fatal"; readonly message: string };
 
 // ============================================================================
 // GAME CONSTANTS
@@ -412,6 +416,43 @@ for (let i = 0; i <= BODY_SEGMENTS; i++) {
   BODY_SIN.push(Math.sin(angle));
 }
 
+// ── Fissure tuning ──────────────────────────────────────────────────────────
+// A burst averages 4 segments at 5 frames each, so ~40px opens in a third of a
+// second: a visible lurch. Then it rests ~78 frames, scaled down with depth, so
+// a 50-segment crack fully propagates in about 18s at depth 2 and 11s at depth
+// 8. The floor gives way faster the deeper you are, and that is the whole point.
+// you land on an intact floor: the first crack is four seconds away, never zero
+const FISSURE_FIRST_DELAY = 240;
+const FISSURE_REST_MIN = 30;
+const FISSURE_REST_VAR = 96;
+const FISSURE_TEAR_BURST_MIN = 2;
+const FISSURE_TEAR_BURST_VAR = 5;
+const FISSURE_TEAR_SEG_FRAMES = 5;
+
+// ~12 frames to 63% rising, ~71 falling. The slow fall is not only taste: the
+// main thread only refreshes the reveal map from the worker every 6 frames, so
+// getLightAt is a staircase in time and this absorbs each step into a ramp.
+const FISSURE_LIGHT_RISE = 0.09;
+const FISSURE_LIGHT_FALL = 0.014;
+// reveal near a creature sits in the 0.15-0.4 band, so 1.2x never cleared the
+// old 0.05 gate. This is why nothing was ever drawn.
+const FISSURE_DIRECT = 2.4;
+// what has been seen stays faintly present forever. This is what actually kills
+// the flicker: the dominant state becomes monotonic.
+const FISSURE_SCAR = 0.2;
+
+// square-law buckets: linear ones put a 3x jump right where the scar floor sits
+const FISSURE_LEVELS = 8;
+const FISSURE_REPS = new Float32Array(FISSURE_LEVELS);
+for (let i = 0; i < FISSURE_LEVELS; i++) {
+  FISSURE_REPS[i] = ((i + 0.5) / FISSURE_LEVELS) ** 2;
+}
+
+// scratch, allocated once and reused across every fissure
+const _fsLevel = new Int8Array(512);
+const _fsWq = new Int8Array(512);
+let _fsTarget = new Float32Array(512);
+
 const PARTICLE_COLORS: Record<string, (h: number, a: number) => string> = {
   birth: (h, a) => `hsla(${h}, 40%, 80%, ${a})`,
   death: (_h, a) => `rgba(130, 120, 140, ${a * 0.35})`,
@@ -470,6 +511,10 @@ class ResidueGrid {
 
   // Get localized residue levels (bilinear interpolation for smoothness)
   sample(x: number, y: number): { safety: number; distress: number } {
+    // NaN fails every bounds comparison below, so without this it reaches the
+    // cell lookup and feeds NaN straight back into the force accumulator,
+    // poisoning the creature that asked permanently
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return { safety: 0, distress: 0 };
     const gx = x / this.resolution - 0.5;
     const gy = y / this.resolution - 0.5;
     
@@ -521,6 +566,7 @@ class FogWorker {
   private ready = false;
   private initialized = false;
   private pendingRender = false;
+  private pendingSince = 0;
   private pendingRevealMapRequest = false;
   private pendingRevealMapSync: Float32Array | null = null;
   private _onRevealMapReceived: ((data: Float32Array) => void) | null = null;
@@ -557,7 +603,16 @@ class FogWorker {
           if (this._onRevealMapReceived) {
             this._onRevealMapReceived(msg.data);
           }
+        } else if (msg.type === "fatal") {
+          console.warn("[void] fog worker failed, falling back", msg.message);
+          this.destroy();
         }
+      };
+
+      // structured-clone failures were silently dropped
+      this.worker.onmessageerror = () => {
+        console.warn("[void] fog worker message could not be deserialised, falling back");
+        this.destroy();
       };
 
       this.worker.onerror = () => {
@@ -609,6 +664,7 @@ class FogWorker {
   requestRender(): void {
     if (!this.pendingRender && this.worker) {
       this.pendingRender = true;
+      this.pendingSince = performance.now();
       this.worker.postMessage({ type: "render" } satisfies FogWorkerInMessage);
     }
   }
@@ -617,10 +673,17 @@ class FogWorker {
     return this.bitmap !== null;
   }
 
-  draw(ctx: CanvasRenderingContext2D): void {
-    if (this.bitmap) {
-      ctx.drawImage(this.bitmap, 0, 0);
-    }
+  draw(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+    if (!this.bitmap) return;
+    // Explicit destination size. Without it, the bitmap from before a resize is
+    // painted unscaled at the origin, which leaves a bright unfogged band across
+    // the new area on every phone rotation.
+    ctx.drawImage(this.bitmap, 0, 0, width, height);
+  }
+
+  /** True when a render was asked for and never answered. */
+  isStalled(now: number): boolean {
+    return this.pendingRender && now - this.pendingSince > 500;
   }
 
   private postRevealMap(data: Float32Array): void {
@@ -687,7 +750,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     ["toast", toast, HTMLElement],
     ["tooltip", tooltip, HTMLElement],
     ["pickupRing", pickupRing, HTMLCanvasElement],
-    ["homeBtn", homeBtn, HTMLButtonElement],
+    ["homeBtn", homeBtn, HTMLAnchorElement],
     ["resetBtn", resetBtn, HTMLButtonElement],
   ];
 
@@ -716,6 +779,28 @@ export function initVoidGame(options: GameInitOptions): () => void {
     _worldSeed = (_worldSeed * 1103515245 + 12345) & 0x7fffffff;
     return (_worldSeed % 10000) / 10000;
   }
+  // mulberry32. Math.imul and >>>0 throughout, so the sequence is bit-identical
+  // in all three engines. worldRandom itself is left alone: its (seed % 10000)
+  // only yields 10^4 values, but every existing seeded world depends on it.
+  function makeRng(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // crack n at a given url and depth is always the same crack
+  function fissureSeed(depth: number, index: number): number {
+    let h = Math.imul(pathSeed, 2654435761) >>> 0;
+    h = (h ^ Math.imul(depth + 1, 40503)) >>> 0;
+    h = (h ^ Math.imul(index + 1, 2246822519)) >>> 0;
+    return h >>> 0;
+  }
+
   function initWorldRandom(seed: number): void {
     _worldSeed = seed;
   }
@@ -810,6 +895,26 @@ export function initVoidGame(options: GameInitOptions): () => void {
   const tooltipPersonalityEl = tooltip.querySelector(".personality") as HTMLElement | null;
   const pickupRingCtx = pickupRing.getContext("2d");
 
+  // ── Reduced motion ──────────────────────────────────────────────────────
+  // This page had none, on a full-viewport 60fps simulation that a visitor
+  // arrives at by accident. Under `reduce` the world still exists and is still
+  // explorable: it simply stops moving on its own. Interaction wakes it, and it
+  // settles again once you stop. Nothing is removed.
+  const reduceMotionQuery =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : null;
+  let reduceMotion = reduceMotionQuery ? reduceMotionQuery.matches : false;
+  let quietFrames = 0;
+
+  function wakeForInteraction(): void {
+    quietFrames = 0;
+    if (reduceMotion && gameLoopId === null && !destroyed) {
+      lastFrameTimestamp = performance.now();
+      gameLoopId = requestAnimationFrame(gameLoop);
+    }
+  }
+
   // Pre-allocated collections
   const _protectedCells = new Set<number>();
   const _newCreatures: Creature[] = [];
@@ -835,6 +940,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
   let currentDepth = parseDepthFromPath();
   let holes: Hole[] = [];
   let fissures: Fissure[] = [];
+  /** frames since arriving at this depth; drives the fissure schedule */
+  let depthClock = 0;
   let monoliths: Monolith[] = [];
   let nests: Nest[] = [];
   let terrainFeatures: TerrainFeature[] = [];
@@ -953,6 +1060,22 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const dx = x2 - x1;
     const dy = y2 - y1;
     return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function pointToSegmentDistSq(
+    px: number, py: number, ax: number, ay: number, bx: number, by: number
+  ): number {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) {
+      const ex = px - ax, ey = py - ay;
+      return ex * ex + ey * ey;
+    }
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+    const ex = px - (ax + t * dx);
+    const ey = py - (ay + t * dy);
+    return ex * ex + ey * ey;
   }
 
   function pointToSegmentDist(
@@ -1598,6 +1721,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
     baseWidth: number;
     jaggedness: number;
     bounds: FissureBounds;
+    rng: () => number;
+    /** how much of the generated path has actually torn open */
+    grownCount: number;
+    tearTimer: number;
+    tearTarget: number;
+    tearAccum: number;
+    /** index on the parent this branch hangs off, so forks open behind the tip */
+    attachIndex: number;
 
     constructor(
       startX: number,
@@ -1605,14 +1736,21 @@ export function initVoidGame(options: GameInitOptions): () => void {
       direction: number,
       maxLength: number,
       width: number,
-      jaggedness: number | null = null
+      jaggedness: number | null = null,
+      rng: (() => number) | null = null
     ) {
-      this.segments = [{ x: startX, y: startY }];
+      this.rng = rng ?? Math.random;
+      this.segments = [{ x: startX, y: startY, width: width * 0.5, lit: 0, seen: 0 }];
       this.branches = [];
       this.direction = direction;
       this.maxLength = maxLength;
       this.baseWidth = width;
-      this.jaggedness = jaggedness ?? 0.3 + Math.random() * 0.5;
+      this.jaggedness = jaggedness ?? 0.3 + this.rng() * 0.5;
+      this.grownCount = 1;
+      this.tearTimer = 0;
+      this.tearTarget = 1;
+      this.tearAccum = 0;
+      this.attachIndex = 0;
       this.bounds = {
         minX: startX,
         maxX: startX,
@@ -1621,25 +1759,59 @@ export function initVoidGame(options: GameInitOptions): () => void {
       };
 
       this.generatePath();
+
+      // A crack seeded on the boundary frequently turned straight back out and
+      // terminated as a 2-6 segment stub welded to the edge of the screen, where
+      // no creature ever goes and no light ever reaches. Those stubs still
+      // counted against the cap, so most of the budget was invisible by
+      // construction. Re-roll the walk rather than keep one.
+      let attempts = 0;
+      while (this.segments.length < 12 && attempts++ < 3) {
+        this.segments.length = 1;
+        this.branches.length = 0;
+        this.direction = direction + (this.rng() - 0.5) * 1.4;
+        this.generatePath();
+      }
+
+      if (reduceMotion) {
+        // present and static: fully formed, permanently legible, no tearing
+        this.grownCount = this.segments.length;
+        for (const seg of this.segments) seg.seen = 1;
+      }
+
       this.computeBounds();
     }
 
     generatePath(): void {
       const taperStart = 0.7;
+      let reflections = 0;
 
       while (true) {
         const last = this.segments[this.segments.length - 1];
         const progress = (this.segments.length * 10) / this.maxLength;
 
-        this.direction += (Math.random() - 0.5) * this.jaggedness;
+        this.direction += (this.rng() - 0.5) * this.jaggedness;
 
-        const stepSize = 6 + Math.random() * 8;
-        const newX = last.x + Math.cos(this.direction) * stepSize;
-        const newY = last.y + Math.sin(this.direction) * stepSize;
+        const stepSize = 6 + this.rng() * 8;
+        let newX = last.x + Math.cos(this.direction) * stepSize;
+        let newY = last.y + Math.sin(this.direction) * stepSize;
 
-        if (newX < 0 || newX > W || newY < 0 || newY > H) {
-          break;
+        // A fracture that meets the edge of a slab turns and runs along it. It
+        // does not evaporate. Mirror the offending component and carry on.
+        if (newX < 4 || newX > W - 4) {
+          this.direction = Math.PI - this.direction;
+          reflections++;
+          newX = last.x + Math.cos(this.direction) * stepSize;
+          newY = last.y + Math.sin(this.direction) * stepSize;
+        } else if (newY < 4 || newY > H - 4) {
+          this.direction = -this.direction;
+          reflections++;
+          newX = last.x + Math.cos(this.direction) * stepSize;
+          newY = last.y + Math.sin(this.direction) * stepSize;
         }
+        newX = Math.max(4, Math.min(W - 4, newX));
+        newY = Math.max(4, Math.min(H - 4, newY));
+        if (reflections > 3) break;
 
         let segmentWidth = this.baseWidth;
         if (progress > taperStart) {
@@ -1649,20 +1821,23 @@ export function initVoidGame(options: GameInitOptions): () => void {
           segmentWidth *= 0.5 + this.segments.length * 0.2;
         }
 
-        this.segments.push({ x: newX, y: newY, width: segmentWidth });
+        this.segments.push({ x: newX, y: newY, width: segmentWidth, lit: 0, seen: 0 });
 
         const branchChance = progress > 0.2 && progress < 0.8 ? 0.06 : 0.02;
-        if (Math.random() < branchChance && this.branches.length < 3) {
+        if (this.rng() < branchChance && this.branches.length < 3) {
           const branchDir =
-            this.direction + (Math.random() > 0.5 ? 1 : -1) * (0.6 + Math.random() * 0.6);
+            this.direction + (this.rng() > 0.5 ? 1 : -1) * (0.6 + this.rng() * 0.6);
           const branch = new Fissure(
             newX,
             newY,
             branchDir,
-            this.maxLength * (0.25 + Math.random() * 0.2),
+            this.maxLength * (0.25 + this.rng() * 0.2),
             this.baseWidth * 0.6,
-            this.jaggedness * (0.8 + Math.random() * 0.4)
+            this.jaggedness * (0.8 + this.rng() * 0.4),
+            this.rng
           );
+          // a fork opens behind the leading tip, never ahead of it
+          branch.attachIndex = this.segments.length - 1;
           this.branches.push(branch);
         }
 
@@ -1702,65 +1877,129 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     draw(): void {
-      if (this.segments.length < 2) return;
-
-      let maxReveal = 0;
-      for (const seg of this.segments) {
-        const r = getLightAt(seg.x, seg.y);
-        if (r > maxReveal) maxReveal = r;
-        if (maxReveal > 0.3) break;
-      }
-      if (maxReveal < 0.05) return;
-
-      const alpha = Math.min(1, maxReveal * 1.2);
-
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.strokeStyle = `rgba(0, 0, 0, ${0.3 * alpha})`;
-      ctx.lineWidth = this.baseWidth + 3;
-      ctx.beginPath();
-      ctx.moveTo(this.segments[0].x + 1, this.segments[0].y + 1);
-      for (let i = 1; i < this.segments.length; i++) {
-        ctx.lineTo(this.segments[i].x + 1, this.segments[i].y + 1);
-      }
-      ctx.stroke();
-
-      ctx.strokeStyle = `rgba(2, 2, 5, ${0.9 * alpha})`;
-      ctx.lineWidth = this.baseWidth;
-      ctx.beginPath();
-      ctx.moveTo(this.segments[0].x, this.segments[0].y);
-      for (let i = 1; i < this.segments.length; i++) {
-        ctx.lineTo(this.segments[i].x, this.segments[i].y);
-      }
-      ctx.stroke();
-
-      if (this.baseWidth > 1.5) {
-        ctx.strokeStyle = `rgba(15, 10, 20, ${0.5 * alpha})`;
-        ctx.lineWidth = Math.max(0.5, this.baseWidth * 0.4);
-        ctx.beginPath();
-        ctx.moveTo(this.segments[0].x, this.segments[0].y);
-        for (let i = 1; i < this.segments.length; i++) {
-          ctx.lineTo(this.segments[i].x, this.segments[i].y);
+      const n = this.grownCount;
+      if (n < 2) {
+        for (const branch of this.branches) {
+          if (this.grownCount > branch.attachIndex) branch.draw();
         }
-        ctx.stroke();
+        return;
       }
+
+      if (_fsLevel.length < n) return;
+
+      // pass one: classify every segment. no allocation, no drawing.
+      let maxLevel = -1;
+      const tipStart = n - 3;
+      for (let i = 0; i < n; i++) {
+        const seg = this.segments[i];
+        // the newest segments are thin and faint, which is what sells a tear
+        const tipFade = i >= tipStart ? 0.35 + (i - tipStart) * 0.25 : 1;
+        const a = Math.max(Math.min(1, seg.lit * FISSURE_DIRECT), seg.seen * FISSURE_SCAR) * tipFade;
+        const lvl = a < 0.03 ? -1 : Math.min(FISSURE_LEVELS - 1, (Math.sqrt(a) * FISSURE_LEVELS) | 0);
+        _fsLevel[i] = lvl;
+        _fsWq[i] = Math.min(7, Math.round(seg.width * 2));
+        if (lvl > maxLevel) maxLevel = lvl;
+      }
+
+      if (maxLevel < 0) {
+        for (const branch of this.branches) {
+          if (this.grownCount > branch.attachIndex) branch.draw();
+        }
+        return;
+      }
+
+      // pass two: consecutive segments at the same level and width become one
+      // polyline, so a lit crack costs a handful of strokes rather than one per
+      // segment. light is a smooth field, so runs are long.
+      const layers = this.baseWidth > 1.5 ? 3 : 2;
+      for (let layer = 0; layer < layers; layer++) {
+        let i = 0;
+        while (i < n - 1) {
+          const lvl = _fsLevel[i];
+          if (lvl < 0) { i++; continue; }
+          let j = i;
+          while (j + 1 < n && _fsLevel[j + 1] === lvl && _fsWq[j + 1] === _fsWq[i]) j++;
+          if (j > i) this.strokeRun(i, j, layer, FISSURE_REPS[lvl], _fsWq[i] / 2);
+          i = j > i ? j : i + 1; // share the boundary vertex, no seam
+        }
+      }
+
+      // the chromatic split appears only where light actually falls, so the
+      // aberration tracks the creature rather than outlining the whole crack
+      ctx.globalCompositeOperation = "lighter";
+      let i = 0;
+      while (i < n - 1) {
+        const lvl = _fsLevel[i];
+        if (lvl < 4) { i++; continue; }
+        let j = i;
+        while (j + 1 < n && _fsLevel[j + 1] === lvl) j++;
+        if (j > i) this.strokeRun(i, j, 3, FISSURE_REPS[lvl], Math.max(0.5, this.baseWidth * 0.35));
+        i = j > i ? j : i + 1;
+      }
+      ctx.globalCompositeOperation = "source-over";
 
       for (const branch of this.branches) {
-        branch.draw();
+        if (this.grownCount > branch.attachIndex) branch.draw();
       }
+    }
+
+    /** One polyline, one stroke. Layer 3 is the chromatic pair. */
+    strokeRun(from: number, to: number, layer: number, a: number, w: number): void {
+      const segs = this.segments;
+
+      if (layer === 3) {
+        // cyan left, red right, matching the site's convention. cyan carries
+        // about four times the luminance of red on near-black, so equal alpha
+        // would make the red vanish entirely.
+        for (const [dx, colour, mul] of [
+          [-1, "0, 255, 255", 0.09],
+          [1, "255, 0, 0", 0.14],
+        ] as const) {
+          ctx.beginPath();
+          ctx.moveTo(segs[from].x + dx, segs[from].y);
+          for (let k = from + 1; k <= to; k++) ctx.lineTo(segs[k].x + dx, segs[k].y);
+          ctx.strokeStyle = `rgba(${colour}, ${a * mul})`;
+          ctx.lineWidth = w;
+          ctx.stroke();
+        }
+        return;
+      }
+
+      const off = layer === 0 ? 1 : 0;
+      ctx.beginPath();
+      ctx.moveTo(segs[from].x + off, segs[from].y + off);
+      for (let k = from + 1; k <= to; k++) ctx.lineTo(segs[k].x + off, segs[k].y + off);
+      if (layer === 0) {
+        ctx.strokeStyle = `rgba(0, 0, 0, ${a * 0.35})`;
+        ctx.lineWidth = w + 3;
+      } else if (layer === 1) {
+        // darker than the fog (10,10,10) and the floor (35,35,42): the crack has
+        // to be the darkest thing on screen
+        ctx.strokeStyle = `rgba(1, 1, 3, ${a * 0.95})`;
+        ctx.lineWidth = w;
+      } else {
+        // was rgba(15,10,20), the last off-palette violet in the fissure
+        ctx.strokeStyle = `rgba(6, 10, 14, ${a * 0.45})`;
+        ctx.lineWidth = Math.max(0.5, w * 0.4);
+      }
+      ctx.stroke();
     }
 
     getDistanceTo(x: number, y: number): number {
       if (!this.isNearBounds(x, y, 50)) return Infinity;
 
-      let minDist = Infinity;
-      for (let i = 1; i < this.segments.length; i++) {
+      // squared throughout: Math.hypot is variadic and overflow-safe, roughly an
+      // order of magnitude slower than sqrt, and this is the hottest walk here
+      let minSq = Infinity;
+      for (let i = 1; i < this.grownCount; i++) {
         const a = this.segments[i - 1];
         const b = this.segments[i];
-        const d = pointToSegmentDist(x, y, a.x, a.y, b.x, b.y);
-        if (d < minDist) minDist = d;
+        const dSq = pointToSegmentDistSq(x, y, a.x, a.y, b.x, b.y);
+        if (dSq < minSq) minSq = dSq;
       }
+      let minDist = minSq === Infinity ? Infinity : Math.sqrt(minSq);
       for (const branch of this.branches) {
+        if (this.grownCount <= branch.attachIndex) continue;
         const d = branch.getDistanceTo(x, y);
         if (d < minDist) minDist = d;
       }
@@ -1770,20 +2009,25 @@ export function initVoidGame(options: GameInitOptions): () => void {
     checkCollision(x: number, y: number): boolean {
       if (!this.isNearBounds(x, y)) return false;
 
-      const hitWidth = this.baseWidth + 2;
-      for (let i = 1; i < this.segments.length; i++) {
+      // only the torn-open part is solid: food must not be blocked by a crack
+      // that has not happened yet
+      const hitSq = (this.baseWidth + 2) ** 2;
+      for (let i = 1; i < this.grownCount; i++) {
         const a = this.segments[i - 1];
         const b = this.segments[i];
-        const d = pointToSegmentDist(x, y, a.x, a.y, b.x, b.y);
-        if (d < hitWidth) return true;
+        if (pointToSegmentDistSq(x, y, a.x, a.y, b.x, b.y) < hitSq) return true;
       }
       for (const branch of this.branches) {
+        if (this.grownCount <= branch.attachIndex) continue;
         if (branch.checkCollision(x, y)) return true;
       }
       return false;
     }
 
     update(): void {
+      this.tear();
+      this.sampleLight();
+
       for (const c of creatures) {
         if (c === heldCreature) continue;
 
@@ -1808,6 +2052,78 @@ export function initVoidGame(options: GameInitOptions): () => void {
           const proximity = 1 - d / fearRange;
           c.fear = Math.min(1, c.fear + proximity * 0.004 * (1 - c.stability * 0.5));
         }
+      }
+    }
+
+    /**
+     * The crack opens in lurches: a short burst of segments, then stillness.
+     * The whole path is generated up front, so this only advances how much of it
+     * exists. Geometry stays independent of frame timing and stays deterministic.
+     */
+    tear(): void {
+      if (reduceMotion) return;
+      if (this.grownCount >= this.segments.length) return;
+
+      if (this.tearTimer > 0) {
+        this.tearTimer--;
+        return;
+      }
+
+      if (this.grownCount >= this.tearTarget) {
+        this.tearTarget = Math.min(
+          this.segments.length,
+          this.grownCount + FISSURE_TEAR_BURST_MIN + Math.floor(this.rng() * FISSURE_TEAR_BURST_VAR)
+        );
+        this.tearAccum = 0;
+        // the tear emits its own faint light for the moment it happens: you
+        // glimpse the floor splitting, then the dark takes it back
+        const tip = this.segments[Math.max(0, this.grownCount - 1)];
+        addReveal(tip.x, tip.y, 34, 0.14);
+        return;
+      }
+
+      this.tearAccum++;
+      if (this.tearAccum >= FISSURE_TEAR_SEG_FRAMES) {
+        this.tearAccum = 0;
+        this.grownCount++;
+        if (this.grownCount >= this.tearTarget) {
+          const restScale = Math.max(0.45, 1 - currentDepth * 0.06);
+          this.tearTimer =
+            (FISSURE_REST_MIN + this.rng() * FISSURE_REST_VAR) * restScale;
+        }
+      }
+    }
+
+    /**
+     * Per-segment light, smoothed.
+     *
+     * The old draw sampled the single brightest point anywhere along the crack
+     * and applied that one alpha to all of it, so a 500px crack snapped in whole
+     * whenever a creature drifted near either end. Light is a spatial field: it
+     * belongs to each segment.
+     */
+    sampleLight(): void {
+      const n = this.grownCount;
+      if (n < 1) return;
+
+      if (_fsTarget.length < n) _fsTarget = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) _fsTarget[i] = getLightAt(this.segments[i].x, this.segments[i].y);
+
+      // getLightAt is nearest-cell on 8px cells while segments are 6-14px apart,
+      // so neighbours land in different cells and the crack beads. Blur the
+      // target, never the stored state: blurring state would let light diffuse
+      // along the crack over time and illuminate the far end, which is the exact
+      // failure being removed.
+      for (let i = 0; i < n; i++) {
+        const prev = _fsTarget[i > 0 ? i - 1 : 0];
+        const next = _fsTarget[i < n - 1 ? i + 1 : n - 1];
+        const t = 0.25 * prev + 0.5 * _fsTarget[i] + 0.25 * next;
+        const seg = this.segments[i];
+        // rises quickly, falls slowly: the dark gives it up reluctantly, and a
+        // slow fall also absorbs the reveal map's 6-frame staircase
+        const rate = t > seg.lit ? FISSURE_LIGHT_RISE : FISSURE_LIGHT_FALL;
+        seg.lit += (t - seg.lit) * rate;
+        if (seg.lit > seg.seen) seg.seen = seg.lit;
       }
     }
 
@@ -2824,8 +3140,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
           
           // Hunger urgency increases force - Linear curve so they act before starvation
           const urge = hunger * (0.08 + conscientiousness * 0.04);
-          fx += (dx / d) * urge;
-          fy += (dy / d) * urge;
+          // d is exactly 0 when a creature is standing on the food; 0/0 is NaN,
+          // and a NaN position never recovers: it draws nothing, reveals no fog,
+          // and quietly starves while still being counted
+          if (d > 1e-6) {
+            fx += (dx / d) * urge;
+            fy += (dy / d) * urge;
+          }
           this.seekingFood = true;
         }
       }
@@ -2897,7 +3218,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         
         // Repulsion (Personal Space)
         if (dSq < personalSpaceSq) {
-           const d = Math.sqrt(dSq);
+           const d = Math.sqrt(dSq) || 1e-6;
            // Smooth repulsion curve: (1 - d/r)
            const push = (1 - d / personalSpace) * 0.05; 
            fx -= (dx / d) * push;
@@ -2984,7 +3305,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const mdSq = mdx * mdx + mdy * mdy;
         
         if (mdSq < 16000) { // ~125px range
-           const md = Math.sqrt(mdSq);
+           const md = Math.sqrt(mdSq) || 1e-6;
            // Curiosity vs Fear equation
            // Curiosity: Openness + Extraversion (dampened by fear)
            // Wariness: Neuroticism + Fear
@@ -3047,6 +3368,15 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       this.x += this.vx;
       this.y += this.vy;
+
+      // Backstop. Any future divide-by-zero anywhere upstream lands here rather
+      // than becoming an invisible creature that starves over several minutes.
+      if (!Number.isFinite(this.x + this.y + this.vx + this.vy)) {
+        this.x = W / 2;
+        this.y = H / 2;
+        this.vx = 0;
+        this.vy = 0;
+      }
 
       // World Bounds (Bounce)
       const margin = 20;
@@ -3463,7 +3793,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // meant a newborn sat under the draw threshold and wore no fringe at all
       // for its first ten seconds, which is exactly the window someone is
       // looking. Only the arousal term scales with the body.
-      const split = 0.55 + arousal * 2.6 * (1 - this.trust * 0.45) * (size / 14);
+      // the arousal term is what makes the fringe shimmer frame to frame, which
+      // is close to a worst case for vestibular sensitivity across a full screen
+      const split = reduceMotion
+        ? 0.55
+        : 0.55 + arousal * 2.6 * (1 - this.trust * 0.45) * (size / 14);
 
       {
         ctx.save();
@@ -3876,6 +4210,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     holes = [];
     fissures = [];
+    depthClock = 0;
     monoliths = [];
     nests = [];
     foods = [];
@@ -3932,6 +4267,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     holes = [];
     fissures = [];
+    depthClock = 0;
     monoliths = [];
     nests = [];
     foods = [];
@@ -4147,8 +4483,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
         workerFogDirty = false;
       }
 
-      if (fogWorker.hasBitmap) {
-        fogWorker.draw(ctx);
+      // Watchdog. If a render was asked for and never answered, the worker is
+      // gone in a way that produced no error, and the stale bitmap below would
+      // otherwise keep drawing forever while everything reported healthy.
+      if (fogWorker.isStalled(performance.now())) {
+        console.warn("[void] fog worker stopped answering, falling back");
+        fogWorker.destroy();
+      } else if (fogWorker.hasBitmap) {
+        fogWorker.draw(ctx, W, H);
         return;
       }
     }
@@ -4392,13 +4734,26 @@ export function initVoidGame(options: GameInitOptions): () => void {
     return { w: dims.w, h: dims.h };
   }
 
+  // A hand-edited or bug-produced save could carry any number of creatures, and
+  // the four pairwise loops turn that into a locked tab. Clamp on the way in.
+  function clampSaveSize(data: { creatures?: unknown[] } | null): void {
+    if (data && Array.isArray(data.creatures) && data.creatures.length > CONFIG.MAX_CREATURES) {
+      data.creatures.length = CONFIG.MAX_CREATURES;
+    }
+  }
+
   function normalizeSaveData(raw: unknown): SaveData | null {
     if (!raw || typeof raw !== "object") return null;
     const data = raw as SaveDataEnvelope;
 
     if (data.version !== SAVE_SCHEMA_VERSION) {
+      // this used to drop the colony without a word, which is exactly the
+      // degraded-without-saying-so failure the site is trying to avoid
+      showToast("the void has changed shape");
       return null;
     }
+
+    clampSaveSize(data as { creatures?: unknown[] });
 
     if (typeof data.depth !== "number" || !Number.isInteger(data.depth) || data.depth < 0) {
       return null;
@@ -4606,6 +4961,74 @@ export function initVoidGame(options: GameInitOptions): () => void {
     return hit;
   }
 
+  /** Add light to the reveal map, through the worker when it owns it. */
+  function addReveal(x: number, y: number, radius: number, intensity: number): void {
+    if (fogWorker.isActive) {
+      fogWorker.addRevealPoints([{ x, y, radius, intensity }]);
+      workerFogDirty = true;
+      return;
+    }
+    if (!revealMap) return;
+
+    const cx = Math.floor(x / revealRes);
+    const cy = Math.floor(y / revealRes);
+    const r = Math.ceil(radius / revealRes);
+    const radiusSq = radius * radius;
+    const revealResSq = revealRes * revealRes;
+    const invRadius = 1 / radius;
+
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const gx = cx + dx;
+        const gy = cy + dy;
+        if (gx < 0 || gx >= revealW || gy < 0 || gy >= revealH) continue;
+        const distSq = (dx * dx + dy * dy) * revealResSq;
+        if (distSq >= radiusSq) continue;
+        const d = Math.sqrt(distSq);
+        const idx = gy * revealW + gx;
+        revealMap[idx] = Math.min(1, revealMap[idx] + (1 - d * invRadius) * intensity);
+      }
+    }
+    fogDirty = true;
+  }
+
+  /**
+   * Placement is deterministic and aimed at the interior. The old edge case
+   * seeded exactly on the boundary and let the walk wander, which is how most
+   * cracks ended up as stubs parked off-camera where light never reaches.
+   */
+  function spawnScheduledFissure(index: number): void {
+    const rng = makeRng(fissureSeed(currentDepth, index));
+
+    const tx = W * (0.22 + rng() * 0.56);
+    const ty = H * (0.22 + rng() * 0.56);
+
+    let x: number, y: number, dir: number;
+
+    // only holes[0] comes from the seeded spawn, so anchoring to any other would
+    // break determinism. radiating from the original wound reads better anyway.
+    if (holes.length > 0 && rng() < 0.45) {
+      const hole = holes[0];
+      const a = rng() * Math.PI * 2;
+      const d = hole.radius + 12 + rng() * 24;
+      x = hole.x + Math.cos(a) * d;
+      y = hole.y + Math.sin(a) * d;
+      dir = a + (rng() - 0.5) * 0.6;
+    } else {
+      const e = Math.floor(rng() * 4);
+      if (e === 0) { x = 2; y = rng() * H; }
+      else if (e === 1) { x = W - 2; y = rng() * H; }
+      else if (e === 2) { x = rng() * W; y = 2; }
+      else { x = rng() * W; y = H - 2; }
+      dir = Math.atan2(ty - y, tx - x) + (rng() - 0.5) * 0.6;
+    }
+
+    const depthScale = 1 + currentDepth * 0.12;
+    const maxLength = (220 + rng() * 340) * depthScale;
+    const width = (1.2 + rng() * 1.8) * (1 + currentDepth * 0.08);
+    fissures.push(new Fissure(x, y, dir, maxLength, width, null, rng));
+  }
+
   function createRipple(x: number, y: number): void {
     for (let i = 0; i < 8 && particles.length < CONFIG.MAX_PARTICLES; i++) {
       const p = new Particle(x, y, "ripple", 200);
@@ -4675,8 +5098,17 @@ export function initVoidGame(options: GameInitOptions): () => void {
   // ============================================================================
 
   function update(deltaMs: number): void {
+    // Under reduced motion nothing ambient may drift. Dropping these also lets
+    // the loop actually reach a resting state: while particles exist the world
+    // is legitimately still animating and must keep drawing.
+    if (reduceMotion && (particles.length > 0 || emotes.length > 0)) {
+      particles.length = 0;
+      emotes.length = 0;
+    }
+
     if (destroyed) return;
     time++;
+    depthClock++;
 
     if (mouse.down && !heldCreature) {
       mouse.holdTime += deltaMs;
@@ -4793,38 +5225,17 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
     }
 
+    // Cracks arrive on a clock, not on a dice roll, so a visitor reads them as a
+    // sequence: the floor is intact when you land, then it starts to fail, and
+    // it fails faster the deeper you are.
     if (currentDepth >= 2) {
-      const fissureChance = 0.0003 * currentDepth;
       const maxFissures = Math.min(currentDepth + 2, 8);
-
-      if (Math.random() < fissureChance && fissures.length < maxFissures) {
-        let x: number, y: number, dir: number;
-
-        const fromHole = holes.length > 0 && Math.random() < 0.4;
-
-        if (fromHole) {
-          const hole = holes[Math.floor(Math.random() * holes.length)];
-          const angle = Math.random() * Math.PI * 2;
-          const d = hole.radius + 15 + Math.random() * 30;
-          x = hole.x + Math.cos(angle) * d;
-          y = hole.y + Math.sin(angle) * d;
-          dir = angle + (Math.random() - 0.5) * 1.2;
-        } else {
-          const edge = Math.floor(Math.random() * 4);
-          if (edge === 0) { x = 0; y = Math.random() * H; dir = 0; }
-          else if (edge === 1) { x = W; y = Math.random() * H; dir = Math.PI; }
-          else if (edge === 2) { x = Math.random() * W; y = 0; dir = Math.PI / 2; }
-          else { x = Math.random() * W; y = H; dir = -Math.PI / 2; }
-          dir += (Math.random() - 0.5) * 0.8;
-        }
-
-        const depthScale = 1 + currentDepth * 0.12;
-        const maxLength = (180 + Math.random() * 350) * depthScale;
-        const width = (1.2 + Math.random() * 1.8) * (1 + currentDepth * 0.08);
-
-        if (x >= 0 && x <= W && y >= 0 && y <= H) {
-          fissures.push(new Fissure(x, y, dir, maxLength, width));
-        }
+      const interval = Math.max(300, 1500 - currentDepth * 150);
+      if (
+        fissures.length < maxFissures &&
+        depthClock >= FISSURE_FIRST_DELAY + fissures.length * interval
+      ) {
+        spawnScheduledFissure(fissures.length);
       }
     }
 
@@ -4836,9 +5247,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       respawnPending = true;
       fadingToBlack = true;
       scheduleTimeout(() => {
+        // this used to live inside the guard, so a birth landing in the same
+        // tick left the world fading to black permanently
+        fadingToBlack = false;
         if (creatures.length === 0) {
           resetFog();
-          fadingToBlack = false;
           creatures.push(new Creature(W / 2, H * 0.28));
           showToast("another wanders in");
         }
@@ -4914,16 +5327,71 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (destroyed || !pickupRingCtx) return;
 
     if (rightClickTarget && !rightClickTarget.isDead && pickupProgress > 0 && !heldCreature) {
-      pickupRing.style.opacity = "1";
-      pickupRing.style.left = rightClickTarget.x - 30 + "px";
-      pickupRing.style.top = rightClickTarget.y - 30 + "px";
+      const SIZE = 60;
+      const HALF = SIZE / 2;
 
-      pickupRingCtx.clearRect(0, 0, 60, 60);
-      pickupRingCtx.strokeStyle = "rgba(255, 200, 150, 0.6)";
-      pickupRingCtx.lineWidth = 2;
+      // the backing store was a flat 60x60 regardless of the display, so on any
+      // phone or retina panel this arc was drawn at a third of the resolution it
+      // was shown at. size it to the device, then work in css pixels.
+      const dpr = Math.min(3, window.devicePixelRatio || 1);
+      const backing = Math.round(SIZE * dpr);
+      if (pickupRing.width !== backing) {
+        pickupRing.width = backing;
+        pickupRing.height = backing;
+        pickupRing.style.width = SIZE + "px";
+        pickupRing.style.height = SIZE + "px";
+      }
+
+      pickupRing.style.opacity = "1";
+      pickupRing.style.left = rightClickTarget.x - HALF + "px";
+      pickupRing.style.top = rightClickTarget.y - HALF + "px";
+
+      pickupRingCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      pickupRingCtx.clearRect(0, 0, SIZE, SIZE);
+
+      const p = Math.min(1, pickupProgress);
+      const r = 24;
+      const start = -Math.PI / 2;
+      const end = start + p * Math.PI * 2;
+
+      // the two channels start apart and converge as the hold completes, so
+      // lifting a creature reads as bringing it into focus. same grammar the
+      // creature's own body speaks when it settles.
+      const split = 0.075 * (1 - p) + 0.006;
+
+      // the track it has yet to travel
+      pickupRingCtx.strokeStyle = "rgba(245, 245, 245, 0.10)";
+      pickupRingCtx.lineWidth = 1;
       pickupRingCtx.beginPath();
-      pickupRingCtx.arc(30, 30, 25, -Math.PI / 2, -Math.PI / 2 + pickupProgress * Math.PI * 2);
+      pickupRingCtx.arc(HALF, HALF, r, 0, Math.PI * 2);
       pickupRingCtx.stroke();
+
+      pickupRingCtx.lineCap = "round";
+      pickupRingCtx.lineWidth = 2;
+      // light adds, so where the two arcs finally overlap they resolve to white
+      pickupRingCtx.globalCompositeOperation = "lighter";
+
+      pickupRingCtx.strokeStyle = `rgba(0, 224, 232, ${0.5 + p * 0.4})`;
+      pickupRingCtx.beginPath();
+      pickupRingCtx.arc(HALF, HALF, r, start - split, end - split);
+      pickupRingCtx.stroke();
+
+      pickupRingCtx.strokeStyle = `rgba(255, 74, 96, ${0.5 + p * 0.4})`;
+      pickupRingCtx.beginPath();
+      pickupRingCtx.arc(HALF, HALF, r, start + split, end + split);
+      pickupRingCtx.stroke();
+
+      // the moment it closes, the aperture blooms once
+      if (p > 0.92) {
+        const bloom = (p - 0.92) / 0.08;
+        pickupRingCtx.strokeStyle = `rgba(255, 255, 255, ${bloom * 0.5})`;
+        pickupRingCtx.lineWidth = 1 + bloom * 1.5;
+        pickupRingCtx.beginPath();
+        pickupRingCtx.arc(HALF, HALF, r, 0, Math.PI * 2);
+        pickupRingCtx.stroke();
+      }
+
+      pickupRingCtx.globalCompositeOperation = "source-over";
     } else {
       pickupRing.style.opacity = "0";
     }
@@ -5004,6 +5472,24 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     update(deltaMs);
     draw();
+
+    // Under reduced motion the world settles rather than running forever. It
+    // keeps stepping while anything is actually happening, then parks on a
+    // static frame until the next interaction wakes it.
+    if (reduceMotion) {
+      const busy =
+        mouse.down ||
+        mouse.rightDown ||
+        heldCreature !== null ||
+        particles.length > 0 ||
+        emotes.length > 0;
+      quietFrames = busy ? 0 : quietFrames + 1;
+      if (quietFrames > 60) {
+        gameLoopId = null;
+        return;
+      }
+    }
+
     gameLoopId = requestAnimationFrame(gameLoop);
   }
 
@@ -5302,14 +5788,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
     mouse.tappedHole = null;
   }, { signal });
 
-  homeBtn.addEventListener("click", () => {
-    window.location.href = "/";
-  }, { signal });
+  // the anchor carries its own href, so no click handler is needed: it works
+  // with javascript broken, middle-click, and shows its target in the status bar
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      window.location.href = "/";
-    }
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    const active = document.activeElement;
+    // only yield to places where escape already means something; a focused
+    // link or button should still let you leave
+    if (active instanceof HTMLElement && active.closest("input, textarea, select, [contenteditable]")) return;
+    window.location.href = "/";
   }, { signal });
 
   resetBtn.addEventListener("click", () => {
@@ -5318,13 +5806,62 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
   }, { signal });
 
-  document.addEventListener("contextmenu", (e) => e.preventDefault(), { signal });
+  // scoped to the canvas: suppressing this document-wide also killed the
+  // context menu on the exit link and the path text
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault(), { signal });
+
+  // any genuine interaction wakes a settled world back up
+  for (const evt of ["pointerdown", "pointermove", "keydown", "touchstart", "wheel"] as const) {
+    document.addEventListener(evt, wakeForInteraction, { signal, passive: true });
+  }
+
+  if (reduceMotionQuery) {
+    const onMotionPreferenceChange = (e: MediaQueryListEvent): void => {
+      reduceMotion = e.matches;
+      // turning the preference off mid-session must not leave a parked loop
+      wakeForInteraction();
+    };
+    if (typeof reduceMotionQuery.addEventListener === "function") {
+      reduceMotionQuery.addEventListener("change", onMotionPreferenceChange, { signal });
+    }
+  }
+
+  // A press that ends outside the window never produced a mouseup, so a held
+  // creature followed the cursor forever and the food tap never closed. There is
+  // also no reason for the flock to keep orbiting a pointer that has left.
+  function releaseAllInput(): void {
+    mouse.down = false;
+    mouse.rightDown = false;
+    mouse.holdTime = 0;
+    mouse.rightHoldTime = 0;
+    pickupProgress = 0;
+    rightClickTarget = null;
+    if (heldCreature) {
+      heldCreature.putdown();
+      heldCreature = null;
+    }
+  }
+
+  window.addEventListener("blur", releaseAllInput, { signal });
+  document.addEventListener("pointercancel", releaseAllInput, { signal });
+  document.addEventListener("mouseleave", () => {
+    releaseAllInput();
+    mouse.x = -100;
+    mouse.y = -100;
+  }, { signal });
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      fogCanvas = null;
-      fogDirty = true;
+    if (document.hidden) {
+      releaseAllInput();
+      // ios and android drop backgrounded tabs without warning, and the interval
+      // save is 400 frames apart
+      save(true);
+      return;
     }
+    // only throw the fog canvas away when we are actually rasterising on the
+    // main thread; with a healthy worker this forced a needless full reallocation
+    if (!fogWorker.isActive) fogCanvas = null;
+    fogDirty = true;
   }, { signal });
 
   // ============================================================================
@@ -5360,21 +5897,39 @@ export function initVoidGame(options: GameInitOptions): () => void {
     spawnStructures(true);
   }
 
-  const handleBeforeUnload = (): void => {
-    cleanup();
+  // Lifecycle.
+  //
+  // `beforeunload` used to tear the whole game down. Chromium keeps the page in
+  // the back/forward cache anyway, so pressing Back restored a document whose
+  // listeners were aborted, whose loop was cancelled and whose worker was gone:
+  // a frozen frame with no way off it. Gecko and WebKit only escaped that
+  // because `beforeunload` disables their bfcache, so they reloaded by accident.
+  //
+  // Now: always persist, and only destroy when the page is genuinely going away.
+  const handlePageHide = (e: PageTransitionEvent): void => {
+    save(true);
+    if (!e.persisted) cleanup();
   };
-  const handlePageHide = (): void => {
-    cleanup();
+
+  // Coming back from the bfcache: the document is intact, the loop is not.
+  const handlePageShow = (e: PageTransitionEvent): void => {
+    if (!e.persisted || !destroyed) return;
+    // the world we saved on the way out is still on disk; the cheapest correct
+    // resume is a fresh init over the same canvas
+    void initVoidGame(options);
   };
 
   // Cleanup function
   function cleanup(): void {
     if (destroyed) return;
+    // cleanup used to cancel the pending idle save on its way out, so closing
+    // the tab discarded the most recent state by design
+    try { save(true); } catch { /* storage refused; nothing more we can do */ }
     destroyed = true;
 
     eventAbortController.abort();
-    window.removeEventListener("beforeunload", handleBeforeUnload);
     window.removeEventListener("pagehide", handlePageHide);
+    window.removeEventListener("pageshow", handlePageShow);
     clearPendingAsyncTasks();
 
     if (gameLoopId !== null) {
@@ -5390,9 +5945,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
   }
 
-  // No signal - these trigger cleanup which calls abort()
-  window.addEventListener("beforeunload", handleBeforeUnload);
+  // No signal: these outlive the AbortController on purpose
   window.addEventListener("pagehide", handlePageHide);
+  window.addEventListener("pageshow", handlePageShow);
 
   activeVoidGameCleanup = cleanup;
   lastFrameTimestamp = performance.now();

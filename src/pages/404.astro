@@ -60,7 +60,13 @@
         font-family: var(--font-body);
         /* Use native cursor - custom cursor was laggy */
         cursor: auto;
+        /* unprefixed user-select is Safari 17.4+, and long-press is the pickup
+           gesture here, so without these iOS 17 and earlier pop the selection
+           magnifier in the middle of picking a creature up */
+        -webkit-user-select: none;
         user-select: none;
+        -webkit-touch-callout: none;
+        overscroll-behavior: none;
       }
 
       #game {
@@ -68,6 +74,10 @@
         position: fixed;
         top: 0;
         left: 0;
+        /* the canvas owns its gestures: no pinch zoom, no double-tap zoom, no
+           rubber-band while dragging a creature */
+        touch-action: none;
+        overscroll-behavior: none;
       }
 
       #title {
@@ -95,7 +105,8 @@
         font-size: clamp(9px, 0.5vw + 7px, 11px);
         letter-spacing: clamp(6px, 1vw + 2px, 10px);
         text-transform: uppercase;
-        color: rgba(245, 245, 245, 0.14);
+        /* was 0.14, about 1.7:1. --opacity-text-floor is the 4.5:1 mark. */
+        color: rgba(245, 245, 245, 0.47);
         font-family: var(--font-casual);
       }
       #lost-path {
@@ -103,9 +114,10 @@
         bottom: clamp(60px, 10vw, 70px);
         left: 50%;
         transform: translateX(-50%);
-        font-size: clamp(8px, 0.4vw + 6px, 9px);
+        font-size: clamp(9px, 0.4vw + 7px, 11px);
         letter-spacing: clamp(1px, 0.3vw + 0.5px, 2px);
-        color: rgba(245, 245, 245, 0.12);
+        /* this is the line that says which page failed. it was 1.6:1. */
+        color: rgba(245, 245, 245, 0.55);
         pointer-events: none;
         z-index: 40;
         max-width: min(300px, 80vw);
@@ -124,6 +136,7 @@
         border: 1px solid var(--color-border);
         border-radius: 6px;
         padding: 8px 12px;
+        -webkit-backdrop-filter: blur(4px);
         backdrop-filter: blur(4px);
         min-width: 100px;
       }
@@ -187,12 +200,19 @@
       }
 
       #home {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
         position: fixed;
-        bottom: clamp(16px, 3vw, 24px);
+        /* viewport-fit=cover is set, so without env() this lands under the
+           gesture bar on every modern iPhone. #controls already does this. */
+        bottom: max(clamp(16px, 3vw, 24px), env(safe-area-inset-bottom));
         left: 50%;
         transform: translateX(-50%);
         background: transparent;
-        color: rgba(245, 245, 245, 0.25);
+        /* the only way out of the page: it was 2.6:1 */
+        color: rgba(245, 245, 245, 0.62);
         font-family: inherit;
         font-size: clamp(8px, 0.5vw + 6px, 9px);
         letter-spacing: clamp(2px, 0.5vw + 1px, 4px);
@@ -224,11 +244,14 @@
               rgb(var(--chromatic-red) / var(--chromatic-opacity));
         }
       }
-      #home:focus {
-        outline: none;
-        color: rgba(245, 245, 245, 0.6);
-        border-color: rgba(245, 245, 245, 0.3);
-        background: rgba(255, 255, 255, 0.02);
+      /* :focus-visible, not :focus, so it does not fire on a click; and a real
+         ring rather than an alpha nudge nobody can perceive on near-black */
+      #home:focus-visible,
+      #controls button:focus-visible {
+        outline: 2px solid rgb(var(--chromatic-cyan) / 0.5);
+        outline-offset: 2px;
+        color: rgba(245, 245, 245, 0.85);
+        background: rgba(255, 255, 255, 0.03);
       }
 
       #controls {
@@ -240,7 +263,7 @@
       #controls button {
         background: transparent;
         border: 1px solid var(--color-border);
-        color: rgba(245, 245, 245, 0.2);
+        color: rgba(245, 245, 245, 0.47);
         /* Touch-friendly minimum size */
         padding: clamp(6px, 1vw, 10px) clamp(10px, 1.5vw, 14px);
         min-height: 44px;
@@ -266,7 +289,11 @@
     </style>
   </head>
   <body>
-    <canvas id="game"></canvas>
+    <canvas
+      id="game"
+      role="img"
+      aria-label="An animated field of small creatures drifting in darkness."
+    ></canvas>
 
     <div id="title">
       <h1>404</h1>
@@ -284,8 +311,8 @@
     <canvas id="pickup-ring" width="60" height="60"></canvas>
 
     <div id="lost-path"></div>
-    <div id="toast"></div>
-    <button id="home">go back home</button>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <a id="home" href="/">go back home</a>
 
     <div id="controls">
       <button id="btn-reset">reset</button>
@@ -315,7 +342,7 @@
       const toast = getRequiredElement("toast", HTMLElement);
       const tooltip = getRequiredElement("creature-tooltip", HTMLElement);
       const pickupRing = getRequiredElement("pickup-ring", HTMLCanvasElement);
-      const homeBtn = getRequiredElement("home", HTMLButtonElement);
+      const homeBtn = getRequiredElement("home", HTMLAnchorElement);
       const resetBtn = getRequiredElement("btn-reset", HTMLButtonElement);
 
       if (
