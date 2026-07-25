@@ -10,7 +10,10 @@ const seo = {
 ---
 
 <Layout seo={seo}>
-  <main class="descent" id="descent">
+  {/* a section, not a main: the layout already provides the main landmark and
+      the html spec allows exactly one, never nested. */}
+  <section class="descent" id="descent" aria-labelledby="descent-title">
+    <h1 id="descent-title" class="sr-only">The Descent: the dimensional tower of codecs</h1>
     <div class="descent__bar" aria-hidden="true"></div>
 
     <!-- ═══ Act 0 — The Surface ═══ -->
@@ -233,7 +236,7 @@ const seo = {
         by geometry.</span
       >
     </section>
-  </main>
+  </section>
 </Layout>
 
 <style is:global>

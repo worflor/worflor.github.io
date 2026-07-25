@@ -6,6 +6,7 @@
   "include": [".astro/types.d.ts", "**/*"],
   "exclude": [
     "dist",
+    "tools/**/*",
     "rag_tests/**/*",
     "scripts/**/*",
     "projects/**/*",

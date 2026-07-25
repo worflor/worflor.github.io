@@ -2,9 +2,9 @@
 import type { Project } from "../types/config";
 import { parseMarkdown } from "../utils/helpers";
 
-type Props = Project;
+type Props = Project & { index?: number };
 
-const { title, description, url, status } = Astro.props;
+const { title, description, url, status, index = 0 } = Astro.props;
 const isExternal = /^https?:\/\//.test(url);
 const statusLabel = status === "closed-dev-alpha" ? "closed dev alpha" : "concept";
 
@@ -16,7 +16,7 @@ const restHtml = restRaw.length ? parseMarkdown(restRaw.join("<br>").trim()) : "
 const restId = `concept-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
 ---
 
-<div class:list={["concept-card interactive stagger-in", { "is-expandable": restHtml }]}>
+<div class:list={["concept-card interactive stagger-in", { "is-expandable": restHtml }]} style={`--stagger-i:${index}`}>
   {restHtml ? (
     <>
       <button

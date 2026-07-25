@@ -1,0 +1,316 @@
+---
+/**
+ * Artifact — the container every inline interactive thing lives in.
+ *
+ * The problem it solves: each tool on this site currently ships its own boot
+ * script, its own loading state, its own failure story and its own teardown, and
+ * several of them leak listeners across view transitions. An OpenUSD viewer, a
+ * Unity build or a WebGL scene would each arrive with the same needs again.
+ *
+ * The contract:
+ *   - nothing loads until the artifact is close to the viewport, so a page with
+ *     six of them costs six placeholders rather than six engines
+ *   - the module is only imported once, and only if the browser can actually run
+ *     it. `requires` is checked before a single byte is fetched
+ *   - every state is a real state with markup: idle, loading, ready, error,
+ *     unsupported. No spinner that lies
+ *   - teardown is guaranteed on astro:before-swap, so leaving the page stops the
+ *     render loop, releases the GPU context and drops the listeners
+ *   - the visitor can always opt out. Nothing heavy starts on a metered
+ *     connection or under prefers-reduced-data unless they press the button
+ *
+ * The module named by `src` is loaded with a dynamic import and should default
+ * export a function:
+ *
+ *   export default function mount(stage, ctx) {
+ *     // ctx: { signal, artifact, setStatus(text), reduceMotion }
+ *     return () => { ...teardown... }   // optional
+ *   }
+ *
+ * Usage:
+ *   <Artifact
+ *     title="Kizuna braid"
+ *     src="/src/scripts/artifacts/kizuna-braid.ts"
+ *     requires={["webgl2"]}
+ *     ratio="16 / 9"
+ *   />
+ */
+interface Props {
+  /** Accessible name for the region. */
+  title: string;
+  /** Module specifier passed to import(). Omit for a purely declarative stage. */
+  src?: string;
+  /** Capabilities that must exist before anything is fetched. */
+  requires?: Array<"webgl" | "webgl2" | "webgpu" | "wasm" | "worker" | "offscreen" | "pointer">;
+  /** Aspect ratio for the stage box, so nothing reflows when the thing loads. */
+  ratio?: string;
+  /** Wait for a press instead of booting on approach. */
+  manual?: boolean;
+  /** Root margin for the intersection observer. */
+  rootMargin?: string;
+  /** One line explaining what this is, shown before it boots. */
+  caption?: string;
+  /**
+   * Handed to the mount function as ctx.params. This is how an artifact is told
+   * which asset to open, which is the difference between one viewer component
+   * and one component per model.
+   */
+  params?: Record<string, unknown>;
+  /**
+   * A still frame shown in the frame until the thing boots. A 3D stage that
+   * starts as an empty box reads as broken; starting as an image of the subject
+   * reads as loading.
+   */
+  poster?: string;
+  class?: string;
+  id?: string;
+}
+
+const {
+  title,
+  src,
+  requires = [],
+  ratio = "16 / 9",
+  manual = false,
+  rootMargin = "200px",
+  caption,
+  params,
+  poster,
+  class: className,
+  id,
+} = Astro.props;
+
+const stageId = id ?? `artifact-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
+---
+
+<figure
+  class:list={["artifact", className]}
+  id={stageId}
+  data-artifact
+  data-state="idle"
+  data-src={src}
+  data-requires={requires.join(" ")}
+  data-manual={manual ? "" : undefined}
+  data-root-margin={rootMargin}
+  data-params={params ? JSON.stringify(params) : undefined}
+  style={`--artifact-ratio: ${ratio}`}
+>
+  <div class="artifact-frame">
+    {poster && (
+      <img
+        class="artifact-poster"
+        src={poster}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        aria-hidden="true"
+      />
+    )}
+    <div class="artifact-stage" data-artifact-stage role="group" aria-label={title}></div>
+
+    <div class="artifact-overlay" data-artifact-overlay>
+      <p class="artifact-title">{title}</p>
+      {caption && <p class="artifact-caption">{caption}</p>}
+      <p class="artifact-message" data-artifact-message></p>
+      <button type="button" class="artifact-launch" data-artifact-launch hidden>
+        Load
+      </button>
+    </div>
+  </div>
+
+  {/* the running commentary a screen reader needs, and nobody else has to see */}
+  <p class="artifact-status" data-artifact-status role="status" aria-live="polite"></p>
+
+  {caption && <figcaption class="artifact-figcaption">{caption}</figcaption>}
+</figure>
+
+<style>
+  .artifact {
+    margin: var(--space-lg) 0;
+    container-type: inline-size;
+  }
+
+  .artifact-frame {
+    position: relative;
+    aspect-ratio: var(--artifact-ratio);
+    width: 100%;
+    overflow: hidden;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    border-radius: var(--radius-lg);
+    background: var(--color-bg);
+    background-image: var(--surface-sheen);
+    /* the box is reserved from first paint, so booting shifts nothing */
+    contain: layout paint;
+  }
+
+  .artifact-stage {
+    position: absolute;
+    inset: 0;
+    display: block;
+  }
+
+  .artifact-poster {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.35;
+    transition: opacity var(--duration-slow) var(--ease-out);
+  }
+
+  /* the poster stands down once the real thing is on stage */
+  .artifact[data-state="ready"] .artifact-poster {
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  .artifact-stage > :global(canvas),
+  .artifact-stage > :global(iframe),
+  .artifact-stage > :global(video) {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+
+  .artifact-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-xs);
+    padding: var(--space-md);
+    text-align: center;
+    transition: opacity var(--duration-slow) var(--ease-out);
+  }
+
+  /* once it is running the overlay stops existing for the pointer and the
+     screen reader both, rather than sitting invisible on top of the stage */
+  .artifact[data-state="ready"] .artifact-overlay {
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  .artifact-title {
+    margin: 0;
+    font-size: var(--text-lg);
+    color: rgb(var(--color-text-rgb) / var(--opacity-high));
+  }
+
+  .artifact-caption,
+  .artifact-message {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / var(--opacity-text-floor-aaa));
+    max-width: 34rem;
+  }
+
+  .artifact-message:empty {
+    display: none;
+  }
+
+  .artifact[data-state="error"] .artifact-message,
+  .artifact[data-state="unsupported"] .artifact-message {
+    color: rgb(var(--color-text-rgb) / var(--opacity-high));
+  }
+
+  .artifact-launch {
+    margin-top: var(--space-xs);
+    min-height: var(--touch-target);
+    padding: 0 var(--space-md);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.18);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-ui-sm);
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    touch-action: manipulation;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background-color var(--duration-normal) var(--ease-out);
+  }
+
+  .artifact-launch[hidden] {
+    display: none;
+  }
+
+  @media (hover: hover) {
+    .artifact-launch:hover {
+      border-color: rgb(var(--chromatic-cyan) / 0.4);
+      background: rgb(var(--color-text-rgb) / 0.04);
+    }
+  }
+
+  /* the loading tell is a single sweep along the top edge. it carries the site's
+     two channels rather than being a spinner, and it stops dead under
+     prefers-reduced-motion instead of spinning forever out of sight. */
+  .artifact[data-state="loading"] .artifact-frame::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 2px;
+    background: linear-gradient(
+      to right,
+      transparent,
+      var(--chromatic-fringe-cyan),
+      var(--chromatic-fringe-red),
+      transparent
+    );
+    animation: artifact-sweep 1.1s var(--ease-out) infinite;
+  }
+
+  @keyframes artifact-sweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(100%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .artifact[data-state="loading"] .artifact-frame::after {
+      animation: none;
+      opacity: 0.6;
+    }
+  }
+
+  .artifact-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .artifact-figcaption {
+    margin: var(--space-xs) 0 0;
+    font-size: var(--text-sm);
+    color: rgb(var(--color-text-rgb) / var(--opacity-text-floor-aaa));
+  }
+
+  /* the overlay already says everything the figcaption would before boot */
+  .artifact:not([data-state="ready"]) .artifact-figcaption {
+    display: none;
+  }
+
+  @media (forced-colors: active) {
+    .artifact-frame {
+      border-color: CanvasText;
+    }
+    .artifact[data-state="loading"] .artifact-frame::after {
+      background: CanvasText;
+    }
+  }
+</style>
+
+<script>
+  import { bootArtifacts } from "../scripts/artifact-host";
+  bootArtifacts();
+  document.addEventListener("astro:page-load", bootArtifacts);
+</script>

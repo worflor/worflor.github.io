@@ -77,5 +77,8 @@ real_audio_benchmark.json
 md-to-pdf.mjs
 *.patch
 
+# local cross-engine audit harness (playwright, baselines, reports)
+tools/audit/
+
 # sensitive docs
 protocol.md

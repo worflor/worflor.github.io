@@ -1,0 +1,13 @@
+---
+/**
+ * KaTeX's stylesheet, isolated so it travels with the pages that need it.
+ *
+ * Importing it in the shared layout put 23kb of equation typography into the
+ * stylesheet every single route downloads, to serve one post. Astro bundles a
+ * component's CSS into the pages that render that component, so gating on this
+ * component is enough: the styles follow the maths.
+ *
+ * Renders nothing.
+ */
+import "katex/dist/katex.min.css";
+---

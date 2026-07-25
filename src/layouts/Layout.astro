@@ -1,6 +1,7 @@
 ---
 import "../styles/global.css";
-import "katex/dist/katex.min.css";
+// katex's stylesheet used to live here and therefore in every route's css.
+// it now travels with MathStyles.astro, rendered only by posts containing maths.
 import { Image } from "astro:assets";
 import Icon from "../components/Icon.astro";
 import { ClientRouter } from "astro:transitions";
@@ -13,6 +14,11 @@ interface Props {
 
 const { seo } = Astro.props;
 const isContactPage = Astro.url.pathname === "/contact";
+
+// trailingSlash is "never", so pathnames arrive unadorned. normalise anyway so
+// a stray slash cannot silently drop the current-page marker.
+const currentPath = Astro.url.pathname.replace(/\/+$/, "") || "/";
+const isCurrent = (url: string) => (url.replace(/\/+$/, "") || "/") === currentPath;
 ---
 
 <script>
@@ -230,6 +236,9 @@ const isContactPage = Astro.url.pathname === "/contact";
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0A0A0A" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    {/* the body face is otherwise discovered only after the stylesheet parses,
+        which delays the first line of text on every cold visit */}
+    <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="manifest" href="/site.webmanifest" />
     {import.meta.env.PROD && (
       <script is:inline>
@@ -298,7 +307,7 @@ const isContactPage = Astro.url.pathname === "/contact";
       <div
         class="py-2 content-section flex items-center justify-between"
       >
-        <a href="/" transition:persist="logo" id="logo-link">
+        <a href="/" transition:persist="logo" id="logo-link" aria-current={isCurrent("/") ? "page" : undefined}>
           <Image
             src={identity.logo}
             alt={`${identity.name} - Home`}
@@ -311,18 +320,28 @@ const isContactPage = Astro.url.pathname === "/contact";
             transition:name="site-logo"
           />
         </a>
-        <span id="header-breadcrumb" class="flex items-center gap-[5px] ml-[10px] text-[length:var(--text-sm)] opacity-0 transition-opacity duration-300 overflow-hidden"></span>
-        <nav class="ml-auto mr-4 @sm:mr-0">
+        {/* the crumbs are buttons that jump to headings, so the strip is a
+            navigation region. both landmarks are named, otherwise a screen
+            reader announces two unlabelled navigations in one header. */}
+        <span id="header-breadcrumb" role="navigation" aria-label="On this page" class="flex items-center gap-[5px] ml-[10px] text-[length:var(--text-sm)] opacity-0 transition-opacity duration-300 overflow-hidden"></span>
+        <nav aria-label="Main" class="ml-auto mr-4 @sm:mr-0">
           {/* Desktop/Tablet nav - visible at @sm (480px+) for better tablet support */}
-          <ul class="absolute right-[clamp(1rem,4vw,1.5rem)] top-1/2 -translate-y-1/2 flex items-center gap-1 group opacity-0 pointer-events-none @sm:opacity-100 @sm:pointer-events-auto">
+          {/* invisible, not merely transparent: a control faded to zero still
+              takes a tab stop, so the desktop list was three phantom stops on a
+              phone. visibility:hidden removes it from sequential focus. */}
+          <ul class="absolute right-[clamp(1rem,4vw,1.5rem)] top-1/2 -translate-y-1/2 flex items-center gap-1 group invisible opacity-0 pointer-events-none @sm:visible @sm:opacity-100 @sm:pointer-events-auto">
             {
               navBarLinks.map((link) => (
                 <li>
+                  {/* .interactive already carries the resting opacity, the
+                      touch-target floor, the dim-siblings-on-hover rule and the
+                      pop back to full. no reason to restate it per link. */}
                   <a
-                    class="px-3 py-2.5 min-h-[var(--touch-target)] flex items-center rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100"
+                    class="interactive px-3 py-2.5 flex items-center rounded-lg"
                     href={link.url}
                     target={link.external ? "_blank" : "_self"}
                     rel={link.external ? "noopener noreferrer" : undefined}
+                    aria-current={isCurrent(link.url) ? "page" : undefined}
                   >
                     {link.title}
                   </a>
@@ -332,18 +351,19 @@ const isContactPage = Astro.url.pathname === "/contact";
             <li class="ml-1 relative">
               <a
                 href="/contact"
-                class="peer p-2.5 min-h-[var(--touch-target)] min-w-[var(--touch-target)] flex items-center justify-center rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100"
+                class="interactive peer p-2.5 min-w-[var(--touch-target)] flex items-center justify-center rounded-lg"
                 aria-label="Contact"
+                aria-current={isCurrent("/contact") ? "page" : undefined}
               >
                 <Icon name="mdi:message-outline" width={20} height={20} />
               </a>
-              <span class="casual surface-raised absolute top-full right-0 mt-2 px-3 py-1.5 text-[length:var(--text-sm)] text-[var(--color-text)]/60 bg-[var(--color-bg)]/90 border border-[var(--color-border)] rounded-md opacity-0 translate-y-1 peer-hover:opacity-100 peer-hover:translate-y-0 peer-focus-visible:opacity-100 peer-focus-visible:translate-y-0 pointer-events-none whitespace-nowrap transition-[opacity,transform] [transition-duration:var(--duration-slow)] [transition-timing-function:var(--ease-spring)] [transition-delay:var(--duration-normal)]">
+              <span class="casual-lazy surface-raised absolute top-full right-0 mt-2 px-3 py-1.5 text-[length:var(--text-sm)] text-[var(--color-text)]/60 bg-[var(--color-bg)]/90 border border-[var(--color-border)] rounded-md opacity-0 translate-y-1 peer-hover:opacity-100 peer-hover:translate-y-0 peer-focus-visible:opacity-100 peer-focus-visible:translate-y-0 pointer-events-none whitespace-nowrap transition-[opacity,transform] [transition-duration:var(--duration-slow)] [transition-timing-function:var(--ease-spring)] [transition-delay:var(--duration-normal)]">
                 Contact me
               </span>
             </li>
           </ul>
           {/* Mobile menu - only on small screens (below @sm/480px) */}
-          <details class="mobile-menu relative opacity-0 pointer-events-none @max-sm:opacity-100 @max-sm:pointer-events-auto">
+          <details class="mobile-menu relative invisible opacity-0 pointer-events-none @max-sm:visible @max-sm:opacity-100 @max-sm:pointer-events-auto">
             <summary class="mobile-menu-toggle relative p-3 min-h-[var(--touch-target)] min-w-[var(--touch-target)] flex items-center justify-center opacity-70 hover:opacity-100 cursor-pointer list-none [&::-webkit-details-marker]:hidden" aria-label="Toggle navigation menu">
               <span class="menu-indicator"></span>
             </summary>
@@ -352,10 +372,11 @@ const isContactPage = Astro.url.pathname === "/contact";
                 navBarLinks.map((link) => (
                   <li>
                     <a
-                      class="block px-4 py-3 min-h-[var(--touch-target)] rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 hover:bg-white/5 transition-[opacity,background-color] duration-200"
+                      class="interactive block px-4 py-3 rounded-lg hover:bg-white/5"
                       href={link.url}
                       target={link.external ? "_blank" : "_self"}
                       rel={link.external ? "noopener noreferrer" : undefined}
+                      aria-current={isCurrent(link.url) ? "page" : undefined}
                     >
                       {link.title}
                     </a>
@@ -364,8 +385,9 @@ const isContactPage = Astro.url.pathname === "/contact";
               }
               <li>
                 <a
-                  class="block px-4 py-3 min-h-[var(--touch-target)] rounded-lg opacity-70 group-has-[a:hover]:opacity-40 hover:!opacity-100 hover:bg-white/5 transition-[opacity,background-color] duration-200"
+                  class="interactive block px-4 py-3 rounded-lg hover:bg-white/5"
                   href="/contact"
+                  aria-current={isCurrent("/contact") ? "page" : undefined}
                 >
                   Contact me
                 </a>
@@ -375,12 +397,16 @@ const isContactPage = Astro.url.pathname === "/contact";
         </nav>
       </div>
     </header>
-    <main id="main" class="pb-16">
+    {/* tabindex allows the skip link to actually move focus here. without it
+        gecko sends the caret but leaves focus on the body. */}
+    <main id="main" class="pb-16" tabindex="-1">
       <slot />
     </main>
     <footer id="site-footer" class="border-t border-[var(--color-border)]" style="display: none;">
       <div class="content-section py-5 text-center">
-        <p class="text-[length:var(--text-sm)] opacity-25">Whisper Codec Stack | Patent Pending | <a href="https://github.com/worflor/worflor.github.io/blob/main/src/scripts/whisper/LICENSE.md" target="_blank" rel="noopener" class="underline-offset-2 hover:opacity-60 transition-opacity" title="License tl;dr: only for-profit companies need a license">License</a></p>
+        {/* the footnote still has to be readable: at opacity 0.25 this measured
+            2.1:1 against the page. --opacity-text-floor is the 4.5:1 mark. */}
+        <p class="text-[length:var(--text-sm)] opacity-[var(--opacity-text-floor)]">Whisper Codec Stack | Patent Pending | <a href="https://github.com/worflor/worflor.github.io/blob/main/src/scripts/whisper/LICENSE.md" target="_blank" rel="noopener" class="underline-offset-2 hover:opacity-100 transition-opacity" title="License tl;dr: only for-profit companies need a license">License</a></p>
       </div>
     </footer>
     <script is:inline data-astro-rerun>
@@ -394,6 +420,15 @@ const isContactPage = Astro.url.pathname === "/contact";
         var breadcrumb = document.getElementById('header-breadcrumb');
         if (!(header instanceof HTMLElement)) return;
         var headerH = header.offsetHeight;
+
+        // publish the measured height so scroll-padding-top can keep anchors
+        // and :target from landing underneath the sticky header
+        function publishHeaderHeight() {
+          headerH = header.offsetHeight;
+          document.documentElement.style.setProperty('--header-h', headerH + 'px');
+        }
+        publishHeaderHeight();
+
         var hideThreshold = headerH * 1.25;
         var lastScroll = window.scrollY;
         var hidePoint = 0;
@@ -431,27 +466,47 @@ const isContactPage = Astro.url.pathname === "/contact";
           breadcrumb.style.maxWidth = info.space + 'px';
         }
         applyBreadcrumbSize();
-        window.addEventListener('resize', applyBreadcrumbSize);
+        function onResize() {
+          publishHeaderHeight();
+          applyBreadcrumbSize();
+        }
+        window.addEventListener('resize', onResize);
+
+        // only write the style when the state actually flips. this used to run a
+        // style mutation on every scroll event regardless.
+        var headerShown = true;
+        function setHeaderShown(shown) {
+          if (shown === headerShown) return;
+          headerShown = shown;
+          header.style.transform = shown ? 'translateY(0)' : 'translateY(-100%)';
+        }
 
         function onScroll() {
           var scroll = window.scrollY;
           if (scroll < hideThreshold) {
-            header.style.transform = 'translateY(0)';
+            setHeaderShown(true);
           } else if (scroll > lastScroll) {
-            header.style.transform = 'translateY(-100%)';
+            setHeaderShown(false);
             hidePoint = scroll;
             if (mobileMenu instanceof HTMLDetailsElement) mobileMenu.open = false;
           } else if (hidePoint - scroll > hideThreshold) {
-            header.style.transform = 'translateY(0)';
+            setHeaderShown(true);
           }
           lastScroll = scroll;
         }
 
         window.addEventListener('scroll', onScroll, { passive: true });
 
+        // tabbing into a hidden header would otherwise put focus off screen.
+        // the header persists across view transitions while this script reruns,
+        // so the listener has to come off again in the cleanup below.
+        function onHeaderFocus() { setHeaderShown(true); }
+        header.addEventListener('focusin', onHeaderFocus);
+
         document.addEventListener('astro:before-swap', function cleanup() {
           window.removeEventListener('scroll', onScroll);
-          window.removeEventListener('resize', applyBreadcrumbSize);
+          window.removeEventListener('resize', onResize);
+          header.removeEventListener('focusin', onHeaderFocus);
           document.removeEventListener('astro:before-swap', cleanup);
         }, { once: true });
         // Pages with [data-breadcrumb-controller] manage their own breadcrumb
@@ -482,10 +537,12 @@ const isContactPage = Astro.url.pathname === "/contact";
             dot.className = 'crumb-sep' + (hideOnMobile ? ' mobile-hidden' : '');
             dot.setAttribute('aria-hidden', 'true');
 
-            var crumb = document.createElement('span');
+            // a real button rather than a span wearing role="button": native
+            // semantics bring enter/space, the correct role and focus handling
+            // without a hand-rolled keydown listener
+            var crumb = document.createElement('button');
+            crumb.type = 'button';
             crumb.className = 'crumb' + (hideOnMobile ? ' mobile-hidden' : '');
-            crumb.setAttribute('role', 'button');
-            crumb.setAttribute('tabindex', '0');
 
             var inner = document.createElement('span');
             inner.className = 'crumb-inner';
@@ -496,12 +553,6 @@ const isContactPage = Astro.url.pathname === "/contact";
             breadcrumb.appendChild(crumb);
 
             crumb.onclick = function() { scrollToHeading(c.el); };
-            crumb.onkeydown = function(e) {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                scrollToHeading(c.el);
-              }
-            };
           });
         }
 
@@ -526,12 +577,17 @@ const isContactPage = Astro.url.pathname === "/contact";
           });
         }
 
+        // the typewriter is motion. reduced-motion readers get the finished text.
+        var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
         function typeOut(crumbs) {
           if (typeTimer) clearInterval(typeTimer);
           var info = getAvailableSpace();
           buildCrumbDOM(crumbs, info.compact);
           breadcrumb.style.maxWidth = info.space + 'px';
           breadcrumb.style.opacity = 'var(--opacity-dim)';
+
+          if (reduceMotion.matches) { checkOverflow(); return; }
 
           var inners = Array.from(breadcrumb.querySelectorAll('.crumb-inner'));
           var texts = inners.map(function(el) { var t = el.textContent; el.textContent = ''; return t; });
@@ -551,6 +607,13 @@ const isContactPage = Astro.url.pathname === "/contact";
 
         function clearThenType(crumbs) {
           if (typeTimer) clearInterval(typeTimer);
+
+          if (reduceMotion.matches) {
+            if (crumbs.length) typeOut(crumbs);
+            else { breadcrumb.style.opacity = '0'; breadcrumb.innerHTML = ''; }
+            return;
+          }
+
           var inners = Array.from(breadcrumb.querySelectorAll('.crumb-inner'));
           var total = inners.reduce(function(a, el) { return a + el.textContent.length; }, 0);
           var i = total;
@@ -628,15 +691,41 @@ const isContactPage = Astro.url.pathname === "/contact";
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
-    overflow-y: scroll;
+    /* reserve the scrollbar track instead of forcing a scrollbar. classic
+       scrollbars (windows chromium and gecko) and overlay scrollbars (webkit)
+       otherwise disagree about the usable width by ~15px. */
+    scrollbar-gutter: stable;
+    /* anchors, :target and in-page jumps have to clear the sticky header.
+       --header-h is measured at runtime; the fallback covers first paint. */
+    scroll-padding-top: calc(var(--header-h, 4.25rem) + var(--space-sm));
+  }
+
+  @supports not (scrollbar-gutter: stable) {
+    html {
+      overflow-y: scroll;
+    }
+  }
+
+  /* colour is set once and then inherited. it used to be assigned by the
+     universal selector, which meant a dimmed parent could not pass its colour
+     down: every child, including svg currentColor, snapped back to full
+     brightness regardless of the component it sat in. */
+  html {
+    color: var(--color-text);
   }
 
   * {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    color: var(--color-text);
     scrollbar-width: thin;
     scrollbar-color: var(--color-border) transparent;
+  }
+
+  /* form controls opt out of inheritance by default, so they need it back.
+     :where() keeps this at zero specificity so components still win. */
+  :where(input, textarea, select, button, optgroup) {
+    color: inherit;
+    font-family: inherit;
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -695,10 +784,12 @@ const isContactPage = Astro.url.pathname === "/contact";
       transition-duration: var(--duration-instant);
     }
 
+    /* the fringe scales with the type it sits on and carries a hair of blur, so
+       it reads as an optical artefact rather than as two hard copies */
     &:hover {
       text-shadow:
-        calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)),
-        var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity));
+        calc(-1 * var(--chromatic-offset-text)) 0 var(--chromatic-blur) var(--chromatic-fringe-cyan),
+        var(--chromatic-offset-text) 0 var(--chromatic-blur) var(--chromatic-fringe-red);
     }
 
     &:has(svg) {
@@ -714,8 +805,8 @@ const isContactPage = Astro.url.pathname === "/contact";
 
       &:hover svg {
         filter:
-          drop-shadow(calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / var(--chromatic-opacity)))
-          drop-shadow(var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / var(--chromatic-opacity)));
+          drop-shadow(calc(-1 * var(--chromatic-offset-text)) 0 var(--chromatic-blur) var(--chromatic-fringe-cyan))
+          drop-shadow(var(--chromatic-offset-text) 0 var(--chromatic-blur) var(--chromatic-fringe-red));
       }
     }
   }
@@ -726,11 +817,15 @@ const isContactPage = Astro.url.pathname === "/contact";
     a:active & { transform: scale(var(--scale-active)); filter: brightness(0.95); }
   }
 
+  /* the ring is drawn with outline alone. it used to also set border-radius,
+     which reshaped the element itself the instant it took focus, and it used to
+     replace box-shadow outright, which erased the edge highlight on any raised
+     surface. surfaces now publish their shadow through --elevation so the ring
+     can compose with it instead of overwriting it. */
   :focus-visible {
     outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
     outline-offset: 3px;
-    border-radius: var(--radius-lg);
-    box-shadow: var(--glow-soft);
+    box-shadow: var(--elevation, 0 0 rgb(0 0 0 / 0)), var(--glow-soft);
     transition: outline-color var(--duration-normal) var(--ease-out), outline-offset var(--duration-normal) var(--ease-out), box-shadow var(--duration-normal) var(--ease-out);
   }
 
@@ -793,11 +888,13 @@ const isContactPage = Astro.url.pathname === "/contact";
 
   .card-hover {
     transition: transform var(--duration-normal) var(--ease-out), opacity var(--duration-normal) var(--ease-out), text-shadow var(--duration-normal) var(--ease-out), box-shadow var(--duration-normal) var(--ease-out);
-    will-change: transform;
 
+    /* no will-change here on purpose: transform and opacity are composited
+       anyway, and a standing hint held one layer per card for the whole page */
     &:hover {
+      --elevation: 0 8px 32px rgb(0 0 0 / 0.12);
       transform: scale(var(--scale-hover));
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+      box-shadow: var(--elevation);
     }
 
     &:active {
@@ -807,9 +904,12 @@ const isContactPage = Astro.url.pathname === "/contact";
     }
   }
 
+  /* --stagger-i is stamped per item by whichever component renders the list.
+     sibling-index() reads better but only chromium implements it, so gecko and
+     webkit dropped the declaration and landed every card at once. */
   .stagger-in {
     animation: fadeUp var(--duration-slow) var(--ease-spring) backwards;
-    animation-delay: calc(sibling-index() * var(--duration-instant));
+    animation-delay: calc(var(--stagger-i, 0) * var(--duration-instant));
   }
 
   @keyframes fadeUp {
@@ -893,6 +993,12 @@ const isContactPage = Astro.url.pathname === "/contact";
     .crumb-sep { flex-shrink: 0; opacity: var(--opacity-subtle); user-select: none; }
 
     .crumb {
+      appearance: none;
+      background: none;
+      border: 0;
+      padding: 0;
+      font: inherit;
+      color: inherit;
       flex: 0 0 auto;
       min-width: 2rem;
       overflow: hidden;
@@ -937,16 +1043,56 @@ const isContactPage = Astro.url.pathname === "/contact";
   }
 
   @media (prefers-reduced-motion: reduce) {
+    /* collapse motion at the source so anything token driven simply has no
+       duration. the blanket rule below stays as a backstop for utility classes
+       that hardcode their own timing. */
+    :root {
+      --duration-instant: 0ms;
+      --duration-fast: 0ms;
+      --duration-normal: 0ms;
+      --duration-slow: 0ms;
+    }
+
     html { scroll-behavior: auto; }
     *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
   }
 
   @media print {
-    header, nav, button, details { display: none; }
+    /* only the chrome goes. hiding every details element also took its content
+       with it, and hiding every button removed in-page controls that some pages
+       use to reveal copy. */
+    .site-header, .skip-link, .action-bar, .tool-actions-shell, #site-footer { display: none; }
+
+    html { color-scheme: light; }
     body { background: white; }
-    * { color: black !important; text-shadow: none !important; }
+
+    /* dark surfaces and inset shadows print as ink. flatten them, then set the
+       ink colour, or black text lands on a black card. */
+    *, *::before, *::after {
+      background: transparent !important;
+      background-image: none !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+      color: black !important;
+    }
+
     a { text-decoration: underline; }
+    a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; word-break: break-all; }
+
+    /* keep code and quotes distinguishable without their dark fills */
+    .prose :where(pre), .prose :where(blockquote), .prose :where(:not(pre) > code) {
+      border: 1px solid #999 !important;
+    }
+
     main { margin: 0; }
+
+    /* do not split a heading from what it introduces. the legacy properties
+       stay because webkit still honours those rather than the break-* set. */
+    h1, h2, h3, h4 { break-after: avoid-page; page-break-after: avoid; }
+    .prose :where(pre), .prose :where(table), figure {
+      break-inside: avoid-page;
+      page-break-inside: avoid;
+    }
   }
 
   ::view-transition-old(root),

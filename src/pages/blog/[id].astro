@@ -12,6 +12,7 @@ import {
   getComingSoonLabel,
 } from "../../utils/posts";
 import BlogPostCard from "../../components/BlogPostCard.astro";
+import MathStyles from "../../components/MathStyles.astro";
 
 export async function getStaticPaths() {
   const posts = await getCollection("posts");
@@ -43,6 +44,8 @@ const relatedPosts = getRelatedPosts(id as string, allPosts, resonanceIndex);
     image: entry.data.images[0].url,
   }}
 >
+  {/* equation typography rides along only with posts that hold equations */}
+  {remarkPluginFrontmatter.hasMath && <MathStyles />}
   <section class="mt-8 content-section">
     <h1 class="font-bold text-[length:var(--text-3xl)] mb-4">
       {entry.data.title}

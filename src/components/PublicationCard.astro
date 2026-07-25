@@ -2,9 +2,9 @@
 import type { Publication } from "../types/config";
 import { parseMarkdown } from "../utils/helpers";
 
-type Props = Publication;
+type Props = Publication & { index?: number };
 
-const { title, authors, arxivId, category, date, teaser } = Astro.props;
+const { title, authors, arxivId, category, date, teaser, index = 0 } = Astro.props;
 
 // every link derives from the id: hand it the arxiv id, get the rest for free.
 const absUrl = `https://arxiv.org/abs/${arxivId}`;
@@ -15,7 +15,7 @@ const meta = [authors, `arXiv:${arxivId}`, category, date].filter(Boolean).join(
 const teaserHtml = teaser ? parseMarkdown(teaser) : "";
 ---
 
-<article class="publication-card interactive stagger-in">
+<article class="publication-card interactive stagger-in" style={`--stagger-i:${index}`}>
   <div class="publication-header">
     <h3 class="publication-title">
       <a href={absUrl} target="_blank" rel="noopener noreferrer">{title}</a>

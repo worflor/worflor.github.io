@@ -46,8 +46,8 @@ const privateClusters = [
               <p class="section-subtitle">papers and other detours.</p>
             </div>
             <div class="publications-list">
-              {publications.map((pub) => (
-                <PublicationCard {...pub} />
+              {publications.map((pub, index) => (
+                <PublicationCard {...pub} index={index} />
               ))}
             </div>
           </section>
@@ -61,7 +61,7 @@ const privateClusters = [
           <div class="projects-shipped grid grid-cols-1 group">
             {
               shippedProjects.map((project, index) => (
-                <ProjectCard {...project} loading={getLoadingPriority(index)} />
+                <ProjectCard {...project} loading={getLoadingPriority(index)} index={index} />
               ))
             }
           </div>
@@ -74,8 +74,8 @@ const privateClusters = [
               <p class="section-subtitle">built to the edge of an idea, then set down till the tea comes.</p>
             </div>
             <div class="artifacts-list">
-              {artifacts.map((artifact) => (
-                <ArtifactCard {...artifact} />
+              {artifacts.map((artifact, index) => (
+                <ArtifactCard {...artifact} index={index} />
               ))}
             </div>
           </section>
@@ -90,8 +90,8 @@ const privateClusters = [
             <div class="private-tier">
               {privateClusters.map((cluster) => (
                 <div class="private-cluster group">
-                  {cluster.map((project) => (
-                    <ProjectCard {...project} variant="compact" />
+                  {cluster.map((project, index) => (
+                    <ProjectCard {...project} variant="compact" index={index} />
                   ))}
                 </div>
               ))}
@@ -107,8 +107,8 @@ const privateClusters = [
             <p class="section-subtitle">research stage. design first, code later.</p>
           </div>
           <div class="concepts-track group">
-            {conceptProjects.map((project) => (
-              <ConceptCard {...project} />
+            {conceptProjects.map((project, index) => (
+              <ConceptCard {...project} index={index} />
             ))}
           </div>
         </aside>

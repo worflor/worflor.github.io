@@ -5,9 +5,9 @@ import path from "node:path";
 import type { Project } from "../types/config";
 import { parseMarkdown } from "../utils/helpers";
 
-type Props = Project & { loading?: "eager" | "lazy"; variant?: "full" | "compact" };
+type Props = Project & { loading?: "eager" | "lazy"; variant?: "full" | "compact"; index?: number };
 
-const { title, description, image, month, year, url, github, status, loading = "lazy", variant = "full" } = Astro.props;
+const { title, description, image, month, year, url, github, status, loading = "lazy", variant = "full", index = 0 } = Astro.props;
 const isCompact = variant === "compact";
 const isExternal = /^https?:\/\//.test(url);
 
@@ -42,6 +42,7 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
   target={isExternal ? "_blank" : "_self"}
   rel={isExternal ? "noopener noreferrer" : undefined}
   aria-label={`View project: ${title}`}
+  style={`--stagger-i:${index}`}
   class:list={[
     "interactive stagger-in",
     isCompact

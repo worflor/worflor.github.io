@@ -2,9 +2,9 @@
 import type { ResearchArtifact } from "../types/config";
 import { parseMarkdown } from "../utils/helpers";
 
-type Props = ResearchArtifact;
+type Props = ResearchArtifact & { index?: number };
 
-const { title, subtitle, takeaway, parts, duality } = Astro.props;
+const { title, subtitle, takeaway, parts, duality, index = 0 } = Astro.props;
 
 const takeawayHtml = parseMarkdown(takeaway);
 const dualityHtml = parseMarkdown(duality);
@@ -12,7 +12,7 @@ const partsRendered = parts.map((p) => ({ ...p, html: parseMarkdown(p.blurb) }))
 const restId = `artifact-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
 ---
 
-<div class="artifact-card interactive stagger-in">
+<div class="artifact-card interactive stagger-in" style={`--stagger-i:${index}`}>
   <button
     type="button"
     class="artifact-toggle"

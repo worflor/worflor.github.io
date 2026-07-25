@@ -2,6 +2,8 @@ import { defineConfig } from "astro/config";
 import sitemap from "@astrojs/sitemap";
 import { remarkReadingTime } from "./src/plugins/remark-reading-time.ts";
 import { remarkResonance } from "./src/plugins/remark-resonance.ts";
+import { rehypeScrollableTables } from "./src/plugins/rehype-scrollable-tables.ts";
+import { remarkHasMath } from "./src/plugins/remark-has-math.ts";
 import tailwindcss from "@tailwindcss/vite";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -25,8 +27,9 @@ export default defineConfig({
   compressHTML: true,
 
   markdown: {
-    remarkPlugins: [remarkReadingTime, remarkResonance, remarkMath],
-    rehypePlugins: [[rehypeKatex, { output: "html" }]],
+    // remarkHasMath must follow remarkMath: it counts the nodes remarkMath creates
+    remarkPlugins: [remarkReadingTime, remarkResonance, remarkMath, remarkHasMath],
+    rehypePlugins: [[rehypeKatex, { output: "html" }], rehypeScrollableTables],
   },
 
   vite: {

@@ -65,11 +65,34 @@
   --touch-target: 2.75rem;
   /* 44px minimum for accessibility */
 
-  /* chromatic aberration */
+  /* chromatic aberration.
+     the base pair stays exactly as it was: fifty-odd rules read these triplets
+     and none of them should shift. */
   --chromatic-cyan: 0 255 255;
   --chromatic-red: 255 0 0;
   --chromatic-offset: 1px;
   --chromatic-opacity: 0.5;
+
+  /* the fringe pair, used only where the aberration is drawn on text and edges.
+     two upgrades over reading the base triplets directly:
+
+     1. the offset is em-relative. a real lens displaces more where the image is
+        larger, and a flat 1px meant a 9px caption wore the same fringe as an
+        80px title: chunky on one, invisible on the other.
+     2. the two sides are matched in luminance. srgb cyan sits at 0.79 relative
+        luminance and srgb red at 0.21, so the old pair read as a cyan glow with
+        a faint red shadow rather than as one split. same hues, balanced weight. */
+  /* clamped, not purely proportional. the floor keeps body copy exactly where it
+     already sat at a flat 1px, and the ceiling stops a display heading from
+     splitting into two words. only the middle of the range moves. */
+  --chromatic-offset-text: clamp(0.9px, 0.045em, 2.5px);
+  --chromatic-blur: 0.012em;
+  --chromatic-fringe-cyan: rgb(0 255 255);
+  --chromatic-fringe-red: rgb(255 0 0);
+
+  /* the same split, bled sideways under a floating surface */
+  --chromatic-bleed-cyan: rgb(0 255 255 / 0.055);
+  --chromatic-bleed-red: rgb(255 0 0 / 0.055);
 
   /* tool action accents (shared across Prism/Lens/Mirror/Radar) */
   --tool-action-run: var(--chromatic-cyan);
@@ -103,12 +126,25 @@
   --ease-out: ease-out;
   --ease-spring: cubic-bezier(0.22, 0.61, 0.36, 1);
 
-  /* opacity scale */
+  /* opacity scale.
+     the text tiers are contrast bound rather than chosen by eye. compositing
+     --color-text (#F5F5F5) over --color-bg (#0A0A0A) at alpha a gives a channel
+     value of 10 + 235a, so on this background:
+       a >= 0.47  ->  4.5:1, wcag aa for body text
+       a >= 0.62  ->  7:1,   wcag aaa for body text
+       a >= 0.36  ->  3:1,   wcag aa for large text, icons and edges
+     anything that carries words sits at or above --opacity-text-floor. the
+     decoration tiers below it are for rules, dots and scrollbars only. */
+  --opacity-text-floor: 0.47;
+  --opacity-text-floor-aaa: 0.62;
+  --opacity-ui-floor: 0.36;
+
   --opacity-high: 0.85;
   --opacity-muted: 0.7;
   --opacity-dim: 0.6;
   --opacity-focus: 0.7;
-  --opacity-hover-dim: 0.4;
+  /* siblings dim while a neighbour is hovered; still readable, so it holds aa */
+  --opacity-hover-dim: 0.48;
   --opacity-subtle: 0.25;
   --opacity-faint: 0.12;
   --color-text-muted: rgb(var(--color-text-rgb) / var(--opacity-muted));
@@ -122,10 +158,14 @@
   --scale-active: 0.97;
   --scale-indicator: 1.2;
 
-  /* border radius */
+  /* border radius. every step derives from --radius-lg so the whole system
+     scales from one number. md and xl were previously inherited from the
+     tailwind defaults, which left them outside the scale. */
   --radius-xs: calc(var(--radius-lg) * 0.25);
   --radius-sm: calc(var(--radius-lg) * 0.375);
+  --radius-md: calc(var(--radius-lg) * 0.75);
   --radius-lg: 0.5rem;
+  --radius-xl: calc(var(--radius-lg) * 1.5);
   --radius-full: 50%;
 
   /* ambient depth */
@@ -162,6 +202,20 @@
   --ios-scroll-y: 0px;
 }
 
+/* both of these are read by the element that sets them and by nothing below it.
+   left inheriting, a raised surface would hand its shadow to every focusable
+   descendant, and a nested list item would inherit its parent's stagger slot. */
+@property --elevation {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --stagger-i {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
 @supports (color: color-mix(in srgb, white, black)) {
   :root {
     --color-text-muted: rgb(from var(--color-text) r g b / var(--opacity-muted));
@@ -179,6 +233,22 @@
   }
 }
 
+/* the luminance-matched fringe pair. same hues the site already speaks in,
+   pinned to one lightness so neither side outshouts the other. engines without
+   oklch keep the srgb pair set above. */
+@supports (color: oklch(0.7 0.15 195)) {
+  :root {
+    --chromatic-fringe-cyan: oklch(0.78 0.13 195);
+    --chromatic-fringe-red: oklch(0.78 0.19 25);
+    --chromatic-bleed-cyan: oklch(0.78 0.13 195 / 0.06);
+    --chromatic-bleed-red: oklch(0.78 0.19 25 / 0.06);
+  }
+}
+
+/* note for anything placed inside this: container-type implies contain: layout,
+   which makes the section a containing block for fixed-position descendants.
+   a floating bar nested in here would anchor to the section rather than to the
+   viewport, which is why .action-bar is always a sibling of these sections. */
 .content-section {
   width: 100%;
   max-width: var(--content-width);
@@ -219,9 +289,51 @@
   line-height: 1.4;
 }
 
-@media (hover: none) and (pointer: coarse) {
+/* native controls. there are checkboxes, radios and range sliders across the
+   tools, and without accent-color every one of them paints in the engine's
+   default blue, the single colour this site never uses. */
+:root {
+  accent-color: rgb(0 196 196);
+}
+
+@supports (color: color-mix(in srgb, white, black)) {
+  :root {
+    accent-color: color-mix(in srgb, rgb(var(--chromatic-cyan)) 76%, var(--color-bg));
+  }
+}
+
+:where(input, textarea) {
+  caret-color: rgb(var(--chromatic-cyan) / 0.9);
+}
+
+/* chromium and webkit paint autofilled fields with a forced light background
+   that ignores background-color. the inset shadow is the only way to cover it. */
+:where(input, textarea, select):-webkit-autofill,
+:where(input, textarea, select):-webkit-autofill:hover,
+:where(input, textarea, select):-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-text);
+  -webkit-box-shadow: 0 0 0 100vmax var(--color-bg) inset;
+  caret-color: var(--color-text);
+  /* the engine repaints its own background on a transition tick, so park it */
+  transition: background-color 100000s ease-in-out 0s;
+}
+
+/* gecko exposes the same state through the standard pseudo-class and does
+   respect a plain background, so it needs its own rule rather than a shared
+   selector list: an unknown pseudo-class would invalidate the whole thing. */
+:where(input, textarea, select):autofill {
+  background-image: none;
+  filter: none;
+}
+
+/* any-pointer rather than pointer: an ipad driven by a trackpad reports a fine
+   primary pointer, yet safari still zooms the viewport when a sub-16px field
+   takes focus. what matters is whether a touch digitiser exists at all. */
+@media (any-pointer: coarse) {
   :where(input, textarea, select) {
-    font-size: 16px !important;
+    /* a floor, not a fixed size: a touch laptop keeps the fluid scale and only
+       the sub-16px case gets clamped */
+    font-size: max(16px, var(--text-ui-base)) !important;
   }
 }
 
@@ -229,10 +341,15 @@
 .interactive {
   opacity: var(--opacity-muted);
   min-height: var(--touch-target);
-  transition: opacity var(--duration-normal) var(--ease-out);
+  transition:
+    opacity var(--duration-normal) var(--ease-out),
+    background-color var(--duration-normal) var(--ease-out);
 }
 
-@media (hover: hover) and (pointer: fine) {
+/* gated on hover alone, not on pointer precision. a stylus or a trackpad driving
+   a tablet can hover perfectly well while still reporting a coarse pointer, and
+   those devices were getting no hover affordance at all. */
+@media (hover: hover) {
   .group:has(a:hover, button:hover) .interactive {
     opacity: var(--opacity-hover-dim);
   }
@@ -254,6 +371,20 @@
   font-family: var(--font-casual);
 }
 
+/* The same face, requested only once its trigger is hovered.
+   A tooltip that nobody has hovered still counts as "using" its font family, so
+   a resting .casual on the header tooltip made all fourteen routes download the
+   19kb casual face to render something invisible. The tooltip waits 180ms to
+   fade in, which is enough head start for the swap to go unnoticed. */
+.casual-lazy {
+  font-family: inherit;
+}
+
+.peer:hover ~ .casual-lazy,
+.peer:focus-visible ~ .casual-lazy {
+  font-family: var(--font-casual);
+}
+
 /* Hover state that swaps to casual font */
 .hover-casual:hover {
   font-family: var(--font-casual);
@@ -263,13 +394,17 @@
   background: var(--color-bg);
 }
 
+/* surfaces publish their shadow through --elevation so the focus ring can add
+   its glow on top rather than replacing the surface treatment */
 .surface-raised {
+  --elevation: var(--edge-highlight);
   background-image: var(--surface-sheen);
-  box-shadow: var(--edge-highlight);
+  box-shadow: var(--elevation);
 }
 
 .surface-inset {
-  box-shadow: var(--depth-inset);
+  --elevation: var(--depth-inset);
+  box-shadow: var(--elevation);
 }
 
 /* Shared tool action surfaces (Prism/Lens/Mirror/Radar/Whisper/Cage). */
@@ -288,12 +423,18 @@
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
   backdrop-filter: blur(16px) saturate(1.2);
   background: transparent;
+  /* a real shadow is several shadows: a tight dark contact edge, a mid drop, and
+     a wide faint ambient that is the layer actually read as depth. the ambient
+     pass is the addition here, and the two chromatic bleeds are now balanced
+     against each other instead of cyan at 0.05 against a red at 0.03 that was
+     four times darker to begin with. */
   box-shadow:
-    0 8px 32px rgb(0 0 0 / 0.35),
-    0 2px 8px rgb(0 0 0 / 0.25),
-    0 0 1px rgb(0 0 0 / 0.4),
-    -2px 6px 24px rgb(var(--chromatic-cyan) / 0.05),
-    2px 6px 24px rgb(var(--chromatic-red) / 0.03);
+    0 1px 2px rgb(0 0 0 / 0.5),
+    0 2px 8px rgb(0 0 0 / 0.26),
+    0 8px 32px rgb(0 0 0 / 0.34),
+    0 24px 64px rgb(0 0 0 / 0.22),
+    -3px 8px 28px var(--chromatic-bleed-cyan),
+    3px 8px 28px var(--chromatic-bleed-red);
   white-space: nowrap;
 }
 
@@ -409,7 +550,7 @@ input[type="reset"] {
 
 /* hover: the inscription surfaces. the spectral plane acknowledges your intent.
    text brightens slowly, gains chromatic character, letter-spacing relaxes. */
-@media (hover: hover) and (pointer: fine) {
+@media (hover: hover) {
   .tool-action-btn:hover:not(:disabled) {
     color: rgb(var(--color-text-rgb) / 0.9);
     letter-spacing: 0.06em;
@@ -468,20 +609,22 @@ input[type="reset"] {
   letter-spacing: -0.01em;
 }
 
+/* running copy at --text-sm, so it sits on the aaa tier. 0.44 measured 4.0:1
+   and failed aa outright. */
 .insights-text {
   font-size: var(--text-sm);
-  color: rgb(var(--color-text-rgb) / 0.44);
+  color: rgb(var(--color-text-rgb) / var(--opacity-text-floor-aaa));
   line-height: 1.65;
   margin: 0;
 }
 
 .insights-text strong {
-  color: rgb(var(--color-text-rgb) / 0.55);
+  color: rgb(var(--color-text-rgb) / 0.8);
   font-weight: 500;
 }
 
 .insights-text em {
-  color: rgb(var(--color-text-rgb) / 0.65);
+  color: rgb(var(--color-text-rgb) / 0.72);
   font-style: italic;
 }
 
@@ -632,6 +775,7 @@ body.invert {
     position: absolute;
     inset: -3px;
     border-radius: var(--radius-full);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
     mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
     animation: logo-spin 22s linear infinite !important;
     pointer-events: none;
@@ -660,6 +804,18 @@ body.invert {
   &.no-transition::before,
   &.no-transition::after {
     transition: none !important;
+  }
+}
+
+/* the ring is a conic gradient with its middle masked out. an engine without
+   mask support would paint the gradient solid, so the whole disc would sit
+   behind the logo. no mask, no ring. */
+@supports not (
+  (mask: radial-gradient(#000, #000)) or (-webkit-mask: radial-gradient(#000, #000))
+) {
+  .logo-hint::before,
+  .logo-hint::after {
+    display: none;
   }
 }
 
@@ -729,11 +885,38 @@ body.pride {
 
 /* ─── Tables ──────────────────────────────────────────────────────────────── */
 
+/* rehype-scrollable-tables wraps every table in this. a table with nowrap
+   headers has a hard minimum width, so without the wrapper it drags the whole
+   document sideways on a phone. */
+.prose :where(.table-scroll) {
+  margin-block: var(--space-md);
+  margin-inline: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+
+  /* edge shadows that appear only while there is something to scroll to.
+     the two "local" layers scroll with the content and cover the two "scroll"
+     shadow layers whenever the table is parked against that edge, so this needs
+     no javascript and no overflow measurement. */
+  background:
+    linear-gradient(to right, var(--color-bg) 40%, rgb(0 0 0 / 0)) left center / 2rem 100% no-repeat local,
+    linear-gradient(to left, var(--color-bg) 40%, rgb(0 0 0 / 0)) right center / 2rem 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgb(0 0 0 / 0.4), rgb(0 0 0 / 0)) left center / 0.85rem 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgb(0 0 0 / 0.4), rgb(0 0 0 / 0)) right center / 0.85rem 100% no-repeat scroll;
+}
+
+.prose :where(.table-scroll:focus-visible) {
+  outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
+  outline-offset: 2px;
+}
+
 .prose :where(table) {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--text-sm);
-  margin-block: var(--space-md);
+  margin-block: 0;
 }
 
 /* Header — reads as field labels, not data */
@@ -751,7 +934,9 @@ body.pride {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgb(var(--color-text-rgb) / 0.45);
+  /* small uppercase text, so it needs the readable tier rather than the quiet
+     one. at 0.45 this measured 4.2:1 and missed aa. */
+  color: rgb(var(--color-text-rgb) / var(--opacity-dim));
   white-space: nowrap;
 }
 
@@ -1126,6 +1311,62 @@ body.pride {
 .prose :where(:not(pre) > code):hover {
   border-color: rgb(var(--chromatic-cyan) / 0.3);
   color: rgb(var(--chromatic-cyan));
+}
+
+/* ─── Contrast preferences ────────────────────────────────────────────────── */
+
+/* windows high contrast substitutes the entire palette but leaves opacity
+   alone, so a design that speaks in alpha arrives as faint grey on a forced
+   background. flatten the tiers and let the system palette carry the hierarchy. */
+@media (forced-colors: active) {
+  :root {
+    --opacity-high: 1;
+    --opacity-muted: 1;
+    --opacity-dim: 1;
+    --opacity-hover-dim: 1;
+    --opacity-focus: 1;
+    --opacity-text-floor: 1;
+    --opacity-text-floor-aaa: 1;
+    --chromatic-opacity: 0;
+  }
+
+  .interactive,
+  .interactive:hover {
+    opacity: 1;
+  }
+
+  /* the chromatic fringe is pure decoration and forced colours drop it anyway */
+  .tool-action-btn,
+  .tool-action-btn:hover,
+  .tool-action-btn:active {
+    text-shadow: none;
+  }
+
+  /* decorative gradient rules become a plain hairline rather than nothing */
+  .prose :where(hr),
+  .prose :where(h2, h3, h4)::after,
+  .prose :where(blockquote)::before,
+  .prose :where(pre)::before,
+  .prose :where(ol > li):not(:last-child)::after {
+    background: CanvasText;
+    opacity: 1;
+  }
+
+  .project-status-dot {
+    background: CanvasText;
+    box-shadow: none;
+  }
+}
+
+/* when the reader asks for more contrast, spend it on the quiet tiers */
+@media (prefers-contrast: more) {
+  :root {
+    --opacity-muted: 0.85;
+    --opacity-dim: 0.8;
+    --opacity-hover-dim: 0.7;
+    --opacity-text-floor: 0.8;
+    --opacity-text-floor-aaa: 0.9;
+  }
 }
 
 /* Reduced motion: disable continuous decorative animations */

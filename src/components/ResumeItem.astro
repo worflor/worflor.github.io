@@ -47,24 +47,34 @@ const dotStyle = `--resume-dot-opacity:${baseOpacity.toFixed(3)}; --resume-dot-h
         <div class="min-w-0 flex-1">
           <div class="flex flex-col gap-0.5 @xs:flex-row @xs:items-baseline @xs:justify-between">
             <div class="min-w-0">
-              <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                <p class="font-medium leading-tight">{title}</p>
-                <span class="text-[rgb(var(--color-text-rgb)/0.22)]">/</span>
-                <span class="truncate text-[rgb(var(--color-text-rgb)/0.62)]">{company.name}</span>
+              {/* min-w-0 on both the row and the title: a flex item defaults to
+                  min-width:auto, so a single long role name could not shrink and
+                  pushed the whole about page 9px wide at 360px */}
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+                <p class="font-medium leading-tight min-w-0">{title}</p>
+                <span class="text-[rgb(var(--color-text-rgb)/0.22)]" aria-hidden="true">/</span>
+                {/* truncate implies white-space: nowrap, so without min-w-0 this
+                    span's min-content width held the whole row open and pushed
+                    the date off the page at 360px. the colour clears aa once
+                    .interactive's 0.7 is multiplied in. */}
+                <span class="truncate min-w-0 text-[rgb(var(--color-text-rgb)/0.8)]">{company.name}</span>
               </div>
             </div>
-            <div class="flex items-center gap-2 @md:hidden pt-0.5">
+            {/* the group is the thing that must not shrink. when only the date
+                inside it was shrink-0, flexbox squeezed the group and the date
+                punched straight out of its own parent and off the page. */}
+            <div class="flex items-center gap-2 @md:hidden pt-0.5 shrink-0">
               {isCurrent && <span class="resume-current-dot size-1.5 shrink-0 rounded-full bg-[rgb(var(--chromatic-cyan)/0.65)]" style={dotStyle} aria-hidden="true"></span>}
-              <p class="text-[length:var(--text-sm)] opacity-60 tabular-nums shrink-0">{date}</p>
+              <p class="text-[length:var(--text-sm)] opacity-70 tabular-nums">{date}</p>
             </div>
           </div>
           {summary && (
-            <p class="mt-2.5 max-w-[39rem] text-[length:var(--text-sm)] leading-[1.55] text-[rgb(var(--color-text-rgb)/0.54)]">
+            <p class="mt-2.5 max-w-[39rem] text-[length:var(--text-sm)] leading-[1.55] text-[rgb(var(--color-text-rgb)/0.72)]">
               {summary}
             </p>
           )}
           {tags.length > 0 && (
-            <p class="mt-2.5 text-[length:var(--text-sm)] leading-[1.55] text-[rgb(var(--color-text-rgb)/0.4)]">
+            <p class="mt-2.5 text-[length:var(--text-sm)] leading-[1.55] text-[rgb(var(--color-text-rgb)/0.68)]">
               {tagLine}
             </p>
           )}
@@ -73,7 +83,7 @@ const dotStyle = `--resume-dot-opacity:${baseOpacity.toFixed(3)}; --resume-dot-h
     </div>
     <div class="hidden @md:flex @md:items-center @md:gap-2 @md:self-start @md:pt-0.5 @md:pl-2">
       {isCurrent && <span class="resume-current-dot size-1.5 shrink-0 rounded-full bg-[rgb(var(--chromatic-cyan)/0.65)]" style={dotStyle} aria-hidden="true"></span>}
-      <p class="text-[length:var(--text-sm)] opacity-60 tabular-nums whitespace-nowrap">{date}</p>
+      <p class="text-[length:var(--text-sm)] opacity-70 tabular-nums whitespace-nowrap">{date}</p>
     </div>
   </div>
 </a>
