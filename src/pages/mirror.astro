@@ -792,7 +792,9 @@ const seo = {
     }
   }
 
+  /* inline in a sentence: the hit area grows via .hit-target, the box does not */
   .dp-try {
+    position: relative;
     display: inline-block;
     font-size: var(--mirror-micro-text-size);
     font-family: var(--font-body);
@@ -820,20 +822,30 @@ const seo = {
     background: rgb(var(--chromatic-cyan) / 0.18);
   }
 
+  /* it stands on its own line rather than inside a sentence, so it takes the
+     target floor properly instead of leaning on the inline exemption */
   .dp-reveal {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--touch-target);
     font-size: var(--text-sm);
     font-family: var(--font-body);
-    color: rgb(var(--color-text-rgb) / var(--opacity-hover-dim));
+    color: rgb(var(--color-text-rgb) / var(--opacity-text-floor));
     background: none;
     border: none;
-    padding: 0;
+    padding: 0 calc(var(--space-xs) * 0.5);
+    margin-inline: calc(var(--space-xs) * -0.5);
     cursor: pointer;
-    transition: color var(--duration-normal) var(--ease-out);
+    text-underline-offset: 3px;
+    text-decoration: underline 1px rgb(var(--color-text-rgb) / 0.25);
+    transition:
+      color var(--duration-normal) var(--ease-out),
+      text-decoration-color var(--duration-normal) var(--ease-out);
   }
 
   .dp-reveal:hover {
-    color: rgb(var(--color-text-rgb) / var(--opacity-muted));
+    color: rgb(var(--color-text-rgb) / var(--opacity-high));
+    text-decoration-color: rgb(var(--color-text-rgb) / 0.5);
   }
 
   .dp-explain {

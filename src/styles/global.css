@@ -337,6 +337,136 @@
   }
 }
 
+/* ─── Controls ────────────────────────────────────────────────────────────
+   The interaction grammar, lifted from Whisper Live and applied by element so
+   the quieter tools inherit it instead of each restating a part of it. Every
+   rule here sits inside :where(), so its specificity is zero and any page rule
+   still wins outright.
+
+   The press is the part that matters. A control answers within 40ms and eases
+   back out over the normal duration, which is what makes it feel like a thing
+   rather than a picture of a thing. On touch there is no hover, so the press is
+   the only feedback there is, and its absence is most of why Lens, Mirror and
+   Radar read as flatter than Whisper. */
+
+:where(button, [role="button"], summary, select, input[type="button"], input[type="submit"], input[type="reset"]) {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform var(--duration-fast) var(--ease-out),
+    border-color var(--duration-normal) var(--ease-out),
+    background-color var(--duration-normal) var(--ease-out),
+    color var(--duration-normal) var(--ease-out);
+}
+
+:where(button, [role="button"], summary, select):active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(var(--scale-active));
+  /* answer now, relax later */
+  transition-duration: 40ms;
+}
+
+/* a control that cannot be used should not look like one that can. lens and
+   mirror had no disabled styling at all, so a dead button looked live. */
+:where(button, select, textarea, input, [role="button"]):disabled,
+:where([aria-disabled="true"]) {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* one field surface across every tool */
+:where(
+  select,
+  textarea,
+  input[type="text"],
+  input[type="number"],
+  input[type="search"],
+  input[type="email"],
+  input[type="url"],
+  input[type="password"]
+) {
+  min-height: var(--touch-target);
+  padding: calc(var(--space-xs) * 0.7) var(--space-xs);
+  border: 1px solid rgb(var(--color-text-rgb) / 0.16);
+  border-radius: var(--radius-sm);
+  background-color: rgb(var(--color-text-rgb) / 0.025);
+  color: inherit;
+  transition:
+    border-color var(--duration-normal) var(--ease-out),
+    background-color var(--duration-normal) var(--ease-out);
+}
+
+@media (hover: hover) {
+  :where(
+    select,
+    textarea,
+    input[type="text"],
+    input[type="number"],
+    input[type="search"],
+    input[type="email"],
+    input[type="url"],
+    input[type="password"]
+  ):hover:not(:disabled) {
+    border-color: rgb(var(--color-text-rgb) / 0.28);
+    background-color: rgb(var(--color-text-rgb) / 0.05);
+  }
+}
+
+/* a select with appearance:none and no glyph is just a box that hides its own
+   nature. the chevron is inlined so it costs no request. */
+:where(select) {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: calc(var(--space-md) + 0.5rem);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%23f5f5f5' stroke-opacity='0.5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-xs) center;
+  background-size: 0.7rem auto;
+}
+
+/* the native box ships at about 13px, which is not a target by any measure */
+:where(input[type="checkbox"], input[type="radio"]) {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+/* the label is the real target: it carries the box and its words as one thing,
+   which is how a 13px checkbox becomes a 44px control without growing visually */
+:where(label:has(> input[type="checkbox"], > input[type="radio"])) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: var(--touch-target);
+  cursor: pointer;
+}
+
+:where(input[type="range"]) {
+  min-height: var(--touch-target);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* An inline control inside a sentence cannot be 44px tall without wrecking the
+   line it sits in. This grows the area a finger can hit while leaving the box
+   exactly where it was, which is the only way to satisfy the target floor and
+   the typography at the same time. Use it on chips and inline affordances. */
+.hit-target {
+  position: relative;
+}
+
+.hit-target::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  width: max(100%, var(--touch-target));
+  height: max(100%, var(--touch-target));
+  /* the paint stays where it was; only the hit test grows */
+  pointer-events: auto;
+}
+
 /* Interactive elements - dims siblings on hover, pops on own hover */
 .interactive {
   opacity: var(--opacity-muted);
@@ -520,10 +650,12 @@
   font-family: var(--font-body);
   font-size: var(--text-ui-sm);
   letter-spacing: 0.04em;
-  /* prevent layout shift from letter-spacing transitions on hover */
-  min-width: max-content;
   cursor: pointer;
   white-space: nowrap;
+  /* a short label like "Run" left the button 39px wide. flex: 0 0 auto above
+     already stops it shrinking, so the floor can be the target rather than
+     the text. */
+  min-width: var(--touch-target);
   touch-action: manipulation;
   -webkit-touch-callout: none;
   -webkit-user-select: none;

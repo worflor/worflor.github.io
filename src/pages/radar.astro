@@ -663,11 +663,15 @@ const seo = {
   }
 
   .triage-select {
-    background: rgb(var(--color-text-rgb) / 0.025);
+    /* background-color, not the shorthand: the shorthand resets background-image
+       and took the shared chevron with it */
+    background-color: rgb(var(--color-text-rgb) / 0.025);
     border: 1px solid rgb(var(--color-text-rgb) / 0.16);
     border-radius: var(--radius-sm);
     color: var(--color-text);
-    min-height: calc(var(--touch-target) * 0.8);
+    /* was 0.8 of the target, which landed at 35px. the shared control
+       layer already carries the floor, the surface and the chevron. */
+    min-height: var(--touch-target);
     padding: calc(var(--space-xs) * 0.55) calc(var(--space-xs) * 0.72);
     font: inherit;
     line-height: 1.2;
@@ -684,14 +688,18 @@ const seo = {
 
   .triage-range {
     accent-color: rgb(var(--chromatic-cyan));
-    min-height: calc(var(--touch-target) * 0.6);
+    /* a slider is dragged, not tapped, so its hit box needs the full floor even
+       though the track itself stays visually thin */
+    min-height: var(--touch-target);
   }
 
   .triage-toggle {
     display: inline-flex;
     align-items: center;
     gap: calc(var(--space-xs) * 0.45);
-    min-height: calc(var(--touch-target) * 0.8);
+    /* was 0.8 of the target, which landed at 35px. the shared control
+       layer already carries the floor, the surface and the chevron. */
+    min-height: var(--touch-target);
     border: 1px solid rgb(var(--color-text-rgb) / 0.16);
     border-radius: var(--radius-sm);
     padding: calc(var(--space-xs) * 0.55) calc(var(--space-xs) * 0.7);

@@ -731,7 +731,8 @@ function renderDataPoint(
 
   // "try" button for interactive data points
   if (point.action && point.value !== null) {
-    const tryBtn = el("button", "dp-try", "try");
+    // hit-target grows the finger area without moving the chip in the sentence
+    const tryBtn = el("button", "dp-try hit-target", "try");
     let running = false;
     tryBtn.addEventListener("click", async (e) => {
       e.stopPropagation();

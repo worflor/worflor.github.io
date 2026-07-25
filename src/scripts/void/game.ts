@@ -2321,6 +2321,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
     // Appearance
     hue: number;
     roundness: number;
+    wobbleA: number;
+    wobbleB: number;
+    wobblePhase: number;
     glow: number;
     warmth: number;
     bodySkew: number;
@@ -2410,6 +2413,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
         this.stability = mutate(parent.stability, 0.15);
         this.hue = (parent.hue + (Math.random() - 0.5) * 40 + 360) % 360;
         this.roundness = mutate(parent.roundness, 0.1);
+        this.wobbleA = mutate(parent.wobbleA, 0.15);
+        this.wobbleB = mutate(parent.wobbleB, 0.25);
+        this.wobblePhase = Math.random() * Math.PI * 2;
         this.glow = mutate(parent.glow, 0.1);
         this.generation = parent.generation + 1;
         this.parentId = parent.id;
@@ -2420,8 +2426,17 @@ export function initVoidGame(options: GameInitOptions): () => void {
         this.extraversion = 0.3 + Math.random() * 0.5;
         this.agreeableness = 0.3 + Math.random() * 0.5;
         this.stability = 0.3 + Math.random() * 0.5;
-        this.hue = Math.random() * 360;
+        // the site speaks in one axis, cyan against red, so the creatures do too.
+        // a full random 360 is why they arrived as arbitrary pastel: mint, lilac,
+        // whatever the wheel handed out. most sit near cyan, a few run warm.
+        this.hue = Math.random() < 0.78
+          ? 168 + Math.random() * 32
+          : (Math.random() < 0.5 ? 352 + Math.random() * 22 : 24 + Math.random() * 14) % 360;
         this.roundness = 0.7 + Math.random() * 0.3;
+        // each one deforms on its own two frequencies, so no two share a outline
+        this.wobbleA = 0.7 + Math.random() * 0.6;
+        this.wobbleB = 1.6 + Math.random() * 1.4;
+        this.wobblePhase = Math.random() * Math.PI * 2;
         this.glow = 0.6 + Math.random() * 0.4;
         this.generation = 0;
         this.parentId = null;
@@ -3360,16 +3375,25 @@ export function initVoidGame(options: GameInitOptions): () => void {
       ctx.rotate(this.idleTilt);
       ctx.scale(currentSquashX, currentSquashY);
 
-      // Body outline
-      ctx.beginPath();
-      for (let i = 0; i <= BODY_SEGMENTS; i++) {
+      // Body outline.
+      // Points first, then a curve through them. Connecting forty-eight samples
+      // with straight lines showed every one of them as a facet the moment the
+      // deformation became large enough to see, which is the whole reason this
+      // codebase had no curves in it and looked like it.
+      const bodyPts: Array<{ x: number; y: number }> = [];
+      for (let i = 0; i < BODY_SEGMENTS; i++) {
         const cosA = BODY_COS[i];
         const sinA = BODY_SIN[i];
 
         let r = bodyR;
-        const angle2 = (i / BODY_SEGMENTS) * Math.PI * 4;
-        const organicWave = Math.sin(angle2 + phase) * bulge * 0.06;
-        r += bodyR * organicWave;
+        // two beating harmonics, each creature on its own pair. the old single
+        // sine ran at 0.06 * bulge, about 1.8% of the radius, which at this size
+        // is a quarter of a pixel: forty-eight segments describing a circle.
+        const theta = (i / BODY_SEGMENTS) * Math.PI * 2;
+        const organicWave =
+          Math.sin(theta * this.wobbleA * 2 + phase + this.wobblePhase) * 0.055 +
+          Math.sin(theta * this.wobbleB * 3 - phase * 0.7) * 0.028;
+        r += bodyR * organicWave * (0.6 + bulge);
 
         let px = cosA * r;
         let py = sinA * r;
@@ -3383,10 +3407,25 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const compensateBulge = Math.abs(lagX) * 0.08 * sideLagInfluence;
         px += cosA * compensateBulge;
 
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
+        bodyPts.push({ x: px, y: py });
       }
-      ctx.closePath();
+
+      // quadratics through the midpoints: a closed C1 curve, no corners
+      const bodyPath = new Path2D();
+      const n = bodyPts.length;
+      const mid = (a: { x: number; y: number }, b: { x: number; y: number }) => ({
+        x: (a.x + b.x) * 0.5,
+        y: (a.y + b.y) * 0.5,
+      });
+      let m = mid(bodyPts[n - 1], bodyPts[0]);
+      bodyPath.moveTo(m.x, m.y);
+      for (let i = 0; i < n; i++) {
+        const cur = bodyPts[i];
+        const next = bodyPts[(i + 1) % n];
+        m = mid(cur, next);
+        bodyPath.quadraticCurveTo(cur.x, cur.y, m.x, m.y);
+      }
+      bodyPath.closePath();
 
       // Body color
       const baseSat = 24 + this.happiness * 0.22;
@@ -3415,8 +3454,33 @@ export function initVoidGame(options: GameInitOptions): () => void {
       bodyGrad.addColorStop(0.45, `hsla(${this.hue}, ${Math.max(6, sat - 2)}%, ${light - 6}%, ${energyAlpha})`);
       bodyGrad.addColorStop(1, `hsla(${this.hue}, ${Math.max(6, sat - 5)}%, ${light - 16}%, ${energyAlpha * 0.92})`);
 
+      // Chromatic convergence.
+      // The site's signature, used as the emotional channel rather than as
+      // decoration: a settled creature is in focus, a frightened one splits into
+      // its two components. Two numbers replace an expression state machine.
+      const arousal = Math.min(1, this.fear * 0.7 + this.stress * 0.5);
+      // The baseline is absolute, not scaled by size. Scaling the whole term
+      // meant a newborn sat under the draw threshold and wore no fringe at all
+      // for its first ten seconds, which is exactly the window someone is
+      // looking. Only the arousal term scales with the body.
+      const split = 0.55 + arousal * 2.6 * (1 - this.trust * 0.45) * (size / 14);
+
+      {
+        ctx.save();
+        // light adds, so the overlap returns to the core colour on its own
+        ctx.globalCompositeOperation = "lighter";
+        const ghost = Math.min(0.5, 0.12 + arousal * 0.4) * energyAlpha;
+        ctx.translate(-split, 0);
+        ctx.fillStyle = `rgba(0, 224, 232, ${ghost})`;
+        ctx.fill(bodyPath);
+        ctx.translate(split * 2, 0);
+        ctx.fillStyle = `rgba(255, 74, 96, ${ghost})`;
+        ctx.fill(bodyPath);
+        ctx.restore();
+      }
+
       ctx.fillStyle = bodyGrad;
-      ctx.fill();
+      ctx.fill(bodyPath);
 
       // Specular highlight
       const hlLagX = lagX * 0.3;
@@ -3463,53 +3527,48 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const showEyes = !this.blinking && this.expression !== "loved";
 
       if (showEyes && !isSleepy) {
-        // Eye whites
-        ctx.fillStyle = `rgba(255, 255, 255, ${0.93 * energyAlpha})`;
+        // Specular foci, not drawn eyes.
+        //
+        // The creature is about twenty-eight pixels across. A sclera, a pupil
+        // and a catchlight inside that is three shapes inside three pixels, and
+        // it resolved to a white rectangle with a dark speck: the single thing
+        // that made these read as clip art. Two bright points that track gaze
+        // carry the same information at this size, because a face is where the
+        // light lands, not where the outlines are.
+        const lookX = this.gazeX;
+        const lookY = this.gazeY;
         const leftEyeX = -eyeSpacing + faceLagX;
         const rightEyeX = eyeSpacing + faceLagX;
 
-        ctx.beginPath();
-        ctx.ellipse(leftEyeX, eyeY, eyeSize * eyeScaleX, eyeSize * eyeScaleY, -0.03 - this.idleTilt * 0.3, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.ellipse(rightEyeX, eyeY, eyeSize * eyeScaleX, eyeSize * eyeScaleY, 0.03 - this.idleTilt * 0.3, 0, Math.PI * 2);
-        ctx.fill();
+        // wide awake and trusting concentrates the focus; fear and fatigue
+        // spread and dim it, which is what a real catchlight does
+        const focusTight = 0.5 + this.trust * 0.18 - this.fear * 0.2 - this.fatigue * 0.15;
+        const fociR = eyeSize * Math.max(0.34, Math.min(0.78, focusTight)) * eyeScaleX;
+        const fociAlpha =
+          (0.72 + this.restedness * 0.2) * (1 - this.lonely * 0.2) * (1 - hunger * 0.25) * energyAlpha;
 
-        // Pupils
-        const lookX = this.gazeX;
-        const lookY = this.gazeY;
-        let pupilMult = 0.46 + this.trust * 0.06;
-        if (isScared) pupilMult = 0.3;
-        else {
-          pupilMult += this.fatigue * 0.04;
-          pupilMult -= this.stress * 0.05;
-          pupilMult -= this.lonely * 0.03;
-          pupilMult += hunger * 0.06;
+        ctx.save();
+        // light adds: where a focus overlaps the body highlight it simply gets
+        // brighter, instead of stamping an opaque dot on top of it
+        ctx.globalCompositeOperation = "lighter";
+        for (const fx of [leftEyeX, rightEyeX]) {
+          const cx = fx + lookX * 0.85;
+          const cy = eyeY + lookY * 0.85;
+          const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, fociR * 2.6);
+          halo.addColorStop(0, `rgba(255, 255, 255, ${fociAlpha})`);
+          halo.addColorStop(0.35, `rgba(226, 250, 255, ${fociAlpha * 0.42})`);
+          halo.addColorStop(1, "rgba(140, 220, 235, 0)");
+          ctx.beginPath();
+          ctx.arc(cx, cy, fociR * 2.6, 0, Math.PI * 2);
+          ctx.fillStyle = halo;
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(cx, cy, fociR * 0.62, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(1, fociAlpha * 1.15)})`;
+          ctx.fill();
         }
-        const pupilSize = eyeSize * Math.max(0.25, Math.min(0.55, pupilMult));
-
-        ctx.fillStyle = `rgba(18, 18, 28, ${energyAlpha})`;
-        ctx.beginPath();
-        ctx.arc(leftEyeX + lookX, eyeY + lookY, pupilSize, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(rightEyeX + lookX, eyeY + lookY, pupilSize, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Eye shine
-        const shineTrack = 0.15;
-        const shineOffX = -pupilSize * 0.3 + lookX * shineTrack;
-        const shineOffY = -pupilSize * 0.35 + lookY * shineTrack;
-        const hungerDim = hunger * 0.2;
-        const shineBrightness = (0.55 + this.restedness * 0.25) * (1 - this.lonely * 0.15) * (1 - hungerDim);
-
-        ctx.fillStyle = `rgba(255, 255, 255, ${shineBrightness * energyAlpha})`;
-        ctx.beginPath();
-        ctx.arc(leftEyeX + shineOffX, eyeY + shineOffY, pupilSize * 0.36, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(rightEyeX + shineOffX, eyeY + shineOffY, pupilSize * 0.36, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.restore();
       } else {
         // Closed eyes
         ctx.strokeStyle = `rgba(55, 45, 65, ${energyAlpha})`;
@@ -3535,12 +3594,18 @@ export function initVoidGame(options: GameInitOptions): () => void {
         }
       }
 
-      // Mouth
+      // Mouth.
+      // A 1.4px stroke on a 28px body resolved to a dark lozenge, which is the
+      // other half of why these read as emoji. Mood is carried by the chromatic
+      // split and the foci now, both of which survive being small.
+      const DRAW_MOUTH = false;
       const mouthX = faceLagX;
       const mouthY = faceY + size * MOUTH_OFFSET;
       ctx.strokeStyle = `rgba(55, 45, 65, ${energyAlpha * 0.75})`;
       ctx.lineWidth = 1.4;
       ctx.lineCap = "round";
+
+      if (DRAW_MOUTH) {
 
       if (this.expression === "happy" || this.expression === "loved") {
         ctx.beginPath();
@@ -3585,6 +3650,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         ctx.quadraticCurveTo(mouthX, mouthY + 0.8, mouthX + size * 0.05, mouthY);
         ctx.stroke();
       }
+      }
 
       // Blush
       const blushTrigger = Math.max(
@@ -3594,7 +3660,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
         this.trust > 0.7 ? (this.trust - 0.7) * 0.8 : 0
       );
 
-      if (blushTrigger > 0.15) {
+      // blush at this size is two pink smudges 2px across, which reads as a
+      // rendering error rather than as warmth
+      const DRAW_BLUSH = false;
+      if (DRAW_BLUSH && blushTrigger > 0.15) {
         const blushA = Math.min(0.32, (blushTrigger - 0.15) * 0.45) * energyAlpha;
         const blushY = eyeY + size * 0.13;
         const blushSpacing = eyeSpacing + size * 0.1;

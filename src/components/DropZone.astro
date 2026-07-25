@@ -1,0 +1,262 @@
+---
+/**
+ * DropZone — the shared way to take a file.
+ *
+ * Lifted from Whisper Live's carrier well, which is the one implementation on
+ * this site that had real thought put into it. The metaphor is a well rather
+ * than a box: it sits inset in the page, breathes slowly while it is empty and
+ * waiting, goes still the instant you engage it, and deepens as you commit. It
+ * has two lives, empty and loaded, and the loaded one is a compact record of
+ * what it holds rather than a permanent invitation.
+ *
+ * Every tool that takes a file should use this. Lens, Prism and Whisper each
+ * grew their own, which is three sets of drag counters, three keyboard stories
+ * and three ways of being wrong about the same edge cases.
+ *
+ * The behaviour lives in scripts/drop-zone.ts. It handles the whole surface:
+ * click, keyboard, drag with a proper enter/leave depth counter, paste, folder
+ * rejection, type and size validation, and a live region so a screen reader is
+ * told what happened. It never reads the file: it emits `dropzone:files` with
+ * a FileList and lets the tool decide.
+ *
+ *   <DropZone
+ *     id="usd-input"
+ *     label="Drop a USD stage"
+ *     hint="usd, usda, usdc, usdz"
+ *     accept=".usd,.usda,.usdc,.usdz"
+ *     maxBytes={2 * 1024 * 1024 * 1024}
+ *   />
+ *
+ *   document.getElementById("usd-input")
+ *     .addEventListener("dropzone:files", (e) => compile(e.detail.files));
+ */
+interface Props {
+  id: string;
+  /** The invitation, shown while empty. */
+  label: string;
+  /** What it will accept, in human words. */
+  hint?: string;
+  /** Passed to the file input, and used to reject wrong types before the tool sees them. */
+  accept?: string;
+  /** Reject anything larger, before it is read. */
+  maxBytes?: number;
+  multiple?: boolean;
+  /** Also accept a paste while the zone has focus. */
+  paste?: boolean;
+  class?: string;
+}
+
+const { id, label, hint, accept, maxBytes, multiple = false, paste = true, class: className } = Astro.props;
+const inputId = `${id}-input`;
+const statusId = `${id}-status`;
+---
+
+<div
+  class:list={["drop-zone", className]}
+  id={id}
+  data-drop-zone
+  data-state="empty"
+  data-accept={accept}
+  data-max-bytes={maxBytes}
+  data-paste={paste ? "" : undefined}
+  role="button"
+  tabindex="0"
+  aria-label={label}
+  aria-describedby={statusId}
+>
+  <div class="drop-zone-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v12"></path>
+      <path d="M8 11l4 4 4-4"></path>
+      <rect x="3" y="17" width="18" height="4" rx="2"></rect>
+    </svg>
+  </div>
+
+  <p class="drop-zone-label">{label}</p>
+  {hint && <p class="drop-zone-hint">{hint}</p>}
+  <p class="drop-zone-meta" data-drop-zone-meta></p>
+
+  <input
+    class="drop-zone-input"
+    id={inputId}
+    type="file"
+    accept={accept}
+    multiple={multiple}
+    tabindex="-1"
+    aria-hidden="true"
+  />
+
+  {/* what happened, for anyone who cannot see the well change shape */}
+  <p class="drop-zone-status" id={statusId} data-drop-zone-status role="status" aria-live="polite"></p>
+</div>
+
+<style>
+  .drop-zone {
+    position: relative;
+    border: 1px dashed rgb(var(--color-text-rgb) / var(--opacity-faint));
+    border-radius: var(--radius-lg);
+    padding: var(--space-md) var(--space-md);
+    text-align: center;
+    cursor: pointer;
+    background: rgb(0 0 0 / 0.15);
+    box-shadow: var(--depth-inset), inset 0 2px 4px rgb(0 0 0 / 0.15);
+    /* it breathes while it is empty and waiting, and only then */
+    animation: drop-zone-breathe 4s ease-in-out infinite;
+    transition:
+      background var(--duration-slow) var(--ease-spring),
+      border-color var(--duration-slow) var(--ease-spring),
+      box-shadow var(--duration-slow) var(--ease-spring);
+  }
+
+  @keyframes drop-zone-breathe {
+    0%, 100% { border-color: rgb(var(--color-text-rgb) / 0.07); }
+    50% { border-color: rgb(var(--color-text-rgb) / 0.18); }
+  }
+
+  /* the moment it has something to say, it stops asking */
+  .drop-zone[data-state="loaded"],
+  .drop-zone[data-state="dragging"],
+  .drop-zone[data-state="error"],
+  .drop-zone:active,
+  .drop-zone:focus-visible {
+    animation-name: none;
+  }
+
+  .drop-zone[data-state="dragging"] {
+    border-color: rgb(var(--chromatic-cyan) / 0.2);
+    background: rgb(0 0 0 / 0.22);
+    box-shadow:
+      var(--depth-inset),
+      inset 0 2px 6px rgb(0 0 0 / 0.2),
+      inset 0 0 12px rgb(var(--chromatic-cyan) / 0.03);
+  }
+
+  .drop-zone:active {
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    background: rgb(0 0 0 / 0.28);
+    box-shadow:
+      var(--depth-inset),
+      inset 0 3px 8px rgb(0 0 0 / 0.25),
+      inset 0 0 12px rgb(var(--chromatic-cyan) / 0.05);
+  }
+
+  .drop-zone:focus-visible {
+    border-color: rgb(var(--chromatic-cyan) / 0.3);
+    box-shadow:
+      var(--depth-inset),
+      inset 0 2px 4px rgb(0 0 0 / 0.15),
+      0 0 0 2px rgb(var(--chromatic-cyan) / 0.1);
+    outline: none;
+  }
+
+  @media (hover: hover) {
+    .drop-zone:hover {
+      border-color: rgb(var(--color-text-rgb) / 0.14);
+      box-shadow: var(--edge-highlight), var(--depth-inset);
+    }
+
+    .drop-zone:hover .drop-zone-label {
+      color: rgb(var(--color-text-rgb) / var(--opacity-high));
+    }
+  }
+
+  .drop-zone-icon {
+    color: rgb(var(--color-text-rgb) / 0.12);
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .drop-zone-icon svg {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+
+  .drop-zone-label {
+    margin: calc(var(--space-xs) * 0.5) 0 0;
+    font-size: var(--text-ui-sm);
+    color: rgb(var(--color-text-rgb) / var(--opacity-text-floor-aaa));
+    transition: color var(--duration-normal) var(--ease-out);
+  }
+
+  .drop-zone-hint,
+  .drop-zone-meta {
+    margin: calc(var(--space-xs) * 0.35) 0 0;
+    font-size: var(--text-sm);
+    /* the quiet tier still has to clear aa: this is the line that tells you
+       which formats are allowed, and it is the one people squint at */
+    color: rgb(var(--color-text-rgb) / var(--opacity-text-floor));
+  }
+
+  .drop-zone-meta:empty {
+    display: none;
+  }
+
+  /* loaded: no longer an invitation, now a record of what it holds */
+  .drop-zone[data-state="loaded"] {
+    border-style: solid;
+    border-color: rgb(var(--color-text-rgb) / 0.16);
+    text-align: left;
+    padding: var(--space-sm);
+    background: rgb(var(--color-text-rgb) / 0.02);
+    box-shadow: var(--depth-inset);
+  }
+
+  .drop-zone[data-state="loaded"] .drop-zone-icon,
+  .drop-zone[data-state="loaded"] .drop-zone-hint {
+    display: none;
+  }
+
+  .drop-zone[data-state="loaded"] .drop-zone-label {
+    margin: 0;
+    font-weight: 600;
+    color: rgb(var(--color-text-rgb) / 0.86);
+    word-break: break-word;
+  }
+
+  .drop-zone[data-state="error"] {
+    border-style: solid;
+    border-color: rgb(var(--tool-status-warning) / 0.45);
+  }
+
+  .drop-zone[data-state="error"] .drop-zone-meta {
+    color: rgb(var(--tool-status-warning) / 0.95);
+  }
+
+  /* the input is the mechanism, never the interface */
+  .drop-zone-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .drop-zone-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .drop-zone {
+      animation: none;
+      border-color: rgb(var(--color-text-rgb) / 0.14);
+    }
+  }
+
+  @media (forced-colors: active) {
+    .drop-zone {
+      animation: none;
+      border-color: CanvasText;
+    }
+  }
+</style>
+
+<script>
+  import { bootDropZones } from "../scripts/drop-zone";
+  bootDropZones();
+  document.addEventListener("astro:page-load", bootDropZones);
+</script>
