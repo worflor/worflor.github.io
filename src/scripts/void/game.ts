@@ -132,6 +132,12 @@ interface SpawnPositionConfig {
 
 // Serialization
 interface SerializedCreature {
+  /** knighthood, optional so saves written before it still load */
+  isKnight?: boolean;
+  vigor?: number;
+  specials?: string[];
+  bornDepth?: number;
+  depthStrain?: number;
   id: string;
   x: number;
   y: number;
@@ -544,6 +550,38 @@ const STALKER_PIN = 0.2;
 // how fast being held in light becomes unbearable. at full light this is about
 // six seconds of standing there before it gives up and goes somewhere else.
 const STALKER_STRAIN_RATE = 0.0038;
+
+// Knighthood. The odds are small on purpose: this is the payoff for tending a
+// line across generations, not something that happens while you look away.
+const KNIGHT_BASE = 0.34;
+const KNIGHT_PET_GOAL = 14;
+const KNIGHT_GEN_GOAL = 4;
+const KNIGHT_VIGOR_MAX = 3;
+// layers below its birth depth a knight carries without complaint
+const KNIGHT_DEPTH_TOLERANCE = 5;
+// how recently something has to have happened to still count as care
+const KNIGHT_CARE_WINDOW = 3600;
+// what a knight is worth as company, at full power, in a stalker's arithmetic
+const KNIGHT_HERD_WEIGHT = 5;
+const KNIGHT_WARD_R = 70;
+// how much more of a meal a knight needs than an ordinary creature
+const KNIGHT_APPETITE = 1.4;
+// bonds a knight needs, summed, before it counts as kept company
+const KNIGHT_SOCIAL_GOAL = 0.8;
+// the power at which a knight stops merely discouraging a stalker and starts
+// turning it around. an unfed one cannot; a fed one can.
+const KNIGHT_ROUT_POWER = 0.35;
+// how long a stalker stays turned around, and how long the answering flare runs
+const KNIGHT_ROUT_FRAMES = 240;
+const KNIGHT_FLASH_FRAMES = 36;
+const SPECIAL_TRAITS = [
+  "dauntless",
+  "radiant",
+  "kindled",
+  "steadfast",
+  "wakeful",
+  "unbowed",
+];
 const STALKER_SPEED = 2.8;
 const STALKER_MIN_DEPTH = 2;
 const STALKER_MAX = 3;
@@ -1659,6 +1697,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
           c.fatigue = Math.max(0, c.fatigue - 0.01 * hunger);
 
           c.memories.fedCount++;
+          // a knight is what it has eaten. everything it can do scales off
+          // this, so feeding one is the whole progression and it never caps
+          // hard, it only slows.
+          if (c.isKnight) c.vigor = Math.min(KNIGHT_VIGOR_MAX, c.vigor + 0.055);
           c.memories.lastFedTime = c.age;
           c.addMemory("good", this.x, this.y, 0.2 + hunger * 0.3);
 
@@ -1868,7 +1910,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
         ctx.beginPath();
         ctx.arc(sparkleX, sparkleY, size, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(100, 85, 130, ${alpha})`;
+        ctx.fillStyle = `rgba(88, 120, 134, ${alpha})`;
         ctx.fill();
       }
     }
@@ -2569,7 +2611,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const activeBonus = this.presence * 0.15;
         const alpha = (baseAlpha + activeBonus) * easeIn;
 
-        ctx.strokeStyle = `rgba(140, 100, 180, ${alpha})`;
+        ctx.strokeStyle = `rgba(90, 170, 200, ${alpha})`;
         ctx.lineWidth = 1.5 + pulse + this.presence * 2;
         ctx.lineCap = "round";
         ctx.beginPath();
@@ -2581,7 +2623,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
           const glowSize = runeW * 0.8;
           ctx.beginPath();
           ctx.arc(this.x, runeY, glowSize, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(120, 80, 160, ${alpha * 0.3})`;
+          ctx.fillStyle = `rgba(70, 140, 175, ${alpha * 0.3})`;
           ctx.fill();
         }
       }
@@ -3032,6 +3074,18 @@ export function initVoidGame(options: GameInitOptions): () => void {
     _energyNorm: number;
     /** how inviting this creature is to a stalker, recomputed once per frame */
     _opportunity: number;
+    /** born in a nest to a well-kept line, and unafraid of the dark */
+    isKnight: boolean;
+    /** what it has eaten, and therefore what it can do. knights only. */
+    vigor: number;
+    /** inherited oddities, shown alongside the ordinary traits */
+    specials: string[];
+    /** the depth it was born at, which is the depth it is built for */
+    bornDepth: number;
+    /** frames left of the flare thrown off by turning something away */
+    wardFlash: number;
+    /** how far past its depth it has been carried, and how poorly it is taking it */
+    depthStrain: number;
     _claimedFood: Food | null;
     _voidChorusTimer: number;
     _voidChorusStrength: number;
@@ -3165,6 +3219,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // Cached
       this._cachedSpeed = 0;
       this._opportunity = 0;
+      this.isKnight = false;
+      this.vigor = 0;
+      this.specials = [];
+      this.bornDepth = currentDepth;
+      this.depthStrain = 0;
+      this.wardFlash = 0;
       this._energyNorm = this.energy / 100;
       this._claimedFood = null;
       this._voidChorusTimer = 0;
@@ -3185,6 +3245,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
     glowRing(): number {
       const reach = this.revealRadius * (0.4 + this.warmth * 0.9);
       return Math.max(DARK_RING_MIN, Math.min(DARK_RING_MAX, reach * 0.75));
+    }
+
+    /**
+     * What this knight can actually bring to bear. Vigor is what it ate; strain
+     * is how badly it is coping with the depth it was dragged to. A neglected
+     * knight deep down is still a knight, it just cannot do anything, which is
+     * a state you can read off it at a glance and fix with a meal.
+     */
+    knightPower(): number {
+      return this.isKnight ? this.vigor * (1 - this.depthStrain * 0.85) : 0;
     }
 
     getLifeStage(): LifeStage {
@@ -3364,7 +3434,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const activityDrain = this._cachedSpeed * 0.002;
       const stressDrain = this.stress * 0.003;
       const ageDrain = lifeProgress * 0.002;
-      this.energy -= CONFIG.BASE_ENERGY_DRAIN + activityDrain + stressDrain + ageDrain;
+      // a knight runs hot. it is the reason they are always hungry, and the
+      // reason feeding one is a commitment rather than a kindness.
+      this.energy -=
+        (CONFIG.BASE_ENERGY_DRAIN + activityDrain + stressDrain + ageDrain) * this.appetite();
 
       // Starvation
       if (this.energy <= 0) {
@@ -3379,8 +3452,15 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
 
       // Update display size
-      this.displaySize = this.size * 20;
-      this.revealRadius = 50 + this.glow * 30 + this.displaySize;
+      //
+      // Vigor is what a knight has eaten, and it has to be worth eating for.
+      // It used to buy nothing but extra rings. Now it is bigger, it carries a
+      // wider light, and everything downstream of revealRadius follows: the
+      // ring every darkness test samples on, how much dark it pushes back, how
+      // much of a stalker's floor it denies. Feeding one visibly compounds.
+      const power = this.knightPower();
+      this.displaySize = this.size * 20 * (1 + power * 0.14);
+      this.revealRadius = 50 + this.glow * 30 + this.displaySize + power * 42;
 
       // Movement
       this.updateMovement();
@@ -3738,6 +3818,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
     
     // Helper for food preference (can be expanded)
+    /**
+     * A knight burns through food and knows it. This drives the existing
+     * hunger arithmetic rather than adding a second appetite, so the only
+     * visible change is that they are always the first to a meal and always
+     * looking for the next one.
+     */
+    appetite(): number {
+      return this.isKnight ? 1 + KNIGHT_APPETITE * (1 + this.vigor * 0.35) : 1;
+    }
+
     typePreference(type: FoodType): number {
       if (type === "green" && this.stress > 0.5) return 2.0; // Comfort food
       if (type === "cyan" && this.fear > 0.5) return 1.5;   // Light food
@@ -3860,13 +3950,71 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const company = Math.min(1, nearbyCount / 3);
         // held creatures have no ground under them and cannot flee toward light
         const exposure = this === heldCreature ? 1.8 : 1;
+        // A knight is not brave as a description, it is brave as a number. This
+        // was written up in a comment and never implemented, so knights panicked
+        // in the dark exactly like newborns while the code claimed otherwise.
+        // Even an unfed one shrugs most of it off; a well fed one does not feel
+        // the dark at all, and a strained one starts feeling it again, which is
+        // the depth mechanic biting where it should.
+        const nerve = this.isKnight ? Math.max(0, 0.4 - this.knightPower() * 0.4) : 1;
         const dread =
-          gloom * gloom * (0.45 + neuroticism * 0.9) * (1 - company * 0.75) * exposure;
+          gloom * gloom * (0.45 + neuroticism * 0.9) * (1 - company * 0.75) * exposure * nerve;
         // fear only, deliberately. stress above 0.4 blocks reproduction, and
         // creatures spend much of their lives in fresh dark, so paying dread
         // into stress would quietly sterilise the colony. the dark should make
         // them want the light, not make them barren.
         this.fear = Math.min(1, this.fear + dread * DARK_DREAD_RATE);
+      }
+
+      // Carrying a knight far below where it was born.
+      //
+      // It is not punished for going deep, it is punished for being taken deep
+      // faster than it can be looked after. Five layers is free. Past that the
+      // strain only climbs while it is neglected, and any of the three things
+      // that already mean care will hold it back: recently fed, recently
+      // handled, or standing with someone it knows. So the fix is the thing a
+      // visitor is doing anyway, and never a chore in its own right.
+      //
+      // It costs no health and it cannot kill. It dims what the knight can do,
+      // and that shows on the body, because a mechanic you cannot see is a
+      // mechanic that feels like a bug.
+      if (this.isKnight) {
+        const past = currentDepth - this.bornDepth - KNIGHT_DEPTH_TOLERANCE;
+        if (past > 0) {
+          const fedLately = time - this.memories.lastFedTime < KNIGHT_CARE_WINDOW;
+          const heldLately = time - this.memories.lastPetTime < KNIGHT_CARE_WINDOW;
+          // socialised means bonds that actually amount to something, not a
+          // single friendship formed once and satisfied forever after
+          let social = 0;
+          for (const b of this.bonds.values()) social += b.strength;
+          const kept =
+            (fedLately ? 1 : 0) + (heldLately ? 1 : 0) + (social > KNIGHT_SOCIAL_GOAL ? 1 : 0);
+          if (kept >= 2) {
+            this.depthStrain = Math.max(0, this.depthStrain - 0.0016);
+          } else {
+            this.depthStrain = Math.min(1, this.depthStrain + 0.00022 * past * (1 - kept * 0.3));
+          }
+        } else {
+          this.depthStrain = Math.max(0, this.depthStrain - 0.0022);
+        }
+      }
+
+      // Standing with a knight is a comfort in itself, and this is the only
+      // thing in the file a knight does to other creatures rather than to
+      // stalkers. It is why a nest with one in it settles.
+      if (this.isKnight) {
+        const power = this.knightPower();
+        if (power > 0.05) {
+          const reach = KNIGHT_WARD_R + power * 40;
+          for (const other of creatures) {
+            if (other === this || other.isDead) continue;
+            const d = Math.hypot(other.x - this.x, other.y - this.y);
+            if (d > reach) continue;
+            const share = (1 - d / reach) * power;
+            other.fear = Math.max(0, other.fear - 0.0016 * share);
+            other.stress = Math.max(0, other.stress - 0.0008 * share);
+          }
+        }
       }
 
       // Fatigue
@@ -3880,8 +4028,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.happiness += (targetHappy - this.happiness) * 0.001;
       this.happiness = Math.max(0, Math.min(100, this.happiness));
 
-      // Fear decay
-      this.fear = Math.max(0, this.fear - 0.001 * this.stability);
+      // Fear decay. A knight collects itself far quicker than anything else.
+      this.fear = Math.max(0, this.fear - 0.001 * this.stability * (1 + this.knightPower() * 3));
 
       // Stress from various sources
       if (this.energy < 30) {
@@ -3989,11 +4137,17 @@ export function initVoidGame(options: GameInitOptions): () => void {
       if (Math.random() < chance) {
         this.energy -= CONFIG.REPRODUCE_ENERGY_COST;
 
+        const bornInNest = nests.some(
+          (n) => Math.hypot(this.x - n.x, this.y - n.y) < n.radius
+        );
+
         const baby = new Creature(
           this.x + (Math.random() - 0.5) * 30,
           this.y + (Math.random() - 0.5) * 30,
           this
         );
+
+        anointIfWorthy(baby, this, bornInNest);
 
         for (let i = 0; i < 15 && particles.length < CONFIG.MAX_PARTICLES; i++) {
           particles.push(new Particle(baby.x, baby.y, "birth", baby.hue));
@@ -4049,6 +4203,67 @@ export function initVoidGame(options: GameInitOptions): () => void {
           }
         }
       }
+    }
+
+    /**
+     * The aberration, turned into something the creature is doing rather than
+     * something the renderer does to it.
+     *
+     * Everything else on this page splits cyan and red by a hair. A knight
+     * splits far enough that the fringes come away from the body as standing
+     * rings, and they breathe. Strain draws as those rings collapsing back in:
+     * a knight carried too deep and left unfed visibly stops shining, which is
+     * the whole depth mechanic said out loud without a bar or a number on it.
+     */
+    drawWard(): void {
+      const power = this.knightPower();
+      if (power < 0.02 || this.isDead) return;
+
+      if (this.wardFlash > 0) this.wardFlash--;
+      // the shells snap outward and brighten for the moment it turns something
+      // away, so the visitor sees the knight do it rather than infer it from a
+      // stalker that happened to leave
+      const flare = this.wardFlash / KNIGHT_FLASH_FRAMES;
+
+      const s = this.displaySize;
+      const beat = Math.sin(time * 0.021 + this.hue) * 0.5 + 0.5;
+      const rings = 1 + Math.min(2, Math.floor(this.vigor));
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      // Three things made the first pass read as a radar scope rather than as
+      // something the creature is giving off: every shell shared a centre, every
+      // shell was perfectly round, and their phases lined up so the set formed
+      // clean concentric rings. Each one now hangs off its own slow orbit, sits
+      // slightly out of round on its own tilt, and is offset in phase by the
+      // golden angle so no two ever come into alignment.
+      for (let i = 0; i < rings; i++) {
+        const drift = time * (0.0062 + i * 0.0017) + i * 2.399;
+        const phase = beat * 0.3 + i * 0.42;
+        const r = s * (0.95 + phase * 0.9 + i * 0.34) * (1 + flare * 0.55);
+        const a = ((0.13 + flare * 0.3) * power) / (1 + i * 0.8);
+        const spread = 1.6 + power * 2.4 + flare * 4;
+
+        // its own small orbit, so the centres never coincide
+        const cx = this.x + Math.cos(drift) * s * (0.09 + i * 0.05);
+        const cy = this.y + Math.sin(drift * 1.13) * s * (0.06 + i * 0.04);
+        // and its own roundness and tilt, so the outlines never nest
+        const squash = 1 + Math.sin(drift * 0.7 + i) * (0.1 + i * 0.035);
+        const tilt = drift * 0.33;
+
+        ctx.lineWidth = 1 + power * 0.5;
+
+        ctx.beginPath();
+        ctx.ellipse(cx - spread, cy, r, r / squash, tilt, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(0, 214, 236, ${a})`;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.ellipse(cx + spread, cy, r, r / squash, tilt, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(236, 62, 84, ${a * 0.9})`;
+        ctx.stroke();
+      }
+      ctx.restore();
     }
 
     draw(): void {
@@ -4468,6 +4683,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     fleeing = 0;
     /** the price of having crossed the light */
     lungeCooldown = 0;
+    /** driven off, and by what: frames of the recoil left to play */
+    routed = 0;
     /**
      * How long it has been held in light it cannot leave. The creatures have
      * stress and it should too: being pinned is not free, it is unbearable.
@@ -4526,6 +4743,48 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.phase += 0.013;
 
       if (this.lungeCooldown > 0) this.lungeCooldown--;
+
+      // Driven off.
+      //
+      // A knight never chases and there is no fight to resolve here: it stands
+      // where it stands, and a stalker that comes inside its reach simply
+      // cannot hold itself together there and leaves. That is the confrontation
+      // in full, and it stays a consequence of the simulation rather than a
+      // combat system bolted onto it.
+      //
+      // An unfed knight cannot do this, only discourage. The power to actually
+      // turn something around is bought with food, which is what makes feeding
+      // one the whole progression rather than a kindness.
+      if (this.routed <= 0) {
+        for (const c of creatures) {
+          if (c.isDead) continue;
+          const power = c.knightPower();
+          if (power < KNIGHT_ROUT_POWER) continue;
+          const reach = KNIGHT_WARD_R + power * 40;
+          if (Math.hypot(c.x - this.x, c.y - this.y) > reach) continue;
+
+          this.routed = KNIGHT_ROUT_FRAMES;
+          this.coil = 0;
+          this.lunging = 0;
+          this.stalk = 0;
+          this.strain = 0;
+          this.fleeing = STALKER_FLEE_FRAMES;
+          this.lungeCooldown = STALKER_LUNGE_COOLDOWN;
+          if (this.seizing) {
+            // whatever it had hold of, it lets go of
+            this.seizing.fear = Math.min(1, this.seizing.fear + 0.3);
+            this.seizing = null;
+            this.seizeProgress = 0;
+          }
+          c.wardFlash = KNIGHT_FLASH_FRAMES;
+          for (let i = 0; i < 14 && particles.length < CONFIG.MAX_PARTICLES; i++) {
+            particles.push(new Particle(this.x, this.y, "void", 190));
+          }
+          break;
+        }
+      } else {
+        this.routed--;
+      }
 
       // Light is unbearable, not merely inconvenient.
       //
@@ -4675,7 +4934,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
         this.x += this.vx;
         this.y += this.vy;
         this.stare = Math.atan2(prey.y - this.y, prey.x - this.x);
-        if (this.observed > 0.7 || liveLightAt(this.x, this.y) > STALKER_FREEZE_HI) {
+        // a knight near enough to matter breaks the wind-up, the way light does
+        let warded = false;
+        for (const c of creatures) {
+          if (c.isDead || c.knightPower() < 0.2) continue;
+          if (Math.hypot(c.x - this.x, c.y - this.y) < KNIGHT_WARD_R + c.knightPower() * 40) {
+            warded = true;
+            break;
+          }
+        }
+        if (warded || this.observed > 0.7 || liveLightAt(this.x, this.y) > STALKER_FREEZE_HI) {
           // caught in the act of winding up. it loses the whole stalk for it.
           this.coil = 0;
           this.stalk = 0;
@@ -4865,7 +5133,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const d = Math.hypot(c.x - this.x, c.y - this.y);
         if (d > STALKER_DREAD_R) continue;
         const near = 1 - d / STALKER_DREAD_R;
-        c.fear = Math.min(1, c.fear + near * near * STALKER_DREAD_RATE * (1 - c.stability * 0.4));
+        const nerve = c.isKnight ? Math.max(0.05, 0.3 - c.knightPower() * 0.25) : 1;
+        c.fear = Math.min(
+          1,
+          c.fear + near * near * STALKER_DREAD_RATE * (1 - c.stability * 0.4) * nerve
+        );
       }
     }
 
@@ -5036,7 +5308,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         // a breath of glow, so they carry through the fog without lighting the
         // ground the way a creature would
         const halo = ctx.createRadialGradient(ex, ey, 0, ex, ey, s * 0.9);
-        halo.addColorStop(0, `rgba(226, 240, 255, ${0.3 * alpha})`);
+        halo.addColorStop(0, `rgba(226, 245, 255, ${0.3 * alpha})`);
         halo.addColorStop(1, "transparent");
         ctx.beginPath();
         ctx.arc(ex, ey, s * 0.9, 0, Math.PI * 2);
@@ -5071,6 +5343,48 @@ export function initVoidGame(options: GameInitOptions): () => void {
    * opposite of what that setting asks for.
    */
   /**
+   * Whether a newborn comes out of the nest as something more.
+   *
+   * Nothing here is a dice roll standing on its own. Every term is a thing the
+   * visitor did on purpose over a long time: hands laid on the parent again and
+   * again, a parent kept alive long enough to be old, a line carried far enough
+   * to have a history behind it. Depth barely registers, deliberately, because
+   * descending is cheap and none of the rest is.
+   *
+   * A knight born to a knight inherits at least one oddity and nothing else.
+   * Being the child of one is not an achievement; it is a family.
+   */
+  function anointIfWorthy(baby: Creature, parent: Creature, inNest: boolean): void {
+    if (parent.isKnight) {
+      // the line remembers, whether or not the child is anointed
+      baby.specials.push(SPECIAL_TRAITS[Math.floor(Math.random() * SPECIAL_TRAITS.length)]);
+    }
+
+    if (!inNest) return;
+
+    const care = Math.min(1, parent.memories.petCount / KNIGHT_PET_GOAL);
+    const tenure = Math.min(1, parent.age / CONFIG.ADULT_AGE);
+    const line = Math.min(1, parent.generation / KNIGHT_GEN_GOAL);
+    // very, very slight
+    const deep = Math.min(0.12, currentDepth * 0.004);
+
+    const odds = KNIGHT_BASE * (care * 0.5 + tenure * 0.25 + line * 0.25) + deep * care;
+    if (Math.random() > odds) return;
+
+    baby.isKnight = true;
+    baby.vigor = 0.15;
+    baby.bornDepth = currentDepth;
+    if (!baby.specials.length) {
+      baby.specials.push(SPECIAL_TRAITS[Math.floor(Math.random() * SPECIAL_TRAITS.length)]);
+    }
+
+    showToast(`${baby.name} wakes up different`);
+    for (let i = 0; i < 26 && particles.length < CONFIG.MAX_PARTICLES; i++) {
+      particles.push(new Particle(baby.x, baby.y, "birth", 190));
+    }
+  }
+
+  /**
    * How inviting is this creature, right now? A product of three terms, each in
    * 0..1 or near it, so any one of them going safe calls the hunt off.
    *
@@ -5092,7 +5406,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       if (o === c || o.isDead) continue;
       const d = Math.hypot(o.x - c.x, o.y - c.y);
       if (d > STALKER_HERD_R) continue;
-      herd += 1 - d / STALKER_HERD_R;
+      // A knight never hunts and never patrols. It is only a creature that is
+      // not afraid, and it counts for many where it stands, because the sum a
+      // stalker already does is the one place it needs to appear. Company is
+      // what makes a creature not worth taking, and a knight is a lot of it.
+      herd += (1 - d / STALKER_HERD_R) * (1 + o.knightPower() * KNIGHT_HERD_WEIGHT);
     }
     const solitude = 1 / (1 + herd * herd * 1.6);
 
@@ -5462,6 +5780,15 @@ export function initVoidGame(options: GameInitOptions): () => void {
       anticipation: c.anticipation,
       vx: c.vx,
       vy: c.vy,
+      // Knighthood has to survive a descent. Creatures are serialised and
+      // rebuilt on every depth change, so leaving these out quietly stripped
+      // the title off any knight the moment it was carried through a hole,
+      // which is the exact journey the whole thing exists for.
+      isKnight: c.isKnight,
+      vigor: c.vigor,
+      specials: c.specials.slice(),
+      bornDepth: c.bornDepth,
+      depthStrain: c.depthStrain,
     };
   }
 
@@ -5469,6 +5796,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
     c.id = data.id || c.id;
     c.name = data.name || c.name;
     c.generation = data.generation || 0;
+    c.isKnight = data.isKnight ?? false;
+    c.vigor = data.vigor ?? 0;
+    c.specials = Array.isArray(data.specials) ? data.specials.slice() : [];
+    c.bornDepth = data.bornDepth ?? currentDepth;
+    c.depthStrain = data.depthStrain ?? 0;
     c.openness = data.openness ?? 0.5;
     c.conscientiousness = data.conscientiousness ?? 0.5;
     c.extraversion = data.extraversion ?? 0.5;
@@ -6431,7 +6763,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
       if (tooltipStatsEl) {
         tooltipStatsEl.innerHTML = `<span>energy ${Math.round(c.energy)}%</span><span>happy ${Math.round(c.happiness)}%</span><span>${trustWord}${fearInfo}</span>`;
       }
-      if (tooltipPersonalityEl) tooltipPersonalityEl.textContent = getPersonalityDescription(c);
+      if (tooltipPersonalityEl) {
+        const base = getPersonalityDescription(c);
+        // whatever a knight passed down leads the line, because it is the part
+        // that was earned rather than rolled
+        tooltipPersonalityEl.textContent = c.specials.length
+          ? `${c.specials.join(", ")} · ${base}`
+          : base;
+      }
 
       const tooltipW = 140, tooltipH = 80;
       const tx = Math.min(W - tooltipW, Math.max(10, c.x + c.displaySize + 15));
@@ -6569,6 +6908,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     for (const s of stalkers) s.draw();
 
     const renderCreatures = [...creatures].sort((a, b) => a.y - b.y);
+    for (const c of renderCreatures) c.drawWard();
     for (const c of renderCreatures) c.draw();
 
     for (const p of particles) p.draw();
