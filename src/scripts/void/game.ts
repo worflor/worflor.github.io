@@ -449,9 +449,84 @@ for (let i = 0; i < FISSURE_LEVELS; i++) {
 }
 
 // scratch, allocated once and reused across every fissure
-const _fsLevel = new Int8Array(512);
-const _fsWq = new Int8Array(512);
-let _fsTarget = new Float32Array(512);
+const FISSURE_SCRATCH = 512;
+const _fsLevel = new Int8Array(FISSURE_SCRATCH);
+const _fsWq = new Int8Array(FISSURE_SCRATCH);
+let _fsTarget = new Float32Array(FISSURE_SCRATCH);
+
+// Depth widens and lengthens a fissure, and both saturate here.
+//
+// These two ceilings are not taste, they are what the draw path can express.
+// The stroke quantiser rounds to a half pixel and clamps at 7 (3.5px), so any
+// width past that is painted at 3.5px while the kill test keeps reading the
+// raw number, and the lethal zone silently walks away from the visible crack.
+// The segment buffers hold FISSURE_SCRATCH entries at ~10px each, and draw()
+// bails outright past that, so a longer crack renders as nothing at all while
+// staying lethal. Left unbounded, depth 20k gave a 4,803px killbox drawn 3.5px
+// wide, out of a 134,000-segment path that never appeared.
+const FISSURE_MAX_WIDTH = 3.4;
+const FISSURE_MAX_LENGTH = (FISSURE_SCRATCH - 32) * 10;
+// forgiveness margin between the painted stroke and the lethal radius, so the
+// hazard reads as slightly smaller than it looks rather than slightly larger
+const FISSURE_KILL_MARGIN = 2;
+
+// Darkness as a felt thing.
+//
+// LIT_SAFE is the one answer to "how lit does a place have to be before it
+// counts as safe", shared by creature dread and by a stalker's appetite so the
+// two can never disagree about what dark means. It is measured on the ring, and
+// it is deliberately high: territory that has merely been walked through once
+// sits around 0.2-0.4, and that is not safety, that is a fading trail. Only a
+// pool that has been stood in reaches past this.
+const LIT_SAFE = 0.55;
+const DARK_DREAD_RATE = 0.0022;
+// bounds on the sampling ring. the radius itself is per creature, three
+// quarters of its own reach, so the test always sits just inside the edge of
+// whatever glow that creature actually casts.
+const DARK_RING_MIN = 26;
+const DARK_RING_MAX = 96;
+
+// Stalkers. Light on the stalker itself decides what it may do: below LO it
+// moves freely, above HI it is pinned, and the band between is a smoothstep so
+// it creeps to a halt rather than snapping.
+const STALKER_FREEZE_LO = 0.14;
+const STALKER_FREEZE_HI = 0.4;
+const STALKER_HERD_R = 78;
+const STALKER_DREAD_R = 130;
+// unease per frame at the very centre of that radius, before stability resists
+const STALKER_DREAD_RATE = 0.0022;
+const STALKER_SEIZE_R = 15;
+const STALKER_SEIZE_FRAMES = 75;
+// A take has to cost it a long silence. Reproduction needs roughly nine
+// thousand frames of being fed, happy and unstressed before it even rolls, so a
+// predator that ate every fifteen seconds outpaced the colony seven to one and
+// simply emptied the world. At a minute of dormancy per kill the arithmetic
+// lands where it should: neglect the colony and it dwindles, tend it and it
+// grows. The visitor is the variable, not the timer.
+const STALKER_SATED_FRAMES = 3600;
+// and it will not take a creature that is only half exposed
+const STALKER_SEIZE_APPETITE = 0.55;
+// how near the visitor's pointer counts as being looked at
+const STALKER_GAZE_R = 95;
+// how near it must hold station for the watch to count, and for how long
+const STALKER_STALK_R = 90;
+const STALKER_STALK_FRAMES = 150;
+const STALKER_SPOOK_FRAMES = 420;
+const STALKER_STANDOFF_FAR = 130;
+const STALKER_STANDOFF_NEAR = 12;
+// terminal velocity is SPEED * 0.8 * boldness * (0.3 + 0.7 * opportunity), so
+// this is a ~0.6px/frame drift when uninterested and ~2.1px/frame when it has
+// committed, which is enough to shadow a towed creature without ever outrunning
+// one that flees toward light
+// below this much boldness it is caught and stops outright
+const STALKER_PIN = 0.2;
+const STALKER_SPEED = 2.8;
+const STALKER_MIN_DEPTH = 2;
+const STALKER_MAX = 3;
+// horizontal slices the body is torn into
+const STALKER_BANDS = 3;
+// narrowest the eyes get, as a fraction of their width
+const STALKER_EYE_MIN = 0.5;
 
 const PARTICLE_COLORS: Record<string, (h: number, a: number) => string> = {
   birth: (h, a) => `hsla(${h}, 40%, 80%, ${a})`,
@@ -1100,6 +1175,59 @@ export function initVoidGame(options: GameInitOptions): () => void {
     const gy = Math.floor(y / revealRes);
     if (gx < 0 || gx >= revealW || gy < 0 || gy >= revealH) return 0;
     return revealMap[gy * revealW + gx];
+  }
+
+  /**
+   * Illumination falling on a point right now, from the creatures themselves.
+   *
+   * This is a different question from the reveal map, and conflating the two
+   * broke the weeping rule outright. Reveal accumulates and decays at 0.0004 a
+   * frame, so ground stays lit for the better part of a minute after anything
+   * walked through it. A stalker pinned by that is pinned by history: towing a
+   * creature across the floor painted a permanent wall of light, froze whatever
+   * was following in the wake, and turned the lantern into a weapon that only
+   * had to be waved once.
+   *
+   * Being observed has to be live. This sums what the creatures are actually
+   * casting at this instant, so light moves when they move, and the moment one
+   * carries its glow away the thing behind it is free again.
+   */
+  function liveLightAt(x: number, y: number): number {
+    let lit = 0;
+    for (const c of creatures) {
+      if (c.isDead) continue;
+      const reach = c.revealRadius * (0.4 + c.warmth * 0.9);
+      const d = Math.hypot(c.x - x, c.y - y);
+      if (d >= reach) continue;
+      lit += (1 - d / reach) * (0.5 + c.glow * 0.5);
+      if (lit >= 1) return 1;
+    }
+    return lit;
+  }
+
+  /**
+   * Light in the ring around a point rather than at the point itself.
+   *
+   * Sampling the centre is what made every darkness test in this file quietly
+   * inert. A creature is a light source, so it stands in its own glow and reads
+   * as safe no matter how black the room around it is. That is why the drop
+   * penalty in putdown() almost never fired: by the time you set one down, it
+   * had lit its own landing spot.
+   *
+   * The ring asks the question that actually matters, which is whether anything
+   * around it is lit, and it is what makes dwelling pay. Reveal accumulates in
+   * proportion to 1 - d/radius, so the outer ring fills several times slower
+   * than the centre: a pool that has been stood in reaches past it within a
+   * couple of seconds, while a trail dragged behind a moving creature never
+   * does. Hurrying through the black is dark by this measure. Stopping is not.
+   */
+  function surroundLight(x: number, y: number, radius: number): number {
+    let sum = 0;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      sum += getLightAt(x + Math.cos(a) * radius, y + Math.sin(a) * radius);
+    }
+    return sum / 8;
   }
 
   // ============================================================================
@@ -2035,7 +2163,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
         const d = this.getDistanceTo(c.x, c.y);
 
-        if (d < this.baseWidth + 2) {
+        // baseWidth is clamped to FISSURE_MAX_WIDTH at spawn, which is also
+        // where the stroke quantiser tops out, so this radius cannot drift
+        // away from the crack the visitor can actually see
+        if (d < Math.min(this.baseWidth, FISSURE_MAX_WIDTH) + FISSURE_KILL_MARGIN) {
           c.die("fell into a fissure");
           for (let i = 0; i < 10 && particles.length < CONFIG.MAX_PARTICLES; i++) {
             const angle = Math.random() * Math.PI * 2;
@@ -2704,6 +2835,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     // Cached values
     _cachedSpeed: number;
     _energyNorm: number;
+    /** how inviting this creature is to a stalker, recomputed once per frame */
+    _opportunity: number;
     _claimedFood: Food | null;
     _voidChorusTimer: number;
     _voidChorusStrength: number;
@@ -2836,10 +2969,27 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       // Cached
       this._cachedSpeed = 0;
+      this._opportunity = 0;
       this._energyNorm = this.energy / 100;
       this._claimedFood = null;
       this._voidChorusTimer = 0;
       this._voidChorusStrength = 0;
+    }
+
+    /**
+     * Just inside the edge of this creature's own glow.
+     *
+     * A fixed ring cannot work, because reveal is only deposited out to
+     * revealRadius * warmthMultiplier and a cold creature's bubble is barely
+     * thirty pixels across. Sampling beyond that reads permanent black no
+     * matter how long it stands still, which silently made dwelling worthless
+     * for exactly the creatures most in need of it. At three quarters of its
+     * own reach the falloff still deposits, so a creature that stays put fills
+     * this ring in a few seconds and one that keeps moving never does.
+     */
+    glowRing(): number {
+      const reach = this.revealRadius * (0.4 + this.warmth * 0.9);
+      return Math.max(DARK_RING_MIN, Math.min(DARK_RING_MAX, reach * 0.75));
     }
 
     getLifeStage(): LifeStage {
@@ -2907,7 +3057,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
     putdown(): void {
       this.targetSquash = 0.85;
 
-      const lightLevel = getLightAt(this.x, this.y);
+      // the ring, not the point. measured at its own position this test was
+      // very nearly impossible to fail: a carried creature lights the exact
+      // spot it is about to be set down on, so the penalty for abandoning one
+      // in the dark almost never fired.
+      const lightLevel = surroundLight(this.x, this.y, this.glowRing());
       if (lightLevel < 0.2) {
         this.memories.droppedInDark++;
         this.fear = Math.min(1, this.fear + 0.15);
@@ -3490,6 +3644,36 @@ export function initVoidGame(options: GameInitOptions): () => void {
         this.lonely = Math.max(0, this.lonely - 0.002);
       }
 
+      // The dark itself
+      //
+      // Nothing here used to read the light, so being swallowed by the black
+      // cost a creature nothing and carrying one as a lantern was free: a held
+      // creature skips every hazard force, and the one penalty landed on
+      // release, by which point it had lit its own landing spot. Dread accrues
+      // wherever it is genuinely dark.
+      //
+      // The counter is already in the reveal physics rather than invented
+      // here. Light accumulates at roughly 0.01 per frame against a decay of
+      // 0.0004, so standing still saturates a pool in under two seconds while
+      // moving leaves a thin trail behind. Dwelling is safe, hurrying through
+      // fresh dark is not, and dragging one by the hand is worst of all.
+      const litHere = surroundLight(this.x, this.y, this.glowRing());
+      if (litHere < LIT_SAFE) {
+        const gloom = (LIT_SAFE - litHere) / LIT_SAFE;
+        const neuroticism = 1 - this.stability;
+        // company answers the dark, and nearbyCount is already to hand
+        const company = Math.min(1, nearbyCount / 3);
+        // held creatures have no ground under them and cannot flee toward light
+        const exposure = this === heldCreature ? 1.8 : 1;
+        const dread =
+          gloom * gloom * (0.45 + neuroticism * 0.9) * (1 - company * 0.75) * exposure;
+        // fear only, deliberately. stress above 0.4 blocks reproduction, and
+        // creatures spend much of their lives in fresh dark, so paying dread
+        // into stress would quietly sterilise the colony. the dark should make
+        // them want the light, not make them barren.
+        this.fear = Math.min(1, this.fear + dread * DARK_DREAD_RATE);
+      }
+
       // Fatigue
       if (this._cachedSpeed > 0.5) {
         this.fatigue = Math.min(1, this.fatigue + 0.0002);
@@ -4018,6 +4202,520 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   // ============================================================================
+  // STALKER
+  // ============================================================================
+
+  /**
+   * The thing that lives further down.
+   *
+   * Depth used to be expressed by widening fissures, which is a hitbox
+   * impersonating a threat. This is what carries depth instead: pressure that
+   * scales by behaviour rather than by radius.
+   *
+   * Two rules do the work, and both are continuous rather than boolean, so the
+   * world never flickers between states.
+   *
+   * Light is observation. A stalker may only move through dark it is standing
+   * in. As light reaches it, it slows; in a bright pool it stops completely and
+   * can be seen plainly, which is the moment the visitor learns what has been
+   * following them. Nothing teleports and nothing snaps.
+   *
+   * Opportunity decides whether it is interested at all, and it is a product,
+   * so any single term near zero calls the hunt off. A creature alone in the
+   * black is an opportunity. A creature in a lit huddle is not: darkness at the
+   * target multiplies against solitude, and solitude counts neighbours by how
+   * well lit they are. Nobody has to be told this. It is learnable by watching,
+   * which is the entire point of the page.
+   *
+   * The lantern case falls out of those two rules rather than being special
+   * cased anywhere. A carried creature is maximally vulnerable and drags a thin
+   * trail of light behind it, so the darkest approach lies directly under the
+   * visitor's own hand. Stand still and the reveal pool saturates outward,
+   * floods that approach, and the thing beneath you freezes into view. It
+   * cannot take a creature out of your grip. It waits for you to set them down,
+   * which is what makes setting them down a decision.
+   */
+  class Stalker {
+    x = 0;
+    y = 0;
+    vx = 0;
+    vy = 0;
+    size = 11;
+    phase = Math.random() * 100;
+    /** smoothed, 1 when free to move and 0 when pinned by light */
+    boldness = 0;
+    /** smoothed appetite for the current target */
+    opportunity = 0;
+    /** fades in on arrival and out when sated, so nothing pops */
+    presence = 0;
+    target: Creature | null = null;
+    /** frames of commitment, so it does not swap target every frame */
+    lock = 0;
+    seizing: Creature | null = null;
+    seizeProgress = 0;
+    sated = 0;
+    /** smoothed bearing of the stare */
+    stare = 0;
+    /**
+     * How long it has held a close, unobserved watch. Only a full stalk may
+     * strike. Without this the approach was gradual but the kill was not: every
+     * gate on the seize was instantaneous, so a stalker that happened to drift
+     * into range with the conditions met took a creature on that same frame.
+     */
+    stalk = 0;
+    /** smoothed sense of the visitor's attention resting on it */
+    observed = 0;
+
+    constructor() {
+      // arrive from the darkest edge available
+      let best = -1;
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        const px = W / 2 + Math.cos(a) * (W / 2 - 6);
+        const py = H / 2 + Math.sin(a) * (H / 2 - 6);
+        const dark = 1 - getLightAt(px, py);
+        if (dark > best) {
+          best = dark;
+          this.x = px;
+          this.y = py;
+        }
+      }
+      this.size = 10 + Math.random() * 3;
+    }
+
+    /** Hysteresis: only switch away from a committed target for a clearly better one. */
+    chooseTarget(): void {
+      const current = this.target && !this.target.isDead ? this.target : null;
+      const currentScore = current ? current._opportunity : 0;
+
+      let best = current;
+      let bestScore = currentScore * (this.lock > 0 ? 1.35 : 1);
+
+      for (const c of creatures) {
+        if (c.isDead || c === current) continue;
+        const score = c._opportunity;
+        if (score > bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      }
+
+      if (best !== current) {
+        this.target = best;
+        this.lock = 120;
+      } else {
+        this.target = current;
+        if (this.lock > 0) this.lock--;
+      }
+
+      const raw = this.target ? this.target._opportunity : 0;
+      this.opportunity += (raw - this.opportunity) * 0.04;
+    }
+
+    update(): void {
+      this.phase += 0.013;
+
+      if (this.sated > 0) {
+        this.sated--;
+        this.presence = Math.max(0, this.presence - 0.008);
+        this.target = null;
+        this.stalk = 0;
+        this.opportunity *= 0.96;
+        // withdraw toward the nearest edge while it digests
+        const ex = this.x < W / 2 ? -1 : 1;
+        this.x += ex * 0.35;
+        return;
+      }
+
+      this.presence = Math.min(1, this.presence + 0.006);
+
+      // Observation, and it must be live rather than remembered. What pins it
+      // is a creature casting light on it at this instant, not the fading print
+      // of somewhere one has been. The bearing search below still reads the
+      // reveal map, because routing is a question about territory: it prefers
+      // to come through ground nothing has established.
+      const lit = liveLightAt(this.x, this.y);
+      const t = Math.max(0, Math.min(1, (lit - STALKER_FREEZE_LO) / (STALKER_FREEZE_HI - STALKER_FREEZE_LO)));
+      const pinned = t * t * (3 - 2 * t);
+      this.boldness += (1 - pinned - this.boldness) * 0.07;
+
+      // The visitor's attention is the other kind of light, and the only
+      // counterplay that costs nothing and needs no creature. A pointer resting
+      // on or near it is a gaze, and a thing that moves solely when unobserved
+      // cannot move under one. It applies as a cap rather than through the
+      // smoothing, so looking bites at once while light still creeps.
+      const gaze = Math.hypot(mouse.x - this.x, mouse.y - this.y);
+      const seen = gaze < STALKER_GAZE_R ? 1 - gaze / STALKER_GAZE_R : 0;
+      this.observed += (seen - this.observed) * 0.3;
+      if (this.observed > 0.01) {
+        this.boldness = Math.min(this.boldness, 1 - this.observed);
+      }
+
+      this.chooseTarget();
+
+      // a seizure in progress is its own state, and light breaks it
+      if (this.seizing) {
+        if (this.seizing.isDead) {
+          this.seizing = null;
+          this.seizeProgress = 0;
+        } else if (this.boldness < 0.25 || this.seizing === heldCreature) {
+          // caught in the light, or plucked out of its grip: let go and recoil
+          this.seizing.fear = Math.min(1, this.seizing.fear + 0.4);
+          this.seizing = null;
+          this.seizeProgress = 0;
+          this.sated = STALKER_SPOOK_FRAMES;
+        } else {
+          const prey = this.seizing;
+          this.x += (prey.x - this.x) * 0.25;
+          this.y += (prey.y - this.y) * 0.25;
+          prey.fear = 1;
+          prey.stress = Math.min(1, prey.stress + 0.02);
+          residueGrid.deposit(prey.x, prey.y, "distress", 0.06);
+          this.seizeProgress++;
+          if (this.seizeProgress >= STALKER_SEIZE_FRAMES) {
+            prey.die("taken");
+            this.seizing = null;
+            this.seizeProgress = 0;
+            this.sated = STALKER_SATED_FRAMES;
+          }
+          this.emitDread();
+          return;
+        }
+      }
+
+      const prey = this.target;
+      if (!prey && this.lock > 0) {
+        // whatever it was watching is gone. withdraw rather than instantly
+        // fixing on the next one, which would read as a machine working down a
+        // list instead of something that hunts.
+        this.lock = 0;
+        this.sated = STALKER_SPOOK_FRAMES;
+      }
+      if (prey) {
+        // hold at a distance that closes as the opportunity ripens, and stand
+        // on the darkest bearing available. that single preference is what puts
+        // it under a moving lantern and what pushes it out of a settled pool.
+        const standoff = STALKER_STANDOFF_FAR - (STALKER_STANDOFF_FAR - STALKER_STANDOFF_NEAR) * this.opportunity;
+        const base = Math.atan2(this.y - prey.y, this.x - prey.x);
+        let bestX = this.x;
+        let bestY = this.y;
+        let bestScore = -Infinity;
+        for (let k = 0; k < 7; k++) {
+          const a = base + (k - 3) * 0.42;
+          const px = prey.x + Math.cos(a) * standoff;
+          const py = prey.y + Math.sin(a) * standoff;
+          if (px < 8 || px > W - 8 || py < 8 || py > H - 8) continue;
+          // darkness, less a small penalty for swinging around the target, so
+          // it creeps around the arc instead of jumping across it
+          const score = 1 - getLightAt(px, py) - Math.abs(k - 3) * 0.035;
+          if (score > bestScore) {
+            bestScore = score;
+            bestX = px;
+            bestY = py;
+          }
+        }
+
+        // Light slows it steeply but not to a crawl, until the pin threshold
+        // where it stops outright. Scaling linearly all the way down made a
+        // carried creature into a moving force field: the stalker followed
+        // through the ground its target had just lit, was held at half speed by
+        // that same trail, and so could never keep pace with even a slow drag.
+        // The floor lets it hold station at the edge of the glow, which is
+        // where a thing that only moves unobserved belongs.
+        const pinned = this.boldness < STALKER_PIN;
+        const speed = pinned
+          ? 0
+          : STALKER_SPEED * (0.25 + 0.75 * this.boldness) * (0.3 + 0.7 * this.opportunity);
+        const dx = bestX - this.x;
+        const dy = bestY - this.y;
+        const d = Math.hypot(dx, dy) || 1;
+        this.vx += (dx / d) * speed * 0.08;
+        this.vy += (dy / d) * speed * 0.08;
+
+        // being looked at, it looks back
+        this.stare =
+          this.observed > 0.3
+            ? Math.atan2(mouse.y - this.y, mouse.x - this.x)
+            : Math.atan2(prey.y - this.y, prey.x - this.x);
+
+        const reach = Math.hypot(prey.x - this.x, prey.y - this.y);
+
+        // The stalk. A strike is earned by holding a close, unobserved watch
+        // rather than by arriving, and everything that breaks the watch empties
+        // it three times faster than it fills: light, a glance from the
+        // visitor, the target reaching company or reaching a lit place. So a
+        // stalk can be interrupted at any point up to the last moment, and the
+        // eyes brighten the whole time it is building, which is the tell.
+        // Holding the watch only requires that it is not pinned, not that it is
+        // in perfect dark. Demanding real darkness was self-defeating: a
+        // creature is a light source, so coming inside stalking range meant
+        // standing in its glow, which broke the very watch that closing the
+        // distance was for. Measured over nine thousand frames the stalk peaked
+        // at 0.84 and never once completed. The edge of the glow is exactly
+        // where this thing belongs; the final lunge still demands a dark moment.
+        const watching =
+          this.boldness > STALKER_PIN + 0.1 &&
+          this.opportunity > STALKER_SEIZE_APPETITE &&
+          reach < STALKER_STALK_R;
+        this.stalk = watching
+          ? Math.min(1, this.stalk + 1 / STALKER_STALK_FRAMES)
+          : Math.max(0, this.stalk - 3 / STALKER_STALK_FRAMES);
+
+        // the take. never from the visitor's hand, and never the last one left.
+        if (
+          reach < STALKER_SEIZE_R &&
+          prey !== heldCreature &&
+          this.boldness > 0.6 &&
+          this.stalk >= 1 &&
+          creatures.length > 1
+        ) {
+          this.seizing = prey;
+          this.seizeProgress = 0;
+        }
+      } else {
+        // nothing worth watching: the stalk lapses, and it drifts
+        this.stalk = Math.max(0, this.stalk - 3 / STALKER_STALK_FRAMES);
+        this.vx += (Math.sin(this.phase * 0.7) * 0.5 - this.vx) * 0.01;
+        this.vy += (Math.cos(this.phase * 0.53) * 0.5 - this.vy) * 0.01;
+      }
+
+      // boldness is already folded into the acceleration above, so it is not
+      // applied again here. under real light it is damped to a visible halt
+      // instead, which reads as being caught rather than as wading through mud.
+      const held = this.boldness < STALKER_PIN;
+      this.vx *= held ? 0.6 : 0.9;
+      this.vy *= held ? 0.6 : 0.9;
+      this.x += this.vx;
+      this.y += this.vy;
+      this.x = Math.max(6, Math.min(W - 6, this.x));
+      this.y = Math.max(6, Math.min(H - 6, this.y));
+
+      this.emitDread();
+    }
+
+    /**
+     * Creatures know before the visitor does. This is the tell that something
+     * is wrong, and it arrives as unease in the colony rather than as a noise.
+     *
+     * Fear only. An earlier version also laid down distress residue every frame
+     * it was near anything, and residue feeds stress, and stress costs 0.003
+     * energy a frame against a base drain a third that size. A stalker that
+     * merely loitered was quietly starving the colony from across the room, and
+     * a lone creature it was forbidden to touch still died of it in about
+     * eighty seconds. The seize deposits distress, because that is a real
+     * emergency; standing nearby is not.
+     */
+    emitDread(): void {
+      for (const c of creatures) {
+        if (c.isDead) continue;
+        const d = Math.hypot(c.x - this.x, c.y - this.y);
+        if (d > STALKER_DREAD_R) continue;
+        const near = 1 - d / STALKER_DREAD_R;
+        c.fear = Math.min(1, c.fear + near * near * STALKER_DREAD_RATE * (1 - c.stability * 0.4));
+      }
+    }
+
+    /** A creature's silhouette, so it reads as one of them until it does not. */
+    bodyPath(): Path2D {
+      const p = new Path2D();
+      const s = this.size;
+      const N = 12;
+      const px: number[] = [];
+      const py: number[] = [];
+      for (let i = 0; i < N; i++) {
+        const a = (i / N) * Math.PI * 2;
+        // the same two-harmonic wobble the creatures use, run slower and
+        // shallower, so the shape is familiar but somehow inert
+        const r = s * (1 + Math.sin(a * 3 + this.phase * 1.4) * 0.05 + Math.sin(a * 2 - this.phase * 0.9) * 0.04);
+        px.push(Math.cos(a) * r);
+        py.push(Math.sin(a) * r * 1.05);
+      }
+      p.moveTo((px[N - 1] + px[0]) / 2, (py[N - 1] + py[0]) / 2);
+      for (let i = 0; i < N; i++) {
+        const j = (i + 1) % N;
+        p.quadraticCurveTo(px[i], py[i], (px[i] + px[j]) / 2, (py[i] + py[j]) / 2);
+      }
+      p.closePath();
+      return p;
+    }
+
+    draw(): void {
+      if (this.presence <= 0.01) return;
+      const path = this.bodyPath();
+      const s = this.size;
+
+      ctx.save();
+      ctx.translate(this.x, this.y);
+
+      // the site's chromatic language, pushed past anything a real creature
+      // would show, and stepped rather than eased so it reads as a bad frame
+      const step = (v: number, n: number) => Math.round(v * n) / n;
+      const jx = step(Math.sin(this.phase * 7.3), 2) * 1.4;
+      const jy = step(Math.cos(this.phase * 5.1), 2) * 1.0;
+      // the wrongness intensifies with commitment rather than with appetite, so
+      // what the visitor sees widening is a stalk actually being built
+      const split = (1.5 + this.stalk * 2.8) * this.presence;
+
+      const ghost = (dx: number, dy: number, fill: string) => {
+        ctx.save();
+        ctx.translate(dx, dy);
+        ctx.fillStyle = fill;
+        ctx.fill(path);
+        ctx.restore();
+      };
+
+      ctx.globalCompositeOperation = "lighter";
+      ghost(-split + jx, jy, `rgba(0, 190, 214, ${0.17 * this.presence})`);
+      ghost(split + jx, -jy, `rgba(220, 44, 62, ${0.15 * this.presence})`);
+
+      // the body is an absence, not a colour: darker than the floor it sits on,
+      // and torn into horizontal bands that slip against each other. a creature
+      // wobbles as one piece, so a silhouette that comes apart in slices is the
+      // cheapest way to say this is the same shape rendered wrongly.
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = `rgba(3, 3, 6, ${0.88 * this.presence})`;
+      const span = s * 2.6;
+      const band = span / STALKER_BANDS;
+      for (let i = 0; i < STALKER_BANDS; i++) {
+        const slip = step(Math.sin(this.phase * 6.1 + i * 2.27), 3) * (0.5 + this.stalk * 1.9);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(-s * 2, -s * 1.3 + i * band, s * 4, band);
+        ctx.clip();
+        ctx.translate(slip, 0);
+        ctx.fill(path);
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    /**
+     * Drawn after the fog, because the eyes are the whole motif: out in the
+     * dark there is nothing to see but two white points, already turned toward
+     * whatever they want. Frozen in light they widen and stop moving at all.
+     */
+    drawThroughFog(): void {
+      if (this.presence <= 0.02) return;
+
+      const s = this.size;
+      const frozen = 1 - this.boldness;
+      // wide and unblinking when pinned, narrowing when it is free to move.
+      // the floor stays high enough that they still read as a pair of eyes
+      // rather than as two dashes when it is roaming.
+      const open = STALKER_EYE_MIN + frozen * (1 - STALKER_EYE_MIN);
+      // Eyes sit side by side and stay that way, exactly as the creatures' do,
+      // with only the gaze sliding within the face. Spacing them along the
+      // normal to the stare made the pair rotate with the target, so looking
+      // sideways stood them one above the other like a colon, which reads as a
+      // different species rather than as one of them gone wrong.
+      const spacing = s * 0.3;
+      const look = this.stare;
+      const lx = Math.cos(look) * s * 0.22;
+      const ly = Math.sin(look) * s * 0.22;
+      // Out in the fog the eyes are all there is, so they carry the warning:
+      // dim while it is merely watching, bright by the time it is ready.
+      const alpha = (0.42 + 0.58 * this.stalk) * this.presence;
+
+      for (const side of [-1, 1]) {
+        const ex = this.x + lx + spacing * side;
+        const ey = this.y + ly;
+
+        // a breath of glow, so they carry through the fog without lighting the
+        // ground the way a creature would
+        const halo = ctx.createRadialGradient(ex, ey, 0, ex, ey, s * 0.9);
+        halo.addColorStop(0, `rgba(226, 240, 255, ${0.3 * alpha})`);
+        halo.addColorStop(1, "transparent");
+        ctx.beginPath();
+        ctx.arc(ex, ey, s * 0.9, 0, Math.PI * 2);
+        ctx.fillStyle = halo;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.ellipse(ex, ey, s * 0.13, s * 0.13 * open, 0, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(248, 252, 255, ${alpha})`;
+        ctx.fill();
+      }
+    }
+  }
+
+  const stalkers: Stalker[] = [];
+
+  /**
+   * Population is capped hard and gated on depth, so the first screens teach
+   * the world before anything hunts in it.
+   *
+   * One creature is enough for a stalker to exist, and that is deliberate. A
+   * world opens with a single creature and only reaches two by reproduction,
+   * which takes thousands of frames of attentive feeding, so gating on a colony
+   * would hide the mechanic behind an hour of play and would miss the exact
+   * case it was built for: the visitor carrying their only companion through
+   * the dark. With one creature the stalker shadows and looms and freezes when
+   * lit, teaching the whole rule at no cost, because the seize below refuses to
+   * take the last one. When the colony grows, the threat becomes real.
+   *
+   * Depth is the real gate. Two descents is a deliberate act, and nothing hunts
+   * before then. Under reduced motion none are spawned at all: an ambush is the
+   * opposite of what that setting asks for.
+   */
+  /**
+   * How inviting is this creature, right now? A product of three terms, each in
+   * 0..1 or near it, so any one of them going safe calls the hunt off.
+   *
+   * This is a property of the creature and not of the watcher, so it is
+   * computed once per frame and read by every stalker. Recomputing it per
+   * stalker meant a herd scan and eight light samples per creature per stalker,
+   * which is the same answer arrived at three times.
+   */
+  function creatureOpportunity(c: Creature): number {
+    // the ring around it, not the creature's own glow, which is always lit
+    const gloom = 1 - Math.min(1, surroundLight(c.x, c.y, c.glowRing()) / LIT_SAFE);
+    if (gloom <= 0.02) return 0;
+
+    // company. a huddle answers the dark twice over: the neighbours deter in
+    // themselves, and their pooled reveal is what lifts the ring above, so
+    // grouping up in the light drives both terms toward zero at once.
+    let herd = 0;
+    for (const o of creatures) {
+      if (o === c || o.isDead) continue;
+      const d = Math.hypot(o.x - c.x, o.y - c.y);
+      if (d > STALKER_HERD_R) continue;
+      herd += 1 - d / STALKER_HERD_R;
+    }
+    const solitude = 1 / (1 + herd * herd * 1.6);
+
+    let vulnerability = 1;
+    // carried: no ground under it, no flight, and a thin trail of light
+    if (c === heldCreature) vulnerability += 0.9;
+    if (c.sleeping) vulnerability += 0.35;
+    vulnerability += (1 - c.stability) * 0.25;
+
+    return Math.min(1, gloom * solitude * vulnerability);
+  }
+
+  function updateStalkers(): void {
+    const want =
+      reduceMotion || currentDepth < STALKER_MIN_DEPTH || creatures.length < 1
+        ? 0
+        : Math.min(STALKER_MAX, 1 + Math.floor((currentDepth - STALKER_MIN_DEPTH) / 5));
+
+    if (stalkers.length < want && Math.random() < 0.005) {
+      stalkers.push(new Stalker());
+    }
+    while (stalkers.length > want) {
+      stalkers.pop();
+    }
+    if (!stalkers.length) return;
+
+    // one pass for the whole colony, before anything reads it
+    for (const c of creatures) {
+      c._opportunity = c.isDead ? 0 : creatureOpportunity(c);
+    }
+
+    for (const s of stalkers) s.update();
+  }
+
+  // ============================================================================
   // TERRAIN & SPAWNING FUNCTIONS
   // ============================================================================
 
@@ -4216,6 +4914,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
     foods = [];
     particles = [];
     emotes = [];
+    // the creature array is rebuilt below, so a surviving stalker would be left
+    // holding a target that no longer exists in the world and never updates
+    stalkers.length = 0;
     initRevealMap();
     generateTerrain(currentDepth, pathSeed + currentDepth * 12345);
 
@@ -4274,6 +4975,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     particles = [];
     emotes = [];
     terrainFeatures = [];
+    // same as the descent path: never carry a stalker across a world rebuild
+    stalkers.length = 0;
     initRevealMap();
     if (currentDepth > 0) {
       generateTerrain(currentDepth, pathSeed + currentDepth * 12345);
@@ -5023,9 +5726,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
       dir = Math.atan2(ty - y, tx - x) + (rng() - 0.5) * 0.6;
     }
 
+    // depth still grows a fissure, it just stops growing without limit. past
+    // the knee the pressure of depth is carried by what lives down there
+    // instead, which scales by behaviour rather than by hitbox.
     const depthScale = 1 + currentDepth * 0.12;
-    const maxLength = (220 + rng() * 340) * depthScale;
-    const width = (1.2 + rng() * 1.8) * (1 + currentDepth * 0.08);
+    const maxLength = Math.min(FISSURE_MAX_LENGTH, (220 + rng() * 340) * depthScale);
+    const width = Math.min(FISSURE_MAX_WIDTH, (1.2 + rng() * 1.8) * (1 + currentDepth * 0.08));
     fissures.push(new Fissure(x, y, dir, maxLength, width, null, rng));
   }
 
@@ -5213,6 +5919,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
     }
     emotes.length = activeCount;
+
+    // after the creatures have moved and lit the world, so a stalker reads the
+    // light that exists now rather than the light from the previous frame
+    updateStalkers();
 
     for (const hole of holes) hole.update();
     for (const m of monoliths) m.update();
@@ -5439,6 +6149,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
     for (const m of monoliths) m.draw();
     for (const f of foods) f.draw();
 
+    // under the creatures: it should look like it is standing behind them
+    for (const s of stalkers) s.draw();
+
     const renderCreatures = [...creatures].sort((a, b) => a.y - b.y);
     for (const c of renderCreatures) c.draw();
 
@@ -5450,6 +6163,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     for (const hole of holes) hole.drawThroughFog();
     for (const m of monoliths) m.drawThroughFog();
     for (const n of nests) n.drawThroughFog();
+    for (const s of stalkers) s.drawThroughFog();
 
     if (mouse.down && mouse.holdTime > 0) {
       const pulse = Math.sin(time * 0.2) * 0.2 + 0.8;
