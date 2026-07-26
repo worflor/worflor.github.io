@@ -464,6 +464,14 @@ let _fsTarget = new Float32Array(FISSURE_SCRATCH);
 // bails outright past that, so a longer crack renders as nothing at all while
 // staying lethal. Left unbounded, depth 20k gave a 4,803px killbox drawn 3.5px
 // wide, out of a 134,000-segment path that never appeared.
+// Growth probes a fan of headings and takes the cheapest, so these govern how
+// deliberate the spread looks: a wider arc wanders, a higher turn cost holds a
+// line, and BLOCKED is the resistance at which it would rather fork than force.
+const FISSURE_PROBES = 9;
+const FISSURE_ARC = 1.15;
+const FISSURE_TURN_COST = 0.55;
+const FISSURE_BLOCKED = 1.9;
+const FISSURE_MAX_SEGMENTS = FISSURE_SCRATCH - 32;
 const FISSURE_MAX_WIDTH = 3.4;
 const FISSURE_MAX_LENGTH = (FISSURE_SCRATCH - 32) * 10;
 // forgiveness margin between the painted stroke and the lethal radius, so the
@@ -533,6 +541,9 @@ const STALKER_STANDOFF_NEAR = 82;
 // one that flees toward light
 // below this much boldness it is caught and stops outright
 const STALKER_PIN = 0.2;
+// how fast being held in light becomes unbearable. at full light this is about
+// six seconds of standing there before it gives up and goes somewhere else.
+const STALKER_STRAIN_RATE = 0.0038;
 const STALKER_SPEED = 2.8;
 const STALKER_MIN_DEPTH = 2;
 const STALKER_MAX = 3;
@@ -1219,6 +1230,59 @@ export function initVoidGame(options: GameInitOptions): () => void {
   }
 
   /**
+   * How much this ground resists being torn open.
+   *
+   * A fracture is not a random walk. It runs where the material is weakest and
+   * deflects around anything stiffer than its surroundings, which is why real
+   * cracks fork around an inclusion rather than driving through it, and why
+   * hyphae fan around an obstacle instead of drilling it. Everything a fissure
+   * avoids falls out of this one number, so there is no list of things to dodge
+   * and anything given a presence later is respected for free.
+   *
+   * The last term is what makes the floor feel awake. Creatures work the ground
+   * they spend time on, a fracture grows toward load, and residue already
+   * records where they have been. So a crack leans toward the colony, and the
+   * moment the visitor lifts a creature out of its path that pull stops being
+   * fed and decays, and the crack drifts off the line it was on. Nobody
+   * scripted the swerve.
+   */
+  function fissureResistance(x: number, y: number): number {
+    if (x < 6 || x > W - 6 || y < 6 || y > H - 6) return 5;
+
+    // tended ground resists. light means somewhere the colony has settled and
+    // keeps returning to, and splitting that open reads as spite.
+    let r = getLightAt(x, y) * 1.7;
+
+    // inclusions. a nest is packed and occupied and a monolith is a footing
+    // driven into the floor; neither shatters the way bare ground does.
+    for (const n of nests) {
+      const d = Math.hypot(x - n.x, y - n.y);
+      const reach = n.radius * 2.2;
+      if (d < reach) r += (1 - d / reach) * 3.6;
+    }
+    for (const m of monoliths) {
+      if (m.presence < 0.05) continue;
+      const d = Math.hypot(x - m.x, y - m.y);
+      const reach = 55 + m.presence * 45;
+      if (d < reach) r += (1 - d / reach) * 2.6;
+    }
+
+    // voids. there is nothing left to tear at the lip of a hole, so a crack
+    // arriving at one has nowhere to propagate and runs along it instead.
+    for (const h of holes) {
+      const d = Math.hypot(x - h.x, y - h.y);
+      const reach = h.radius + 48;
+      if (d < reach) r += (1 - d / reach) * 4.4;
+    }
+
+    // load
+    const res = residueGrid.sample(x, y);
+    r -= res.distress * 1.2 + res.safety * 0.35;
+
+    return r;
+  }
+
+  /**
    * Light in the ring around a point rather than at the point itself.
    *
    * Sampling the centre is what made every darkness test in this file quietly
@@ -1865,6 +1929,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     rng: () => number;
     /** how much of the generated path has actually torn open */
     grownCount: number;
+    /** it has nowhere left to grow, either walled in or at its full length */
+    spent: boolean;
     tearTimer: number;
     tearTarget: number;
     tearAccum: number;
@@ -1888,6 +1954,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.baseWidth = width;
       this.jaggedness = jaggedness ?? 0.3 + this.rng() * 0.5;
       this.grownCount = 1;
+      this.spent = false;
       this.tearTimer = 0;
       this.tearTarget = 1;
       this.tearAccum = 0;
@@ -1899,93 +1966,143 @@ export function initVoidGame(options: GameInitOptions): () => void {
         maxY: startY,
       };
 
-      this.generatePath();
-
-      // A crack seeded on the boundary frequently turned straight back out and
-      // terminated as a 2-6 segment stub welded to the edge of the screen, where
-      // no creature ever goes and no light ever reaches. Those stubs still
-      // counted against the cap, so most of the budget was invisible by
-      // construction. Re-roll the walk rather than keep one.
-      let attempts = 0;
-      while (this.segments.length < 12 && attempts++ < 3) {
-        this.segments.length = 1;
-        this.branches.length = 0;
-        this.direction = direction + (this.rng() - 0.5) * 1.4;
-        this.generatePath();
+      // A few segments up front so a new crack is a crack rather than a dot.
+      // The rest arrives through the tear cadence, one considered step at a
+      // time, which is the whole point: it has to be able to look before it
+      // decides. Stubs welded to the edge sort themselves out now, because the
+      // interior is lower resistance than the wall and the field pulls inward
+      // without anyone having to re-roll the walk.
+      for (let i = 0; i < 4; i++) {
+        if (!this.growSegment()) break;
       }
+      this.grownCount = this.segments.length;
 
       if (reduceMotion) {
-        // present and static: fully formed, permanently legible, no tearing
+        // present and static: formed at once, permanently legible, no tearing
+        while (this.growSegment()) {
+          /* to its full length in one go */
+        }
         this.grownCount = this.segments.length;
         for (const seg of this.segments) seg.seen = 1;
       }
-
-      this.computeBounds();
     }
 
-    generatePath(): void {
-      const taperStart = 0.7;
-      let reflections = 0;
+    /**
+     * One step, chosen at the moment it is taken.
+     *
+     * The whole path used to be drawn inside the constructor, so a crack knew
+     * its entire future before it moved: it could not avoid a nest that was
+     * already standing there, could not react to a creature, and could not
+     * change its mind. Growing one segment at a time lets the same tear cadence
+     * read the world it is actually tearing, for a handful of samples every few
+     * dozen frames.
+     */
+    growSegment(): boolean {
+      if (this.segments.length >= FISSURE_MAX_SEGMENTS) return false;
+      if (this.segments.length * 10 >= this.maxLength) return false;
 
-      while (true) {
-        const last = this.segments[this.segments.length - 1];
-        const progress = (this.segments.length * 10) / this.maxLength;
+      const last = this.segments[this.segments.length - 1];
+      const step = 6 + this.rng() * 8;
+      const look = step * 2.4;
 
-        this.direction += (this.rng() - 0.5) * this.jaggedness;
+      let bestDir = this.direction;
+      let bestScore = Infinity;
+      let altDir = this.direction;
+      let altScore = Infinity;
 
-        const stepSize = 6 + this.rng() * 8;
-        let newX = last.x + Math.cos(this.direction) * stepSize;
-        let newY = last.y + Math.sin(this.direction) * stepSize;
+      for (let k = 0; k < FISSURE_PROBES; k++) {
+        const spread = (k / (FISSURE_PROBES - 1) - 0.5) * 2 * FISSURE_ARC;
+        const dir = this.direction + spread + (this.rng() - 0.5) * this.jaggedness * 0.4;
+        const px = last.x + Math.cos(dir) * look;
+        const py = last.y + Math.sin(dir) * look;
 
-        // A fracture that meets the edge of a slab turns and runs along it. It
-        // does not evaporate. Mirror the offending component and carry on.
-        if (newX < 4 || newX > W - 4) {
-          this.direction = Math.PI - this.direction;
-          reflections++;
-          newX = last.x + Math.cos(this.direction) * stepSize;
-          newY = last.y + Math.sin(this.direction) * stepSize;
-        } else if (newY < 4 || newY > H - 4) {
-          this.direction = -this.direction;
-          reflections++;
-          newX = last.x + Math.cos(this.direction) * stepSize;
-          newY = last.y + Math.sin(this.direction) * stepSize;
-        }
-        newX = Math.max(4, Math.min(W - 4, newX));
-        newY = Math.max(4, Math.min(H - 4, newY));
-        if (reflections > 3) break;
+        // turning costs, so the tip curves through the field rather than
+        // jittering across it every step
+        let score = fissureResistance(px, py) + Math.abs(spread) * FISSURE_TURN_COST;
 
-        let segmentWidth = this.baseWidth;
-        if (progress > taperStart) {
-          segmentWidth *= 1 - ((progress - taperStart) / (1 - taperStart)) * 0.6;
-        }
-        if (this.segments.length < 3) {
-          segmentWidth *= 0.5 + this.segments.length * 0.2;
-        }
-
-        this.segments.push({ x: newX, y: newY, width: segmentWidth, lit: 0, seen: 0 });
-
-        const branchChance = progress > 0.2 && progress < 0.8 ? 0.06 : 0.02;
-        if (this.rng() < branchChance && this.branches.length < 3) {
-          const branchDir =
-            this.direction + (this.rng() > 0.5 ? 1 : -1) * (0.6 + this.rng() * 0.6);
-          const branch = new Fissure(
-            newX,
-            newY,
-            branchDir,
-            this.maxLength * (0.25 + this.rng() * 0.2),
-            this.baseWidth * 0.6,
-            this.jaggedness * (0.8 + this.rng() * 0.4),
-            this.rng
-          );
-          // a fork opens behind the leading tip, never ahead of it
-          branch.attachIndex = this.segments.length - 1;
-          this.branches.push(branch);
+        // and it will not crawl back over itself, which is what turns a walk
+        // into something that spreads
+        const from = Math.max(0, this.segments.length - 16);
+        for (let i = from; i < this.segments.length - 1; i++) {
+          const sx = this.segments[i].x - px;
+          const sy = this.segments[i].y - py;
+          if (sx * sx + sy * sy < 340) score += 1.7;
         }
 
-        if (progress >= 1) {
-          break;
+        if (score < bestScore) {
+          altScore = bestScore;
+          altDir = bestDir;
+          bestScore = score;
+          bestDir = dir;
+        } else if (score < altScore) {
+          altScore = score;
+          altDir = dir;
         }
       }
+
+      // Met something. Fork around it rather than force through, which is what
+      // hyphae do at an obstacle and what makes the spread read as searching
+      // instead of aiming.
+      if (
+        bestScore > FISSURE_BLOCKED &&
+        this.branches.length < 3 &&
+        this.segments.length > 5 &&
+        altScore < bestScore + 1.2
+      ) {
+        this.fork(last.x, last.y, altDir);
+      }
+      // walled in on every heading: stop here rather than tunnel through
+      if (bestScore > FISSURE_BLOCKED * 1.7) return false;
+
+      this.direction = bestDir;
+      let nx = last.x + Math.cos(this.direction) * step;
+      let ny = last.y + Math.sin(this.direction) * step;
+
+      // a fracture meeting the edge of a slab turns and runs along it
+      if (nx < 4 || nx > W - 4) {
+        this.direction = Math.PI - this.direction;
+        nx = last.x + Math.cos(this.direction) * step;
+        ny = last.y + Math.sin(this.direction) * step;
+      } else if (ny < 4 || ny > H - 4) {
+        this.direction = -this.direction;
+        nx = last.x + Math.cos(this.direction) * step;
+        ny = last.y + Math.sin(this.direction) * step;
+      }
+      nx = Math.max(4, Math.min(W - 4, nx));
+      ny = Math.max(4, Math.min(H - 4, ny));
+
+      const progress = (this.segments.length * 10) / this.maxLength;
+      let segmentWidth = this.baseWidth;
+      if (progress > 0.7) segmentWidth *= 1 - ((progress - 0.7) / 0.3) * 0.6;
+      if (this.segments.length < 3) segmentWidth *= 0.5 + this.segments.length * 0.2;
+
+      this.segments.push({ x: nx, y: ny, width: segmentWidth, lit: 0, seen: 0 });
+
+      // an ordinary fork now and then, independent of any obstacle
+      const forkChance = progress > 0.2 && progress < 0.8 ? 0.05 : 0.015;
+      if (this.rng() < forkChance && this.branches.length < 3) {
+        this.fork(nx, ny, this.direction + (this.rng() > 0.5 ? 1 : -1) * (0.6 + this.rng() * 0.6));
+      }
+
+      if (nx < this.bounds.minX) this.bounds.minX = nx;
+      if (nx > this.bounds.maxX) this.bounds.maxX = nx;
+      if (ny < this.bounds.minY) this.bounds.minY = ny;
+      if (ny > this.bounds.maxY) this.bounds.maxY = ny;
+      return true;
+    }
+
+    fork(x: number, y: number, dir: number): void {
+      const branch = new Fissure(
+        x,
+        y,
+        dir,
+        this.maxLength * (0.25 + this.rng() * 0.2),
+        this.baseWidth * 0.6,
+        this.jaggedness * 1.2,
+        this.rng
+      );
+      branch.attachIndex = this.segments.length - 1;
+      this.branches.push(branch);
     }
 
     computeBounds(): void {
@@ -2167,6 +2284,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     update(): void {
       this.tear();
+      // forks were never ticked, so every branch stayed frozen at the length it
+      // was born with while the trunk went on without it
+      for (const branch of this.branches) {
+        if (this.grownCount > branch.attachIndex) branch.tear();
+      }
       this.sampleLight();
 
       for (const c of creatures) {
@@ -2206,7 +2328,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
      */
     tear(): void {
       if (reduceMotion) return;
-      if (this.grownCount >= this.segments.length) return;
+      if (this.spent) return;
 
       if (this.tearTimer > 0) {
         this.tearTimer--;
@@ -2214,10 +2336,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
 
       if (this.grownCount >= this.tearTarget) {
-        this.tearTarget = Math.min(
-          this.segments.length,
-          this.grownCount + FISSURE_TEAR_BURST_MIN + Math.floor(this.rng() * FISSURE_TEAR_BURST_VAR)
-        );
+        this.tearTarget =
+          this.grownCount + FISSURE_TEAR_BURST_MIN + Math.floor(this.rng() * FISSURE_TEAR_BURST_VAR);
         this.tearAccum = 0;
         // the tear emits its own faint light for the moment it happens: you
         // glimpse the floor splitting, then the dark takes it back
@@ -2229,7 +2349,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.tearAccum++;
       if (this.tearAccum >= FISSURE_TEAR_SEG_FRAMES) {
         this.tearAccum = 0;
-        this.grownCount++;
+        // grow it now, against the world as it stands this frame
+        if (!this.growSegment()) {
+          this.spent = true;
+          return;
+        }
+        this.grownCount = this.segments.length;
         if (this.grownCount >= this.tearTarget) {
           const restScale = Math.max(0.45, 1 - currentDepth * 0.06);
           this.tearTimer =
@@ -4343,6 +4468,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
     fleeing = 0;
     /** the price of having crossed the light */
     lungeCooldown = 0;
+    /**
+     * How long it has been held in light it cannot leave. The creatures have
+     * stress and it should too: being pinned is not free, it is unbearable.
+     */
+    strain = 0;
+    /** unmaking itself, on the way to somewhere darker */
+    dissolving = false;
 
     constructor() {
       // arrive from the darkest edge available
@@ -4394,6 +4526,40 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.phase += 0.013;
 
       if (this.lungeCooldown > 0) this.lungeCooldown--;
+
+      // Light is unbearable, not merely inconvenient.
+      //
+      // Pinning was absolute, so a stalker caught in the middle of a lit floor
+      // simply stopped there and stayed, forever, in plain sight. That is the
+      // one state that breaks the spell: the thing that is frightening because
+      // it only moves unobserved becomes a stuck ornament the moment you look
+      // at it for long enough. Strain gives it a way out that costs it the
+      // hunt. It comes apart where it stands and reassembles somewhere dark,
+      // and all the visitor sees is a pair of eyes fading out and another pair
+      // opening across the room.
+      if (this.dissolving) {
+        this.presence -= 0.045;
+        this.stalk = 0;
+        this.target = null;
+        this.vx *= 0.8;
+        this.vy *= 0.8;
+        if (this.presence <= 0) {
+          this.relocate();
+          this.dissolving = false;
+          this.strain = 0;
+          this.presence = 0;
+          this.sated = STALKER_SPOOK_FRAMES;
+        }
+        return;
+      }
+
+      const pinnedNow = liveLightAt(this.x, this.y);
+      if (pinnedNow > STALKER_FREEZE_LO) {
+        this.strain = Math.min(1, this.strain + pinnedNow * STALKER_STRAIN_RATE);
+        if (this.strain >= 1) this.dissolving = true;
+      } else {
+        this.strain = Math.max(0, this.strain - STALKER_STRAIN_RATE * 1.6);
+      }
 
       // Running. Whatever just happened, it wants the dark and nothing else,
       // and this is the only time it moves faster than the creatures do.
@@ -4701,6 +4867,44 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const near = 1 - d / STALKER_DREAD_R;
         c.fear = Math.min(1, c.fear + near * near * STALKER_DREAD_RATE * (1 - c.stability * 0.4));
       }
+    }
+
+    /**
+     * Somewhere dark, and not somewhere the visitor is looking.
+     *
+     * The same darkest-of-several-candidates search the constructor uses, run
+     * over the whole floor instead of the rim, and biased away from the pointer
+     * so it never rematerialises under the cursor that just drove it off.
+     */
+    relocate(): void {
+      let bestScore = -Infinity;
+      let bx = this.x;
+      let by = this.y;
+      for (let i = 0; i < 24; i++) {
+        const px = 40 + this.rngRoll() * (W - 80);
+        const py = 40 + this.rngRoll() * (H - 80);
+        const gaze = Math.hypot(mouse.x - px, mouse.y - py);
+        const score =
+          -liveLightAt(px, py) * 2 -
+          getLightAt(px, py) +
+          Math.min(gaze, 400) / 400;
+        if (score > bestScore) {
+          bestScore = score;
+          bx = px;
+          by = py;
+        }
+      }
+      this.x = bx;
+      this.y = by;
+      this.vx = 0;
+      this.vy = 0;
+      this.boldness = 1;
+      this.observed = 0;
+      this.lungeCooldown = Math.max(this.lungeCooldown, STALKER_LUNGE_COOLDOWN >> 1);
+    }
+
+    rngRoll(): number {
+      return Math.random();
     }
 
     /** A creature's silhouette, so it reads as one of them until it does not. */
