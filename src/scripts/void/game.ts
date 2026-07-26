@@ -511,9 +511,22 @@ const STALKER_GAZE_R = 95;
 // how near it must hold station for the watch to count, and for how long
 const STALKER_STALK_R = 90;
 const STALKER_STALK_FRAMES = 150;
+// the lunge: wind-up, dash, and the bolt for cover afterwards
+const STALKER_COIL_FRAMES = 14;
+const STALKER_LUNGE_FRAMES = 42;
+const STALKER_LUNGE_RANGE = 150;
+const STALKER_LUNGE_SPEED = 4.2;
+const STALKER_FLEE_FRAMES = 90;
+const STALKER_FLEE_SPEED = 5;
+// a miss still costs it the better part of half a minute in the dark
+const STALKER_LUNGE_COOLDOWN = 1500;
 const STALKER_SPOOK_FRAMES = 420;
 const STALKER_STANDOFF_FAR = 130;
-const STALKER_STANDOFF_NEAR = 12;
+// how close it presses to something it cannot strike
+const STALKER_STANDOFF_LOOM = 12;
+// and how far back it waits from something it can, which is the length of the
+// lunge and so the length of the visitor's warning
+const STALKER_STANDOFF_NEAR = 82;
 // terminal velocity is SPEED * 0.8 * boldness * (0.3 + 0.7 * opportunity), so
 // this is a ~0.6px/frame drift when uninterested and ~2.1px/frame when it has
 // committed, which is enough to shadow a towed creature without ever outrunning
@@ -2653,14 +2666,71 @@ export function initVoidGame(options: GameInitOptions): () => void {
       return true;
     }
 
+    /**
+     * What the nest is for, drawn.
+     *
+     * Occupants build a proximity bond every frame they share it, friendship
+     * lands at strength 0.5, and a creature with any friend reproduces at one
+     * and a half times the rate. Every part of that already worked and none of
+     * it was ever visible, which is the whole reason the nest read as scenery.
+     * A thread per pair, brightening as the bond does and turning warm at
+     * friendship, says it without a word of UI.
+     */
+    drawBonds(easeIn: number): void {
+      if (this.occupants.size < 2) return;
+
+      const here: Creature[] = [];
+      for (const c of creatures) {
+        if (this.occupants.has(c.id)) here.push(c);
+      }
+
+      for (let i = 0; i < here.length; i++) {
+        for (let j = i + 1; j < here.length; j++) {
+          const a = here[i];
+          const b = here[j];
+          const bond = a.bonds.get(b.id);
+          if (!bond) continue;
+
+          const friends = a.friends.has(b.id);
+          const alpha = Math.min(0.42, 0.07 + bond.strength * 0.8) * easeIn;
+          // the thread sags toward the hearth, so a full nest reads as
+          // gathered around something rather than strung between posts
+          const mx = (a.x + b.x) * 0.35 + this.x * 0.3;
+          const my = (a.y + b.y) * 0.35 + this.y * 0.3;
+
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.quadraticCurveTo(mx, my, b.x, b.y);
+          ctx.strokeStyle = friends
+            ? `rgba(255, 196, 132, ${alpha})`
+            : `rgba(158, 150, 142, ${alpha * 0.55})`;
+          ctx.lineWidth = friends ? 1.1 : 0.7;
+          ctx.stroke();
+        }
+      }
+    }
+
     drawThroughFog(): void {
       const easeIn = this.getEaseIn();
-      if (easeIn < 0.3 || this.occupancyGlow < 0.1) return;
+      if (easeIn < 0.2) return;
 
-      const alpha = 0.03 * this.occupancyGlow * easeIn;
+      // A nest has to be findable from across a dark room. It was a two pixel
+      // dot at three percent opacity, so the creatures' pull toward it looked
+      // like aimless drift, and the visitor had no reason to believe the place
+      // meant anything. This is the one warm landmark that survives the fog,
+      // and it brightens as the nest fills.
+      const warm = 0.12 + this.occupancyGlow * 0.55;
+      const pulse = 1 + Math.sin(this.warmthPulse) * 0.06;
+      const r = this.radius * 0.9 * pulse;
+
+      const glow = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, r);
+      glow.addColorStop(0, `rgba(255, 186, 120, ${0.17 * warm * easeIn})`);
+      glow.addColorStop(0.5, `rgba(208, 128, 78, ${0.075 * warm * easeIn})`);
+      glow.addColorStop(1, "transparent");
+
       ctx.beginPath();
-      ctx.arc(this.x, this.y, 2, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(180, 140, 100, ${alpha})`;
+      ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = glow;
       ctx.fill();
     }
 
@@ -4265,6 +4335,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
     stalk = 0;
     /** smoothed sense of the visitor's attention resting on it */
     observed = 0;
+    /** gathering itself, utterly still. the last moment this can be broken. */
+    coil = 0;
+    /** committed and crossing lit ground. light does not stop it here. */
+    lunging = 0;
+    /** running for the dark, as fast as it moves all game */
+    fleeing = 0;
+    /** the price of having crossed the light */
+    lungeCooldown = 0;
 
     constructor() {
       // arrive from the darkest edge available
@@ -4314,6 +4392,35 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     update(): void {
       this.phase += 0.013;
+
+      if (this.lungeCooldown > 0) this.lungeCooldown--;
+
+      // Running. Whatever just happened, it wants the dark and nothing else,
+      // and this is the only time it moves faster than the creatures do.
+      if (this.fleeing > 0) {
+        this.fleeing--;
+        this.stalk = 0;
+        this.target = null;
+        let bestA = this.stare + Math.PI;
+        let bestDark = -Infinity;
+        for (let k = 0; k < 8; k++) {
+          const a = (k / 8) * Math.PI * 2;
+          const px = this.x + Math.cos(a) * 90;
+          const py = this.y + Math.sin(a) * 90;
+          if (px < 10 || px > W - 10 || py < 10 || py > H - 10) continue;
+          const dark = 1 - liveLightAt(px, py) - getLightAt(px, py) * 0.4;
+          if (dark > bestDark) {
+            bestDark = dark;
+            bestA = a;
+          }
+        }
+        this.vx += (Math.cos(bestA) * STALKER_FLEE_SPEED - this.vx) * 0.25;
+        this.vy += (Math.sin(bestA) * STALKER_FLEE_SPEED - this.vy) * 0.25;
+        this.x = Math.max(6, Math.min(W - 6, this.x + this.vx));
+        this.y = Math.max(6, Math.min(H - 6, this.y + this.vy));
+        this.emitDread();
+        return;
+      }
 
       if (this.sated > 0) {
         this.sated--;
@@ -4376,6 +4483,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
             prey.die("taken");
             this.seizing = null;
             this.seizeProgress = 0;
+            this.fleeing = STALKER_FLEE_FRAMES;
+            this.lungeCooldown = STALKER_LUNGE_COOLDOWN;
             this.sated = STALKER_SATED_FRAMES;
           }
           this.emitDread();
@@ -4391,11 +4500,89 @@ export function initVoidGame(options: GameInitOptions): () => void {
         this.lock = 0;
         this.sated = STALKER_SPOOK_FRAMES;
       }
+      // Gathering itself. Utterly still, aimed, and readable: this is the last
+      // instant the visitor can break it, with a light or a look.
+      if (prey && this.coil > 0) {
+        this.coil--;
+        this.vx *= 0.6;
+        this.vy *= 0.6;
+        this.x += this.vx;
+        this.y += this.vy;
+        this.stare = Math.atan2(prey.y - this.y, prey.x - this.x);
+        if (this.observed > 0.7 || liveLightAt(this.x, this.y) > STALKER_FREEZE_HI) {
+          // caught in the act of winding up. it loses the whole stalk for it.
+          this.coil = 0;
+          this.stalk = 0;
+          this.fleeing = STALKER_FLEE_FRAMES;
+          this.lungeCooldown = STALKER_LUNGE_COOLDOWN;
+        } else if (this.coil === 0) {
+          this.lunging = STALKER_LUNGE_FRAMES;
+        }
+        this.emitDread();
+        return;
+      }
+
+      // The commitment.
+      //
+      // Everywhere else in this class light is an absolute veto, which is
+      // correct for something that only moves unobserved and is also why a
+      // creature standing in its own glow was untouchable no matter how alone
+      // it was. This is the one exception, and it is bought rather than given:
+      // a full stalk, in range, off cooldown, and paid for afterwards with a
+      // long silence. It crosses lit ground at four times its creeping speed,
+      // strikes, and runs.
+      if (prey && this.lunging > 0) {
+        this.lunging--;
+        const ldx = prey.x - this.x;
+        const ldy = prey.y - this.y;
+        const ld = Math.hypot(ldx, ldy) || 1;
+        this.vx += ((ldx / ld) * STALKER_LUNGE_SPEED - this.vx) * 0.3;
+        this.vy += ((ldy / ld) * STALKER_LUNGE_SPEED - this.vy) * 0.3;
+        this.x = Math.max(6, Math.min(W - 6, this.x + this.vx));
+        this.y = Math.max(6, Math.min(H - 6, this.y + this.vy));
+        this.stare = Math.atan2(ldy, ldx);
+        this.stalk = 0;
+
+        if (ld < STALKER_SEIZE_R + 6 && prey !== heldCreature) {
+          if (creatures.length > 1) {
+            this.seizing = prey;
+            this.seizeProgress = 0;
+            this.lunging = 0;
+          } else {
+            // The last one is never taken, but it is not spared the fright.
+            // Without this a lone creature made the predator inert, which is
+            // exactly the dead air that asked for a lunge in the first place.
+            prey.fear = 1;
+            prey.energy = Math.max(1, prey.energy - 12);
+            prey.vx += (ldx / ld) * 6;
+            prey.vy += (ldy / ld) * 6;
+            prey.addMemory("bad", prey.x, prey.y, 0.6);
+            residueGrid.deposit(prey.x, prey.y, "distress", 0.08);
+            this.lunging = 0;
+          }
+        }
+
+        if (this.lunging === 0 && !this.seizing) {
+          this.fleeing = STALKER_FLEE_FRAMES;
+          this.lungeCooldown = STALKER_LUNGE_COOLDOWN;
+        }
+        this.emitDread();
+        return;
+      }
+
       if (prey) {
         // hold at a distance that closes as the opportunity ripens, and stand
         // on the darkest bearing available. that single preference is what puts
         // it under a moving lantern and what pushes it out of a settled pool.
-        const standoff = STALKER_STANDOFF_FAR - (STALKER_STANDOFF_FAR - STALKER_STANDOFF_NEAR) * this.opportunity;
+        // How close it is willing to hold depends on whether it can actually do
+        // anything from there. A creature in the visitor's hand cannot be
+        // struck, so it presses right in and looms under it. A free creature
+        // can, so it keeps the length of a lunge between them and lets the dash
+        // close the gap. Holding at arm's length in both cases left the lunge
+        // with twenty pixels to cross, which read as a twitch rather than a
+        // charge, and cost the loom under the hand nothing to fix.
+        const near = prey === heldCreature ? STALKER_STANDOFF_LOOM : STALKER_STANDOFF_NEAR;
+        const standoff = STALKER_STANDOFF_FAR - (STALKER_STANDOFF_FAR - near) * this.opportunity;
         const base = Math.atan2(this.y - prey.y, this.x - prey.x);
         let bestX = this.x;
         let bestY = this.y;
@@ -4461,16 +4648,17 @@ export function initVoidGame(options: GameInitOptions): () => void {
           ? Math.min(1, this.stalk + 1 / STALKER_STALK_FRAMES)
           : Math.max(0, this.stalk - 3 / STALKER_STALK_FRAMES);
 
-        // the take. never from the visitor's hand, and never the last one left.
+        // The strike is now only ever reached through a lunge, so every death
+        // in this world is preceded by a wind-up and a dash the visitor can
+        // see. A quiet grab in the dark was cheaper to write and read as a
+        // creature simply vanishing.
         if (
-          reach < STALKER_SEIZE_R &&
-          prey !== heldCreature &&
-          this.boldness > 0.6 &&
           this.stalk >= 1 &&
-          creatures.length > 1
+          this.lungeCooldown <= 0 &&
+          reach < STALKER_LUNGE_RANGE &&
+          prey !== heldCreature
         ) {
-          this.seizing = prey;
-          this.seizeProgress = 0;
+          this.coil = STALKER_COIL_FRAMES;
         }
       } else {
         // nothing worth watching: the stalk lapses, and it drifts
@@ -4552,9 +4740,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const step = (v: number, n: number) => Math.round(v * n) / n;
       const jx = step(Math.sin(this.phase * 7.3), 2) * 1.4;
       const jy = step(Math.cos(this.phase * 5.1), 2) * 1.0;
-      // the wrongness intensifies with commitment rather than with appetite, so
-      // what the visitor sees widening is a stalk actually being built
-      const split = (1.5 + this.stalk * 2.8) * this.presence;
+      // One value drives the whole look: how close this thing is to acting. It
+      // rises across the stalk, pins at full through the wind-up and the dash,
+      // and drops the instant it is running away. The stalk alone was not
+      // enough, because a lunge zeroes it and the body would have gone calm at
+      // the exact moment it was most dangerous.
+      const menace = this.coil > 0 || this.lunging > 0 ? 1 : this.stalk;
+      const split = (1.5 + menace * 2.8) * this.presence;
 
       const ghost = (dx: number, dy: number, fill: string) => {
         ctx.save();
@@ -4564,7 +4756,21 @@ export function initVoidGame(options: GameInitOptions): () => void {
         ctx.restore();
       };
 
+      // winding up: it gathers, wider and lower, the way anything does before
+      // it throws itself somewhere
+      if (this.coil > 0) {
+        const t = 1 - this.coil / STALKER_COIL_FRAMES;
+        ctx.scale(1 + t * 0.2, 1 - t * 0.15);
+      }
+
       ctx.globalCompositeOperation = "lighter";
+
+      // mid-dash the fringe drags behind it, so the direction it committed in
+      // is legible from a still frame
+      if (this.lunging > 0) {
+        ghost(-this.vx * 1.5, -this.vy * 1.5, `rgba(0, 190, 214, ${0.13 * this.presence})`);
+        ghost(-this.vx * 2.8, -this.vy * 2.8, `rgba(220, 44, 62, ${0.09 * this.presence})`);
+      }
       ghost(-split + jx, jy, `rgba(0, 190, 214, ${0.17 * this.presence})`);
       ghost(split + jx, -jy, `rgba(220, 44, 62, ${0.15 * this.presence})`);
 
@@ -4577,7 +4783,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const span = s * 2.6;
       const band = span / STALKER_BANDS;
       for (let i = 0; i < STALKER_BANDS; i++) {
-        const slip = step(Math.sin(this.phase * 6.1 + i * 2.27), 3) * (0.5 + this.stalk * 1.9);
+        const slip = step(Math.sin(this.phase * 6.1 + i * 2.27), 3) * (0.5 + menace * 1.9);
         ctx.save();
         ctx.beginPath();
         ctx.rect(-s * 2, -s * 1.3 + i * band, s * 4, band);
@@ -4614,8 +4820,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const lx = Math.cos(look) * s * 0.22;
       const ly = Math.sin(look) * s * 0.22;
       // Out in the fog the eyes are all there is, so they carry the warning:
-      // dim while it is merely watching, bright by the time it is ready.
-      const alpha = (0.42 + 0.58 * this.stalk) * this.presence;
+      // dim while it is merely watching, bright by the time it is ready, and
+      // full through the wind-up and the dash.
+      const menace = this.coil > 0 || this.lunging > 0 ? 1 : this.stalk;
+      const alpha = (0.42 + 0.58 * menace) * this.presence;
 
       for (const side of [-1, 1]) {
         const ex = this.x + lx + spacing * side;
@@ -6145,7 +6353,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     for (const f of fissures) f.draw();
     for (const hole of holes) hole.draw();
-    for (const n of nests) n.draw();
+    for (const n of nests) {
+      n.draw();
+      // under the creatures, so the threads read as running between them
+      n.drawBonds(n.getEaseIn());
+    }
     for (const m of monoliths) m.draw();
     for (const f of foods) f.draw();
 
