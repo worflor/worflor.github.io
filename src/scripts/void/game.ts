@@ -107,6 +107,11 @@ interface SpawnPositionConfig {
 interface SerializedCreature {
   /** knighthood, optional so saves written before it still load */
   isKnight?: boolean;
+  glowLoss?: number;
+  dreadFloor?: number;
+  drainExtra?: number;
+  marked?: number;
+  afflictions?: string[];
   vigor?: number;
   specials?: string[];
   bornDepth?: number;
@@ -573,6 +578,58 @@ const KNIGHT_ROUT_POWER = 0.35;
 // how long a stalker stays turned around, and how long the answering flare runs
 const KNIGHT_ROUT_FRAMES = 240;
 const KNIGHT_FLASH_FRAMES = 36;
+/**
+ * What a stalker becomes after it has eaten.
+ *
+ * Food left in the dark is an offering, and the thing in the dark takes it.
+ * That is a genuine trade rather than a punishment: while it is carrying an
+ * affliction it has no interest in killing anything, so buying your colony a
+ * quiet few minutes is exactly what the offering does. What it costs is a mark
+ * on somebody, and the marks do not wash off.
+ *
+ * Rarity sets severity, and the ladder was already in the world: white is
+ * common, green uncommon at 18%, cyan rare at 3%, and purple only ever forms
+ * in darkness at 12% — the one food a visitor cannot drop by accident in a lit
+ * room, and the one that costs a creature its light forever.
+ */
+const AFFLICTIONS: Record<string, { name: string; weight: number; hue: number }[]> = {
+  white: [
+    { name: "palled", weight: 5, hue: 200 },
+    { name: "hollowed", weight: 2, hue: 30 },
+  ],
+  green: [
+    { name: "hollowed", weight: 4, hue: 30 },
+    { name: "palled", weight: 3, hue: 200 },
+    { name: "marked", weight: 1, hue: 355 },
+  ],
+  cyan: [
+    { name: "marked", weight: 4, hue: 355 },
+    { name: "hollowed", weight: 2, hue: 30 },
+    { name: "snuffed", weight: 1, hue: 265 },
+  ],
+  purple: [
+    { name: "snuffed", weight: 5, hue: 265 },
+    { name: "marked", weight: 3, hue: 355 },
+  ],
+};
+
+/** How long a fed stalker spends carrying its gift instead of hunting. */
+const SEEK_FRAMES = 2400;
+const SEEK_SPEED = 1.5;
+// It smells the whole floor.
+//
+// A radius was the wrong shape for this. At 260 and then 520 on a floor twelve
+// hundred wide, whether an offering was ever noticed came down to where the
+// stalker happened to be standing, so the mechanic fired or did not for
+// reasons the visitor could neither see nor influence. Leaving something out
+// in the dark is a deliberate act and it should always be answered.
+//
+// The restraint that matters is elsewhere and is unchanged: only food in
+// darkness counts, a committed stalk still outranks a meal, and every meal is
+// paid for with a permanent mark on somebody.
+const SMELL_R = 4000;
+const SEEK_TOUCH_R = 18;
+
 const SPECIAL_TRAITS = [
   "dauntless",
   "radiant",
@@ -1579,6 +1636,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     groundY: number;
     claimedBy: Creature | null;
     type: FoodType;
+    /** it landed where the light does not reach, and that does not change */
+    darkBorn: boolean;
     hue: number;
     sat: number;
 
@@ -1602,6 +1661,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       const roll = Math.random();
       const inDarkness = getLightAt(this.x, this.y) < 0.3;
+      // Judged once, where it fell.
+      //
+      // Whether this is an offering was being re-decided every frame from the
+      // light on it, and the creatures hurrying over to eat it lit it
+      // themselves, so bait disqualified itself moments after landing and the
+      // dark never got a single meal. Where the visitor chose to put it is the
+      // decision, and it is made once.
+      this.darkBorn = inDarkness;
 
       if (inDarkness && roll < 0.12) {
         this.type = "purple";
@@ -3166,6 +3233,21 @@ export function initVoidGame(options: GameInitOptions): () => void {
     wardFlash: number;
     /** how far past its depth it has been carried, and how poorly it is taking it */
     depthStrain: number;
+    /**
+     * What the dark has taken out of it, and does not give back.
+     *
+     * These are permanent. A visitor who feeds the thing in the dark is making
+     * a real trade, and a trade the world will not quietly undo is the only
+     * kind that means anything.
+     */
+    glowLoss: number;
+    dreadFloor: number;
+    drainExtra: number;
+    marked: number;
+    /** what it is called now, shown before its traits */
+    afflictions: string[];
+    /** frames of the sigil still burning, purely for the eye */
+    afflictFlash: number;
     _claimedFood: Food | null;
     _voidChorusTimer: number;
     _voidChorusStrength: number;
@@ -3291,6 +3373,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.bornDepth = currentDepth;
       this.depthStrain = 0;
       this.wardFlash = 0;
+      this.glowLoss = 0;
+      this.dreadFloor = 0;
+      this.drainExtra = 0;
+      this.marked = 0;
+      this.afflictions = [];
+      this.afflictFlash = 0;
       this._energyNorm = this.energy / 100;
       this._claimedFood = null;
       this._voidChorusTimer = 0;
@@ -3309,7 +3397,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
      * this ring in a few seconds and one that keeps moving never does.
      */
     glowRing(): number {
-      const reach = this.revealRadius * (0.4 + this.warmth * 0.9);
+      const reach = this.revealRadius * (0.4 + this.warmth * 0.9) * (1 - this.glowLoss);
       return Math.max(DARK_RING_MIN, Math.min(DARK_RING_MAX, reach * 0.75));
     }
 
@@ -3495,7 +3583,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // a knight runs hot. it is the reason they are always hungry, and the
       // reason feeding one is a commitment rather than a kindness.
       this.energy -=
-        (CONFIG.BASE_ENERGY_DRAIN + activityDrain + stressDrain + ageDrain) * this.appetite();
+        (CONFIG.BASE_ENERGY_DRAIN + activityDrain + stressDrain + ageDrain + this.drainExtra) *
+        this.appetite();
 
       // Starvation
       if (this.energy <= 0) {
@@ -3900,7 +3989,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       // Warmth-based reveal (matches original JS version)
       // Warm creatures illuminate more, cold creatures barely reveal
-      const warmthMultiplier = 0.4 + this.warmth * 0.9;
+      // a snuffed creature stops lighting the world, forever
+      const warmthMultiplier = (0.4 + this.warmth * 0.9) * (1 - this.glowLoss);
       const radius = this.revealRadius * warmthMultiplier;
       const revealIntensity = 0.014 + this.warmth * 0.016;
       const emissionIntensity = this.glow * (0.5 + this.warmth * 0.5);
@@ -4086,8 +4176,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.happiness += (targetHappy - this.happiness) * 0.001;
       this.happiness = Math.max(0, Math.min(100, this.happiness));
 
-      // Fear decay. A knight collects itself far quicker than anything else.
-      this.fear = Math.max(0, this.fear - 0.001 * this.stability * (1 + this.knightPower() * 3));
+      // Fear decay. A knight collects itself far quicker than anything else,
+      // and a palled creature never quite gets all the way back down.
+      this.fear = Math.max(
+        this.dreadFloor,
+        this.fear - 0.001 * this.stability * (1 + this.knightPower() * 3)
+      );
 
       // Stress from various sources
       if (this.energy < 30) {
@@ -4205,6 +4299,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
           this
         );
 
+        voidEvents.births++;
         anointIfWorthy(baby, this, bornInNest);
 
         for (let i = 0; i < 15 && particles.length < CONFIG.MAX_PARTICLES; i++) {
@@ -4356,6 +4451,47 @@ export function initVoidGame(options: GameInitOptions): () => void {
         ctx.ellipse(cx + spread, cy, r, r / squash, tilt, 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(236, 62, 84, ${a * 0.9})`;
         ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    /**
+     * What was done to it, worn.
+     *
+     * A permanent penalty the visitor cannot see is a bug as far as they are
+     * concerned. The flare says it happened; the mote that stays afterwards
+     * says it is still true, and there is one per affliction so a creature that
+     * has been visited twice reads differently from one visited once.
+     */
+    drawAfflictions(): void {
+      if (this.isDead || (!this.afflictions.length && this.afflictFlash <= 0)) return;
+
+      const s = this.displaySize;
+      if (this.afflictFlash > 0) {
+        this.afflictFlash--;
+        const t = this.afflictFlash / 90;
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, s * (1 + (1 - t) * 2.2), 0, Math.PI * 2);
+        ctx.strokeStyle = `hsla(265, 70%, 62%, ${0.5 * t})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      for (let i = 0; i < this.afflictions.length; i++) {
+        const a = (time * 0.012 + i * 2.4) % (Math.PI * 2);
+        const r = s * 0.95;
+        const hue = this.afflictions[i] === "snuffed" ? 265
+          : this.afflictions[i] === "marked" ? 355
+          : this.afflictions[i] === "hollowed" ? 30 : 200;
+        ctx.beginPath();
+        ctx.arc(this.x + Math.cos(a) * r, this.y + Math.sin(a) * r * 0.55, 1.4, 0, Math.PI * 2);
+        ctx.fillStyle = `hsla(${hue}, 75%, 65%, 0.5)`;
+        ctx.fill();
       }
       ctx.restore();
     }
@@ -4784,6 +4920,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
     lungeCooldown = 0;
     /** driven off, and by what: frames of the recoil left to play */
     routed = 0;
+    /** an offering it has eaten and not yet passed on */
+    carrying: string | null = null;
+    carryHue = 0;
+    seekTimer = 0;
     /**
      * How long it has been held in light it cannot leave. The creatures have
      * stress and it should too: being pinned is not free, it is unbearable.
@@ -4994,6 +5134,65 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.observed += (seen - this.observed) * 0.3;
       if (this.observed > 0.01) {
         this.boldness = Math.min(this.boldness, 1 - this.observed);
+      }
+
+      // Something is out there, and it is not a creature.
+      //
+      // A stalker that has eaten is not hunting: it is carrying, and it wants
+      // to put the thing down on somebody. That is the whole trade the visitor
+      // is offered. Bait it and your colony gets minutes of peace, and one of
+      // them wears the cost for the rest of its life.
+      if (this.carrying) {
+        this.seekTimer--;
+        if (this.seekTimer <= 0) {
+          this.carrying = null;
+        } else {
+          const mark = this.nearestMarkable();
+          // Nobody left to give it to: every creature already carries this
+          // one, or the only candidates are knights who refuse it. Standing
+          // there holding it for two thousand frames is a dead state nobody
+          // can see the reason for, so it swallows the gift and goes back to
+          // being what it was.
+          if (!mark) {
+            this.carrying = null;
+            this.seekTimer = 0;
+          } else {
+            const dx = mark.x - this.x;
+            const dy = mark.y - this.y;
+            const d = Math.hypot(dx, dy) || 1;
+            this.stare = Math.atan2(dy, dx);
+            // it walks in openly. light does not hold a thing that has already
+            // been paid.
+            this.vx += ((dx / d) * SEEK_SPEED - this.vx) * 0.08;
+            this.vy += ((dy / d) * SEEK_SPEED - this.vy) * 0.08;
+            this.x = Math.max(6, Math.min(W - 6, this.x + this.vx));
+            this.y = Math.max(6, Math.min(H - 6, this.y + this.vy));
+            if (d < SEEK_TOUCH_R) this.bestow(mark);
+          }
+          this.emitDread();
+          return;
+        }
+      }
+
+      // and if it has not eaten, it can still smell what was left out
+      // A committed stalk outranks an easy meal; anything short of that does
+      // not. This is what makes baiting a real answer to a hunt in progress
+      // rather than a coin flip.
+      if (!this.carrying && this.stalk < STALKER_STALK_FRAMES * 0.75) {
+        const meal = this.smell();
+        if (meal) {
+          const dx = meal.x - this.x;
+          const dy = meal.y - this.y;
+          const d = Math.hypot(dx, dy) || 1;
+          this.stare = Math.atan2(dy, dx);
+          this.vx += ((dx / d) * SEEK_SPEED * 0.8 - this.vx) * 0.07;
+          this.vy += ((dy / d) * SEEK_SPEED * 0.8 - this.vy) * 0.07;
+          this.x = Math.max(6, Math.min(W - 6, this.x + this.vx));
+          this.y = Math.max(6, Math.min(H - 6, this.y + this.vy));
+          if (d < SEEK_TOUCH_R) this.devour(meal);
+          this.emitDread();
+          return;
+        }
       }
 
       this.chooseTarget();
@@ -5293,6 +5492,103 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     /**
+     * Food left where the light does not reach.
+     *
+     * Only in the dark, deliberately: a meal dropped in a lit room is for the
+     * colony and nothing else comes for it. The visitor decides which it is by
+     * where they stand when they drop it, and that is the entire interface.
+     */
+    smell(): Food | null {
+      let best: Food | null = null;
+      let bestD = SMELL_R;
+      for (const f of foods) {
+        if (!f.darkBorn) continue;
+        const d = Math.hypot(f.x - this.x, f.y - this.y);
+        if (d < bestD) {
+          bestD = d;
+          best = f;
+        }
+      }
+      return best;
+    }
+
+    /** Eat it, and roll for what it turns into. */
+    devour(meal: Food): void {
+      const table = AFFLICTIONS[meal.type] || AFFLICTIONS.white;
+      let total = 0;
+      for (const row of table) total += row.weight;
+      let roll = Math.random() * total;
+      let pick = table[table.length - 1];
+      for (const row of table) {
+        roll -= row.weight;
+        if (roll <= 0) {
+          pick = row;
+          break;
+        }
+      }
+
+      this.carrying = pick.name;
+      this.carryHue = pick.hue;
+      this.seekTimer = SEEK_FRAMES;
+      this.stalk = 0;
+      this.coil = 0;
+      this.lunging = 0;
+
+      const idx = foods.indexOf(meal);
+      if (idx >= 0) foods.splice(idx, 1);
+
+      for (let i = 0; i < 18 && particles.length < CONFIG.MAX_PARTICLES; i++) {
+        particles.push(new Particle(meal.x, meal.y, "void", pick.hue));
+      }
+      showToast("something took the offering");
+    }
+
+    /** The nearest creature that has not already been given this. */
+    nearestMarkable(): Creature | null {
+      let best: Creature | null = null;
+      let bestD = Infinity;
+      for (const c of creatures) {
+        if (c.isDead || c === heldCreature) continue;
+        // a knight simply refuses it
+        if (c.knightPower() > KNIGHT_ROUT_POWER) continue;
+        if (this.carrying && c.afflictions.includes(this.carrying)) continue;
+        const d = Math.hypot(c.x - this.x, c.y - this.y);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
+      }
+      return best;
+    }
+
+    /** Put it down on somebody. None of this comes back off. */
+    bestow(c: Creature): void {
+      const what = this.carrying;
+      if (!what) return;
+
+      if (what === "snuffed") c.glowLoss = Math.min(0.85, c.glowLoss + 0.55);
+      else if (what === "palled") c.dreadFloor = Math.min(0.6, c.dreadFloor + 0.22);
+      else if (what === "hollowed") c.drainExtra = Math.min(0.02, c.drainExtra + 0.006);
+      else if (what === "marked") c.marked = Math.min(1.2, c.marked + 0.45);
+
+      if (!c.afflictions.includes(what)) c.afflictions.push(what);
+      c.afflictFlash = 90;
+      c.fear = 1;
+      c.expression = "scared";
+      c.expressionTimer = 90;
+
+      for (let i = 0; i < 22 && particles.length < CONFIG.MAX_PARTICLES; i++) {
+        particles.push(new Particle(c.x, c.y, "void", this.carryHue));
+      }
+      showToast(`${c.name} is ${what}`);
+
+      this.carrying = null;
+      this.seekTimer = 0;
+      this.fleeing = STALKER_FLEE_FRAMES;
+      this.lungeCooldown = STALKER_LUNGE_COOLDOWN;
+    }
+
+    /**
      * Creatures know before the visitor does. This is the tell that something
      * is wrong, and it arrives as unease in the colony rather than as a noise.
      *
@@ -5417,6 +5713,20 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
 
       ctx.globalCompositeOperation = "lighter";
+
+      // Carrying. Whatever it swallowed is lit inside it and does not sit
+      // still, which is the tell that this one is not hunting: it is delivering.
+      if (this.carrying) {
+        const beat = 0.55 + Math.sin(this.phase * 5.5) * 0.3;
+        const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, s * 1.5);
+        glow.addColorStop(0, `hsla(${this.carryHue}, 70%, 62%, ${0.3 * beat * this.presence})`);
+        glow.addColorStop(0.55, `hsla(${this.carryHue}, 60%, 45%, ${0.12 * beat * this.presence})`);
+        glow.addColorStop(1, "transparent");
+        ctx.beginPath();
+        ctx.arc(0, 0, s * 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = glow;
+        ctx.fill();
+      }
 
       // mid-dash the fringe drags behind it, so the direction it committed in
       // is legible from a still frame
@@ -5609,6 +5919,32 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (c === heldCreature) vulnerability += 0.9;
     if (c.sleeping) vulnerability += 0.35;
     vulnerability += (1 - c.stability) * 0.25;
+
+    // The young, the old, and the spent.
+    //
+    // Weighing only where a creature stood meant picking prey the way a dice
+    // roll does: a newborn and a prime adult read identically, which is the one
+    // thing no predator has ever done. Condition is what gets read in the wild,
+    // and reading it here costs nothing and makes the colony's shape matter. A
+    // clutch of juveniles is a different proposition from a settled group of
+    // adults, and the visitor can feel that without being told it.
+    //
+    // Childhood is bounded by the age it could first breed at, so the window is
+    // about eighty seconds rather than the ten minutes to full size. Long
+    // enough to be a real risk worth guarding, short enough that a colony can
+    // still get its young through it.
+    const youth = 1 - Math.min(1, c.age / (CONFIG.MIN_REPRODUCE_AGE * 2));
+    const frail =
+      c.age > CONFIG.ELDER_AGE
+        ? (c.age - CONFIG.ELDER_AGE) / (CONFIG.MAX_AGE - CONFIG.ELDER_AGE)
+        : 0;
+    const spent = 1 - Math.min(1, c.energy / 55);
+    vulnerability += youth * 0.5 + frail * 0.45 + spent * 0.3;
+
+    // and a knight is never easy prey, at any age
+    vulnerability += c.marked;
+
+    if (c.isKnight) vulnerability = Math.max(1, vulnerability - c.knightPower() * 0.8);
 
     return Math.min(1, gloom * solitude * vulnerability);
   }
@@ -5986,6 +6322,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // the title off any knight the moment it was carried through a hole,
       // which is the exact journey the whole thing exists for.
       isKnight: c.isKnight,
+      glowLoss: c.glowLoss,
+      dreadFloor: c.dreadFloor,
+      drainExtra: c.drainExtra,
+      marked: c.marked,
+      afflictions: c.afflictions.slice(),
       vigor: c.vigor,
       specials: c.specials.slice(),
       bornDepth: c.bornDepth,
@@ -5998,6 +6339,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
     c.name = data.name || c.name;
     c.generation = data.generation || 0;
     c.isKnight = data.isKnight ?? false;
+    c.glowLoss = data.glowLoss ?? 0;
+    c.dreadFloor = data.dreadFloor ?? 0;
+    c.drainExtra = data.drainExtra ?? 0;
+    c.marked = data.marked ?? 0;
+    c.afflictions = Array.isArray(data.afflictions) ? data.afflictions.slice() : [];
     c.vigor = data.vigor ?? 0;
     c.specials = Array.isArray(data.specials) ? data.specials.slice() : [];
     c.bornDepth = data.bornDepth ?? currentDepth;
@@ -6963,9 +7309,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const base = getPersonalityDescription(c);
         // whatever a knight passed down leads the line, because it is the part
         // that was earned rather than rolled
-        tooltipPersonalityEl.textContent = c.specials.length
-          ? `${c.specials.join(", ")} · ${base}`
-          : base;
+        const worn = [...c.afflictions, ...c.specials];
+        tooltipPersonalityEl.textContent = worn.length ? `${worn.join(", ")} · ${base}` : base;
       }
 
       const tooltipW = 140, tooltipH = 80;
@@ -7105,6 +7450,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     const renderCreatures = [...creatures].sort((a, b) => a.y - b.y);
     for (const c of renderCreatures) c.drawWard();
+    for (const c of renderCreatures) c.drawAfflictions();
     for (const c of renderCreatures) c.draw();
 
     for (const p of particles) p.draw();
@@ -7653,15 +7999,16 @@ export function initVoidGame(options: GameInitOptions): () => void {
         id: c.id, x: c.x, y: c.y, energy: c.energy, age: c.age, isDead: c.isDead,
         fear: c.fear, stress: c.stress, isKnight: c.isKnight, vigor: c.vigor,
         depthStrain: c.depthStrain, generation: c.generation, friends: c.friends.size,
+        afflictions: c.afflictions.slice(), glowLoss: c.glowLoss, marked: c.marked,
       })),
       stalkers: stalkers.map((s) => ({
-        x: s.x, y: s.y, stalk: s.stalkRatio(), coil: s.coil, lunging: s.lunging,
+        carrying: s.carrying, x: s.x, y: s.y, stalk: s.stalkRatio(), coil: s.coil, lunging: s.lunging,
         fleeing: s.fleeing, seizing: s.seizing ? s.seizing.id : null,
         presence: s.presence, boldness: s.boldness, opportunity: s.opportunity,
         observed: s.observed, strain: s.strain, sated: s.sated,
       })),
       counts: {
-        foods: foods.length, particles: particles.length, holes: holes.length,
+        foods: foods.length, darkFoods: foods.filter((f) => f.darkBorn).length, particles: particles.length, holes: holes.length,
         fissures: fissures.length, nests: nests.length, monoliths: monoliths.length,
         emotes: emotes.length,
         fissureSegments: fissures.reduce((n, f) => n + f.segments.length, 0),
