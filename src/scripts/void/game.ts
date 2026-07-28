@@ -32,18 +32,8 @@ interface MouseState {
 }
 
 // Creature memory system
-interface MemorySpot {
-  x: number;
-  y: number;
-  strength: number;
-}
-
 interface CreatureMemory {
-  goodSpots: MemorySpot[];
-  badSpots: MemorySpot[];
-  fedCount: number;
   petCount: number;
-  droppedInDark: number;
   lastFedTime: number;
   lastPetTime: number;
 }
@@ -51,24 +41,7 @@ interface CreatureMemory {
 // Social systems
 interface Bond {
   strength: number;
-  sharedTime: number;
-  sharedMeals: number;
   lastSeen: number;
-}
-
-interface SocialMemory {
-  helpedMe: number;
-  iHelped: number;
-  lastPositive: number;
-}
-
-interface SocialContext {
-  nearbyHunger: number;
-  nearbyFear: number;
-  nearbyLoneliness: number;
-  neediest: CreatureRef | null;
-  neediestType: "hunger" | "fear" | "loneliness" | null;
-  lastUpdate: number;
 }
 
 // Structure details
@@ -173,7 +146,6 @@ interface SerializedCreature {
   memories: CreatureMemory;
   comforted: number;
   lonely: number;
-  anticipation: number;
   vx: number;
   vy: number;
 }
@@ -276,7 +248,11 @@ type FogWorkerOutMessage =
 // GAME CONSTANTS
 // ============================================================================
 
-const SAVE_SCHEMA_VERSION = 2;
+// 3: dropped goodSpots, badSpots, socialMemory, socialContext and anticipation.
+// All five were written, serialised and never read by anything that decided
+// anything, so they versioned the save format on behalf of intentions that were
+// abandoned. A save is a promise about what the world is made of.
+const SAVE_SCHEMA_VERSION = 3;
 
 const CONFIG = {
   // Timing
@@ -484,6 +460,13 @@ const FISSURE_MAX_LENGTH = (FISSURE_SCRATCH - 32) * 10;
 // hazard reads as slightly smaller than it looks rather than slightly larger
 const FISSURE_KILL_MARGIN = 2;
 
+// Healing is deliberately far slower than tearing, and demands more light than
+// a crack could ever have grown through. Holding ground has to be work, and it
+// has to be possible.
+const FISSURE_MEND_FRAMES = 90;
+const FISSURE_MEND_RING = 46;
+const FISSURE_MEND_LIGHT = 0.72;
+
 // Darkness as a felt thing.
 //
 // LIT_SAFE is the one answer to "how lit does a place have to be before it
@@ -510,7 +493,9 @@ const STALKER_DREAD_R = 130;
 // unease per frame at the very centre of that radius, before stability resists
 const STALKER_DREAD_RATE = 0.0022;
 const STALKER_SEIZE_R = 15;
-const STALKER_SEIZE_FRAMES = 75;
+// The coil and the dash were the fair warning. A second and a quarter of
+// struggle on top of a glowing body afterwards only ever read as lit.
+const STALKER_SEIZE_FRAMES = 45;
 // A take has to cost it a long silence. Reproduction needs roughly nine
 // thousand frames of being fed, happy and unstressed before it even rolls, so a
 // predator that ate every fifteen seconds outpaced the colony seven to one and
@@ -522,18 +507,32 @@ const STALKER_SATED_FRAMES = 3600;
 const STALKER_SEIZE_APPETITE = 0.55;
 // how near the visitor's pointer counts as being looked at
 const STALKER_GAZE_R = 95;
-// how near it must hold station for the watch to count, and for how long
-const STALKER_STALK_R = 90;
-const STALKER_STALK_FRAMES = 150;
+// slack around its chosen standoff within which the watch still counts, so
+// ordinary drift never costs it the hunt
+const STALKER_STALK_MARGIN = 26;
+const STALKER_STALK_FRAMES = 120;
+// how fast an interrupted watch drains, relative to how fast it fills
+const STALKER_STALK_DECAY = 1.5;
 // the lunge: wind-up, dash, and the bolt for cover afterwards
-const STALKER_COIL_FRAMES = 14;
+// The wind-up is the player's window, and fourteen frames was under a quarter
+// of a second: legible in a still, unanswerable in play. It is a tell, so it
+// has to last long enough to be told.
+const STALKER_COIL_FRAMES = 30;
 const STALKER_LUNGE_FRAMES = 42;
 const STALKER_LUNGE_RANGE = 150;
 const STALKER_LUNGE_SPEED = 4.2;
 const STALKER_FLEE_FRAMES = 90;
 const STALKER_FLEE_SPEED = 5;
-// a miss still costs it the better part of half a minute in the dark
-const STALKER_LUNGE_COOLDOWN = 1500;
+// A miss costs it a spell in the dark, and this is the knob that sets how
+// often the world sees an attack at all.
+//
+// The wind-up had to grow from 14 frames to 30 to be answerable, and standing
+// still for that long lets prey drift out of reach, which cut successful
+// lunges from 15 in four minutes to 3. Shortening the tell again would buy the
+// frequency back by making the warning unanswerable, which is the wrong trade.
+// Charging less for a failed attempt buys it back without touching the part
+// the player interacts with.
+const STALKER_LUNGE_COOLDOWN = 620;
 const STALKER_SPOOK_FRAMES = 420;
 const STALKER_STANDOFF_FAR = 130;
 // how close it presses to something it cannot strike
@@ -584,7 +583,9 @@ const SPECIAL_TRAITS = [
 ];
 const STALKER_SPEED = 2.8;
 const STALKER_MIN_DEPTH = 2;
-const STALKER_MAX = 3;
+// One. Three of these stopped being a presence and started being a spawn
+// table, and depth has better ways to press on the visitor than arithmetic.
+const STALKER_MAX = 1;
 // horizontal slices the body is torn into
 const STALKER_BANDS = 3;
 // narrowest the eyes get, as a fraction of their width
@@ -973,6 +974,35 @@ export function initVoidGame(options: GameInitOptions): () => void {
   let revealH: number;
   const revealRes = CONFIG.REVEAL_RES;
   const LINGER_DURATION = 180; // Frames to keep fog revealed after creature leaves (~3s at 60fps)
+  /**
+   * What actually happened, counted at the site it happened.
+   *
+   * The harness used to infer attacks from a speed threshold, which cannot
+   * work: a retreat moves faster than a lunge, and a lunge is followed
+   * immediately by a mandatory retreat, so the two merge into one reading and
+   * the count could report attacks in a world where none occurred. A death was
+   * inferred from a population count that could not tell starvation from a
+   * fissure from a kill, and `die()` threw its reason away.
+   *
+   * These are tallies rather than a log: no allocation, no growth, no listener
+   * to leak, and the page never has to be running a test for them to be true.
+   */
+  const voidEvents = {
+    lunges: 0,
+    seizes: 0,
+    routs: 0,
+    relocations: 0,
+    deaths: 0,
+    deathsByStalker: 0,
+    deathsByFissure: 0,
+    deathsByHole: 0,
+    deathsByStarvation: 0,
+    deathsByAge: 0,
+    knightsBorn: 0,
+    births: 0,
+    respawns: 0,
+  };
+
   let respawnPending = false;
   let fadingToBlack = false;
 
@@ -1254,10 +1284,10 @@ export function initVoidGame(options: GameInitOptions): () => void {
    * casting at this instant, so light moves when they move, and the moment one
    * carries its glow away the thing behind it is free again.
    */
-  function liveLightAt(x: number, y: number): number {
+  function liveLightAt(x: number, y: number, except: Creature | null = null): number {
     let lit = 0;
     for (const c of creatures) {
-      if (c.isDead) continue;
+      if (c.isDead || c === except) continue;
       const reach = c.revealRadius * (0.4 + c.warmth * 0.9);
       const d = Math.hypot(c.x - x, c.y - y);
       if (d >= reach) continue;
@@ -1696,21 +1726,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
           c.stress = Math.max(0, c.stress - 0.02 * (0.5 + hunger));
           c.fatigue = Math.max(0, c.fatigue - 0.01 * hunger);
 
-          c.memories.fedCount++;
           // a knight is what it has eaten. everything it can do scales off
           // this, so feeding one is the whole progression and it never caps
           // hard, it only slows.
           if (c.isKnight) c.vigor = Math.min(KNIGHT_VIGOR_MAX, c.vigor + 0.055);
           c.memories.lastFedTime = c.age;
-          c.addMemory("good", this.x, this.y, 0.2 + hunger * 0.3);
 
           if (hunger > 0.3) {
             c.attachment = Math.min(1, c.attachment + 0.003 * hunger);
-          }
-
-          if (c.anticipation > 0.2) {
-            c.happiness = Math.min(100, c.happiness + c.anticipation * 3);
-            c.anticipation = 0;
           }
 
           for (const other of creatures) {
@@ -1723,9 +1746,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
             if (otherDist < 40 && other.expression === "eating") {
               c.updateBond(other.id, "meal");
               other.updateBond(c.id, "meal");
-            }
-            if (otherDist < 60 && hunger > 0.3 && c.socialMemory) {
-              c.recordSocialPositive(other.id);
             }
           }
 
@@ -1973,6 +1993,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
     grownCount: number;
     /** it has nowhere left to grow, either walled in or at its full length */
     spent: boolean;
+    /** frames since the tip last closed */
+    mendAccum: number;
     tearTimer: number;
     tearTarget: number;
     tearAccum: number;
@@ -1997,6 +2019,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       this.jaggedness = jaggedness ?? 0.3 + this.rng() * 0.5;
       this.grownCount = 1;
       this.spent = false;
+      this.mendAccum = 0;
       this.tearTimer = 0;
       this.tearTarget = 1;
       this.tearAccum = 0;
@@ -2027,6 +2050,50 @@ export function initVoidGame(options: GameInitOptions): () => void {
         this.grownCount = this.segments.length;
         for (const seg of this.segments) seg.seen = 1;
       }
+    }
+
+    /**
+     * Tended ground closes.
+     *
+     * Every process in this world ran one way. Fissures accumulated and were
+     * cleared only by rebuilding the floor, light decayed, creatures aged
+     * toward a cap, so the single long arc available was decline and the only
+     * escape was descending, which started the same decline again faster. A
+     * simulation with no restorative process has exactly one story to tell.
+     *
+     * The resistance field already says that tended ground resists tearing.
+     * This is the same sentence in the other direction: ground the colony has
+     * kept lit long enough does not merely refuse to split, it knits. It heals
+     * from the tip backwards, far slower than it tore, and only under light a
+     * crack could never have grown into in the first place. So a floor you
+     * genuinely hold can be recovered, a floor you abandon cannot, and light
+     * stays the one answer to everything.
+     */
+    mend(): void {
+      if (reduceMotion || this.segments.length <= 1) return;
+
+      this.mendAccum++;
+      if (this.mendAccum < FISSURE_MEND_FRAMES) return;
+      this.mendAccum = 0;
+
+      const tip = this.segments[this.segments.length - 1];
+      if (surroundLight(tip.x, tip.y, FISSURE_MEND_RING) < FISSURE_MEND_LIGHT) return;
+
+      // branches go before the trunk they hang from
+      for (let i = this.branches.length - 1; i >= 0; i--) {
+        if (this.branches[i].segments.length > 1) {
+          this.branches[i].mendAccum = FISSURE_MEND_FRAMES;
+          this.branches[i].mend();
+          return;
+        }
+        if (this.branches[i].attachIndex >= this.segments.length - 1) this.branches.splice(i, 1);
+      }
+
+      this.segments.pop();
+      this.grownCount = this.segments.length;
+      this.spent = false;
+      addReveal(tip.x, tip.y, 26, 0.06);
+      this.computeBounds();
     }
 
     /**
@@ -2325,6 +2392,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     }
 
     update(): void {
+      this.mend();
       this.tear();
       // forks were never ticked, so every branch stayed frozen at the length it
       // was born with while the trunk went on without it
@@ -2781,7 +2849,22 @@ export function initVoidGame(options: GameInitOptions): () => void {
             const sleepQuality = 1 + c.stability * 0.5;
             c.fatigue = Math.max(0, c.fatigue - 0.005 * sleepQuality);
             c.restedness = Math.min(1, c.restedness + 0.002 * sleepQuality);
-            c.energy = Math.min(100, c.energy + 0.008 * sleepQuality);
+            // Rest has to actually restore, or the world cannot be left alone.
+            //
+            // This returned 0.008 a frame against a base drain of 0.008 and an
+            // activity, stress and age drain on top, so sleeping was break-even
+            // at best and a colony starved from full in under three minutes no
+            // matter what it did. There was no state in which this world
+            // sustained itself, which made the visitor a life-support machine
+            // and made walking away the same as ending it.
+            //
+            // A nest is now a genuine floor: sleep out-paces drain, so a colony
+            // with somewhere to sleep persists untended at low population. Food
+            // is what lets it flourish rather than what stops it dying, because
+            // nests are few and small and cannot hold everyone, and energy
+            // alone was never the gate on reproduction. Survival is free;
+            // growth is earned.
+            c.energy = Math.min(100, c.energy + 0.032 * sleepQuality);
             c.stress = Math.max(0, c.stress - 0.002);
 
             const wellRested = c.fatigue < 0.1;
@@ -3036,7 +3119,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
     // Deep Systems
     comforted: number;
     lonely: number;
-    anticipation: number;
     petted: number;
 
     // Home
@@ -3046,8 +3128,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
     // Memory
     memories: CreatureMemory;
-    socialMemory: Map<string, SocialMemory>;
-    socialContext: SocialContext;
 
     // Social
     friends: Set<string>;
@@ -3168,7 +3248,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // Deep systems
       this.comforted = 0;
       this.lonely = 0;
-      this.anticipation = 0;
       this.petted = 0;
 
       // Home
@@ -3178,22 +3257,9 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       // Memory
       this.memories = {
-        goodSpots: [],
-        badSpots: [],
-        fedCount: 0,
         petCount: 0,
-        droppedInDark: 0,
         lastFedTime: 0,
         lastPetTime: 0,
-      };
-      this.socialMemory = new Map();
-      this.socialContext = {
-        nearbyHunger: 0,
-        nearbyFear: 0,
-        nearbyLoneliness: 0,
-        neediest: null,
-        neediestType: null,
-        lastUpdate: 0,
       };
 
       // Social
@@ -3264,33 +3330,18 @@ export function initVoidGame(options: GameInitOptions): () => void {
       return "elder";
     }
 
-    addMemory(type: "good" | "bad", x: number, y: number, strength: number): void {
-      const spots = type === "good" ? this.memories.goodSpots : this.memories.badSpots;
-      const existing = spots.find(
-        (s) => Math.hypot(s.x - x, s.y - y) < 30
-      );
-      if (existing) {
-        existing.strength = Math.min(1, existing.strength + strength);
-      } else {
-        spots.push({ x, y, strength });
-        if (spots.length > 10) spots.shift();
-      }
-    }
-
     updateBond(otherId: string, type: "proximity" | "meal" | "help"): void {
       let bond = this.bonds.get(otherId);
       if (!bond) {
-        bond = { strength: 0, sharedTime: 0, sharedMeals: 0, lastSeen: this.age };
+        bond = { strength: 0, lastSeen: this.age };
         this.bonds.set(otherId, bond);
       }
 
       bond.lastSeen = this.age;
 
       if (type === "proximity") {
-        bond.sharedTime++;
         bond.strength = Math.min(1, bond.strength + 0.0001);
       } else if (type === "meal") {
-        bond.sharedMeals++;
         bond.strength = Math.min(1, bond.strength + 0.01);
       } else if (type === "help") {
         bond.strength = Math.min(1, bond.strength + 0.02);
@@ -3299,16 +3350,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       if (bond.strength > 0.5 && !this.friends.has(otherId)) {
         this.friends.add(otherId);
       }
-    }
-
-    recordSocialPositive(otherId: string): void {
-      let mem = this.socialMemory.get(otherId);
-      if (!mem) {
-        mem = { helpedMe: 0, iHelped: 0, lastPositive: this.age };
-        this.socialMemory.set(otherId, mem);
-      }
-      mem.helpedMe++;
-      mem.lastPositive = this.age;
     }
 
     pickup(): void {
@@ -3328,10 +3369,8 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // in the dark almost never fired.
       const lightLevel = surroundLight(this.x, this.y, this.glowRing());
       if (lightLevel < 0.2) {
-        this.memories.droppedInDark++;
         this.fear = Math.min(1, this.fear + 0.15);
         this.trust = Math.max(0, this.trust - 0.02);
-        this.addMemory("bad", this.x, this.y, 0.3);
       } else {
         this.trust = Math.min(1, this.trust + 0.01);
       }
@@ -3357,7 +3396,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
 
       this.memories.petCount++;
       this.memories.lastPetTime = this.age;
-      this.addMemory("good", this.x, this.y, 0.15);
 
       this.expression = "happy";
       this.expressionTimer = 40;
@@ -3379,8 +3417,31 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
     }
 
-    die(_reason: string): void {
+    die(reason: string): void {
       this.isDead = true;
+      voidEvents.deaths++;
+      if (reason === "taken") voidEvents.deathsByStalker++;
+      else if (reason.indexOf("fissure") >= 0) voidEvents.deathsByFissure++;
+      else if (reason.indexOf("hole") >= 0 || reason.indexOf("fell") >= 0) voidEvents.deathsByHole++;
+      else if (reason.indexOf("starv") >= 0) voidEvents.deathsByStarvation++;
+      else if (reason.indexOf("age") >= 0) voidEvents.deathsByAge++;
+
+      // The world names them, tracks their parents, lets them make friends,
+      // and gives their friends grief when they go. Then it discarded the one
+      // sentence that made any of that land. An off-screen death without a
+      // word is indistinguishable from a bug, and this world is mostly
+      // off-screen by design.
+      if (!fadingToBlack) {
+        showToast(
+          reason === "taken"
+            ? `${this.name} was taken`
+            : reason === "starvation"
+              ? `${this.name} went hungry`
+              : reason === "old age"
+                ? `${this.name} grew old`
+                : `${this.name}: ${reason}`
+        );
+      }
 
       // Release any claimed food so other creatures can claim it
       if (this._claimedFood) {
@@ -3400,9 +3461,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
           other.stress = Math.min(1, other.stress + 0.2);
         }
         // Clean up social memory references to dead creature
-        if (other.socialMemory.has(this.id)) {
-          other.socialMemory.delete(this.id);
-        }
         // Clean up bond references
         if (other.bonds.has(this.id)) {
           other.bonds.delete(this.id);
@@ -4220,6 +4278,34 @@ export function initVoidGame(options: GameInitOptions): () => void {
       if (power < 0.02 || this.isDead) return;
 
       if (this.wardFlash > 0) this.wardFlash--;
+
+      // Where the protection actually reaches, drawn only while something is
+      // near enough for the answer to matter.
+      //
+      // The reach was invisible, so deciding whether a creature was safe beside
+      // a knight was guesswork, and positioning is the whole of what a visitor
+      // can do about any of this. Showing it always would be a HUD; showing it
+      // when a stalker closes is the knight noticing, which is the same
+      // information arriving as behaviour.
+      let nearestThreat = Infinity;
+      for (const st of stalkers) {
+        const d = Math.hypot(st.x - this.x, st.y - this.y);
+        if (d < nearestThreat) nearestThreat = d;
+      }
+      const reach = KNIGHT_WARD_R + power * 40;
+      const notice = Math.max(0, Math.min(1, (reach * 2.1 - nearestThreat) / reach));
+      if (notice > 0.01) {
+        const edge = 0.055 * notice * power + (this.wardFlash / KNIGHT_FLASH_FRAMES) * 0.1;
+        ctx.save();
+        ctx.setLineDash([5, 9]);
+        ctx.lineDashOffset = -time * 0.35;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, reach, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(150, 226, 240, ${edge})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+      }
       // the shells snap outward and brighten for the moment it turns something
       // away, so the visitor sees the knight do it rather than infer it from a
       // stalker that happened to leave
@@ -4241,7 +4327,15 @@ export function initVoidGame(options: GameInitOptions): () => void {
         const drift = time * (0.0062 + i * 0.0017) + i * 2.399;
         const phase = beat * 0.3 + i * 0.42;
         const r = s * (0.95 + phase * 0.9 + i * 0.34) * (1 + flare * 0.55);
-        const a = ((0.13 + flare * 0.3) * power) / (1 + i * 0.8);
+        // Strain does not just make the shells small, it makes them falter. A
+        // knight that is merely young and a knight that is failing were the
+        // same picture at different sizes, which is a state you cannot act on
+        // because you cannot name it. A guttering shell says the difference.
+        const gutter =
+          this.depthStrain > 0.15
+            ? 0.35 + 0.65 * (Math.sin(time * 0.13 + i * 1.7) * 0.5 + 0.5) * (1 - this.depthStrain)
+            : 1;
+        const a = (((0.13 + flare * 0.3) * power) / (1 + i * 0.8)) * gutter;
         const spread = 1.6 + power * 2.4 + flare * 4;
 
         // its own small orbit, so the centres never coincide
@@ -4675,6 +4769,11 @@ export function initVoidGame(options: GameInitOptions): () => void {
     stalk = 0;
     /** smoothed sense of the visitor's attention resting on it */
     observed = 0;
+
+    /** the watch as a 0..1 ratio, for anything that draws or reports it */
+    stalkRatio(): number {
+      return this.stalk / STALKER_STALK_FRAMES;
+    }
     /** gathering itself, utterly still. the last moment this can be broken. */
     coil = 0;
     /** committed and crossing lit ground. light does not stop it here. */
@@ -4764,6 +4863,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
           if (Math.hypot(c.x - this.x, c.y - this.y) > reach) continue;
 
           this.routed = KNIGHT_ROUT_FRAMES;
+          voidEvents.routs++;
           this.coil = 0;
           this.lunging = 0;
           this.stalk = 0;
@@ -4804,6 +4904,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         this.vy *= 0.8;
         if (this.presence <= 0) {
           this.relocate();
+          voidEvents.relocations++;
           this.dissolving = false;
           this.strain = 0;
           this.presence = 0;
@@ -4812,9 +4913,21 @@ export function initVoidGame(options: GameInitOptions): () => void {
         return;
       }
 
-      const pinnedNow = liveLightAt(this.x, this.y);
-      if (pinnedNow > STALKER_FREEZE_LO) {
-        this.strain = Math.min(1, this.strain + pinnedNow * STALKER_STRAIN_RATE);
+      // Strain is for being stuck, not for being near anything.
+      //
+      // Keying it to any light above the freeze floor quietly broke the hunt
+      // outright. Stalking means holding station within ninety pixels of a
+      // creature, which is inside that creature's own glow by definition, so
+      // every stalk strained itself out and dissolved before it finished. The
+      // stalk topped out at 0.95 against a gate of 1 and no stalker could ever
+      // strike at all.
+      //
+      // The state this is meant to rescue is narrower than that: pinned, unable
+      // to move, stranded in a lit patch with no way out. That is boldness
+      // below the pin threshold, which a stalk can never be in, so the two
+      // cannot collide.
+      if (this.boldness < STALKER_PIN) {
+        this.strain = Math.min(1, this.strain + STALKER_STRAIN_RATE);
         if (this.strain >= 1) this.dissolving = true;
       } else {
         this.strain = Math.max(0, this.strain - STALKER_STRAIN_RATE * 1.6);
@@ -4890,7 +5003,22 @@ export function initVoidGame(options: GameInitOptions): () => void {
         if (this.seizing.isDead) {
           this.seizing = null;
           this.seizeProgress = 0;
-        } else if (this.boldness < 0.25 || this.seizing === heldCreature) {
+        // Rescue means somebody else. This read `boldness`, which is computed
+        // from every glowing body in the world including the one being held at
+        // arm's length, so at zero distance the prey's own light sat above the
+        // freeze threshold and pinned the thing killing it. Nearly every seize
+        // cancelled itself within twenty frames of the seventy-five it needed,
+        // and no stalker had ever completed a kill.
+        //
+        // This is the third time this exact trap has been sprung in this file:
+        // the stalk-watch and the coil both had to be exempted from the prey's
+        // own glow for the same reason. Anything that measures light on a
+        // creature it is acting upon has to exclude that creature, or the
+        // target defeats the mechanic aimed at it.
+        } else if (
+          liveLightAt(this.x, this.y, this.seizing) > STALKER_FREEZE_HI ||
+          this.seizing === heldCreature
+        ) {
           // caught in the light, or plucked out of its grip: let go and recoil
           this.seizing.fear = Math.min(1, this.seizing.fear + 0.4);
           this.seizing = null;
@@ -4943,7 +5071,19 @@ export function initVoidGame(options: GameInitOptions): () => void {
             break;
           }
         }
-        if (warded || this.observed > 0.7 || liveLightAt(this.x, this.y) > STALKER_FREEZE_HI) {
+        // Only somebody can call this off, not something.
+        //
+        // Ambient light used to cancel the wind-up, which quietly contradicted
+        // the entire premise of the lunge: this is the one moment the thing
+        // crosses lit ground on purpose. Worse, it coils within arm's reach of
+        // its prey, so the prey's own glow was the light doing the cancelling,
+        // and a longer, fairer tell simply handed the world more chances to
+        // veto it at random. Lengthening the coil from 14 frames to 30 cut
+        // successful lunges from 15 to 3 without a single player deciding
+        // anything. A commitment that the world can revoke is not a commitment,
+        // and a warning you cannot answer is not a warning. The visitor's
+        // attention and a knight can stop it. Nothing else gets a vote.
+        if (warded || this.observed > 0.7) {
           // caught in the act of winding up. it loses the whole stalk for it.
           this.coil = 0;
           this.stalk = 0;
@@ -4951,6 +5091,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
           this.lungeCooldown = STALKER_LUNGE_COOLDOWN;
         } else if (this.coil === 0) {
           this.lunging = STALKER_LUNGE_FRAMES;
+          voidEvents.lunges++;
         }
         this.emitDread();
         return;
@@ -4982,6 +5123,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
             this.seizing = prey;
             this.seizeProgress = 0;
             this.lunging = 0;
+            voidEvents.seizes++;
           } else {
             // The last one is never taken, but it is not spared the fright.
             // Without this a lone creature made the predator inert, which is
@@ -4990,7 +5132,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
             prey.energy = Math.max(1, prey.energy - 12);
             prey.vx += (ldx / ld) * 6;
             prey.vy += (ldy / ld) * 6;
-            prey.addMemory("bad", prey.x, prey.y, 0.6);
             residueGrid.deposit(prey.x, prey.y, "distress", 0.08);
             this.lunging = 0;
           }
@@ -5074,20 +5215,56 @@ export function initVoidGame(options: GameInitOptions): () => void {
         // distance was for. Measured over nine thousand frames the stalk peaked
         // at 0.84 and never once completed. The edge of the glow is exactly
         // where this thing belongs; the final lunge still demands a dark moment.
+        // The watch radius is derived from the standoff, never set beside it.
+        //
+        // These were two hand-tuned numbers that had to agree and silently did
+        // not. Standoff is 130 - 48 * opportunity, opportunity realistically
+        // peaks near 0.67, so a stalker held station at about 98px while the
+        // watch demanded 90. It parked permanently just outside its own
+        // stalking range: across 20,000 frames the three watch conditions were
+        // met together on exactly zero of them, the stalk never left 0.00, and
+        // no attack was possible at any point in the game's history.
+        //
+        // A distance the stalker chooses and a distance it is judged against
+        // cannot be independent constants. One margin, one source of truth.
+        // Hysteresis, for the same reason the target lock has it.
+        //
+        // Opportunity is smoothed and hovers near its own ceiling of about
+        // 0.67, so a flat threshold of 0.55 was crossed back and forth
+        // constantly. Building at +1 and draining at -1.5, the watch settled
+        // into an equilibrium at 119 of the 120 frames it needed and stayed
+        // there: not a rounding error, a stable state one frame short of the
+        // only thing this creature exists to do. Once it has begun watching,
+        // it takes a real fall in prospects to call it off, not a shiver.
+        const appetite =
+          this.stalk > 0 ? STALKER_SEIZE_APPETITE * 0.7 : STALKER_SEIZE_APPETITE;
         const watching =
           this.boldness > STALKER_PIN + 0.1 &&
-          this.opportunity > STALKER_SEIZE_APPETITE &&
-          reach < STALKER_STALK_R;
+          this.opportunity > appetite &&
+          reach < standoff + STALKER_STALK_MARGIN;
+        // The decay used to be three times the build rate, which sounds
+        // appropriately harsh and in practice meant a single flickering frame
+        // cost three of progress. Measured, the stalk topped out around 142 of
+        // the 150 it needed and no stalker ever struck at all. It still has to
+        // be held and can still be broken by sustained interference; it is no
+        // longer defeated by noise.
+        // Counted in whole frames, deliberately.
+        //
+        // This accumulated 1/120 per frame toward a gate of 1.0, and a hundred
+        // and twenty additions of a repeating binary fraction do not have to
+        // sum to exactly one. It settled at 0.99 and stopped: the watch ran to
+        // completion and then failed its own test, every time, invisibly. An
+        // epsilon would have hidden it. Integers cannot drift.
         this.stalk = watching
-          ? Math.min(1, this.stalk + 1 / STALKER_STALK_FRAMES)
-          : Math.max(0, this.stalk - 3 / STALKER_STALK_FRAMES);
+          ? Math.min(STALKER_STALK_FRAMES, this.stalk + 1)
+          : Math.max(0, this.stalk - STALKER_STALK_DECAY);
 
         // The strike is now only ever reached through a lunge, so every death
         // in this world is preceded by a wind-up and a dash the visitor can
         // see. A quiet grab in the dark was cheaper to write and read as a
         // creature simply vanishing.
         if (
-          this.stalk >= 1 &&
+          this.stalk >= STALKER_STALK_FRAMES &&
           this.lungeCooldown <= 0 &&
           reach < STALKER_LUNGE_RANGE &&
           prey !== heldCreature
@@ -5096,7 +5273,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         }
       } else {
         // nothing worth watching: the stalk lapses, and it drifts
-        this.stalk = Math.max(0, this.stalk - 3 / STALKER_STALK_FRAMES);
+        this.stalk = Math.max(0, this.stalk - STALKER_STALK_DECAY);
         this.vx += (Math.sin(this.phase * 0.7) * 0.5 - this.vx) * 0.01;
         this.vy += (Math.cos(this.phase * 0.53) * 0.5 - this.vy) * 0.01;
       }
@@ -5221,7 +5398,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // and drops the instant it is running away. The stalk alone was not
       // enough, because a lunge zeroes it and the body would have gone calm at
       // the exact moment it was most dangerous.
-      const menace = this.coil > 0 || this.lunging > 0 ? 1 : this.stalk;
+      const menace = this.coil > 0 || this.lunging > 0 ? 1 : this.stalkRatio();
       const split = (1.5 + menace * 2.8) * this.presence;
 
       const ghost = (dx: number, dy: number, fill: string) => {
@@ -5259,7 +5436,14 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const span = s * 2.6;
       const band = span / STALKER_BANDS;
       for (let i = 0; i < STALKER_BANDS; i++) {
-        const slip = step(Math.sin(this.phase * 6.1 + i * 2.27), 3) * (0.5 + menace * 1.9);
+        // Held by the visitor's attention, the tear stops moving. The gaze was
+        // doing real work and saying nothing about it: you had to notice a
+        // thing had stopped drifting to know you were the reason. A silhouette
+        // that freezes mid-glitch reads as caught, instantly and without any
+        // interface, and it is the same language as the creature it is aping.
+        const grip = Math.max(this.observed, 1 - this.boldness);
+        const slip =
+          step(Math.sin(this.phase * 6.1 + i * 2.27), 3) * (0.5 + menace * 1.9) * (1 - grip * 0.92);
         ctx.save();
         ctx.beginPath();
         ctx.rect(-s * 2, -s * 1.3 + i * band, s * 4, band);
@@ -5284,8 +5468,13 @@ export function initVoidGame(options: GameInitOptions): () => void {
       const frozen = 1 - this.boldness;
       // wide and unblinking when pinned, narrowing when it is free to move.
       // the floor stays high enough that they still read as a pair of eyes
-      // rather than as two dashes when it is roaming.
-      const open = STALKER_EYE_MIN + frozen * (1 - STALKER_EYE_MIN);
+      // rather than as two dashes when it is roaming, and they go fully round
+      // through the wind-up, which is the one moment the visitor has to act on.
+      const winding = this.coil > 0 ? 1 - this.coil / STALKER_COIL_FRAMES : 0;
+      const open = Math.max(
+        STALKER_EYE_MIN + frozen * (1 - STALKER_EYE_MIN),
+        winding
+      );
       // Eyes sit side by side and stay that way, exactly as the creatures' do,
       // with only the gaze sliding within the face. Spacing them along the
       // normal to the stare made the pair rotate with the target, so looking
@@ -5298,7 +5487,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
       // Out in the fog the eyes are all there is, so they carry the warning:
       // dim while it is merely watching, bright by the time it is ready, and
       // full through the wind-up and the dash.
-      const menace = this.coil > 0 || this.lunging > 0 ? 1 : this.stalk;
+      const menace = this.coil > 0 || this.lunging > 0 ? 1 : this.stalkRatio();
       const alpha = (0.42 + 0.58 * menace) * this.presence;
 
       for (const side of [-1, 1]) {
@@ -5372,6 +5561,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
     if (Math.random() > odds) return;
 
     baby.isKnight = true;
+    voidEvents.knightsBorn++;
     baby.vigor = 0.15;
     baby.bornDepth = currentDepth;
     if (!baby.specials.length) {
@@ -5518,6 +5708,22 @@ export function initVoidGame(options: GameInitOptions): () => void {
       fogDirty = true;
     }
 
+    // The dial that makes deeper mean darker.
+    //
+    // This was computed here and discarded at all three call sites, so every
+    // floor was lit exactly like the surface and descending changed nothing a
+    // visitor could see. Laying it into the reveal map as an ambient floor is
+    // what the number was always for: at depth 0 the ground reads at 0.4, by
+    // depth 20 it is nearer 0.08, and the dark stops being a backdrop and
+    // starts being the thing you are descending into.
+    if (revealMap) {
+      for (let i = 0; i < revealMap.length; i++) {
+        if (revealMap[i] < baseLight) revealMap[i] = baseLight;
+      }
+      fogDirty = true;
+      workerFogDirty = true;
+    }
+
     return { baseLight, safeZoneCount };
   }
 
@@ -5660,8 +5866,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       c.homeX = c.x;
       c.homeY = c.y;
       c.homeStrength = 0;
-      c.memories.goodSpots = [];
-      c.memories.badSpots = [];
       creatures.push(c);
     }
 
@@ -5724,8 +5928,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       c.homeX = c.x;
       c.homeY = c.y;
       c.homeStrength = 0;
-      c.memories.goodSpots = [];
-      c.memories.badSpots = [];
       creatures.push(c);
     }
 
@@ -5777,7 +5979,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       memories: c.memories,
       comforted: c.comforted,
       lonely: c.lonely,
-      anticipation: c.anticipation,
       vx: c.vx,
       vy: c.vy,
       // Knighthood has to survive a descent. Creatures are serialised and
@@ -5829,17 +6030,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
     c.homeStrength = data.homeStrength ?? 0;
     c.sleeping = data.sleeping ?? false;
     c.memories = data.memories ?? {
-      goodSpots: [],
-      badSpots: [],
-      fedCount: 0,
       petCount: 0,
-      droppedInDark: 0,
       lastFedTime: 0,
       lastPetTime: 0,
     };
     c.comforted = data.comforted ?? 0;
     c.lonely = data.lonely ?? 0;
-    c.anticipation = data.anticipation ?? 0;
     c.vx = data.vx ?? (Math.random() - 0.5) * 0.5;
     c.vy = data.vy ?? (Math.random() - 0.5) * 0.5;
   }
@@ -6154,7 +6350,6 @@ export function initVoidGame(options: GameInitOptions): () => void {
       "homeStrength",
       "comforted",
       "lonely",
-      "anticipation",
       "vx",
       "vy",
     ];
@@ -6707,6 +6902,7 @@ export function initVoidGame(options: GameInitOptions): () => void {
         if (creatures.length === 0) {
           resetFog();
           creatures.push(new Creature(W / 2, H * 0.28));
+          voidEvents.respawns++;
           showToast("another wanders in");
         }
         respawnPending = false;
@@ -7422,6 +7618,69 @@ export function initVoidGame(options: GameInitOptions): () => void {
   activeVoidGameCleanup = cleanup;
   lastFrameTimestamp = performance.now();
   gameLoop(lastFrameTimestamp);
+
+  /**
+   * A read-only window onto the simulation.
+   *
+   * Everything in this file is closure-scoped, which is right for the page and
+   * was catastrophic for testing it. With no way in, the harness reconstructed
+   * state by instrumenting the 2D context and inverting what it saw: a stalker's
+   * position from a transform, its commitment from an eye's alpha, an attack
+   * from a speed threshold. Every one of those inversions was wrong.
+   *
+   * The eye alpha encodes `menace * presence`, two unknowns in one observable,
+   * so the harness's "stalk" was never the stalk and the missing `presence`
+   * term is where a fudged 0.9 threshold came from; a total failure of the
+   * attack chain passed as green for days. Body position comes from a transform
+   * that carries a per-band jitter which the lunge itself switches on. Attacks
+   * were counted by speed, and a retreat is faster than a lunge, so the metric
+   * could report attacks in a world where none had ever occurred. And nothing
+   * drawn is indistinguishable from nothing existing, so a NaN, an early return
+   * and a blinded probe all read identically.
+   *
+   * This ships in production rather than hiding behind a build flag, and that
+   * is the point: the page under test is byte-for-byte the page that is served.
+   * A test-only build would have reintroduced the very problem it was meant to
+   * solve. It reads existing state, mutates nothing, and costs about a
+   * kilobyte.
+   */
+  const voidPort = {
+    version: 1,
+    snapshot: () => ({
+      time,
+      depth: currentDepth,
+      creatures: creatures.map((c) => ({
+        id: c.id, x: c.x, y: c.y, energy: c.energy, age: c.age, isDead: c.isDead,
+        fear: c.fear, stress: c.stress, isKnight: c.isKnight, vigor: c.vigor,
+        depthStrain: c.depthStrain, generation: c.generation, friends: c.friends.size,
+      })),
+      stalkers: stalkers.map((s) => ({
+        x: s.x, y: s.y, stalk: s.stalkRatio(), coil: s.coil, lunging: s.lunging,
+        fleeing: s.fleeing, seizing: s.seizing ? s.seizing.id : null,
+        presence: s.presence, boldness: s.boldness, opportunity: s.opportunity,
+        observed: s.observed, strain: s.strain, sated: s.sated,
+      })),
+      counts: {
+        foods: foods.length, particles: particles.length, holes: holes.length,
+        fissures: fissures.length, nests: nests.length, monoliths: monoliths.length,
+        emotes: emotes.length,
+        fissureSegments: fissures.reduce((n, f) => n + f.segments.length, 0),
+      },
+      held: heldCreature ? heldCreature.id : null,
+    }),
+    /** Tuning the harness must never hand-copy again. */
+    constants: {
+      STALKER_LUNGE_SPEED, STALKER_FLEE_SPEED, STALKER_STALK_FRAMES,
+      STALKER_COIL_FRAMES, STALKER_SEIZE_FRAMES, STALKER_LUNGE_RANGE,
+      STALKER_MIN_DEPTH, STALKER_MAX, STALKER_PIN, STALKER_FREEZE_HI,
+      KNIGHT_WARD_R, KNIGHT_ROUT_POWER, KNIGHT_DEPTH_TOLERANCE,
+      LIT_SAFE, FISSURE_MAX_WIDTH, FISSURE_MAX_SEGMENTS,
+      MAX_CREATURES: CONFIG.MAX_CREATURES, MAX_AGE: CONFIG.MAX_AGE,
+    },
+    /** Counted events, so nothing has to be inferred from paint again. */
+    events: voidEvents,
+  };
+  (window as unknown as { __void?: unknown }).__void = voidPort;
 
   return cleanup;
 }

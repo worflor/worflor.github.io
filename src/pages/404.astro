@@ -370,7 +370,23 @@
           resetBtn,
         });
 
-        window.addEventListener("pagehide", cleanup, { once: true });
+        // Bfcache-aware, and deliberately not `once`.
+        //
+        // The game installs its own pagehide handler that declines to tear down
+        // when `persisted` is true, because a bfcached document is intact and
+        // only the loop needs restarting. This listener was registered after it
+        // with no such check, so the first Back destroyed the world anyway and
+        // `pageshow` rebuilt it from the save, re-rolling every stalker, fissure,
+        // hole, nest and monolith. `once` then removed this listener, so only
+        // the first Back behaved that way and no later one did, which is the
+        // signature of a bug nobody can reproduce.
+        //
+        // `once` also has to go: with the check in place it would otherwise be
+        // spent on a bfcache hide that cleaned nothing, leaving a genuine unload
+        // afterwards with no teardown at all.
+        window.addEventListener("pagehide", (event) => {
+          if (!event.persisted) cleanup();
+        });
         document.addEventListener("astro:before-swap", cleanup, { once: true });
       }
     </script>
