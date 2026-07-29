@@ -5175,10 +5175,24 @@ export function initVoidGame(options: GameInitOptions): () => void {
       }
 
       // and if it has not eaten, it can still smell what was left out
-      // A committed stalk outranks an easy meal; anything short of that does
-      // not. This is what makes baiting a real answer to a hunt in progress
-      // rather than a coin flip.
-      if (!this.carrying && this.stalk < STALKER_STALK_FRAMES * 0.75) {
+      // Carrion is what it does when nothing is worth stalking.
+      //
+      // Gating this on the stalk alone, with a nose that reaches the whole
+      // floor, meant any scrap left anywhere in the dark outranked hunting —
+      // and a visitor drops food constantly, so the predator was permanently
+      // pacified by ordinary play and stopped attacking altogether. An
+      // offering has to be answerable without being an off switch.
+      //
+      // So a live prospect wins. If something nearby is genuinely exposed it
+      // hunts, and the bait is only tempting when the colony is keeping itself
+      // safe — which is exactly when the visitor has attention spare to be
+      // curious with, and exactly when losing a creature to a mark instead of
+      // to teeth is a trade worth offering.
+      const tempted =
+        !this.carrying &&
+        this.stalk < STALKER_STALK_FRAMES * 0.75 &&
+        this.opportunity < STALKER_SEIZE_APPETITE;
+      if (tempted) {
         const meal = this.smell();
         if (meal) {
           const dx = meal.x - this.x;
@@ -6001,7 +6015,12 @@ export function initVoidGame(options: GameInitOptions): () => void {
         y: worldRandom() * H,
         radius: 30 + worldRandom() * 40,
         intensity: 0.1 + worldRandom() * 0.15,
-        hue: 240 + worldRandom() * 60,
+        // Ground-glow belongs to the same otherworldly register as the
+        // portal rather than being a smear from blue to magenta. The old range
+        // ran 240 to 300 and its top end was the only magenta in the world,
+        // invisible to the palette audit because that audit exempted every
+        // hsl colour it saw.
+        hue: 252 + worldRandom() * 24,
       });
     }
 
