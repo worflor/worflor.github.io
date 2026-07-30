@@ -1,0 +1,545 @@
+---
+import NeuronLayout from "../../layouts/NeuronLayout.astro";
+import { projectsPageContent } from "../../config";
+import { repoIsPublic } from "../../utils/release";
+
+// Whether this page may promise a download, decided once at build time.
+//
+// The gate is declared on the Neuron project record in config.ts, so the card
+// on /projects and this page can never disagree about it. Delete that one
+// `gate:` line the day the repository opens and everything here unlocks
+// together. Until then GitHub answers 404 to a stranger, the probe fails
+// closed, and the page asks for patience instead of sending someone nowhere.
+//
+// Resolved at build time on purpose: the HTML ships already decided, so there
+// is no flash of the wrong state while a fetch settles.
+const REPO_SLUG = "worflor/neuron";
+const gate = projectsPageContent.projects.find((p) => p.slug === "neuron")?.gate;
+const released = gate ? await repoIsPublic(gate) : true;
+
+const REPO = `https://github.com/${REPO_SLUG}`;
+// Not a dead end while it waits: the contact form knows this project by slug
+// and will name it in the subject line and the inquiry banner.
+const CTA_HREF = released ? REPO : "/contact?project=neuron";
+const CTA_LABEL = released ? "GET NEURON" : "TELL ME WHEN";
+const RELEASE_CHIP = released ? "PUBLIC&nbsp;BETA · MK1" : "COMING&nbsp;SOON · MK1";
+
+const seo = {
+  title: "Neuron / an anti-synapse for your Razer gear",
+  description:
+    "One small binary that replaces Razer Synapse. Talks to your mouse and keyboard directly over raw HID. No driver, no account, no cloud, no telemetry.",
+  image: "/images/neuron-og.png",
+};
+---
+
+<NeuronLayout seo={seo}>
+  <div class="neuron-landing-wrap">
+    <div
+      class="dv-card"
+      data-card
+      style="width:100%;max-width:1440px;min-height:clamp(560px,92vh,900px);background:linear-gradient(180deg,#060705,#040503);box-shadow:inset 0 0 0 1px rgba(200,222,200,.06),0 24px 70px rgba(0,0,0,.6);position:relative;overflow:hidden;font-family:'JetBrains Mono',monospace;display:flex;flex-direction:column;box-sizing:border-box;container-type:inline-size;"
+    >
+      <canvas data-signal="transcribe" style="position:absolute;inset:0;pointer-events:none;width:100%;height:100%;"></canvas>
+
+      <div data-topbar style="position:relative;z-index:1;display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 20px;padding:clamp(20px,4cqw,42px) clamp(20px,5.5cqw,56px) 0;">
+        <div style="display:flex;align-items:baseline;gap:clamp(8px,1.4cqw,14px);flex-wrap:wrap;">
+          <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:clamp(15px,1.9cqw,19px);letter-spacing:.32em;color:#eef3ec;view-transition-name:neuron-wordmark;">NEURON</span>
+          <span style="font-size:clamp(9px,1.1cqw,11px);letter-spacing:.16em;color:rgba(198,214,198,.42);white-space:nowrap;">/ AN&nbsp;ANTI-SYNAPSE</span>
+        </div>
+        <div style="font-size:clamp(9px,1.1cqw,11px);letter-spacing:.14em;color:rgba(198,214,198,.42);white-space:nowrap;" set:html={RELEASE_CHIP} />
+      </div>
+
+      <div style="position:relative;z-index:1;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:clamp(30px,6vh,68px);padding:clamp(24px,4vh,0px) clamp(20px,5.5cqw,56px) clamp(24px,4vh,0px);text-align:center;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(30px,6.2cqw,60px);line-height:1.15;letter-spacing:-0.01em;color:#eef3ec;max-width:960px;text-wrap:balance;">your <span data-domain style="color:#39ff6a;">mouse</span><span data-caret style="display:inline-block;width:3px;height:0.92em;margin:0 1px;transform:translateY(0.08em);background:#39ff6a;"></span>, your way.</div>
+
+        <div data-row style="width:100%;max-width:1200px;display:grid;grid-template-columns:minmax(120px,1fr) auto minmax(120px,1fr);align-items:center;gap:clamp(14px,2.4vh,22px) clamp(22px,4cqw,40px);">
+          <div data-trigger-cell style="grid-column:1;justify-self:start;text-align:left;min-width:0;max-width:100%;">
+            <div style="font-size:clamp(9.5px,1.15cqw,10.5px);letter-spacing:.2em;color:rgba(198,214,198,.45);white-space:nowrap;">TRIGGER</div>
+            <div data-trigger-list style="font-size:clamp(9px,1cqw,9.5px);letter-spacing:.06em;color:rgba(198,214,198,.28);white-space:nowrap;overflow:hidden;text-overflow:clip;">button · gesture · flick · app · mic · hold</div>
+          </div>
+
+          <a data-cta href={CTA_HREF} style="grid-column:2;justify-self:center;display:inline-flex;align-items:center;gap:clamp(10px,1.6cqw,16px);padding:clamp(13px,1.8cqw,16px) clamp(24px,3.6cqw,34px);background:#070a07;border:1px solid rgba(57,255,106,.6);color:#eef3ec;text-decoration:none;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:clamp(16px,2cqw,20px);letter-spacing:.05em;box-shadow:5px 5px 0 rgba(57,255,106,.15);transition:background .12s,color .12s,border-color .12s,box-shadow .12s,transform .12s;white-space:nowrap;flex-shrink:0;" style-hover="background:#0a120b;border-color:#39ff6a;color:#f4fff7;" style-active="box-shadow:2px 2px 0 rgba(57,255,106,.34);transform:translate(3px,3px);">{CTA_LABEL}<canvas data-therefore width="40" height="40" style="width:40px;height:40px;display:block;flex-shrink:0;margin:-6px calc(-1 * clamp(2px,0.6cqw,4px));"></canvas></a>
+
+          <div data-action-cell style="grid-column:3;justify-self:end;text-align:right;min-width:0;max-width:100%;">
+            <div style="font-size:clamp(9.5px,1.15cqw,10.5px);letter-spacing:.2em;color:rgba(57,255,106,.7);white-space:nowrap;">ACTION</div>
+            <div data-transcript style="font-family:'JetBrains Mono',monospace;font-weight:500;font-size:clamp(14px,1.7cqw,16px);line-height:1.3;min-height:1.3em;letter-spacing:.02em;color:#d9ffe4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;">dpi 1600</div>
+          </div>
+        </div>
+        <a data-learn href="/neuron/about" style="display:inline-flex;align-items:center;gap:clamp(8px,1.2cqw,11px);margin-top:clamp(-40px,-4vh,-18px);font-family:'JetBrains Mono',monospace;font-size:clamp(10px,1.15cqw,11px);font-weight:500;letter-spacing:.34em;text-transform:uppercase;color:rgba(198,214,198,.48);text-decoration:none;padding:7px 3px 5px;border-bottom:1px solid rgba(198,214,198,.13);transition:color .16s,border-color .16s,letter-spacing .16s;" style-hover="color:#eef3ec;border-color:rgba(198,214,198,.4);letter-spacing:.42em;">learn more</a>
+      </div>
+
+      <div style="position:relative;z-index:1;text-align:center;padding:clamp(20px,4vh,52px) clamp(16px,5cqw,40px);font-size:clamp(8.5px,1.4cqw,11px);letter-spacing:.1em;color:rgba(198,214,198,.38);">no cloud, account, telemetry &nbsp;·&nbsp; one binary &nbsp;·&nbsp; <a href="/" style="color:inherit;text-decoration:none;border-bottom:1px solid rgba(198,214,198,.16);padding-bottom:2px;transition:color .15s,border-color .15s,text-shadow .18s ease-out;" style-hover="color:#eef3ec;border-color:rgba(198,214,198,.42);text-shadow:-1px 0 0 rgb(0 255 255 / 0.5),1px 0 0 rgb(255 0 0 / 0.5);">woflo</a></div>
+    </div>
+  </div>
+
+  <script>
+    // @ts-nocheck
+    // Ported 1:1 from the Neuron Landing design doc's DCLogic component.
+    // The responsive grid (formerly renderVals template holes) is applied via
+    // applyNarrow(); experimental input devices stay gated off by default.
+    (function initNeuronLanding() {
+      const PROPS = {
+        controllerEnabled: false,
+        pedalEnabled: false,
+        dialEnabled: false,
+        penEnabled: false,
+        trackpadEnabled: false,
+      };
+
+      const canvas = document.querySelector("canvas[data-signal]");
+      if (!canvas) return;
+      if (canvas.__init) return;
+      canvas.__init = true;
+
+      const card = canvas.closest("[data-card]") || canvas.parentElement;
+      const ctx = canvas.getContext("2d");
+      const reduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      const N = 300;
+      let W = 1440, H = 860;
+      let resolveX = W * 0.5;
+      let centerY = H * 0.6;
+      let scale = 1;
+      const BASE_W = 1440;
+      const idleAmpBase = 34;
+      const pullRadBase = 130;
+      const freqs = [[0.011, 1.1], [0.026, -0.9], [0.052, 0.7], [0.09, -0.5]];
+      const pullK = 0.20;
+
+      // responsive grid (renderVals equivalent)
+      let narrow = false;
+      const rowEl = card.querySelector("[data-row]");
+      const cellTrigger = card.querySelector("[data-trigger-cell]");
+      const cellAction = card.querySelector("[data-action-cell]");
+      const ctaCell = card.querySelector("[data-cta]");
+      const applyNarrow = () => {
+        if (!rowEl) return;
+        if (narrow) {
+          rowEl.style.gridTemplateColumns = "1fr";
+          if (cellTrigger) { cellTrigger.style.gridColumn = "auto"; cellTrigger.style.justifySelf = "center"; cellTrigger.style.textAlign = "center"; }
+          if (ctaCell) ctaCell.style.gridColumn = "auto";
+          if (cellAction) { cellAction.style.gridColumn = "auto"; cellAction.style.justifySelf = "center"; cellAction.style.textAlign = "center"; }
+        } else {
+          rowEl.style.gridTemplateColumns = "minmax(120px,1fr) auto minmax(120px,1fr)";
+          if (cellTrigger) { cellTrigger.style.gridColumn = "1"; cellTrigger.style.justifySelf = "start"; cellTrigger.style.textAlign = "left"; }
+          if (ctaCell) ctaCell.style.gridColumn = "2";
+          if (cellAction) { cellAction.style.gridColumn = "3"; cellAction.style.justifySelf = "end"; cellAction.style.textAlign = "right"; }
+        }
+      };
+
+      const y = new Float32Array(N), v = new Float32Array(N);
+      const xAt = (i) => (i / (N - 1)) * W;
+      const smooth = (a, b, t) => { t = Math.max(0, Math.min(1, (t - a) / (b - a))); return t * t * (3 - 2 * t); };
+      const ampScale = (x) => (x > resolveX ? 0 : smooth(24, 250 * scale, resolveX - x));
+      const sampleY = (x) => {
+        const fi = (x / W) * (N - 1);
+        let i = Math.floor(fi); if (i < 0) i = 0; if (i > N - 2) i = N - 2;
+        const f = fi - i;
+        return centerY + (y[i] * (1 - f) + y[i + 1] * f) * ampScale(x);
+      };
+      const kick = (x, amp) => { for (let i = 1; i < N - 1; i++) { const dx = xAt(i) - x; const w = Math.exp(-(dx * dx) / (72 * 72)); v[i] += amp * w; } };
+      const pathSeg = (i0, i1, dx) => { ctx.beginPath(); for (let i = i0; i <= i1; i++) { const x = xAt(i); const yy = sampleY(x); if (i === i0) ctx.moveTo(x + dx, yy); else ctx.lineTo(x + dx, yy); } };
+
+      const fitTriggerList = () => {
+        const el = card.querySelector("[data-trigger-list]");
+        if (!el) return;
+        const words = ["button", "gesture", "flick", "app", "mic", "hold"];
+        el.textContent = words.join(" · ");
+        let n = words.length;
+        while (n > 0 && el.scrollWidth > el.clientWidth + 1) {
+          n -= 1;
+          el.textContent = words.slice(0, n).join(" · ");
+        }
+      };
+
+      const layout = () => {
+        const rect = card.getBoundingClientRect();
+        W = Math.max(1, rect.width);
+        H = Math.max(1, rect.height);
+        scale = Math.max(0.34, Math.min(1, W / BASE_W));
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.round(W * dpr);
+        canvas.height = Math.round(H * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        resolveX = W * 0.5;
+        const row = card.querySelector("[data-row]");
+        if (row) {
+          const rowRect = row.getBoundingClientRect();
+          centerY = (rowRect.top + rowRect.bottom) / 2 - rect.top;
+        } else {
+          centerY = H * 0.6;
+        }
+        const isNarrow = W < 760;
+        if (isNarrow !== narrow) { narrow = isNarrow; applyNarrow(); }
+        fitTriggerList();
+      };
+      layout();
+      // Webfonts swap in after first paint, and fitTriggerList measures text.
+      // Run once against fallback metrics it fits, then JetBrains Mono arrives
+      // wider and the row clips with no resize to correct it: at 320px that
+      // left "button · gesture · flick · app · mic · hold" 7px over its box.
+      // ResizeObserver cannot catch this, because the element's box never
+      // changes, only the text inside it.
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(layout).catch(() => {});
+      const ro = new ResizeObserver(() => { layout(); if (reduce) drawStatic(); });
+      ro.observe(card);
+
+      const pointer = { x: -1, y: 0, active: false };
+      const onMove = (e) => { const r = canvas.getBoundingClientRect(); pointer.x = (e.clientX - r.left) * (W / r.width); pointer.y = (e.clientY - r.top) * (H / r.height); pointer.active = true; };
+      const onLeave = () => { pointer.active = false; };
+      if (!reduce) {
+        card.addEventListener("pointermove", onMove);
+        card.addEventListener("pointerleave", onLeave);
+      }
+
+      let harmonizeTarget = 0, harmonize = 0;
+      const thereState = { hover: false };
+      const cta = card.querySelector("[data-cta]");
+      const onCtaEnter = () => { harmonizeTarget = 1; thereState.hover = true; };
+      const onCtaLeave = () => { harmonizeTarget = 0; thereState.hover = false; };
+      if (cta && !reduce) { cta.addEventListener("pointerenter", onCtaEnter); cta.addEventListener("pointerleave", onCtaLeave); }
+
+      // ---- "therefore" (∴) glyph: dark-bg electric spinner ----
+      const thereCanvas = card.querySelector("[data-therefore]");
+      let tctx = null, TSZ = 40;
+      if (thereCanvas) {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        thereCanvas.width = Math.round(TSZ * dpr);
+        thereCanvas.height = Math.round(TSZ * dpr);
+        tctx = thereCanvas.getContext("2d");
+        tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      const TWO3 = (Math.PI * 2) / 3;
+      const tParticles = [];
+      const tS = { angle: -Math.PI / 2, vel: 0, hover: 0, chroma: 0, emit: 0 };
+      const wrapPi = (a) => { a = a % (Math.PI * 2); if (a > Math.PI) a -= Math.PI * 2; else if (a < -Math.PI) a += Math.PI * 2; return a; };
+      const renderTherefore = () => {
+        if (!tctx) return;
+        const C = TSZ / 2;
+        tS.hover += ((thereState.hover ? 1 : 0) - tS.hover) * 0.14;
+        const targetVel = thereState.hover ? 0.30 : 0;
+        tS.vel += (targetVel - tS.vel) * 0.05;
+        tS.angle += tS.vel;
+        if (!thereState.hover && tS.vel < 0.006) {
+          const rest = -Math.PI / 2 + Math.round((tS.angle + Math.PI / 2) / TWO3) * TWO3;
+          tS.angle += (rest - tS.angle) * 0.12;
+        }
+        tS.chroma += 0.05 + tS.vel * 2.1;
+        const e = tS.hover;
+        const sx = 1 + 0.14 * e, sy = 1 - 0.11 * e;
+        const R = 7.0, dotR = 2.2;
+        const dots = [];
+        for (let i = 0; i < 3; i++) {
+          const a = tS.angle + i * TWO3;
+          dots.push({ a, x: C + Math.cos(a) * R * sx, y: C + Math.sin(a) * R * sy });
+        }
+        if (e > 0.25) {
+          tS.emit += 1 + tS.vel * 9;
+          while (tS.emit >= 1 && tParticles.length < 110) {
+            tS.emit -= 1;
+            const d = dots[(Math.random() * 3) | 0];
+            const tang = d.a + Math.PI / 2 * (tS.vel >= 0 ? 1 : -1);
+            const spd = 0.5 + tS.vel * 3.4 + Math.random() * 0.9;
+            const spread = (Math.random() - 0.5) * 1.1;
+            const dir = tang + spread;
+            tParticles.push({
+              x: d.x, y: d.y,
+              vx: Math.cos(dir) * spd + Math.cos(d.a) * 0.4,
+              vy: Math.sin(dir) * spd + Math.sin(d.a) * 0.4,
+              life: 0, max: 14 + (Math.random() * 16) | 0,
+              streak: Math.random() < 0.4,
+              bright: Math.random() < 0.35,
+            });
+          }
+        }
+        tctx.clearRect(0, 0, TSZ, TSZ);
+        tctx.lineCap = "round";
+        for (let i = tParticles.length - 1; i >= 0; i--) {
+          const p = tParticles[i];
+          p.life++;
+          p.vx *= 0.9; p.vy *= 0.9;
+          p.x += p.vx; p.y += p.vy;
+          if (p.life >= p.max) { tParticles.splice(i, 1); continue; }
+          const al = 1 - p.life / p.max;
+          tctx.globalAlpha = al;
+          tctx.fillStyle = p.bright ? "#b7ffd0" : "#39ff6a";
+          if (p.streak) {
+            tctx.strokeStyle = p.bright ? "#b7ffd0" : "#39ff6a";
+            tctx.lineWidth = 1.2;
+            tctx.beginPath();
+            tctx.moveTo(p.x, p.y);
+            tctx.lineTo(p.x - p.vx * 1.8, p.y - p.vy * 1.8);
+            tctx.stroke();
+          } else {
+            const s = 1.7 * al + 0.5;
+            tctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+          }
+        }
+        tctx.globalAlpha = 1;
+        const drawDot = (x, y, r, col) => { tctx.beginPath(); tctx.arc(x, y, r, 0, 7); tctx.fillStyle = col; tctx.fill(); };
+        for (const d of dots) {
+          const hot = Math.exp(-(wrapPi(d.a - tS.chroma) ** 2) / (2 * 0.6 * 0.6));
+          const off = hot * 2.9 * e;
+          if (off > 0.2) {
+            tctx.globalCompositeOperation = "lighter";
+            drawDot(d.x + off, d.y, dotR, "rgba(255,54,54,0.95)");
+            drawDot(d.x - off * 0.6, d.y + off * 0.5, dotR, "rgba(52,206,255,0.9)");
+            drawDot(d.x, d.y, dotR, "rgba(214,255,225,1)");
+            tctx.globalCompositeOperation = "source-over";
+          } else {
+            drawDot(d.x, d.y, dotR, "#f4fff7");
+          }
+        }
+      };
+
+      const pairs = [
+        ["mouse", "dpi 1600"],
+        ["mouse", "gesture: teleport"],
+        ["mouse", "sniper: 400"],
+        ["mouse", "flick: 3200"],
+        ["keyboard", "hypershift held"],
+        ["keyboard", "macro: lift.py"],
+        ["keyboard", "macro: hook.py"],
+        ["keyboard", "layer: nav"],
+        ["mic", "mic muted"],
+        ["mic", "gain -4db"],
+        ["mic", "noise gate on"],
+        ["headset", "output flipped"],
+        ["headset", "volume +6"],
+        ["headset", "sidetone 20%"],
+        ["controller", "stick: linear"],
+        ["controller", "trigger: hair"],
+        ["pedal", "push-to-talk"],
+        ["dial", "scrub timeline"],
+        ["pen", "pressure: soft"],
+        ["trackpad", "swipe: desktop"],
+        ["hardware", "brightness 60%"],
+        ["hardware", "lighting: typing heat"],
+        ["hardware", "profile: {game}"],
+        ["mouse", "sens for {game}"],
+        ["keyboard", "binds: {game}"],
+        ["hardware", "detected: {game}"],
+        ["headset", "eq: {game}"],
+      ];
+
+      const games = [
+        "Valorant", "Overwatch", "Apex", "CS2", "Marvel Rivals", "The Finals",
+        "Deadlock", "Fortnite", "Minecraft", "Paladins", "Rocket League",
+        "League", "Dota 2", "Rust", "Battlefield 6", "Splitgate",
+        "Quake", "osu!", "Half-Life", "TF2", "Runescape", "Doom",
+      ];
+      let gameBag = [];
+      let lastGame = "";
+      const drawGame = () => {
+        if (gameBag.length === 0) { gameBag = games.map((_, i) => i); for (let i = gameBag.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; const tmp = gameBag[i]; gameBag[i] = gameBag[j]; gameBag[j] = tmp; } }
+        let k = 0; while (k < gameBag.length - 1 && games[gameBag[k]] === lastGame) k++;
+        const idx = gameBag.splice(k, 1)[0];
+        lastGame = games[idx];
+        return games[idx];
+      };
+
+      const deviceFlag = { controller: "controllerEnabled", pedal: "pedalEnabled", dial: "dialEnabled", pen: "penEnabled", trackpad: "trackpadEnabled" };
+      const isDomainEnabled = (d) => { const key = deviceFlag[d]; return key ? !!PROPS[key] : true; };
+
+      let bag = [];
+      let lastDomain = "mouse";
+      const refill = () => {
+        bag = pairs.map((_, i) => i).filter((i) => isDomainEnabled(pairs[i][0]));
+        for (let i = bag.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; const tmp = bag[i]; bag[i] = bag[j]; bag[j] = tmp; }
+      };
+      const pickPair = () => {
+        if (bag.length === 0) refill();
+        let k = 0; while (k < bag.length - 1 && pairs[bag[k]][0] === lastDomain) k++;
+        const idx = bag.splice(k, 1)[0];
+        lastDomain = pairs[idx][0];
+        const domain = pairs[idx][0];
+        let action = pairs[idx][1];
+        if (action.indexOf("{game}") !== -1) action = action.replace("{game}", drawGame());
+        return [domain, action];
+      };
+      const domainEl = card.querySelector("[data-domain]");
+      const spanEl = card.querySelector("[data-transcript]");
+      const caretEl = card.querySelector("[data-caret]");
+      const caretSolid = () => { if (caretEl) caretEl.style.opacity = "1"; };
+      const caretIdle = () => {};
+      const typeDelay = (ch) => 3 + ((Math.random() * 3) | 0) + (ch === " " || ch === ":" ? 3 : 0);
+      let seq = null;
+      if (domainEl) { domainEl.textContent = ""; if (spanEl) spanEl.textContent = ""; seq = { phase: "type", f: 0, dt: "mouse", at: "dpi 1600", di: 0, ai: 0, dNext: 0, aNext: 3 }; caretSolid(); }
+
+      let triggers = [];
+      let spawnAt = 40, t = 0, flash = 0;
+      let raf = 0;
+
+      const step = () => {
+        t += 1;
+        harmonize += (harmonizeTarget - harmonize) * 0.06;
+        const h = harmonize;
+        for (let i = 1; i < N - 1; i++) {
+          const x = xAt(i);
+          let chaotic = 0;
+          for (let k = 0; k < freqs.length; k++) chaotic += Math.sin(x * freqs[k][0] + t * 0.02 * freqs[k][1]);
+          chaotic *= idleAmpBase * scale * 0.5;
+          const fundamental = Math.sin(x * 0.0125 + t * 0.045);
+          const overtone = Math.sin(x * 0.025 + t * 0.09) * 0.28;
+          const clean = (fundamental + overtone) * (idleAmpBase * scale * 0.62);
+          const target = chaotic * (1 - h) + clean * h;
+          const lap = (y[i - 1] + y[i + 1]) * 0.5 - y[i];
+          v[i] += lap * 0.30 - y[i] * 0.003 + (target - y[i]) * (0.020 + h * 0.014);
+        }
+        if (pointer.active && pointer.x >= 0) {
+          const ty = pointer.y - centerY;
+          const pk = pullK * (1 - h);
+          for (let i = 1; i < N - 1; i++) {
+            const dx = xAt(i) - pointer.x;
+            const w = Math.exp(-(dx * dx) / (pullRadBase * scale * pullRadBase * scale));
+            if (w > 0.01) v[i] += (ty - y[i]) * w * pk;
+          }
+        }
+        if (t >= spawnAt && triggers.length === 0 && !seq) {
+          const s0 = 5.2 + Math.random() * 1.1;
+          triggers.push({ x: 0, speed0: s0, speed: s0, pair: pickPair() });
+          kick(60, 5);
+          spawnAt = Infinity;
+        }
+        for (const tr of triggers) tr.speed = tr.speed0 * (1 - 0.55 * h);
+        for (let i = 1; i < N - 1; i++) { v[i] *= 0.94; if (v[i] > 40) v[i] = 40; else if (v[i] < -40) v[i] = -40; y[i] += v[i]; if (y[i] > 230) y[i] = 230; else if (y[i] < -230) y[i] = -230; }
+        y[0] = 0; y[N - 1] = 0;
+
+        for (const tr of triggers) {
+          const px = tr.x; tr.x += tr.speed;
+          if (px < resolveX && tr.x >= resolveX) {
+            tr.done = true; flash = 1; kick(resolveX - 90, 4);
+            seq = { phase: "del", f: 0, dt: tr.pair[0], at: tr.pair[1], di: 0, ai: 0, dNext: 0, aNext: 3 };
+            caretSolid();
+          }
+        }
+        triggers = triggers.filter((tr) => !tr.done && tr.x < W + 30);
+
+        if (seq) {
+          seq.f += 1;
+          if (seq.phase === "del") {
+            if (seq.f >= 2) {
+              seq.f = 0;
+              if (domainEl && domainEl.textContent.length) domainEl.textContent = domainEl.textContent.slice(0, -1);
+              if (spanEl && spanEl.textContent.length) spanEl.textContent = spanEl.textContent.slice(0, -1);
+              const domainDone = !domainEl || domainEl.textContent.length === 0;
+              const spanDone = !spanEl || spanEl.textContent.length === 0;
+              if (domainDone && spanDone) seq.phase = "hold";
+            }
+          } else if (seq.phase === "hold") {
+            if (seq.f >= 9) { seq.phase = "type"; seq.f = 0; seq.di = 0; seq.ai = 0; seq.dNext = 0; seq.aNext = 3; if (spanEl) spanEl.textContent = ""; }
+          } else {
+            if (domainEl && seq.di < seq.dt.length && seq.f >= seq.dNext) {
+              seq.di += 1; domainEl.textContent = seq.dt.slice(0, seq.di); seq.dNext = seq.f + typeDelay(seq.dt[seq.di - 1]);
+            }
+            if (spanEl && seq.ai < seq.at.length && seq.f >= seq.aNext) {
+              seq.ai += 1; spanEl.textContent = seq.at.slice(0, seq.ai); seq.aNext = seq.f + typeDelay(seq.at[seq.ai - 1]);
+            }
+            const dDone = !domainEl || seq.di >= seq.dt.length;
+            const aDone = !spanEl || seq.ai >= seq.at.length;
+            if (dDone && aDone) { seq = null; caretIdle(); spawnAt = t + 70 + Math.random() * 65; }
+          }
+        }
+
+        // ---- render ----
+        const iRes = Math.floor((resolveX / W) * (N - 1));
+        ctx.clearRect(0, 0, W, H);
+        for (let gx = 48; gx < W; gx += 48) {
+          const major = gx % 240 === 0;
+          ctx.fillStyle = major ? "rgba(198,214,198,0.16)" : "rgba(198,214,198,0.08)";
+          ctx.fillRect(gx - 0.5, centerY + 16, 1, major ? 10 : 5);
+        }
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.globalCompositeOperation = "lighter";
+        pathSeg(0, iRes, 3.1); ctx.strokeStyle = "rgba(255,42,42,0.92)"; ctx.lineWidth = 1.6; ctx.stroke();
+        pathSeg(0, iRes, -3.1); ctx.strokeStyle = "rgba(42,210,255,0.9)"; ctx.lineWidth = 1.6; ctx.stroke();
+        pathSeg(0, iRes, 0); ctx.strokeStyle = "rgba(170,255,196,0.98)"; ctx.lineWidth = 1.8; ctx.stroke();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.beginPath(); ctx.moveTo(resolveX, centerY); ctx.lineTo(W, centerY);
+        ctx.strokeStyle = "#f4fff7"; ctx.lineWidth = 2 + flash * 1.4 + h * 0.7; ctx.stroke();
+        ctx.font = '10px "JetBrains Mono", monospace';
+        ctx.textAlign = "center";
+        for (const tr of triggers) {
+          const yy = sampleY(tr.x);
+          const a = Math.max(0, Math.min(1, tr.x / 130) * Math.min(1, (resolveX - tr.x) / 130));
+          ctx.globalAlpha = a;
+          ctx.fillStyle = "#eafff0";
+          ctx.beginPath(); ctx.arc(tr.x, yy, 2.4, 0, 7); ctx.fill();
+          ctx.fillStyle = "rgba(198,214,198,0.6)";
+          ctx.fillText(tr.pair[0], tr.x, yy - 13);
+          ctx.globalAlpha = 1;
+        }
+        ctx.textAlign = "left";
+        flash *= 0.88;
+        if (caretEl) caretEl.style.opacity = seq ? "1" : ((Math.floor(t / 32) % 2) ? "0" : "1");
+        renderTherefore();
+        raf = requestAnimationFrame(step);
+      };
+
+      // ∴ glyph at rest: apex-up, no spin, no sparks.
+      const drawThereforeStatic = () => {
+        if (!tctx) return;
+        const C = TSZ / 2, R = 7.0, dotR = 2.2;
+        tctx.clearRect(0, 0, TSZ, TSZ);
+        for (let i = 0; i < 3; i++) {
+          const a = -Math.PI / 2 + i * TWO3;
+          tctx.beginPath();
+          tctx.arc(C + Math.cos(a) * R, C + Math.sin(a) * R, dotR, 0, 7);
+          tctx.fillStyle = "#f4fff7";
+          tctx.fill();
+        }
+      };
+
+      // Reduced-motion: no perpetual loop. Settle the wave to its natural idle
+      // shape, resolve one transcript, and paint a single frozen frame that
+      // still tells the story: chaos on the left, one clean readout on the right.
+      const drawStatic = () => {
+        for (let s = 0; s < 240; s++) {
+          for (let i = 1; i < N - 1; i++) {
+            const x = xAt(i);
+            let chaotic = 0;
+            for (let k = 0; k < freqs.length; k++) chaotic += Math.sin(x * freqs[k][0] + s * 0.02 * freqs[k][1]);
+            chaotic *= idleAmpBase * scale * 0.5;
+            const lap = (y[i - 1] + y[i + 1]) * 0.5 - y[i];
+            v[i] += lap * 0.30 - y[i] * 0.003 + (chaotic - y[i]) * 0.020;
+          }
+          for (let i = 1; i < N - 1; i++) { v[i] *= 0.94; if (v[i] > 40) v[i] = 40; else if (v[i] < -40) v[i] = -40; y[i] += v[i]; if (y[i] > 230) y[i] = 230; else if (y[i] < -230) y[i] = -230; }
+          y[0] = 0; y[N - 1] = 0;
+        }
+        if (domainEl) domainEl.textContent = "mouse";
+        if (spanEl) spanEl.textContent = "dpi 1600";
+        if (caretEl) caretEl.style.opacity = "1";
+        const iRes = Math.floor((resolveX / W) * (N - 1));
+        ctx.clearRect(0, 0, W, H);
+        for (let gx = 48; gx < W; gx += 48) {
+          const major = gx % 240 === 0;
+          ctx.fillStyle = major ? "rgba(198,214,198,0.16)" : "rgba(198,214,198,0.08)";
+          ctx.fillRect(gx - 0.5, centerY + 16, 1, major ? 10 : 5);
+        }
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.globalCompositeOperation = "lighter";
+        pathSeg(0, iRes, 3.1); ctx.strokeStyle = "rgba(255,42,42,0.92)"; ctx.lineWidth = 1.6; ctx.stroke();
+        pathSeg(0, iRes, -3.1); ctx.strokeStyle = "rgba(42,210,255,0.9)"; ctx.lineWidth = 1.6; ctx.stroke();
+        pathSeg(0, iRes, 0); ctx.strokeStyle = "rgba(170,255,196,0.98)"; ctx.lineWidth = 1.8; ctx.stroke();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.beginPath(); ctx.moveTo(resolveX, centerY); ctx.lineTo(W, centerY);
+        ctx.strokeStyle = "#f4fff7"; ctx.lineWidth = 2; ctx.stroke();
+        drawThereforeStatic();
+      };
+
+      if (reduce) drawStatic();
+      else step();
+    })();
+  </script>
+</NeuronLayout>
+
+<style>
+  .neuron-landing-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: clamp(16px, 3vw, 44px);
+    box-sizing: border-box;
+    background: #050604;
+  }
+</style>

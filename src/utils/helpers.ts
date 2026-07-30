@@ -60,3 +60,18 @@ export function parseMarkdown(text: string): string {
 
 export const getLoadingPriority = (index: number, eagerCount = 2): "eager" | "lazy" =>
   index < eagerCount ? "eager" : "lazy";
+
+// unicode combining marks, written as escapes so no invisible character has to
+// survive a copy, a paste or a diff.
+const COMBINING_MARKS = new RegExp("[\u0300-\u036f]", "g");
+
+// a stable url-safe id from a human title. diacritics fold rather than vanish,
+// so "séance" reaches "seance" instead of "s-ance", and everything else
+// collapses to single hyphens with none left dangling at either end.
+export const slugify = (text: string): string =>
+  text
+    .normalize("NFD")
+    .replace(COMBINING_MARKS, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");

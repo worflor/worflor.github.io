@@ -672,21 +672,32 @@ async function collectNetwork(signal?: AbortSignal): Promise<DataPoint[]> {
 
   throwIfAborted(signal);
 
-  const providerResults = await Promise.allSettled(
-    NETWORK_PROVIDER_PIPELINE.map(async provider => {
+  // One provider at a time, stopping as soon as the answer is good enough.
+  //
+  // This used to fire all four at once through Promise.allSettled, so opening
+  // the page handed your address to four geolocation companies simultaneously
+  // (five, counting the ipify fallback below) before you had asked it anything.
+  // On a page whose whole subject is what your browser gives away, that was the
+  // one thing it should not have been doing quietly.
+  //
+  // Order is unchanged, so precedence is still deterministic and a later
+  // provider can still fill a field an earlier one left blank. The difference
+  // is that a complete first answer ends the loop, which is the common case:
+  // one request instead of four.
+  for (const provider of NETWORK_PROVIDER_PIPELINE) {
+    throwIfAborted(signal);
+    if (snapshot.ip && snapshot.country && snapshot.city) break;
+    try {
       const raw = await fetchJsonWithTimeout(provider.url, provider.timeoutMs, signal);
-      if (!raw) return null;
-      return provider.extract(raw);
-    }),
-  );
+      if (raw) snapshot = mergeNetworkSnapshot(snapshot, provider.extract(raw));
+    } catch {
+      // a provider being down or rate-limiting is ordinary; the next one is the
+      // fallback. an abort is not ordinary, so let it through.
+      throwIfAborted(signal);
+    }
+  }
 
   throwIfAborted(signal);
-
-  // Merge in configured provider order so precedence stays deterministic.
-  for (const result of providerResults) {
-    if (result.status !== "fulfilled" || !result.value) continue;
-    snapshot = mergeNetworkSnapshot(snapshot, result.value);
-  }
 
   // Last-resort fallback: public IP only.
   if (!snapshot.ip) {

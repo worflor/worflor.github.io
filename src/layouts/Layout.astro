@@ -259,6 +259,10 @@ const isCurrent = (url: string) => (url.replace(/\/+$/, "") || "/") === currentP
     <title>{seo.title}</title>
     <meta name="description" content={seo.description} />
     <link rel="canonical" href={Astro.url.href} />
+    {/* a feed nobody can find is not a feed. readers and browser extensions
+        look for exactly this tag, so it goes on every page rather than only
+        on the blog. */}
+    <link rel="alternate" type="application/rss+xml" title="woflo" href="/rss.xml" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content={seo.title} />
     <meta property="og:description" content={seo.description} />

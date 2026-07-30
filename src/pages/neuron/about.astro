@@ -1,0 +1,707 @@
+---
+import NeuronLayout from "../../layouts/NeuronLayout.astro";
+import { projectsPageContent } from "../../config";
+import { repoIsPublic } from "../../utils/release";
+
+// See neuron/index.astro for why this is decided at build time and why it fails
+// closed. Both pages read the same `gate:` on the Neuron record in config.ts, so
+// they cannot drift apart, and removing that one line releases both at once.
+const REPO_SLUG = "worflor/neuron";
+const gate = projectsPageContent.projects.find((p) => p.slug === "neuron")?.gate;
+const released = gate ? await repoIsPublic(gate) : true;
+
+const REPO = `https://github.com/${REPO_SLUG}`;
+const CTA_HREF = released ? REPO : "/contact?project=neuron";
+const CTA_LABEL = released ? "GET NEURON" : "TELL ME WHEN";
+
+const seo = {
+  title: "Neuron / learn more",
+  description:
+    "How Neuron works: trigger → action, raw HID with no driver, a composable lighting engine, gesture spellweaving, real-python macros, first-class hypershift, and a clean exit from Synapse.",
+  image: "/images/neuron-og.png",
+};
+---
+
+<NeuronLayout seo={seo}>
+  <div style="min-height:100vh;background:linear-gradient(180deg,#060705,#040503);font-family:'JetBrains Mono',monospace;color:#e8e6df;">
+
+    <!-- top bar -->
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:36px clamp(24px,6vw,72px) 0;">
+      <div style="display:flex;align-items:baseline;gap:12px;">
+        <a href="/neuron" style="text-decoration:none;">
+          <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px;letter-spacing:.32em;color:#eef3ec;view-transition-name:neuron-wordmark;">NEURON</span>
+        </a>
+        <a href="/" style="font-size:10px;letter-spacing:.16em;color:rgba(198,214,198,.42);text-decoration:none;transition:color .15s,text-shadow .18s ease-out;" style-hover="color:#eef3ec;text-shadow:-1px 0 0 rgb(0 255 255 / 0.5),1px 0 0 rgb(255 0 0 / 0.5);">/ woflo</a>
+      </div>
+      {released && (
+        <a href={REPO} style="font-size:10px;letter-spacing:.2em;color:rgba(198,214,198,.42);text-decoration:none;border-bottom:1px solid rgba(198,214,198,.13);padding-bottom:3px;transition:color .15s,border-color .15s;" style-hover="color:#eef3ec;border-color:rgba(198,214,198,.4);">SOURCE ↗</a>
+      )}
+    </div>
+
+    <div data-grid style="display:grid;grid-template-columns:230px minmax(0,1fr);max-width:1160px;margin:0 auto;padding:0 clamp(24px,6vw,72px);align-items:start;">
+
+      <!-- chapter rail -->
+      <nav data-rail style="display:flex;position:sticky;top:0;height:100vh;box-sizing:border-box;padding:18vh 40px 0 0;flex-direction:column;gap:14px;">
+        <div style="position:relative;display:flex;flex-direction:column;gap:13px;padding-left:18px;">
+          <div style="position:absolute;left:0;top:2px;bottom:2px;width:1px;background:rgba(198,214,198,.12);"></div>
+          <div data-progress style="position:absolute;left:0;top:2px;width:1px;height:0;background:#39ff6a;"></div>
+          <a data-ch="sec-0" href="#sec-0" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">00&nbsp;&nbsp;WHY IT EXISTS</a>
+          <a data-ch="sec-1" href="#sec-1" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">01&nbsp;&nbsp;TRIGGER → ACTION</a>
+          <a data-ch="sec-2" href="#sec-2" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">02&nbsp;&nbsp;NO DRIVERS</a>
+          <a data-ch="sec-3" href="#sec-3" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">03&nbsp;&nbsp;LIGHTING</a>
+          <a data-ch="sec-4" href="#sec-4" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">04&nbsp;&nbsp;SPELLWEAVING</a>
+          <a data-ch="sec-5" href="#sec-5" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">05&nbsp;&nbsp;MACROS</a>
+          <a data-ch="sec-6" href="#sec-6" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">06&nbsp;&nbsp;HYPERSHIFT</a>
+          <a data-ch="sec-7" href="#sec-7" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">07&nbsp;&nbsp;WON'T SURPRISE YOU</a>
+          <a data-ch="sec-8" href="#sec-8" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">08&nbsp;&nbsp;LIFE AFTER SYNAPSE</a>
+          <a data-ch="sec-9" href="#sec-9" style="font-size:10px;letter-spacing:.18em;color:rgba(198,214,198,.4);text-decoration:none;transition:color .2s;white-space:nowrap;">09&nbsp;&nbsp;GET IT</a>
+        </div>
+      </nav>
+
+      <!-- reading column -->
+      <main style="max-width:680px;min-width:0;padding:16vh 0 20vh;">
+
+        <section id="sec-0" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">00 / WHY IT EXISTS</div>
+          <h1 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(30px,4.6vw,44px);line-height:1.14;letter-spacing:-0.01em;color:#eef3ec;margin:0 0 26px;text-wrap:balance;">an anti-synapse for your razer gear.</h1>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">Neuron is one small binary that replaces Razer Synapse. It talks to your mouse and keyboard directly over raw HID, sending the same bytes Synapse does, worked out from wire captures and a lot of live probing. Doesn't require a kernel driver, vendor SDK, account, or cloud-anything. Neuron does what you tell it then gets out of your way.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">Synapse grew into a two-gigabyte, account-gated, cloud-synced install that re-enables features you turned off and bolts a login screen onto your mouse dpi. Neuron is the opposite design on purpose: one tray process sitting at a few megabytes, your config as plain TOML on your own disk, and nothing running in the background that you didn't ask for.</p>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="carrier" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-1" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">01 / TRIGGER → ACTION</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">everything is one sentence: when this, do that.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 34px;">The whole app runs on a single idea. Something happens, so it does something. A button press, a drawn glyph, a radial flick, the foreground app changing, a tap on your mic mute, a held hypershift layer: those are all triggers. A keystroke, a macro, a dpi cycle, a profile switch, a raw python script: those are all actions. Bind any trigger to any action and everything further down this page is built out of that one pairing.</p>
+
+          <div style="border:1px solid rgba(198,214,198,.12);padding:26px 28px;background:rgba(255,255,255,.015);">
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px;">
+              <button data-chip="button" style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;padding:8px 14px;background:transparent;border:1px solid rgba(198,214,198,.2);color:rgba(220,228,218,.65);cursor:pointer;transition:border-color .15s,color .15s;" style-hover="border-color:rgba(57,255,106,.5);color:#eef3ec;">button</button>
+              <button data-chip="gesture" style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;padding:8px 14px;background:transparent;border:1px solid rgba(198,214,198,.2);color:rgba(220,228,218,.65);cursor:pointer;transition:border-color .15s,color .15s;" style-hover="border-color:rgba(57,255,106,.5);color:#eef3ec;">gesture</button>
+              <button data-chip="flick" style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;padding:8px 14px;background:transparent;border:1px solid rgba(198,214,198,.2);color:rgba(220,228,218,.65);cursor:pointer;transition:border-color .15s,color .15s;" style-hover="border-color:rgba(57,255,106,.5);color:#eef3ec;">app</button>
+              <button data-chip="mic" style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;padding:8px 14px;background:transparent;border:1px solid rgba(198,214,198,.2);color:rgba(220,228,218,.65);cursor:pointer;transition:border-color .15s,color .15s;" style-hover="border-color:rgba(57,255,106,.5);color:#eef3ec;">mic</button>
+              <button data-chip="hold" style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;padding:8px 14px;background:transparent;border:1px solid rgba(198,214,198,.2);color:rgba(220,228,218,.65);cursor:pointer;transition:border-color .15s,color .15s;" style-hover="border-color:rgba(57,255,106,.5);color:#eef3ec;">hold</button>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:10px;font-size:14px;">
+              <span style="color:rgba(57,255,106,.7);flex-shrink:0;">→</span>
+              <span data-demo-line style="color:#d9ffe4;letter-spacing:.02em;min-height:1.5em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">mouse4 held → sniper: dpi 400</span>
+              <span data-demo-caret style="display:inline-block;width:2px;height:0.95em;background:#39ff6a;flex-shrink:0;transform:translateY(0.12em);"></span>
+            </div>
+          </div>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="bytes" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-2" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">02 / NO DRIVERS</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">no driver. no sdk. just hid.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">Razer's control interface answers HID feature reports, and those don't need read or write access to the device, so Neuron opens your mouse with zero desired access and speaks the exact bytes Synapse sends. That one detail is the whole foundation. There's no kernel driver to sign allowing Neuron to sidestep the "vulnerable driver" quarantines that bricked OpenRGB and SignalRGB in 2025.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">On top of that sits the everyday stuff: dpi and the full stage cycle, polling up to 8000&nbsp;Hz where the hardware exposes it, brightness, lift-off distance, scroll stages, battery and charge. Reads decode the device's own bytes and match Synapse to the byte. Press the onboard dpi button or snap a side-plate onto a Naga and Neuron hears the mouse announce it live, on a separate channel, without polling for it.</p>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="bloom" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-3" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">03 / LIGHTING</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">lighting that means something.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">You get everything Synapse's lighting does (the native static, breathing, spectrum, wave, reactive and starlight effects, invoked by their real firmware ids), and then the actual point: an open theme engine sitting on top. An effect is two halves that compose, a <em style="font-style: normal; color: rgb(217, 255, 228);">pattern</em> that decides where light lands and how bright, and a <em style="font-style: normal; color: rgb(217, 255, 228);">spectrum</em> that decides what colour and when. Since a frame is just data, a live readout (battery, cpu, your mic peak) drops in as its own layer over a running effect, and painting the fire sim with an ocean gradient gives you cold fire with zero code. Changes apply live.</p>
+          <p style="font-size:13.5px;line-height:1.7;color:rgba(198,214,198,.5);margin:0 0 18px;">Three I built for the fun of it, so you can see what the engine gives you past the stock set:</p>
+          <div style="display:grid;gap:0;border-top:1px solid rgba(198,214,198,.1);">
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:16px;padding:16px 4px;border-bottom:1px solid rgba(198,214,198,.1);align-items:baseline;">
+              <span style="font-size:11px;letter-spacing:.12em;color:#eef3ec;">typing heat</span>
+              <span style="font-size:13.5px;line-height:1.65;color:rgba(220,228,218,.62);">every keypress deposits heat locally around the key, requiring passive time to let cool</span>
+            </div>
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:16px;padding:16px 4px;border-bottom:1px solid rgba(198,214,198,.1);align-items:baseline;">
+              <span style="font-size:11px;letter-spacing:.12em;color:#eef3ec;">comet</span>
+              <span style="font-size:13.5px;line-height:1.65;color:rgba(220,228,218,.62);">shooting streaks with real head-to-tail gradients; type the key a comet head sits on to break it</span>
+            </div>
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:16px;padding:16px 4px;border-bottom:1px solid rgba(198,214,198,.1);align-items:baseline;">
+              <span style="font-size:11px;letter-spacing:.12em;color:#eef3ec;">ambient</span>
+              <span style="font-size:13.5px;line-height:1.65;color:rgba(220,228,218,.62);">the whole board as an ambilight, mirroring whatever's onscreen</span>
+            </div>
+          </div>
+          <p style="font-size:13.5px;line-height:1.7;color:rgba(198,214,198,.5);margin:18px 0 0;">Alongside more. Because a preset is only a pattern plus a spectrum, more will come as development goes, and adding your own is a bit of data.</p>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="glyph" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-4" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">04 / SPELLWEAVING</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">hold, draw, cast.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">Hold a trigger, weave a stroke, release, and it fires an action live as a<i> real keybind</i>. Glyphs aren't matched pixel against pixel. Each stroke is fit to a small dynamical model and identified by its <em style="font-style: normal; color: rgb(217, 255, 228);">eigenmotion</em>, its natural frequency and decay, which is what makes it hold up no matter where on the screen you drew it, how big, or how fast, and lets clockwise and counter-clockwise fall out as genuinely different shapes. There's a fair amount of signal-processing work under that; the method is written up <a href="#" style="color: rgb(57, 255, 106); text-decoration: none; border-bottom: 1px solid rgba(57, 255, 106, 0.35); transition: border-color 0.15s;" style-hover="border-color:rgba(57,255,106,.7);">in a short paper</a> (coming soon after release).</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">Because a resolved gesture is just another trigger, one capture drives a whole family of instruments: <em style="font-style:normal;color:#d9ffe4;">teleport</em> pops a live minimap of your monitors you fling the cursor across, <em style="font-style:normal;color:#d9ffe4;">glance</em> pulls every matching window into a magnetic collage, a <em style="font-style:normal;color:#d9ffe4;">dial</em> turns the next hold into an analog slide where speed is sensitivity, and <em style="font-style:normal;color:#d9ffe4;">knockback</em> is a little rhythm game your mouse plays back at you while you wait in queue.</p>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="type" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-5" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">05 / MACROS</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">macros are real python.</h2><p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 30px;">A macro is a python file with a <code style="color: rgb(217, 255, 228);">def macro(ctx)</code>. Neuron runs it in a bundled interpreter that stays warm in the background, so firing one is basically a function call, comfortably under a frame. Unsandboxed (on purpose): ctypes, subprocess, sockets, files, anything a program can do your macro can do. In its own process, so no macro can take Neuron down... unless it explicitly takes Neuron down.</p>
+
+          <pre style="margin:0;padding:24px 26px;background:#070a07;border:1px solid rgba(198,214,198,.12);font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.8;color:rgba(220,228,218,.8);overflow-x:auto;white-space:pre;"><div><span style="color:rgba(198,214,198,.35);"># lift.py — double-tap ctrl to boost mic gain while you talk</span></div>
+<div><span style="color:#39ff6a;">from</span> neuron <span style="color:#39ff6a;">import</span> on, mic, keys</div>
+<div>&nbsp;</div>
+<div><span style="color:rgba(198,214,198,.55);">@on(keys.double_tap(</span><span style="color:#d9ffe4;">"ctrl"</span><span style="color:rgba(198,214,198,.55);">))</span></div>
+<div><span style="color:#39ff6a;">def</span> lift(ctx):</div>
+<div>    <span style="color:#39ff6a;">with</span> mic.gain(+4):</div>
+<div>        keys.wait_release(<span style="color:#d9ffe4;">"ctrl"</span>)</div>
+</pre>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:22px 0 0;">Every run gets a snapshot of where you were when you fired it, frozen at trigger time, so the whole thing reasons about one consistent moment. And if you'd rather not write python, the GUI has a block builder that <i>writes </i>the source for you, losslessly both ways :)</p>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="layers" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-6" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">06 / HYPERSHIFT</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">hold a key, get a second keyboard.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 30px;">Razer ships hypershift as hold-only. Neuron makes the layer first-class and gives it four stances, then makes sure releasing one layer only drops that layer, so two held layers never stomp each other.</p>
+          <div style="display:grid;gap:0;border-top:1px solid rgba(198,214,198,.1);">
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:16px;padding:14px 4px;border-bottom:1px solid rgba(198,214,198,.1);align-items:baseline;">
+              <span style="font-size:11px;letter-spacing:.12em;color:#eef3ec;">hold</span>
+              <span style="font-size:13.5px;line-height:1.6;color:rgba(220,228,218,.62);">active only while you hold it down</span>
+            </div>
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:16px;padding:14px 4px;border-bottom:1px solid rgba(198,214,198,.1);align-items:baseline;">
+              <span style="font-size:11px;letter-spacing:.12em;color:#eef3ec;">toggle</span>
+              <span style="font-size:13.5px;line-height:1.6;color:rgba(220,228,218,.62);">one press: on, another press: off</span>
+            </div>
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:16px;padding:14px 4px;border-bottom:1px solid rgba(198,214,198,.1);align-items:baseline;">
+              <span style="font-size:11px;letter-spacing:.12em;color:#eef3ec;">smart</span>
+              <span style="font-size:13.5px;line-height:1.6;color:rgba(220,228,218,.62);">holds immediately, then decides tap vs hold for you on release</span>
+            </div>
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:16px;padding:14px 4px;border-bottom:1px solid rgba(198,214,198,.1);align-items:baseline;">
+              <span style="font-size:11px;letter-spacing:.12em;color:#eef3ec;">one-shot</span>
+              <span style="font-size:13.5px;line-height:1.6;color:rgba(220,228,218,.62);">arms for exactly the next trigger, then drops</span>
+            </div>
+          </div>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="gate" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-7" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">07 / WON'T SURPRISE YOU</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">it changes what you ask, and nothing else.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">This is a tool whose whole job is injecting input and writing to your hardware, so the safety has to be real. Every synthesised keystroke runs through one switch that starts disarmed, and only the running app ever flips it on. Every write backs the device up first, takes effect in volatile memory before anything gets flashed, then reads itself back to confirm the bytes actually landed. A mismatch is a hard error, never a silent success, and where there's no opcode Neuron trusts, it simply refuses rather than guessing at your hardware.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">Nothing changes quietly, either. Every committed change pops a small card on screen after it lands, and you drag a little mock-monitor to say where those cards appear. Think of it as the OSD Synapse throws at you, minus the part where you can't turn it off.</p>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="dissolve" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-8" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">08 / LIFE AFTER SYNAPSE</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">bring your settings, then purge synapse.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">Synapse's export files are just zips of plaintext xml, so Neuron reads one directly, keeps only the binds you actually changed, and throws away the hundred keys still sitting on their defaults. Run it dry and it shows you exactly what it would import and what it dropped, before anything is committed.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">When you're ready to be rid of it, Neuron can figure out which services are Razer's by asking <i>who installed them</i>, stops them respawning, and ends the whole tree.&nbsp;</p>
+        </section>
+
+        <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
+          <div style="position:relative;">
+            <pre data-scene="resolve" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(198,214,198,.32);white-space:pre;user-select:none;text-align:center;">∴</pre>
+            <pre data-scene-hi style="position:absolute;inset:0;margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;letter-spacing:.05em;color:rgba(57,255,106,.8);white-space:pre;user-select:none;pointer-events:none;text-align:center;"></pre>
+          </div>
+        </div>
+
+        <section id="sec-9" data-reveal style="scroll-margin-top:80px;">
+          <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">09 / GET IT</div>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">run and done.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 30px;">A few megabytes, source-available, Windows today with Linux and macOS kept behind seams for later<sup style="font-size: 0.6em; vertical-align: top; letter-spacing: 0.04em; color: rgba(198, 214, 198, 0.5);">TM</sup>. Your config is plain TOML you own, and deleting the binary leaves nothing running and nothing behind. Fair warning: this is public beta mk1, from one dev on one desk. It runs on mine every day, but it honestly hasn't been tested on yours... <i>yet ;)</i></p>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:24px;">
+            <a data-cta href={CTA_HREF} style="display:inline-flex;align-items:center;gap:14px;padding:15px 32px;background:#070a07;border:1px solid rgba(57,255,106,.6);color:#eef3ec;text-decoration:none;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:18px;letter-spacing:.05em;box-shadow:5px 5px 0 rgba(57,255,106,.15);transition:background .12s,border-color .12s,box-shadow .12s,transform .12s;white-space:nowrap;" style-hover="background:#0a120b;border-color:#39ff6a;color:#f4fff7;" style-active="box-shadow:2px 2px 0 rgba(57,255,106,.34);transform:translate(3px,3px);">{CTA_LABEL}<canvas data-therefore width="40" height="40" style="width:40px;height:40px;display:block;flex-shrink:0;margin:-6px -6px;"></canvas></a>
+            <span style="font-size:10px;letter-spacing:.12em;color:rgba(198,214,198,.38);">no cloud, account, telemetry · just one binary</span>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <script>
+    // @ts-nocheck
+    // Ported 1:1 from the Neuron Learn More design doc's DCLogic component.
+    // Template holes ({{ gridCols }}, {{ railDisplay }}, onClick={{ pickDemo }})
+    // and props (railEnabled / reveals / autoDemo, all true) are inlined here.
+    (function initNeuronAbout() {
+      const PROPS = { railEnabled: true, reveals: true, autoDemo: true };
+      const reduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      let narrow = window.innerWidth < 900;
+
+      const gridEl = document.querySelector("[data-grid]");
+      const railEl = document.querySelector("[data-rail]");
+      const applyLayout = () => {
+        const railOn = PROPS.railEnabled && !narrow;
+        if (gridEl) gridEl.style.gridTemplateColumns = railOn ? "230px minmax(0,1fr)" : "minmax(0,1fr)";
+        if (railEl) railEl.style.display = railOn ? "flex" : "none";
+      };
+      applyLayout();
+
+      const demos = {
+        button: "mouse4 held → sniper: dpi 400",
+        gesture: "draw ↻ → cast: teleport",
+        flick: "valorant.exe → profile: valorant",
+        mic: "mic muted → keycaps flash red",
+        hold: "caps held → hypershift: nav",
+      };
+      const demoKeys = Object.keys(demos);
+      let demoIdx = 0;
+      let typeTimer = null;
+      let cycleTimer = null;
+      let typing = false;
+
+      const check = () => {
+        const n = window.innerWidth < 900;
+        if (n !== narrow) { narrow = n; applyLayout(); }
+      };
+      window.addEventListener("resize", check);
+
+      // scroll reveals (scroll-driven; IntersectionObserver is unreliable here).
+      // reduced-motion readers get the content already present, no fade-up.
+      let hiddenReveals = [];
+      if (PROPS.reveals && !reduce) {
+        document.querySelectorAll("[data-reveal]").forEach((el) => {
+          if (el.getBoundingClientRect().top > window.innerHeight) {
+            el.style.opacity = "0";
+            el.style.transform = "translateY(16px)";
+            el.style.transition = "opacity .7s ease, transform .7s ease";
+            hiddenReveals.push(el);
+          }
+        });
+      }
+      const revealScan = () => {
+        if (hiddenReveals.length) {
+          const trig = window.innerHeight * 0.92;
+          hiddenReveals = hiddenReveals.filter((el) => {
+            if (el.getBoundingClientRect().top < trig) {
+              el.style.opacity = "1";
+              el.style.transform = "translateY(0)";
+              return false;
+            }
+            return true;
+          });
+        }
+      };
+
+      // active chapter + progress line + reveal-on-scroll
+      if (railEl) {
+        const links = railEl.querySelectorAll("[data-ch]");
+        const secs = [...links].map((l) => document.getElementById(l.dataset.ch)).filter(Boolean);
+        const progress = railEl.querySelector("[data-progress]");
+        const onScroll = () => {
+          const se = document.scrollingElement || document.documentElement;
+          const yv = se.scrollTop;
+          const max = se.scrollHeight - se.clientHeight;
+          if (progress) progress.style.height = (max > 0 ? (yv / max) * 100 : 0) + "%";
+          revealScan();
+          let active = secs[0] ? secs[0].id : null;
+          for (const s of secs) {
+            if (s.getBoundingClientRect().top < window.innerHeight * 0.4) active = s.id;
+          }
+          links.forEach((l) => {
+            const on = l.dataset.ch === active;
+            l.style.color = on ? "#39ff6a" : "rgba(198,214,198,.4)";
+          });
+        };
+        window.addEventListener("scroll", onScroll, { passive: true });
+        onScroll();
+      } else {
+        window.addEventListener("scroll", revealScan, { passive: true });
+        revealScan();
+      }
+
+      initTherefore();
+      initScenes();
+
+      // demo caret blink when idle (steady, not blinking, under reduced-motion)
+      if (!reduce) {
+        setInterval(() => {
+          const c = document.querySelector("[data-demo-caret]");
+          if (c && !typing) c.style.opacity = c.style.opacity === "0" ? "1" : "0";
+        }, 530);
+      }
+
+      // chip clicks (design doc bound these via onClick={{ pickDemo }}). still
+      // interactive under reduced-motion: showDemo snaps the line without typing.
+      document.querySelectorAll("[data-chip]").forEach((b) => {
+        b.addEventListener("click", () => showDemo(b.dataset.chip, true));
+      });
+
+      if (PROPS.autoDemo && !reduce) scheduleCycle(4200);
+
+      function scheduleCycle(ms) {
+        clearTimeout(cycleTimer);
+        cycleTimer = setTimeout(() => {
+          demoIdx = (demoIdx + 1) % demoKeys.length;
+          showDemo(demoKeys[demoIdx], false);
+        }, ms);
+      }
+
+      function showDemo(key, user) {
+        const line = document.querySelector("[data-demo-line]");
+        const caret = document.querySelector("[data-demo-caret]");
+        if (!line || !demos[key]) return;
+        if (user) demoIdx = demoKeys.indexOf(key);
+        document.querySelectorAll("[data-chip]").forEach((b) => {
+          const on = b.dataset.chip === key;
+          b.style.borderColor = on ? "rgba(57,255,106,.6)" : "rgba(198,214,198,.2)";
+          b.style.color = on ? "#eef3ec" : "rgba(220,228,218,.65)";
+        });
+        const target = demos[key];
+        if (reduce) {
+          line.textContent = target;
+          if (caret) caret.style.opacity = "1";
+          return;
+        }
+        clearInterval(typeTimer);
+        typing = true;
+        if (caret) caret.style.opacity = "1";
+        let txt = line.textContent;
+        typeTimer = setInterval(() => {
+          if (txt.length > 0 && txt !== target.slice(0, txt.length)) {
+            txt = txt.slice(0, -1);
+          } else if (txt.length < target.length) {
+            txt = target.slice(0, txt.length + 1);
+          } else {
+            clearInterval(typeTimer);
+            typing = false;
+            if (PROPS.autoDemo) scheduleCycle(user ? 7000 : 4200);
+            return;
+          }
+          line.textContent = txt;
+        }, 24);
+      }
+
+      function initTherefore() {
+        const cta = document.querySelector("[data-cta]");
+        const thereCanvas = cta && cta.querySelector("[data-therefore]");
+        if (!thereCanvas || thereCanvas.__init) return;
+        thereCanvas.__init = true;
+
+        const thereState = { hover: false };
+        cta.addEventListener("pointerenter", () => { thereState.hover = true; });
+        cta.addEventListener("pointerleave", () => { thereState.hover = false; });
+
+        const TSZ = 40;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        thereCanvas.width = Math.round(TSZ * dpr);
+        thereCanvas.height = Math.round(TSZ * dpr);
+        const tctx = thereCanvas.getContext("2d");
+        tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        // reduced-motion: draw the ∴ once at rest, skip hover spin + sparks.
+        if (reduce) {
+          const C = TSZ / 2, R = 7.0, dotR = 2.2;
+          tctx.clearRect(0, 0, TSZ, TSZ);
+          for (let i = 0; i < 3; i++) {
+            const a = -Math.PI / 2 + i * ((Math.PI * 2) / 3);
+            tctx.beginPath();
+            tctx.arc(C + Math.cos(a) * R, C + Math.sin(a) * R, dotR, 0, 7);
+            tctx.fillStyle = "#f4fff7";
+            tctx.fill();
+          }
+          return;
+        }
+
+        const TWO3 = (Math.PI * 2) / 3;
+        const tParticles = [];
+        const tS = { angle: -Math.PI / 2, vel: 0, hover: 0, chroma: 0, emit: 0 };
+        const wrapPi = (a) => { a = a % (Math.PI * 2); if (a > Math.PI) a -= Math.PI * 2; else if (a < -Math.PI) a += Math.PI * 2; return a; };
+
+        const render = () => {
+          const C = TSZ / 2;
+          tS.hover += ((thereState.hover ? 1 : 0) - tS.hover) * 0.14;
+          const targetVel = thereState.hover ? 0.30 : 0;
+          tS.vel += (targetVel - tS.vel) * 0.05;
+          tS.angle += tS.vel;
+          if (!thereState.hover && tS.vel < 0.006) {
+            const rest = -Math.PI / 2 + Math.round((tS.angle + Math.PI / 2) / TWO3) * TWO3;
+            tS.angle += (rest - tS.angle) * 0.12;
+          }
+          tS.chroma += 0.05 + tS.vel * 2.1;
+          const e = tS.hover;
+          const sx = 1 + 0.14 * e, sy = 1 - 0.11 * e;
+          const R = 7.0, dotR = 2.2;
+          const dots = [];
+          for (let i = 0; i < 3; i++) {
+            const a = tS.angle + i * TWO3;
+            dots.push({ a, x: C + Math.cos(a) * R * sx, y: C + Math.sin(a) * R * sy });
+          }
+          if (e > 0.25) {
+            tS.emit += 1 + tS.vel * 9;
+            while (tS.emit >= 1 && tParticles.length < 110) {
+              tS.emit -= 1;
+              const d = dots[(Math.random() * 3) | 0];
+              const tang = d.a + Math.PI / 2 * (tS.vel >= 0 ? 1 : -1);
+              const spd = 0.5 + tS.vel * 3.4 + Math.random() * 0.9;
+              const spread = (Math.random() - 0.5) * 1.1;
+              const dir = tang + spread;
+              tParticles.push({
+                x: d.x, y: d.y,
+                vx: Math.cos(dir) * spd + Math.cos(d.a) * 0.4,
+                vy: Math.sin(dir) * spd + Math.sin(d.a) * 0.4,
+                life: 0, max: 14 + (Math.random() * 16) | 0,
+                streak: Math.random() < 0.4,
+                bright: Math.random() < 0.35,
+              });
+            }
+          }
+          tctx.clearRect(0, 0, TSZ, TSZ);
+          tctx.lineCap = "round";
+          for (let i = tParticles.length - 1; i >= 0; i--) {
+            const p = tParticles[i];
+            p.life++;
+            p.vx *= 0.9; p.vy *= 0.9;
+            p.x += p.vx; p.y += p.vy;
+            if (p.life >= p.max) { tParticles.splice(i, 1); continue; }
+            const al = 1 - p.life / p.max;
+            tctx.globalAlpha = al;
+            tctx.fillStyle = p.bright ? "#b7ffd0" : "#39ff6a";
+            if (p.streak) {
+              tctx.strokeStyle = p.bright ? "#b7ffd0" : "#39ff6a";
+              tctx.lineWidth = 1.2;
+              tctx.beginPath();
+              tctx.moveTo(p.x, p.y);
+              tctx.lineTo(p.x - p.vx * 1.8, p.y - p.vy * 1.8);
+              tctx.stroke();
+            } else {
+              const s = 1.7 * al + 0.5;
+              tctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+            }
+          }
+          tctx.globalAlpha = 1;
+          const drawDot = (x, y, r, col) => { tctx.beginPath(); tctx.arc(x, y, r, 0, 7); tctx.fillStyle = col; tctx.fill(); };
+          for (const d of dots) {
+            const hot = Math.exp(-(wrapPi(d.a - tS.chroma) ** 2) / (2 * 0.6 * 0.6));
+            const off = hot * 2.9 * e;
+            if (off > 0.2) {
+              tctx.globalCompositeOperation = "lighter";
+              drawDot(d.x + off, d.y, dotR, "rgba(255,54,54,0.95)");
+              drawDot(d.x - off * 0.6, d.y + off * 0.5, dotR, "rgba(52,206,255,0.9)");
+              drawDot(d.x, d.y, dotR, "rgba(214,255,225,1)");
+              tctx.globalCompositeOperation = "source-over";
+            } else {
+              drawDot(d.x, d.y, dotR, "#f4fff7");
+            }
+          }
+          requestAnimationFrame(render);
+        };
+        render();
+      }
+
+      // Nine ascii "transmissions", one per divider. carrier → bytes → bloom →
+      // glyph → type → layers → gate → dissolve → resolve.
+      function initScenes() {
+        const pres = [...document.querySelectorAll("pre[data-scene]")];
+        if (!pres.length) return;
+        const W = 63, H = 7, CX = 31, CY = 3;
+        const env = (x) => Math.max(0, Math.min(1, x / 6, (W - 1 - x) / 6));
+        const mk = () => {
+          const b = [], h = [];
+          for (let y = 0; y < H; y++) { b.push(new Array(W).fill(" ")); h.push(new Array(W).fill(" ")); }
+          return { b, h };
+        };
+        const put = (g, x, y, ch) => { x |= 0; y |= 0; if (x >= 0 && x < W && y >= 0 && y < H) g[y][x] = ch; };
+
+        const draw = {
+          carrier(s, g) {
+            const t = s.t * 0.06;
+            const yAt = (x) => CY + (Math.sin(x * 0.22 + t) + 0.5 * Math.sin(x * 0.09 - t * 0.7)) * 1.7 * env(x);
+            for (let x = 0; x < W; x++) {
+              const sp = Math.abs(Math.cos(x * 0.22 + t));
+              put(g.b, x, Math.round(yAt(x)), sp > 0.66 ? "·" : sp > 0.33 ? ":" : "+");
+            }
+            const px = ((s.t * 0.5) % (W + 20)) - 10;
+            put(g.h, px, Math.round(yAt(Math.max(0, Math.min(W - 1, px)))), "▸");
+          },
+          bytes(s, g) {
+            if (!s.data.hex) { s.data.hex = []; for (let i = 0; i < 48; i++) s.data.hex.push((Math.random() * 256 | 0).toString(16).padStart(2, "0")); }
+            const off = (s.t * 0.25) | 0;
+            for (let x = 0; x < W; x++) {
+              const k = x + off, ph = k % 3;
+              if (ph < 2) g.b[CY][x] = s.data.hex[((k / 3) | 0) % 48][ph];
+            }
+            for (let x = 3; x < W; x += 8) { put(g.b, x, CY - 2, "·"); put(g.b, x, CY + 2, "·"); }
+            const px = (((s.t * 0.7) % (W + 26)) - 8) | 0;
+            for (let x = Math.max(0, px - 7); x <= px && x < W; x++) {
+              if (x >= 0 && g.b[CY][x] !== " ") { g.h[CY][x] = g.b[CY][x]; g.b[CY][x] = " "; }
+            }
+          },
+          bloom(s, g) {
+            const t = s.t * 0.035;
+            const srcs = [[CX + Math.sin(t * 1.3) * 22, CY], [CX + Math.sin(t * 0.8 + 2) * 14, CY], [CX + Math.sin(t * 1.7 + 4) * 26, CY]];
+            const RAMP = " ·:;+*#";
+            for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+              let v = 0;
+              for (const src of srcs) { const dx = (x - src[0]) * 0.5, dy = (y - src[1]) * 1.5; v += Math.exp(-(dx * dx + dy * dy) / 11); }
+              v *= env(x);
+              if (v > 0.96) g.h[y][x] = "+";
+              else if (v > 0.12) g.b[y][x] = RAMP[Math.min(6, (v * 7) | 0)];
+            }
+          },
+          glyph(s, g) {
+            if (!s.data.f) s.data.f = new Float32Array(W * H);
+            const f = s.data.f;
+            for (let i = 0; i < f.length; i++) f[i] *= 0.958;
+            const t = s.t * 0.04;
+            for (let k = 0; k < 4; k++) {
+              const tt = t - k * 0.01;
+              const x = (CX + Math.sin(tt * 3) * 17) | 0, y = Math.round(CY + Math.sin(tt * 2 + 1.2) * 2.5);
+              if (x >= 0 && x < W && y >= 0 && y < H) f[y * W + x] = 1;
+            }
+            for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+              const v = f[y * W + x];
+              if (v > 0.12) g.b[y][x] = v > 0.7 ? "+" : v > 0.35 ? ":" : "·";
+            }
+            put(g.h, CX + Math.sin(t * 3) * 17, Math.round(CY + Math.sin(t * 2 + 1.2) * 2.5), "*");
+          },
+          type(s, g) {
+            const d = s.data;
+            if (!d.lines) { d.lines = ["def macro(ctx):", 'keys.tap("q")', "mic.gain(+4)", 'run("lift.py")', 'notify("done")']; d.i = 0; d.n = 0; d.phase = 0; d.wait = 0; d.px = 0; }
+            const str = d.lines[d.i], x0 = CX - (str.length >> 1);
+            for (let x = 4; x < W - 4; x += 2) put(g.b, x, CY + 2, "·");
+            if (d.phase === 0) {
+              if (s.t % 3 === 0) d.n++;
+              if (d.n >= str.length) { d.phase = 1; d.wait = s.t + 34; }
+            } else if (d.phase === 1) {
+              if (s.t > d.wait) { d.phase = 2; d.px = x0 + str.length; }
+            } else {
+              d.px += 1.3;
+              if (d.px > W + 8) { d.i = (d.i + 1) % d.lines.length; d.phase = 0; d.n = 0; }
+            }
+            if (d.phase < 2) {
+              for (let k = 0; k < Math.min(d.n, str.length); k++) put(g.b, x0 + k, CY, str[k]);
+              if (d.phase === 0 && (s.t % 16) < 10) put(g.h, x0 + d.n, CY, "_");
+            } else {
+              put(g.h, Math.min(d.px, W - 1), CY + 2, "▸");
+            }
+          },
+          layers(s, g) {
+            const t = s.t * 0.05, act = ((s.t / 220) | 0) % 3;
+            for (let L = 0; L < 3; L++) {
+              const yo = CY + (L - 1) * 2;
+              for (let x = 0; x < W; x++) {
+                const y = yo + Math.sin(x * 0.17 + t + L * 2.1) * 0.85 * env(x);
+                if (L === act) { if (x % 2 === 0) put(g.h, x, Math.round(y), "+"); else put(g.b, x, Math.round(y), ":"); }
+                else put(g.b, x, Math.round(y), "·");
+              }
+            }
+          },
+          gate(s, g) {
+            for (let x = 0; x < W; x++) if (Math.abs(x - CX) > 2) put(g.b, x, CY, "·");
+            const cyc = (s.t / 170) | 0, armed = cyc % 2 === 1;
+            put(armed ? g.h : g.b, CX - 2, CY, "[");
+            put(armed ? g.h : g.b, CX + 2, CY, "]");
+            const pt = (s.t % 170) - 6;
+            if (armed) {
+              if (pt >= 0 && pt < W) put(g.h, pt, CY, "▸");
+            } else if (pt >= 0) {
+              if (pt < CX - 3) put(g.h, pt, CY, "▸");
+              else {
+                const k = pt - (CX - 3);
+                if (k < 16) for (let j = 0; j < 4; j++) {
+                  const a = j * 1.7 + 0.4;
+                  put(g.b, CX - 3 - k * 0.35 + Math.cos(a) * k * 0.45, CY + Math.sin(a) * k * 0.22, "·");
+                }
+              }
+            }
+          },
+          dissolve(s, g) {
+            if (!s.data.p) {
+              s.data.p = [];
+              for (let i = 0; i < 26; i++) s.data.p.push({ x: Math.random() * W, y: Math.random() * H, vx: 0, vy: 0, on: false, st: 0, tx: 3 + i * 2.2 });
+            }
+            for (const p of s.data.p) {
+              if (!p.on) {
+                p.vx += (p.tx - p.x) * 0.0022 + (Math.random() - 0.5) * 0.04;
+                p.vy += (CY - p.y) * 0.005 + (Math.random() - 0.5) * 0.04;
+                p.vx *= 0.93; p.vy *= 0.93; p.x += p.vx; p.y += p.vy;
+                if (Math.abs(p.x - p.tx) < 0.5 && Math.abs(p.y - CY) < 0.5) { p.on = true; p.st = s.t; }
+                put(g.b, p.x, p.y, "·");
+              } else {
+                put(s.t - p.st < 26 ? g.h : g.b, p.tx, CY, "+");
+                if (s.t - p.st > 380 + (p.tx * 7) % 140) { p.on = false; p.x = Math.random() * W; p.y = Math.random() < 0.5 ? 0 : H - 1; }
+              }
+            }
+          },
+          resolve(s, g) {
+            const M = CX - 2;
+            for (let d = 1; d <= M; d++) { put(g.b, CX - d, CY, "─"); put(g.b, CX + d, CY, "─"); }
+            const r = (s.t % 150) * 0.4;
+            if (r >= 2 && r <= M) {
+              put(g.h, Math.round(CX + r), CY, "─");
+              put(g.h, Math.round(CX - r), CY, "─");
+            }
+            put(g.h, CX, CY, "◆");
+          },
+        };
+
+        const scenes = pres.map((pre) => ({
+          pre, hi: pre.parentElement.querySelector("[data-scene-hi]"),
+          kind: pre.dataset.scene, t: (Math.random() * 900) | 0, data: {},
+        }));
+        const render = (s) => {
+          const g = mk();
+          (draw[s.kind] || draw.carrier)(s, g);
+          s.pre.textContent = g.b.map((r) => r.join("")).join("\n");
+          if (s.hi) s.hi.textContent = g.h.map((r) => r.join("")).join("\n");
+        };
+        scenes.forEach(render);
+        // reduced-motion: keep the single settled frame, don't animate.
+        if (reduce) return;
+        let frame = 0;
+        const loop = () => {
+          frame++;
+          if (frame % 2 === 0) {
+            const vh = window.innerHeight;
+            for (const s of scenes) {
+              const r = s.pre.getBoundingClientRect();
+              if (r.bottom < -60 || r.top > vh + 60) continue;
+              s.t += 1;
+              render(s);
+            }
+          }
+          requestAnimationFrame(loop);
+        };
+        loop();
+      }
+    })();
+  </script>
+</NeuronLayout>

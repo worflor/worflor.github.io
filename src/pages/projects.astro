@@ -6,19 +6,17 @@ import ConceptCard from "../components/ConceptCard.astro";
 import PublicationCard from "../components/PublicationCard.astro";
 import ArtifactCard from "../components/ArtifactCard.astro";
 import { getLoadingPriority } from "../utils/helpers";
-import type { Project } from "../types/config";
+import { groupOf, resolveGates } from "../utils/projects";
 
-const allProjects = projectsPageContent.projects;
 const publications = projectsPageContent.publications ?? [];
 const artifacts = projectsPageContent.artifacts ?? [];
 
+const allProjects = await resolveGates(projectsPageContent.projects);
+
 // three tiers, ordered most-real to most-speculative so the page reads top-down
 // on mobile and keeps the sticky concepts sidebar on desktop. the section is its
-// own axis: status drives the badge, group decides placement. the default derives
-// from status, so only the intentional exceptions (hindsight) set group by hand.
-const groupOf = (p: Project): "shipped" | "private" | "concept" =>
-  p.group ?? (p.status === "concept" ? "concept" : p.status ? "private" : "shipped");
-
+// own axis: status drives the badge, group decides placement, and the mapping
+// between them lives in utils/projects.ts so every surface agrees.
 const shippedProjects = allProjects.filter((p) => groupOf(p) === "shipped");
 const privateProjects = allProjects.filter((p) => groupOf(p) === "private");
 const conceptProjects = allProjects.filter((p) => groupOf(p) === "concept");

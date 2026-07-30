@@ -1,6 +1,17 @@
 ---
 import Layout from "../layouts/Layout.astro";
-import { contactPageContent } from "../config";
+import { contactPageContent, projectsPageContent } from "../config";
+import { inquiryLabels } from "../utils/projects";
+
+// every id ?project= will answer to, built from the same record the endeavours
+// page renders. this used to be a hand-written object down in the inline script,
+// which meant a new card produced a link that matched nothing and showed no
+// banner, with no error anywhere to say so.
+const labels = inquiryLabels(projectsPageContent.projects, projectsPageContent.artifacts ?? []);
+
+// json in a non-executable script tag. the escape keeps a title containing
+// "</script>" from ending the element early.
+const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
 ---
 
 <Layout seo={contactPageContent.seo}>
@@ -109,6 +120,8 @@ import { contactPageContent } from "../config";
   </section>
 </Layout>
 
+<script type="application/json" id="project-labels" set:html={labelsJson} is:inline />
+
 <script is:inline data-astro-rerun>
   // Set data attrs before render
   (function () {
@@ -126,14 +139,11 @@ import { contactPageContent } from "../config";
       history.replaceState({}, "", location.pathname);
     }
     var project = p.get("project");
-    var labels = {
-      seance: "Seance",
-      wick: "Wick",
-      "alpha-math": "alpha-math",
-      pocket: "Project Pocket",
-      prisma: "Project Prisma",
-      hindsight: "hindsight",
-    };
+    var labels = {};
+    try {
+      var labelsEl = document.getElementById("project-labels");
+      if (labelsEl) labels = JSON.parse(labelsEl.textContent || "{}");
+    } catch (e) {}
     var label = project ? labels[project] : null;
     if (label) {
       var banner = document.querySelector(".project-context");

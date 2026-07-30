@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Project } from "../types/config";
 import { parseMarkdown } from "../utils/helpers";
+import { STATUS_LABEL, STATUS_IS_ACTIVE } from "../utils/projects";
 
 type Props = Project & { loading?: "eager" | "lazy"; variant?: "full" | "compact"; index?: number };
 
@@ -90,8 +91,8 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
       <span class="opacity-60 tabular-nums shrink-0 whitespace-nowrap">· {month ? `${month} ` : ""}{year}</span>
       {status && (
         <span class="project-status">
-          {(status === "private-beta" || status === "closed-dev-alpha") && <span class="project-status-dot" aria-hidden="true"></span>}
-          {status === "private-beta" ? "private beta" : status === "closed-dev-alpha" ? "closed dev alpha" : "concept"}
+          {STATUS_IS_ACTIVE[status] && <span class="project-status-dot" aria-hidden="true"></span>}
+          {STATUS_LABEL[status]}
         </span>
       )}
       {github && (

@@ -609,9 +609,16 @@
 
 /* fallback: no webgpu = no shader canvas = needs a solid bg.
    the shader init script adds [data-plasma] when active;
-   without it, fall back to a dark translucent background. */
-.action-bar:not([data-plasma]),
-.tool-actions-shell:not([data-plasma]) {
+   without it, fall back to a dark translucent background.
+
+   the selector is wrapped in :where() so it weighs (0,1,0) rather than (0,2,0).
+   as a bare class-plus-:not() it outranked every override written after it, and
+   :not() contributes its argument's specificity, so the @supports fallback below
+   could never take effect: a browser with no backdrop-filter support was handed
+   this 0.8 translucent background instead of the 0.94 written for it, which is
+   the exact unreadable case that block exists to prevent. the same shadowing hid
+   the coarse-pointer, contrast and forced-colours branches. */
+:where(.action-bar, .tool-actions-shell):not([data-plasma]) {
   background: var(--tool-actionbar-bg);
 }
 
@@ -621,6 +628,64 @@
   .action-bar,
   .tool-actions-shell {
     background: var(--tool-actionbar-bg-fallback);
+  }
+}
+
+/* The three conditions the glass has to survive, carried over from the
+   whisperglass shell, which had all three and this bar had none.
+
+   Coarse pointers: a smaller radius and a notch more alpha. The bar is
+   position: fixed, so it recomposites on every frame of every scroll, and
+   backdrop-filter costs scale with the radius, on exactly the devices least
+   able to pay it. At phone pixel density nobody can tell a 12px blur of body
+   text from a 16px one, so the radius is the cheap thing to give up. The alpha
+   is not decoration either: it is the chrome staying legible on a screen held
+   at arm's length. */
+@media (hover: none) and (pointer: coarse) {
+  .action-bar,
+  .tool-actions-shell {
+    background: rgb(10 10 10 / 0.86);
+    -webkit-backdrop-filter: blur(12px) saturate(1.2);
+    backdrop-filter: blur(12px) saturate(1.2);
+  }
+}
+
+/* Someone who asked the OS for more contrast was still getting translucent
+   chrome with the document sliding underneath it. Glass is the first thing to
+   spend when legibility is the request. */
+@media (prefers-contrast: more) {
+  .action-bar,
+  .tool-actions-shell {
+    background: rgb(10 10 10);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Forced colours substitutes the hue and keeps the alpha, which is the trap.
+   The instinct is that this mode paints its own opaque canvas over whatever an
+   author asked for, so a translucent surface gets flattened for free. It does
+   not: measured here, rgb(10 10 10 / 0.8) arrived as rgba(0, 0, 0, 0.8), still
+   a window, with the page's own text legible straight through the bar.
+
+   Canvas is named explicitly because it is the one colour in this mode
+   guaranteed to be the background the reader chose. The blur goes with it,
+   since filtering a backdrop nothing can see through is a compositing layer
+   bought for no picture.
+
+   The border is not decoration: the shadow list above is built from tokens, and
+   a single token resolving to none in this mode invalidates the whole
+   declaration at computed-value time and drops it, taking the bar's edge with
+   it. A real border puts the boundary back in the one channel this mode keeps,
+   and a floating surface with no visible edge is indistinguishable from the
+   document under it. */
+@media (forced-colors: active) {
+  .action-bar,
+  .tool-actions-shell {
+    background: Canvas;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 1px solid CanvasText;
   }
 }
 
@@ -1013,6 +1078,40 @@ body.pride {
   *:nth-child(13n) {
     animation-delay: -4.2s !important;
   }
+}
+
+/* ─── Prose typography ────────────────────────────────────────────────────── */
+
+/* Line breaking, brought to parity with the whisperglass shell.
+   Three properties, each fixing a thing that reads as sloppiness rather than
+   as a bug, and none of them changing a single layout box.
+
+   text-wrap: pretty  — the browser looks ahead and refuses to leave one word
+   stranded on the last line. Costs nothing and it is the single most visible
+   difference between prose that was typeset and prose that was merely poured.
+
+   text-wrap: balance — headings that run to two lines split evenly instead of
+   dumping one orphan word underneath. Applied only to headings because the
+   spec caps balancing at a few lines, and it is where the ragged split shows
+   most: the h1 on the kizuna post wraps at a different word in every engine.
+
+   overflow-wrap: anywhere — this blog is full of identifiers, hashes and long
+   unspaced strings, and any one of them is otherwise an unbreakable box that
+   drags the whole document sideways on a phone.
+
+   All three degrade to the current behaviour where unsupported, so there is no
+   fallback to write. */
+.prose :where(p, li, dd, figcaption, blockquote) {
+  text-wrap: pretty;
+}
+
+.prose :where(h1, h2, h3, h4, h5, h6),
+.page-title {
+  text-wrap: balance;
+}
+
+.prose :where(p, li, dd, td, th) {
+  overflow-wrap: anywhere;
 }
 
 /* ─── Tables ──────────────────────────────────────────────────────────────── */

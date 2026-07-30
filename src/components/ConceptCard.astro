@@ -1,12 +1,13 @@
 ---
 import type { Project } from "../types/config";
 import { parseMarkdown } from "../utils/helpers";
+import { STATUS_LABEL } from "../utils/projects";
 
 type Props = Project & { index?: number };
 
 const { title, description, url, status, index = 0 } = Astro.props;
 const isExternal = /^https?:\/\//.test(url);
-const statusLabel = status === "closed-dev-alpha" ? "closed dev alpha" : "concept";
+const statusLabel = STATUS_LABEL[status ?? "concept"];
 
 // split the opener (first beat, before the first <br>) from the rest, so the card
 // shows a one-line teaser collapsed and only reveals the full pitch once opened.

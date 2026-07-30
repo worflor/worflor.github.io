@@ -186,11 +186,26 @@ Oh, *knowledge*. <3`,
 export const projectsPageContent: ProjectPageContent = {
   seo: {
     title: "Endeavours | woflo",
-    description: "Endeavours.",
+    description:
+      "Things I've built: an anti-Synapse for Razer gear, a git client that reads your codebase as a manifold, browser-native encrypted messaging, and the research underneath them.",
     image: identity.logo,
   },
   subtitle: "some endeavours.",
   projects: [
+    {
+      title: "Neuron",
+      description:
+        "An anti-synapse for your Razer gear. One small binary that replaces Razer Synapse, talking to your mouse and keyboard directly over raw HID: the same bytes, worked out from wire captures and a lot of live probing. No kernel driver, no vendor SDK, no account, no cloud.<br>Everything is one sentence, <em>when this, do that</em>: bind any trigger to any action. A composable lighting engine, gesture spellweaving by eigenmotion, real-python macros, and first-class hypershift fall out of that one pairing.<br>Windows-first, one developer, your config plain TOML you own.",
+      image: "/images/neuron-cover.svg",
+      month: "July",
+      year: "2026",
+      url: "/neuron",
+      slug: "neuron",
+      // the badge answers to the repository, not to this file. while it is
+      // private the card says "coming soon" on its own; the day it opens the
+      // badge clears itself and this line can go.
+      gate: "worflor/neuron",
+    },
     {
       title: "Manifold",
       description:
@@ -200,6 +215,7 @@ export const projectsPageContent: ProjectPageContent = {
       year: "2026",
       url: "https://github.com/worflor/git-desktop-premium-ultra-promax-plus-R",
       github: "worflor/git-desktop-premium-ultra-promax-plus-R",
+      slug: "manifold",
     },
     {
       title: "Whisper",
@@ -208,6 +224,7 @@ export const projectsPageContent: ProjectPageContent = {
       month: "February",
       year: "2026",
       url: "/whisper?live",
+      slug: "whisper",
     },
     {
       title: "alpha-math",
@@ -216,6 +233,7 @@ export const projectsPageContent: ProjectPageContent = {
       month: "May",
       year: "2026",
       url: "/contact?project=alpha-math",
+      slug: "alpha-math",
       status: "closed-dev-alpha",
     },
     {
@@ -225,12 +243,16 @@ export const projectsPageContent: ProjectPageContent = {
       month: "April",
       year: "2026",
       url: "/blog/wdym",
+      slug: "wdym",
     },
     {
       title: "Project Pocket",
       description: "Encryption that doesn't protect the file. Encryption that decides whether the file exists.<br>A public BitTorrent swarm holds the blobs; nothing in them is recognizable as data. A Kizuna 16D witness check decides whether your handshake's geometry matches, and if it does, the blob collapses into a file your machine can read.",
       year: "2026",
       url: "/contact?project=pocket",
+      // linked as "pocket" long before this field existed, and a slug derived
+      // from the title would silently become "project-pocket" and break it.
+      slug: "pocket",
       status: "concept",
     },
     {
@@ -238,16 +260,19 @@ export const projectsPageContent: ProjectPageContent = {
       description: "hindsight is 20/20, and your gameplay just got clipped in 4K.<br>Vulkan lifts each frame off the swapchain and Lumen folds them into one continuous light field. All the while, Glyph is reading your hands as 7D kinetic strokes, so the way you played is baked into the recording as an eigenidentity.",
       year: "2026",
       url: "/contact?project=hindsight",
-      status: "closed-dev-alpha",
-      // intentional: a closed alpha that is still conceptual r&d, so it lives
-      // with the concepts rather than the finished private tools.
-      group: "concept",
+      slug: "hindsight",
+      // "closed dev alpha" implied someone was at the wheel, and nobody has
+      // been for months. parked says the true thing: built to the edge of an
+      // idea and set down, still worth looking at. it lands in the concepts
+      // rail on its own, so the old group override is gone.
+      status: "parked",
     },
     {
       title: "Project Prisma",
       description: "Footage in superposition. Every frame holds every possible cut.<br>Prisma is the measurement. The Whisper codecs already produce a surprise signal for every byte, every sample, every frame. Read those signals as attention, weight them, collapse the timeline. The edit was always in the recording; nobody had a way to find it.",
       year: "2026",
       url: "/contact?project=prisma",
+      slug: "prisma",
       status: "concept",
     },
     {
@@ -258,6 +283,7 @@ export const projectsPageContent: ProjectPageContent = {
       year: "2026",
       url: "https://github.com/worflor/minecraft-server-maintainer",
       github: "worflor/minecraft-server-maintainer",
+      slug: "minecraft-server-maintainer",
     },
     /*
 
@@ -282,6 +308,7 @@ export const projectsPageContent: ProjectPageContent = {
       image: "/images/morithon.webp",
       year: "2024",
       url: "https://dhafo.itch.io/morithon",
+      slug: "morithon",
     },
   ],
   publications: [

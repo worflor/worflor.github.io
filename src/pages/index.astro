@@ -1,16 +1,29 @@
 ---
 import { Image } from "astro:assets";
 import Layout from "../layouts/Layout.astro";
-import { homePageContent, identity } from "../config";
+import { homePageContent, identity, projectsPageContent } from "../config";
 import SocialLink from "../components/SocialLink.astro";
 import Link from "../components/Link.astro";
 import BlogPostCard from "../components/BlogPostCard.astro";
+import ProjectCard from "../components/ProjectCard.astro";
 import { getCollection } from "astro:content";
 import { preparePosts } from "../utils/posts";
 import { getLoadingPriority } from "../utils/helpers";
+import { groupOf, resolveGates } from "../utils/projects";
 
 const posts = await getCollection("posts");
 const recentPosts = await preparePosts(posts, 2);
+
+// the front door never named a single thing he had built: a visitor met an
+// avatar, a paragraph and two links, with the actual work one click away and
+// invisible. these are the first cards off the endeavours page, in the order
+// they are curated there rather than by date, so the pick stays deliberate.
+//
+// gates resolve here too. the home page and /projects disagreeing about whether
+// neuron is out would read worse than either being wrong alone.
+const featuredProjects = (await resolveGates(projectsPageContent.projects))
+  .filter((project) => groupOf(project) === "shipped")
+  .slice(0, 2);
 ---
 
 <Layout seo={homePageContent.seo}>
@@ -51,6 +64,25 @@ const recentPosts = await preparePosts(posts, 2);
           <Link text={link.title} href={link.url} external={link.external} />
         ))
       }
+    </div>
+  </section>
+  <section class="mt-[var(--space-xl)] content-section">
+    {/* not "Endeavours": the quick-links row directly above already carries
+        that word, and the two stacked read as a duplicated heading. */}
+    <h2 class="mb-8">Selected Work</h2>
+    <div class="grid grid-cols-1 mb-10 group">
+      {
+        featuredProjects.map((project, index) => (
+          <ProjectCard {...project} loading={getLoadingPriority(index)} index={index} />
+        ))
+      }
+    </div>
+    <div class="text-center">
+      <a
+        href="/projects"
+        class="link-underline opacity-60 hover:opacity-100 py-2 inline-block min-h-[var(--touch-target)]"
+        >View all</a
+      >
     </div>
   </section>
   <section class="mt-[var(--space-xl)] content-section">

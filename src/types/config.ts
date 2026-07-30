@@ -87,6 +87,16 @@ export type AboutPageContent = {
   };
 };
 
+// the badge on a card, and nothing else. "coming-soon" means the thing is real
+// and the door is not open yet; "parked" means it was built to the edge of an
+// idea and set down, which is a different claim from never having started.
+export type ProjectStatus =
+  | "private-beta"
+  | "concept"
+  | "closed-dev-alpha"
+  | "coming-soon"
+  | "parked";
+
 export type Project = {
   title: string;
   description: string;
@@ -96,12 +106,21 @@ export type Project = {
   year: string;
   url: string;
   github?: string;
+  // stable id for this project, used by /contact?project= and by any surface
+  // that needs to name another. defaults to a slug of the title, so it only
+  // needs setting where the two differ ("Project Pocket" is linked as "pocket").
+  slug?: string;
   // the dev-status badge shown on the card
-  status?: "private-beta" | "concept" | "closed-dev-alpha";
+  status?: ProjectStatus;
   // which section the card lives in. its own axis: a closed-dev-alpha can be a
   // finished private tool ("private") or exploratory r&d ("concept"). defaults
-  // are derived from status in projects.astro; set this only to override.
+  // are derived from status in utils/projects.ts; set this only to override.
   group?: "private" | "concept";
+  // a github repository, as "owner/name", that this card's promise depends on.
+  // checked once at build time: while it is not publicly readable the card wears
+  // "coming soon" no matter what status says, and once it opens the badge clears
+  // itself. the repository is the fact, the record is only the intent.
+  gate?: string;
 };
 
 // a published paper. everything renders from the arxiv id: the abstract, pdf,

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080" role="img" aria-label="Neuron — an anti-synapse">
+  <defs>
+    <linearGradient id="nbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#060705"/>
+      <stop offset="1" stop-color="#040503"/>
+    </linearGradient>
+    <linearGradient id="nfade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#39ff6a" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#39ff6a" stop-opacity="0.55"/>
+      <stop offset="0.62" stop-color="#f4fff7" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#f4fff7" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#nbg)"/>
+  <rect x="8" y="8" width="1904" height="1064" fill="none" stroke="#c8dec8" stroke-opacity="0.08" stroke-width="2"/>
+
+  <!-- signal baseline: chaotic left, resolving to a clean line at center-right -->
+  <path d="M 150 560
+           Q 230 470 300 560 T 450 560 T 600 560
+           Q 700 460 820 560
+           L 1000 560
+           L 1780 560"
+        fill="none" stroke="url(#nfade)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="1000" cy="560" r="8" fill="#f4fff7"/>
+
+  <!-- the therefore (∴) triad -->
+  <g fill="#39ff6a">
+    <circle cx="960" cy="360" r="15"/>
+    <circle cx="934" cy="405" r="15"/>
+    <circle cx="986" cy="405" r="15"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="960" y="740" text-anchor="middle"
+        font-family="'Space Grotesk', 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="140" font-weight="700" letter-spacing="44" fill="#eef3ec">NEURON</text>
+  <text x="960" y="812" text-anchor="middle"
+        font-family="'JetBrains Mono', ui-monospace, monospace"
+        font-size="34" letter-spacing="16" fill="#c6d6c6" fill-opacity="0.5">/ AN ANTI-SYNAPSE</text>
+</svg>
