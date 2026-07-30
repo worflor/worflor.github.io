@@ -23,7 +23,10 @@ const seo = {
 ---
 
 <NeuronLayout seo={seo}>
-  <div style="min-height:100vh;background:linear-gradient(180deg,#060705,#040503);font-family:'JetBrains Mono',monospace;color:#e8e6df;">
+  {/* data-dither: same gradient as the landing card, so the same banding, so
+      the same fix. position:relative because the grain is an absolutely
+      positioned ::after and needs this box as its containing block. */}
+  <div data-dither style="position:relative;min-height:100vh;background:linear-gradient(180deg,#060705,#040503);font-family:'JetBrains Mono',monospace;color:#e8e6df;">
 
     <!-- top bar -->
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:36px clamp(24px,6vw,72px) 0;">
