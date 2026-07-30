@@ -155,7 +155,7 @@ ECDH shared secret
      │
      ├──→ 16D Möbius ──→ residual (spectral witness)
      │
-     ├──→ reinterpret as $4^8$ block ──→ 8D Loup context (warm start)
+     ├──→ reinterpret as 4^8 block ──→ 8D Loup context (warm start)
      │
      └──→ first 512 bytes ──→ Logos seed (secret-dependent entropy state)
                                    │
