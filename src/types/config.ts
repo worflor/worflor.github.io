@@ -27,6 +27,8 @@ export type SEOInfo = {
   title: string;
   description: string;
   image: string;
+  // Public when intentionally shared, without being volunteered to search.
+  noindex?: boolean;
 };
 
 export type HomePageContent = {

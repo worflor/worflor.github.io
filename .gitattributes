@@ -1,3 +1,4 @@
 src/scripts/void-game.ts linguist-vendored
 src/scripts/fog-worker.ts linguist-vendored
+*.pdf binary
 

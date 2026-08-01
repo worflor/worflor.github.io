@@ -12,7 +12,13 @@ import mailObfuscation from "astro-mail-obfuscation";
 
 export default defineConfig({
   site: "https://woflo.dev",
-  integrations: [sitemap(), mailObfuscation()],
+  integrations: [
+    sitemap({
+      // /resume is shared deliberately, not advertised to search engines.
+      filter: (page) => !page.endsWith("/resume"),
+    }),
+    mailObfuscation(),
+  ],
   output: "static",
   trailingSlash: "never",
   prefetch: {

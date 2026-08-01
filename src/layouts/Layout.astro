@@ -258,6 +258,7 @@ const isCurrent = (url: string) => (url.replace(/\/+$/, "") || "/") === currentP
     <meta name="generator" content={Astro.generator} />
     <title>{seo.title}</title>
     <meta name="description" content={seo.description} />
+    {seo.noindex && <meta name="robots" content="noindex" />}
     <link rel="canonical" href={Astro.url.href} />
     {/* a feed nobody can find is not a feed. readers and browser extensions
         look for exactly this tag, so it goes on every page rather than only

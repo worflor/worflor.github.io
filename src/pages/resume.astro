@@ -1,0 +1,104 @@
+---
+import ActionBar from "../components/ActionBar.astro";
+import Layout from "../layouts/Layout.astro";
+
+const seo = {
+  title: "Dummy Résumé / Deployment Test",
+  description: "A deliberately fictional résumé used to verify the public deployment path.",
+  image: "/images/og-default.png",
+  noindex: true,
+};
+---
+
+<Layout seo={seo}>
+  <ActionBar label="Dummy resume actions" class="resume-actions">
+    <button class="resume-action" type="button" data-save-resume>Save as PDF</button>
+    <a class="resume-action" href="/resume.pdf">Download dummy PDF</a>
+    <a class="resume-action" href="/contact">Contact</a>
+  </ActionBar>
+
+  <section class="resume-shell" aria-labelledby="resume-name">
+    <article class="resume-sheet">
+      <div class="banner">DUMMY DEPLOYMENT TEST · FICTIONAL CONTENT · NOT A REAL RÉSUMÉ</div>
+      <div class="eyebrow"><span>Placeholder Candidate / Résumé</span><span>Deployment fixture</span></div>
+      <div class="hairline"></div>
+      <header>
+        <h1 id="resume-name">AVERY EXAMPLE</h1>
+        <div class="role"><strong>Software Developer · fictional profile</strong><span>Exampleville, Ontario</span></div>
+        <div class="contact" aria-label="Placeholder links">
+          <span><b>web</b> example.invalid</span>
+          <span><b>github</b> github.com/example</span>
+          <span><b>contact</b> <a href="/contact">woflo.dev/contact</a></span>
+        </div>
+      </header>
+
+      <p class="intro">This page exists solely to verify the résumé route, noindex policy, GitHub Pages deployment, print styling, static PDF delivery, and shared floating action controls. Every candidate detail below is fabricated.</p>
+
+      <div class="layout">
+        <main>
+          <section class="section">
+            <h2 class="section-label">Selected Fictional Work</h2>
+            <article class="work-item">
+              <div class="head"><h3>Placeholder Observatory</h3><span class="tag">2026 · DEMO</span></div>
+              <div class="sub">Imaginary observability console · test-only artifact</div>
+              <p>A completely fictional application for checking that long-form résumé layout, section rhythm, and interactive actions survive deployment intact.</p>
+              <ul class="points">
+                <li data-n="01">Verifies the public route is reachable on the final GitHub Pages origin.</li>
+                <li data-n="02">Verifies browser-native print output can be saved as a conventional PDF.</li>
+                <li data-n="03">Verifies a static dummy PDF downloads from the same public origin.</li>
+              </ul>
+            </article>
+            <article class="work-item">
+              <div class="head"><h3>Sample Systems Toolkit</h3><span class="tag">2025 · DEMO</span></div>
+              <div class="sub">Fabricated CLI · placeholder documentation</div>
+              <p>Intentionally generic placeholder copy with no connection to a real employer, school, personal address, phone number, or email address.</p>
+            </article>
+          </section>
+
+          <section class="section">
+            <h2 class="section-label">Test Notes</h2>
+            <p class="summary">If you are reading this publicly, the deployment test worked. This fixture will be replaced with the real résumé only after the route, PDF, responsive layout, and Pages deployment are approved.</p>
+          </section>
+        </main>
+
+        <aside class="rail">
+          <section><h2 class="section-label">Fixture Coverage</h2><p><strong>Route</strong><br />/resume</p><p><strong>Static asset</strong><br />/resume.pdf</p><p><strong>Print mode</strong><br />Save as PDF</p><p><strong>Search behavior</strong><br />noindex + sitemap exclusion</p></section>
+          <section><h2 class="section-label">Dummy Details</h2><div class="tools"><span class="grp"><b>Identity</b>Entirely fictional</span><span class="grp"><b>Purpose</b>Deployment verification</span><span class="grp"><b>Disposition</b>Temporary fixture</span></div></section>
+        </aside>
+      </div>
+      <div class="footer"><span>Dummy résumé / deployment test</span><span>01 / 01</span></div>
+    </article>
+  </section>
+</Layout>
+
+<script>
+  function bindResumeActions() {
+    const button = document.querySelector<HTMLButtonElement>("[data-save-resume]");
+    if (!button || button.dataset.bound === "true") return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => window.print());
+  }
+
+  bindResumeActions();
+  document.addEventListener("astro:page-load", bindResumeActions);
+</script>
+
+<style is:global>
+  @font-face { font-family: "InterResume"; src: url("/fonts/InterVariable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+  .resume-shell { --resume-bg:#0a0a0a; --resume-ink:#f5f5f5; --resume-body:rgb(245 245 245/.74); --resume-muted:rgb(245 245 245/.58); --resume-quiet:rgb(245 245 245/.42); --resume-border:#242424; --resume-cyan:#3fd8d8; max-width:10.5in; margin:2rem auto 7rem; padding:0 1rem; color:var(--resume-ink); font:9.2pt/1.47 "InterResume",Inter,"Segoe UI",sans-serif; }
+  .resume-sheet { width:8.5in; min-height:11in; overflow:hidden; margin:0 auto 1.5rem; padding:.46in .54in .42in; position:relative; background:radial-gradient(ellipse 78% 34% at 48% 0%,rgb(255 255 255/.022),transparent 62%),var(--resume-bg); box-shadow:0 1rem 3rem rgb(0 0 0/.28); }
+  .resume-shell .banner { margin:-.46in -.54in .46in; padding:.16in .54in; background:#6b1f1f; color:#fff3f3; font:700 7pt/1.2 "Cascadia Code",Consolas,monospace; letter-spacing:.1em; text-align:center; }
+  .resume-shell .eyebrow,.resume-shell .section-label,.resume-shell .tag,.resume-shell .footer { font-family:"Cascadia Code",Consolas,monospace; }
+  .resume-shell .eyebrow { display:flex; justify-content:space-between; color:var(--resume-quiet); font-size:6.9pt; letter-spacing:.1em; text-transform:uppercase; }
+  .resume-shell .hairline { height:1px; margin:11px 0 15px; background:linear-gradient(90deg,rgb(63 216 216/.5),rgb(118 80 220/.22) 42%,var(--resume-border) 78%); }
+  .resume-shell h1 { margin:0; font-size:31pt; font-weight:760; letter-spacing:-.072em; line-height:.95; }
+  .resume-shell .role,.resume-shell .head { display:flex; justify-content:space-between; gap:10px; align-items:baseline; }
+  .resume-shell .role { margin-top:8px; gap:20px; }.resume-shell .role strong { font-size:11pt; font-weight:580; letter-spacing:-.02em; }.resume-shell .role span,.resume-shell .sub { color:var(--resume-muted); font-size:8.2pt; text-align:right; }
+  .resume-shell .contact { display:flex; flex-wrap:wrap; gap:4px 15px; margin-top:11px; color:var(--resume-muted); font-size:8.1pt; }.resume-shell .contact b { color:var(--resume-ink); font-weight:540; }.resume-shell .contact a { color:inherit; text-decoration:none; }.resume-shell .contact a:hover { color:var(--resume-cyan); }
+  .resume-shell .intro { margin:15px 0 0; max-width:6.9in; color:var(--resume-body); font-size:10pt; line-height:1.48; letter-spacing:-.01em; }.resume-shell .layout { display:grid; grid-template-columns:minmax(0,1fr) 1.82in; gap:26px; margin-top:15px; }.resume-shell .rail { padding-left:16px; position:relative; }.resume-shell .rail::before { content:""; position:absolute; left:0; top:2px; bottom:2px; width:1px; background:linear-gradient(rgb(63 216 216/.35),var(--resume-border) 30%); }
+  .resume-shell .section-label { display:flex; align-items:center; gap:8px; margin:0 0 9px; color:var(--resume-quiet); font-size:6.9pt; letter-spacing:.1em; text-transform:uppercase; }.resume-shell .section-label::before { content:"›"; color:rgb(63 216 216/.75); }.resume-shell .section-label::after { content:""; height:1px; flex:1; background:var(--resume-border); }.resume-shell .section { margin-bottom:18px; }.resume-shell .work-item { padding-bottom:11px; margin-bottom:11px; border-bottom:1px solid var(--resume-border); }.resume-shell .work-item:last-child { margin-bottom:0; }.resume-shell .head h3 { margin:0; font-size:11.2pt; font-weight:630; letter-spacing:-.024em; }.resume-shell .tag { color:var(--resume-quiet); font-size:6.6pt; letter-spacing:.06em; text-transform:uppercase; white-space:nowrap; }.resume-shell .work-item p,.resume-shell .summary { margin:5px 0 0; color:var(--resume-body); }.resume-shell .points { margin:6px 0 0; padding:0; list-style:none; color:var(--resume-body); font-size:8.6pt; }.resume-shell .points li { margin:3px 0; padding-left:15px; position:relative; }.resume-shell .points li::before { content:attr(data-n); position:absolute; left:0; color:rgb(63 216 216/.62); font:6.6pt "Cascadia Code",Consolas,monospace; padding-top:2.5px; }.resume-shell .rail p { margin:0 0 8px; color:var(--resume-body); font-size:8.3pt; line-height:1.55; }.resume-shell .rail strong { color:var(--resume-ink); font-weight:560; }.resume-shell .rail section + section { margin-top:16px; }.resume-shell .tools { color:var(--resume-body); font-size:8.2pt; line-height:1.62; }.resume-shell .tools .grp { display:block; margin-bottom:6px; }.resume-shell .tools b { display:block; color:var(--resume-quiet); font:600 6.5pt "Cascadia Code",Consolas,monospace; letter-spacing:.09em; text-transform:uppercase; margin-bottom:2px; }.resume-shell .footer { position:absolute; left:.54in; right:.54in; bottom:.18in; display:flex; justify-content:space-between; border-top:1px solid var(--resume-border); padding-top:8px; color:var(--resume-quiet); font-size:6.4pt; letter-spacing:.06em; text-transform:uppercase; }
+  .resume-actions { position:sticky; top:5rem; left:auto; right:auto; bottom:auto; transform:none; width:max-content; margin:.85rem auto 0; z-index:45; }.resume-actions .action-bar-content { gap:.5rem; }.resume-action { appearance:none; border:0; background:transparent; color:var(--color-text); font:600 var(--text-sm)/1 var(--font-body); letter-spacing:.02em; padding:.7rem .9rem; border-radius:.55rem; text-decoration:none; cursor:pointer; }.resume-action:hover,.resume-action:focus-visible { background:rgb(var(--color-text-rgb)/.1); outline:none; }
+  @media (max-width: 760px) { .resume-shell { margin-top:1rem; padding:0 .35rem 6rem; }.resume-sheet { width:100%; min-height:0; padding:1.25rem 1rem 2.75rem; overflow:visible; }.resume-shell .banner { margin:-1.25rem -1rem 1.25rem; padding:.7rem 1rem; }.resume-shell .layout { grid-template-columns:1fr; }.resume-shell .rail { padding:1.25rem 0 0; }.resume-shell .rail::before { top:0; right:0; bottom:auto; width:auto; height:1px; background:var(--resume-border); }.resume-shell .footer { left:1rem; right:1rem; bottom:.75rem; }.resume-shell h1 { font-size:clamp(2rem,10vw,3.4rem); }.resume-shell .role,.resume-shell .head { align-items:flex-start; flex-direction:column; gap:.25rem; }.resume-shell .role span { text-align:left; }.resume-shell .contact { display:grid; gap:.35rem; }.resume-shell .tag { white-space:normal; } }
+  @page { size:Letter; margin:0; }
+  @media print { html,body { background:#fff !important; } .site-header,.skip-link,.resume-actions,footer { display:none !important; } main#main { padding:0 !important; } .resume-shell { margin:0; padding:0; max-width:none; --resume-bg:#fff; --resume-ink:#111; --resume-body:#2d2d2d; --resume-muted:#565656; --resume-quiet:#666; --resume-border:#c9c9c9; --resume-cyan:#176d6d; } .resume-sheet { width:8.5in; height:11in; min-height:11in; margin:0; box-shadow:none; background:#fff; } .resume-shell .banner { background:#6b1f1f; color:#fff; } .resume-shell .hairline { background:linear-gradient(90deg,#176d6d,#777 42%,var(--resume-border) 78%); } .resume-shell .contact a { color:inherit; } }
+</style>
