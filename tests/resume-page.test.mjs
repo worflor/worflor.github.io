@@ -14,6 +14,8 @@ test("dummy deployment resume is fictional, private by design, and printable", (
   assert.match(source, /AVERY EXAMPLE/);
   assert.match(source, /noindex:\s*true/);
   assert.match(source, /import ActionBar from "\.\.\/components\/ActionBar\.astro"/);
+  assert.match(source, /label="Dummy resume actions"/);
+  assert.doesNotMatch(source, /\.resume-actions\s*\{\s*position\s*:\s*sticky/);
   assert.match(source, /href="\/resume\.pdf"/);
   assert.match(source, /window\.print\(\)/);
   assert.match(source, /@media print/);
