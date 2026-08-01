@@ -12,7 +12,7 @@ const seo = {
 
 <Layout seo={seo}>
   <ActionBar label="Dummy resume actions" class="resume-actions">
-    <button class="resume-action" type="button" data-save-resume>Save as PDF</button>
+    <a class="resume-action" href="/resume.pdf" download="dummy-resume-deployment-test.pdf">Download PDF</a>
     <a class="resume-action" href="/contact">Contact</a>
   </ActionBar>
 
@@ -31,7 +31,7 @@ const seo = {
         </div>
       </header>
 
-      <p class="intro">This page exists solely to verify the résumé route, noindex policy, GitHub Pages deployment, print styling, static PDF delivery, and shared floating action controls. Every candidate detail below is fabricated.</p>
+      <p class="intro">This page exists solely to verify the résumé route, noindex policy, GitHub Pages deployment, direct PDF delivery, and shared floating action controls. Every candidate detail below is fabricated.</p>
 
       <div class="layout">
         <main>
@@ -43,8 +43,8 @@ const seo = {
               <p>A completely fictional application for checking that long-form résumé layout, section rhythm, and interactive actions survive deployment intact.</p>
               <ul class="points">
                 <li data-n="01">Verifies the public route is reachable on the final GitHub Pages origin.</li>
-                <li data-n="02">Verifies browser-native print output can be saved as a conventional PDF.</li>
-                <li data-n="03">Verifies a static dummy PDF downloads from the same public origin.</li>
+                <li data-n="02">Verifies the static dummy PDF downloads directly from the public origin.</li>
+                <li data-n="03">Verifies no browser print dialog is needed for the document flow.</li>
               </ul>
             </article>
             <article class="work-item">
@@ -61,7 +61,7 @@ const seo = {
         </main>
 
         <aside class="rail">
-          <section><h2 class="section-label">Fixture Coverage</h2><p><strong>Route</strong><br />/resume</p><p><strong>Static asset</strong><br />/resume.pdf</p><p><strong>Print mode</strong><br />Save as PDF</p><p><strong>Search behavior</strong><br />noindex + sitemap exclusion</p></section>
+          <section><h2 class="section-label">Fixture Coverage</h2><p><strong>Route</strong><br />/resume</p><p><strong>Static asset</strong><br />/resume.pdf</p><p><strong>Document flow</strong><br />Direct download</p><p><strong>Search behavior</strong><br />noindex + sitemap exclusion</p></section>
           <section><h2 class="section-label">Dummy Details</h2><div class="tools"><span class="grp"><b>Identity</b>Entirely fictional</span><span class="grp"><b>Purpose</b>Deployment verification</span><span class="grp"><b>Disposition</b>Temporary fixture</span></div></section>
         </aside>
       </div>
@@ -69,18 +69,6 @@ const seo = {
     </article>
   </section>
 </Layout>
-
-<script>
-  function bindResumeActions() {
-    const button = document.querySelector<HTMLButtonElement>("[data-save-resume]");
-    if (!button || button.dataset.bound === "true") return;
-    button.dataset.bound = "true";
-    button.addEventListener("click", () => window.print());
-  }
-
-  bindResumeActions();
-  document.addEventListener("astro:page-load", bindResumeActions);
-</script>
 
 <style is:global>
   @font-face { font-family: "InterResume"; src: url("/fonts/InterVariable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
