@@ -5,6 +5,7 @@ import test from "node:test";
 
 const root = process.cwd();
 const resumePage = resolve(root, "src", "pages", "resume.astro");
+const dummyPdf = resolve(root, "public", "resume.pdf");
 
 test("dummy deployment resume is fictional, private by design, and printable", () => {
   assert.ok(existsSync(resumePage), "src/pages/resume.astro should exist");
@@ -16,7 +17,8 @@ test("dummy deployment resume is fictional, private by design, and printable", (
   assert.match(source, /import ActionBar from "\.\.\/components\/ActionBar\.astro"/);
   assert.match(source, /label="Dummy resume actions"/);
   assert.doesNotMatch(source, /\.resume-actions\s*\{\s*position\s*:\s*sticky/);
-  assert.match(source, /href="\/resume\.pdf"/);
+  assert.ok(existsSync(dummyPdf), "public/resume.pdf should remain a deployed fixture asset");
+  assert.doesNotMatch(source, /href="\/resume\.pdf"/, "the fixture PDF should not occupy a primary ActionBar slot");
   assert.match(source, /window\.print\(\)/);
   assert.match(source, /@media print/);
   assert.match(source, /--resume-bg:#fff/);
