@@ -109,7 +109,7 @@ Oh, *knowledge*. <3`,
     ],
   },
   work: {
-    description: `To me, programming languages are tools, and I'm always picking up new ones for random purposes. Started with **C++** and Shader Languages like **GLSL**, and have since picked up **Java (21+)** and miniscule amounts of *Python (3.12)*.
+    description: `To me, programming languages are tools, and I'm always picking up new ones for random purposes. I started with **C++** and shader languages like **GLSL**, then picked up **Java (21+)**, **Python**, **TypeScript**, **Dart**, and **Rust** as projects demanded them.
     <br/>
     Why? Check out my Projects and/or Blog page!`,
     items: [
