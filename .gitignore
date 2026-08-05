@@ -42,6 +42,7 @@ nul
 # r&d scripts (probes, benchmarks, diagnostics)
 scripts/*
 !scripts/run-whisper-tests.mjs
+!scripts/render-resume-pdf.mjs
 
 # r&d docs (codec tower write-ups, not site content)
 docs/

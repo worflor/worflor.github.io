@@ -19,10 +19,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22 for the global WebSocket that render-resume-pdf.mjs drives the
+          # browser with; 20 is also past end-of-life
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run build
+      # /resume.pdf is rendered from the built /resume page at deploy time so
+      # it can never drift from the site; the runner image ships chrome.
+      - run: node scripts/render-resume-pdf.mjs
+      - run: node --test tests/resume-page.test.mjs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
