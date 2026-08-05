@@ -255,18 +255,15 @@ export const projectsPageContent: ProjectPageContent = {
       slug: "pocket",
       status: "concept",
     },
-    {
-      title: "hindsight",
-      description: "hindsight is 20/20, and your gameplay just got clipped in 4K.<br>Vulkan lifts each frame off the swapchain and Lumen folds them into one continuous light field. All the while, Glyph is reading your hands as 7D kinetic strokes, so the way you played is baked into the recording as an eigenidentity.",
-      year: "2026",
-      url: "/contact?project=hindsight",
-      slug: "hindsight",
-      // "closed dev alpha" implied someone was at the wheel, and nobody has
-      // been for months. parked says the true thing: built to the edge of an
-      // idea and set down, still worth looking at. it lands in the concepts
-      // rail on its own, so the old group override is gone.
-      status: "parked",
-    },
+    // hindsight is resting out of sight for now. uncomment to bring it back.
+    // {
+    //   title: "hindsight",
+    //   description: "hindsight is 20/20, and your gameplay just got clipped in 4K.<br>Vulkan lifts each frame off the swapchain and Lumen folds them into one continuous light field. All the while, Glyph is reading your hands as 7D kinetic strokes, so the way you played is baked into the recording as an eigenidentity.",
+    //   year: "2026",
+    //   url: "/contact?project=hindsight",
+    //   slug: "hindsight",
+    //   status: "parked",
+    // },
     {
       title: "Project Prisma",
       description: "Footage in superposition. Every frame holds every possible cut.<br>Prisma is the measurement. The Whisper codecs already produce a surprise signal for every byte, every sample, every frame. Read those signals as attention, weight them, collapse the timeline. The edit was always in the recording; nobody had a way to find it.",
