@@ -42,7 +42,7 @@ import {
   type BraidMessage,
   parseFrontier,
 } from "../live-braid";
-import { evictBelowFloor, purgeDead, meetOf } from "../retention";
+import { evictBelowFloor, purgeDead, meetOf, slotIsDead, type Floor } from "../retention";
 
 import {
   sortRoster,
@@ -586,6 +586,15 @@ export class CampfireNode {
     this.neighbors.delete(label);
     this.log("neighbor disconnected");
 
+    // an admission is a claim about a link. when the link dies the claim is
+    // unanswerable, and now that every fold re-reads this map, a stale entry
+    // would be re-asked on every roster change for the rest of the session.
+    for (const [hex, pending] of Array.from(this.pendingAdmissions)) {
+      if (pending.label !== label) continue;
+      this.pendingAdmissions.delete(hex);
+      this.joinReqAttempts.delete(hex);
+    }
+
     // an announced release closes the edge without anyone leaving. the two
     // ends of an edge can be an epoch apart when topology reconciliation
     // drops it, so the peer's word beats our possibly stale roster math.
@@ -711,13 +720,13 @@ export class CampfireNode {
     this.recentBySeq.set(key, full);
     // Dead means: this epoch is closed, or every peer has already passed this
     // slot in that seat's strand. Insertion order only breaks ties among those.
-    const currentEpochId = this.currentEpoch?.epochId ?? 0;
+    const repairFloorNow: Floor<string> = {
+      epoch: this.currentEpoch?.epochId ?? 0,
+      seqAt: (seatHex) => this.repairFloor(seatHex),
+    };
     evictBelowFloor(this.recentBySeq, DEDUP_RING_SIZE, (k) => {
       const [epochPart, seatHex, seqPart] = k.split(":");
-      const epoch = Number(epochPart);
-      if (epoch < currentEpochId) return true; // a closed epoch is never repaired
-      if (epoch > currentEpochId) return false;
-      return Number(seqPart) <= this.repairFloor(seatHex);
+      return slotIsDead({ epoch: Number(epochPart), seat: seatHex, seq: Number(seqPart) }, repairFloorNow);
     });
   }
 
@@ -1042,9 +1051,11 @@ export class CampfireNode {
       const prior = parseGroupMsgHeader(priorFrame.subarray(1));
       if (!prior) { this.recentBySeq.delete(`${parsed.epochId}:${senderHex}:${parsed.seq}`); }
       else
-      // the position is (seat, EPOCH, seq): every fold restarts each seat's
+      // the position is (EPOCH, seat, seq): every fold restarts each seat's
       // strand at seq 1, so the same seq in a later epoch is a different place
-      // entirely. recentBySeq is keyed without the epoch, so qualify it here.
+      // entirely. The cache key already carries the epoch, so the lookup can
+      // only return a same-epoch frame; the equality below re-reads it off the
+      // frame's own header, which is the field an equivocator controls.
       if (prior.epochId === parsed.epochId && !constantTimeEqual(prior.msgId, parsed.msgId)) {
         const name = this.allPeers.get(senderHex)?.name ?? senderHex.slice(0, 8);
         this.log(`two different messages claim the same place in ${name}'s thread`);
@@ -1117,10 +1128,16 @@ export class CampfireNode {
       }
     } else if (result.status === "held") {
       // drop questions our own progress has already answered
-      const mine = target.braid.myFrontier;
+      // A question is dead once our own progress has answered it. Same order as
+      // every other eviction here, which is the point: this site used to treat
+      // ANY epoch other than the current one as dead, including a later one.
+      const answered: Floor<number> = {
+        epoch: target.epochId,
+        seqAt: (seatIdx) => target.braid.myFrontier[seatIdx] ?? 0,
+      };
       purgeDead(this.outstandingWants, (k) => {
         const [ep, seatIdx, from] = k.split(":").map(Number);
-        return ep !== target.epochId || Number(from) <= (mine[seatIdx] ?? 0);
+        return slotIsDead({ epoch: ep, seat: seatIdx, seq: from }, answered);
       });
 
       const askedAt = Date.now();
@@ -1568,10 +1585,6 @@ export class CampfireNode {
     }
   }
 
-  /** re-issue admissions this seat is still holding, for joiners the roster does
-   *  not yet seat. only the elder may issue an admission fold, so this fires on
-   *  the seat that just inherited the role and is still holding the joiner's
-   *  bootstrap link. */
   /**
    * Rotate this seat's key material without changing the roster.
    *
@@ -1585,24 +1598,67 @@ export class CampfireNode {
     await this.issueFold(FOLD_REASON_UPDATE, this.peerId);
   }
 
+  /**
+   * Push every admission this seat still holds one step further, whoever we are.
+   *
+   * An admission is a two-party fact: the ADMITTER holds the joiner's bootstrap
+   * link and is the only seat that can reach it, while only the ELDER may mint
+   * the fold that seats it. When those are different seats the request has to
+   * survive a relay, and a relay is exactly what an elder change can eat:
+   *
+   *   joiner ── X (holds the link) ──flood──▶ E (elder, consumes and does NOT
+   *                                              forward: handleJoinReq returns)
+   *
+   * so a seat Y that never saw the request holds nothing. If E departs, Y
+   * inherits an empty hand, while X still holds a live link to someone sitting
+   * at "joining room" and no reason to speak again. The joiner waits forever.
+   *
+   * The fix is to make this LEVEL-triggered on the roster rather than
+   * edge-triggered on the elder role. The roster is the thing that both defines
+   * who the elder is and records whether the joiner got in, so every fold is
+   * precisely the moment to re-ask "is anyone I am holding still not seated?"
+   * Being level-triggered is also what makes it safe to run unconditionally: the
+   * roster check is the same test that decides the answer, so once the joiner is
+   * in, this goes quiet on its own rather than needing a flag to remember it.
+   *
+   * Termination: each iteration either seats a joiner (removing it from the set
+   * that drives the next pass) or skips it, so the recursion through issueFold
+   * is bounded by the number of pending joiners, not by the number of folds.
+   */
   private async readmitPendingJoiners(): Promise<void> {
-    if (!this.currentEpoch || !this.isElder()) return;
+    if (!this.currentEpoch) return;
+    const elder = this.isElder();
 
     // requests that reached us before we were elder. draining them here is what
     // makes the retry level-triggered rather than edge-triggered.
-    for (const [hex, joinerId] of Array.from(this.relayedJoinReqs)) {
-      this.relayedJoinReqs.delete(hex);
-      if (this.currentEpoch.roster.includes(hex)) continue;
-      this.pendingJoinReqs.add(hex);
-      await this.issueFold(FOLD_REASON_JOIN, joinerId);
+    if (elder) {
+      for (const [hex, joinerId] of Array.from(this.relayedJoinReqs)) {
+        this.relayedJoinReqs.delete(hex);
+        if (this.currentEpoch.roster.includes(hex)) continue;
+        this.pendingJoinReqs.add(hex);
+        await this.issueFold(FOLD_REASON_JOIN, joinerId);
+      }
     }
 
     for (const [hex, pending] of Array.from(this.pendingAdmissions)) {
       if (this.currentEpoch.roster.includes(hex)) continue;
       const peer = this.neighbors.get(pending.label);
       if (!peer?.connected || !peer.peerIdHex) continue;
-      this.pendingJoinReqs.add(hex);
-      await this.issueFold(FOLD_REASON_JOIN, peer.peerId);
+
+      if (elder) {
+        this.pendingJoinReqs.add(hex);
+        await this.issueFold(FOLD_REASON_JOIN, peer.peerId);
+        continue;
+      }
+
+      // Not the elder, so we cannot seat anyone. What we CAN do is re-ask, and
+      // we are the only seat with standing to: the request names a peer nobody
+      // else can still reach. The attempt counter rides along so the flood
+      // dedup treats this as a new question rather than an echo of the one the
+      // departed elder already swallowed.
+      const attempt = (this.joinReqAttempts.get(hex) ?? 0) + 1;
+      this.joinReqAttempts.set(hex, attempt);
+      await this.broadcastToNeighbors(buildJoinReq(peer.peerId, peer.name, attempt));
     }
   }
 
@@ -1745,7 +1801,6 @@ export class CampfireNode {
       return false;
     }
 
-    const wasElder = this.isElder();
     // open the copy addressed to us. no copy means this fold was not sealed for
     // this seat, which is exactly what a removed member sees.
     if (!this.identity) return false;
@@ -1826,11 +1881,12 @@ export class CampfireNode {
 
     // a joiner's admission lives with whichever elder was asked. if that elder
     // departs mid-admission the request dies with it and the joiner sits at
-    // "joining room" forever with nothing to tell it otherwise. only the seat
-    // that just INHERITED the elder role re-issues: doing it on every fold would
-    // duplicate an admission already in flight and inflate the epoch.
+    // "joining room" forever with nothing to tell it otherwise. every fold is a
+    // roster change, hence the exact event that can move the elder, so every
+    // fold re-asks. The roster check inside is what keeps that from duplicating
+    // an admission already in flight: once the joiner is seated it is silent.
     // queued, never awaited: we are inside the epoch queue and issueFold takes it.
-    if (!wasElder && this.isElder()) void this.readmitPendingJoiners();
+    void this.readmitPendingJoiners();
 
     this.pendingJoinReqs.delete(subjectHex);
     this.relayedJoinReqs.delete(subjectHex);

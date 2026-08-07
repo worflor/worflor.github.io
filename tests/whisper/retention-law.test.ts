@@ -25,10 +25,70 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { evictBelowFloor, purgeDead, meetOf } from "../../src/scripts/whisper/retention.js";
+import {
+  evictBelowFloor, purgeDead, meetOf, slotIsDead,
+  type Floor,
+} from "../../src/scripts/whisper/retention.js";
 import { pruneSkippedLoopKeys } from "../../src/scripts/whisper/live-protocol.js";
+import { makeDeterministicRng } from "./_helpers/generators.js";
 
 describe("the retention law", () => {
+  describe("slotIsDead: the position order, stated once", () => {
+    // (epoch, seq) lexicographic. Epoch first because a fold restarts every
+    // strand at 1, so the same seq in a later epoch is a different place.
+    const floor: Floor<number> = { epoch: 5, seqAt: (seat) => [10, 20, 0][seat] ?? 0 };
+
+    it("a closed epoch is wholly dead, whatever the seq", () => {
+      for (const seq of [0, 1, 999, 0xFFFFFFFF]) {
+        assert.equal(slotIsDead({ epoch: 4, seat: 0, seq }, floor), true,
+          `epoch 4 is behind floor epoch 5, so seq ${seq} is unreachable`);
+      }
+    });
+
+    it("a FUTURE epoch is never dead, whatever the seq", () => {
+      // The direction one call site had backwards: it treated any epoch that was
+      // not the current one as dead, which would discard the future as well as
+      // the past.
+      for (const seq of [0, 1, 999]) {
+        assert.equal(slotIsDead({ epoch: 6, seat: 0, seq }, floor), false,
+          `epoch 6 is ahead of the floor, so seq ${seq} cannot be behind every reader`);
+      }
+    });
+
+    it("within the floor's epoch, the seat's own meet decides", () => {
+      assert.equal(slotIsDead({ epoch: 5, seat: 0, seq: 10 }, floor), true, "at the meet is dead");
+      assert.equal(slotIsDead({ epoch: 5, seat: 0, seq: 11 }, floor), false, "one past is alive");
+      assert.equal(slotIsDead({ epoch: 5, seat: 1, seq: 20 }, floor), true, "seats are independent");
+      assert.equal(slotIsDead({ epoch: 5, seat: 1, seq: 21 }, floor), false);
+    });
+
+    it("a seat nobody has heard from pins its whole strand", () => {
+      // seat 2's meet is 0, so every seq from 1 up is still reachable.
+      assert.equal(slotIsDead({ epoch: 5, seat: 2, seq: 1 }, floor), false,
+        "a zero meet must protect the entire strand, not expose it");
+      assert.equal(slotIsDead({ epoch: 5, seat: 2, seq: 0 }, floor), true,
+        "seq 0 is before any real message and is trivially behind");
+    });
+
+    it("is MONOTONE in the floor: raising it never resurrects a dead slot", () => {
+      const rng = makeDeterministicRng(0x5107);
+      for (let t = 0; t < 400; t++) {
+        const slot = {
+          epoch: Math.floor(rng() * 8),
+          seat: Math.floor(rng() * 4),
+          seq: Math.floor(rng() * 50),
+        };
+        const lowEpoch = Math.floor(rng() * 8);
+        const low: Floor<number> = { epoch: lowEpoch, seqAt: () => Math.floor(rng() * 25) };
+        if (!slotIsDead(slot, low)) continue;
+        // any floor at least as high must still call it dead
+        const high: Floor<number> = { epoch: lowEpoch + 1, seqAt: () => 0 };
+        assert.equal(slotIsDead(slot, high), true,
+          `slot ${JSON.stringify(slot)} died under a lower floor but revived under a higher one`);
+      }
+    });
+  });
+
   describe("meetOf: absence is the bottom element", () => {
     it("is the minimum over known positions", () => {
       assert.equal(meetOf([5, 3, 9]), 3);

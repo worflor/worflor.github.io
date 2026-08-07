@@ -51,6 +51,58 @@
  * resolving it by quietly breaking someone.
  */
 
+/**
+ * A POSITION in the mesh's shared record.
+ *
+ * Every fold restarts every strand at seq 1, so a seq is only meaningful
+ * alongside the epoch it was spoken in: the same seq in a later epoch is a
+ * different place entirely. The position is therefore the pair, ordered
+ * lexicographically — epoch first, which is total because epochs only advance,
+ * then seq within a seat's strand.
+ */
+export interface Slot<Seat> {
+  epoch: number;
+  seat: Seat;
+  seq: number;
+}
+
+/**
+ * The highest position, per seat, that is provably behind every reader.
+ *
+ * `epoch` is the epoch this floor speaks about; `seqAt` gives the meet of the
+ * readers' demands within it. A floor says nothing about other epochs beyond
+ * the ordering: everything before is closed, everything after is unreachable.
+ */
+export interface Floor<Seat> {
+  epoch: number;
+  seqAt: (seat: Seat) => number;
+}
+
+/**
+ * Is this position dead — behind every reader, unreachable forever?
+ *
+ * THE ONE PLACE THIS COMPARISON LIVES. It was previously open-coded at each
+ * eviction site: the repair cache, the outstanding-wants purge, the braid store
+ * watermark, and the epoch retention floor each re-derived "epoch first, then
+ * seq" in its own dialect. Five copies of an order agreeing only because nobody
+ * had yet made a mistake, in a system whose comments already record one near
+ * miss ("recentBySeq is keyed without the epoch, so qualify it here").
+ *
+ * They had in fact already diverged: one site treated a LATER epoch as alive,
+ * correctly, while another treated any epoch that was not the current one as
+ * dead. Harmless where it sat, and exactly the shape of drift that stops being
+ * harmless at the next call site.
+ *
+ * Generic in the seat key because structures name seats differently — a roster
+ * index here, a hex id there. The encoding of a key belongs to the structure
+ * that owns it; the ORDER belongs here, once.
+ */
+export function slotIsDead<Seat>(slot: Slot<Seat>, floor: Floor<Seat>): boolean {
+  if (slot.epoch < floor.epoch) return true;  // a closed epoch is never asked about again
+  if (slot.epoch > floor.epoch) return false; // the future is never behind anyone
+  return slot.seq <= floor.seqAt(slot.seat);
+}
+
 /** Outcome of one sweep, so callers can act on sustained pressure. */
 export interface SweepResult {
   /** entries actually dropped. */

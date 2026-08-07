@@ -51,7 +51,7 @@
 
 import { hkdf, TE, aesGcmEncrypt, aesGcmDecrypt, constantTimeEqual } from "./live-crypto";
 import { sha256 } from "./wasm";
-import { evictBelowFloor, purgeDead } from "./retention";
+import { evictBelowFloor, purgeDead, slotIsDead } from "./retention";
 import { toArrayBuffer } from "./buf";
 import {
     loopInit,
@@ -651,11 +651,20 @@ function stableFrontier<A>(state: BraidState<A>): Uint32Array {
 }
 
 /** true when no lane can still ask for this entry, so it is safe to drop. */
-function belowWatermark(meet: Uint32Array, key: string): boolean {
+/**
+ * A store key is (seat, seq); the epoch is the state's own, since a BraidState
+ * is scoped to one epoch and a fold builds a fresh one. Passing it explicitly
+ * keeps this site on the SAME comparison as the epoch-spanning sites in gossip,
+ * rather than a special case that happens to agree.
+ */
+function belowWatermark<A>(state: BraidState<A>, meet: Uint32Array, key: string): boolean {
     const sep = key.indexOf(":");
     const j = Number(key.slice(0, sep));
-    const q = Number(key.slice(sep + 1));
-    return j < meet.length && q <= meet[j];
+    if (j >= meet.length) return false; // not a seat in this epoch: never ours to drop
+    return slotIsDead(
+        { epoch: state.epochId, seat: j, seq: Number(key.slice(sep + 1)) },
+        { epoch: state.epochId, seqAt: (seat) => meet[seat] },
+    );
 }
 
 /**
@@ -686,7 +695,7 @@ function storePut<A>(state: BraidState<A>, seatIndex: number, seq: number, plain
     // (fold, or remove the seat) rather than to a sweep that would silently
     // break replay to hit a number.
     const meet = stableFrontier(state);
-    const dead = (key: string) => belowWatermark(meet, key);
+    const dead = (key: string) => belowWatermark(state, meet, key);
     // Two bounds, one floor. The byte budget is folded in by tightening the cap
     // until either the size fits or nothing dead is left to give.
     while (state.storeBytes > BRAID_STORE_MAX_BYTES) {
@@ -708,7 +717,7 @@ function expireStore<A>(state: BraidState<A>): void {
     // lattice decides what is dead and the clock only chooses among the dead.
     purgeDead(
         state.store,
-        (key) => belowWatermark(meet, key) && (state.storeAt.get(key) ?? Infinity) <= cutoff,
+        (key) => belowWatermark(state, meet, key) && (state.storeAt.get(key) ?? Infinity) <= cutoff,
         (k, v) => releaseEntry(state, k, v),
     );
 }
@@ -724,7 +733,7 @@ function expireStore<A>(state: BraidState<A>): void {
 function storeGc<A>(state: BraidState<A>): void {
     expireStore(state);
     const meet = stableFrontier(state);
-    purgeDead(state.store, (key) => belowWatermark(meet, key), (k, v) => releaseEntry(state, k, v));
+    purgeDead(state.store, (key) => belowWatermark(state, meet, key), (k, v) => releaseEntry(state, k, v));
 }
 
 // --- seal (send) ---
