@@ -336,7 +336,15 @@ function decodeX(counts: Uint32Array, data: Uint8Array, len: number): Uint8Array
 
 // expands a 32-byte chain key to 65536 bytes.
 // HKDF(chain, le32(step), 'kizuna-expand-v1', 32) → AES-CTR keystream over 65536 zero bytes.
-async function expandChain(chain: Uint8Array, step: number): Promise<Uint8Array> {
+/**
+ * AES-CTR keystream from (chain, step).
+ *
+ * `bytes` exists because CTR keystream is position-independent: block i depends
+ * only on the counter, so the first N bytes are identical whether you generate N
+ * or 65536. loopStep consumes 512 of them and used to ask for all 65536, paying
+ * 128x the cipher work for output it immediately zeroized. Verified byte-identical.
+ */
+async function expandChain(chain: Uint8Array, step: number, bytes = B16): Promise<Uint8Array> {
     const aesKeyBytes = await hkdf(chain, le32(step), INFO_EXPAND, 32);
     const cryptoKey   = await crypto.subtle.importKey(
         "raw", toArrayBuffer(aesKeyBytes), { name: "AES-CTR" }, false, ["encrypt"],
@@ -345,7 +353,7 @@ async function expandChain(chain: Uint8Array, step: number): Promise<Uint8Array>
     const result = await crypto.subtle.encrypt(
         { name: "AES-CTR", counter: new Uint8Array(16), length: 64 },
         cryptoKey,
-        new Uint8Array(B16),  // 65536 zero bytes
+        new Uint8Array(bytes),
     );
     return new Uint8Array(result);
 }
@@ -417,7 +425,46 @@ export function loopFingerprint(state: LoopState): string {
 
 // --- loop state ---
 
+/**
+ * The part of a step that survives encoding, and therefore can be computed early.
+ *
+ * WHICH PART, EXACTLY. A step needs two expensive inputs: the model digest and
+ * the freshening keystream. It is tempting to precompute both, since `loopStep`
+ * takes only the state — but that reads the pipeline wrong. Between one step and
+ * the next sits `loopEncode`, which TRAINS the model on the message, so the
+ * counts the next digest commits to do not exist until the message does. The
+ * digest is genuinely content-dependent and stays on the critical path.
+ *
+ * The keystream is not. `expandChain` is a function of (chain, step) alone, and
+ * `loopEncode` preserves both — it only ever replaces the counts. So the
+ * keystream for the next step is fully determined the moment the current one
+ * lands, and can be derived while the line is idle instead of while someone is
+ * waiting.
+ */
+export interface PrimedStep {
+    primeData: Uint8Array;
+}
+
 export interface LoopState extends ModelCounts {
+    /**
+     * PRECOMPUTED NEXT STEP, and the reason latency need not include it.
+     *
+     * The freshening keystream for the next step is determined by (chain, step),
+     * and `loopEncode` changes neither. So it is knowable the moment the current
+     * step lands, and deriving it then moves the single most expensive call in
+     * the message path into the gap between messages.
+     *
+     * Staleness is impossible by construction rather than by discipline: a step
+     * always allocates a NEW state object, so a precomputation attached to one
+     * object can never be read against a state it was not derived from. There is
+     * no cache key to get wrong and nothing to invalidate.
+     *
+     * `priming` marks work in flight, so a message arriving mid-computation
+     * waits for it rather than duplicating it.
+     */
+    primed?:  PrimedStep;
+    priming?: Promise<PrimedStep | null>;
+
     // cryptographic root. all other fields derive from this + message history.
     chain:   Uint8Array;      // 32 bytes
 
@@ -471,6 +518,46 @@ export function loopInit(sharedBlock: Uint8Array): LoopState {
 // advance the loop one step: the ratchet.
 // returns the message key for this step and the new loop state.
 // both parties call this independently and derive identical results.
+async function computePrimed(state: LoopState): Promise<PrimedStep> {
+    // 512 bytes is exactly what priming consumes, and CTR keystream is
+    // position-independent, so this is byte-identical to the first 512 of 65536.
+    return { primeData: await expandChain(state.chain, state.step, 512) };
+}
+
+/**
+ * Start the content-independent work for this state's next step.
+ *
+ * Fire and forget: callers invoke it after a transition and do not await, so the
+ * cost lands in the gap between messages rather than inside one. Idempotent, and
+ * safe on a state that is never stepped again, since the result is wiped with it.
+ */
+export function loopPrime(state: LoopState): void {
+    if (state.primed || state.priming) return;
+
+    let self: Promise<PrimedStep | null>;
+    self = computePrimed(state)
+        // A background failure must never become the caller's problem, and must
+        // never escape as an unhandled rejection: the stored promise resolves to
+        // null instead of rejecting, and the next step derives inline exactly as
+        // it did before priming existed.
+        .then((p): PrimedStep | null => p, () => null)
+        .then((p) => {
+            // IDENTITY GUARD. loopWipe clears `priming`, so a state wiped while
+            // this was in flight no longer matches and the result is dropped.
+            // Without it a resolving promise would write freshly derived
+            // keystream back into a state that was just zeroized, resurrecting
+            // precisely what the wipe existed to destroy.
+            if (state.priming !== self) {
+                p?.primeData.fill(0);
+                return null;
+            }
+            state.priming = undefined;
+            if (p) state.primed = p;
+            return p;
+        });
+    state.priming = self;
+}
+
 export async function loopStep(state: LoopState): Promise<{ next: LoopState; messageKey: Uint8Array }> {
     // history binding: digest the model trajectory BEFORE this step. the counts encode
     // every prior message, so this digest is a function of the full conversation history.
@@ -479,10 +566,19 @@ export async function loopStep(state: LoopState): Promise<{ next: LoopState; mes
     // NOT every divergence: the counts are additive multisets, so a reordering that preserves
     // them digests identically. See the note in live-braid.ts. This is a desync tripwire,
     // not a transcript commitment.
-    const digest = await modelDigest(state);
+    // The digest must be computed here: it commits the counts, and the counts
+    // include training on the message that has just been encoded.
+    const digestPromise = modelDigest(state);
 
-    // 16D phase: expand chain → 65536-byte block (model-freshening keystream)
-    const expanded = await expandChain(state.chain, state.step);
+    // The keystream need not be. Use it if ready, wait if in flight, derive
+    // inline otherwise; all three paths produce identical bytes. A priming that
+    // failed or was invalidated resolves to null, so this falls through to the
+    // inline derivation rather than inheriting someone else's error.
+    let primed = state.primed;
+    if (!primed && state.priming) primed = (await state.priming) ?? undefined;
+    if (!primed) primed = await computePrimed(state);
+    const { primeData } = primed;
+    const digest = await digestPromise;
 
     // derive message key and advance chain, both bound to the model-trajectory digest
     const [messageKey, newChain] = await Promise.all([
@@ -490,16 +586,13 @@ export async function loopStep(state: LoopState): Promise<{ next: LoopState; mes
         advanceChain(state.chain, digest, state.step),
     ]);
 
-    // 0D: overlay counts from expanded block for all three models
-    const primeData = expanded.subarray(0, 512);
+    // 0D: overlay counts from the freshening keystream for all three models
     const newCountsBitM = state.countsBitM.slice();
     primeCountsM(newCountsBitM, primeData);
     const newCountsBit1 = state.countsBit1.slice();
     primeCounts1(newCountsBit1, primeData);
     const newCountsBitX = state.countsBitX.slice();
     primeCountsX(newCountsBitX, primeData);
-
-    expanded.fill(0);  // wipe keystream after use
 
     return {
         next: {
@@ -659,6 +752,9 @@ export function loopTrain(counts: ModelCounts, data: Uint8Array): void {
 // chain is the cryptographic secret; count arrays hold the statistical
 // fingerprint of key material + message history and must also be zeroed.
 export function loopWipe(state: LoopState): void {
+    state.primed?.primeData.fill(0);
+    state.primed = undefined;
+    state.priming = undefined;
     state.chain.fill(0);
     state.countsBitM.fill(0);
     state.countsBit1.fill(0);

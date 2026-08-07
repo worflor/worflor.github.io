@@ -76,7 +76,6 @@ export const TRACKER_URLS = [
 ];
 
 const WS_CONNECT_TIMEOUT = 5_000;
-const PEER_DISCOVERY_TIMEOUT = 30_000;
 const TOTAL_TIMEOUT = 45_000;
 const REANNOUNCE_INTERVAL = 10_000;
 export const EPOCH_WINDOW = 2 * 60 * 1000;

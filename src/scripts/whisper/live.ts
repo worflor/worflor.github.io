@@ -657,8 +657,6 @@ export class WhisperLiveSession {
   private recoveryResolve: (() => void) | null = null;
 
   // Send rate shaping: decaying burst level, threshold 15, decay τ=4s, ceil 2s.
-  private burstLevel = 0;
-  private burstLastSend = 0;
 
   private rtcConfig: RTCConfiguration;
   private turnPool: RTCIceServer[] = [];
@@ -1291,7 +1289,6 @@ export class WhisperLiveSession {
       if (!this.pc) { resolve(); return; }
       const pc = this.pc;
       const maxWait = this.hasExternalAssistConfigured() ? ICE_GATHER_TIMEOUT_ASSIST : ICE_GATHER_TIMEOUT;
-      let lastCandidateAt = Date.now();
 
       const logGatherResult = () => {
         const sdp = pc.localDescription?.sdp ?? "";
@@ -1325,31 +1322,49 @@ export class WhisperLiveSession {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        clearInterval(settlePoll);
+        if (settleTimer) clearTimeout(settleTimer);
         pc.removeEventListener("icecandidate", onIceCandidate);
         pc.onicegatheringstatechange = null;
         logGatherResult();
         resolve();
       };
 
+      /**
+       * SETTLE ON THE EVENT, NOT ON A CLOCK.
+       *
+       * "Candidates have gone quiet for ICE_GATHER_SETTLE_MS" is a statement
+       * about the last candidate, so the last candidate is what should decide
+       * it. Polling every 250ms answered the same question on a schedule that
+       * has nothing to do with the question, which cost up to a full poll
+       * interval of pure waiting on every connection even when gathering had
+       * finished immediately.
+       *
+       * A timer re-armed by each candidate is both exact and cheaper: it fires
+       * once, exactly ICE_GATHER_SETTLE_MS after the last candidate arrives,
+       * instead of waking four times a second to re-read the SDP and re-run two
+       * regexes over it.
+       */
+      let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const armSettle = () => {
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => {
+          if (settled) return;
+          // Quiet is necessary but not sufficient: silence with nothing usable
+          // gathered yet means keep waiting for the ceiling, not give up early.
+          if (!hasUsefulCandidates() || candidateCount() === 0) { armSettle(); return; }
+          this.onLog("path discovery settled, proceeding with gathered candidates");
+          done();
+        }, ICE_GATHER_SETTLE_MS);
+      };
+
       const onIceCandidate = (event: RTCPeerConnectionIceEvent) => {
-        if (event.candidate) lastCandidateAt = Date.now();
+        if (!event.candidate) return;
+        armSettle();
       };
 
       pc.addEventListener("icecandidate", onIceCandidate);
-
-      const settlePoll = setInterval(() => {
-        if (settled) return;
-        if (pc.iceGatheringState === "complete") {
-          done();
-          return;
-        }
-        if (!hasUsefulCandidates()) return;
-        if (candidateCount() === 0) return;
-        if (Date.now() - lastCandidateAt < ICE_GATHER_SETTLE_MS) return;
-        this.onLog("path discovery settled, proceeding with gathered candidates");
-        done();
-      }, 250);
+      armSettle(); // gathering may finish before the first event reaches us
 
       const timer = setTimeout(() => {
         this.onLog("path discovery timed out, proceeding with what we have");
@@ -1743,11 +1758,20 @@ export class WhisperLiveSession {
 
       this.sharedSecret = sharedSecret;
       // Derive purpose-specific keys so the session root is never directly exposed
-      this.silentKey = await deriveSilentKey(sharedSecret);
-      this.audioKeyBytes = await deriveAudioKey(sharedSecret);
-      const ctrlRoot = await deriveCtrlKey(sharedSecret);
-      const chainA = await hkdf(ctrlRoot, ZERO_SALT_32, TE.encode("ctrl-send"), 32);
-      const chainB = await hkdf(ctrlRoot, ZERO_SALT_32, TE.encode("ctrl-recv"), 32);
+      // Three independent derivations from one root: nothing here reads anything
+      // else here, so awaiting them in sequence was three round trips of latency
+      // on the connection path for no ordering requirement.
+      const [silentKey, audioKeyBytes, ctrlRoot] = await Promise.all([
+        deriveSilentKey(sharedSecret),
+        deriveAudioKey(sharedSecret),
+        deriveCtrlKey(sharedSecret),
+      ]);
+      this.silentKey = silentKey;
+      this.audioKeyBytes = audioKeyBytes;
+      const [chainA, chainB] = await Promise.all([
+        hkdf(ctrlRoot, ZERO_SALT_32, TE.encode("ctrl-send"), 32),
+        hkdf(ctrlRoot, ZERO_SALT_32, TE.encode("ctrl-recv"), 32),
+      ]);
       ctrlRoot.fill(0);
       this.ctrlChainSend = this.isOfferer ? chainA : chainB;
       this.ctrlChainRecv = this.isOfferer ? chainB : chainA;
@@ -2289,22 +2313,28 @@ export class WhisperLiveSession {
     });
   }
 
-  /** Decaying burst delay: 0 below threshold, exponential curve above. */
-  private burstDelay(): number {
-    const now = Date.now();
-    if (this.burstLastSend) this.burstLevel *= Math.exp(-(now - this.burstLastSend) / 4_000);
-    this.burstLastSend = now;
-    const excess = ++this.burstLevel - 15;
-    return excess > 0 ? 2_000 * (1 - Math.exp(-excess / 5)) : 0;
-  }
-
-  /** Enqueue a send job — serializes through sendQueue so ratchet state is never concurrent. */
-  private enqueueSend(job: () => Promise<void>, skipBurst = false): Promise<void> {
+  /**
+   * Enqueue a send job — serializes through sendQueue so ratchet state is never
+   * concurrent.
+   *
+   * NO PACING HERE, DELIBERATELY. This used to impose a decaying burst delay:
+   * past fifteen sends it added `2000 * (1 - exp(-excess/5))` ms per message,
+   * asymptotically two full seconds each. Nothing depended on it. Congestion is
+   * already handled where congestion actually lives — `waitForDrain` blocks on
+   * `dc.bufferedAmount`, which is the transport's own measure of whether it can
+   * accept more — so the delay was not backpressure, it was a second, blind
+   * mechanism guessing at the same thing and getting it wrong by up to two
+   * seconds.
+   *
+   * It was also the wrong shape for the one purpose that could have justified
+   * it. Timing obfuscation has to make send times INDEPENDENT of user behaviour;
+   * a delay that grows with how fast you are typing does the opposite, encoding
+   * the burst pattern into the very timing it would need to hide. Obfuscation
+   * belongs in a designed layer, added on purpose, on top of a transport that is
+   * otherwise raw.
+   */
+  private enqueueSend(job: () => Promise<void>): Promise<void> {
     const wrapped = async () => {
-      if (!skipBurst) {
-        const delay = this.burstDelay();
-        if (delay > 1) await new Promise<void>((r) => setTimeout(r, delay));
-      }
       await job().catch((err) => {
         const msg = errorMessage(err);
         this.onLog(`send failed: ${msg}`);
@@ -2450,7 +2480,7 @@ export class WhisperLiveSession {
           }
           bytesSent += chunkLen;
           if (this.onSendProgress) this.onSendProgress(bytesSent, file.size);
-        }, true);
+        });
       }
     } finally {
       this.cancelledOutgoingTransfers.delete(transferId);
@@ -2485,7 +2515,7 @@ export class WhisperLiveSession {
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
       await this.encryptAndSend(plaintext, flags);
-    }, true);
+    });
   }
 
   private async sendFileDressed(

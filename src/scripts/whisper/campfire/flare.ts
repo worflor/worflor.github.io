@@ -31,6 +31,8 @@ interface FlareBaseCallbacks {
 export interface CampfireHostFlareOptions extends FlareBaseCallbacks {
   phrase: string;
   getCurrentOfferCode: () => string | null;
+  /** resolves when the host mints a fresh offer; replaces polling the getter. */
+  nextOfferCode: () => Promise<string>;
   applyAnswerCode: (answerCode: string) => Promise<void>;
   signal: AbortSignal;
 }
@@ -60,16 +62,29 @@ function closeTrackerSocket(ws: WebSocket | null): void {
   try { ws.close(1000); } catch { /* noop */ }
 }
 
+/**
+ * Wait for the host to mint a fresh offer.
+ *
+ * Event-driven: the node resolves `nextOfferCode()` at the instant a new offer
+ * exists, so the happy path costs nothing. The ceiling remains as a safety net
+ * for the case where no offer ever arrives, which is the only situation a clock
+ * is the right instrument for.
+ */
 async function waitForNextOffer(
-  getCurrentOfferCode: () => string | null,
+  nextOfferCode: () => Promise<string>,
   previousOffer: string,
   signal: AbortSignal,
 ): Promise<string | null> {
-  const start = Date.now();
-  while (!signal.aborted && Date.now() - start < 12_000) {
-    const next = getCurrentOfferCode();
-    if (next && next !== previousOffer) return next;
-    await new Promise<void>((resolve) => setTimeout(resolve, 120));
+  const deadline = new Promise<null>((resolve) => setTimeout(() => resolve(null), 12_000));
+  const aborted = new Promise<null>((resolve) => {
+    if (signal.aborted) { resolve(null); return; }
+    signal.addEventListener("abort", () => resolve(null), { once: true });
+  });
+
+  while (!signal.aborted) {
+    const next = await Promise.race([nextOfferCode(), deadline, aborted]);
+    if (next === null) return null;              // ceiling hit, or aborted
+    if (next !== previousOffer) return next;     // a genuinely new offer
   }
   return null;
 }
@@ -98,7 +113,7 @@ export async function hostCampfireViaFlare(opts: CampfireHostFlareOptions): Prom
     if (rotatingOffer || opts.signal.aborted) return;
     rotatingOffer = true;
     try {
-      const nextOffer = await waitForNextOffer(opts.getCurrentOfferCode, offerCtx.offerCode, opts.signal);
+      const nextOffer = await waitForNextOffer(opts.nextOfferCode, offerCtx.offerCode, opts.signal);
       if (!nextOffer || nextOffer === offerCtx.offerCode || opts.signal.aborted) return;
       offerCtx = {
         offerCode: nextOffer,

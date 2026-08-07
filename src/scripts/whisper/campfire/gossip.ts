@@ -217,6 +217,8 @@ export class CampfireNode {
 
   // Root-only bootstrap slot state (root remains the sole admission entry point)
   private rootSlotCounter = 0;
+  /** resolvers awaiting the next freshly minted root offer; see nextOfferCode. */
+  private offerWaiters: Array<(code: string) => void> = [];
 
   // Peer-only bootstrap state
   private bootstrapSession: CampfireSessionLike | null = null;
@@ -428,8 +430,7 @@ export class CampfireNode {
 
     // Store pending session, will be assigned to joining peer
     this._pendingRootSession = rootSession;
-    this._pendingRootOffer = offerCode;
-    this.cb.onRoomCodeUpdate?.(offerCode);
+    this.publishOfferCode(offerCode);
 
     return offerCode;
   }
@@ -628,8 +629,7 @@ export class CampfireNode {
     try {
       const offerCode = await session.createOffer();
       this._pendingRootSession = session;
-      this._pendingRootOffer = offerCode;
-      this.cb.onRoomCodeUpdate?.(offerCode);
+      this.publishOfferCode(offerCode);
     } catch (err) {
       this.log(`failed to prepare next connection: ${err instanceof Error ? err.message : "unknown"}`);
     }
@@ -638,6 +638,29 @@ export class CampfireNode {
   /** Root: get current offer code for new joiners. */
   getCurrentOfferCode(): string | null {
     return this._pendingRootOffer;
+  }
+
+  /**
+   * Resolves the next time a fresh root offer is minted.
+   *
+   * The node already knows the exact instant this happens, so anyone waiting for
+   * it should be told rather than left to ask. The flare transport used to poll
+   * `getCurrentOfferCode()` every 120ms for up to twelve seconds, which is the
+   * same question asked eighty times against a clock that has nothing to do with
+   * the answer, and which added up to a poll interval of dead time to every
+   * offer rotation.
+   */
+  nextOfferCode(): Promise<string> {
+    return new Promise((resolve) => { this.offerWaiters.push(resolve); });
+  }
+
+  /** Single place a fresh root offer becomes visible: store, announce, wake waiters. */
+  private publishOfferCode(offerCode: string): void {
+    this._pendingRootOffer = offerCode;
+    this.cb.onRoomCodeUpdate?.(offerCode);
+    const waiting = this.offerWaiters;
+    this.offerWaiters = [];
+    for (const resolve of waiting) resolve(offerCode);
   }
 
   /* ── Send Helpers ──────────────────────────────────────── */

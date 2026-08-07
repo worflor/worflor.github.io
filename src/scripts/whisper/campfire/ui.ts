@@ -377,6 +377,9 @@ export function initCampfire(opts: CampfireUIOptions): () => void {
     void hostCampfireViaFlare({
       phrase,
       getCurrentOfferCode: () => node?.getCurrentOfferCode() ?? null,
+      nextOfferCode: () => node
+        ? node.nextOfferCode()
+        : new Promise<string>(() => { /* no node: never resolves, the ceiling handles it */ }),
       applyAnswerCode: async (answerCode: string) => {
         if (!node) throw new Error("node-unavailable");
         await node.applyAnswer(answerCode);

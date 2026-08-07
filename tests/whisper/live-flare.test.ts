@@ -269,6 +269,9 @@ describe("flare cleanup", () => {
     const hostPromise = withAbortTimeout(ac, () => hostCampfireViaFlare({
       phrase: "tower phrase",
       getCurrentOfferCode: () => "B".repeat(64),
+      // the host never mints a fresh offer in this scenario, so the wait is
+      // resolved by abort or the ceiling, never by a poll
+      nextOfferCode: () => new Promise<string>(() => {}),
       applyAnswerCode: async (answerCode) => {
         seenAnswers.push(answerCode);
         ac.abort();

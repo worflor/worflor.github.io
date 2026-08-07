@@ -28,6 +28,7 @@ import {
   loopEncode,
   loopDecode,
   loopWipe,
+  loopPrime,
 } from "./live-loop";
 import {
   HEADER_SIZE,
@@ -214,6 +215,14 @@ export function cloneLoopState(state: LoopState): LoopState {
     countsBit1: state.countsBit1.slice(),
     countsBitX: state.countsBitX.slice(),
     step: state.step,
+    // COPY the precomputation, never share it. A speculative clone is wiped when
+    // a decrypt fails, and wiping zeroizes; an aliased buffer would take the
+    // original's precomputation down with it. Copying 544 bytes is far cheaper
+    // than recomputing it, so the receive path keeps the benefit.
+    primed: state.primed ? { primeData: state.primed.primeData.slice() } : undefined,
+    // `priming` is deliberately NOT carried: an in-flight promise resolves onto
+    // the object it was started for, so handing it to a clone would write the
+    // clone's result into the original.
   };
 }
 
@@ -283,6 +292,9 @@ export async function protocolEncrypt(
   // compress plaintext with the loop codec (advances counts)
   const { encoded, raw, next: afterEncode } = loopEncode(s.loopSend, plaintext);
   s.loopSend = afterEncode;
+  // Prime the state that will actually be stepped next. It carries the same
+  // chain and step as the pre-encode state, so its keystream is already knowable.
+  loopPrime(s.loopSend);
 
   // pre-encryption payload: [decodedLen:4B LE][encoded with mode prefix]
   let compressedPayload: Uint8Array;
@@ -493,6 +505,7 @@ async function protocolDecryptInner(s: ProtocolState, complete: Uint8Array): Pro
     return { ok: false, reason: `malformed coder stream: ${(e as Error).message}` };
   }
   s.loopRecv = afterDecode;
+  loopPrime(s.loopRecv); // same reasoning as the send path
   s.lastRecvPubKeyHex = pubKeyHex;
 
   return { ok: true, plaintext, msgId, flags: header.flags, didDHRatchet, recvSkipped };
