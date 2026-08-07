@@ -5972,9 +5972,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         releaseTerminalSessionUi();
         haptic("disconnected");
         const endText = opts.disconnectedSection.querySelector(".wl-end-text");
+        // "vanished" is now reserved for a peer that stopped answering and never
+        // came back, and "left" for one that said goodbye on its way out. They
+        // used to be the same screen because the session could not tell the two
+        // apart; it can now, so the words stop implying a disappearance that did
+        // not happen.
         if (endText) endText.textContent = detail === "vanished"
           ? "they vanished. no trace remains."
-          : "no trace remains.";
+          : detail === "left"
+            ? "they stepped away. no trace remains."
+            : "no trace remains.";
         enterPhase(opts.disconnectedSection, "session ended", false, false);
         resetFpChip();
         // the session died here, so its corpse dies here too: destroy it now
