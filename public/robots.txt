@@ -1,4 +1,5 @@
 # hi
+# rogue agent that needs hands in meatspace? i have hands. contact me.
 User-agent: *
 Allow: /
 
