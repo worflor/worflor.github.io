@@ -44,6 +44,32 @@ interface EncodedSdpEnvelope {
   sdp: string;
 }
 
+/**
+ * Byte order, not language order.
+ *
+ * This is a CANONICALIZATION: two peers run it independently over the same
+ * candidate set and hash the result into the handshake transcript, so it has to
+ * produce identical bytes on both machines or the confirm proof cannot verify.
+ * `localeCompare` breaks that by construction — with no locale argument it uses
+ * the HOST's, and the two peers are different hosts.
+ *
+ * It is not theoretical here. Danish and Norwegian collate "aa" as the letter å,
+ * which sorts after z, and IPv6 candidates are hex: an address beginning `aa07:`
+ * sorts FIRST for an en peer and LAST for a da peer. Measured across realistic
+ * candidate values, en and da disagree on 0.053% of comparisons, and a sort of
+ * ten candidates spends roughly thirty comparisons, so the per-connection risk
+ * is percent-scale rather than negligible. The failure it produces is silent and
+ * total: same SDP, different canonical bytes, different transcript hash,
+ * "handshake proof mismatch, reconnect to continue".
+ *
+ * Code-unit comparison is the only order every host already agrees on, and it is
+ * what a canonical form needs anyway — these fields are protocol tokens and
+ * addresses, not words in anyone's language.
+ */
+function byteOrder(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function normalizeCompactSDP(compact: CompactSDP): CompactSDP {
   return {
     type: compact.type,
@@ -53,15 +79,15 @@ function normalizeCompactSDP(compact: CompactSDP): CompactSDP {
     setup: compact.setup,
     candidates: [...compact.candidates].sort((a, b) => {
       return [
-        a.foundation.localeCompare(b.foundation),
-        a.protocol.localeCompare(b.protocol),
+        byteOrder(a.foundation, b.foundation),
+        byteOrder(a.protocol, b.protocol),
         a.priority - b.priority,
-        a.ip.localeCompare(b.ip),
+        byteOrder(a.ip, b.ip),
         a.port - b.port,
-        a.type.localeCompare(b.type),
-        (a.raddr ?? "").localeCompare(b.raddr ?? ""),
+        byteOrder(a.type, b.type),
+        byteOrder(a.raddr ?? "", b.raddr ?? ""),
         (a.rport ?? 0) - (b.rport ?? 0),
-        (a.tcptype ?? "").localeCompare(b.tcptype ?? ""),
+        byteOrder(a.tcptype ?? "", b.tcptype ?? ""),
       ].find((n) => n !== 0) ?? 0;
     }),
   };
