@@ -163,11 +163,21 @@ export async function buildConfirmProof(
   }
 }
 
+/**
+ * Argument order MIRRORS buildConfirmProof, with the proof appended last.
+ *
+ * It used to lead with the proof, which put four interchangeable Uint8Arrays in
+ * two different orders across a build/verify pair. TypeScript cannot tell those
+ * apart, so a transposed call typechecks and silently always returns false — a
+ * confirm step that rejects every honest peer, or worse, a NEGATIVE test that
+ * passes because the arguments are garbage rather than because the check works.
+ * Same shape as the fold-signing-body slip: the types agreed, the bytes did not.
+ */
 export async function verifyConfirmProof(
-  proof: Uint8Array,
   sessionRoot: Uint8Array,
   confirmContextHash: Uint8Array,
   senderRole: HandshakeRole,
+  proof: Uint8Array,
 ): Promise<boolean> {
   const expected = await buildConfirmProof(sessionRoot, confirmContextHash, senderRole);
   try {

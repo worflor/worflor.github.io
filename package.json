@@ -8,6 +8,14 @@
     "start": "astro dev",
     "test": "npm run test:whisper",
     "test:whisper": "node scripts/run-whisper-tests.mjs",
+    "fuzz:header": "jazzer tests/whisper/fuzz/parse-header.fuzz.cjs --sync",
+    "fuzz:ctrl": "jazzer tests/whisper/fuzz/ctrl.fuzz.cjs --sync",
+    "fuzz:file": "jazzer tests/whisper/fuzz/file-plaintext.fuzz.cjs --sync",
+    "fuzz:corpus": "tsx tests/whisper/fuzz/make-corpus.ts",
+    "fuzz:loop": "jazzer tests/whisper/fuzz/loop-decode-hostile.fuzz.cjs tests/whisper/fuzz/corpus/loop-decode --sync -- -max_len=4096 -rss_limit_mb=4096",
+    "fuzz:cfwire": "jazzer tests/whisper/fuzz/campfire-wire.fuzz.cjs --sync -- -max_len=2048",
+    "fuzz:decrypt-corpus": "tsx tests/whisper/fuzz/make-decrypt-corpus.ts",
+    "fuzz:decrypt": "jazzer tests/whisper/fuzz/protocol-decrypt.fuzz.cjs tests/whisper/fuzz/corpus/protocol-decrypt -- -max_len=512",
     "build": "npm run test:whisper && astro check && astro build",
     "preview": "astro preview",
     "astro": "astro"
@@ -29,8 +37,10 @@
     "typescript": "^5.4.3"
   },
   "devDependencies": {
+    "@jazzer.js/core": "^4.0.0",
     "@tailwindcss/typography": "^0.5.12",
     "@webgpu/types": "^0.1.70",
+    "fast-check": "^3.23.2",
     "tsx": "^4.21.0"
   }
 }

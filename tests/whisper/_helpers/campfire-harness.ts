@@ -30,7 +30,9 @@ import type {
   CampfireMessage,
 } from "../../../src/scripts/whisper/campfire/types.js";
 import { CampfireNode } from "../../../src/scripts/whisper/campfire/gossip.js";
-import { toHex } from "../../../src/scripts/whisper/wasm.js";
+import { toHex, sha256, concatBytes } from "../../../src/scripts/whisper/wasm.js";
+import { parseGroupMsgHeader, groupMsgSigningBody } from "../../../src/scripts/whisper/campfire/wire.js";
+import { signBytes, type CampfireIdentity } from "../../../src/scripts/whisper/campfire/identity.js";
 import { makeDeterministicRng } from "./generators.js";
 import type { WhisperLiveCallbacks } from "../../../src/scripts/whisper/live.js";
 
@@ -45,6 +47,13 @@ interface QueuedDelivery {
   run: () => unknown;
 }
 
+/**
+ * Runaway-gossip backstop. Configurable per net because it does double duty: it
+ * is the only infinite-loop detector, AND it caps legitimate work, so a test
+ * that deliberately builds a large backlog trips it for the honest reason. A
+ * fixed global forces such a test to either shrink below the thing it is trying
+ * to measure or to be deleted, and both hide the scenario.
+ */
 const DELIVERY_CEILING = 100_000;
 const REORDER_WINDOW = 4;
 
@@ -54,6 +63,8 @@ export class VirtualNet {
   reorder = false;
   /** optional per-edge drop hook, consulted for every sendEncryptedRaw delivery. */
   dropFilter?: DeliveryFilter;
+  /** raise for tests that legitimately generate a lot of traffic; see DELIVERY_CEILING. */
+  deliveryCeiling = DELIVERY_CEILING;
 
   private queue: QueuedDelivery[] = [];
   private seqCounter = 0;
@@ -84,6 +95,33 @@ export class VirtualNet {
 
   enqueue(_fromIdx: number, _toIdx: number, run: () => unknown): void {
     this.queue.push({ seq: this.seqCounter++, run });
+    if (this.autoPump) this.schedulePump();
+  }
+
+  /** process deliveries as they are enqueued instead of only inside drain().
+   *  the real transport is concurrent: a node can receive and relay while it is
+   *  part-way through its own teardown. without this the harness batches every
+   *  delivery until the caller reaches drain(), so anything a node does DURING
+   *  an await looks like a no-op no matter how correct it is. */
+  autoPump = false;
+  private pumping = false;
+
+  private schedulePump(): void {
+    if (this.pumping) return;
+    this.pumping = true;
+    setImmediate(async () => {
+      try {
+        let processed = 0;
+        while (this.queue.length > 0) {
+          if (++processed > this.deliveryCeiling) {
+            throw new Error(`virtual net: exceeded ${this.deliveryCeiling} deliveries while pumping`);
+          }
+          await this.takeNext().run();
+        }
+      } finally {
+        this.pumping = false;
+      }
+    });
   }
 
   /* ── offer/answer broker ─────────────────────────────────── */
@@ -136,8 +174,8 @@ export class VirtualNet {
       while (this.queue.length > 0) {
         const next = this.takeNext();
         processed++;
-        if (processed > DELIVERY_CEILING) {
-          throw new Error(`virtual net: exceeded ${DELIVERY_CEILING} deliveries — probable infinite gossip loop`);
+        if (processed > this.deliveryCeiling) {
+          throw new Error(`virtual net: exceeded ${this.deliveryCeiling} deliveries — probable infinite gossip loop`);
         }
         await next.run();
       }
@@ -262,6 +300,8 @@ export interface NodeRecord {
   readonly logs: string[];
   readonly peersSeen: Array<{ peerId: Uint8Array; name: string }>;
   readonly diverged: Array<{ hex: string; reason: string }>;
+  readonly stalled: Array<{ hex: string; reason: string }>;
+  readonly equivocations: Array<{ hex: string; seq: number }>;
 }
 
 /** construct a CampfireNode wired to a fake transport bound to `net`,
@@ -274,6 +314,8 @@ export function makeNode(net: VirtualNet, name: string, opts: { ringRepairInterv
   const logs: string[] = [];
   const peersSeen: Array<{ peerId: Uint8Array; name: string }> = [];
   const diverged: Array<{ hex: string; reason: string }> = [];
+  const stalled: Array<{ hex: string; reason: string }> = [];
+  const equivocations: Array<{ hex: string; seq: number }> = [];
 
   const sessionFactory: CampfireSessionFactory = (callbacks) => new FakeSession(net, idx, callbacks);
 
@@ -292,6 +334,8 @@ export function makeNode(net: VirtualNet, name: string, opts: { ringRepairInterv
     onReact: () => {},
     onUnreact: () => {},
     onSeatDiverged: (peerId, reason) => { diverged.push({ hex: toHex(peerId), reason }); },
+    onSeatStalled: (peerId, reason) => { stalled.push({ hex: toHex(peerId), reason }); },
+    onSeatEquivocated: (peerId, seq) => { equivocations.push({ hex: toHex(peerId), seq }); },
   };
 
   const node = new CampfireNode(callbacks, {
@@ -301,7 +345,7 @@ export function makeNode(net: VirtualNet, name: string, opts: { ringRepairInterv
     beaconIdleMs: opts.beaconIdleMs,
   });
 
-  return { net, idx, name, node, states, stateDetails, messages, logs, peersSeen, diverged };
+  return { net, idx, name, node, states, stateDetails, messages, logs, peersSeen, diverged, stalled, equivocations };
 }
 
 /** mimic the UI join flow: host must already have created (or be holding a
@@ -359,6 +403,68 @@ export async function injectForgedMessage(target: NodeRecord, plaintext: Uint8Ar
     }
   }
   throw new Error("injectForgedMessage: target has no connected neighbor session");
+}
+
+/** deliver `bytes` to `target` over the link whose far end is the peer `fromHex`,
+ *  so the receiver attributes the frame to that specific neighbor. use this when
+ *  an attack depends on WHO the immediate sender is; injectForgedMessage borrows
+ *  an arbitrary neighbor and would silently model a different attacker. returns
+ *  false if target has no connected link to that peer. */
+export async function injectForgedMessageFrom(
+  target: NodeRecord, fromHex: string, bytes: Uint8Array,
+): Promise<boolean> {
+  const neighbors: Map<string, { connected: boolean; peerIdHex: string; session: CampfireSessionLike | null }> =
+    (target.node as unknown as {
+      neighbors: Map<string, { connected: boolean; peerIdHex: string; session: CampfireSessionLike | null }>;
+    }).neighbors;
+  for (const peer of neighbors.values()) {
+    if (!peer.connected || !peer.session || peer.peerIdHex !== fromHex) continue;
+    const mirror = (peer.session as FakeSession).peer;
+    if (!mirror) continue;
+    await mirror.sendEncryptedRaw(bytes, 0x02);
+    return true;
+  }
+  return false;
+}
+
+/** Corrupt a CF_GROUP_MSG's ciphertext and repair its msgId so the frame stays
+ *  internally consistent. The receiver recomputes msgId from
+ *  (senderId, epochId, seq, ciphertext) and drops mismatches, which is what stops
+ *  a relay from censoring by id-collision — so a test that wants the frame to
+ *  reach the CRYPTO layer has to keep the id honest. Returns the new frame.
+ *  Layout: [type 1][msgId 32][senderId 16][seq 4][epochId 4][ts 8][hop 1][ct 1][frontier..][ciphertext..] */
+export async function corruptGroupCiphertext(
+  frame: Uint8Array, sender: NodeRecord, byteFromEnd = 1,
+): Promise<Uint8Array> {
+  const out = frame.slice();
+  out[out.length - byteFromEnd] ^= 0xff;
+  const body = out.subarray(1);
+  const senderId = body.subarray(32, 32 + 16);
+  const parsed = parseGroupMsgHeader(body);
+  if (!parsed) throw new Error("corruptGroupCiphertext: frame did not parse");
+  // production order is (peerId, epochId, seq, ciphertext) — see broadcastText
+  const msgId = await sha256(concatBytes(senderId, le32(parsed.epochId), le32(parsed.seq), parsed.ciphertext));
+  out.set(msgId, 1);
+
+  // Re-sign as the sender. Group messages are authored, so a corrupted frame is
+  // dropped before it ever reaches the crypto layer unless its signature is
+  // valid — which is the point of the defence. A test that wants to exercise a
+  // frame that AUTHENTICATES but will not OPEN is modelling an honest-but-buggy
+  // sender, and only that sender's own key can produce one.
+  const identity = (sender.node as unknown as { identity: CampfireIdentity }).identity;
+  const sigBody = groupMsgSigningBody(
+    senderId, parsed.seq, parsed.epochId, parsed.timestamp, parsed.contentType,
+    parsed.confirm, parsed.frontier, parsed.ciphertext, identity.publicKey,
+  );
+  const signature = await signBytes(identity, sigBody);
+  // [type 1][msgId 32][senderId 16][seq 4][epochId 4][ts 8][hop 1][ct 1][pubkey 33][sig 64]
+  out.set(identity.publicKey, 1 + 32 + 16 + 4 + 4 + 8 + 1 + 1);
+  out.set(signature, 1 + 32 + 16 + 4 + 4 + 8 + 1 + 1 + 33);
+  return out;
+}
+
+function le32(n: number): Uint8Array {
+  return new Uint8Array([n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff]);
 }
 
 /** destroy every node (stops their real timers) then drain to flush leave

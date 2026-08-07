@@ -15,7 +15,18 @@ import { hkdf, kdfChainDirect, compressP256, decompressP256 } from "./live-crypt
 /** Pre-encoded constant — avoids per-call TextEncoder allocations */
 const KDF_INFO_RATCHET = new TextEncoder().encode("whisper-ratchet");
 
-const MAX_SKIP = 256;  // max skipped message keys to store
+/**
+ * Max skipped message keys to store, and the bound on how far a single frame may
+ * jump the receive counter.
+ *
+ * EXPORTED because it was previously redeclared in five places (here,
+ * live-protocol, and three test harnesses), each carrying a comment saying it
+ * must match the others and none of them enforcing it. A boundary constant that
+ * only agrees by convention is a boundary that stops being tested the moment
+ * someone changes one copy: every "at the limit" case would quietly become an
+ * interior case and keep passing.
+ */
+export const MAX_SKIP = 256;
 
 function skippedKeyId(pubHex: string, nr: number): string {
   return `${pubHex}:${nr}`;
@@ -68,6 +79,25 @@ export async function generateDHKeyPair(): Promise<RatchetKeyPair> {
   return { publicKey: compressP256(pubRaw), privateKey: pair.privateKey };
 }
 
+// Injectable DH keypair source (test seam). Production always uses the real
+// CSPRNG-backed generateDHKeyPair; the deterministic test harness can install a
+// seeded source so a ratchet run replays bit-exactly. This is an indirection
+// only — the default is byte-for-byte the prior behavior. Never install a
+// non-CSPRNG source outside tests.
+let currentDHKeyPairSource: () => Promise<RatchetKeyPair> = generateDHKeyPair;
+
+/** Install a deterministic DH keypair source. Test-only. Returns the previous source. */
+export function setDHKeyPairSource(source: () => Promise<RatchetKeyPair>): () => Promise<RatchetKeyPair> {
+  const prev = currentDHKeyPairSource;
+  currentDHKeyPairSource = source;
+  return prev;
+}
+
+/** Restore the production CSPRNG-backed DH keypair source. Test-only. */
+export function resetDHKeyPairSource(): void {
+  currentDHKeyPairSource = generateDHKeyPair;
+}
+
 async function dhExchange(privateKey: CryptoKey, peerPublicRaw: Uint8Array): Promise<Uint8Array> {
   // compressed (33B) keys must be decompressed for WebCrypto importKey("raw")
   const keyBytes = peerPublicRaw.length === 33 ? decompressP256(peerPublicRaw) : peerPublicRaw;
@@ -94,7 +124,7 @@ export async function initRatchetAsReceiver(
   sharedSecret: Uint8Array,
   peerPublicKey: Uint8Array,
 ): Promise<RatchetState> {
-  const dhSelf = await generateDHKeyPair();
+  const dhSelf = await currentDHKeyPairSource();
   const dhOutput = await dhExchange(dhSelf.privateKey, peerPublicKey);
   const [rootKey, chainKeySend] = await kdfRootChain(sharedSecret, dhOutput);
   dhOutput.fill(0);
@@ -154,7 +184,7 @@ export async function dhRatchetStep(state: RatchetState, peerPublicKey: Uint8Arr
   state.chainKeyRecv = chainKeyRecv;
 
   const oldDhSelf = state.dhSelf;
-  state.dhSelf = await generateDHKeyPair();
+  state.dhSelf = await currentDHKeyPairSource();
   oldDhSelf.publicKey.fill(0);
   const dhSend = await dhExchange(state.dhSelf.privateKey, peerPublicKey);
   const intermediateRootKey = state.rootKey;
@@ -203,4 +233,25 @@ export function trySkippedKey(
   if (!mk) return null;
   state.skippedKeys.delete(key);
   return mk;
+}
+
+// Structural fingerprint of a ratchet state — TEST oracle. Summarizes the
+// position/identity of the ratchet (counters, prev chain length, peer pubkey,
+// which chains exist, and the SORTED set of skipped-key IDs) WITHOUT ever
+// touching secret key material (rootKey, chain keys, skipped-key values). Note
+// this is a within-peer summary, not a cross-peer equality oracle: the two
+// peers hold deliberately asymmetric chains, so their fingerprints differ. Its
+// use is asserting that an operation changed (or, for a clean rejection, did
+// NOT change) the structural state exactly as the reference model predicts.
+export function ratchetFingerprint(state: RatchetState): string {
+  const ids = Array.from(state.skippedKeys.keys()).sort();
+  return JSON.stringify({
+    nSend: state.nSend,
+    nRecv: state.nRecv,
+    prevChainLength: state.prevChainLength,
+    dhPeerHex: state.dhPeerHex,
+    hasSend: state.chainKeySend !== null,
+    hasRecv: state.chainKeyRecv !== null,
+    skipped: ids,
+  });
 }

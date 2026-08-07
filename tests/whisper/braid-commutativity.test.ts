@@ -91,6 +91,8 @@ function modelDelta(before: ModelCounts, after: ModelCounts): Delta {
   };
 }
 
+const TE = new TextEncoder();
+
 function assertDeltasEqual(a: Delta, b: Delta, label: string): void {
   assert.deepStrictEqual(a.M,  b.M,  `${label}: countsBitM delta mismatch`);
   assert.deepStrictEqual(a.C1, b.C1, `${label}: countsBit1 delta mismatch`);
@@ -278,6 +280,26 @@ describe("braid commutativity", () => {
         return counts;
       });
 
+      // PRECONDITION. Every assertion below is an EQUALITY, and equalities are
+      // satisfied for free by anything that does not move: a loopTrain that
+      // returned immediately would make this whole suite pass while proving
+      // nothing. Establish that integration really happened before claiming it
+      // is order-blind.
+      assert.notDeepStrictEqual(
+        Array.from(finalsByOrder[0].countsBitM), Array.from(baseCounts.countsBitM),
+        "precondition: integrating the message set must actually move the counts",
+      );
+
+      // NEGATIVE CONTROL. Also show the comparison has discriminating power —
+      // that these particular counts are a function of WHAT was integrated, not a
+      // constant the machinery would report equal no matter what.
+      const otherSet = cloneCounts(baseCounts);
+      for (const m of messages) loopTrain(otherSet, concatBytes(m, TE.encode("extra")));
+      assert.throws(
+        () => assertCountsEqual(finalsByOrder[0], otherSet, "control"),
+        "a different multiset must be distinguishable, or equality proves nothing",
+      );
+
       for (let i = 1; i < finalsByOrder.length; i++) {
         assertCountsEqual(finalsByOrder[0], finalsByOrder[i], `order 0 vs order ${i}`);
       }
@@ -359,6 +381,19 @@ describe("braid commutativity", () => {
       const droppedDigest = await modelDigest(droppedCounts);
 
       assert.notDeepStrictEqual(droppedDigest, fullDigest, "dropping a message must change the digest");
+
+      // SUBSTITUTION, not just cardinality. A digest that only tracked HOW MANY
+      // messages were integrated would already pass the assertion above while
+      // being blind to what they said. Swap the dropped message for a distinct
+      // one of the same length and the digest must still move.
+      const swappedCounts = cloneCounts(baseCounts);
+      for (let i = 0; i < messages.length; i++) {
+        loopTrain(swappedCounts, i === 3 ? new Uint8Array(messages[3].length).fill(0x3c) : messages[i]);
+      }
+      assert.notDeepStrictEqual(
+        await modelDigest(swappedCounts), fullDigest,
+        "the digest must depend on message CONTENT, not merely on how many arrived",
+      );
     });
 
     it("flipping one byte in one message changes the digest", async () => {
@@ -422,8 +457,23 @@ describe("braid commutativity", () => {
         loopTrain(afterB, payload);
         const deltaB = modelDelta(beforeB, afterB);
 
+        // the delta must be a real one: a no-op trainer produces the empty delta
+        // from every base, so "insensitive to base state" would hold vacuously.
+        assert.notDeepStrictEqual(
+          Array.from(afterA.countsBitM), Array.from(beforeA.countsBitM),
+          `precondition: training on ${label} must move the counts`,
+        );
         assertDeltasEqual(deltaA, deltaB, `delta(${label}) must be identical regardless of base state`);
       }
+
+      // and the delta depends on the PAYLOAD, so equality across bases is a
+      // statement about base-independence rather than about a constant.
+      const one = cloneCounts(stateA); loopTrain(one, generateTestData(600, "text"));
+      const two = cloneCounts(stateA); loopTrain(two, new Uint8Array(600).fill(0x5c));
+      assert.throws(
+        () => assertDeltasEqual(modelDelta(stateA, one), modelDelta(stateA, two), "control"),
+        "different payloads must give different deltas",
+      );
     });
   });
 });

@@ -149,8 +149,8 @@ describe("live-handshake", () => {
     const offererProof = await buildConfirmProof(sessionRoot, confirmContext, "offerer");
     const answererProof = await buildConfirmProof(sessionRoot, confirmContext, "answerer");
 
-    assert.equal(await verifyConfirmProof(offererProof, sessionRoot, confirmContext, "offerer"), true);
-    assert.equal(await verifyConfirmProof(offererProof, sessionRoot, confirmContext, "answerer"), false);
+    assert.equal(await verifyConfirmProof(sessionRoot, confirmContext, "offerer", offererProof), true);
+    assert.equal(await verifyConfirmProof(sessionRoot, confirmContext, "answerer", offererProof), false);
     assert.notDeepStrictEqual(Array.from(offererProof), Array.from(answererProof));
 
     sessionRoot.fill(0);
@@ -164,8 +164,8 @@ describe("live-handshake", () => {
     const confirmContext = randomKey();
 
     const answererProof = await buildConfirmProof(sessionRoot, confirmContext, "answerer");
-    assert.equal(await verifyConfirmProof(answererProof, sessionRoot, confirmContext, "answerer"), true);
-    assert.equal(await verifyConfirmProof(answererProof, sessionRoot, confirmContext, "offerer"), false);
+    assert.equal(await verifyConfirmProof(sessionRoot, confirmContext, "answerer", answererProof), true);
+    assert.equal(await verifyConfirmProof(sessionRoot, confirmContext, "offerer", answererProof), false);
 
     sessionRoot.fill(0);
     confirmContext.fill(0);

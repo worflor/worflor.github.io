@@ -11,6 +11,8 @@
     "scripts/**/*",
     "projects/**/*",
     "src/scripts/whisper/glyph-bench/**/*",
+    "src/scripts/whisper/trajectory-bench/**/*",
+    "attic/**/*",
     "src/scripts/whisper/test-*.ts"
   ]
 }

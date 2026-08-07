@@ -14,6 +14,9 @@
 
 import { TE, TD } from "../live-crypto";
 import { concatBytes } from "../wasm";
+import { PUBKEY_LEN, SIGNATURE_LEN } from "./identity";
+import { Cursor } from "./cursor";
+import { BRAID_CONFIRM_LEN } from "../live-braid";
 import {
   CF_GROUP_MSG,
   CF_JOIN_ANNOUNCE,
@@ -78,10 +81,26 @@ function readF64LE(data: Uint8Array, offset: number): number {
  * le32(seq) || ciphertext). frontier and ciphertext come opaque from
  * braidSeal — this builder does no encryption, so it is synchronous.
  */
+/** The bytes a group message commits to. Deliberately excludes hopCount, which
+ *  every relay rewrites (see rewrapGroupMsg), and msgId, which is a pure
+ *  function of fields already covered. Includes the author's public key so a
+ *  frame cannot keep a valid signature while presenting a different key. */
+export function groupMsgSigningBody(
+  senderId: Uint8Array, seq: number, epochId: number, timestamp: number,
+  contentType: number, confirm: Uint8Array, frontier: Uint8Array, ciphertext: Uint8Array,
+  authorPublicKey: Uint8Array,
+): Uint8Array {
+  return concatBytes(
+    senderId, u32LE(seq), u32LE(epochId), f64LE(timestamp),
+    new Uint8Array([contentType]), confirm, frontier, ciphertext, authorPublicKey,
+  );
+}
+
 export function buildGroupMsg(
   msgId: Uint8Array, senderId: Uint8Array, seq: number, epochId: number,
   timestamp: number, hopCount: number, contentType: number,
-  frontier: Uint8Array, ciphertext: Uint8Array,
+  confirm: Uint8Array, frontier: Uint8Array, ciphertext: Uint8Array,
+  authorPublicKey: Uint8Array, signature: Uint8Array,
 ): Uint8Array {
   return concatBytes(
     new Uint8Array([CF_GROUP_MSG]),
@@ -90,6 +109,8 @@ export function buildGroupMsg(
     u32LE(epochId),
     f64LE(timestamp),
     new Uint8Array([hopCount, contentType]),
+    authorPublicKey, signature,
+    confirm,
     frontier,
     ciphertext,
   );
@@ -107,8 +128,15 @@ export function rewrapGroupMsg(raw: Uint8Array, newHopCount: number): Uint8Array
 }
 
 /** 0x52 JOIN_ANNOUNCE: [peerId 16B][nameUTF8...] */
-export function buildJoinAnnounce(peerId: Uint8Array, name: string): Uint8Array {
-  return concatBytes(new Uint8Array([CF_JOIN_ANNOUNCE]), peerId, TE.encode(name));
+/** A seat announces its AGREEMENT key alongside its id. Fold entropy is sealed
+ *  to that key per recipient, so a seat whose key nobody knows cannot be folded
+ *  with. It is safe to carry unauthenticated here: the seal binds to the key,
+ *  and a wrong key simply means the recipient cannot open its copy — it cannot
+ *  make someone else's copy readable. */
+export function buildJoinAnnounce(
+  peerId: Uint8Array, agreementKey: Uint8Array, name: string,
+): Uint8Array {
+  return concatBytes(new Uint8Array([CF_JOIN_ANNOUNCE]), peerId, agreementKey, TE.encode(name));
 }
 
 /** 0x53 LEAVE_ANNOUNCE: [peerId 16B] */
@@ -128,11 +156,13 @@ export function buildSdpRelay(targetPeerId: Uint8Array, originPeerId: Uint8Array
 }
 
 /** 0x57 PEER_LIST: [count 2B][...peerId 16B + nameLen 1B + name] */
-export function buildPeerList(peers: Array<{ peerId: Uint8Array; name: string }>): Uint8Array {
+export function buildPeerList(
+  peers: Array<{ peerId: Uint8Array; agreementKey: Uint8Array; name: string }>,
+): Uint8Array {
   const parts: Uint8Array[] = [new Uint8Array([CF_PEER_LIST]), u16LE(peers.length)];
   for (const p of peers) {
     const nameBytes = TE.encode(p.name);
-    parts.push(p.peerId, new Uint8Array([nameBytes.length]), nameBytes);
+    parts.push(p.peerId, p.agreementKey, new Uint8Array([nameBytes.length]), nameBytes);
   }
   return concatBytes(...parts);
 }
@@ -154,11 +184,17 @@ export function buildDmSdpRelay(
 }
 
 /** 0x5B RING_WANT: [originPeerId 16B][targetPeerId 16B][fromSeq 4B][toSeq 4B] */
-export function buildRingWant(originPeerId: Uint8Array, targetPeerId: Uint8Array, fromSeq: number, toSeq: number): Uint8Array {
+/** A sequence number only means something INSIDE an epoch: every fold restarts
+ *  each seat's strand at 1. A repair request without an epoch therefore names an
+ *  ambiguous position, and can be answered with a frame from a previous epoch. */
+export function buildRingWant(
+  originPeerId: Uint8Array, targetPeerId: Uint8Array, epochId: number, fromSeq: number, toSeq: number,
+): Uint8Array {
   return concatBytes(
     new Uint8Array([CF_RING_WANT]),
     originPeerId,
     targetPeerId,
+    u32LE(epochId),
     u32LE(fromSeq),
     u32LE(toSeq),
   );
@@ -199,15 +235,15 @@ export function buildCfReact(
  */
 export function buildBraidFold(
   newEpochId: number, reason: number, subjectPeerId: Uint8Array,
-  entropy: Uint8Array, rosterDigest: Uint8Array,
+  recipients: Uint8Array, rosterDigest: Uint8Array,
+  authorPublicKey: Uint8Array, newAgreementKey: Uint8Array, signature: Uint8Array,
 ): Uint8Array {
   return concatBytes(
     new Uint8Array([CF_BRAID_FOLD]),
-    u32LE(newEpochId),
-    new Uint8Array([reason]),
-    subjectPeerId,
-    entropy,
-    rosterDigest,
+    braidFoldSigningBody(
+      newEpochId, reason, subjectPeerId, recipients, rosterDigest, authorPublicKey, newAgreementKey,
+    ),
+    signature,
   );
 }
 
@@ -237,8 +273,35 @@ export function buildBraidWelcome(
 
 /** 0x60 JOIN_REQ: [joinerId 16B][nameUTF8...] — relayed toward the elder when
  *  a non-elder member admits a joiner over its own direct link. */
-export function buildJoinReq(joinerId: Uint8Array, name: string): Uint8Array {
-  return concatBytes(new Uint8Array([CF_JOIN_REQ]), joinerId, TE.encode(name));
+/** `attempt` distinguishes retries. Gossip dedups by payload hash, so without it
+ *  a re-sent request is byte-identical to the first and is dropped everywhere as
+ *  already-seen — which makes retrying structurally impossible, not merely
+ *  ineffective. A joiner whose elder departed mid-admission depends on this. */
+/** one recipient's copy of the fold entropy: who it is for, then the seal
+ *  ([ephemeral pubkey 33][ciphertext+tag 48]). */
+export const SEALED_ENTROPY_LEN = PUBKEY_LEN + 48;
+export const FOLD_RECIPIENT_LEN = PEER_ID_LEN + SEALED_ENTROPY_LEN;
+
+/** the bytes an epoch fold commits to: everything except the signature itself.
+ *  the author's public key is inside the signed region, so a frame cannot keep a
+ *  valid signature while swapping in a different key. */
+export function braidFoldSigningBody(
+  newEpochId: number, reason: number, subjectPeerId: Uint8Array,
+  recipients: Uint8Array, rosterDigest: Uint8Array, authorPublicKey: Uint8Array,
+  newAgreementKey: Uint8Array,
+): Uint8Array {
+  // the recipient COUNT is inside the signed region: a relay must not be able to
+  // drop a member's sealed copy and leave the signature intact, which would
+  // silently exclude that seat from the epoch.
+  return concatBytes(
+    u32LE(newEpochId), new Uint8Array([reason]), subjectPeerId,
+    new Uint8Array([recipients.length / FOLD_RECIPIENT_LEN]), recipients,
+    rosterDigest, authorPublicKey, newAgreementKey,
+  );
+}
+
+export function buildJoinReq(joinerId: Uint8Array, name: string, attempt = 0): Uint8Array {
+  return concatBytes(new Uint8Array([CF_JOIN_REQ]), joinerId, u32LE(attempt), TE.encode(name));
 }
 
 /**
@@ -266,35 +329,68 @@ export function parseEdgeRelease(data: Uint8Array): ParsedEdgeRelease {
 export interface ParsedGroupMsg {
   msgId: Uint8Array; senderId: Uint8Array;
   seq: number; epochId: number; timestamp: number; hopCount: number; contentType: number;
+  authorPublicKey: Uint8Array; signature: Uint8Array;
+  /** keyed tag over the sender's transcript commitment at `frontier`. */
+  confirm: Uint8Array;
   frontier: Uint8Array; ciphertext: Uint8Array;
 }
-export function parseGroupMsgHeader(data: Uint8Array): ParsedGroupMsg {
-  let o = 0;
-  const msgId = data.subarray(o, o + MSG_ID_LEN); o += MSG_ID_LEN;
-  const senderId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
-  const seq = readU32LE(data, o); o += 4;
-  const epochId = readU32LE(data, o); o += 4;
-  const timestamp = readF64LE(data, o); o += 8;
-  const hopCount = data[o]; o += 1;
-  const contentType = data[o]; o += 1;
-  const frontierCount = data[o];
-  const frontierLen = 1 + frontierCount * 5;
-  const frontier = data.subarray(o, o + frontierLen); o += frontierLen;
-  const ciphertext = data.subarray(o);
-  return { msgId, senderId, seq, epochId, timestamp, hopCount, contentType, frontier, ciphertext };
+/** fixed prefix before the variable-length frontier:
+ *  msgId 32 + senderId 16 + seq 4 + epochId 4 + timestamp 8 + hop 1 + type 1
+ *  + authorPublicKey 33 + signature 64 */
+export const GROUP_MSG_PREFIX =
+  MSG_ID_LEN + PEER_ID_LEN + 4 + 4 + 8 + 1 + 1 + PUBKEY_LEN + SIGNATURE_LEN + BRAID_CONFIRM_LEN;
+
+/**
+ * Returns null on any frame that does not actually contain what it claims.
+ *
+ * These bytes arrive from a RELAY, before any signature or tag is checked, so
+ * every length here is attacker-chosen. Reading a field without first proving
+ * it is present threw a RangeError out of the parser on a short frame — and
+ * nothing upstream catches it, so a truncated frame from any relay became an
+ * unhandled rejection in the receiving node. Believing the frontier count
+ * without checking the bytes exist was the same mistake one field along: it
+ * silently produced a short signature and handed the whole frame back as
+ * ciphertext.
+ */
+export function parseGroupMsgHeader(data: Uint8Array): ParsedGroupMsg | null {
+  const c = new Cursor(data);
+  const msgId = c.bytes(MSG_ID_LEN);
+  const senderId = c.bytes(PEER_ID_LEN);
+  const seq = c.u32();
+  const epochId = c.u32();
+  const timestamp = c.f64();
+  const hopCount = c.u8();
+  const contentType = c.u8();
+  const authorPublicKey = c.bytes(PUBKEY_LEN);
+  const signature = c.bytes(SIGNATURE_LEN);
+  const confirm = c.bytes(BRAID_CONFIRM_LEN);
+  // the frontier has a DEPENDENT length: its width is a function of a value
+  // read from the frame itself. the count is consumed first and only then
+  // honoured, so a lie about it fails the cursor instead of reading past the end.
+  const frontierCount = c.u8();
+  const frontier = concatBytes(new Uint8Array([frontierCount]), c.bytes(frontierCount * 5));
+  // AES-GCM output is plaintext plus a 16-byte tag, so a shorter remainder
+  // cannot be a ciphertext whatever the rest of the frame claims.
+  c.expect(16);
+  const ciphertext = c.rest();
+  return c.finish({
+    msgId, senderId, seq, epochId, timestamp, hopCount, contentType,
+    authorPublicKey, signature, confirm, frontier, ciphertext,
+  });
 }
 
-export interface ParsedJoinAnnounce { peerId: Uint8Array; name: string }
-export function parseJoinAnnounce(data: Uint8Array): ParsedJoinAnnounce {
-  return {
-    peerId: data.subarray(0, PEER_ID_LEN),
-    name: TD.decode(data.subarray(PEER_ID_LEN)),
-  };
+export interface ParsedJoinAnnounce { peerId: Uint8Array; agreementKey: Uint8Array; name: string }
+export function parseJoinAnnounce(data: Uint8Array): ParsedJoinAnnounce | null {
+  const c = new Cursor(data);
+  const peerId = c.bytes(PEER_ID_LEN);
+  const agreementKey = c.bytes(PUBKEY_LEN);
+  return c.finish({ peerId, agreementKey, name: TD.decode(c.rest()) });
 }
 
 export interface ParsedLeaveAnnounce { peerId: Uint8Array }
-export function parseLeaveAnnounce(data: Uint8Array): ParsedLeaveAnnounce {
-  return { peerId: data.subarray(0, PEER_ID_LEN) };
+export function parseLeaveAnnounce(data: Uint8Array): ParsedLeaveAnnounce | null {
+  const c = new Cursor(data);
+  return c.finish({ peerId: c.bytes(PEER_ID_LEN) });
 }
 
 export interface ParsedSdpRelay { targetPeerId: Uint8Array; originPeerId: Uint8Array; sdpType: number; sdpCode: string }
@@ -307,18 +403,21 @@ export function parseSdpRelay(data: Uint8Array): ParsedSdpRelay {
   };
 }
 
-export interface ParsedPeerList { peers: Array<{ peerId: Uint8Array; name: string }> }
-export function parsePeerList(data: Uint8Array): ParsedPeerList {
-  const count = readU16LE(data, 0);
-  const peers: Array<{ peerId: Uint8Array; name: string }> = [];
-  let o = 2;
-  for (let i = 0; i < count; i++) {
-    const peerId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
-    const nameLen = data[o]; o += 1;
-    const name = TD.decode(data.subarray(o, o + nameLen)); o += nameLen;
-    peers.push({ peerId, name });
+export interface ParsedPeerList { peers: Array<{ peerId: Uint8Array; agreementKey: Uint8Array; name: string }> }
+export function parsePeerList(data: Uint8Array): ParsedPeerList | null {
+  const c = new Cursor(data);
+  const count = c.u16();
+  const peers: Array<{ peerId: Uint8Array; agreementKey: Uint8Array; name: string }> = [];
+  // the count is a 16-bit attacker-chosen field, and it is not trusted: it only
+  // says how many times to ask. each ask fails the cursor when the bytes are not
+  // there, so a 3-byte frame claiming 65535 entries just yields null.
+  for (let i = 0; i < count && c.ok; i++) {
+    const peerId = c.bytes(PEER_ID_LEN);
+    const agreementKey = c.bytes(PUBKEY_LEN);
+    const name = TD.decode(c.bytes(c.u8()));
+    peers.push({ peerId, agreementKey, name });
   }
-  return { peers };
+  return c.finish({ peers });
 }
 
 export interface ParsedDmSdpRelay {
@@ -340,17 +439,19 @@ export function parseDmSdpRelay(data: Uint8Array): ParsedDmSdpRelay {
 export interface ParsedRingWant {
   originPeerId: Uint8Array;
   targetPeerId: Uint8Array;
+  epochId: number;
   fromSeq: number;
   toSeq: number;
 }
 
-export function parseRingWant(data: Uint8Array): ParsedRingWant {
-  return {
-    originPeerId: data.subarray(0, PEER_ID_LEN),
-    targetPeerId: data.subarray(PEER_ID_LEN, PEER_ID_LEN * 2),
-    fromSeq: readU32LE(data, PEER_ID_LEN * 2),
-    toSeq: readU32LE(data, PEER_ID_LEN * 2 + 4),
-  };
+export function parseRingWant(data: Uint8Array): ParsedRingWant | null {
+  const c = new Cursor(data);
+  const originPeerId = c.bytes(PEER_ID_LEN);
+  const targetPeerId = c.bytes(PEER_ID_LEN);
+  const epochId = c.u32();
+  const fromSeq = c.u32();
+  const toSeq = c.u32();
+  return c.finish({ originPeerId, targetPeerId, epochId, fromSeq, toSeq });
 }
 
 export interface ParsedCfReact {
@@ -380,39 +481,71 @@ export function parseCfReact(data: Uint8Array): ParsedCfReact | null {
 
 export interface ParsedBraidFold {
   newEpochId: number; reason: number; subjectPeerId: Uint8Array;
-  entropy: Uint8Array; rosterDigest: Uint8Array;
+  /** concatenated [peerId 16][sealed 81], one entry per member of the new roster. */
+  recipients: Uint8Array; rosterDigest: Uint8Array;
+  authorPublicKey: Uint8Array;
+  /** on an UPDATE fold, the author's replacement agreement key. */
+  newAgreementKey: Uint8Array;
+  signature: Uint8Array;
+  /** exact bytes the signature covers, so verification never re-serializes. */
+  signingBody: Uint8Array;
 }
-export function parseBraidFold(data: Uint8Array): ParsedBraidFold {
-  let o = 0;
-  const newEpochId = readU32LE(data, o); o += 4;
-  const reason = data[o]; o += 1;
-  const subjectPeerId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
-  const entropy = data.subarray(o, o + 32); o += 32;
-  const rosterDigest = data.subarray(o, o + 32); o += 32;
-  return { newEpochId, reason, subjectPeerId, entropy, rosterDigest };
+/** the fold is now variable-length: a recipient list sits between the fixed
+ *  prefix and the fixed suffix. */
+export const BRAID_FOLD_PREFIX = 4 + 1 + PEER_ID_LEN + 1;
+export const BRAID_FOLD_SUFFIX = 32 + PUBKEY_LEN + PUBKEY_LEN + SIGNATURE_LEN;
+
+export function parseBraidFold(data: Uint8Array): ParsedBraidFold | null {
+  const c = new Cursor(data);
+  const newEpochId = c.u32();
+  const reason = c.u8();
+  const subjectPeerId = c.bytes(PEER_ID_LEN);
+  const count = c.u8();
+  const recipients = c.bytes(count * FOLD_RECIPIENT_LEN);
+  const rosterDigest = c.bytes(32);
+  const authorPublicKey = c.bytes(PUBKEY_LEN);
+  // an UPDATE fold rotates the author's agreement key; other reasons carry zeros
+  const newAgreementKey = c.bytes(PUBKEY_LEN);
+  // the signed region is everything before the signature
+  const signingBody = data.subarray(0, Math.max(0, data.length - SIGNATURE_LEN));
+  const signature = c.bytes(SIGNATURE_LEN);
+  c.expectEnd(); // trailing bytes mean a malformed frame, not a longer one
+  return c.finish({
+    newEpochId, reason, subjectPeerId, recipients, rosterDigest,
+    authorPublicKey, newAgreementKey, signature, signingBody,
+  });
+}
+
+/** the sealed copy addressed to `peerIdHex`, or null when this fold is not ours. */
+export function foldRecipientFor(recipients: Uint8Array, peerIdHex: string): Uint8Array | null {
+  for (let o = 0; o + FOLD_RECIPIENT_LEN <= recipients.length; o += FOLD_RECIPIENT_LEN) {
+    let match = true;
+    for (let i = 0; i < PEER_ID_LEN; i++) {
+      if (recipients[o + i] !== parseInt(peerIdHex.slice(i * 2, i * 2 + 2), 16)) { match = false; break; }
+    }
+    if (match) return recipients.subarray(o + PEER_ID_LEN, o + FOLD_RECIPIENT_LEN);
+  }
+  return null;
 }
 
 export interface ParsedBraidWelcome {
   epochId: number; senderPeerId: Uint8Array; root: Uint8Array; roster: Uint8Array[];
 }
-export function parseBraidWelcome(data: Uint8Array): ParsedBraidWelcome {
-  let o = 0;
-  const epochId = readU32LE(data, o); o += 4;
-  const senderPeerId = data.subarray(o, o + PEER_ID_LEN); o += PEER_ID_LEN;
-  const root = data.subarray(o, o + 32); o += 32;
-  const count = data[o]; o += 1;
+export function parseBraidWelcome(data: Uint8Array): ParsedBraidWelcome | null {
+  const c = new Cursor(data);
+  const epochId = c.u32();
+  const senderPeerId = c.bytes(PEER_ID_LEN);
+  const root = c.bytes(32);
+  const count = c.u8();
   const roster: Uint8Array[] = [];
-  for (let i = 0; i < count; i++) {
-    roster.push(data.subarray(o, o + PEER_ID_LEN));
-    o += PEER_ID_LEN;
-  }
-  return { epochId, senderPeerId, root, roster };
+  for (let i = 0; i < count; i++) roster.push(c.bytes(PEER_ID_LEN));
+  return c.finish({ epochId, senderPeerId, root, roster });
 }
 
-export interface ParsedJoinReq { joinerId: Uint8Array; name: string }
-export function parseJoinReq(data: Uint8Array): ParsedJoinReq {
-  return {
-    joinerId: data.subarray(0, PEER_ID_LEN),
-    name: TD.decode(data.subarray(PEER_ID_LEN)),
-  };
+export interface ParsedJoinReq { joinerId: Uint8Array; attempt: number; name: string }
+export function parseJoinReq(data: Uint8Array): ParsedJoinReq | null {
+  const c = new Cursor(data);
+  const joinerId = c.bytes(PEER_ID_LEN);
+  const attempt = c.u32();
+  return c.finish({ joinerId, attempt, name: TD.decode(c.rest()) });
 }

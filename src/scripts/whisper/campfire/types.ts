@@ -40,8 +40,33 @@ export const PEER_ID_LEN           = 16;
 /** Message ID length (SHA-256 hash). */
 export const MSG_ID_LEN            = 32;
 
-/** Previous-epoch braid grace period (ms) — how long a stale epoch may still open messages. */
+/** Outgoing-epoch braid grace period (ms) — how long a stale epoch may still open messages. */
 export const KEY_GRACE_PERIOD        = 30_000;
+
+/** Outgoing epochs kept openable at once. Bounds the cost of a fold burst: a
+ *  run of quick departures rotates several epochs inside one grace window, and
+ *  each still holds messages that were in flight when it turned. */
+export const MAX_DRAINING_EPOCHS     = 4;
+
+/** Applied folds retained so a neighbor stranded by a partition can be walked
+ *  forward. Memory only, zeroized on teardown; never served to a peer missing
+ *  from the current roster, since a fold is exactly the secret that removed it. */
+export const MAX_RETAINED_FOLDS      = 16;
+
+/** Ceiling on the peer directory. `allPeers` is fed by JOIN_ANNOUNCE and
+ *  PEER_LIST, neither of which is authenticated or roster-checked, so without a
+ *  cap any peer can grow it without bound and each new entry is re-gossiped. */
+export const MAX_KNOWN_PEERS         = 256;
+
+/** Ceiling on remembered reaction ids. The key includes an attacker-chosen
+ *  emoji string, so this set is unbounded in BOTH length and cardinality. */
+export const REACT_DEDUP_RING        = 4096;
+
+/** Minimum gap (ms) between walking the same neighbor forward. A lagging seat
+ *  stamps its stale epoch on every frame it sends, so without this one silent
+ *  partition would turn into a fold re-send per message. */
+export const FOLD_PUSH_INTERVAL      = 1_000;
+
 
 /** Max target neighbors per peer. */
 export const MAX_NEIGHBORS           = 4;
@@ -91,6 +116,22 @@ export type CampfireState =
 export type CampfireRole = "root" | "peer";
 
 /** Content type byte inside a GROUP_MSG. */
+/**
+ * The per-message facts the UI needs, carried ON the message through the braid.
+ *
+ * This is the attachment type the braid is parametric in. Naming it here rather
+ * than inline is the whole point: it is the contract between the two places that
+ * must agree (attached at ingress, read at delivery), and because the braid is
+ * polymorphic in it, those are the ONLY two places that can possibly see it.
+ * There is no third party to fall out of step with.
+ */
+export interface GroupMsgFacts {
+  msgId: Uint8Array;
+  timestamp: number;
+  hopCount: number;
+  contentType: ContentType;
+}
+
 export const enum ContentType {
   Text = 0x00,
   File = 0x01,
@@ -117,7 +158,7 @@ export interface BraidEpoch {
   /** sorted lowercase hex seat ids — same ordering as BraidState.seats. */
   roster: string[];
   root: Uint8Array;
-  braid: BraidState;
+  braid: BraidState<GroupMsgFacts>;
 }
 
 export interface CampfireMessage {
@@ -151,4 +192,18 @@ export interface CampfireCallbacks {
   onUnreact?: (displayId: number, emoji: string, senderIdHex: string) => void;
   /** A seat's strand desynced beyond recovery for the current epoch — its bond is dead until the next fold. */
   onSeatDiverged?: (peerId: Uint8Array, reason: string) => void;
+  /** Two differently-signed frames claim the SAME position in one seat's strand.
+   *  A seat's sequence is monotone, so this cannot happen honestly. Both frames
+   *  carry that seat's signature, so the PAIR is self-contained evidence: anyone
+   *  can verify it without trusting whoever reports it. This is the one signal
+   *  that survives a stolen key, because it does not ask "is this signed?" but
+   *  "do the witnesses agree?" — and a thief cannot make the honest seat stop
+   *  testifying. Carry both frames so the accusation stays checkable. */
+  onSeatEquivocated?: (peerId: Uint8Array, seq: number, first: Uint8Array, second: Uint8Array) => void;
+  /** A seat's frames keep failing to open. Unlike onSeatDiverged this is a
+   *  report, not a verdict: no state changed, the bond is intact, and a clean
+   *  copy still lands. It fires for a genuine history fork and can also fire
+   *  for a burst of forged frames, so present it as "cannot read", never as
+   *  "they left" or "they are compromised". */
+  onSeatStalled?: (peerId: Uint8Array, reason: string) => void;
 }

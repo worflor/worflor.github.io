@@ -74,6 +74,13 @@ import {
 } from "./live-ratchet";
 
 import {
+  type ProtocolState,
+  protocolEncrypt,
+  protocolDecrypt,
+  cloneProtocolState,
+} from "./live-protocol";
+
+import {
   HEADER_SIZE,
   HEADER_SIZE_COMPACT,
   LIVE_FLAG_SAME_KEY,
@@ -425,6 +432,13 @@ const ICE_GATHER_TIMEOUT_ASSIST = 15_000; // public STUN needs a wider ceiling t
 const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
 const HEARTBEAT_TIMEOUT = 45_000;         // drop peer after 45s silence
 
+/**
+ * Teardown needs BOTH of these. See consecutiveDecryptFailures for why one
+ * witness is not enough to tell a desynced session from a bad minute.
+ */
+const DESYNC_MIN_FAILURES = 8;
+const DESYNC_GRACE_MS = 30_000;
+
 const LIVE_MSG = {
   KEY_EXCHANGE: 0x10,
   RATCHET_INIT: 0x11,
@@ -500,7 +514,25 @@ export class WhisperLiveSession {
   private ctrlChainRecv: Uint8Array | null = null;
   private ctrlSendCounter = 0;
   private ctrlRecvCounter = 0;
+  /**
+   * DESYNC IS A PROPERTY OF THE CHANNEL OVER TIME, NOT OF A FRAME.
+   *
+   * A count of consecutive failures alone cannot tell the two apart. A genuinely
+   * desynced peer produces failures FOREVER — the root keys disagree, so nothing
+   * will ever decrypt again. A corrupt or hostile frame produces a failure in a
+   * session that is otherwise healthy. Three-in-a-row is satisfied by both, and
+   * tearing down on it means any short burst kills a working conversation. This
+   * is F1 in the shape it survived in: the fatal signal moved off the ratchet and
+   * onto the counter, and the counter was still cheap to drive.
+   *
+   * So the teardown needs two independent witnesses that must agree: enough
+   * failures to rule out a blip, AND a silence long enough that a healthy session
+   * would certainly have delivered something. A burst satisfies the first and
+   * never the second, because the very next honest frame resets both.
+   */
   private consecutiveDecryptFailures = 0;
+  /** timestamp of the last successful decrypt; session start counts as one. */
+  private lastDecryptSuccessAt = 0;
   /** PBKDF2-stretched phrase root (wipeable bytes, never store the raw string). */
   private phraseRoot: Uint8Array | null = null;
   // in-person local mode: the handshake codes are packed via live-qr-sdp
@@ -954,6 +986,22 @@ export class WhisperLiveSession {
     this.lastRecvPubKeyHex = lastRecvPubKeyHex;
   }
 
+  /** Bundle the instance's message-protocol fields into a ProtocolState for the
+   *  pure transforms in live-protocol.ts. References the same mutable objects. */
+  private buildProtoState(): ProtocolState {
+    return {
+      ratchet: this.ratchetState!,
+      loopSend: this.loopStateSend,
+      loopRecv: this.loopStateRecv,
+      skippedLoopKeys: this.skippedLoopKeys,
+      lastSentPubKeyHex: this.lastSentPubKeyHex,
+      lastRecvPubKeyHex: this.lastRecvPubKeyHex,
+      nSentTotal: this.nSentTotal,
+      nRecvTotal: this.nRecvTotal,
+      isOfferer: this.isOfferer,
+    };
+  }
+
   private async withRatchetLock<T>(op: () => Promise<T>): Promise<T> {
     const prior = this.ratchetOpQueue;
     let release!: () => void;
@@ -1113,7 +1161,7 @@ export class WhisperLiveSession {
         this.replacePendingPeerConfirmProof(proof.slice());
         return;
       }
-      const valid = await verifyConfirmProof(proof, this.sharedSecret, this.confirmContextHash, this.peerRole());
+      const valid = await verifyConfirmProof(this.sharedSecret, this.confirmContextHash, this.peerRole(), proof);
       if (!valid) {
         this.onLog("peer confirmation proof mismatch, aborting");
         this.setState("error", "handshake proof mismatch, reconnect to continue");
@@ -1923,132 +1971,46 @@ export class WhisperLiveSession {
       this.onLog("recv: acquiring lock");
       await this.withRatchetLock(async () => {
         this.onLog("recv: lock acquired");
-        const header = parseHeader(complete);
-        const ratchetState = this.cloneRatchetState(this.ratchetState!);
-        let loopStateSend = this.loopStateSend ? this.cloneLoopState(this.loopStateSend) : null;
-        let loopStateRecv = this.loopStateRecv ? this.cloneLoopState(this.loopStateRecv) : null;
-        const skippedLoopKeys = this.cloneSkippedLoopKeys();
-
-        // Resolve pubkey: compact headers use cached peer key
-        let pubKeyHex: string;
-        if (header.pubKey) {
-          pubKeyHex = toHex(header.pubKey);
-        } else {
-          pubKeyHex = this.lastRecvPubKeyHex;
-          if (!pubKeyHex) return; // no cached key — can't process
+        // delegate the full receive transform to the pure protocol core — the same
+        // dual-ratchet + membrane pipeline (protocolDecrypt) the test harness drives.
+        // it runs on a clone; we commit only if it succeeds AND the session is current.
+        const clone = cloneProtocolState(this.buildProtoState());
+        const outcome = await protocolDecrypt(clone, complete);
+        if (!outcome.ok) {
+          this.wipeRatchetState(clone.ratchet);
+          this.wipeLoopState(clone.loopSend);
+          this.wipeLoopState(clone.loopRecv);
+          this.wipeSkippedLoopKeys(clone.skippedLoopKeys);
+          // the clone is discarded, so committed state is untouched. the session
+          // still stays live: ending it needs BOTH a run of failures and a long
+          // silence, and any honest frame in between resets both (see
+          // consecutiveDecryptFailures).
+          // count it here, at the only site that knows the failure was a decrypt
+          // failure: the catch below also sees errors thrown while dispatching an
+          // already-decrypted message, and those must never look like desync.
+          this.consecutiveDecryptFailures++;
+          throw new Error(`decrypt failed: ${outcome.reason}`);
         }
 
-        // try loop-derived skipped key first (defense-in-depth; never fires with ordered SCTP).
-        let messageKey = this.takeSkippedLoopKey(skippedLoopKeys, pubKeyHex, header.counter);
-        let didDHRatchet = false;
-        // every position skipMessagesWithLoopState advances past corresponds to one message
-        // the peer actually sent (its nSentTotal ticked for each). nRecvTotal must mirror
-        // that count exactly, or the global msgId numbering drifts out of lockstep forever.
-        let recvSkipped = 0;
-
-        if (!messageKey) {
-          // check if this is a new DH ratchet key
-          if (pubKeyHex !== ratchetState.dhPeerHex) {
-            if (!header.pubKey) return; // DH ratchet needs the actual key bytes
-            // new DH ratchet — skip remaining messages in current receive chain
-            if (ratchetState.chainKeyRecv && loopStateRecv) {
-              const beforeSkip = ratchetState.nRecv;
-              loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.prevChainLen);
-              recvSkipped += ratchetState.nRecv - beforeSkip;
-            }
-            await dhRatchetStep(ratchetState, header.pubKey.slice());
-            // reinit both loop states from the new DH-derived chain keys
-            const reinit = await this.loopStatesFromRatchetState(ratchetState);
-            loopStateSend = reinit.send;
-            loopStateRecv = reinit.recv;
-            didDHRatchet = true;
-          }
-
-          // advance loop and ratchet counter to the message's position
-          // (with ordered SCTP, skip count is always 0 — loop body never executes)
-          if (!loopStateRecv) throw new Error("No receiving loop state");
-          const beforeSkip = ratchetState.nRecv;
-          loopStateRecv = await this.skipMessagesWithLoopState(ratchetState, loopStateRecv, skippedLoopKeys, header.counter);
-          recvSkipped += ratchetState.nRecv - beforeSkip;
-
-          // derive this message's key via loopStep — speculative until decrypt succeeds
-          const stepResult = await loopStep(loopStateRecv);
-          loopWipe(loopStateRecv);
-          loopStateRecv = stepResult.next;
-          messageKey = stepResult.messageKey;
-          ratchetState.nRecv++;
-        }
-
-        const aad = complete.subarray(0, headerSize);
-        const peerDirBit = this.isOfferer ? 1 : 0;
-        const nonce = buildNonce(header.counter, peerDirBit, header.salt);
-        let compressedPayload: Uint8Array;
-        try {
-          compressedPayload = await aesGcmDecrypt(messageKey, header.ciphertext, nonce, aad);
-        } catch (decryptErr) {
-          messageKey.fill(0);
-          // if a DH ratchet step was performed and decrypt still fails, the ratchet
-          // is structurally broken (mismatched keys). deterministic — disconnect.
-          if (didDHRatchet) {
-            this.onLog("decryption failed, encryption state unrecoverable. disconnecting");
-            this.setState("error", "session got out of sync, reconnect to continue");
-            this.cleanupConnection();
-            return;
-          }
-          throw decryptErr;
-        }
-        messageKey.fill(0);
-
-        // session may have been torn down/regenerated during the awaits above (decrypt,
-        // skip-derivation, DH step). check before touching nRecvTotal: a stale session's
-        // counter must never be mutated, and no further awaits occur before commit below
-        // so one check here covers the rest of this function too.
+        // session may have been torn down/regenerated during the awaits above. a
+        // stale session must never commit; discard the speculative clone.
         if (!this.isSessionCurrent(generation)) {
-          this.wipeRatchetState(ratchetState);
-          this.wipeLoopState(loopStateSend);
-          this.wipeLoopState(loopStateRecv);
-          this.wipeSkippedLoopKeys(skippedLoopKeys);
+          this.wipeRatchetState(clone.ratchet);
+          this.wipeLoopState(clone.loopSend);
+          this.wipeLoopState(clone.loopRecv);
+          this.wipeSkippedLoopKeys(clone.skippedLoopKeys);
           return;
         }
 
-        // reserve this message's msgId slot (plus any skipped ones) now: the peer's
-        // nSentTotal already moved past them at send time, authenticated by GCM above.
-        // count it here, before decompress, so a decode failure below still counts,
-        // otherwise every future msgId would be off by one, forever, from this point on.
-        this.nRecvTotal += recvSkipped;
-        const msgId = this.nRecvTotal * 2 + (this.isOfferer ? 1 : 0);
-        this.nRecvTotal++;
-
-        // decompress: first 4 bytes are decodedLen (LE uint32), rest is loop-encoded plaintext
-        if (compressedPayload.length < 4) throw new Error("ciphertext too short");
-        const decodedLen = new DataView(
-          compressedPayload.buffer, compressedPayload.byteOffset,
-        ).getUint32(0, true);
-        // Sanity bound — even with chunked reassembly, no single message should decode
-        // to more than 64 MB. Prevents a compromised peer from forcing a huge allocation.
-        if (decodedLen > 64 * 1024 * 1024) throw new Error("decodedLen exceeds safety limit");
-        const compressed = compressedPayload.subarray(4);
-
-        if (!loopStateRecv) throw new Error("No receiving loop state after step");
-        const { decoded: plaintext, next: afterDecode } = loopDecode(loopStateRecv, compressed, decodedLen);
-        // note: loopDecode's `next` shares state.chain by reference (spread copy).
-        // wiping loopStateRecv here would zero afterDecode.chain — skip the wipe.
-        // the old state is local and will be garbage collected.
-        loopStateRecv = afterDecode;
-
-        if (!this.isSessionCurrent(generation)) {
-          this.wipeRatchetState(ratchetState);
-          this.wipeLoopState(loopStateSend);
-          this.wipeLoopState(loopStateRecv);
-          this.wipeSkippedLoopKeys(skippedLoopKeys);
-          return;
-        }
-
-        this.commitReceiveState(ratchetState, loopStateSend, loopStateRecv, skippedLoopKeys, pubKeyHex);
+        this.nRecvTotal = clone.nRecvTotal;
+        this.commitReceiveState(clone.ratchet, clone.loopSend, clone.loopRecv, clone.skippedLoopKeys, clone.lastRecvPubKeyHex);
+        const { plaintext, msgId, didDHRatchet } = outcome;
+        const header = { flags: outcome.flags };
         this.onLog(`recv: committed, nRecv=${this.ratchetState!.nRecv}, DH=${didDHRatchet}`);
         if (didDHRatchet) this.onLog("bond renewed");
 
         this.consecutiveDecryptFailures = 0; // reset on successful decrypt+decompress
+        this.lastDecryptSuccessAt = Date.now();
 
         const ackPayload = new Uint8Array(4);
         new DataView(ackPayload.buffer).setUint32(0, msgId, true);
@@ -2099,10 +2061,14 @@ export class WhisperLiveSession {
         }
       });
     } catch (err) {
-      this.consecutiveDecryptFailures++;
-      this.onLog(`decrypt failed: ${errorMessage(err)}`);
-      if (this.consecutiveDecryptFailures >= 3) {
-        this.onLog("3 consecutive decryption failures, possible desync or tampering. disconnecting");
+      this.onLog(`receive failed: ${errorMessage(err)}`);
+      // the datachannel is dtls-protected, so a frame that got this far really
+      // is the peer's. a run of them means the peer's membrane genuinely
+      // diverged, and every later message will fail the same way, so say so
+      // rather than leaving the user in a silent session that can never heal.
+      const quietFor = Date.now() - this.lastDecryptSuccessAt;
+      if (this.consecutiveDecryptFailures >= DESYNC_MIN_FAILURES && quietFor >= DESYNC_GRACE_MS) {
+        this.onLog(`${this.consecutiveDecryptFailures} decrypt failures and nothing delivered for ${Math.round(quietFor / 1000)}s, session is desynced. disconnecting`);
         this.setState("error", "session got out of sync, reconnect to continue");
         this.cleanupConnection();
       }
@@ -2600,70 +2566,20 @@ export class WhisperLiveSession {
         throw new Error("No sending loop state, ratchet not fully initialized");
       }
 
-      if (this.ratchetState.nSend >= 0xFFFFFFFF) {
-        throw new Error("Message counter exhausted — session must be restarted");
-      }
-
-      const msgId = this.nSentTotal * 2 + (this.isOfferer ? 0 : 1);
-      this.nSentTotal++;
-
-      // derive message key via loopStep (advances chain, primes counts)
-      const { next: nextLoopSend, messageKey } = await loopStep(this.loopStateSend);
-      loopWipe(this.loopStateSend);
-      this.loopStateSend = nextLoopSend;
-
-      // compress plaintext with the loop codec (advances counts).
-      // raw = true means encoded is the original data (zero-copy pass-through
-      // for large payloads that won't compress). the 0xFF raw marker is fused
-      // into the allocation below instead of being copied separately.
-      const { encoded, raw, next: afterEncode } = loopEncode(this.loopStateSend, plaintext);
-      this.loopStateSend = afterEncode;
-
-      // build pre-encryption payload: [decodedLen:4B LE][encoded with mode prefix]
-      let compressedPayload: Uint8Array;
-      if (raw) {
-        // fuse [decodedLen][0xFF][data] — one allocation, one memcpy
-        compressedPayload = new Uint8Array(5 + encoded.length);
-        new DataView(compressedPayload.buffer).setUint32(0, encoded.length, true);
-        compressedPayload[4] = 0xFF;
-        compressedPayload.set(encoded, 5);
-      } else {
-        // encoded already has [mode][compressedBits], prepend decodedLen
-        compressedPayload = new Uint8Array(4 + encoded.length);
-        new DataView(compressedPayload.buffer).setUint32(0, plaintext.length, true);
-        compressedPayload.set(encoded, 4);
-      }
-
-      const salt = randomBytes(4);
-      const counter = this.ratchetState.nSend;
-      const prevChainLen = this.ratchetState.prevChainLength;
-      const dirBit = this.isOfferer ? 0 : 1;
-      const nonce = buildNonce(counter, dirBit, salt);
-      const pubKeyHex = toHex(this.ratchetState.dhSelf.publicKey);
-      const sameKey = pubKeyHex === this.lastSentPubKeyHex;
-
-      const header = buildHeader(
-        sameKey ? (flags | LIVE_FLAG_SAME_KEY) : flags,
-        this.ratchetState.dhSelf.publicKey,
-        counter,
-        prevChainLen,
-        salt,
-      );
-      this.lastSentPubKeyHex = pubKeyHex;
-
-      const ciphertext = await aesGcmEncrypt(messageKey, compressedPayload, nonce, header);
-      messageKey.fill(0);
-
-      this.ratchetState.nSend++;
+      // delegate the full message transform to the pure protocol core — the same
+      // dual-ratchet + membrane pipeline (protocolEncrypt) the test harness drives.
+      const proto = this.buildProtoState();
+      const { wire, msgId } = await protocolEncrypt(proto, plaintext, flags, randomBytes(4));
+      this.loopStateSend = proto.loopSend;
+      this.lastSentPubKeyHex = proto.lastSentPubKeyHex;
+      this.nSentTotal = proto.nSentTotal;
       this.onLog(`send: encrypted, nSend=${this.ratchetState.nSend}, releasing lock`);
 
-      // pass [header, ciphertext] as separate parts — the iterator reads across
-      // them with a cursor, avoiding a full-payload concat allocation.
-      const wireLen = header.length + ciphertext.length;
+      const wireLen = wire.length;
       const totalBytes = estimateChunkedPrefixedSize(wireLen);
       let bytesSent = 0;
       let lastProgressEmit = 0;
-      for (const chunk of iterateChunksPrefixed([header, ciphertext], LIVE_MSG.ENCRYPTED)) {
+      for (const chunk of iterateChunksPrefixed([wire], LIVE_MSG.ENCRYPTED)) {
         if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
           try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
         }
@@ -2914,6 +2830,7 @@ export class WhisperLiveSession {
     this.wipeBytes(this.phraseRoot);
     this.phraseRoot = null;
     this.consecutiveDecryptFailures = 0;
+    this.lastDecryptSuccessAt = Date.now();
     this.assembler.reset();
     this.clearIncomingFiles();
 

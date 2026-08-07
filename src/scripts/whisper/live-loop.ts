@@ -389,6 +389,32 @@ export async function modelDigest(state: ModelCounts): Promise<Uint8Array> {
     return new Uint8Array(h);
 }
 
+// synchronous, non-cryptographic fingerprint of the full adaptive model state
+// (all three count arrays + chain + step). unlike modelDigest (async SHA-256),
+// this is a fast pure function meant purely as a TEST oracle: the lockstep
+// invariant is that an encoder and decoder that have processed the same message
+// history hold byte-identical count tables, so equal fingerprints prove no
+// desync and an inequality names the exact step where the models diverged.
+// FNV-1a folded into two 32-bit lanes over the raw bytes of every field. read
+// only; tree-shaken from the production bundle when unused.
+export function loopFingerprint(state: LoopState): string {
+    let h1 = 0x811c9dc5 >>> 0;
+    let h2 = 0x1000193 >>> 0;
+    const fold = (bytes: Uint8Array): void => {
+        for (let i = 0; i < bytes.length; i++) {
+            h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
+            h2 = Math.imul(h2 ^ bytes[i], 0x85ebca77) >>> 0;
+        }
+    };
+    const asBytes = (a: Uint32Array): Uint8Array => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+    fold(asBytes(state.countsBitM));
+    fold(asBytes(state.countsBit1));
+    fold(asBytes(state.countsBitX));
+    fold(state.chain);
+    fold(le32(state.step));
+    return (h1 >>> 0).toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0");
+}
+
 // --- loop state ---
 
 export interface LoopState extends ModelCounts {
@@ -448,8 +474,11 @@ export function loopInit(sharedBlock: Uint8Array): LoopState {
 export async function loopStep(state: LoopState): Promise<{ next: LoopState; messageKey: Uint8Array }> {
     // history binding: digest the model trajectory BEFORE this step. the counts encode
     // every prior message, so this digest is a function of the full conversation history.
-    // any divergence (wrong key-seed, missing/altered prior message) → different digest →
-    // ~50%-bit-different messageKey → AES-GCM integrity rejects → zero plaintext recovery.
+    // divergence that CHANGES THE COUNTS (wrong key-seed, missing prior message) → different
+    // digest → ~50%-bit-different messageKey → AES-GCM rejects → zero plaintext recovery.
+    // NOT every divergence: the counts are additive multisets, so a reordering that preserves
+    // them digests identically. See the note in live-braid.ts. This is a desync tripwire,
+    // not a transcript commitment.
     const digest = await modelDigest(state);
 
     // 16D phase: expand chain → 65536-byte block (model-freshening keystream)
@@ -585,6 +614,11 @@ export function loopDecode(state: LoopState, data: Uint8Array, len: number): { d
             primeCounts1(c1, decoded);
             break;
         case 0xFF: // RAW fallback — train all from plaintext
+            // the frame claims `len` bytes; take them only if they are actually
+            // there. slicing a short payload would deliver a TRUNCATED plaintext
+            // under a valid tag, and both sides would then train their models on
+            // different bytes and silently desync.
+            if (payload.length < len) throw new Error("raw payload shorter than its declared length");
             decoded = payload.slice(0, len);
             // Mirror encoder: for large payloads train only on a prefix so
             // both sides' model state stays identical.

@@ -1,7 +1,16 @@
 /**
- * Test data generators for Whisper test suite.
- * Random generators use crypto entropy. Deterministic helpers are provided
- * for reproducible stress/property tests.
+ * Test data generators for the Whisper test suite.
+ *
+ * READ THIS BEFORE REACHING FOR `random*`. Everything named `random*` here draws
+ * from node:crypto, so a test that fails using one CANNOT BE REPLAYED: the input
+ * that broke it is gone. That directly contradicts the rule `_harness/rng.ts` is
+ * built on ("same root always replays identically"), and it is the reason a flaky
+ * campfire failure took a full investigation to pin down rather than a rerun.
+ *
+ * Use these only where the VALUES genuinely do not matter, which in practice
+ * means byte-layout tests: build a header, parse it back, check the fields. The
+ * moment an assertion depends on what the bytes were, take a seeded generator
+ * from `_harness/rng.ts` instead, so the failure comes with its own repro.
  */
 
 import { randomBytes as cryptoRandomBytes } from "node:crypto";
@@ -52,11 +61,31 @@ export function randomMsgId(): Uint8Array {
   return randomBytes(32);
 }
 
-/** Fake compressed P-256 public key (33 bytes, starts with 0x02 or 0x03). */
-export function fakeP256PubKey(): Uint8Array {
+/**
+ * 33 bytes shaped like a compressed P-256 key that is NOT a point on the curve.
+ *
+ * Renamed from `fakeP256PubKey`, which read as "a P-256 key, for tests" and was
+ * a trap. Thirty-two random bytes behind a 0x02/0x03 prefix land on the curve
+ * with probability about one in two to the thirty-two, so anything that actually
+ * decompresses this ALWAYS takes the rejection path and never the
+ * structurally-valid-rogue-point path. A test written against it would look like
+ * it covered hostile keys while covering exactly one of the two cases, and the
+ * interesting one is the other.
+ *
+ * Correct use: header build/parse, where the 33 bytes are opaque payload.
+ * Anything that reaches point decompression wants `realP256PubKey()` below, or
+ * `generateDHKeyPair()` directly, the way `_harness/adversary.ts` does.
+ */
+export function offCurveP256PubKey(): Uint8Array {
   const buf = randomBytes(33);
   buf[0] = (buf[0] & 1) ? 0x03 : 0x02;
   return buf;
+}
+
+/** A genuine, on-curve compressed P-256 public key, for anything that decompresses. */
+export async function realP256PubKey(): Promise<Uint8Array> {
+  const { generateDHKeyPair } = await import("../../../src/scripts/whisper/live-ratchet.js");
+  return (await generateDHKeyPair()).publicKey;
 }
 
 export function generateTestData(size: number, kind: "random" | "zeros" | "pattern" | "text"): Uint8Array {

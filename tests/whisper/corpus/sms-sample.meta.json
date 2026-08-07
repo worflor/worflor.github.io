@@ -1,0 +1,7 @@
+{
+  "source": "UCI SMS Spam Collection",
+  "license": "CC BY 4.0",
+  "url": "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip",
+  "count": 400,
+  "note": "vendored sample for test fixtures; real human SMS text"
+}

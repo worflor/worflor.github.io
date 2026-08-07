@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertBytesEqual } from "./_helpers/assertions.js";
-import { randomBytes, fakeP256PubKey, generateTestData } from "./_helpers/generators.js";
+import { randomBytes, offCurveP256PubKey, generateTestData } from "./_helpers/generators.js";
 import {
   HEADER_SIZE,
   HEADER_SIZE_COMPACT,
@@ -69,7 +69,7 @@ describe("live-wire", () => {
       for (let i = 0; i < 100; i++) {
         // Mask out SAME_KEY bit so we get full headers
         const flags = Math.floor(Math.random() * 256) & ~LIVE_FLAG_SAME_KEY;
-        const pubKey = fakeP256PubKey();
+        const pubKey = offCurveP256PubKey();
         const counter = Math.floor(Math.random() * 0xFFFFFFFF);
         const prevChainLen = Math.floor(Math.random() * 0xFFFFFFFF);
         const salt = randomSalt();
@@ -97,7 +97,7 @@ describe("live-wire", () => {
 
     it("header byte layout matches spec", () => {
       const flags = 0xA3;
-      const pubKey = fakeP256PubKey();
+      const pubKey = offCurveP256PubKey();
       const counter = 0x04030201;
       const prevChainLen = 0x08070605;
       const salt = new Uint8Array([0xAA, 0xBB, 0xCC, 0xDD]);
@@ -124,7 +124,7 @@ describe("live-wire", () => {
 
     it("boundary flags values (excluding SAME_KEY bit)", () => {
       for (const flags of [0, 1, 0x07, 0x70, 0xF7]) {
-        const header = buildHeader(flags, fakeP256PubKey(), 0, 0, randomSalt());
+        const header = buildHeader(flags, offCurveP256PubKey(), 0, 0, randomSalt());
         const parsed = parseHeader(header);
         assert.equal(parsed.flags, flags, `flags=0x${flags.toString(16)}`);
       }
@@ -132,7 +132,7 @@ describe("live-wire", () => {
 
     it("boundary counter/prevChainLen values", () => {
       for (const val of [0, 1, 0xFFFF, 0xFFFFFFFF]) {
-        const header = buildHeader(0, fakeP256PubKey(), val, val, randomSalt());
+        const header = buildHeader(0, offCurveP256PubKey(), val, val, randomSalt());
         const parsed = parseHeader(header);
         assert.equal(parsed.counter, val, `counter=${val}`);
         assert.equal(parsed.prevChainLen, val, `prevChainLen=${val}`);
@@ -195,7 +195,7 @@ describe("live-wire", () => {
 
     it("compact header saves 33 bytes vs full header", () => {
       const salt = randomSalt();
-      const full = buildHeader(0, fakeP256PubKey(), 42, 10, salt);
+      const full = buildHeader(0, offCurveP256PubKey(), 42, 10, salt);
       const compact = buildHeader(LIVE_FLAG_SAME_KEY, new Uint8Array(0), 42, 10, salt);
       assert.equal(full.length - compact.length, 33);
     });
@@ -223,15 +223,15 @@ describe("live-wire", () => {
     });
 
     it("rejects wrong salt length (both formats)", () => {
-      assert.throws(() => buildHeader(0, fakeP256PubKey(), 0, 0, new Uint8Array(3)), /invalid salt/);
-      assert.throws(() => buildHeader(0, fakeP256PubKey(), 0, 0, new Uint8Array(5)), /invalid salt/);
+      assert.throws(() => buildHeader(0, offCurveP256PubKey(), 0, 0, new Uint8Array(3)), /invalid salt/);
+      assert.throws(() => buildHeader(0, offCurveP256PubKey(), 0, 0, new Uint8Array(5)), /invalid salt/);
       assert.throws(() => buildHeader(LIVE_FLAG_SAME_KEY, new Uint8Array(0), 0, 0, new Uint8Array(3)), /invalid salt/);
     });
   });
 
   describe("minimum packet (header only, empty ciphertext)", () => {
     it("parseHeader returns empty ciphertext for 46-byte full packet", () => {
-      const header = buildHeader(0, fakeP256PubKey(), 0, 0, randomSalt());
+      const header = buildHeader(0, offCurveP256PubKey(), 0, 0, randomSalt());
       assert.equal(header.length, 46);
       const parsed = parseHeader(header);
       assert.equal(parsed.ciphertext.length, 0, "empty ciphertext");
@@ -282,7 +282,7 @@ describe("live-wire", () => {
       const counter = 42;
       const salt = randomSalt();
       const dirBit = 0;
-      const header = buildHeader(0, fakeP256PubKey(), counter, 0, salt);
+      const header = buildHeader(0, offCurveP256PubKey(), counter, 0, salt);
       const parsed = parseHeader(header);
       const nonce = buildNonce(parsed.counter, dirBit, parsed.salt);
       const expected = buildNonce(counter, dirBit, salt);

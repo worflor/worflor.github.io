@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { assertBytesEqual } from "./_helpers/assertions.js";
+import { toHex } from "../../src/scripts/whisper/wasm.js";
 import { randomBytes, randomKey, randomNonce } from "./_helpers/generators.js";
 import {
   aesGcmEncrypt,
@@ -447,38 +448,106 @@ describe("live-crypto", () => {
       }
     });
 
-    it("forward secrecy: snapshot chain cannot decrypt future frames", async () => {
+    /**
+     * WHAT FORWARD SECRECY ACTUALLY CLAIMS.
+     *
+     * The test that used to live here advanced a snapshot, sealed with it, and
+     * asserted the receiver could not open the result. That is a DESYNC test:
+     * it shows two parties holding different chain states disagree, which is
+     * true of any keyed construction whatsoever, including one that never
+     * ratcheted at all. It would pass if kdfChain returned its input unchanged,
+     * because the AAD alone carries the step.
+     *
+     * Forward secrecy is the opposite direction in time. Give the attacker the
+     * FULL sender state at step N — everything the honest party holds, no
+     * snapshot games — and require that the frames already sent at steps < N
+     * stay shut. That is a statement about the one-wayness of the chain KDF, and
+     * it fails loudly for any construction that keeps old key material reachable.
+     */
+    it("forward secrecy: total state capture at step N does not open frames before N", async () => {
       const { offSend, ansRecv } = await deriveChains(randomKey());
       let oS = offSend, aR = new Uint8Array(ansRecv);
 
-      // Advance 5 steps
+      // the honest transcript: five frames, ciphertexts kept as an attacker would
+      const CAPTURED: Array<{ sealed: Uint8Array; plain: Uint8Array; seq: number }> = [];
       for (let i = 0; i < 5; i++) {
+        const plain = randomBytes(24);
         const s = await chainStep(oS); oS = s.newChain;
+        CAPTURED.push({ sealed: await sealCtrl(s.ck, plain, i, 0, s.aad), plain, seq: i });
+        s.aad.fill(0);
         const r = await chainStep(aR); aR = r.newChain;
-        await sealCtrl(s.ck, randomBytes(10), i, 0, s.aad); // just advance
-        s.aad.fill(0); r.aad.fill(0);
+        // the receiver really could read them at the time — otherwise the test
+        // below would be about frames that were never legible in the first place
+        assertBytesEqual(await openCtrl(r.ck, CAPTURED[i].sealed, i, 0, r.aad), plain, `frame ${i} was legible`);
+        r.aad.fill(0);
       }
 
-      // Snapshot sender chain at step 5 — this IS the aad for any seal using this chain epoch
-      const snapshot = new Uint8Array(oS);
+      // COMPROMISE. The attacker now owns both chain states in full.
+      const stolenSend = new Uint8Array(oS);
+      const stolenRecv = new Uint8Array(aR);
 
-      // Advance 3 more steps
-      for (let i = 5; i < 8; i++) {
-        const s = await chainStep(oS); oS = s.newChain;
-        const r = await chainStep(aR); aR = r.newChain;
-        s.aad.fill(0); r.aad.fill(0);
+      // It can of course read everything from here forward — forward secrecy has
+      // never claimed otherwise, and asserting it makes the compromise real
+      // rather than a variable we declared and never used.
+      {
+        const future = randomBytes(24);
+        const s = await chainStep(new Uint8Array(stolenSend));
+        const sealed = await sealCtrl(s.ck, future, 5, 0, s.aad);
+        const a = await chainStep(new Uint8Array(stolenSend));
+        assertBytesEqual(await openCtrl(a.ck, sealed, 5, 0, a.aad), future,
+          "sanity: the stolen state is genuinely live state, not junk");
+        s.aad.fill(0); a.aad.fill(0);
       }
 
-      // Try to use snapshot to derive step-6 key — must produce wrong key
-      const [, snapshotMsgKey] = await kdfChainDirect(snapshot);
-      const snapshotCk = await importCtrlKey(snapshotMsgKey);
-      // Seal with snapshot key (aad = snapshot = chain-at-step-5)
-      const sealed = await sealCtrl(snapshotCk, randomBytes(10), 5, 0, snapshot);
-      // Receiver already advanced past step 5 — no way to open (aad mismatch + chain mismatch)
-      const [, recvMsgKey] = await kdfChainDirect(aR); // kdfChainDirect does not mutate aR
-      const recvCk = await importCtrlKey(recvMsgKey);
-      await assert.rejects(() => openCtrl(recvCk, sealed, 5, 0, aR),
-        "snapshot chain must not decrypt future frames");
+      // THE CLAIM. Walk the stolen state forward as far as the attacker likes —
+      // that is the only direction the KDF runs — and try every key it yields
+      // against every captured frame. Also try the raw stolen chains directly, in
+      // case the construction ever leaks a usable key without a step.
+      const candidates: CryptoKey[] = [];
+      for (const seed of [stolenSend, stolenRecv]) {
+        let walk = new Uint8Array(seed);
+        const [, direct] = await kdfChainDirect(walk);
+        candidates.push(await importCtrlKey(direct));
+        for (let step = 0; step < 8; step++) {
+          const [next, mk] = await kdfChainDirect(walk);
+          candidates.push(await importCtrlKey(mk));
+          walk = next;
+        }
+      }
+
+      for (const frame of CAPTURED) {
+        for (const key of candidates) {
+          // every AAD the attacker could plausibly try, including the stolen chains
+          for (const aad of [stolenSend, stolenRecv, new Uint8Array(32)]) {
+            await assert.rejects(
+              () => openCtrl(key, frame.sealed, frame.seq, 0, aad),
+              `frame ${frame.seq} must stay sealed after total state capture`,
+            );
+          }
+        }
+      }
+    });
+
+    /**
+     * The companion property: the chain KDF is one-way in the sense the above
+     * relies on. Stated directly so a failure points at the KDF rather than at
+     * the twenty-frame search loop.
+     */
+    it("chain steps never revisit a previous chain or message key", async () => {
+      const { offSend } = await deriveChains(randomKey());
+      let chain = new Uint8Array(offSend);
+      const chains = new Set<string>([toHex(chain)]);
+      const keys = new Set<string>();
+
+      for (let i = 0; i < 64; i++) {
+        const [next, mk] = await kdfChainDirect(chain);
+        const ch = toHex(next), kh = toHex(mk);
+        assert.ok(!chains.has(ch), `chain state repeated at step ${i} — the ratchet is cyclic`);
+        assert.ok(!keys.has(kh), `message key repeated at step ${i}`);
+        assert.ok(kh !== ch, "the message key must not BE the next chain state");
+        chains.add(ch); keys.add(kh);
+        chain = next;
+      }
     });
 
     it("desync on skip: receiver fails if sender advances without it", async () => {
