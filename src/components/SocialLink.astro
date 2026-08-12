@@ -25,7 +25,9 @@ const rel = external
   <Icon name={icon} width={24} height={24} class="shrink-0" aria-hidden="true" />
   {isBox ? (
     <div class="flex items-center justify-between w-full min-w-0 gap-2">
-      <p class="truncate">{title}</p>
+      {/* min-w-0 so the label can shrink past its content width and let
+          truncate do its job. a flex item refuses to below auto otherwise. */}
+      <p class="truncate min-w-0">{title}</p>
       <Icon name="mdi:arrow-up" class="rotate-45 shrink-0" width={16} height={16} aria-hidden="true" />
     </div>
   ) : (

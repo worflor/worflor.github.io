@@ -7,6 +7,7 @@ import type {
   BlogPageContent,
   HomePageContent,
   ContactPageContent,
+  FreelanceBriefContent,
 } from "./types/config";
 
 export const identity: Identity = {
@@ -376,4 +377,21 @@ export const contactPageContent: ContactPageContent = {
     email: "so I can get back to you",
     message: "well hello there :) what's on your mind?",
   },
+};
+
+// freelance
+//
+// `enabled` is the whole switch. the component checks it and renders nothing
+// when it is false, so no page has to remember to guard its own call, and the
+// slot cannot be half-open: on means every surface offers it, off means none do.
+export const freelanceBriefContent: FreelanceBriefContent = {
+  enabled: true,
+  kicker: "freelance workbench",
+  status: "open",
+  heading: "Have a strange idea, a broken workflow, or a system that ought to exist?",
+  // the leader rule above already states availability, so the sentence no
+  // longer has to.
+  subtitle: "I build useful things from unclear beginnings.",
+  placeholder: "explain away",
+  submitLabel: "send the brief",
 };

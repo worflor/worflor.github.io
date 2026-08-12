@@ -189,3 +189,18 @@ export type ContactPageContent = {
     message: string;
   };
 };
+
+export type FreelanceBriefContent = {
+  // the one switch. false removes the composer from every surface that renders
+  // it, along with its spacing, so turning the slot off leaves no gap behind.
+  enabled: boolean;
+  kicker: string;
+  // the value at the end of the kicker's leader rule. a word carries the state
+  // a coloured light only gestures at, and it can say something a dot cannot,
+  // like "booked until march".
+  status: string;
+  heading: string;
+  subtitle: string;
+  placeholder: string;
+  submitLabel: string;
+};

@@ -479,7 +479,14 @@ const isCurrent = (url: string) => (url.replace(/\/+$/, "") || "/") === currentP
 
         // only write the style when the state actually flips. this used to run a
         // style mutation on every scroll event regardless.
+        // the header element persists across view transitions, so it arrives on
+        // the new page still wearing whatever transform the old page left on it.
+        // this variable used to just declare "shown" and early-return, which
+        // meant a link clicked from the foot of a long page landed on a page
+        // with no header at all until you scrolled far enough to flip the state.
+        // the element is the owner; the variable is read off it.
         var headerShown = true;
+        header.style.transform = 'translateY(0)';
         function setHeaderShown(shown) {
           if (shown === headerShown) return;
           headerShown = shown;
@@ -688,72 +695,84 @@ const isCurrent = (url: string) => (url.replace(/\/+$/, "") || "/") === currentP
 </html>
 
 <style is:global>
-  html {
-    font-family: var(--font-body);
-    background: var(--color-bg);
-    scroll-behavior: smooth;
-    color-scheme: dark;
-    -webkit-text-size-adjust: 100%;
-    text-size-adjust: 100%;
-    -webkit-tap-highlight-color: transparent;
-    /* reserve the scrollbar track instead of forcing a scrollbar. classic
-       scrollbars (windows chromium and gecko) and overlay scrollbars (webkit)
-       otherwise disagree about the usable width by ~15px. */
-    scrollbar-gutter: stable;
-    /* anchors, :target and in-page jumps have to clear the sticky header.
-       --header-h is measured at runtime; the fallback covers first paint. */
-    scroll-padding-top: calc(var(--header-h, 4.25rem) + var(--space-sm));
-  }
-
-  @supports not (scrollbar-gutter: stable) {
+  @layer base {
     html {
-      overflow-y: scroll;
+      font-family: var(--font-body);
+      background: var(--color-bg);
+      scroll-behavior: smooth;
+      color-scheme: dark;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+      -webkit-tap-highlight-color: transparent;
+      /* reserve the scrollbar track instead of forcing a scrollbar. classic
+         scrollbars (windows chromium and gecko) and overlay scrollbars (webkit)
+         otherwise disagree about the usable width by ~15px. */
+      scrollbar-gutter: stable;
+      /* anchors, :target and in-page jumps have to clear the sticky header.
+         --header-h is measured at runtime; the fallback covers first paint. */
+      scroll-padding-top: calc(var(--header-h, 4.25rem) + var(--space-sm));
+    }
+
+    @supports not (scrollbar-gutter: stable) {
+      html {
+        overflow-y: scroll;
+      }
+    }
+
+    /* colour is set once and then inherited. it used to be assigned by the
+       universal selector, which meant a dimmed parent could not pass its colour
+       down: every child, including svg currentColor, snapped back to full
+       brightness regardless of the component it sat in. */
+    html {
+      color: var(--color-text);
+    }
+
+    * {
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      scrollbar-width: thin;
+      scrollbar-color: var(--color-border) transparent;
+    }
+
+    /* form controls opt out of inheritance by default, so they need it back.
+       zero specificity was already the intent here, and being in the base layer
+       is what actually delivers it: a font utility on a textarea now wins. */
+    :where(input, textarea, select, button, optgroup) {
+      color: inherit;
+      font-family: inherit;
     }
   }
 
-  /* colour is set once and then inherited. it used to be assigned by the
-     universal selector, which meant a dimmed parent could not pass its colour
-     down: every child, including svg currentColor, snapped back to full
-     brightness regardless of the component it sat in. */
-  html {
-    color: var(--color-text);
-  }
+  /* element defaults belong in the base layer. unlayered css beats every
+     cascade layer no matter how specific, so out here these outranked tailwind's
+     layered utilities and a utility class could not override a default it was
+     written to override. `white-space` is a shorthand whose text-wrap half this
+     block was setting, which is how `truncate` kept its clipping, lost its
+     nowrap, and wrapped labels one letter per line with nothing in the
+     stylesheet appearing to say so. */
+  @layer base {
+    h1, h2, h3, h4, h5, h6 {
+      letter-spacing: -0.02em;
+      text-wrap: pretty;
+    }
 
-  * {
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-border) transparent;
-  }
+    strong, b {
+      font-weight: 700;
+    }
 
-  /* form controls opt out of inheritance by default, so they need it back.
-     :where() keeps this at zero specificity so components still win. */
-  :where(input, textarea, select, button, optgroup) {
-    color: inherit;
-    font-family: inherit;
-  }
+    em, i {
+      font-style: italic;
+    }
 
-  h1, h2, h3, h4, h5, h6 {
-    letter-spacing: -0.02em;
-    text-wrap: pretty;
-  }
+    p, li, blockquote, figcaption, dd {
+      text-wrap: pretty;
+      overflow-wrap: break-word;
+    }
 
-  strong, b {
-    font-weight: 700;
-  }
-
-  em, i {
-    font-style: italic;
-  }
-
-  p, li, blockquote, figcaption, dd {
-    text-wrap: pretty;
-    overflow-wrap: break-word;
-  }
-
-  @supports (text-wrap: balance) {
-    h3, h4, h5, h6 {
-      text-wrap: balance;
+    @supports (text-wrap: balance) {
+      h3, h4, h5, h6 {
+        text-wrap: balance;
+      }
     }
   }
 

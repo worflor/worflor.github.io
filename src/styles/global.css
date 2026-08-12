@@ -373,29 +373,13 @@
   cursor: not-allowed;
 }
 
-/* one field surface across every tool */
-:where(
-  select,
-  textarea,
-  input[type="text"],
-  input[type="number"],
-  input[type="search"],
-  input[type="email"],
-  input[type="url"],
-  input[type="password"]
-) {
-  min-height: var(--touch-target);
-  padding: calc(var(--space-xs) * 0.7) var(--space-xs);
-  border: 1px solid rgb(var(--color-text-rgb) / 0.16);
-  border-radius: var(--radius-sm);
-  background-color: rgb(var(--color-text-rgb) / 0.025);
-  color: inherit;
-  transition:
-    border-color var(--duration-normal) var(--ease-out),
-    background-color var(--duration-normal) var(--ease-out);
-}
+/* one field surface across every tool.
 
-@media (hover: hover) {
+   in the base layer, because it is a default and a page that wants a different
+   field has to be able to say so with a utility class. :where() already put the
+   specificity at zero, but unlayered css outranks every layer regardless of
+   specificity, so out here zero specificity still beat a utility. */
+@layer base {
   :where(
     select,
     textarea,
@@ -405,10 +389,55 @@
     input[type="email"],
     input[type="url"],
     input[type="password"]
-  ):hover:not(:disabled) {
-    border-color: rgb(var(--color-text-rgb) / 0.28);
-    background-color: rgb(var(--color-text-rgb) / 0.05);
+  ) {
+    min-height: var(--touch-target);
+    padding: calc(var(--space-xs) * 0.7) var(--space-xs);
+    border: 1px solid rgb(var(--color-text-rgb) / 0.16);
+    border-radius: var(--radius-sm);
+    background-color: rgb(var(--color-text-rgb) / 0.025);
+    color: inherit;
+    transition:
+      border-color var(--duration-normal) var(--ease-out),
+      background-color var(--duration-normal) var(--ease-out);
   }
+
+  @media (hover: hover) {
+    :where(
+      select,
+      textarea,
+      input[type="text"],
+      input[type="number"],
+      input[type="search"],
+      input[type="email"],
+      input[type="url"],
+      input[type="password"]
+    ):hover:not(:disabled) {
+      border-color: rgb(var(--color-text-rgb) / 0.28);
+      background-color: rgb(var(--color-text-rgb) / 0.05);
+    }
+  }
+}
+
+/* focus lives in the border rather than in a halo. text fields match
+   :focus-visible while being typed in, so this is the state a keyboard user
+   actually sees, and the cyan edge is the site's own accent doing the work
+   the default ring did. */
+:where(
+  select,
+  textarea,
+  input[type="text"],
+  input[type="number"],
+  input[type="search"],
+  input[type="email"],
+  input[type="url"],
+  input[type="password"]
+):focus-visible {
+  outline: none;
+  /* the layout-level focus ring carries a soft cyan bloom, which is exactly
+     the halo fields are forbidden to wear. the border is the indicator here. */
+  box-shadow: none;
+  border-color: rgb(var(--chromatic-cyan) / 0.55);
+  background-color: rgb(var(--color-text-rgb) / 0.04);
 }
 
 /* a select with appearance:none and no glyph is just a box that hides its own

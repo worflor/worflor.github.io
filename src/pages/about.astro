@@ -4,6 +4,7 @@ import { aboutPageContent } from "../config";
 import ResumeItem from "../components/ResumeItem.astro";
 import SocialLink from "../components/SocialLink.astro";
 import ImageGallery from "../components/ImageGallery.astro";
+import FreelanceBrief from "../components/FreelanceBrief.astro";
 import { parseMarkdown } from "../utils/helpers";
 
 const pageDescription = parseMarkdown(aboutPageContent.about.description);
@@ -42,6 +43,16 @@ const remainingConnectLinks = aboutPageContent.connect.links.slice(3);
       </div>
     </div>
   </section>
+  {/* a section in its own right, not a block inside one. it carries its own
+      rule, kicker and heading, so nesting it under another section's label gave
+      the page two headings for one thing, two vertical rules a few pixels
+      apart, and a column of text indented past everything around it.
+
+      it follows Work on purpose: that section ends on "Tool Maker / Freelance /
+      2025 - Present", and this is that line made actionable. */}
+  <section class="content-section">
+    <FreelanceBrief source="the about page" />
+  </section>
   <section
     class="mt-[calc(var(--space-xl)*1.5)] content-section @xs:flex @xs:gap-[var(--space-lg)]"
   >
@@ -50,7 +61,13 @@ const remainingConnectLinks = aboutPageContent.connect.links.slice(3);
       <div class="mb-[var(--space-md)]">
         <Fragment set:html={connectDescription} />
       </div>
-      <div class="grid grid-cols-1 @xs:grid-cols-3 gap-[var(--space-xs)] group">
+      {/* the column count is asked for rather than declared. a fixed
+          three-across fired at a 20rem container, which at phone width gave
+          each box about 108px when "Endeavours" needs roughly 157 to stay on
+          one line, so the labels wrapped one letter per row. stating the
+          minimum a box can live at lets the grid fit however many actually
+          fit, and it cannot break again when a link is renamed. */}
+      <div class="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-[var(--space-xs)] group">
         {
           featuredConnectLinks.map((item) => (
             <SocialLink {...item} variant="box" />

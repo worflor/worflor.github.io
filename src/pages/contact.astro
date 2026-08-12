@@ -21,8 +21,11 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
       {contactPageContent.subtitle}
     </p>
 
+    {/* one banner, whatever the visitor arrived carrying. the kind word and the
+        subject both come from whichever branch below claims it, so a second
+        arrival route can never render a second, differently-styled chip. */}
     <div class="project-context" hidden aria-live="polite">
-      <span class="project-context-label">inquiry</span>
+      <span class="project-context-label" id="context-kind"></span>
       <span id="project-context-name"></span>
     </div>
 
@@ -67,7 +70,7 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
       />
 
       <div class="flex flex-col gap-[var(--space-xs)]">
-        <label for="name" class="text-[var(--text-sm)] opacity-70">Name</label>
+        <label for="name" class="form-label">Name</label>
         <input
           type="text"
           id="name"
@@ -80,8 +83,7 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
       </div>
 
       <div class="flex flex-col gap-[var(--space-xs)]">
-        <label for="email" class="text-[var(--text-sm)] opacity-70">Email</label
-        >
+        <label for="email" class="form-label">Email</label>
         <input
           type="email"
           id="email"
@@ -94,7 +96,7 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
       </div>
 
       <div class="flex flex-col gap-[var(--space-xs)]">
-        <label for="message" class="text-[var(--text-sm)] opacity-70"
+        <label for="message" class="form-label"
           >Message<span class="text-red-400">*</span></label
         >
         <textarea
@@ -144,18 +146,51 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
       var labelsEl = document.getElementById("project-labels");
       if (labelsEl) labels = JSON.parse(labelsEl.textContent || "{}");
     } catch (e) {}
-    var label = project ? labels[project] : null;
-    if (label) {
+    // the single place any arrival route announces itself. kind + name light
+    // the banner, and the subject line is derived from the same two strings,
+    // so what the visitor is told and what lands in the inbox cannot drift.
+    function announce(kind, name) {
       var banner = document.querySelector(".project-context");
-      var labelEl = document.getElementById("project-context-name");
-      if (banner && labelEl) {
-        labelEl.textContent = label;
+      var kindEl = document.getElementById("context-kind");
+      var nameEl = document.getElementById("project-context-name");
+      if (banner && kindEl && nameEl) {
+        kindEl.textContent = kind;
+        nameEl.textContent = name;
         banner.removeAttribute("hidden");
       }
       var subjectEl = document.querySelector('input[name="_subject"]');
-      if (subjectEl) subjectEl.value = "Inquiry: " + label;
+      if (subjectEl) subjectEl.value = kind.charAt(0).toUpperCase() + kind.slice(1) + ": " + name;
+    }
+
+    var label = project ? labels[project] : null;
+    if (label) {
+      announce("inquiry", label);
       var messageEl = document.getElementById("message");
       if (messageEl) messageEl.placeholder = "what brings you to " + label + "?";
+    }
+    if (p.has("brief")) {
+      var brief = "";
+      var briefSource = "the portfolio";
+      try {
+        brief = sessionStorage.getItem("freelance-brief") || "";
+        briefSource = sessionStorage.getItem("freelance-brief-source") || briefSource;
+        sessionStorage.removeItem("freelance-brief");
+        sessionStorage.removeItem("freelance-brief-source");
+      } catch (e) {}
+      var briefMessageEl = document.getElementById("message");
+      if (brief && briefMessageEl instanceof HTMLTextAreaElement) {
+        briefMessageEl.value = brief;
+        announce("brief", briefSource);
+        // the message is already written. what is still missing is a way to
+        // reply, so the cursor goes to the gap rather than back to the answer.
+        var emailEl = document.getElementById("email");
+        if (emailEl instanceof HTMLInputElement) emailEl.focus();
+        // this visitor demonstrably typed a sentence on the previous page. the
+        // spam gate below counts interaction from page load, and without this
+        // it would silently swallow their first send.
+        document.documentElement.dataset.briefCarried = "";
+      }
+      history.replaceState({}, "", location.pathname);
     }
     document.documentElement.dataset.ready = "";
   })();
@@ -165,7 +200,11 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
   // Anti-spam
   const MIN_TIME_MS = 5000;
   const loadTime = Date.now();
-  let interacted = false;
+  // arriving with a brief already means a sentence was typed and a button was
+  // pressed on the page before this one. the gate is meant to catch a bot that
+  // posts on load, not to make a human retype their own words.
+  const carriedBrief = "briefCarried" in document.documentElement.dataset;
+  let interacted = carriedBrief;
   const ctrl = new AbortController();
 
   const onInteract = () => {
@@ -191,7 +230,7 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
       if (
         hp1Value ||
         hp2Value ||
-        elapsed < MIN_TIME_MS ||
+        (elapsed < MIN_TIME_MS && !carriedBrief) ||
         !interacted ||
         navigator.webdriver
       ) {
@@ -217,7 +256,8 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
     pointer-events: none;
   }
 
-  /* Inquiry banner: shown when /contact is hit with ?project= */
+  /* Arrival banner: shown when /contact is reached carrying context, either a
+     project inquiry (?project=) or a freelance brief (?brief). */
   .project-context {
     display: inline-flex;
     align-items: baseline;
@@ -298,41 +338,45 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
     }
   }
 
-  /* Shared form control base */
-  .form-input,
-  .form-submit {
-    background: var(--color-bg);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-sm) var(--space-md);
+  /* field labels speak in the same register as the freelance brief kicker, so
+     the two ends of the brief flow read as one instrument. */
+  .form-label {
+    font-family: var(--font-mono);
+    font-size: calc(var(--text-sm) * 0.82);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgb(var(--color-text-rgb) / 0.55);
+  }
+
+  /* the field surface. a quiet hairline box carrying the site's chromatic seam,
+     the red hairline beside a cyan rule that already marks the sent confirmation
+     and the brief section. it rests as a short tick at the top left and extends
+     to the full field height on focus, which keeps focus unmistakable without
+     spending any shadow at all. the seam is drawn as two background gradients
+     because an input cannot host a pseudo-element. */
+  .form-input {
+    background: transparent;
+    border: 0;
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    border-radius: 0;
+    padding: var(--space-sm) 0;
     font-size: var(--text-base);
     color: var(--color-text);
     min-height: var(--touch-target);
-    box-shadow:
-      inset 0 2px 5px rgba(0, 0, 0, 0.5),
-      inset 0 -1px 3px rgba(0, 0, 0, 0.25);
-    transition:
-      box-shadow var(--duration-normal) var(--ease-out),
-      border-color var(--duration-normal) var(--ease-out);
+    transition: border-color var(--duration-normal) var(--ease-out);
   }
 
-  .form-input:hover,
-  .form-submit:hover {
-    border-color: rgb(var(--color-text-rgb) / 0.2);
-    box-shadow:
-      inset 0 2px 5px rgba(0, 0, 0, 0.5),
-      inset 0 -1px 3px rgba(0, 0, 0, 0.25),
-      var(--chromatic-shadow);
+  .form-input:hover {
+    border-bottom-color: rgb(var(--color-text-rgb) / 0.28);
   }
 
-  .form-input:focus,
-  .form-submit:focus-visible {
+  .form-input:focus {
     outline: none;
-    border-color: rgb(var(--color-text-rgb) / 0.3);
-    box-shadow:
-      inset 0 2px 5px rgba(0, 0, 0, 0.5),
-      inset 0 -1px 3px rgba(0, 0, 0, 0.25),
-      var(--chromatic-shadow-lg);
+    /* the layout-level focus ring composites a soft bloom onto anything
+       focused. the rule under the text carries focus here instead. */
+    box-shadow: none;
+    border-bottom-color: rgb(var(--color-text-rgb) / 0.55);
   }
 
   /* Input-specific */
@@ -348,25 +392,42 @@ const labelsJson = JSON.stringify(labels).replace(/</g, "\\u003c");
     opacity: 0;
   }
 
-  /* Button-specific */
+  /* the submit borrows the label register rather than the field surface. it is
+     an action, so it wears no seam of its own until it is pointed at. */
   .form-submit {
     cursor: pointer;
+    min-height: var(--touch-target);
+    padding: var(--space-sm) var(--space-md);
+    background: transparent;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.18);
+    border-radius: var(--radius-sm);
+    color: rgb(var(--color-text-rgb) / 0.85);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
     transition:
-      box-shadow var(--duration-normal) var(--ease-out),
       border-color var(--duration-normal) var(--ease-out),
-      background var(--duration-normal) var(--ease-out),
-      text-shadow var(--duration-normal) var(--ease-out),
-      transform var(--duration-normal) var(--ease-out);
+      background-color var(--duration-normal) var(--ease-out),
+      color var(--duration-normal) var(--ease-out);
   }
   .form-submit:hover {
-    background: rgb(var(--color-text-rgb) / 0.03);
-    /* Softer glow rather than loud text-shadow bleed */
-    text-shadow:
-      calc(-1 * var(--chromatic-offset)) 0 0 rgb(var(--chromatic-cyan) / 0.25),
-      var(--chromatic-offset) 0 0 rgb(var(--chromatic-red) / 0.25);
+    background: rgb(var(--color-text-rgb) / 0.045);
+    border-color: rgb(var(--color-text-rgb) / 0.35);
+    color: var(--color-text);
+    /* the layout-level hover fringe on buttons reads as bleed on this much
+       uppercase mono, so the border and fill carry the hover instead. */
+    text-shadow: none;
+  }
+  .form-submit:focus-visible {
+    outline: 2px solid rgb(var(--chromatic-cyan) / 0.6);
+    outline-offset: 2px;
+    /* keep the layout-level bloom off the action too */
+    box-shadow: none;
+    color: var(--color-text);
   }
   .form-submit:active {
-    /* Minimal physical push so it feels heavy */
+    /* minimal physical push so it feels heavy */
     transform: scale(0.99);
     opacity: var(--opacity-muted);
   }

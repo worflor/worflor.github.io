@@ -122,7 +122,12 @@
         z-index: 40;
         max-width: min(300px, 80vw);
         text-align: center;
-        word-break: break-all;
+        /* the requested path can be one long unbroken token, so it has to be
+           breakable. break-all did that by breaking anywhere in anything, which
+           split the ordinary words too: the line read "pag / e not found".
+           anywhere breaks a token only when it cannot fit on a line by itself,
+           which is what was wanted. */
+        overflow-wrap: anywhere;
         padding: 0 1rem;
       }
 

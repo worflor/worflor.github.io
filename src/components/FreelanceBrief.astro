@@ -1,0 +1,261 @@
+---
+// the freelance entry point. it is deliberately not a second contact form: it
+// takes one sentence and carries it to /contact, so the visitor arrives with
+// the hard part already written instead of facing an empty page.
+import { freelanceBriefContent } from "../config";
+
+type Props = {
+  // human-readable origin, shown back to the visitor on /contact and used as
+  // the email subject. one string, one owner: the page names itself.
+  source: string;
+};
+
+const { source } = Astro.props;
+const { enabled, kicker, status, heading, subtitle, placeholder, submitLabel } = freelanceBriefContent;
+
+// an id derived from the source, since two pages could one day render this at
+// once and a duplicate id would silently break the label association.
+const fieldId = `brief-${source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+---
+
+{/* the switch is checked here rather than at each call site. a page that wants
+    the composer renders it unconditionally and gets nothing when the slot is
+    closed, including the surrounding margin — so flipping the boolean can never
+    leave a stray gap on one page and a live form on another. */}
+{enabled && (
+<section class="freelance-brief" aria-labelledby="freelance-brief-title" data-freelance-brief>
+  <div class="brief-head">
+    {/* label, rule, value. the rule is decoration with a job: it ties the
+        kicker to the field below by spanning exactly its width, and it puts the
+        state at the end of a line the eye already has to travel. */}
+    <p class="brief-kicker">
+      <span>{kicker}</span>
+      <span class="brief-leader" aria-hidden="true"></span>
+      <span class="brief-status">{status}</span>
+    </p>
+    <h2 id="freelance-brief-title">{heading}</h2>
+    <p class="brief-sub">{subtitle}</p>
+  </div>
+
+  {/* no method and no named field: with javascript off this is just a link to
+      the contact page, and there is no path where the visitor's words end up
+      in a url or a server log. */}
+  <form class="brief-form" action="/contact" data-brief-composer data-brief-source={source}>
+    <label class="sr-only" for={fieldId}>Describe what you want built</label>
+
+    <div class="brief-field">
+      <textarea
+        id={fieldId}
+        rows="3"
+        required
+        class="brief-input"
+        placeholder={placeholder}
+      ></textarea>
+    </div>
+
+    <div class="brief-actions">
+      <button type="submit"><span>{submitLabel}</span><span class="brief-arrow" aria-hidden="true">↗</span></button>
+    </div>
+    <noscript><p class="brief-fallback"><a href="/contact">Tell me about it on the contact page.</a></p></noscript>
+  </form>
+</section>
+)}
+
+<script>
+  import { navigate } from "astro:transitions/client";
+
+  // the brief travels in sessionStorage rather than the query string. it is the
+  // visitor's own sentence, and a url is the one part of a page that gets
+  // copied, shared, logged and put in a referrer header.
+  const STORE_TEXT = "freelance-brief";
+  const STORE_SOURCE = "freelance-brief-source";
+
+  function bootBriefComposers() {
+    document.querySelectorAll("[data-brief-composer]").forEach((node) => {
+      if (!(node instanceof HTMLFormElement) || node.dataset.briefBound) return;
+      node.dataset.briefBound = "";
+
+      node.addEventListener("submit", (event) => {
+        const field = node.querySelector("textarea");
+        if (!(field instanceof HTMLTextAreaElement)) return;
+        const brief = field.value.trim();
+
+        // `required` rejects an empty field but accepts one holding only
+        // spaces, and trimming that leaves nothing to carry. falling through
+        // here would submit the form for real and drop the visitor on a blank
+        // contact page with no message and no reason given, so the field says
+        // so itself and keeps them where they are.
+        if (!brief) {
+          event.preventDefault();
+          field.value = "";
+          field.setCustomValidity("Tell me what you want built.");
+          field.reportValidity();
+          field.addEventListener("input", () => field.setCustomValidity(""), { once: true });
+          return;
+        }
+
+        try {
+          sessionStorage.setItem(STORE_TEXT, brief);
+          sessionStorage.setItem(STORE_SOURCE, node.dataset.briefSource || "the portfolio");
+        } catch (e) {
+          // private mode, or storage full. let the form fall through to its
+          // plain /contact action rather than swallowing the click.
+          return;
+        }
+
+        event.preventDefault();
+        navigate("/contact?brief");
+      });
+    });
+  }
+
+  document.addEventListener("astro:page-load", bootBriefComposers);
+</script>
+
+<style>
+  /* the component owns the gap above it, matching the rhythm the page sets
+     between its own sections. the call site contributes a bare container, so a
+     closed slot collapses to nothing and the sections either side close up as
+     if it had never been there. */
+  .freelance-brief {
+    position: relative;
+    margin: calc(var(--space-xl) * 1.5) 0 0;
+    padding: var(--space-lg) 0 var(--space-lg) var(--space-lg);
+    border-left: 1px solid rgb(var(--color-text-rgb) / 0.14);
+  }
+
+  /* the chromatic signature, drawn the way /contact already draws it on the
+     sent confirmation: one cyan rule with a red hairline shadowed a pixel to
+     its left. same gesture in both places, so the two ends of this flow are
+     visibly the same object. */
+  .freelance-brief::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: 0;
+    width: 2px;
+    height: 2.75rem;
+    background: rgb(var(--chromatic-cyan) / 0.7);
+    box-shadow: -1px 0 0 rgb(var(--chromatic-red) / 0.5);
+  }
+
+  .brief-kicker {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    max-width: 34rem;
+    margin: 0 0 var(--space-md);
+    font-family: var(--font-mono);
+    font-size: calc(var(--text-sm) * 0.82);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgb(var(--color-text-rgb) / 0.5);
+  }
+
+  .brief-leader {
+    flex: 1;
+    height: 0;
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.12);
+  }
+
+  /* the value is the payload, so it reads brighter than the label that names it. */
+  .brief-status {
+    color: rgb(var(--color-text-rgb) / 0.8);
+  }
+
+  .brief-head h2 {
+    margin: 0;
+    max-width: 34rem;
+    font-size: clamp(1.25rem, 2.6vw, 1.55rem);
+    line-height: 1.24;
+    letter-spacing: -0.01em;
+  }
+  .brief-sub { margin: var(--space-sm) 0 0; opacity: 0.55; max-width: 30rem; }
+
+  /* the composer holds the same measure as the paragraph above it. left to fill
+     its container it went full-bleed on tablet and wider, which stranded the
+     button a long way right of the sentence that asks for it. */
+  .brief-form { margin-top: var(--space-lg); max-width: 34rem; }
+
+  /* the awaiting blank, in the page's own vocabulary for a region where content
+     lives: the resume block on this same page is a pair of hairlines with no
+     sides, no fill and no radius, and this is that. the chromatic mark stays on
+     the section border where it has a line to sit on. worn again down here it
+     had nothing to attach to, and a signature repeated inside the thing already
+     wearing it stops being a signature.
+
+     it asks for one sentence, which is why it cannot be dragged open. the long
+     version belongs on the contact page this hands off to. */
+  .brief-field {
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.1);
+    border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    transition: border-color var(--duration-normal) var(--ease-out);
+  }
+  .brief-input {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    min-height: 5.5rem;
+    padding: var(--space-md) 0;
+    resize: none;
+    color: var(--color-text);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    font: inherit;
+    line-height: 1.5;
+    outline: none;
+    /* the layout-level focus ring adds a soft bloom just inside the field
+       border; the wrapper's extending seam carries focus instead. */
+    box-shadow: none;
+    font-family: var(--font-mono);
+  }
+  .brief-input::placeholder { color: rgb(var(--color-text-rgb) / 0.42); font-family: var(--font-mono); }
+
+  /* focused: the rule the text sits on comes up to meet it. monochrome and
+     structural, so focus is obvious without a halo and without introducing a
+     colour the section has not already earned. */
+  .brief-field:focus-within {
+    border-bottom-color: rgb(var(--color-text-rgb) / 0.55);
+  }
+
+  .brief-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: var(--space-sm);
+  }
+  .brief-actions button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: var(--touch-target);
+    padding: 0.25rem 0.4rem;
+    color: var(--color-text);
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgb(var(--color-text-rgb) / 0.3);
+    border-radius: 0;
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--text-sm);
+    opacity: 0.75;
+    transition: opacity var(--duration-normal) var(--ease-out), border-color var(--duration-normal) var(--ease-out);
+  }
+  .brief-actions button:hover, .brief-actions button:focus-visible {
+    opacity: 1;
+    border-color: rgb(var(--chromatic-cyan) / 0.7);
+  }
+  .brief-actions button:focus-visible { outline: 2px solid rgb(var(--chromatic-cyan) / 0.6); outline-offset: 4px; box-shadow: none; }
+  .brief-arrow { color: rgb(var(--chromatic-cyan) / 0.8); transition: transform var(--duration-fast) var(--ease-out); }
+  .brief-actions button:hover .brief-arrow { transform: translate(0.1em, -0.1em); }
+
+  .brief-fallback { margin: var(--space-sm) 0 0; font-size: var(--text-sm); }
+  .brief-fallback a { text-decoration: underline; text-underline-offset: 0.2em; }
+
+  @media (max-width: 32rem) {
+    .freelance-brief { padding-left: var(--space-md); }
+    .brief-input { font-size: var(--text-sm); }
+    .brief-actions { justify-content: flex-start; }
+  }
+</style>
