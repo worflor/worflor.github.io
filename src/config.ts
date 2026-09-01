@@ -228,9 +228,9 @@ export const projectsPageContent: ProjectPageContent = {
       slug: "whisper",
     },
     {
-      title: "alpha-math",
+      title: "math scryer",
       description:
-        "AlphaFold, but for algebra.<br>Hand it any algebra and it uncovers the laws it obeys, including ones nobody had written down, then proves each one exactly.",
+        "AlphaFold's the inspiration, but aimed at algebra.<br>Hand it any algebra and it uncovers the laws it obeys, including ones nobody had written down, then proves each one exactly. MCP research preview",
       month: "May",
       year: "2026",
       url: "/contact?project=alpha-math",
