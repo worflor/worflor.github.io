@@ -159,6 +159,8 @@ export type ResearchArtifact = {
   takeaway: string; // the collapsed line (markdown allowed)
   parts: ArtifactPart[];
   duality: string; // how the parts answer each other (markdown allowed)
+  noteLabel?: string; // heading for the personal aside below duality
+  note?: string; // personal aside, deliberately human register (markdown, blank-line paragraphs allowed)
 };
 
 export type ProjectPageContent = {

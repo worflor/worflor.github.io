@@ -4,10 +4,11 @@ import { parseMarkdown } from "../utils/helpers";
 
 type Props = ResearchArtifact & { index?: number };
 
-const { title, subtitle, takeaway, parts, duality, index = 0 } = Astro.props;
+const { title, subtitle, takeaway, parts, duality, noteLabel, note, index = 0 } = Astro.props;
 
 const takeawayHtml = parseMarkdown(takeaway);
 const dualityHtml = parseMarkdown(duality);
+const noteHtml = note ? parseMarkdown(note) : undefined;
 const partsRendered = parts.map((p) => ({ ...p, html: parseMarkdown(p.blurb) }));
 const restId = `artifact-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
 ---
@@ -76,6 +77,13 @@ const restId = `artifact-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").
         ))}
       </div>
       <div class="artifact-duality"><Fragment set:html={dualityHtml} /></div>
+
+      {noteHtml && (
+        <div class="artifact-note">
+          {noteLabel && <p class="artifact-note-label">{noteLabel}</p>}
+          <Fragment set:html={noteHtml} />
+        </div>
+      )}
     </div>
   </div>
 </div>
@@ -265,6 +273,35 @@ const restId = `artifact-rest-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").
   .artifact-takeaway :global(p),
   .artifact-part-blurb :global(p),
   .artifact-duality :global(p) {
+    margin: 0;
+  }
+
+  /* the personal aside: upright where duality is italic, a register break
+     on purpose. paragraph spacing kept (not zeroed) so multi-graf asides breathe. */
+  .artifact-note {
+    margin-top: var(--space-md);
+    padding-top: var(--space-sm);
+    border-top: 1px solid rgb(var(--color-text-rgb) / 0.08);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    opacity: 0.7;
+  }
+
+  /* upright + tracked, not italic — duality is the epigram voice, this is the
+     label voice, and the two need to look different at a glance, not just read different */
+  .artifact-note-label {
+    margin: 0 0 0.6rem;
+    font-size: calc(var(--text-sm) * 0.85);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    opacity: 0.45;
+  }
+
+  .artifact-note :global(p) {
+    margin: 0 0 0.75rem;
+  }
+
+  .artifact-note :global(p:last-child) {
     margin: 0;
   }
 

@@ -344,6 +344,9 @@ export const projectsPageContent: ProjectPageContent = {
       ],
       duality:
         "séance turns weights into a readable corpus, which is exactly the thing wick pretends to have. each one's question was the other's answer.",
+      noteLabel: "why even bother my human attention on this?",
+      note:
+        "catching it takes the same intuition a good player builds up in a live game: a new ability still runs on the same physics underneath it, and if you already know the mechanics, you can feel where it bends the system it landed in. when a result comes back and it doesn't sit right, that's the same muscle firing.\n\nif x works, i want to spend the confidence on something wilder than x actually earned. three steps at a time is comfortable, five is more fun, and five is only affordable because the real cost is the hour spent setting up the environment and deciding what's actually being tested, the model's own time barely counts. after that, sometimes it comes back wrong with a good reason attached, sometimes it just takes a few back-and-forths before the idea reshapes into what i actually meant.\n\nwick and séance are the two that kept reshaping long enough to earn names.",
     },
   ],
 };
