@@ -23,10 +23,13 @@
  *   [9..12]  salt (4B)
  *   [13..]   ciphertext
  *
- * For file messages, the plaintext is:
+ * For single-message payloads (voice notes — see encodeFilePlaintext), the plaintext is:
  *   [0..3]   filename length (4B LE)
  *   [4..4+N] filename (UTF-8)
  *   [4+N..]  file type (null-terminated) + file bytes
+ *
+ * Every other file rides the multi-part path (encodeFilePartPlaintext) regardless of
+ * size — a small file is simply a one-chunk transfer.
  */
 
 import { TD } from "./live-crypto";
@@ -165,10 +168,14 @@ function sanitizeFileName(name: string): string {
 
 /** Application-level multi-part file chunk header. */
 export interface FilePartHeader {
+  /** Packed identity: high 24 bits = group nonce (one per user gesture), low 8 bits =
+   *  index of this file within its group. A lone file is a group of one. */
   transferId: number;
   chunkIndex: number;
   totalChunks: number;
   totalFileSize: number;
+  /** Number of files in this transfer's group. Only present on chunk 0; 1 for a lone file. */
+  groupCount?: number;
   /** Only present on chunk 0. */
   fileName?: string;
   /** Only present on chunk 0. */
@@ -180,12 +187,13 @@ export interface FilePartHeader {
  * Encode a FILE_PART plaintext chunk.
  *
  * Chunk 0 layout:
- *   [0..3]   transferId (4B LE)
+ *   [0..3]   transferId (4B LE) — (groupNonce << 8) | indexInGroup
  *   [4..7]   chunkIndex = 0
  *   [8..11]  totalChunks (4B LE)
  *   [12..19] totalFileSize (float64 LE — exact to 2^53, ~8 PB)
- *   [20..21] nameLen (2B LE)
- *   [22..]   name bytes, type bytes (null-terminated), chunk data
+ *   [20]     groupCount (1B) — files in this group, 1..255
+ *   [21..22] nameLen (2B LE)
+ *   [23..]   name bytes, type bytes (null-terminated), chunk data
  *
  * Chunks 1..N-1 layout:
  *   [0..3]   transferId (4B LE)
@@ -202,21 +210,23 @@ export function encodeFilePartPlaintext(
   chunkData: Uint8Array,
   fileName?: string,
   fileType?: string,
+  groupCount = 1,
 ): Uint8Array {
   if (chunkIndex === 0) {
     const nameBytes = TE.encode(fileName ?? "");
     const typeBytes = TE.encode(fileType ?? "");
-    const out = new Uint8Array(22 + nameBytes.length + typeBytes.length + 1 + chunkData.length);
+    const out = new Uint8Array(23 + nameBytes.length + typeBytes.length + 1 + chunkData.length);
     const v = new DataView(out.buffer);
     v.setUint32(0, transferId, true);
     v.setUint32(4, 0, true);
     v.setUint32(8, totalChunks, true);
     v.setFloat64(12, totalFileSize, true);
-    v.setUint16(20, nameBytes.length, true);
-    out.set(nameBytes, 22);
-    out.set(typeBytes, 22 + nameBytes.length);
-    out[22 + nameBytes.length + typeBytes.length] = 0; // null terminator
-    out.set(chunkData, 23 + nameBytes.length + typeBytes.length);
+    v.setUint8(20, Math.max(1, Math.min(255, groupCount)));
+    v.setUint16(21, nameBytes.length, true);
+    out.set(nameBytes, 23);
+    out.set(typeBytes, 23 + nameBytes.length);
+    out[23 + nameBytes.length + typeBytes.length] = 0; // null terminator
+    out.set(chunkData, 24 + nameBytes.length + typeBytes.length);
     return out;
   } else {
     const out = new Uint8Array(20 + chunkData.length);
@@ -245,15 +255,16 @@ export function decodeFilePartPlaintext(data: Uint8Array): FilePartHeader {
     throw new Error("file part: invalid totalFileSize");
   }
   if (chunkIndex === 0) {
-    if (data.length < 22) throw new Error("file part first chunk too short");
-    const nameLen = v.getUint16(20, true);
-    if (22 + nameLen > data.length) throw new Error("file part name out of bounds");
-    const fileName = sanitizeFileName(TD.decode(data.subarray(22, 22 + nameLen)));
-    let typeEnd = 22 + nameLen;
+    if (data.length < 23) throw new Error("file part first chunk too short");
+    const groupCount = Math.max(1, v.getUint8(20));
+    const nameLen = v.getUint16(21, true);
+    if (23 + nameLen > data.length) throw new Error("file part name out of bounds");
+    const fileName = sanitizeFileName(TD.decode(data.subarray(23, 23 + nameLen)));
+    let typeEnd = 23 + nameLen;
     while (typeEnd < data.length && data[typeEnd] !== 0) typeEnd++;
-    const fileType = TD.decode(data.subarray(22 + nameLen, typeEnd));
+    const fileType = TD.decode(data.subarray(23 + nameLen, typeEnd));
     const chunkData = data.subarray(Math.min(typeEnd + 1, data.length));
-    return { transferId, chunkIndex, totalChunks, totalFileSize, fileName, fileType, chunkData };
+    return { transferId, chunkIndex, totalChunks, totalFileSize, groupCount, fileName, fileType, chunkData };
   } else {
     return { transferId, chunkIndex, totalChunks, totalFileSize, chunkData: data.subarray(20) };
   }

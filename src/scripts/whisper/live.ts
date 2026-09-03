@@ -15,7 +15,6 @@
  */
 
 import {
-  WhisperEngine,
   randomBytes,
   concatBytes,
   toHex,
@@ -101,7 +100,6 @@ import {
   ChunkAssembler,
 } from "./live-chunking";
 
-import { createMinimalPNGCarrier } from "./live-carrier";
 import {
   derivePhraseRoot,
   derivePhraseScopedKey,
@@ -145,17 +143,22 @@ export interface LiveMessage {
    * Zero wire overhead — derived from per-side send/recv totals + role.
    */
   msgId?: number;
-  /** Chunked file transfer id, set for FILE_PART assemblies (inbound and the outbound
-   *  chunk-0 self-echo) so the UI can resolve progress cards by id instead of name+size. */
+  /** File transfer id, set on every FILE_PART assembly (inbound and the outbound
+   *  chunk-0 self-echo). Packed: high 24 bits = group nonce (one per user gesture),
+   *  low 8 bits = index within the group. A lone file is a group of one. */
   transferId?: number;
+  /** How many files were sent together in this file's group (1 for a lone file).
+   *  Set alongside transferId on FILE_PART messages. */
+  groupCount?: number;
   text?: string;
   fileName?: string;
   fileSize?: number;
-  /** file payload for small single-message files (< 4 MB). */
+  /** In-memory payload for voice notes only (see sendAudio) — kept for waveform
+   *  render and scrub playback. Never set for file transfers; those carry fileBlob. */
   fileData?: Uint8Array;
-  /** file payload for large chunked transfers — assembled from per-chunk Blobs
-   *  so the data lives in browser blob storage (can swap to disk), not JS heap.
-   *  consumers should prefer the filePayloadBlob() helper over reading these directly. */
+  /** File-transfer payload — assembled from per-chunk Blobs so the data lives in
+   *  browser blob storage (can swap to disk), not JS heap. Every non-voice-note file
+   *  arrives here regardless of size. */
   fileBlob?: Blob;
   fileType?: string;
   timestamp: number;
@@ -178,15 +181,19 @@ export interface WhisperLiveCallbacks {
   onPeerTyping?: (state: number) => void;
   /** A message we sent was successfully decrypted by the peer. msgId identifies which message. */
   onAck?: (msgId: number) => void;
-  /** Progress during chunked send (file transfers). */
-  onSendProgress?: (bytesSent: number, totalBytes: number) => void;
-  /** Fires once, synchronously, when a chunked outbound file transfer starts —
-   *  lets the UI attach a cancel control to the outbound card, keyed by transferId. */
-  onSendStart?: (transferId: number, fileName: string, totalBytes: number) => void;
-  /** Progress during chunked receive (file transfers). Fires on the first chunk
-   *  (so the UI can render the incoming card immediately) and periodically thereafter,
-   *  throttled the same way as onSendProgress, plus unconditionally on the last chunk. */
-  onReceiveProgress?: (transferId: number, receivedBytes: number, totalBytes: number, fileName: string) => void;
+  /** Progress pushing one message's bytes onto the wire (every message type). Drives
+   *  the compose-bar send animation. Not file-specific — see onSendProgress for that. */
+  onWireProgress?: (bytesSent: number, totalBytes: number) => void;
+  /** Progress during a file send, keyed by the transfer it belongs to. */
+  onSendProgress?: (transferId: number, bytesSent: number, totalBytes: number) => void;
+  /** Fires once, synchronously, when an outbound file transfer starts — lets the UI
+   *  attach a cancel control to the outbound card, keyed by transferId. groupCount is
+   *  the number of files in this file's group (1 for a lone file). */
+  onSendStart?: (transferId: number, fileName: string, totalBytes: number, groupCount: number) => void;
+  /** Progress during a file receive. Fires on the first chunk (so the UI can render the
+   *  incoming card immediately) and periodically thereafter, throttled the same way as
+   *  onSendProgress, plus unconditionally on the last chunk. */
+  onReceiveProgress?: (transferId: number, receivedBytes: number, totalBytes: number, fileName: string, groupCount: number) => void;
   /** A chunked file transfer (in either direction) was cancelled, locally or by the peer. */
   onTransferCancelled?: (transferId: number, by: "local" | "peer", direction: "in" | "out") => void;
   /** Periodic connection quality stats (fires each heartbeat cycle). */
@@ -511,6 +518,8 @@ interface IncomingFileTransfer {
   chunks: Map<number, Blob>;
   receivedBytes: number;
   firstMsgId: number;
+  /** files in this transfer's group, from chunk 0 (1 for a lone file). */
+  groupCount: number;
   /** performance.now() of the last onReceiveProgress emission, for throttling. */
   lastProgressEmit: number;
 }
@@ -563,7 +572,11 @@ export class WhisperLiveSession {
   /** transferIds actively being sent via sendFileChunked, letting an incoming FILE_CANCEL(RECEIVER)
    *  be validated against a real in-flight send instead of blindly trusting the peer's transferId. */
   private outgoingTransfersInFlight = new Set<number>();
-  private engine: WhisperEngine | null = null;
+  /** group nonces (high 24 bits of a transferId) whose remaining queued files should not
+   *  be sent — set by cancelFileGroup, checked by sendFileGroup between files. */
+  private cancelledFileGroups = new Set<number>();
+  /** group nonces currently being sent, so a fresh gesture never reuses a live nonce. */
+  private activeFileGroups = new Set<number>();
   private isOfferer = false;
   /** Total messages sent this session — never resets unlike ratchet nSend. */
   private nSentTotal = 0;
@@ -670,6 +683,7 @@ export class WhisperLiveSession {
   onRawDecrypted: WhisperLiveCallbacks["onRawDecrypted"];
   onPeerTyping: WhisperLiveCallbacks["onPeerTyping"];
   onAck: WhisperLiveCallbacks["onAck"];
+  onWireProgress: WhisperLiveCallbacks["onWireProgress"];
   onSendProgress: WhisperLiveCallbacks["onSendProgress"];
   onSendStart: WhisperLiveCallbacks["onSendStart"];
   onReceiveProgress: WhisperLiveCallbacks["onReceiveProgress"];
@@ -707,6 +721,7 @@ export class WhisperLiveSession {
     this.onRawDecrypted = callbacks.onRawDecrypted;
     this.onPeerTyping = callbacks.onPeerTyping;
     this.onAck = callbacks.onAck;
+    this.onWireProgress = callbacks.onWireProgress;
     this.onSendProgress = callbacks.onSendProgress;
     this.onSendStart = callbacks.onSendStart;
     this.onReceiveProgress = callbacks.onReceiveProgress;
@@ -1083,6 +1098,8 @@ export class WhisperLiveSession {
     this.cancelledIncomingTransfers.clear();
     this.cancelledOutgoingTransfers.clear();
     this.outgoingTransfersInFlight.clear();
+    this.cancelledFileGroups.clear();
+    this.activeFileGroups.clear();
   }
 
   private resetSessionState(): void {
@@ -2175,7 +2192,7 @@ export class WhisperLiveSession {
       this.onLog(`file part decode error: ${errorMessage(err)}`);
       return;
     }
-    const { transferId, chunkIndex, totalChunks, totalFileSize, fileName, fileType, chunkData } = part;
+    const { transferId, chunkIndex, totalChunks, totalFileSize, groupCount, fileName, fileType, chunkData } = part;
 
     // dropped locally (we rejected it) or the peer aborted it — ignore any stragglers
     // still in flight without recreating transfer state.
@@ -2198,6 +2215,7 @@ export class WhisperLiveSession {
         chunks: new Map(),
         receivedBytes: 0,
         firstMsgId: msgId,
+        groupCount: groupCount ?? 1,
         lastProgressEmit: 0,
       };
       this.incomingFiles.set(transferId, transfer);
@@ -2216,7 +2234,7 @@ export class WhisperLiveSession {
       // always emit on the first chunk (so the UI can render the card immediately)
       // and on the last chunk (so the UI can settle at 100%); otherwise throttle.
       if (isNewTransfer || isLastChunk || now - transfer.lastProgressEmit >= SEND_PROGRESS_INTERVAL_MS) {
-        this.onReceiveProgress(transferId, transfer.receivedBytes, transfer.totalSize, transfer.fileName);
+        this.onReceiveProgress(transferId, transfer.receivedBytes, transfer.totalSize, transfer.fileName, transfer.groupCount);
         transfer.lastProgressEmit = now;
       }
     }
@@ -2235,6 +2253,7 @@ export class WhisperLiveSession {
       direction: "peer",
       msgId: transfer.firstMsgId,
       transferId,
+      groupCount: transfer.groupCount,
       fileName: transfer.fileName,
       fileSize: transfer.totalSize,
       fileBlob: assembled,
@@ -2446,42 +2465,71 @@ export class WhisperLiveSession {
     return sentMsgId;
   }
 
+  /** Send one file — a group of one. */
   async sendFile(file: File): Promise<number> {
-    // Large files: split into application-level chunks so the sender never
-    // needs more than one chunk (~4 MB) in memory at a time.
-    if (file.size > FILE_CHUNK_SIZE) {
-      return this.sendFileChunked(file);
-    }
-
-    const fileBytes = new Uint8Array(await file.arrayBuffer());
-    let sentMsgId = -1;
-    await this.enqueueSend(async () => {
-      if (!await this.canSend()) return;
-      if (this.transportMode === "dressed") {
-        sentMsgId = await this.sendFileDressed(file.name, file.type, fileBytes);
-        return;
-      }
-      const plaintext = encodeFilePlaintext(file.name, file.type, fileBytes);
-      const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
-      if (msgId < 0) return;
-      sentMsgId = msgId;
-      this.onMessage({
-        type: "file", direction: "self",
-        msgId, fileName: file.name, fileSize: fileBytes.length, fileType: file.type,
-        fileData: fileBytes,
-        timestamp: Date.now(),
-      });
-    });
-    return sentMsgId;
+    return this.sendFileGroup([file]);
   }
 
-  /** Cancel an in-flight outbound chunked transfer we initiated. Aborts the send
-   *  loop between chunks, tells the peer via CTRL so it drops its partial state,
-   *  and always resolves cleanly (no throw) — sendFileChunked simply stops early. */
+  /** Send a batch of files chosen in a single gesture as one group.
+   *
+   *  There is no separate group identity on the wire: every file is an independent
+   *  FILE_PART transfer, and its transferId is (groupNonce << 8) | indexInGroup. One
+   *  24-bit nonce is drawn per gesture and the files are numbered 0..N-1, so group
+   *  membership is a property of each file's own id with nothing to keep in sync.
+   *  chunk 0 of each file also carries groupCount so the receiver knows the batch size.
+   *
+   *  Files stream sequentially; cancelling the group stops the queue before the next
+   *  file starts (see cancelFileGroup). Returns the msgId of the first file. */
+  async sendFileGroup(files: File[]): Promise<number> {
+    if (!files.length) return -1;
+    const groupCount = Math.min(255, files.length);
+    const batch = files.slice(0, groupCount);
+
+    let groupNonce = this.drawGroupNonce();
+    this.activeFileGroups.add(groupNonce);
+    this.cancelledFileGroups.delete(groupNonce);
+
+    let firstMsgId = -1;
+    try {
+      for (let index = 0; index < batch.length; index++) {
+        if (this.cancelledFileGroups.has(groupNonce)) break; // group cancelled — drop the rest of the queue
+        const transferId = ((groupNonce << 8) | index) >>> 0;
+        const msgId = await this.sendFileChunked(batch[index], transferId, groupCount);
+        if (index === 0) firstMsgId = msgId;
+      }
+    } finally {
+      this.activeFileGroups.delete(groupNonce);
+      this.cancelledFileGroups.delete(groupNonce);
+    }
+    return firstMsgId;
+  }
+
+  /** A 24-bit random group nonce not currently in flight. */
+  private drawGroupNonce(): number {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const b = randomBytes(4);
+      const nonce = new DataView(b.buffer, b.byteOffset).getUint32(0, true) & 0xffffff;
+      if (!this.activeFileGroups.has(nonce)) return nonce;
+    }
+    return (Date.now() & 0xffffff) >>> 0;
+  }
+
+  /** Cancel an in-flight outbound file transfer we initiated. Aborts the send loop
+   *  between chunks, tells the peer via CTRL so it drops its partial state, and always
+   *  resolves cleanly (no throw) — sendFileChunked simply stops early. */
   cancelFileTransfer(transferId: number): void {
     this.addCancelledTransferId(this.cancelledOutgoingTransfers, transferId);
     this.sendCtrl(CTRL_OP.FILE_CANCEL, encodeFileCancelPayload(transferId, FILE_CANCEL_ROLE.SENDER));
     this.onTransferCancelled?.(transferId, "local", "out");
+  }
+
+  /** Cancel a whole outbound group: stop the queue so no further file starts, and
+   *  abort every file from that group still in flight. */
+  cancelFileGroup(groupNonce: number): void {
+    this.cancelledFileGroups.add(groupNonce);
+    for (const id of this.outgoingTransfersInFlight) {
+      if ((id >>> 8) === groupNonce) this.cancelFileTransfer(id);
+    }
   }
 
   /** Reject/drop an in-flight inbound chunked transfer. Releases the partial chunk
@@ -2498,22 +2546,23 @@ export class WhisperLiveSession {
     this.onTransferCancelled?.(transferId, "local", "in");
   }
 
-  /** Send a large file as sequential application-level 4 MB chunks.
-   *  Each chunk is independently encrypted. The sender only holds one chunk
-   *  in memory at a time — peak allocation is O(chunk) not O(file). */
-  private async sendFileChunked(file: File): Promise<number> {
-    const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE);
-    const transferIdBytes = randomBytes(4);
-    const transferId = new DataView(transferIdBytes.buffer).getUint32(0, true);
+  /** Send one file as sequential application-level 4 MB chunks, each independently
+   *  encrypted. The sender only holds one chunk in memory at a time — peak allocation
+   *  is O(chunk) not O(file). A small file is simply a one-chunk transfer.
+   *
+   *  transferId and groupCount are assigned by sendFileGroup (a lone file is a group
+   *  of one: index 0, groupCount 1). */
+  private async sendFileChunked(file: File, transferId: number, groupCount: number): Promise<number> {
+    const totalChunks = Math.max(1, Math.ceil(file.size / FILE_CHUNK_SIZE));
     let firstMsgId = -1;
     let bytesSent = 0;
 
-    this.onSendStart?.(transferId, file.name, file.size);
+    this.onSendStart?.(transferId, file.name, file.size, groupCount);
     this.outgoingTransfersInFlight.add(transferId);
 
     try {
       for (let i = 0; i < totalChunks; i++) {
-        // checked between chunks — cancelled either locally or by the peer rejecting.
+        // checked between chunks — cancelled locally, by the peer rejecting, or by a group cancel.
         if (this.cancelledOutgoingTransfers.has(transferId)) break;
 
         const start = i * FILE_CHUNK_SIZE;
@@ -2523,7 +2572,7 @@ export class WhisperLiveSession {
         const chunkIdx = i;
         const chunkLen = chunkBytes.length;
 
-        // Chunked file transfer = single user action — skip rate shaping
+        // File transfer = single user action — skip rate shaping
         await this.enqueueSend(async () => {
           if (this.cancelledOutgoingTransfers.has(transferId)) return; // cancelled while queued
           if (!await this.canSend()) return;
@@ -2531,22 +2580,24 @@ export class WhisperLiveSession {
             transferId, chunkIdx, totalChunks, file.size, chunkBytes,
             chunkIdx === 0 ? file.name : undefined,
             chunkIdx === 0 ? file.type : undefined,
+            groupCount,
           );
           const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE_PART);
           if (msgId < 0) return;
           if (chunkIdx === 0) {
             firstMsgId = msgId;
-            // Show self-entry immediately. fileData is omitted — we don't keep
-            // 500 MB of our own file in memory just for a self-view download link.
+            // Show self-entry immediately. No payload is attached — we don't keep the
+            // sender's own file in memory just for a self-view download link; the UI
+            // re-renders the finished card from the retained File handle.
             this.onMessage({
               type: "file", direction: "self",
               msgId, fileName: file.name, fileSize: file.size, fileType: file.type,
-              transferId,
+              transferId, groupCount,
               timestamp: Date.now(),
             });
           }
           bytesSent += chunkLen;
-          if (this.onSendProgress) this.onSendProgress(bytesSent, file.size);
+          this.onSendProgress?.(transferId, bytesSent, file.size);
         });
       }
     } finally {
@@ -2556,25 +2607,32 @@ export class WhisperLiveSession {
     return firstMsgId;
   }
 
-  /** Send an audio recording as a file message, keeping bytes for self-playback.
-   *  Always uses raw file wire — skips dressed mode (stego wraps audio in a PNG
-   *  carrier which destroys playback and adds pointless overhead). */
-  async sendAudio(fileName: string, fileType: string, audioBytes: Uint8Array): Promise<number> {
+  /** Send a Whisper-native inline payload — a voice note or a drawing — as a single
+   *  message that carries its bytes in memory on both sides. These are content composed
+   *  inside Whisper, always small, with bespoke renderers (waveform scrub, glyph canvas,
+   *  live-preview merge) that need the raw bytes synchronously. Everything else is a
+   *  file transfer (see sendFileGroup). */
+  async sendInline(fileName: string, fileType: string, bytes: Uint8Array): Promise<number> {
     let sentMsgId = -1;
     await this.enqueueSend(async () => {
       if (!await this.canSend()) return;
-      const plaintext = encodeFilePlaintext(fileName, fileType, audioBytes);
+      const plaintext = encodeFilePlaintext(fileName, fileType, bytes);
       const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
       if (msgId < 0) return;
       sentMsgId = msgId;
       this.onMessage({
         type: "file", direction: "self",
-        msgId, fileName, fileSize: audioBytes.length, fileType,
-        fileData: audioBytes,
+        msgId, fileName, fileSize: bytes.length, fileType,
+        fileData: bytes,
         timestamp: Date.now(),
       });
     });
     return sentMsgId;
+  }
+
+  /** Send a recorded voice note. See sendInline. */
+  async sendAudio(fileName: string, fileType: string, audioBytes: Uint8Array): Promise<number> {
+    return this.sendInline(fileName, fileType, audioBytes);
   }
 
   /** Send raw plaintext with custom flags. Used by CampfireNode for pairwise channels. */
@@ -2583,58 +2641,6 @@ export class WhisperLiveSession {
       if (!await this.canSend()) return;
       await this.encryptAndSend(plaintext, flags);
     });
-  }
-
-  private async sendFileDressed(
-    fileName: string, fileType: string, fileBytes: Uint8Array,
-  ): Promise<number> {
-    if (!this.engine) this.engine = new WhisperEngine();
-    const carrier = createMinimalPNGCarrier();
-
-    try {
-      let password: string;
-      if (this.sharedSecret) {
-        const stegoKey = await hkdf(this.sharedSecret, ZERO_SALT_32, TE.encode("whisper-stego"), 16);
-        password = toHex(stegoKey);
-        stegoKey.fill(0);
-      } else {
-        password = "whisper-dressed";
-      }
-
-      const payloadFile = new File([toArrayBuffer(fileBytes)], fileName, { type: fileType });
-      const carrierFile = new File([toArrayBuffer(carrier)], "carrier.png", { type: "image/png" });
-
-      const result = await this.engine.embedFile(carrierFile, payloadFile, password, {
-        preferInertSpace: false,
-        maxCandidates: 1,
-        onlyDecodeHere: false,
-        allowTailFallback: true,
-      });
-
-      // Send the dressed carrier as a file message
-      const dressedBytes = new Uint8Array(await result.outputFile.arrayBuffer());
-      const plaintext = encodeFilePlaintext(result.outputName, result.outputType, dressedBytes);
-      const msgId = await this.encryptAndSend(plaintext, LIVE_FLAG.FILE);
-
-      this.onMessage({
-        type: "file",
-        direction: "self",
-        msgId,
-        fileName: fileName,
-        fileSize: fileBytes.length,
-        fileType: fileType,
-        fileData: fileBytes,
-        timestamp: Date.now(),
-      });
-
-      this.onLog(`sent ${fileName} (embedded in carrier)`);
-      return msgId;
-    } catch (err) {
-      this.onLog(`steganography failed, sending directly: ${errorMessage(err)}`);
-      const msgId = await this.encryptAndSend(encodeFilePlaintext(fileName, fileType, fileBytes), LIVE_FLAG.FILE);
-      this.onMessage({ type: "file", direction: "self", msgId, fileName, fileSize: fileBytes.length, fileType, fileData: fileBytes, timestamp: Date.now() });
-      return msgId;
-    }
   }
 
   private waitForDrain(): Promise<void> {
@@ -2683,10 +2689,10 @@ export class WhisperLiveSession {
         if (!this.dc || this.dc.readyState !== "open") return msgId;
         this.dc.send(chunk);
         bytesSent += chunk.byteLength;
-        if (this.onSendProgress) {
+        if (this.onWireProgress) {
           const now = performance.now();
           if (bytesSent >= totalBytes || now - lastProgressEmit >= SEND_PROGRESS_INTERVAL_MS) {
-            this.onSendProgress(bytesSent, totalBytes);
+            this.onWireProgress(bytesSent, totalBytes);
             lastProgressEmit = now;
           }
         }

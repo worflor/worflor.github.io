@@ -490,5 +490,86 @@ describe("live-wire", () => {
       const encoded = encodeFilePartPlaintext(7, 0, 0, 0, randomBytes(1), "x.bin", "application/octet-stream");
       assert.throws(() => decodeFilePartPlaintext(encoded), /totalChunks/);
     });
+
+    it("groupCount defaults to 1 (a lone file is a group of one) and round-trips on chunk 0", () => {
+      const loneDefault = decodeFilePartPlaintext(encodeFilePartPlaintext(1, 0, 1, 10, randomBytes(4), "a.bin", ""));
+      assert.equal(loneDefault.groupCount, 1);
+      for (const gc of [1, 2, 10, 255]) {
+        const decoded = decodeFilePartPlaintext(encodeFilePartPlaintext(1, 0, 1, 10, randomBytes(4), "a.bin", "", gc));
+        assert.equal(decoded.groupCount, gc, `groupCount ${gc}`);
+      }
+    });
+
+    it("groupCount is clamped into 1..255 on encode", () => {
+      assert.equal(decodeFilePartPlaintext(encodeFilePartPlaintext(1, 0, 1, 10, randomBytes(1), "a", "", 0)).groupCount, 1);
+      assert.equal(decodeFilePartPlaintext(encodeFilePartPlaintext(1, 0, 1, 10, randomBytes(1), "a", "", 999)).groupCount, 255);
+    });
+
+    it("groupCount is not carried on non-zero chunks (only chunk 0 has it)", () => {
+      const decoded = decodeFilePartPlaintext(encodeFilePartPlaintext(1, 1, 3, 10, randomBytes(4), undefined, undefined, 5));
+      assert.equal(decoded.groupCount, undefined);
+    });
+
+    it("packed transferId (groupNonce << 8 | index) round-trips as an opaque uint32", () => {
+      // the wire treats transferId as an opaque id; the (nonce, index) split is a
+      // consumer convention. verify the packing survives a full round-trip.
+      for (const [nonce, index] of [[0, 0], [1, 3], [0xffffff, 255], [0x0abcde, 7]] as const) {
+        const tid = ((nonce << 8) | index) >>> 0;
+        const decoded = decodeFilePartPlaintext(encodeFilePartPlaintext(tid, 0, 1, 10, randomBytes(2), "f", "", 8));
+        assert.equal(decoded.transferId, tid, `tid for nonce=${nonce} index=${index}`);
+        assert.equal(decoded.transferId >>> 8, nonce, "recovered nonce");
+        assert.equal(decoded.transferId & 0xff, index, "recovered index");
+      }
+    });
+
+    it("chunk 0 shorter than the fixed header is rejected", () => {
+      // valid transferId/chunkIndex=0/totalChunks=1/size=10, but truncated before groupCount+nameLen
+      const buf = new Uint8Array(22);
+      const v = new DataView(buf.buffer);
+      v.setUint32(8, 1, true);     // totalChunks
+      v.setFloat64(12, 10, true);  // totalFileSize
+      assert.throws(() => decodeFilePartPlaintext(buf), /too short/);
+    });
+
+    it("a 3-file group round-trips: each file's chunks carry the shared nonce, its own index, and the batch size", () => {
+      // mirrors WhisperLiveSession.sendFileGroup -> sendFileChunked: one 24-bit nonce
+      // per gesture, files numbered 0..N-1, groupCount on every chunk 0.
+      const CHUNK = 1 << 20;
+      const groupNonce = 0x3af219;
+      const files = [
+        { name: "a.bin", type: "application/octet-stream", bytes: randomBytes(CHUNK + 512) }, // 2 chunks
+        { name: "b.png", type: "image/png", bytes: randomBytes(300) },                        // 1 chunk
+        { name: "c.txt", type: "text/plain", bytes: randomBytes(CHUNK * 2 + 1) },             // 3 chunks
+      ];
+      files.forEach((file, index) => {
+        const transferId = ((groupNonce << 8) | index) >>> 0;
+        const totalChunks = Math.max(1, Math.ceil(file.bytes.length / CHUNK));
+        const parts: Uint8Array[] = [];
+        for (let c = 0; c < totalChunks; c++) {
+          const slice = file.bytes.subarray(c * CHUNK, Math.min((c + 1) * CHUNK, file.bytes.length));
+          const wire = encodeFilePartPlaintext(
+            transferId, c, totalChunks, file.bytes.length, slice,
+            c === 0 ? file.name : undefined,
+            c === 0 ? file.type : undefined,
+            files.length,
+          );
+          const decoded = decodeFilePartPlaintext(wire);
+          assert.equal(decoded.transferId >>> 8, groupNonce, `nonce on ${file.name} chunk ${c}`);
+          assert.equal(decoded.transferId & 0xff, index, `index on ${file.name} chunk ${c}`);
+          if (c === 0) {
+            assert.equal(decoded.groupCount, 3, `groupCount on ${file.name} chunk 0`);
+            assert.equal(decoded.fileName, file.name);
+            assert.equal(decoded.fileType, file.type);
+          } else {
+            assert.equal(decoded.groupCount, undefined);
+          }
+          parts.push(decoded.chunkData.slice());
+        }
+        const joined = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+        let off = 0;
+        for (const p of parts) { joined.set(p, off); off += p.length; }
+        assertBytesEqual(joined, file.bytes, `${file.name} reassembles`);
+      });
+    });
   });
 });

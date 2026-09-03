@@ -2737,6 +2737,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     });
   }
 
+  interface LightboxEntry { src: string; dlUrl: string; fileName: string; kind: MediaKind }
+
   function openMediaLightbox(
     src: string,
     dlUrl: string,
@@ -2744,12 +2746,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     kind: MediaKind,
     glyph?: GlyphPayload,
     glyphBytes?: Uint8Array,
+    gallery?: { entries: LightboxEntry[]; index: number },
   ): void {
     // Close any existing lightbox first
     closeMediaLightbox();
 
     const lbAc = new AbortController();
     const lbSignal = lbAc.signal;
+
+    const entries: LightboxEntry[] = gallery?.entries ?? [{ src, dlUrl, fileName, kind }];
+    let cursor = gallery ? Math.max(0, Math.min(gallery.index, entries.length - 1)) : 0;
 
     const overlay = document.createElement("div");
     overlay.className = "wl-lightbox";
@@ -2758,62 +2764,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const inner = document.createElement("div");
     inner.className = "wl-lightbox-inner";
 
-    if (kind === "image") {
-      const img = document.createElement("img");
-      img.className = "wl-lightbox-img";
-      img.src = src;
-      img.alt = fileName;
-      img.draggable = false;
-      inner.appendChild(img);
-    } else if (kind === "video") {
-      const video = document.createElement("video");
-      video.className = "wl-lightbox-video";
-      video.src = src;
-      video.controls = true;
-      video.autoplay = true;
-      video.playsInline = true;
-      inner.appendChild(video);
-    } else {
-      const frame = document.createElement("div");
-      frame.className = "wl-lightbox-img";
-      frame.style.display = "grid";
-      frame.style.placeItems = "center";
-
-      const canvas = document.createElement("canvas");
-      canvas.className = "wl-peer-draw-inline";
-      canvas.style.width = "100%";
-      canvas.style.height = "100%";
-      canvas.style.aspectRatio = `${Math.max(1, glyph?.logicalW ?? 4)} / ${Math.max(1, glyph?.logicalH ?? 3)}`;
-      frame.appendChild(canvas);
-      inner.appendChild(frame);
-
-      if (glyph) {
-        bindGlyphCanvasToHost(canvas, frame, glyph, lbSignal);
-      }
-    }
-
     const bar = document.createElement("div");
     bar.className = "wl-lightbox-bar";
-
     const label = document.createElement("span");
     label.className = "wl-lightbox-name";
-    label.textContent = fileName;
-
     const dlLink = document.createElement("a");
     dlLink.className = "wl-lightbox-dl";
-    if (kind === "glyph" && glyphBytes) {
-      dlLink.href = "#";
-      dlLink.download = gwyphPngName(fileName);
-      dlLink.title = "Download PNG";
-      dlLink.addEventListener("click", (e) => {
-        e.preventDefault();
-        void downloadGlyphAsPng(glyphBytes, fileName);
-      }, { signal: lbSignal });
-    } else {
-      dlLink.href = dlUrl;
-      dlLink.download = fileName;
-      dlLink.title = "Download";
-    }
+    dlLink.title = "Download";
     dlLink.innerHTML = `<svg width="16" height="16" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 
     const annotateBtn = document.createElement("button");
@@ -2822,8 +2779,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     annotateBtn.title = "Draw";
     annotateBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     annotateBtn.addEventListener("click", () => {
-      if (kind === "glyph" && glyphBytes) {
-        openManagedDrawSurface({ mode: "annotate", gwyphBase: glyphBytes, originalName: fileName }, {
+      const cur = entries[cursor];
+      if (cur.kind === "glyph" && glyphBytes) {
+        openManagedDrawSurface({ mode: "annotate", gwyphBase: glyphBytes, originalName: cur.fileName }, {
           onSend: (r) => sendFileToChat(r.file, "draw"),
           onEvent: (ev) => session?.sendDrawStream(ev),
         }, lbSignal);
@@ -2832,13 +2790,79 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const mediaEl = inner.querySelector("img, video") as HTMLImageElement | HTMLVideoElement | null;
       if (!mediaEl) return;
       if (mediaEl instanceof HTMLVideoElement) mediaEl.pause();
-      openManagedDrawSurface({ mode: "annotate", mediaEl, originalName: fileName }, {
+      openManagedDrawSurface({ mode: "annotate", mediaEl, originalName: cur.fileName }, {
         onSend: (r) => sendFileToChat(r.file, "draw"),
         onEvent: (ev) => session?.sendDrawStream(ev),
       }, lbSignal);
     }, { signal: lbSignal });
 
-    bar.append(label, annotateBtn, dlLink);
+    const counter = document.createElement("span");
+    counter.className = "wl-lightbox-count";
+
+    /** Render the media at `cursor` into `inner` and refresh the bar. */
+    const show = (): void => {
+      const e = entries[cursor];
+      inner.replaceChildren();
+      if (e.kind === "image") {
+        const img = document.createElement("img");
+        img.className = "wl-lightbox-img";
+        img.src = e.src; img.alt = e.fileName; img.draggable = false;
+        inner.appendChild(img);
+      } else if (e.kind === "video") {
+        const video = document.createElement("video");
+        video.className = "wl-lightbox-video";
+        video.src = e.src; video.controls = true; video.autoplay = true; video.playsInline = true;
+        inner.appendChild(video);
+      } else {
+        const frame = document.createElement("div");
+        frame.className = "wl-lightbox-img";
+        frame.style.display = "grid";
+        frame.style.placeItems = "center";
+        const canvas = document.createElement("canvas");
+        canvas.className = "wl-peer-draw-inline";
+        canvas.style.width = "100%";
+        canvas.style.height = "100%";
+        canvas.style.aspectRatio = `${Math.max(1, glyph?.logicalW ?? 4)} / ${Math.max(1, glyph?.logicalH ?? 3)}`;
+        frame.appendChild(canvas);
+        inner.appendChild(frame);
+        if (glyph) bindGlyphCanvasToHost(canvas, frame, glyph, lbSignal);
+      }
+      label.textContent = e.fileName;
+      if (e.kind === "glyph" && glyphBytes) {
+        dlLink.href = "#";
+        dlLink.download = gwyphPngName(e.fileName);
+        dlLink.onclick = (ev) => { ev.preventDefault(); void downloadGlyphAsPng(glyphBytes, e.fileName); };
+      } else {
+        dlLink.href = e.dlUrl;
+        dlLink.download = e.fileName;
+        dlLink.onclick = null;
+      }
+      counter.textContent = entries.length > 1 ? `${cursor + 1} / ${entries.length}` : "";
+    };
+
+    const step = (delta: number): void => {
+      if (entries.length < 2) return;
+      cursor = (cursor + delta + entries.length) % entries.length;
+      show();
+    };
+
+    if (entries.length > 1) {
+      for (const [dir, glyphPath, cls] of [
+        [-1, "M11 3L6 8l5 5", "wl-lightbox-prev"],
+        [1, "M6 3l5 5-5 5", "wl-lightbox-next"],
+      ] as const) {
+        const nav = document.createElement("button");
+        nav.type = "button";
+        nav.className = cls;
+        nav.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="${glyphPath}" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+        nav.addEventListener("click", (ev) => { ev.stopPropagation(); step(dir); }, { signal: lbSignal });
+        overlay.appendChild(nav);
+      }
+    }
+
+    show();
+
+    bar.append(label, counter, annotateBtn, dlLink);
 
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
@@ -2854,9 +2878,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (e.target === overlay) closeMediaLightbox();
     }, { signal: lbSignal });
 
-    // Escape to close — document-level, cleaned up by lbAc.abort()
+    // Escape to close, arrows to page a gallery — cleaned up by lbAc.abort()
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeMediaLightbox(); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
     }, { signal: lbSignal });
 
     requestAnimationFrame(() => overlay.classList.add("wl-lightbox--open"));
@@ -4226,6 +4252,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // clearChatArtifacts can null them out and let the underlying handle (and any
   // detached DOM it's still closed over) be garbage collected on chat clear.
   const outboundFileRefs = new Set<TransferCardState>();
+  const outboundGroupRefs = new Set<{ file?: File; blob?: Blob }>();
 
   // set immediately before calling session.sendFile(file) and consumed inside the
   // synchronous prefix of onSendStart (which fires before sendFileChunked's first
@@ -4234,13 +4261,70 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   // signature.
   let pendingOutboundFile: File | null = null;
 
-  /** True if any card (either direction) hasn't settled yet — delivered/cancelled cards
-   *  are pruned from transferCards as soon as they resolve, so this is just a scan over
-   *  whatever's left in flight, never more than a couple of entries in practice. Backs
-   *  the beforeunload guard and the screen wake lock. */
+  /* ── File groups ──────────────────────────────────────────────
+   * Every file rides the same transfer path (see live.ts sendFileGroup) and its
+   * transferId is (groupNonce << 8) | indexInGroup. A lone file is a group of one
+   * and renders exactly as a single transfer card / media bubble always has. Two or
+   * more files chosen in one gesture share a nonce and land as ONE bubble: a header
+   * plus a grid of per-file tiles that fill in as each file arrives, with one
+   * "save all" (and, where supported, "save to folder") for the whole batch.
+   */
+  interface TransferItem {
+    transferId: number;
+    index: number;
+    direction: "in" | "out";
+    fileName: string;
+    fileType: string;
+    totalBytes: number;
+    received: number;
+    state: "queued" | "active" | "done" | "cancelled";
+    /** out: the local File handle, retained for re-download (disk-backed, ~free). */
+    file?: File;
+    /** in: the assembled payload once the file finishes (for save-all / folder / lightbox). */
+    blob?: Blob;
+    tileEl: HTMLElement;
+    fillEl: HTMLElement | null;
+    metaEl: HTMLElement | null;
+    nameEl: HTMLElement | null;
+    /** media items: the display + octet-stream blob URLs, created once on finalize
+     *  and reused by the tile thumbnail and the group lightbox. */
+    displayUrl?: string;
+    dlUrl?: string;
+    mediaKind?: MediaKind;
+  }
+
+  interface TransferGroup {
+    nonce: number;
+    direction: "in" | "out";
+    count: number;
+    items: Map<number, TransferItem>;
+    wrapEl: HTMLElement;
+    gridEl: HTMLElement;
+    subEl: HTMLElement;
+    cancelBtn: HTMLButtonElement | null;
+    saveAllBtn: HTMLButtonElement | null;
+    settled: boolean;
+  }
+
+  /** Multi-file groups, keyed by group nonce (transferId >>> 8). */
+  const groups = new Map<number, TransferGroup>();
+
+  /** The group bubble built at gesture time by sendFilesToChat, before the session has
+   *  drawn a nonce — adopted by the first onSendStart. */
+  let pendingOutboundGroup: { files: File[]; group: TransferGroup } | null = null;
+
+  /** Last directory the user picked for a "save to folder" handoff, reused across groups. */
+  let lastDirHandle: FileSystemDirectoryHandle | null = null;
+  const fsaSupported = typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
+
+  /** True if any transfer (single card or group item) is still in flight. Backs the
+   *  beforeunload guard and the screen wake lock. */
   function hasActiveTransfers(): boolean {
     for (const state of transferCards.values()) {
       if (!state.settled) return true;
+    }
+    for (const group of groups.values()) {
+      if (!group.settled) return true;
     }
     return false;
   }
@@ -4513,9 +4597,493 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     fadeOut.finished.then(() => { badge.remove(); swapIn(); }).catch(() => { badge.remove(); swapIn(); });
   }
 
+  /* ── Multi-file group bubble ─────────────────────────────── */
+
+  const FILE_TILE_ICON = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 2h8l6 6v14H6z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M14 2v6h6" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
+
+  function groupOf(transferId: number): TransferGroup | null {
+    return groups.get(transferId >>> 8) ?? null;
+  }
+
+  /** A file whose group has two or more members renders inside a group bubble
+   *  rather than as its own message. */
+  function isGroupedFileMessage(msg: LiveMessage): boolean {
+    return msg.type === "file" && msg.transferId != null && (msg.groupCount ?? 1) >= 2;
+  }
+
+  /** Columns for a batch of N tiles — chosen to avoid a lone trailing tile and to
+   *  keep tiles a comfortable size (small batches get bigger tiles). */
+  function gridColumnsFor(count: number): number {
+    const table = [0, 1, 2, 3, 2, 3, 3, 4, 4, 3, 4, 4, 4];
+    if (count < table.length) return table[count];
+    return count <= 20 ? 4 : 5;
+  }
+
+  function buildTransferGroup(nonce: number, direction: "in" | "out", count: number): TransferGroup {
+    const wrapEl = document.createElement("div");
+    wrapEl.className = `wl-msg wl-msg--${direction === "in" ? "peer" : "self"}`;
+    wrapEl.dataset.groupNonce = String(nonce);
+
+    const card = document.createElement("div");
+    card.className = "wl-transfer-group";
+    card.dataset.settled = "false";
+    card.dataset.dir = direction;
+
+    const head = document.createElement("div");
+    head.className = "wl-transfer-group-head";
+
+    const title = document.createElement("span");
+    title.className = "wl-transfer-group-title";
+    title.textContent = `${count} files`;
+
+    const sub = document.createElement("span");
+    sub.className = "wl-transfer-group-sub";
+
+    const actions = document.createElement("div");
+    actions.className = "wl-transfer-group-actions";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "wl-transfer-group-cancel";
+    cancelBtn.textContent = "cancel";
+    cancelBtn.setAttribute("aria-label", "Cancel all remaining files");
+    cancelBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // read the nonce live — an outbound group is created with a placeholder and
+      // adopts its real nonce on the first onSendStart.
+      const group = groups.get(Number(wrapEl.dataset.groupNonce));
+      if (!group) return;
+      if (group.direction === "out") session?.cancelFileGroup(group.nonce);
+      for (const item of group.items.values()) {
+        if (item.state === "active" || item.state === "queued") {
+          if (group.direction === "in") session?.cancelIncomingTransfer(item.transferId);
+          collapseGroupItemCancelled(item);
+        }
+      }
+      maybeSettleGroup(group);
+    }, { signal });
+    actions.appendChild(cancelBtn);
+
+    head.append(title, sub, actions);
+
+    const grid = document.createElement("div");
+    grid.className = "wl-transfer-grid";
+    grid.style.setProperty("--wl-grid-cols", String(gridColumnsFor(count)));
+
+    card.append(head, grid);
+    wrapEl.appendChild(card);
+
+    const timeEl = document.createElement("time");
+    timeEl.className = "wl-msg-time";
+    const now = Date.now();
+    timeEl.dateTime = String(now);
+    const timeText = document.createElement("span");
+    timeText.className = "wl-msg-time-text";
+    timeText.textContent = formatTime(now);
+    timeEl.appendChild(timeText);
+    wrapEl.appendChild(timeEl);
+
+    if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
+    opts.chatMessages.appendChild(wrapEl);
+    if (direction === "out") { pinnedToBottom = true; requestAnimationFrame(() => anchorToBottom("instant")); }
+    else smartScroll();
+
+    const group: TransferGroup = {
+      nonce, direction, count,
+      items: new Map(),
+      wrapEl, gridEl: grid, subEl: sub,
+      cancelBtn, saveAllBtn: null,
+      settled: false,
+    };
+    groups.set(nonce, group);
+
+    // pre-seat every tile as a skeleton so the grid is stable from the first frame:
+    // files fill their slot in place as they arrive rather than popping a new tile
+    // in and reflowing the whole batch. the receiver knows the count from chunk 0
+    // even before it knows any name.
+    for (let i = 0; i < count; i++) ensureGroupItem(group, i, "", 0, "");
+
+    void acquireTransferWakeLock();
+    updateGroupHeader(group);
+    return group;
+  }
+
+  /** Get item `index`, or create its (skeleton) tile if it doesn't exist yet. */
+  function ensureGroupItem(
+    group: TransferGroup, index: number, fileName: string, totalBytes: number, fileType: string,
+  ): TransferItem {
+    const existing = group.items.get(index);
+    if (existing) {
+      if (fileName && existing.state === "queued") setTileName(existing, fileName);
+      if (totalBytes && !existing.totalBytes) {
+        existing.totalBytes = totalBytes;
+        if (existing.metaEl && existing.state === "queued") existing.metaEl.textContent = formatSize(totalBytes);
+      }
+      if (fileType || fileName) {
+        existing.fileType ||= fileType;
+        const iconEl = existing.tileEl.querySelector<HTMLElement>(".wl-transfer-tile-icon");
+        if (iconEl) iconEl.innerHTML = tileGlyphFor(existing.fileName, existing.fileType);
+      }
+      return existing;
+    }
+
+    const tileEl = document.createElement("div");
+    tileEl.className = "wl-transfer-tile";
+    tileEl.dataset.state = "queued";
+
+    const inner = document.createElement("div");
+    inner.className = "wl-transfer-tile-inner";
+
+    const icon = document.createElement("span");
+    icon.className = "wl-transfer-tile-icon";
+    icon.innerHTML = tileGlyphFor(fileName, fileType);
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "wl-transfer-tile-name";
+    nameEl.textContent = fileName;
+
+    const metaEl = document.createElement("span");
+    metaEl.className = "wl-transfer-tile-meta";
+    metaEl.textContent = totalBytes ? formatSize(totalBytes) : "";
+
+    inner.append(icon, nameEl, metaEl);
+
+    const track = document.createElement("div");
+    track.className = "wl-transfer-tile-track";
+    const fillEl = document.createElement("div");
+    fillEl.className = "wl-transfer-fill";
+    track.appendChild(fillEl);
+
+    tileEl.append(inner, track);
+
+    // keep tiles in index order regardless of arrival order
+    const after = [...group.items.values()].find((it) => it.index > index);
+    group.gridEl.insertBefore(tileEl, after?.tileEl ?? null);
+
+    const item: TransferItem = {
+      transferId: ((group.nonce << 8) | index) >>> 0,
+      index, direction: group.direction,
+      fileName, fileType, totalBytes, received: 0,
+      state: "queued", tileEl, fillEl, metaEl, nameEl,
+    };
+    group.items.set(index, item);
+    return item;
+  }
+
+  function setTileName(item: TransferItem, name: string): void {
+    item.fileName = name;
+    if (item.nameEl) item.nameEl.textContent = name;
+  }
+
+  function markGroupItemActive(item: TransferItem): void {
+    if (item.state === "queued") { item.state = "active"; item.tileEl.dataset.state = "active"; }
+  }
+
+  function updateGroupItemProgress(item: TransferItem): void {
+    if (item.state === "done" || item.state === "cancelled") return;
+    markGroupItemActive(item);
+    const ratio = item.totalBytes > 0 ? Math.min(1, item.received / item.totalBytes) : 0;
+    item.tileEl.style.setProperty("--wl-transfer-ratio", String(ratio));
+    if (item.metaEl) {
+      item.metaEl.textContent = item.totalBytes > 0
+        ? `${Math.round(ratio * 100)}%`
+        : formatSize(item.received);
+    }
+  }
+
+  function collapseGroupItemCancelled(item: TransferItem): void {
+    if (item.state === "done" || item.state === "cancelled") return;
+    item.state = "cancelled";
+    item.tileEl.dataset.state = "cancelled";
+    item.fillEl?.parentElement?.remove();
+    item.fillEl = null;
+    if (item.metaEl) item.metaEl.textContent = "cancelled";
+    const group = groups.get(item.transferId >>> 8);
+    if (group) updateGroupHeader(group);
+  }
+
+  /** Turn a finished tile into its final form — a media thumbnail (tap → group
+   *  lightbox) or a compact generic-file row with its own download — cross-fading
+   *  out of the skeleton so it settles in place rather than snapping. */
+  function finalizeGroupItem(item: TransferItem, msg: LiveMessage): void {
+    if (item.state === "cancelled" || item.state === "done") return;
+    item.state = "done";
+    item.tileEl.dataset.state = "done";
+    if (msg.fileBlob) item.blob = msg.fileBlob;
+    if (msg.fileName) setTileName(item, msg.fileName);
+    item.fileType = msg.fileType ?? item.fileType;
+    if (item.totalBytes === 0 && msg.fileSize) item.totalBytes = msg.fileSize;
+
+    item.fillEl?.parentElement?.remove();
+    item.fillEl = null;
+    item.metaEl = null;
+    item.nameEl = null;
+
+    const media = detectMedia(msg);
+    clearNode(item.tileEl);
+
+    if (media && (media.kind === "image" || media.kind === "video") && msg.fileBlob) {
+      const displayUrl = URL.createObjectURL(msg.fileBlob.slice(0, msg.fileBlob.size, media.mime));
+      const dlUrl = URL.createObjectURL(msg.fileBlob.slice(0, msg.fileBlob.size, "application/octet-stream"));
+      objectUrls.add(displayUrl);
+      objectUrls.add(dlUrl);
+      item.displayUrl = displayUrl;
+      item.dlUrl = dlUrl;
+      item.mediaKind = media.kind;
+      const thumb = createMediaThumbnail(media.kind, displayUrl, item.fileName, () => {
+        renderGenericTile(item);
+      }, signal);
+      thumb.classList.add("wl-transfer-tile-thumb");
+      thumb.addEventListener("click", () => openGroupLightbox(item), { signal });
+      item.tileEl.appendChild(thumb);
+      const cap = document.createElement("span");
+      cap.className = "wl-transfer-tile-cap";
+      cap.textContent = item.fileName;
+      item.tileEl.appendChild(cap);
+    } else {
+      renderGenericTile(item);
+    }
+
+    if (!reduceMotion) {
+      item.tileEl.animate(
+        [{ opacity: 0.35 }, { opacity: 1 }],
+        { duration: 220, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
+      );
+    }
+
+    const group = groups.get(item.transferId >>> 8);
+    if (group) {
+      updateGroupHeader(group);
+      maybeSettleGroup(group);
+      if (item.blob && lastDirHandle && group.direction === "in") void writeItemToDir(item, lastDirHandle);
+      if (group.direction === "in" && (pinnedToBottom || isNearBottom())) smartScroll();
+    }
+  }
+
+  function renderGenericTile(item: TransferItem): void {
+    clearNode(item.tileEl);
+    item.tileEl.dataset.kind = "generic";
+    const inner = document.createElement("div");
+    inner.className = "wl-transfer-tile-inner";
+    const icon = document.createElement("span");
+    icon.className = "wl-transfer-tile-icon";
+    icon.innerHTML = tileGlyphFor(item.fileName, item.fileType);
+    const nameEl = document.createElement("span");
+    nameEl.className = "wl-transfer-tile-name";
+    nameEl.textContent = item.fileName;
+    const metaEl = document.createElement("span");
+    metaEl.className = "wl-transfer-tile-meta";
+    metaEl.textContent = formatSize(item.totalBytes || 0);
+    inner.append(icon, nameEl, metaEl);
+    item.tileEl.appendChild(inner);
+
+    const src = item.blob ?? item.file;
+    if (src) {
+      const dl = document.createElement("button");
+      dl.type = "button";
+      dl.className = "wl-transfer-tile-dl";
+      dl.title = `Download ${item.fileName}`;
+      dl.setAttribute("aria-label", `Download ${item.fileName}`);
+      dl.innerHTML = `<svg viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+      dl.addEventListener("click", (e) => { e.stopPropagation(); downloadBlob(src, item.fileName); }, { signal });
+      item.tileEl.appendChild(dl);
+    }
+  }
+
+  /** A small type-hint glyph for a tile: image / video / audio / pdf / archive / generic. */
+  function tileGlyphFor(name: string, type: string): string {
+    const t = (type || "").toLowerCase();
+    const ext = (name.split(".").pop() ?? "").toLowerCase();
+    if (t.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg", "heic"].includes(ext)) {
+      return `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.4"/><circle cx="8.5" cy="9.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M4 17l4.5-4.5L12 16l3-3 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    }
+    if (t.startsWith("video/") || ["mp4", "webm", "mov", "mkv", "avi", "m4v", "ogv"].includes(ext)) {
+      return `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M10 9l5 3-5 3V9z" fill="currentColor"/></svg>`;
+    }
+    if (t.startsWith("audio/") || ["mp3", "wav", "m4a", "flac", "ogg", "aac", "opus", "wharm"].includes(ext)) {
+      return `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 17V6l10-2v11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="17" r="2.5" stroke="currentColor" stroke-width="1.5"/><circle cx="16.5" cy="15" r="2.5" stroke="currentColor" stroke-width="1.5"/></svg>`;
+    }
+    if (t === "application/pdf" || ext === "pdf") {
+      return `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 2h8l6 6v14H6z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M14 2v6h6" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.5 17.5v-4h1.3a1.2 1.2 0 010 2.4H8.5M13 13.5h1.8M13 15.5h1.4M13 17.5v-4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
+    }
+    if (["zip", "gz", "tar", "rar", "7z", "bz2", "xz"].includes(ext) || t.includes("zip") || t.includes("compressed")) {
+      return `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M12 3v3M12 8v2M12 12v2M10.5 16h3v3.5h-3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
+    }
+    return FILE_TILE_ICON;
+  }
+
+  function updateGroupHeader(group: TransferGroup): void {
+    const items = [...group.items.values()];
+    const done = items.filter((it) => it.state === "done").length;
+    const cancelled = items.filter((it) => it.state === "cancelled").length;
+    const total = items.reduce((n, it) => n + (it.totalBytes || 0), 0);
+    const parts: string[] = [];
+    if (total > 0) parts.push(formatSize(total));
+    if (!group.settled) {
+      parts.push(`${done} of ${group.count}`);
+    } else if (cancelled) {
+      parts.push(done ? `${done} of ${group.count}` : "cancelled");
+    }
+    group.subEl.textContent = parts.join(" · ");
+    group.wrapEl.querySelector<HTMLElement>(".wl-transfer-group")
+      ?.style.setProperty("--wl-group-progress", String(group.count ? done / group.count : 0));
+  }
+
+  function maybeSettleGroup(group: TransferGroup): void {
+    const items = [...group.items.values()];
+    const resolved = items.filter((it) => it.state === "done" || it.state === "cancelled");
+    if (resolved.length < group.count || resolved.length < items.length) return;
+    if (group.settled) return;
+    group.settled = true;
+    const card = group.wrapEl.querySelector<HTMLElement>(".wl-transfer-group");
+    card?.setAttribute("data-settled", "true");
+    group.cancelBtn?.remove();
+    group.cancelBtn = null;
+
+    const anyPayload = items.some((it) => it.blob || it.file);
+    if (anyPayload) {
+      const actions = group.wrapEl.querySelector<HTMLElement>(".wl-transfer-group-actions");
+      const saveAll = document.createElement("button");
+      saveAll.type = "button";
+      saveAll.className = "wl-transfer-group-saveall";
+      saveAll.textContent = fsaSupported && group.direction === "in" ? "save all…" : "download all";
+      saveAll.addEventListener("click", (e) => { e.stopPropagation(); void groupSaveAll(group); }, { signal });
+      actions?.appendChild(saveAll);
+      group.saveAllBtn = saveAll;
+      if (!reduceMotion) saveAll.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: "ease" });
+    }
+    updateGroupHeader(group);
+    maybeReleaseTransferWakeLock();
+  }
+
+  /** Download a Blob/File under a name via a transient object URL — create, click, revoke. */
+  function downloadBlob(blob: Blob, fileName: string): void {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  /** Save every finished file in the group in one gesture. On Chromium the receiver
+   *  picks a folder once and the files stream straight to disk (no per-file prompt,
+   *  no blob URLs); elsewhere it falls back to a short burst of downloads. */
+  async function groupSaveAll(group: TransferGroup): Promise<void> {
+    const payloads = [...group.items.values()]
+      .filter((it) => it.state === "done" && (it.blob || it.file))
+      .sort((a, b) => a.index - b.index);
+    if (!payloads.length) return;
+
+    const btn = group.saveAllBtn;
+    if (btn) btn.disabled = true;
+    try {
+      if (fsaSupported && group.direction === "in") {
+        const dir = lastDirHandle ?? await pickDir();
+        if (dir) {
+          for (const it of payloads) await writeItemToDir(it, dir);
+          if (btn) { btn.textContent = `saved to ${dir.name}/`; btn.classList.add("wl-transfer-group-saveall--done"); }
+          return;
+        }
+        if (!lastDirHandle) return; // user dismissed the picker — don't fall through to a download burst
+      }
+      // fallback: staggered downloads (one user gesture covers the batch)
+      for (let i = 0; i < payloads.length; i++) {
+        downloadBlob((payloads[i].blob ?? payloads[i].file)!, payloads[i].fileName);
+        if (i < payloads.length - 1) await new Promise((r) => setTimeout(r, 180));
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function pickDir(): Promise<FileSystemDirectoryHandle | null> {
+    try {
+      const picker = (window as unknown as { showDirectoryPicker: (o?: unknown) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker;
+      const dir = await picker({ mode: "readwrite", id: "whisper-files" });
+      lastDirHandle = dir;
+      return dir;
+    } catch {
+      return null; // user dismissed the picker
+    }
+  }
+
+  const dirWrittenNames = new WeakMap<FileSystemDirectoryHandle, Set<string>>();
+
+  /** Write one finished item straight into a chosen directory, never overwriting: a
+   *  name that already exists gets " (2)", " (3)"… before the extension. */
+  async function writeItemToDir(item: TransferItem, dir: FileSystemDirectoryHandle): Promise<void> {
+    const blob = item.blob ?? item.file;
+    if (!blob) return;
+    try {
+      let used = dirWrittenNames.get(dir);
+      if (!used) { used = new Set(); dirWrittenNames.set(dir, used); }
+      const name = await uniqueDirName(dir, item.fileName, used);
+      used.add(name);
+      const fh = await dir.getFileHandle(name, { create: true });
+      const w = await (fh as unknown as { createWritable: () => Promise<{ write: (b: Blob) => Promise<void>; close: () => Promise<void> }> }).createWritable();
+      await w.write(blob);
+      await w.close();
+      item.tileEl.dataset.saved = "true";
+    } catch (err) {
+      appendLog(`save to folder failed for ${item.fileName}: ${errMsg(err)}`);
+    }
+  }
+
+  async function uniqueDirName(dir: FileSystemDirectoryHandle, name: string, used: Set<string>): Promise<string> {
+    const exists = async (n: string): Promise<boolean> => {
+      if (used.has(n)) return true;
+      try { await dir.getFileHandle(n); return true; } catch { return false; }
+    };
+    if (!await exists(name)) return name;
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    for (let i = 2; i < 1000; i++) {
+      const candidate = `${stem} (${i})${ext}`;
+      if (!await exists(candidate)) return candidate;
+    }
+    return `${stem} (${Date.now()})${ext}`;
+  }
+
+  /** Open the lightbox on a group's media items with ‹ › paging across the batch.
+   *  Reuses the object URLs the tiles already created (see finalizeGroupItem). */
+  function openGroupLightbox(startItem: TransferItem): void {
+    const group = groups.get(startItem.transferId >>> 8);
+    if (!group) return;
+    const mediaItems = [...group.items.values()]
+      .filter((it) => it.state === "done" && it.displayUrl && it.mediaKind)
+      .sort((a, b) => a.index - b.index);
+    if (!mediaItems.length) return;
+    const entries: LightboxEntry[] = mediaItems.map((it) => ({
+      src: it.displayUrl!, dlUrl: it.dlUrl ?? it.displayUrl!, fileName: it.fileName, kind: it.mediaKind!,
+    }));
+    const startIndex = Math.max(0, mediaItems.findIndex((it) => it === startItem));
+    openMediaLightbox(entries[startIndex].src, entries[startIndex].dlUrl, entries[startIndex].fileName, entries[startIndex].kind, undefined, undefined, { entries, index: startIndex });
+  }
+
   function addChatMessage(msg: LiveMessage): HTMLElement | null {
     // Hide empty-state hint on first real message
     if (chatEmpty && chatEmpty.parentNode) chatEmpty.remove();
+
+    // A file whose group has 2+ members lives inside its group bubble, not the
+    // timeline. The bubble already exists (built at gesture time for outbound, on
+    // first chunk for inbound); route the finished file into its tile and stop.
+    if (isGroupedFileMessage(msg)) {
+      const nonce = msg.transferId! >>> 8;
+      const index = msg.transferId! & 0xff;
+      const group = groups.get(nonce)
+        ?? buildTransferGroup(nonce, msg.direction === "self" ? "out" : "in", msg.groupCount ?? 2);
+      const item = ensureGroupItem(group, index, msg.fileName ?? "", msg.fileSize ?? 0, msg.fileType ?? "");
+      // the outbound chunk-0 self-echo carries no payload — it just confirms the send
+      // started; the tile settles when onSendProgress reaches 100%. inbound assemblies
+      // and any payload-bearing message finalize the tile now.
+      if (msg.direction === "peer" || msg.fileBlob) finalizeGroupItem(item, msg);
+      return null;
+    }
 
     // consume draw preview early — covers both glyph and annotate paths
     const drawPreview = (msg.direction === "self" && msg.type === "file")
@@ -5702,28 +6270,58 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       onLog: appendLog,
       onPeerTyping: handlePeerCompose,
       onAck: handleAck,
-      onSendProgress: (sent, total) => {
+      // one message's bytes going onto the wire — drives the composer send animation.
+      onWireProgress: (sent, total) => {
         sendProgress(sent / total);
-        // onSendProgress is shared between two signals: per-chunk cumulative progress
-        // for chunked file sends (total === file.size) and per-wire-frame progress for
-        // every message type (total = encrypted frame size, which in practice never
-        // equals a real file size). Route cumulative updates to the outbound card with
-        // the matching totalBytes; if several in-flight sends happen to share that exact
-        // size, each transfer's bytesSent is monotonic, so pick whichever candidate's
-        // last known bytesSent sits closest below (never above) the new value.
-        let candidate: TransferCardState | null = null;
-        for (const state of transferCards.values()) {
-          if (state.direction !== "out" || state.settled || state.totalBytes !== total) continue;
-          if (state.bytesSent > sent) continue;
-          if (!candidate || state.bytesSent > candidate.bytesSent) candidate = state;
+      },
+      // cumulative progress for a specific file transfer, keyed by its transferId.
+      onSendProgress: (transferId, sent, total) => {
+        const group = groupOf(transferId);
+        if (group) {
+          const item = group.items.get(transferId & 0xff);
+          if (item && item.state !== "done" && item.state !== "cancelled") {
+            item.received = sent;
+            if (sent >= total) {
+              finalizeGroupItem(item, {
+                type: "file", direction: "self",
+                fileName: item.fileName, fileType: item.file?.type ?? item.fileType,
+                fileBlob: item.file, fileSize: item.totalBytes || total, timestamp: Date.now(),
+              });
+            } else {
+              updateGroupItemProgress(item);
+              updateGroupHeader(group);
+            }
+          }
+          return;
         }
-        if (candidate) {
-          candidate.bytesSent = sent;
-          updateTransferCardProgress(candidate, sent, total);
-          if (sent >= total) settleOutboundTransferDelivered(candidate.transferId);
+        const card = transferCards.get(transferId);
+        if (card && !card.settled) {
+          card.bytesSent = sent;
+          updateTransferCardProgress(card, sent, total);
+          if (sent >= total) settleOutboundTransferDelivered(transferId);
         }
       },
-      onSendStart: (transferId, fileName, totalBytes) => {
+      onSendStart: (transferId, fileName, totalBytes, groupCount) => {
+        if (groupCount >= 2) {
+          const nonce = transferId >>> 8;
+          const index = transferId & 0xff;
+          let group = groups.get(nonce);
+          if (!group && pendingOutboundGroup && pendingOutboundGroup.group.nonce < 0) {
+            group = pendingOutboundGroup.group;
+            groups.delete(group.nonce);
+            group.nonce = nonce;
+            group.wrapEl.dataset.groupNonce = String(nonce);
+            groups.set(nonce, group);
+            for (const it of group.items.values()) it.transferId = ((nonce << 8) | it.index) >>> 0;
+          }
+          group ??= buildTransferGroup(nonce, "out", groupCount);
+          const item = ensureGroupItem(group, index, fileName, totalBytes, pendingOutboundGroup?.files[index]?.type ?? "");
+          item.transferId = transferId;
+          item.file = pendingOutboundGroup?.files[index] ?? item.file;
+          if (item.file) outboundGroupRefs.add(item);
+          markGroupItemActive(item);
+          return;
+        }
         const card = buildTransferCard("out", transferId, fileName, totalBytes);
         // fires synchronously within sendFileChunked's pre-await prefix, so whatever
         // sendFileToChat staged in pendingOutboundFile right before calling
@@ -5733,11 +6331,30 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           outboundFileRefs.add(card);
         }
       },
-      onReceiveProgress: (transferId, receivedBytes, totalBytes, fileName) => {
+      onReceiveProgress: (transferId, receivedBytes, totalBytes, fileName, groupCount) => {
+        if (groupCount >= 2) {
+          const nonce = transferId >>> 8;
+          const index = transferId & 0xff;
+          const group = groups.get(nonce) ?? buildTransferGroup(nonce, "in", groupCount);
+          const item = ensureGroupItem(group, index, fileName, totalBytes, "");
+          if (fileName && item.state === "queued") setTileName(item, fileName);
+          if (totalBytes) item.totalBytes = totalBytes;
+          item.received = receivedBytes;
+          updateGroupItemProgress(item);
+          updateGroupHeader(group);
+          return;
+        }
         const state = transferCards.get(transferId) ?? buildTransferCard("in", transferId, fileName, totalBytes);
         updateTransferCardProgress(state, receivedBytes, totalBytes);
       },
       onTransferCancelled: (transferId) => {
+        const group = groupOf(transferId);
+        if (group) {
+          const item = group.items.get(transferId & 0xff);
+          if (item) collapseGroupItemCancelled(item);
+          maybeSettleGroup(group);
+          return;
+        }
         collapseTransferCancelled(transferId);
       },
       onConnectionStats: handleConnectionStats,
@@ -6094,7 +6711,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // so nulling it here is enough to disarm them.
     for (const state of outboundFileRefs) state.file = undefined;
     outboundFileRefs.clear();
-    // the map was cleared without settling cards, so the wake lock must drop here
+    groups.clear();
+    for (const ref of outboundGroupRefs) { ref.file = undefined; ref.blob = undefined; }
+    outboundGroupRefs.clear();
+    pendingOutboundGroup = null;
+    // the maps were cleared without settling cards, so the wake lock must drop here
     releaseTransferWakeLock();
     revokeObjectUrls();
     clearNode(opts.chatMessages);
@@ -8699,6 +9320,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     clearVote.castLocal();
   }, { signal });
 
+  /** Whisper-native content sent inline (single message, bytes in memory both sides):
+   *  voice notes and drawings. Everything else is a file transfer. */
+  function isInlinePayload(file: File, label: string): boolean {
+    return label === "draw" || isWhisperGlyph(file.type, file.name);
+  }
+
   // ── Shared file-send helper (used by file picker, draw, drag-drop) ──
   async function sendFileToChat(file: File, label = "file"): Promise<void> {
     if (!session) {
@@ -8713,12 +9340,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       return;
     }
     sendBeginFill();
-    // staged for onSendStart to pick up if this turns into a chunked transfer —
-    // see the comment there. cleared unconditionally below; small/non-chunked
-    // sends never consume it (they already carry fileData on their self-echo).
+    // staged for onSendStart to pick up — the one hop that threads the local File
+    // handle into the transfer card it triggers. cleared unconditionally below.
     pendingOutboundFile = file;
     try {
-      const msgId = await session.sendFile(file);
+      const msgId = isInlinePayload(file, label)
+        ? await session.sendInline(file.name, file.type, new Uint8Array(await file.arrayBuffer()))
+        : await session.sendFile(file);
       sendInFlight(msgId);
     } catch (err) {
       send.phase = "delivered"; send.velocity = -4;
@@ -8731,8 +9359,63 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   async function sendFilesToChat(files: Iterable<File>, label = "file"): Promise<void> {
-    for (const file of files) {
-      await sendFileToChat(file, label);
+    const list = Array.from(files);
+    if (list.length <= 1) {
+      if (list[0]) await sendFileToChat(list[0], label);
+      return;
+    }
+    if (!session) {
+      // preview: simulate the outbound group filling in, tile by tile. a high fixed
+      // nonce prefix keeps the packed transferId -> nonce recovery working.
+      const batch = list.slice(0, 255);
+      const group = buildTransferGroup(0xfe0000 + (previewSendId++ & 0xff), "out", batch.length);
+      batch.forEach((file, index) => {
+        const item = ensureGroupItem(group, index, file.name, file.size, file.type);
+        item.file = file;
+        outboundGroupRefs.add(item);
+        markGroupItemActive(item);
+        // simulate the upload climbing, then settling
+        let sent = 0;
+        const tick = window.setInterval(() => {
+          sent = Math.min(file.size, sent + Math.max(1, file.size / 6));
+          item.received = sent;
+          updateGroupItemProgress(item);
+          updateGroupHeader(group);
+          if (sent >= file.size) {
+            clearInterval(tick);
+            finalizeGroupItem(item, {
+              type: "file", direction: "self",
+              fileName: file.name, fileType: file.type, fileBlob: file,
+              fileSize: file.size, timestamp: Date.now(),
+            });
+          }
+        }, 90 + index * 30);
+      });
+      simulateSendEnergy();
+      return;
+    }
+    // one gesture, one group, one bubble. build the whole thing up front from the
+    // local File list — the sender's model is complete before a byte moves. the
+    // session draws the real group nonce on the first onSendStart (see there).
+    const batch = list.slice(0, 255);
+    const group = buildTransferGroup(-1, "out", batch.length);
+    batch.forEach((file, index) => {
+      const item = ensureGroupItem(group, index, file.name, file.size, file.type);
+      item.file = file;
+      outboundGroupRefs.add(item);
+    });
+    pendingOutboundGroup = { files: batch, group };
+    sendBeginFill();
+    try {
+      const msgId = await session.sendFileGroup(batch);
+      sendInFlight(msgId);
+    } catch (err) {
+      send.phase = "delivered"; send.velocity = -4;
+      haptic("send-failed");
+      appendLog(`file send failed: ${errMsg(err)}`);
+      pulseComposeIntent("error", 1100);
+    } finally {
+      pendingOutboundGroup = null;
     }
   }
 

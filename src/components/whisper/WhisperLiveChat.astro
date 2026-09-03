@@ -2212,6 +2212,369 @@
     color: rgb(var(--tool-status-success) / 0.75);
   }
 
+  /* ── Multi-file group bubble ──────────────────────────────────
+   * Several files sent in one gesture land as one card: a header line and a
+   * grid of per-file tiles that fill in as each file arrives, plus one
+   * "save all" for the whole batch. A group of one never uses this — it stays
+   * a plain transfer card / media bubble. */
+  :global(.wl-chat-messages) :global(.wl-transfer-group) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.6rem 0.6rem 0.5rem;
+    border-radius: var(--whisper-radius-bubble);
+    border: 1px solid var(--msg-border);
+    background: var(--msg-bg);
+    width: min(82vw, 27rem);
+    box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-head) {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0 0.15rem;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-title) {
+    font-weight: 600;
+    font-size: var(--whisper-text-sm, 0.86rem);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-sub) {
+    font-family: var(--whisper-font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--whisper-text-fine);
+    color: rgb(var(--color-text-rgb) / 0.5);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-actions) {
+    margin-left: auto;
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-actions button) {
+    font: inherit;
+    font-size: var(--whisper-text-fine);
+    padding: 0.16rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    background: rgb(var(--color-text-rgb) / 0.05);
+    color: rgb(var(--color-text-rgb) / 0.62);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background var(--duration-fast) ease,
+      border-color var(--duration-fast) ease,
+      color var(--duration-fast) ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-saveall) {
+    color: rgb(var(--msg-accent) / 0.9);
+    border-color: rgb(var(--msg-accent) / 0.32);
+    background: rgb(var(--msg-accent) / 0.08);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-saveall--done),
+  :global(.wl-chat-messages) :global(.wl-transfer-group-saveall--done:hover) {
+    color: rgb(var(--tool-status-success) / 0.9);
+    border-color: rgb(var(--tool-status-success) / 0.3);
+    background: rgb(var(--tool-status-success) / 0.08);
+    cursor: default;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-actions button:hover) {
+    color: rgb(var(--msg-accent));
+    border-color: rgb(var(--msg-accent) / 0.55);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-actions button:disabled) {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-cancel:hover) {
+    color: rgb(var(--chromatic-red) / 0.85);
+    border-color: rgb(var(--chromatic-red) / 0.4);
+    background: rgb(var(--chromatic-red) / 0.12);
+  }
+
+  /* a hairline batch-progress bar under the header, gone once settled */
+  :global(.wl-chat-messages) :global(.wl-transfer-group:not([data-settled="true"]) .wl-transfer-group-head)::after {
+    content: "";
+    position: absolute;
+    left: 0.15rem;
+    right: 0.15rem;
+    bottom: -0.28rem;
+    height: 2px;
+    border-radius: 999px;
+    background:
+      linear-gradient(to right,
+        rgb(var(--msg-accent) / 0.55) calc(var(--wl-group-progress, 0) * 100%),
+        rgb(var(--color-text-rgb) / 0.08) 0);
+    transition: background var(--duration-normal) ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-head) {
+    position: relative;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-grid) {
+    display: grid;
+    grid-template-columns: repeat(var(--wl-grid-cols, 3), 1fr);
+    gap: 3px;
+    border-radius: 9px;
+    overflow: hidden;
+    max-height: 58vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile) {
+    position: relative;
+    aspect-ratio: 1;
+    overflow: hidden;
+    background: rgb(var(--color-text-rgb) / 0.05);
+    color: rgb(var(--color-text-rgb) / 0.62);
+    --wl-transfer-ratio: 0;
+  }
+
+  /* content sits absolutely inside the square so a long filename or the file
+     icon can never grow the tile out of the grid's row rhythm. */
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-inner) {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.16rem;
+    padding: 0.35rem;
+    overflow: hidden;
+    text-align: center;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile[data-state="queued"]) {
+    opacity: 0.62;
+  }
+
+  /* queued tiles breathe gently so a slow batch doesn't look frozen */
+  :global(.wl-chat-messages) :global(.wl-transfer-tile[data-state="queued"])::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg,
+      transparent 30%, rgb(var(--color-text-rgb) / 0.06) 50%, transparent 70%);
+    background-size: 220% 100%;
+    animation: wl-tile-shimmer 1.9s ease-in-out infinite;
+  }
+
+  @keyframes wl-tile-shimmer {
+    from { background-position: 130% 0; }
+    to { background-position: -30% 0; }
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile[data-state="queued"] .wl-transfer-tile-track),
+  :global(.wl-chat-messages) :global(.wl-transfer-tile[data-state="cancelled"] .wl-transfer-tile-track) {
+    display: none;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile[data-state="cancelled"]) {
+    opacity: 0.4;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile[data-state="active"] .wl-transfer-tile-track) {
+    height: 4px;
+    background: rgb(var(--color-text-rgb) / 0.14);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.wl-chat-messages) :global(.wl-transfer-tile[data-state="queued"])::after {
+      animation: none;
+    }
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-name) {
+    font-size: var(--whisper-text-fine);
+    line-height: 1.2;
+    max-width: 100%;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-meta) {
+    font-family: var(--whisper-font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.62rem;
+    color: rgb(var(--color-text-rgb) / 0.42);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-track) {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: rgb(var(--color-text-rgb) / 0.1);
+    overflow: hidden;
+    z-index: 1;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-icon) {
+    width: 1.6rem;
+    height: 1.6rem;
+    color: rgb(var(--color-text-rgb) / 0.4);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-icon svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* the shared media-thumb sizes itself by aspect ratio; inside a tile it must
+     instead fill the fixed square. these override .wl-media-thumb (declared later
+     in the file) via the extra .wl-transfer-tile ancestor. */
+  :global(.wl-chat-messages) :global(.wl-transfer-tile) :global(.wl-transfer-tile-thumb) {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    max-width: none;
+    max-height: none;
+    aspect-ratio: auto;
+    border-radius: 0;
+    cursor: pointer;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile) :global(.wl-transfer-tile-thumb img),
+  :global(.wl-chat-messages) :global(.wl-transfer-tile) :global(.wl-transfer-tile-thumb video) {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    object-fit: cover;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-cap) {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 0.75rem 0.4rem 0.28rem;
+    font-size: 0.62rem;
+    line-height: 1.18;
+    text-align: left;
+    color: rgb(255 255 255 / 0.94);
+    background: linear-gradient(to top, rgb(0 0 0 / 0.66), rgb(0 0 0 / 0.28) 55%, transparent);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+    pointer-events: none;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-thumb) {
+    transition: filter 160ms ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-thumb:hover) {
+    filter: brightness(1.06);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-dl) {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.25rem;
+    width: 1.4rem;
+    height: 1.4rem;
+    padding: 0.28rem;
+    border-radius: 50%;
+    border: none;
+    background: rgb(var(--color-text-rgb) / 0.08);
+    color: rgb(var(--color-text-rgb) / 0.6);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-dl svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-dl:hover) {
+    background: rgb(var(--msg-accent) / 0.18);
+    color: rgb(var(--msg-accent));
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile[data-saved]::after) {
+    content: "";
+    position: absolute;
+    top: 0.3rem;
+    left: 0.3rem;
+    width: 0.9rem;
+    height: 0.9rem;
+    border-radius: 50%;
+    background:
+      rgb(var(--tool-status-success) / 0.9)
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M2.5 6l2.5 2.5 4.5-5' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      center / 78% no-repeat;
+  }
+
+  /* the group's tiles inherit the peer/self fill colour from the existing
+     .wl-transfer-fill rules (cyan for self, purple for peer). */
+
+  /* ── Lightbox gallery paging ─────────────────────────────── */
+  :global(.wl-lightbox-prev),
+  :global(.wl-lightbox-next) {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 2.6rem;
+    height: 2.6rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: none;
+    background: rgb(0 0 0 / 0.4);
+    color: rgb(255 255 255 / 0.85);
+    cursor: pointer;
+    z-index: 2;
+    transition: background var(--duration-fast) ease;
+  }
+
+  :global(.wl-lightbox-prev) { left: 0.75rem; }
+  :global(.wl-lightbox-next) { right: 0.75rem; }
+
+  :global(.wl-lightbox-prev:hover),
+  :global(.wl-lightbox-next:hover) {
+    background: rgb(0 0 0 / 0.62);
+  }
+
+  :global(.wl-lightbox-count) {
+    font-family: var(--whisper-font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--whisper-text-fine);
+    color: rgb(255 255 255 / 0.55);
+    margin-left: 0.5rem;
+  }
+
+  @media (max-width: 30rem) {
+    :global(.wl-lightbox-prev),
+    :global(.wl-lightbox-next) {
+      width: 2.2rem;
+      height: 2.2rem;
+      background: rgb(0 0 0 / 0.3);
+    }
+  }
+
   /* ── Audio player ─────────────────────────────────────────── */
   :global(.wl-chat-messages) :global(.wl-msg-audio) {
     display: flex;
