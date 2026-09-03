@@ -2638,13 +2638,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return new Blob([msg.fileData!], { type });
   }
 
+  // raw bytes of a file payload, regardless of representation. the returned array
+  // is a detached copy, so the source (msg.fileData or the browser-held blob) can
+  // be released once decode is done.
+  async function filePayloadBytes(msg: LiveMessage): Promise<Uint8Array> {
+    if (msg.fileData) return msg.fileData.slice();
+    if (msg.fileBlob) return new Uint8Array(await msg.fileBlob.arrayBuffer());
+    return new Uint8Array(0);
+  }
+
   function isRenderableAudioMessage(msg: LiveMessage): boolean {
-    // audio codec decoding needs raw bytes — only works with fileData (small single-message files).
-    // large chunked audio files fall through to generic download.
-    if (msg.type !== "file" || !msg.fileData) return false;
+    // a recorded voice note (fileData, in memory) or a dragged/picked audio file
+    // (fileBlob) — both render as the inline waveform player. grouped audio stays a
+    // list row (isGroupedFileMessage short-circuits before this).
+    if (msg.type !== "file" || !hasFilePayload(msg)) return false;
     if (isWhisperGlyph(msg.fileType, msg.fileName)) return false;
-    const type = msg.fileType?.toLowerCase() ?? "";
-    return type.startsWith("audio/") || isWhisperAudioCodec(msg.fileType, msg.fileName);
+    const t = (msg.fileType ?? "").toLowerCase();
+    if (t.startsWith("audio/") || isWhisperAudioCodec(msg.fileType, msg.fileName)) return true;
+    if (t.startsWith("video/") || t.startsWith("image/")) return false; // trust an explicit non-audio type
+    const ext = (msg.fileName ?? "").toLowerCase().split(".").pop() ?? "";
+    return ["mp3", "wav", "m4a", "aac", "flac", "ogg", "oga", "opus", "weba", "3gp", "amr", "wma", "aiff", "aif"].includes(ext);
   }
 
   async function downloadGlyphAsPng(glyphBytes: Uint8Array, sourceName: string): Promise<void> {
@@ -2664,7 +2677,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     setTimeout(() => URL.revokeObjectURL(url), 1500);
   }
 
-  type MediaKind = "image" | "video" | "glyph";
+  /** Everything the lightbox knows how to show. image/video/glyph also render as a
+   *  thumbnail bubble in the timeline; pdf/text are documents that keep their file
+   *  card and open the lightbox from a preview affordance (see isThumbKind). */
+  type MediaKind = "image" | "video" | "glyph" | "pdf" | "text";
 
   /** Extension → MIME fallback for when the peer sends a generic/missing type. */
   const EXT_MIME: Record<string, string> = {
@@ -2673,31 +2689,120 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     ico: "image/x-icon", tif: "image/tiff", tiff: "image/tiff",
     mp4: "video/mp4", webm: "video/webm", ogv: "video/ogg", mov: "video/quicktime",
     mkv: "video/x-matroska", avi: "video/x-msvideo", m4v: "video/mp4",
+    pdf: "application/pdf",
   };
 
+  /** Extensions whose bytes are worth trying to show as text. Peers label source
+   *  files with anything from text/plain to application/octet-stream, so the name is
+   *  the only usable hint — and it is only a hint: the bytes themselves are sniffed
+   *  before a preview is ever offered (see sniffTextPreview). */
+  const TEXT_EXT = new Set([
+    "txt", "text", "log", "md", "markdown", "rst", "csv", "tsv", "json", "jsonl",
+    "ndjson", "xml", "yml", "yaml", "toml", "ini", "cfg", "conf", "env", "properties",
+    "html", "htm", "css", "scss", "less", "js", "mjs", "cjs", "jsx", "ts", "tsx",
+    "py", "rb", "rs", "go", "c", "h", "cc", "cpp", "hpp", "cs", "java", "kt", "swift",
+    "php", "lua", "pl", "r", "sh", "bash", "zsh", "fish", "ps1", "bat", "sql", "wat",
+    "diff", "patch", "srt", "vtt", "gitignore", "editorconfig", "lock",
+  ]);
+
+  /** MIME → preview kind. The only owner of "which MIME means which lightbox kind";
+   *  both the declared type and the extension fallback are resolved through it. */
+  function kindForMime(t: string): MediaKind | null {
+    if (t.startsWith("image/")) return "image";
+    if (t.startsWith("video/")) return "video";
+    if (t === "application/pdf") return "pdf";
+    if (t.startsWith("text/")) return "text";
+    if (t === "application/json" || t === "application/xml"
+      || t === "application/javascript" || t === "application/x-ndjson") return "text";
+    return null;
+  }
+
+  /** Kinds that render as a thumbnail bubble / collage tile. The rest are documents. */
+  function isThumbKind(kind: MediaKind): boolean {
+    return kind === "image" || kind === "video" || kind === "glyph";
+  }
+
   /**
-   * Detect whether a file message is renderable media. We don't hardcode a list
-   * of "supported" types — anything with an image/* or video/* MIME is attempted,
+   * Detect whether a file message is previewable. We don't hardcode a list of
+   * "supported" types — anything with an image/* or video/* MIME is attempted,
    * and the browser's own codec support decides whether it can be decoded.
    * An onerror fallback at render time catches anything the browser can't handle.
+   * Documents (pdf, text) are candidates only: a pdf still needs a built-in viewer
+   * and text still has to survive the byte sniff before a preview is offered.
    */
   function detectMedia(msg: LiveMessage): { kind: MediaKind; mime: string } | null {
     if (msg.type !== "file" || !hasFilePayload(msg)) return null;
     if (isWhisperGlyph(msg.fileType, msg.fileName)) {
       return { kind: "glyph", mime: GLYPH_MIME };
     }
-    const t = (msg.fileType ?? "").toLowerCase();
-    // Primary: trust the MIME type prefix
-    if (t.startsWith("image/")) return { kind: "image", mime: t };
-    if (t.startsWith("video/")) return { kind: "video", mime: t };
-    // Fallback: infer from extension when MIME is missing or generic
+    // parameters (charset, codecs) never take part in the decision
+    const t = (msg.fileType ?? "").toLowerCase().split(";")[0].trim();
     const ext = (msg.fileName ?? "").toLowerCase().split(".").pop() ?? "";
+    // A curated source/text extension outranks the declared type: no image, video or
+    // pdf claims one of these names, and the sender's own OS mislabels several of
+    // them (a .ts file is offered as video/mp2t). The bytes get sniffed either way.
+    if (TEXT_EXT.has(ext)) return { kind: "text", mime: t.startsWith("text/") ? t : "text/plain" };
+    // Primary: trust the MIME type
+    const declared = kindForMime(t);
+    if (declared) return { kind: declared, mime: t };
+    // Fallback: infer from the name when the MIME is missing or generic
     const inferred = EXT_MIME[ext];
-    if (inferred) {
-      const k: MediaKind = inferred.startsWith("image/") ? "image" : "video";
-      return { kind: k, mime: inferred };
-    }
+    if (inferred) return { kind: kindForMime(inferred)!, mime: inferred };
     return null;
+  }
+
+  /** Cap on the bytes a text preview decodes. Only the window shown inline is
+   *  bounded — the full file is always still one tap away as a download. */
+  const TEXT_PREVIEW_CAP = 256 * 1024;
+
+  /** How much is read to answer "are these characters at all?". Deciding whether to
+   *  offer a preview is a much cheaper question than rendering one, and a batch of
+   *  fifty logs asks it fifty times at once. */
+  const TEXT_SNIFF_HEAD = 8 * 1024;
+
+  interface TextPreview { text: string; shown: number; total: number }
+
+  /**
+   * Decode the head of a blob as strict UTF-8 and reject anything that isn't
+   * overwhelmingly printable, so a binary claiming text/plain degrades to the
+   * download card instead of rendering as mojibake. Returns null when the bytes are
+   * not text. Decoding streams, so the partial code point at the cap boundary is
+   * held back rather than mistaken for corruption.
+   */
+  async function sniffTextPreview(blob: Blob, limit = TEXT_PREVIEW_CAP): Promise<TextPreview | null> {
+    const total = blob.size;
+    const shown = Math.min(total, limit);
+    let text: string;
+    try {
+      const head = new Uint8Array(await blob.slice(0, shown).arrayBuffer());
+      text = new TextDecoder("utf-8", { fatal: true }).decode(head, { stream: true });
+    } catch {
+      return null; // invalid utf-8, or the blob went away
+    }
+    let control = 0;
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (c === 9 || c === 10 || c === 13) continue;
+      if (c === 0) return null; // a NUL is proof enough that these are not characters
+      if (c < 32 || c === 127) control++;
+    }
+    // half a percent of stray control bytes is a mangled log; more is a binary
+    if (control * 200 > text.length) return null;
+    return { text, shown, total };
+  }
+
+  /** Whether the browser has a built-in, sandboxed PDF viewer. Where it doesn't
+   *  (most mobile browsers) no preview is offered at all and the card stays a plain
+   *  download — a peer's pdf is never handed to an outside handler to find out. */
+  const pdfPreviewSupported = ((): boolean => {
+    const nav = navigator as Navigator & { pdfViewerEnabled?: boolean };
+    return nav.pdfViewerEnabled === true;
+  })();
+
+  /** Whether a document kind can actually be previewed here and now. Text still has
+   *  to pass sniffTextPreview on its bytes; this is only the static half. */
+  function canPreviewDocument(kind: MediaKind): boolean {
+    return kind === "text" || (kind === "pdf" && pdfPreviewSupported);
   }
 
   /* ── Media lightbox ─────────────────────────────────────────────── */
@@ -2747,15 +2852,24 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     mime?: string;
   }
 
+  /** Default display MIME per kind, for a peer that sent none. pdf is pinned
+   *  explicitly because the <embed> viewer keys off the blob's own type. */
+  function displayMimeFor(e: LightboxEntry): string {
+    if (e.mime) return e.mime;
+    return e.kind === "video" ? "video/mp4" : e.kind === "pdf" ? "application/pdf" : "image/*";
+  }
+
   /** Mint (and cache) the display + download URLs for a gallery entry the first time
    *  it is actually shown — a batch of hundreds never allocates a URL it isn't viewed. */
   function hydrateLightboxEntry(e: LightboxEntry): void {
-    if (e.src || !e.blob) return;
-    const mime = e.mime || (e.kind === "video" ? "video/mp4" : "image/*");
-    e.src = URL.createObjectURL(e.blob.slice(0, e.blob.size, mime));
+    if (e.dlUrl || !e.blob) return;
     e.dlUrl = URL.createObjectURL(e.blob.slice(0, e.blob.size, "application/octet-stream"));
-    objectUrls.add(e.src);
     objectUrls.add(e.dlUrl);
+    // text renders from decoded bytes into a <pre>; it never needs, and never gets,
+    // a url the browser could be navigated to.
+    if (e.kind === "text") return;
+    e.src = URL.createObjectURL(e.blob.slice(0, e.blob.size, displayMimeFor(e)));
+    objectUrls.add(e.src);
   }
 
   function openMediaLightbox(
@@ -2778,7 +2892,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     const overlay = document.createElement("div");
     overlay.className = "wl-lightbox";
-    overlay.addEventListener("wheel", (e) => e.preventDefault(), { passive: false, signal: lbSignal });
+    // the overlay itself never scrolls, so a wheel over it is swallowed. a text
+    // preview is the one surface inside it that genuinely has more to show.
+    overlay.addEventListener("wheel", (e) => {
+      if ((e.target as Element | null)?.closest?.(".wl-lightbox-text-body")) return;
+      e.preventDefault();
+    }, { passive: false, signal: lbSignal });
 
     const inner = document.createElement("div");
     inner.className = "wl-lightbox-inner";
@@ -2823,9 +2942,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const counter = document.createElement("span");
     counter.className = "wl-lightbox-count";
 
+    /** Bumped on every page turn so an async text fill that lands late is dropped
+     *  instead of overwriting whatever the reader is looking at now. */
+    let showToken = 0;
+
     /** Render the media at `cursor` and refresh the bar. */
     const show = (): void => {
       const e = entries[cursor];
+      const token = ++showToken;
       hydrateLightboxEntry(e);
       // warm the neighbours so a page turn is instant
       hydrateLightboxEntry(entries[(cursor + 1) % entries.length]);
@@ -2842,6 +2966,38 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         video.className = "wl-lightbox-video";
         video.src = e.src ?? ""; video.controls = true; video.autoplay = true; video.playsInline = true;
         mediaEl = video;
+      } else if (e.kind === "pdf") {
+        // the browser's own sandboxed viewer. <embed> (not <iframe>) because it has
+        // no browsing context of its own to be navigated: the blob url is bound to a
+        // plugin instance typed application/pdf and nothing can re-point it.
+        const doc = document.createElement("embed");
+        doc.className = "wl-lightbox-doc";
+        doc.type = "application/pdf";
+        doc.src = e.src ?? "";
+        mediaEl = doc;
+      } else if (e.kind === "text") {
+        const frame = document.createElement("div");
+        frame.className = "wl-lightbox-text";
+        const body = document.createElement("pre");
+        body.className = "wl-lightbox-text-body";
+        body.tabIndex = 0;
+        const note = document.createElement("p");
+        note.className = "wl-lightbox-text-note";
+        note.textContent = "reading…";
+        frame.append(body, note);
+        const blob = e.blob;
+        void (blob ? sniffTextPreview(blob) : Promise.resolve(null)).then((r) => {
+          if (token !== showToken || lbSignal.aborted) return;
+          if (!r) { note.textContent = "these bytes are not text; download the file to open it"; return; }
+          // textContent, never innerHTML: peer bytes are shown, never parsed.
+          body.textContent = r.text;
+          note.textContent = r.total === 0
+            ? "empty file"
+            : r.shown < r.total
+              ? `showing the first ${formatSize(r.shown)} of ${formatSize(r.total)}`
+              : formatSize(r.total);
+        });
+        mediaEl = frame;
       } else {
         const frame = document.createElement("div");
         frame.className = "wl-lightbox-img";
@@ -2858,6 +3014,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }
       mediaHost.replaceChildren(mediaEl);
       label.textContent = e.fileName;
+      // annotating means drawing on pixels — a document has none.
+      annotateBtn.hidden = !isThumbKind(e.kind);
       if (e.kind === "glyph" && glyphBytes) {
         dlLink.href = "#";
         dlLink.download = gwyphPngName(e.fileName);
@@ -2928,6 +3086,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     lightboxAc = lbAc;
   }
 
+  /** Open the lightbox on one blob-backed entry. Goes through the gallery form so the
+   *  urls are minted by hydrateLightboxEntry — the single owner of "which type does
+   *  this entry get displayed as, and which does it get downloaded as". */
+  function openBlobLightbox(fileName: string, kind: MediaKind, blob: Blob, mime?: string): void {
+    openMediaLightbox("", "", fileName, kind, undefined, undefined, {
+      entries: [{ fileName, kind, blob, mime }], index: 0,
+    });
+  }
+
   function closeMediaLightbox(): void {
     if (!lightboxEl) return;
     const el = lightboxEl;
@@ -2936,9 +3103,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     lightboxAc?.abort();
     lightboxAc = null;
     el.classList.remove("wl-lightbox--open");
-    // Release video resources
+    // Release video / pdf-plugin resources
     const vid = el.querySelector("video");
     if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); }
+    el.querySelector("embed")?.removeAttribute("src");
     el.addEventListener("transitionend", () => el.remove(), { once: true });
     setTimeout(() => { if (el.parentNode) el.remove(); }, 350);
   }
@@ -3072,23 +3240,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       glyphBytes.set(msg.fileData);
       const glyph = parseGwyphPayload(glyphBytes);
       if (!glyph) {
-        const dlBlob = new Blob([glyphBytes], { type: "application/octet-stream" });
-        const dlUrl = URL.createObjectURL(dlBlob);
+        const dlUrl = URL.createObjectURL(new Blob([glyphBytes], { type: "application/octet-stream" }));
         objectUrls.add(dlUrl);
         const fallback = document.createElement("div");
-        fallback.className = "wl-msg-file";
-        const n = document.createElement("span");
-        n.className = "wl-msg-file-name";
-        n.textContent = fileName;
-        const s = document.createElement("span");
-        s.className = "wl-msg-file-size";
-        s.textContent = fileSize ? formatSize(fileSize) : "";
-        const a = document.createElement("a");
-        a.className = "wl-msg-file-download";
-        a.href = dlUrl;
-        a.download = fileName;
-        a.textContent = "download";
-        fallback.append(n, s, a);
+        fillGenericFileCard(fallback, fileName, fileSize, dlUrl);
         return fallback;
       }
 
@@ -3110,20 +3265,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     // Guard against firing on detached elements (e.g. session ended before load).
     const fallbackToFile = () => {
       if (!root.isConnected) return;
-      root.className = "wl-msg-file";
-      root.textContent = "";
-      const n = document.createElement("span");
-      n.className = "wl-msg-file-name";
-      n.textContent = fileName;
-      const s = document.createElement("span");
-      s.className = "wl-msg-file-size";
-      s.textContent = fileSize ? formatSize(fileSize) : "";
-      const a = document.createElement("a");
-      a.className = "wl-msg-file-download";
-      a.href = dlUrl;
-      a.download = fileName;
-      a.textContent = "download";
-      root.append(n, s, a);
+      fillGenericFileCard(root, fileName, fileSize, dlUrl);
     };
 
     // ── Thumbnail ──
@@ -3314,6 +3456,93 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     return thumb;
+  }
+
+  /** (Re)build `root` as the plain name / size / download card. The shared shape for
+   *  every file that has no richer rendering — and the honest fallback whenever a
+   *  decode or a byte sniff comes back empty. */
+  function fillGenericFileCard(
+    root: HTMLElement, fileName: string, fileSize: number | undefined, dlUrl: string,
+  ): void {
+    root.className = "wl-msg-file";
+    clearNode(root);
+    const n = document.createElement("span");
+    n.className = "wl-msg-file-name";
+    n.textContent = fileName;
+    const s = document.createElement("span");
+    s.className = "wl-msg-file-size";
+    s.textContent = fileSize ? formatSize(fileSize) : "";
+    const a = document.createElement("a");
+    a.className = "wl-msg-file-download";
+    a.href = dlUrl;
+    a.download = fileName;
+    a.textContent = "download";
+    root.append(n, s, a);
+  }
+
+  /** Bytes / lines of a text file shown in the timeline peek. The peek is a teaser;
+   *  the lightbox and the download carry the whole file. */
+  const DOC_PEEK_BYTES = 4096;
+  const DOC_PEEK_LINES = 10;
+
+  const PDF_DOC_FACE = `<svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M8 3h11l6 6v20H8z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M19 3v6h6" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 16h8M12 20h8M12 24h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+
+  /** A previewable document (pdf / text) in the timeline: the same shell a photo
+   *  gets — a face that opens the lightbox on tap, an info bar carrying name / size /
+   *  download. The face is a code peek for text and a document mark for a pdf;
+   *  neither pretends to be a rendered page. Text whose bytes fail the sniff drops
+   *  back to a plain download card, so the peek is never mojibake. */
+  function renderDocumentMessage(msg: LiveMessage, signal: AbortSignal): HTMLElement {
+    const { kind, mime } = detectMedia(msg)!;
+    const fileName = msg.fileName ?? "file";
+    const fileSize = msg.fileSize;
+
+    const srcBlob = filePayloadBlob(msg, kind === "pdf" ? "application/pdf" : "text/plain");
+    const dlUrl = URL.createObjectURL(filePayloadBlob(msg, "application/octet-stream"));
+    objectUrls.add(dlUrl);
+
+    const root = document.createElement("div");
+    root.className = "wl-msg-media wl-msg-doc";
+    root.dataset.doc = kind;
+
+    const face = document.createElement("div");
+    face.className = "wl-media-thumb wl-doc-face"; // wl-media-thumb: same hover + shelf-ignore semantics
+    face.dataset.doc = kind;
+    face.addEventListener("click", () => openBlobLightbox(fileName, kind, srcBlob, mime), { signal });
+
+    root.append(face, createMediaInfoBar(fileName, fileSize, dlUrl));
+
+    if (kind === "pdf") {
+      face.innerHTML = PDF_DOC_FACE;
+      return root;
+    }
+
+    face.classList.add("wl-doc-face--loading");
+    const body = document.createElement("pre");
+    body.className = "wl-doc-peek-body";
+    face.appendChild(body);
+    void sniffTextPreview(srcBlob, DOC_PEEK_BYTES).then((r) => {
+      if (signal.aborted || !root.isConnected) return;
+      face.classList.remove("wl-doc-face--loading");
+      if (!r || r.total === 0 || r.text.trim() === "") {
+        // not text, empty, or all whitespace — a peek would just be a blank box
+        fillGenericFileCard(root, fileName, fileSize, dlUrl);
+        return;
+      }
+      // textContent, never innerHTML: peer bytes are shown, never parsed.
+      const lines = r.text.split("\n");
+      body.textContent = lines.slice(0, DOC_PEEK_LINES).join("\n");
+      // the bottom fade earns its place only when there is genuinely more below the
+      // fold — either more lines than the peek shows, or more file than was sniffed.
+      requestAnimationFrame(() => {
+        if (signal.aborted || !face.isConnected) return;
+        const clipped = face.scrollHeight - face.clientHeight > 2
+          || lines.length > DOC_PEEK_LINES
+          || r.shown < r.total;
+        face.classList.toggle("wl-doc-face--clipped", clipped);
+      });
+    });
+    return root;
   }
 
   /** Build the info bar beneath the thumbnail (filename, size, download). */
@@ -4603,10 +4832,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       fileName: state.fileName, fileSize: state.totalBytes, fileType: file.type,
       fileBlob: file, timestamp: Date.now(),
     };
-    const isMedia = detectMedia(msg) !== null;
+    const detected = detectMedia(msg);
+    const isMedia = !!detected && isThumbKind(detected.kind);
+    // a card that replaces the progress card wholesale (thumbnail or document peek),
+    // vs. one that just grows a download link on the existing name/size row.
+    const isRichCard = isMedia || (!!detected && canPreviewDocument(detected.kind));
 
     const buildAffordance = (): HTMLElement => {
       if (isMedia) return renderMediaMessage(msg, signal, null);
+      if (isRichCard) return renderDocumentMessage(msg, signal);
       // generic file: same "download" wording/class as the receiver's card, but a
       // lazy click-time object URL instead of an eager one (see downloadRetainedFile).
       const link = document.createElement("a");
@@ -4624,7 +4858,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (!state.wrapEl.isConnected) return;
       const fresh = buildAffordance();
       if (!reduceMotion) fresh.style.opacity = "0";
-      if (isMedia) {
+      if (isRichCard) {
         state.wrapEl.replaceChild(fresh, state.cardEl);
         state.cardEl = fresh;
       } else {
@@ -4940,6 +5174,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       renderMediaTile(item); // a placeholder; the <img>/<video> hydrates when the tile nears the viewport
     } else {
       renderFileRow(item);
+      // documents stay in the list where they read as documents, but the row itself
+      // becomes the preview affordance.
+      if (media) armRowPreview(item, media);
     }
 
     if (!reduceMotion) {
@@ -4951,6 +5188,32 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (item.blob && lastDirHandle && group.direction === "in") void writeItemToDir(item, lastDirHandle);
       scheduleGroupUpdate(group);
     }
+  }
+
+  /** Turn a finished document row into a preview affordance: tap opens the lightbox,
+   *  and openGroupLightbox pages through it alongside the collage's photos in index
+   *  order. Marking mediaKind is what admits the item to the gallery, so it is set
+   *  only once the preview is known to work — a binary claiming text/plain, or a pdf
+   *  with no viewer to show it, stays a plain download row. */
+  function armRowPreview(item: TransferItem, media: { kind: MediaKind; mime: string }): void {
+    const blob = item.blob ?? item.file;
+    if (!blob || !canPreviewDocument(media.kind)) return;
+    const arm = (): void => {
+      if (item.state !== "done" || item.slot !== "list") return;
+      item.mediaKind = media.kind;
+      item.mediaMime = media.mime;
+      item.el.dataset.preview = "true";
+      item.el.title = `Preview ${item.fileName}`;
+      item.el.onclick = () => openGroupLightbox(item);
+      const hint = document.createElement("span");
+      hint.className = "wl-transfer-hint";
+      hint.textContent = "preview";
+      const dl = item.el.querySelector(".wl-transfer-row-dl");
+      if (dl) item.el.insertBefore(hint, dl); else item.el.appendChild(hint);
+    };
+    if (media.kind === "text") {
+      void sniffTextPreview(blob, TEXT_SNIFF_HEAD).then((r) => { if (r && r.total > 0 && r.text.trim()) arm(); });
+    } else arm();
   }
 
   /** A finished media tile — a light glyph placeholder that hydrates into an
@@ -5026,6 +5289,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     el.dataset.state = "done";
     el.dataset.kind = "file";
     delete el.dataset.thumb;
+    delete el.dataset.preview;
+    el.removeAttribute("title");
     el.onclick = null;
     clearNode(el);
     el.style.removeProperty("--wl-transfer-ratio");
@@ -5146,10 +5411,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
-  /** A small type-hint glyph for a tile: image / video / audio / pdf / archive / generic. */
+  const TEXT_GLYPH = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 2h8l6 6v14H6z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M14 2v6h6" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 13h6M9 16h6M9 19h3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`;
+
+  /** A small type-hint glyph for a tile: image / video / audio / pdf / archive / text / generic. */
   function tileGlyphFor(name: string, type: string): string {
     const t = (type || "").toLowerCase();
     const ext = (name.split(".").pop() ?? "").toLowerCase();
+    // a curated source/text extension wins over the declared type, same as detectMedia
+    // (a .ts file is mislabelled video/mp2t by the OS).
+    if (TEXT_EXT.has(ext)) return TEXT_GLYPH;
     if (t.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg", "heic"].includes(ext)) {
       return `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.4"/><circle cx="8.5" cy="9.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M4 17l4.5-4.5L12 16l3-3 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     }
@@ -5165,6 +5435,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     if (["zip", "gz", "tar", "rar", "7z", "bz2", "xz"].includes(ext) || t.includes("zip") || t.includes("compressed")) {
       return `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M12 3v3M12 8v2M12 12v2M10.5 16h3v3.5h-3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
     }
+    if (t.startsWith("text/")) return TEXT_GLYPH;
     return FILE_TILE_ICON;
   }
 
@@ -5300,18 +5571,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return `${stem} (${Date.now()})${ext}`;
   }
 
-  /** Open the lightbox on a group's media items with ‹ › paging across the batch.
-   *  Entries carry the blob, not a URL — the lightbox mints URLs only for the
-   *  entries actually viewed, so a batch of hundreds costs nothing to open. */
+  /** Open the lightbox on everything in the group that can be previewed — photos,
+   *  videos, pdfs and text alike — with ‹ › paging across the batch in index order,
+   *  so a mixed drop reads as one sequence rather than two. Entries carry the blob,
+   *  not a URL: the lightbox mints URLs only for the entries actually viewed, so a
+   *  batch of hundreds costs nothing to open. */
   function openGroupLightbox(startItem: TransferItem): void {
     const group = groups.get(startItem.transferId >>> 8);
     if (!group) return;
     const mediaItems = [...group.items.values()]
-      .filter((it) => it.state === "done" && it.blob && it.mediaKind)
+      .filter((it) => it.state === "done" && (it.blob ?? it.file) && it.mediaKind)
       .sort((a, b) => a.index - b.index);
     if (!mediaItems.length) return;
     const entries: LightboxEntry[] = mediaItems.map((it) => ({
-      fileName: it.fileName, kind: it.mediaKind!, blob: it.blob, mime: it.fileType || undefined,
+      fileName: it.fileName, kind: it.mediaKind!,
+      blob: it.blob ?? it.file, mime: it.mediaMime || it.fileType || undefined,
     }));
     const startIndex = Math.max(0, mediaItems.findIndex((it) => it === startItem));
     openMediaLightbox("", "", entries[startIndex].fileName, entries[startIndex].kind, undefined, undefined, { entries, index: startIndex });
@@ -5425,8 +5699,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       textEl.textContent = msg.text ?? "";
       div.appendChild(textEl);
     } else if (isRenderableAudioMessage(msg)) {
-      const fileData = msg.fileData;
-      if (!fileData) return null;
       /* ── Inline audio player with waveform ─────────────── */
       const audioEl = document.createElement("div");
       audioEl.className = "wl-msg-audio";
@@ -5446,15 +5718,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const dlBtn = document.createElement("button");
       dlBtn.type = "button";
       dlBtn.className = "wl-audio-dl-btn";
-      dlBtn.title = "Download as WAV";
+      dlBtn.title = isWhisperAudioCodec(msg.fileType, msg.fileName) ? "Download as WAV" : "Download";
       dlBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 
       audioEl.append(playBtn, canvas, durLabel, dlBtn);
 
       // we don't need a blob URL for custom Harmonic codec playback
       const isWhisperCodec = isWhisperAudioCodec(msg.fileType, msg.fileName);
-      const abCopy = new ArrayBuffer(fileData.byteLength);
-      new Uint8Array(abCopy).set(fileData);
+      // filled in the rAF below once the payload bytes are in hand (a voice note
+      // hands them over synchronously; a dragged file resolves its blob first).
+      let abCopy: ArrayBuffer | null = null;
 
       let pcmData: Float32Array | null = null;
       let durationSeconds = 0;
@@ -5580,6 +5853,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         redraw(0);
 
         try {
+          abCopy = (await filePayloadBytes(msg)).buffer as ArrayBuffer;
+        } catch {
+          playBtn.setAttribute("aria-disabled", "true");
+          playBtn.title = "audio unavailable";
+          return;
+        }
+        if (signal.aborted) return;
+
+        try {
           if (isWhisperCodec) {
             const decKey = session ? session.audioKey : undefined;
             const decoded = await decodeHarmonic(new Uint8Array(abCopy), decKey);
@@ -5611,7 +5893,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
               opusBlobUrl = wavBlobUrl;
             }
           } else {
-            // unused fallback for non-Harmonic audio formats
+            // a dragged or picked audio file (mp3, m4a, ogg, ...). decode a copy
+            // for the waveform; play and download both use the original container.
             const actx = createAudioContext();
             if (!actx) throw new Error("audio decode unavailable");
             const decoded = await actx.decodeAudioData(abCopy.slice(0));
@@ -5619,6 +5902,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
             durationSeconds = decoded.duration;
             (playBtn as HTMLButtonElement & { _sr: number })._sr = decoded.sampleRate;
             void actx.close();
+
+            const playMime = (msg.fileType ?? "").toLowerCase().startsWith("audio/")
+              ? msg.fileType!
+              : "audio/mpeg";
+            const url = URL.createObjectURL(new Blob([abCopy], { type: playMime }));
+            objectUrls.add(url);
+            opusBlobUrl = url; // HTMLAudioElement plays the original bytes directly
+            wavBlobUrl = url;  // download hands back the original file (see dlBtn)
           }
           durLabel.textContent = formatAudioDuration(durationSeconds);
 
@@ -5695,16 +5986,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, { signal });
 
       dlBtn.addEventListener("click", async () => {
-        if (!isWhisperCodec || dlBtn.disabled || !wavBlobUrl) return;
+        if (dlBtn.disabled || !wavBlobUrl) return;
         dlBtn.disabled = true;
         try {
-          const base = msg.fileName?.endsWith(".wharm")
-            ? msg.fileName.slice(0, -6)
-            : `audio-${msg.timestamp || Date.now()}`;
+          let name: string;
+          if (isWhisperCodec) {
+            const base = msg.fileName?.endsWith(".wharm")
+              ? msg.fileName.slice(0, -6)
+              : `audio-${msg.timestamp || Date.now()}`;
+            name = `${base}.wav`;
+          } else {
+            name = msg.fileName?.trim() || `audio-${msg.timestamp || Date.now()}`;
+          }
           const a = document.createElement("a");
           a.style.display = "none";
           a.href = wavBlobUrl;
-          a.download = `${base}.wav`;
+          a.download = name;
           document.body.appendChild(a);
           a.click();
           setTimeout(() => document.body.removeChild(a), 1000);
@@ -5729,7 +6026,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       }, { signal });
 
       div.appendChild(audioEl);
-    } else if (media !== null) {
+    } else if (media !== null && isThumbKind(media.kind)) {
       const merged = mergePeerStreamFinal
         ? renderMergedPeerDrawMessage(msg, signal, replacePeerPreviewAspectRatio, replacePeerPreviewSnapshot)
         : null;
@@ -5738,6 +6035,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       } else {
         div.appendChild(renderMediaMessage(msg, signal, drawPreview));
       }
+    } else if (media !== null && canPreviewDocument(media.kind) && hasFilePayload(msg)) {
+      // a pdf (where the browser has a viewer) or a text file: rendered as a
+      // media-shell card with a peek face, not a link.
+      div.appendChild(renderDocumentMessage(msg, signal));
     } else if (msg.type === "file") {
       const fileEl = document.createElement("div");
       fileEl.className = "wl-msg-file";
@@ -5756,8 +6057,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         // always use octet-stream for received files — never let the browser interpret
         // peer-declared MIME types (prevents HTML/SVG/etc. execution via blob URL).
         // the download attribute + file extension ensure the OS opens files correctly.
-        const blob = filePayloadBlob(msg, "application/octet-stream");
-        const url = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(filePayloadBlob(msg, "application/octet-stream"));
         objectUrls.add(url);
 
         const link = document.createElement("a");

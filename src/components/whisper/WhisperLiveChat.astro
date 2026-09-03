@@ -2100,6 +2100,8 @@
     border: 1px solid var(--msg-border);
     background: var(--msg-bg);
     box-shadow: inset 0 1px 0 rgb(var(--color-text-rgb) / 0.018);
+    /* a two-word filename shouldn't collapse the card to a stub */
+    min-width: 11rem;
   }
 
   :global(.wl-chat-messages) :global(.wl-msg-file-name) {
@@ -2537,6 +2539,43 @@
     color: rgb(var(--color-text-rgb) / 0.4);
   }
 
+  /* a document row is the preview affordance: the whole row opens the lightbox,
+     the download button keeps its own click (see armRowPreview / renderFileRow) */
+  :global(.wl-chat-messages) :global(.wl-transfer-row[data-preview]) {
+    cursor: pointer;
+    transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-row[data-preview]:hover) {
+    background: rgb(var(--color-text-rgb) / 0.08);
+    color: rgb(var(--color-text-rgb) / 0.84);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-row[data-preview]:active) {
+    background: rgb(var(--color-text-rgb) / 0.11);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-hint) {
+    flex: none;
+    font-size: 0.62rem;
+    letter-spacing: 0.015em;
+    color: rgb(var(--msg-accent) / 0.62);
+    opacity: 0.75;
+    transition: opacity var(--duration-fast) ease;
+  }
+
+  /* on a pointer device the hint stays out of the way until the row is aimed at;
+     on touch there is no hover, so it just sits there quietly. */
+  @media (hover: hover) {
+    :global(.wl-chat-messages) :global(.wl-transfer-hint) { opacity: 0; }
+    :global(.wl-chat-messages) :global(.wl-transfer-row[data-preview]:hover .wl-transfer-hint) { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.wl-chat-messages) :global(.wl-transfer-row[data-preview]),
+    :global(.wl-chat-messages) :global(.wl-transfer-hint) { transition: none; }
+  }
+
   :global(.wl-chat-messages) :global(.wl-transfer-row-dl) {
     flex: none;
     margin-left: 0.1rem;
@@ -2651,6 +2690,17 @@
   /* video: shrink to the far edges so the native controls stay reachable */
   :global(.wl-lightbox[data-kind="video"] .wl-lightbox-nav) { width: 16%; bottom: 5.5rem; }
 
+  /* documents are read, not glanced at: the paging zones become narrow gutter strips
+     so they never sit over the page, and the document is inset to leave them room
+     (see the :has rule in the document block below). */
+  :global(.wl-lightbox[data-kind="pdf"] .wl-lightbox-nav),
+  :global(.wl-lightbox[data-kind="text"] .wl-lightbox-nav) {
+    width: 3.2rem;
+    max-width: 3.2rem;
+    padding: 0;
+    justify-content: center;
+  }
+
   :global(.wl-lightbox-nav-chevron) {
     display: flex;
     align-items: center;
@@ -2686,6 +2736,106 @@
       height: 2rem;
       background: rgb(0 0 0 / 0.36);
     }
+    :global(.wl-lightbox[data-kind="pdf"] .wl-lightbox-nav),
+    :global(.wl-lightbox[data-kind="text"] .wl-lightbox-nav) { width: 2.6rem; max-width: 2.6rem; }
+  }
+
+  /* ── Lightbox documents (pdf + text) ──────────────────────
+     A pdf goes to the browser's own sandboxed viewer via <embed>; text is decoded
+     into a <pre> and never becomes a url at all. Both fill a single reading frame
+     the same size, so paging between them doesn't jump. */
+  :global(.wl-lightbox[data-kind="pdf"]),
+  :global(.wl-lightbox[data-kind="text"]) {
+    /* the frame scrolls its own content — the overlay's touch lock would eat it */
+    touch-action: pan-x pan-y pinch-zoom;
+  }
+
+  :global(.wl-lightbox-doc),
+  :global(.wl-lightbox-text) {
+    width: min(58rem, calc(100vw - 2rem));
+    border-radius: var(--whisper-radius-tight);
+    box-shadow: 0 4px 32px rgb(0 0 0 / 0.4);
+  }
+
+  /* the pdf viewer needs the whole frame; a short text file gets only the height it
+     has something to say in. */
+  :global(.wl-lightbox-doc) {
+    height: calc(100vh - 5rem);
+    height: calc(100dvh - 5rem);
+  }
+
+  :global(.wl-lightbox-text) {
+    max-height: calc(100vh - 5rem);
+    max-height: calc(100dvh - 5rem);
+  }
+
+  /* leave the paging gutters clear when the gallery actually pages */
+  :global(.wl-lightbox:has(.wl-lightbox-nav)) :global(.wl-lightbox-doc),
+  :global(.wl-lightbox:has(.wl-lightbox-nav)) :global(.wl-lightbox-text) {
+    width: min(58rem, calc(100vw - 7.5rem));
+  }
+
+  :global(.wl-lightbox-doc) {
+    border: none;
+    background: rgb(28 28 31);
+  }
+
+  :global(.wl-lightbox-text) {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgb(255 255 255 / 0.09);
+    background: rgb(17 17 19);
+    overflow: hidden;
+  }
+
+  :global(.wl-lightbox-text-body) {
+    flex: 1 1 auto;
+    /* a short (or empty) file still reads as a panel rather than a sliver */
+    min-height: 5rem;
+    margin: 0;
+    padding: 0.9rem 1.05rem;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(255 255 255 / 0.22) transparent;
+    font-family: var(--whisper-font-mono);
+    font-size: 0.76rem;
+    line-height: 1.65;
+    color: rgb(255 255 255 / 0.84);
+    /* code scrolls rather than reflows — a wrapped diff is a lie about the file */
+    white-space: pre;
+    tab-size: 2;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  :global(.wl-lightbox-text-body:focus-visible) {
+    outline: 1px solid rgb(255 255 255 / 0.18);
+    outline-offset: -1px;
+  }
+
+  :global(.wl-lightbox-text-note) {
+    flex: none;
+    margin: 0;
+    padding: 0.4rem 1.05rem;
+    border-top: 1px solid rgb(255 255 255 / 0.08);
+    background: rgb(255 255 255 / 0.03);
+    font-family: var(--whisper-font-mono);
+    font-size: var(--whisper-text-fine);
+    color: rgb(255 255 255 / 0.42);
+  }
+
+  @media (max-width: 30rem) {
+    :global(.wl-lightbox-doc),
+    :global(.wl-lightbox-text) {
+      width: calc(100vw - 1rem);
+      border-radius: 3px;
+    }
+    :global(.wl-lightbox:has(.wl-lightbox-nav)) :global(.wl-lightbox-doc),
+    :global(.wl-lightbox:has(.wl-lightbox-nav)) :global(.wl-lightbox-text) {
+      width: calc(100vw - 6rem);
+    }
+    :global(.wl-lightbox-text-body) { padding: 0.7rem 0.8rem; }
+    :global(.wl-lightbox-text-note) { padding: 0.35rem 0.8rem; }
   }
 
   /* ── Audio player ─────────────────────────────────────────── */
@@ -3006,6 +3156,81 @@
 
   :global(.wl-chat-messages) :global(.wl-media-dl:active) {
     transform: scale(0.92);
+  }
+
+  /* ── Document card (pdf / text) ────────────────────────────
+     the media shell (.wl-msg-media) with a non-image face: a code peek for
+     text, a document mark for a pdf. tap the face -> lightbox; the info bar
+     below is the same one photos use. fixed width so a batch of docs reads as
+     one column instead of a ragged stack keyed to line length. */
+  :global(.wl-chat-messages) :global(.wl-msg-doc) {
+    /* a definite width, not min(_, 100%): the card sits in a shrink-wrapped
+       flex column, so a percentage would resolve against its own content. */
+    width: 20.5rem;
+    max-width: 100%;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-doc-face[data-doc="text"]) {
+    aspect-ratio: auto;
+    line-height: normal;
+    display: block;
+    min-height: 2.75rem;
+    max-height: 8.4rem;
+    padding: 0.5rem 0.95rem 0 0.68rem;
+    background: transparent;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-doc-peek-body) {
+    margin: 0;
+    font-family: var(--whisper-font-mono);
+    font-size: 0.66rem;
+    line-height: 1.55;
+    color: rgb(var(--color-text-rgb) / 0.56);
+    white-space: pre;
+    overflow: hidden;
+    tab-size: 2;
+    /* a long line trails off softly rather than hitting a hard vertical edge.
+       a mask (not an overlay gradient) so it fades to whatever the bubble bg is
+       — self and peer bubbles use different gradients. */
+    -webkit-mask-image: linear-gradient(to right, #000 70%, transparent);
+    mask-image: linear-gradient(to right, #000 70%, transparent);
+  }
+
+  /* bottom fade, only when the peek is genuinely clipped (JS adds --clipped once
+     it measures the overflow) — a short file's last line is never dimmed. masking
+     the face fades within the visible window regardless of the pre's full height. */
+  :global(.wl-chat-messages) :global(.wl-doc-face--clipped) {
+    -webkit-mask-image: linear-gradient(to bottom, #000 56%, transparent);
+    mask-image: linear-gradient(to bottom, #000 56%, transparent);
+  }
+
+  /* a calm placeholder bar while the first bytes are read (near-instant for an
+     in-memory blob, a beat longer for a disk-backed one) */
+  :global(.wl-chat-messages) :global(.wl-doc-face--loading) {
+    min-height: 4.5rem;
+  }
+  :global(.wl-chat-messages) :global(.wl-doc-face--loading)::before {
+    content: "";
+    position: absolute;
+    inset: 0.95rem 42% auto 0.72rem;
+    height: 0.5rem;
+    border-radius: 2px;
+    background: rgb(var(--msg-accent) / 0.11);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-doc-face[data-doc="pdf"]) {
+    aspect-ratio: auto;
+    min-height: 4.5rem;
+    max-height: 5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: rgb(var(--msg-accent) / 0.52);
+  }
+  :global(.wl-chat-messages) :global(.wl-doc-face[data-doc="pdf"] svg) {
+    width: 2.5rem;
+    height: 2.5rem;
   }
 
   /* ── z-index sanity ────────────────────────────────────────── */
