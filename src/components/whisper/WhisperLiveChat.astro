@@ -2576,47 +2576,69 @@
   }
 
   /* ── Lightbox gallery paging ─────────────────────────────── */
-  :global(.wl-lightbox-prev),
-  :global(.wl-lightbox-next) {
+  /* the media element is swapped inside this host; display:contents keeps the
+     existing .wl-lightbox-inner > img/video sizing rules intact. */
+  :global(.wl-lightbox-stage) { display: contents; }
+
+  :global(.wl-lightbox-nav) {
     position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 2.6rem;
-    height: 2.6rem;
+    top: 4rem;
+    bottom: 4.75rem;
+    width: 34%;
+    max-width: 15rem;
+    display: flex;
+    align-items: center;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    z-index: 3;
+    -webkit-tap-highlight-color: transparent;
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+
+  :global(.wl-lightbox--open .wl-lightbox-nav) { opacity: 1; }
+
+  :global(.wl-lightbox-nav--prev) { left: 0; justify-content: flex-start; padding-left: 0.7rem; }
+  :global(.wl-lightbox-nav--next) { right: 0; justify-content: flex-end; padding-right: 0.7rem; }
+
+  /* video: shrink to the far edges so the native controls stay reachable */
+  :global(.wl-lightbox[data-kind="video"] .wl-lightbox-nav) { width: 16%; bottom: 5.5rem; }
+
+  :global(.wl-lightbox-nav-chevron) {
     display: flex;
     align-items: center;
     justify-content: center;
+    width: 2.4rem;
+    height: 2.4rem;
     border-radius: 50%;
-    border: none;
-    background: rgb(0 0 0 / 0.4);
-    color: rgb(255 255 255 / 0.85);
-    cursor: pointer;
-    z-index: 2;
-    transition: background var(--duration-fast) ease;
+    background: rgb(0 0 0 / 0.44);
+    color: rgb(255 255 255 / 0.92);
+    transition: background var(--duration-fast) ease, transform var(--duration-fast) ease;
   }
 
-  :global(.wl-lightbox-prev) { left: 0.75rem; }
-  :global(.wl-lightbox-next) { right: 0.75rem; }
+  :global(.wl-lightbox-nav:hover .wl-lightbox-nav-chevron) { background: rgb(0 0 0 / 0.66); }
+  :global(.wl-lightbox-nav:active .wl-lightbox-nav-chevron) { transform: scale(0.9); }
 
-  :global(.wl-lightbox-prev:hover),
-  :global(.wl-lightbox-next:hover) {
-    background: rgb(0 0 0 / 0.62);
-  }
+  /* keep the close button and info bar above the nav zones */
+  :global(.wl-lightbox-close) { z-index: 5; }
+  :global(.wl-lightbox-bar) { z-index: 5; }
 
   :global(.wl-lightbox-count) {
     font-family: var(--whisper-font-mono);
     font-variant-numeric: tabular-nums;
     font-size: var(--whisper-text-fine);
     color: rgb(255 255 255 / 0.55);
-    margin-left: 0.5rem;
+    margin-left: 0.35rem;
+    flex: none;
   }
 
   @media (max-width: 30rem) {
-    :global(.wl-lightbox-prev),
-    :global(.wl-lightbox-next) {
-      width: 2.2rem;
-      height: 2.2rem;
-      background: rgb(0 0 0 / 0.3);
+    :global(.wl-lightbox-nav) { width: 30%; }
+    :global(.wl-lightbox-nav-chevron) {
+      width: 2rem;
+      height: 2rem;
+      background: rgb(0 0 0 / 0.36);
     }
   }
 

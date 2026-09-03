@@ -2763,6 +2763,11 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     const inner = document.createElement("div");
     inner.className = "wl-lightbox-inner";
+    // the media element is swapped inside this host so the nav zones (siblings)
+    // survive a page turn.
+    const mediaHost = document.createElement("div");
+    mediaHost.className = "wl-lightbox-stage";
+    inner.appendChild(mediaHost);
 
     const bar = document.createElement("div");
     bar.className = "wl-lightbox-bar";
@@ -2799,20 +2804,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const counter = document.createElement("span");
     counter.className = "wl-lightbox-count";
 
-    /** Render the media at `cursor` into `inner` and refresh the bar. */
+    /** Render the media at `cursor` and refresh the bar. */
     const show = (): void => {
       const e = entries[cursor];
-      inner.replaceChildren();
+      overlay.dataset.kind = e.kind;
+      let mediaEl: HTMLElement;
       if (e.kind === "image") {
         const img = document.createElement("img");
         img.className = "wl-lightbox-img";
         img.src = e.src; img.alt = e.fileName; img.draggable = false;
-        inner.appendChild(img);
+        mediaEl = img;
       } else if (e.kind === "video") {
         const video = document.createElement("video");
         video.className = "wl-lightbox-video";
         video.src = e.src; video.controls = true; video.autoplay = true; video.playsInline = true;
-        inner.appendChild(video);
+        mediaEl = video;
       } else {
         const frame = document.createElement("div");
         frame.className = "wl-lightbox-img";
@@ -2824,9 +2830,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         canvas.style.height = "100%";
         canvas.style.aspectRatio = `${Math.max(1, glyph?.logicalW ?? 4)} / ${Math.max(1, glyph?.logicalH ?? 3)}`;
         frame.appendChild(canvas);
-        inner.appendChild(frame);
         if (glyph) bindGlyphCanvasToHost(canvas, frame, glyph, lbSignal);
+        mediaEl = frame;
       }
+      mediaHost.replaceChildren(mediaEl);
       label.textContent = e.fileName;
       if (e.kind === "glyph" && glyphBytes) {
         dlLink.href = "#";
@@ -2846,17 +2853,22 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       show();
     };
 
+    // tall edge zones over the media — a big, focus-proof hit target for paging.
+    // the chevron lives inside each zone. they clear the close button (top) and the
+    // info bar (bottom); for video they shrink to the far edges so the native
+    // controls stay reachable (see the CSS).
     if (entries.length > 1) {
-      for (const [dir, glyphPath, cls] of [
-        [-1, "M11 3L6 8l5 5", "wl-lightbox-prev"],
-        [1, "M6 3l5 5-5 5", "wl-lightbox-next"],
+      for (const [dir, d, cls] of [
+        [-1, "M11 3L6 8l5 5", "wl-lightbox-nav--prev"],
+        [1, "M6 3l5 5-5 5", "wl-lightbox-nav--next"],
       ] as const) {
-        const nav = document.createElement("button");
-        nav.type = "button";
-        nav.className = cls;
-        nav.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="${glyphPath}" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-        nav.addEventListener("click", (ev) => { ev.stopPropagation(); step(dir); }, { signal: lbSignal });
-        overlay.appendChild(nav);
+        const zone = document.createElement("button");
+        zone.type = "button";
+        zone.className = `wl-lightbox-nav ${cls}`;
+        zone.setAttribute("aria-label", dir < 0 ? "Previous" : "Next");
+        zone.innerHTML = `<span class="wl-lightbox-nav-chevron"><svg width="17" height="17" viewBox="0 0 16 16" fill="none"><path d="${d}" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+        zone.addEventListener("click", (ev) => { ev.stopPropagation(); step(dir); }, { signal: lbSignal });
+        overlay.appendChild(zone);
       }
     }
 
@@ -2878,12 +2890,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       if (e.target === overlay) closeMediaLightbox();
     }, { signal: lbSignal });
 
-    // Escape to close, arrows to page a gallery — cleaned up by lbAc.abort()
+    // Escape to close, arrows to page a gallery. Capture phase so it beats a
+    // focused <video> (which would otherwise seek on the arrow keys).
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeMediaLightbox(); }
-      else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
-      else if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
-    }, { signal: lbSignal });
+      else if (e.key === "ArrowLeft") { e.preventDefault(); e.stopPropagation(); step(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); step(1); }
+    }, { capture: true, signal: lbSignal });
 
     requestAnimationFrame(() => overlay.classList.add("wl-lightbox--open"));
 
@@ -4705,11 +4718,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       settled: false,
     };
     groups.set(nonce, group);
-
-    // pre-seat every item so the bubble is stable from the first frame: rows fill
-    // their slot in place as files arrive rather than popping in and reflowing.
-    // media items migrate up into the collage once their type is known.
-    for (let i = 0; i < count; i++) ensureGroupItem(group, i, "", 0, "");
+    // items are created in their correct slot (collage vs list) as they are
+    // reported — no blank pre-seed to migrate around. the sender knows every type
+    // up front (see sendFilesToChat); the receiver learns them from each chunk 0.
 
     void acquireTransferWakeLock();
     updateGroupHeader(group);
@@ -4730,6 +4741,24 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function syncGroupLayout(group: TransferGroup): void {
     group.wrapEl.querySelector<HTMLElement>(".wl-transfer-group")
       ?.setAttribute("data-layout", group.mediaEl ? "media" : "list");
+  }
+
+  /** Coalesce the reflow-heavy group work (collage relayout, header, settle check,
+   *  follow-scroll) into one pass per animation frame. During a burst of arrivals
+   *  this turns N reflows and N smooth scrolls into one. Keyed by the group's stable
+   *  wrapEl so an outbound placeholder that adopts its real nonce isn't dropped. */
+  const groupSyncPending = new Set<HTMLElement>();
+  function scheduleGroupUpdate(group: TransferGroup): void {
+    if (groupSyncPending.has(group.wrapEl)) return;
+    groupSyncPending.add(group.wrapEl);
+    requestAnimationFrame(() => {
+      groupSyncPending.delete(group.wrapEl);
+      if (!group.wrapEl.isConnected) return;
+      relayoutMedia(group);
+      updateGroupHeader(group);
+      maybeSettleGroup(group);
+      if (group.direction === "in" && (pinnedToBottom || isNearBottom())) anchorToBottom("instant");
+    });
   }
 
   /** Get item `index`, creating its skeleton row if it doesn't exist. Fresh type
@@ -4762,7 +4791,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       item.slot = "media";
       renderPendingRow(item); // re-render as a tile-shaped pending cell
       placeItemNode(group, item);
-      relayoutMedia(group);
+      scheduleGroupUpdate(group);
     }
     return item;
   }
@@ -4846,7 +4875,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     item.el.querySelector(".wl-transfer-track")?.remove();
     if (item.metaEl) item.metaEl.textContent = "cancelled";
     const group = groups.get(item.transferId >>> 8);
-    if (group) { relayoutMedia(group); updateGroupHeader(group); }
+    if (group) scheduleGroupUpdate(group);
   }
 
   /** Settle a finished item into its final form — a collage thumbnail (tap → group
@@ -4890,11 +4919,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     if (group) {
-      relayoutMedia(group);
-      updateGroupHeader(group);
-      maybeSettleGroup(group);
       if (item.blob && lastDirHandle && group.direction === "in") void writeItemToDir(item, lastDirHandle);
-      if (group.direction === "in" && (pinnedToBottom || isNearBottom())) smartScroll();
+      scheduleGroupUpdate(group);
     }
   }
 
@@ -4920,8 +4946,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     item.slot = "list";
     item.mediaKind = undefined;
     const g = groups.get(item.transferId >>> 8);
-    if (g) { placeItemNode(g, item); relayoutMedia(g); }
     renderFileRow(item);
+    if (g) { placeItemNode(g, item); scheduleGroupUpdate(g); }
   }
 
   function renderFileRow(item: TransferItem): void {
@@ -6391,7 +6417,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
               });
             } else {
               updateGroupItemProgress(item);
-              updateGroupHeader(group);
+              scheduleGroupUpdate(group);
             }
           }
           return;
@@ -6442,7 +6468,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           if (totalBytes) item.totalBytes = totalBytes;
           item.received = receivedBytes;
           updateGroupItemProgress(item);
-          updateGroupHeader(group);
+          scheduleGroupUpdate(group);
           return;
         }
         const state = transferCards.get(transferId) ?? buildTransferCard("in", transferId, fileName, totalBytes);
@@ -6453,7 +6479,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         if (group) {
           const item = group.items.get(transferId & 0xff);
           if (item) collapseGroupItemCancelled(item);
-          maybeSettleGroup(group);
+          scheduleGroupUpdate(group);
           return;
         }
         collapseTransferCancelled(transferId);
@@ -9481,7 +9507,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           sent = Math.min(file.size, sent + Math.max(1, file.size / 6));
           item.received = sent;
           updateGroupItemProgress(item);
-          updateGroupHeader(group);
+          scheduleGroupUpdate(group);
           if (sent >= file.size) {
             clearInterval(tick);
             finalizeGroupItem(item, {
