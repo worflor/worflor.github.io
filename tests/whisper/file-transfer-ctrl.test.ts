@@ -125,7 +125,7 @@ describe("estimateChunkedPrefixedSize — large payload (| 0 truncation fix)", (
   it("matches the manual formula straddling the 32-bit signed int boundary (2^31)", () => {
     const sizes = [2 ** 31 - 1, 2 ** 31, 2 ** 31 + 1, 3 * 1024 ** 3];
     for (const size of sizes) {
-      assert.equal(estimateChunkedPrefixedSize(size), manualEstimate(size), `size=${size}`);
+      assert.equal(estimateChunkedPrefixedSize(size, CHUNK_SIZE), manualEstimate(size), `size=${size}`);
     }
   });
 
@@ -134,7 +134,7 @@ describe("estimateChunkedPrefixedSize — large payload (| 0 truncation fix)", (
     // estimate to 2 (empty payload) via the Math.max(0, ...) guard. 5 GB and 8 PB
     // (~2^53, the documented float64-exact ceiling for a file transfer) must not.
     for (const size of [5 * 1024 ** 3, 8 * 1024 ** 5]) {
-      const estimate = estimateChunkedPrefixedSize(size);
+      const estimate = estimateChunkedPrefixedSize(size, CHUNK_SIZE);
       assert.ok(estimate > 0, `estimate for ${size} should be positive, got ${estimate}`);
       assert.ok(estimate >= size, `estimate for ${size} should be at least the payload size, got ${estimate}`);
       assert.equal(estimate, manualEstimate(size), `size=${size}`);
@@ -142,14 +142,14 @@ describe("estimateChunkedPrefixedSize — large payload (| 0 truncation fix)", (
   });
 
   it("clamps negative payloadBytes to a zero-length estimate", () => {
-    assert.equal(estimateChunkedPrefixedSize(-100), 2);
+    assert.equal(estimateChunkedPrefixedSize(-100, CHUNK_SIZE), 2);
   });
 
   it("floors fractional payloadBytes instead of bitwise-truncating them", () => {
     // Math.floor(99.9) = 99, matching a plain integer byte length of 99.
     // The old `| 0` happened to floor small positive fractions too — this guards
     // the *replacement* stays correct, not just the large-value regression.
-    assert.equal(estimateChunkedPrefixedSize(99.9), manualEstimate(99));
+    assert.equal(estimateChunkedPrefixedSize(99.9, CHUNK_SIZE), manualEstimate(99));
   });
 });
 

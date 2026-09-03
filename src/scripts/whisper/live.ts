@@ -95,6 +95,8 @@ import {
 
 import {
   BUFFERED_AMOUNT_LOW,
+  BUFFERED_AMOUNT_HIGH,
+  CHUNK_SIZE as DEFAULT_WIRE_CHUNK,
   estimateChunkedPrefixedSize,
   iterateChunksPrefixed,
   ChunkAssembler,
@@ -564,6 +566,9 @@ export class WhisperLiveSession {
   private useLocalCodec = false;
   private transportMode: TransportMode = "naked";
   private assembler = new ChunkAssembler();
+  /** payload bytes per DataChannel frame — raised toward the negotiated
+   *  max-message-size once the SCTP transport reports it (see wireChunkSize()). */
+  private _wireChunkSize = 0;
   private incomingFiles = new Map<number, IncomingFileTransfer>();
   /** transferIds we (as receiver) rejected or dropped — stragglers still in flight are silently ignored. */
   private cancelledIncomingTransfers = new Set<number>();
@@ -2560,15 +2565,23 @@ export class WhisperLiveSession {
     this.onSendStart?.(transferId, file.name, file.size, groupCount);
     this.outgoingTransfersInFlight.add(transferId);
 
+    // read the next chunk off disk while the current one is encrypting + on the wire,
+    // so a slow disk and a slow link overlap instead of adding up. file.slice() reads
+    // only its byte range — the whole file is never in memory.
+    const readChunk = (idx: number): Promise<Uint8Array> => {
+      const start = idx * FILE_CHUNK_SIZE;
+      const end = Math.min(start + FILE_CHUNK_SIZE, file.size);
+      return file.slice(start, end).arrayBuffer().then((b) => new Uint8Array(b));
+    };
+
     try {
+      let pending: Promise<Uint8Array> | null = readChunk(0);
       for (let i = 0; i < totalChunks; i++) {
         // checked between chunks — cancelled locally, by the peer rejecting, or by a group cancel.
         if (this.cancelledOutgoingTransfers.has(transferId)) break;
 
-        const start = i * FILE_CHUNK_SIZE;
-        const end = Math.min(start + FILE_CHUNK_SIZE, file.size);
-        // file.slice() reads only this byte range — does not load the whole file.
-        const chunkBytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
+        const chunkBytes = await pending!;
+        pending = i + 1 < totalChunks ? readChunk(i + 1) : null;
         const chunkIdx = i;
         const chunkLen = chunkBytes.length;
 
@@ -2643,6 +2656,19 @@ export class WhisperLiveSession {
     });
   }
 
+  /** DataChannel payload size. Once a message has gone out end to end at a size it
+   *  sticks (`_wireChunkSize`); otherwise a candidate derived from the negotiated
+   *  max-message-size (256 KB on Chrome, ≥64 KB anywhere per RFC 8841), falling back
+   *  to the safe default before SCTP negotiation reports one. A `dc.send` that
+   *  rejects the frame (a browser lying about its cap) drops the cache to default. */
+  private wireChunkSize(): number {
+    if (this._wireChunkSize > 0) return this._wireChunkSize;
+    const max = this.pc?.sctp?.maxMessageSize ?? 0;
+    return max > 0
+      ? Math.max(16 * 1024, Math.min(256 * 1024, max - 64)) // room for the 6-byte header
+      : DEFAULT_WIRE_CHUNK;
+  }
+
   private waitForDrain(): Promise<void> {
     const dc = this.dc;
     if (!dc || dc.readyState !== "open") return Promise.reject(new Error("channel closed"));
@@ -2661,44 +2687,62 @@ export class WhisperLiveSession {
 
   private async encryptAndSend(plaintext: Uint8Array, flags: number): Promise<number> {
     this.onLog(`send: acquiring lock (queue depth: ${this.nSentTotal})`);
-    return this.withRatchetLock(async () => {
-      this.onLog("send: lock acquired");
-      if (!this.ratchetState || !this.dc) return -1;
 
+    // The ratchet lock is held only for the state-mutating transform. The wire push
+    // that follows is just dc.send() + backpressure — no ratchet state — so it runs
+    // outside the lock, which lets incoming frames keep decrypting during a big
+    // upload. Ordering across sends is still enforced by the sendQueue (enqueueSend).
+    const encrypted = await this.withRatchetLock(async () => {
+      this.onLog("send: lock acquired");
+      if (!this.ratchetState || !this.dc) return null;
       if (!this.loopStateSend) {
         throw new Error("No sending loop state, ratchet not fully initialized");
       }
-
       // delegate the full message transform to the pure protocol core — the same
       // dual-ratchet + membrane pipeline (protocolEncrypt) the test harness drives.
       const proto = this.buildProtoState();
-      const { wire, msgId } = await protocolEncrypt(proto, plaintext, flags, randomBytes(4));
+      const r = await protocolEncrypt(proto, plaintext, flags, randomBytes(4));
       this.loopStateSend = proto.loopSend;
       this.lastSentPubKeyHex = proto.lastSentPubKeyHex;
       this.nSentTotal = proto.nSentTotal;
       this.onLog(`send: encrypted, nSend=${this.ratchetState.nSend}, releasing lock`);
+      return r;
+    });
+    if (!encrypted) return -1;
+    const { wire, msgId } = encrypted;
 
-      const wireLen = wire.length;
-      const totalBytes = estimateChunkedPrefixedSize(wireLen);
-      let bytesSent = 0;
-      let lastProgressEmit = 0;
-      for (const chunk of iterateChunksPrefixed([wire], LIVE_MSG.ENCRYPTED)) {
-        if (this.dc.bufferedAmount > BUFFERED_AMOUNT_LOW) {
-          try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
-        }
-        if (!this.dc || this.dc.readyState !== "open") return msgId;
+    const chunkSize = this.wireChunkSize();
+    const totalBytes = estimateChunkedPrefixedSize(wire.length, chunkSize);
+    let bytesSent = 0;
+    let lastProgressEmit = 0;
+    for (const chunk of iterateChunksPrefixed([wire], LIVE_MSG.ENCRYPTED, chunkSize)) {
+      // hysteresis: fill the pipe up to the high-water mark, then wait for it to
+      // drain back to the low-water mark — one stall per ~2 MB instead of per frame.
+      if (this.dc && this.dc.bufferedAmount > BUFFERED_AMOUNT_HIGH) {
+        try { await this.waitForDrain(); } catch { return msgId; } // channel closed during drain
+      }
+      if (!this.dc || this.dc.readyState !== "open") return msgId;
+      try {
         this.dc.send(chunk);
-        bytesSent += chunk.byteLength;
-        if (this.onWireProgress) {
-          const now = performance.now();
-          if (bytesSent >= totalBytes || now - lastProgressEmit >= SEND_PROGRESS_INTERVAL_MS) {
-            this.onWireProgress(bytesSent, totalBytes);
-            lastProgressEmit = now;
-          }
+      } catch (err) {
+        // a frame larger than the peer actually accepts (a lying maxMessageSize):
+        // drop back to the safe default and let the caller retry the message.
+        this.onLog(`dc.send failed (${errorMessage(err)}); chunk size back to default`);
+        this._wireChunkSize = DEFAULT_WIRE_CHUNK;
+        return -1;
+      }
+      bytesSent += chunk.byteLength;
+      if (this.onWireProgress) {
+        const now = performance.now();
+        if (bytesSent >= totalBytes || now - lastProgressEmit >= SEND_PROGRESS_INTERVAL_MS) {
+          this.onWireProgress(bytesSent, totalBytes);
+          lastProgressEmit = now;
         }
       }
-      return msgId;
-    });
+    }
+    // a full message went out at this size — lock it in for the rest of the session.
+    if (this._wireChunkSize <= 0) this._wireChunkSize = chunkSize;
+    return msgId;
   }
 
   /* ── Trust ──────────────────────────────────────────────── */

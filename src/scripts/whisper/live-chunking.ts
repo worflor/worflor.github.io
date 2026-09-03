@@ -1,9 +1,11 @@
 /**
  * Whisper Live — DataChannel chunking and reassembly.
  *
- * WebRTC DataChannels have message size limits (~256KB typically,
- * but 16KB is the safe max for interoperability). We chunk large
- * messages and reassemble on the other side.
+ * A DataChannel message can't exceed the peers' negotiated max-message-size. RFC
+ * 8841 says assume 65536 when the SDP carries no `a=max-message-size`, so 60 KB is
+ * the safe default here; live.ts raises it toward the real negotiated size (often
+ * 256 KB) once the SCTP transport reports it. We chunk larger messages and
+ * reassemble on the other side.
  *
  * Chunk format:
  *   [0]      chunk type (0x01 = start, 0x02 = continue, 0x03 = end, 0x04 = single)
@@ -11,12 +13,18 @@
  *   [5..]    chunk data
  */
 
-const CHUNK_SIZE = 15_360; // 15KB payload per chunk (under 16KB DataChannel limit)
+/** Safe default payload per chunk when the negotiated max-message-size is unknown. */
+export const CHUNK_SIZE = 61_440; // 60 KB, comfortably under the RFC 8841 assumed 64 KB
 const CHUNK_START = 0x01;
 const CHUNK_CONTINUE = 0x02;
 const CHUNK_END = 0x03;
 const CHUNK_SINGLE = 0x04;
-export const BUFFERED_AMOUNT_LOW = 64 * 1024;    // 64 KB backpressure threshold
+/** Resume sending once the DataChannel's send buffer drains to here (low-water). */
+export const BUFFERED_AMOUNT_LOW = 256 * 1024;
+/** Pause sending once it climbs above here (high-water). The gap between the two is
+ *  the pipe depth — deep enough to ride out network jitter without a drain stall
+ *  every few frames, shallow enough that a cancel isn't buried under megabytes. */
+export const BUFFERED_AMOUNT_HIGH = 2 * 1024 * 1024;
 
 const START_TOTAL_LENGTH_BYTES = 4;
 const SINGLE_DATA_OFFSET = 1;
@@ -25,20 +33,21 @@ const CONT_DATA_OFFSET = 1;
 
 /**
  * Exact wire-byte estimate for chunkMessagePrefixed without materializing chunks.
+ * Pass the same chunkSize iterateChunksPrefixed will be called with.
  */
-export function estimateChunkedPrefixedSize(payloadBytes: number): number {
+export function estimateChunkedPrefixedSize(payloadBytes: number, chunkSize: number = CHUNK_SIZE): number {
   // Math.floor, not | 0: the bitwise-or coerces through a 32-bit signed int and
   // wraps negative for payloads over 2 GB, which real file transfers exceed.
   const len = Math.max(0, Math.floor(payloadBytes));
-  if (len <= CHUNK_SIZE) return 2 + len; // prefix + single type + payload
+  if (len <= chunkSize) return 2 + len; // prefix + single type + payload
 
-  const startPayload = Math.min(CHUNK_SIZE - START_TOTAL_LENGTH_BYTES, len);
+  const startPayload = Math.min(chunkSize - START_TOTAL_LENGTH_BYTES, len);
   const remaining = len - startPayload;
   // Start chunk: prefix + type + totalLen(4) + payload
   let total = 6 + startPayload;
 
   if (remaining <= 0) return total;
-  const tailChunks = Math.ceil(remaining / CHUNK_SIZE);
+  const tailChunks = Math.ceil(remaining / chunkSize);
   // each tail chunk: prefix + type + payload slice
   total += tailChunks * 2 + remaining;
   return total;
@@ -55,6 +64,7 @@ export function estimateChunkedPrefixedSize(payloadBytes: number): number {
 export function* iterateChunksPrefixed(
   data: Uint8Array | readonly Uint8Array[],
   prefix: number,
+  chunkSize: number = CHUNK_SIZE,
 ): Generator<Uint8Array> {
   const parts = data instanceof Uint8Array ? [data] : data;
   let totalLen = 0;
@@ -74,7 +84,7 @@ export function* iterateChunksPrefixed(
     }
   };
 
-  if (totalLen <= CHUNK_SIZE) {
+  if (totalLen <= chunkSize) {
     const chunk = new Uint8Array(2 + totalLen);
     chunk[0] = prefix;
     chunk[1] = CHUNK_SINGLE;
@@ -83,7 +93,7 @@ export function* iterateChunksPrefixed(
     return;
   }
 
-  const startPayload = Math.min(CHUNK_SIZE - START_TOTAL_LENGTH_BYTES, totalLen);
+  const startPayload = Math.min(chunkSize - START_TOTAL_LENGTH_BYTES, totalLen);
   const startChunk = new Uint8Array(6 + startPayload);
   startChunk[0] = prefix;
   startChunk[1] = CHUNK_START;
@@ -94,7 +104,7 @@ export function* iterateChunksPrefixed(
 
   while (sent < totalLen) {
     const remaining = totalLen - sent;
-    const payloadSize = remaining < CHUNK_SIZE ? remaining : CHUNK_SIZE;
+    const payloadSize = remaining < chunkSize ? remaining : chunkSize;
     const chunk = new Uint8Array(2 + payloadSize);
     chunk[0] = prefix;
     chunk[1] = sent + payloadSize >= totalLen ? CHUNK_END : CHUNK_CONTINUE;
@@ -109,8 +119,8 @@ export function* iterateChunksPrefixed(
  * at position [0] of each chunk. This avoids a second allocation + copy
  * in encryptAndSend — chunks are ready to send directly.
  */
-export function chunkMessagePrefixed(data: Uint8Array, prefix: number): Uint8Array[] {
-  return Array.from(iterateChunksPrefixed(data, prefix));
+export function chunkMessagePrefixed(data: Uint8Array, prefix: number, chunkSize: number = CHUNK_SIZE): Uint8Array[] {
+  return Array.from(iterateChunksPrefixed(data, prefix, chunkSize));
 }
 
 export class ChunkAssembler {
