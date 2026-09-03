@@ -2737,7 +2737,26 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     });
   }
 
-  interface LightboxEntry { src: string; dlUrl: string; fileName: string; kind: MediaKind }
+  interface LightboxEntry {
+    fileName: string;
+    kind: MediaKind;
+    /** eager URLs (single-item callers) OR a blob the URLs are minted from on first view. */
+    src?: string;
+    dlUrl?: string;
+    blob?: Blob;
+    mime?: string;
+  }
+
+  /** Mint (and cache) the display + download URLs for a gallery entry the first time
+   *  it is actually shown — a batch of hundreds never allocates a URL it isn't viewed. */
+  function hydrateLightboxEntry(e: LightboxEntry): void {
+    if (e.src || !e.blob) return;
+    const mime = e.mime || (e.kind === "video" ? "video/mp4" : "image/*");
+    e.src = URL.createObjectURL(e.blob.slice(0, e.blob.size, mime));
+    e.dlUrl = URL.createObjectURL(e.blob.slice(0, e.blob.size, "application/octet-stream"));
+    objectUrls.add(e.src);
+    objectUrls.add(e.dlUrl);
+  }
 
   function openMediaLightbox(
     src: string,
@@ -2807,17 +2826,21 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     /** Render the media at `cursor` and refresh the bar. */
     const show = (): void => {
       const e = entries[cursor];
+      hydrateLightboxEntry(e);
+      // warm the neighbours so a page turn is instant
+      hydrateLightboxEntry(entries[(cursor + 1) % entries.length]);
+      hydrateLightboxEntry(entries[(cursor - 1 + entries.length) % entries.length]);
       overlay.dataset.kind = e.kind;
       let mediaEl: HTMLElement;
       if (e.kind === "image") {
         const img = document.createElement("img");
         img.className = "wl-lightbox-img";
-        img.src = e.src; img.alt = e.fileName; img.draggable = false;
+        img.src = e.src ?? ""; img.alt = e.fileName; img.draggable = false;
         mediaEl = img;
       } else if (e.kind === "video") {
         const video = document.createElement("video");
         video.className = "wl-lightbox-video";
-        video.src = e.src; video.controls = true; video.autoplay = true; video.playsInline = true;
+        video.src = e.src ?? ""; video.controls = true; video.autoplay = true; video.playsInline = true;
         mediaEl = video;
       } else {
         const frame = document.createElement("div");
@@ -2840,7 +2863,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
         dlLink.download = gwyphPngName(e.fileName);
         dlLink.onclick = (ev) => { ev.preventDefault(); void downloadGlyphAsPng(glyphBytes, e.fileName); };
       } else {
-        dlLink.href = e.dlUrl;
+        dlLink.href = e.dlUrl ?? e.src ?? "#";
         dlLink.download = e.fileName;
         dlLink.onclick = null;
       }
@@ -4301,11 +4324,13 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     el: HTMLElement;
     metaEl: HTMLElement | null;
     nameEl: HTMLElement | null;
-    /** media items: the display + octet-stream blob URLs, created once on finalize
-     *  and reused by the tile thumbnail and the group lightbox. */
+    /** media items: kind + real mime, and the display + octet-stream blob URLs which
+     *  are minted lazily when the tile hydrates (see hydrateMediaTile). */
+    mediaKind?: MediaKind;
+    mediaMime?: string;
     displayUrl?: string;
     dlUrl?: string;
-    mediaKind?: MediaKind;
+    thumbHydrated?: boolean;
   }
 
   interface TransferGroup {
@@ -4319,8 +4344,12 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     /** the compact row list for everything else. */
     listEl: HTMLElement;
     subEl: HTMLElement;
+    actionsEl: HTMLElement;
     cancelBtn: HTMLButtonElement | null;
     saveAllBtn: HTMLButtonElement | null;
+    expandBtn: HTMLButtonElement | null;
+    /** collage shows every tile (scrolling) rather than folding past a few rows. */
+    collageExpanded: boolean;
     settled: boolean;
   }
 
@@ -4629,8 +4658,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return msg.type === "file" && msg.transferId != null && (msg.groupCount ?? 1) >= 2;
   }
 
-  /** How many collage tiles to actually show before folding the rest into a "+N". */
-  const MEDIA_TILE_CAP = 9;
+  /** Collapsed collage height, in rows. A small overflow past this (see
+   *  COLLAGE_FOLD_GRACE) shows anyway; a real one folds behind a tappable "+N". */
+  const COLLAGE_COLLAPSED_ROWS = 3;
+  const COLLAGE_FOLD_GRACE = 2;
 
   /** Whether a name/type looks like an image or video (best guess before the file lands). */
   function looksLikeMedia(name: string, type: string): boolean {
@@ -4713,8 +4744,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const group: TransferGroup = {
       nonce, direction, count,
       items: new Map(),
-      wrapEl, mediaEl: null, listEl, subEl: sub,
-      cancelBtn, saveAllBtn: null,
+      wrapEl, mediaEl: null, listEl, subEl: sub, actionsEl: actions,
+      cancelBtn, saveAllBtn: null, expandBtn: null,
+      collageExpanded: false,
       settled: false,
     };
     groups.set(nonce, group);
@@ -4809,6 +4841,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const el = item.el;
     el.className = item.slot === "media" ? "wl-transfer-tile" : "wl-transfer-row";
     el.dataset.state = item.state === "queued" ? "queued" : "active";
+    delete el.dataset.thumb;
+    el.onclick = null;
     clearNode(el);
     el.style.removeProperty("--wl-transfer-ratio");
 
@@ -4901,14 +4935,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
 
     if (isMedia && msg.fileBlob) {
-      const displayUrl = URL.createObjectURL(msg.fileBlob.slice(0, msg.fileBlob.size, media!.mime));
-      const dlUrl = URL.createObjectURL(msg.fileBlob.slice(0, msg.fileBlob.size, "application/octet-stream"));
-      objectUrls.add(displayUrl);
-      objectUrls.add(dlUrl);
-      item.displayUrl = displayUrl;
-      item.dlUrl = dlUrl;
       item.mediaKind = media!.kind;
-      renderMediaTile(item);
+      item.mediaMime = media!.mime;
+      renderMediaTile(item); // a placeholder; the <img>/<video> hydrates when the tile nears the viewport
     } else {
       renderFileRow(item);
     }
@@ -4924,21 +4953,62 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
+  /** A finished media tile — a light glyph placeholder that hydrates into an
+   *  <img>/<video> thumbnail once it nears the viewport, so a 300-photo batch never
+   *  decodes 300 thumbnails at once. */
   function renderMediaTile(item: TransferItem): void {
     const el = item.el;
     el.className = "wl-transfer-tile";
     el.dataset.state = "done";
     el.dataset.kind = item.mediaKind ?? "image";
+    el.dataset.thumb = "pending";
     clearNode(el);
     el.style.removeProperty("--wl-transfer-ratio");
+    el.onclick = () => openGroupLightbox(item);
+    const ph = document.createElement("span");
+    ph.className = "wl-transfer-tile-ph";
+    ph.innerHTML = tileGlyphFor(item.fileName, item.fileType);
+    el.appendChild(ph);
+    item.thumbHydrated = false;
+    observeMediaTile(item);
+  }
+
+  let mediaThumbObs: IntersectionObserver | null = null;
+  const mediaThumbByEl = new Map<Element, TransferItem>();
+  function observeMediaTile(item: TransferItem): void {
+    if (typeof IntersectionObserver !== "function") { hydrateMediaTile(item); return; }
+    mediaThumbObs ??= new IntersectionObserver((rows) => {
+      for (const row of rows) {
+        if (!row.isIntersecting) continue;
+        const it = mediaThumbByEl.get(row.target);
+        mediaThumbObs!.unobserve(row.target);
+        mediaThumbByEl.delete(row.target);
+        if (it) hydrateMediaTile(it);
+      }
+    }, { root: opts.chatMessages, rootMargin: "300px 0px" });
+    mediaThumbByEl.set(item.el, item);
+    mediaThumbObs.observe(item.el);
+  }
+
+  function hydrateMediaTile(item: TransferItem): void {
+    if (item.thumbHydrated || !item.blob || item.slot !== "media") return;
+    item.thumbHydrated = true;
+    const el = item.el;
+    delete el.dataset.thumb;
+    if (!item.displayUrl) {
+      item.displayUrl = URL.createObjectURL(item.blob.slice(0, item.blob.size, item.mediaMime || "image/*"));
+      item.dlUrl = URL.createObjectURL(item.blob.slice(0, item.blob.size, "application/octet-stream"));
+      objectUrls.add(item.displayUrl);
+      objectUrls.add(item.dlUrl);
+    }
+    clearNode(el);
     const thumb = createMediaThumbnail(
       item.mediaKind === "video" ? "video" : "image",
-      item.displayUrl!, item.fileName,
+      item.displayUrl, item.fileName,
       () => demoteMediaItemToRow(item), // browser couldn't decode it — fall back to a row
       signal,
     );
     thumb.classList.add("wl-transfer-tile-thumb");
-    thumb.addEventListener("click", () => openGroupLightbox(item), { signal });
     el.appendChild(thumb);
   }
 
@@ -4955,6 +5025,8 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     el.className = "wl-transfer-row";
     el.dataset.state = "done";
     el.dataset.kind = "file";
+    delete el.dataset.thumb;
+    el.onclick = null;
     clearNode(el);
     el.style.removeProperty("--wl-transfer-ratio");
 
@@ -4983,44 +5055,95 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
-  /** Per-row tile count for a collage of n visible tiles — tuned so the last row
-   *  is never a single lonely tile. */
-  function collageCols(n: number): number {
+  /** Per-row tile count for a collage of n tiles — tuned so a collapsed collage's
+   *  last row is never a single lonely tile, and a big expanded one packs denser. */
+  function collageCols(n: number, expanded: boolean): number {
+    if (expanded) return n > 40 ? 6 : n > 18 ? 5 : n > 9 ? 4 : ([0, 1, 2, 3, 2, 3, 3, 4, 4, 3][n] ?? 4);
     return ([0, 1, 2, 3, 2, 3, 3, 4, 4, 3][n] ?? 4);
   }
 
-  /** Size the collage and fold anything past MEDIA_TILE_CAP into a "+N" badge on the
-   *  last visible tile. Tiles flex-grow, so a partial last row fills its width with
-   *  no hole; the bubble never grows unbounded. */
+  /** Size the collage. A collage past COLLAPSED_ROWS (plus a small grace) folds: the
+   *  last visible tile becomes a tappable "+N" that expands the collage in place to a
+   *  scrollable grid, with a "show less" in the header to fold it back. Tiles
+   *  flex-grow so a partial last row fills its width with no hole. */
   function relayoutMedia(group: TransferGroup): void {
     const el = group.mediaEl;
     if (!el) return;
     const tiles = [...group.items.values()]
       .filter((it) => it.slot === "media" && it.state !== "cancelled")
       .sort((a, b) => a.index - b.index);
-    if (!tiles.length) { el.remove(); group.mediaEl = null; syncGroupLayout(group); return; }
+    if (!tiles.length) {
+      el.remove();
+      group.mediaEl = null;
+      group.collageExpanded = false;
+      updateCollageExpandControl(group, 0, 0);
+      syncGroupLayout(group);
+      return;
+    }
 
-    const shown = Math.min(tiles.length, MEDIA_TILE_CAP);
-    const cols = collageCols(shown);
+    const n = tiles.length;
+    const expanded = group.collageExpanded;
+    const cols = collageCols(expanded ? n : Math.min(n, 10), expanded);
+    const collapsedCap = cols * COLLAGE_COLLAPSED_ROWS;
+    const folds = n > collapsedCap + COLLAGE_FOLD_GRACE;
+    const visible = expanded || !folds ? n : collapsedCap;
+
     el.style.setProperty("--wl-media-basis", `calc(${(100 / cols).toFixed(4)}% - 2px)`);
-    // fewer columns -> taller, more square tiles; more columns -> flatter. fixed per
-    // group so every row is the same height even when the last one is short.
+    // fewer columns -> taller, more square tiles; more -> flatter. fixed per group so
+    // every row is the same height even when the last one is short.
     el.style.setProperty("--wl-media-h",
       cols <= 2 ? "clamp(5rem, 29vw, 7.25rem)"
         : cols === 3 ? "clamp(4.25rem, 23vw, 5.75rem)"
-          : "clamp(3.6rem, 18vw, 4.75rem)");
+          : cols === 4 ? "clamp(3.6rem, 18vw, 4.75rem)"
+            : "clamp(3rem, 15vw, 4rem)");
+    el.classList.toggle("wl-transfer-media--expanded", expanded && folds);
 
-    const overflow = tiles.length - MEDIA_TILE_CAP;
     tiles.forEach((it, i) => {
-      it.el.hidden = overflow > 0 && i >= MEDIA_TILE_CAP;
+      it.el.hidden = i >= visible;
       it.el.querySelector(".wl-transfer-more")?.remove();
-      if (overflow > 0 && i === MEDIA_TILE_CAP - 1) {
-        const more = document.createElement("span");
+      if (folds && !expanded && i === visible - 1) {
+        const more = document.createElement("button");
+        more.type = "button";
         more.className = "wl-transfer-more";
-        more.textContent = `+${overflow + 1}`;
+        more.textContent = `+${n - visible + 1}`;
+        more.setAttribute("aria-label", `Show all ${n} photos`);
+        more.addEventListener("click", (e) => { e.stopPropagation(); setCollageExpanded(group, true); }, { signal });
         it.el.appendChild(more);
       }
     });
+
+    updateCollageExpandControl(group, n, folds ? visible : n);
+  }
+
+  /** The header's fold/unfold affordance — only present once the collage actually folds. */
+  function updateCollageExpandControl(group: TransferGroup, total: number, visible: number): void {
+    const canFold = total > visible || group.collageExpanded;
+    if (!canFold) { group.expandBtn?.remove(); group.expandBtn = null; return; }
+    if (!group.expandBtn) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "wl-transfer-group-expand";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setCollageExpanded(group, !group.collageExpanded);
+      }, { signal });
+      group.actionsEl.insertBefore(btn, group.actionsEl.firstChild);
+      group.expandBtn = btn;
+    }
+    group.expandBtn.textContent = group.collageExpanded ? "show less" : `show all ${total}`;
+  }
+
+  function setCollageExpanded(group: TransferGroup, on: boolean): void {
+    if (group.collageExpanded === on) return;
+    group.collageExpanded = on;
+    const nearBottom = pinnedToBottom || isNearBottom();
+    relayoutMedia(group);
+    if (!on) {
+      // collapsing can shrink the bubble past the viewport top — keep its head in view
+      group.wrapEl.scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+    } else if (nearBottom) {
+      requestAnimationFrame(() => anchorToBottom("instant"));
+    }
   }
 
   /** A small type-hint glyph for a tile: image / video / audio / pdf / archive / generic. */
@@ -5178,19 +5301,20 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   }
 
   /** Open the lightbox on a group's media items with ‹ › paging across the batch.
-   *  Reuses the object URLs the tiles already created (see finalizeGroupItem). */
+   *  Entries carry the blob, not a URL — the lightbox mints URLs only for the
+   *  entries actually viewed, so a batch of hundreds costs nothing to open. */
   function openGroupLightbox(startItem: TransferItem): void {
     const group = groups.get(startItem.transferId >>> 8);
     if (!group) return;
     const mediaItems = [...group.items.values()]
-      .filter((it) => it.state === "done" && it.displayUrl && it.mediaKind)
+      .filter((it) => it.state === "done" && it.blob && it.mediaKind)
       .sort((a, b) => a.index - b.index);
     if (!mediaItems.length) return;
     const entries: LightboxEntry[] = mediaItems.map((it) => ({
-      src: it.displayUrl!, dlUrl: it.dlUrl ?? it.displayUrl!, fileName: it.fileName, kind: it.mediaKind!,
+      fileName: it.fileName, kind: it.mediaKind!, blob: it.blob, mime: it.fileType || undefined,
     }));
     const startIndex = Math.max(0, mediaItems.findIndex((it) => it === startItem));
-    openMediaLightbox(entries[startIndex].src, entries[startIndex].dlUrl, entries[startIndex].fileName, entries[startIndex].kind, undefined, undefined, { entries, index: startIndex });
+    openMediaLightbox("", "", entries[startIndex].fileName, entries[startIndex].kind, undefined, undefined, { entries, index: startIndex });
   }
 
   function addChatMessage(msg: LiveMessage): HTMLElement | null {
@@ -6839,6 +6963,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     for (const state of outboundFileRefs) state.file = undefined;
     outboundFileRefs.clear();
     groups.clear();
+    mediaThumbObs?.disconnect();
+    mediaThumbObs = null;
+    mediaThumbByEl.clear();
     for (const ref of outboundGroupRefs) { ref.file = undefined; ref.blob = undefined; }
     outboundGroupRefs.clear();
     pendingOutboundGroup = null;

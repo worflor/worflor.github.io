@@ -2323,6 +2323,16 @@
     overflow: hidden;
   }
 
+  /* expanded: every tile shows, the collage scrolls instead of the bubble growing */
+  :global(.wl-chat-messages) :global(.wl-transfer-media--expanded) {
+    max-height: 52vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--color-text-rgb) / 0.22) transparent;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 0.6rem, #000 calc(100% - 0.6rem), transparent);
+  }
+
   :global(.wl-chat-messages) :global(.wl-transfer-tile) {
     position: relative;
     flex: 1 1 var(--wl-media-basis, 33%);
@@ -2332,6 +2342,25 @@
     background: rgb(var(--color-text-rgb) / 0.05);
     color: rgb(var(--color-text-rgb) / 0.55);
     --wl-transfer-ratio: 0;
+  }
+
+  /* finished tile whose thumbnail hasn't hydrated yet — a quiet glyph */
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-ph) {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgb(var(--color-text-rgb) / 0.32);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile-ph svg) {
+    width: 1.6rem;
+    height: 1.6rem;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-tile[data-thumb="pending"]) {
+    cursor: pointer;
   }
 
   /* in-flight media cell — glyph + name + percent, centred */
@@ -2419,11 +2448,28 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgb(0 0 0 / 0.52);
+    border: none;
+    background: rgb(0 0 0 / 0.5);
     color: rgb(255 255 255 / 0.95);
+    font: inherit;
     font-weight: 600;
     font-size: 0.95rem;
-    pointer-events: none;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: background var(--duration-fast) ease;
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-more:hover) {
+    background: rgb(0 0 0 / 0.62);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-expand) {
+    color: rgb(var(--color-text-rgb) / 0.6);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-transfer-group-expand:hover) {
+    color: rgb(var(--msg-accent));
+    border-color: rgb(var(--msg-accent) / 0.5);
   }
 
   /* ── list ── */
