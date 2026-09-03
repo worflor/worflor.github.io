@@ -4278,12 +4278,14 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     totalBytes: number;
     received: number;
     state: "queued" | "active" | "done" | "cancelled";
+    /** where the item currently lives: the media collage or the file list. */
+    slot: "media" | "list";
     /** out: the local File handle, retained for re-download (disk-backed, ~free). */
     file?: File;
     /** in: the assembled payload once the file finishes (for save-all / folder / lightbox). */
     blob?: Blob;
-    tileEl: HTMLElement;
-    fillEl: HTMLElement | null;
+    /** the item's current DOM node (a collage tile or a list row). */
+    el: HTMLElement;
     metaEl: HTMLElement | null;
     nameEl: HTMLElement | null;
     /** media items: the display + octet-stream blob URLs, created once on finalize
@@ -4299,7 +4301,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     count: number;
     items: Map<number, TransferItem>;
     wrapEl: HTMLElement;
-    gridEl: HTMLElement;
+    /** the collage row for image/video items (created lazily). */
+    mediaEl: HTMLElement | null;
+    /** the compact row list for everything else. */
+    listEl: HTMLElement;
     subEl: HTMLElement;
     cancelBtn: HTMLButtonElement | null;
     saveAllBtn: HTMLButtonElement | null;
@@ -4611,12 +4616,16 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return msg.type === "file" && msg.transferId != null && (msg.groupCount ?? 1) >= 2;
   }
 
-  /** Columns for a batch of N tiles — chosen to avoid a lone trailing tile and to
-   *  keep tiles a comfortable size (small batches get bigger tiles). */
-  function gridColumnsFor(count: number): number {
-    const table = [0, 1, 2, 3, 2, 3, 3, 4, 4, 3, 4, 4, 4];
-    if (count < table.length) return table[count];
-    return count <= 20 ? 4 : 5;
+  /** How many collage tiles to actually show before folding the rest into a "+N". */
+  const MEDIA_TILE_CAP = 9;
+
+  /** Whether a name/type looks like an image or video (best guess before the file lands). */
+  function looksLikeMedia(name: string, type: string): boolean {
+    const t = (type || "").toLowerCase();
+    if (t.startsWith("image/") || t.startsWith("video/")) return true;
+    const ext = (name.split(".").pop() ?? "").toLowerCase();
+    return ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "heic", "tif", "tiff",
+      "mp4", "webm", "mov", "mkv", "avi", "m4v", "ogv"].includes(ext);
   }
 
   function buildTransferGroup(nonce: number, direction: "in" | "out", count: number): TransferGroup {
@@ -4628,6 +4637,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     card.className = "wl-transfer-group";
     card.dataset.settled = "false";
     card.dataset.dir = direction;
+    card.dataset.layout = "list";
 
     const head = document.createElement("div");
     head.className = "wl-transfer-group-head";
@@ -4666,11 +4676,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
 
     head.append(title, sub, actions);
 
-    const grid = document.createElement("div");
-    grid.className = "wl-transfer-grid";
-    grid.style.setProperty("--wl-grid-cols", String(gridColumnsFor(count)));
+    const listEl = document.createElement("div");
+    listEl.className = "wl-transfer-list";
 
-    card.append(head, grid);
+    card.append(head, listEl);
     wrapEl.appendChild(card);
 
     const timeEl = document.createElement("time");
@@ -4691,16 +4700,15 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const group: TransferGroup = {
       nonce, direction, count,
       items: new Map(),
-      wrapEl, gridEl: grid, subEl: sub,
+      wrapEl, mediaEl: null, listEl, subEl: sub,
       cancelBtn, saveAllBtn: null,
       settled: false,
     };
     groups.set(nonce, group);
 
-    // pre-seat every tile as a skeleton so the grid is stable from the first frame:
-    // files fill their slot in place as they arrive rather than popping a new tile
-    // in and reflowing the whole batch. the receiver knows the count from chunk 0
-    // even before it knows any name.
+    // pre-seat every item so the bubble is stable from the first frame: rows fill
+    // their slot in place as files arrive rather than popping in and reflowing.
+    // media items migrate up into the collage once their type is known.
     for (let i = 0; i < count; i++) ensureGroupItem(group, i, "", 0, "");
 
     void acquireTransferWakeLock();
@@ -4708,82 +4716,122 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     return group;
   }
 
-  /** Get item `index`, or create its (skeleton) tile if it doesn't exist yet. */
+  function mediaContainer(group: TransferGroup): HTMLElement {
+    if (group.mediaEl) return group.mediaEl;
+    const el = document.createElement("div");
+    el.className = "wl-transfer-media";
+    const card = group.wrapEl.querySelector<HTMLElement>(".wl-transfer-group");
+    card?.insertBefore(el, group.listEl);
+    group.mediaEl = el;
+    syncGroupLayout(group);
+    return el;
+  }
+
+  function syncGroupLayout(group: TransferGroup): void {
+    group.wrapEl.querySelector<HTMLElement>(".wl-transfer-group")
+      ?.setAttribute("data-layout", group.mediaEl ? "media" : "list");
+  }
+
+  /** Get item `index`, creating its skeleton row if it doesn't exist. Fresh type
+   *  info promotes a pending row into the media collage. */
   function ensureGroupItem(
     group: TransferGroup, index: number, fileName: string, totalBytes: number, fileType: string,
   ): TransferItem {
-    const existing = group.items.get(index);
-    if (existing) {
-      if (fileName && existing.state === "queued") setTileName(existing, fileName);
-      if (totalBytes && !existing.totalBytes) {
-        existing.totalBytes = totalBytes;
-        if (existing.metaEl && existing.state === "queued") existing.metaEl.textContent = formatSize(totalBytes);
+    let item = group.items.get(index);
+    if (!item) {
+      item = {
+        transferId: ((group.nonce << 8) | index) >>> 0,
+        index, direction: group.direction,
+        fileName, fileType, totalBytes, received: 0,
+        state: "queued", slot: "list", el: document.createElement("div"),
+        metaEl: null, nameEl: null,
+      };
+      group.items.set(index, item);
+      renderPendingRow(item);
+      placeItemNode(group, item);
+    } else {
+      if (fileName && item.state === "queued") setItemName(item, fileName);
+      if (fileType) item.fileType ||= fileType;
+      if (totalBytes && !item.totalBytes) {
+        item.totalBytes = totalBytes;
+        if (item.metaEl && item.state === "queued") item.metaEl.textContent = formatSize(totalBytes);
       }
-      if (fileType || fileName) {
-        existing.fileType ||= fileType;
-        const iconEl = existing.tileEl.querySelector<HTMLElement>(".wl-transfer-tile-icon");
-        if (iconEl) iconEl.innerHTML = tileGlyphFor(existing.fileName, existing.fileType);
-      }
-      return existing;
     }
-
-    const tileEl = document.createElement("div");
-    tileEl.className = "wl-transfer-tile";
-    tileEl.dataset.state = "queued";
-
-    const inner = document.createElement("div");
-    inner.className = "wl-transfer-tile-inner";
-
-    const icon = document.createElement("span");
-    icon.className = "wl-transfer-tile-icon";
-    icon.innerHTML = tileGlyphFor(fileName, fileType);
-
-    const nameEl = document.createElement("span");
-    nameEl.className = "wl-transfer-tile-name";
-    nameEl.textContent = fileName;
-
-    const metaEl = document.createElement("span");
-    metaEl.className = "wl-transfer-tile-meta";
-    metaEl.textContent = totalBytes ? formatSize(totalBytes) : "";
-
-    inner.append(icon, nameEl, metaEl);
-
-    const track = document.createElement("div");
-    track.className = "wl-transfer-tile-track";
-    const fillEl = document.createElement("div");
-    fillEl.className = "wl-transfer-fill";
-    track.appendChild(fillEl);
-
-    tileEl.append(inner, track);
-
-    // keep tiles in index order regardless of arrival order
-    const after = [...group.items.values()].find((it) => it.index > index);
-    group.gridEl.insertBefore(tileEl, after?.tileEl ?? null);
-
-    const item: TransferItem = {
-      transferId: ((group.nonce << 8) | index) >>> 0,
-      index, direction: group.direction,
-      fileName, fileType, totalBytes, received: 0,
-      state: "queued", tileEl, fillEl, metaEl, nameEl,
-    };
-    group.items.set(index, item);
+    // promote to the collage the moment we can tell it's media
+    if (item.state !== "done" && item.slot === "list" && looksLikeMedia(item.fileName, item.fileType)) {
+      item.slot = "media";
+      renderPendingRow(item); // re-render as a tile-shaped pending cell
+      placeItemNode(group, item);
+      relayoutMedia(group);
+    }
     return item;
   }
 
-  function setTileName(item: TransferItem, name: string): void {
+  /** Slot the item's node into the right container in index order. */
+  function placeItemNode(group: TransferGroup, item: TransferItem): void {
+    const container = item.slot === "media" ? mediaContainer(group) : group.listEl;
+    const siblings = [...group.items.values()].filter((it) => it.slot === item.slot && it !== item);
+    const after = siblings.find((it) => it.index > item.index);
+    container.insertBefore(item.el, after?.el ?? null);
+  }
+
+  /** A skeleton / in-flight cell — a compact row in the list, or a square in the collage. */
+  function renderPendingRow(item: TransferItem): void {
+    const el = item.el;
+    el.className = item.slot === "media" ? "wl-transfer-tile" : "wl-transfer-row";
+    el.dataset.state = item.state === "queued" ? "queued" : "active";
+    clearNode(el);
+    el.style.removeProperty("--wl-transfer-ratio");
+
+    const icon = document.createElement("span");
+    icon.className = "wl-transfer-icon";
+    icon.innerHTML = tileGlyphFor(item.fileName, item.fileType);
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "wl-transfer-name";
+    nameEl.textContent = item.fileName;
+
+    const metaEl = document.createElement("span");
+    metaEl.className = "wl-transfer-meta";
+    metaEl.textContent = item.totalBytes ? formatSize(item.totalBytes) : "";
+
+    if (item.slot === "media") {
+      const body = document.createElement("span");
+      body.className = "wl-transfer-cell-body";
+      body.append(icon, nameEl, metaEl);
+      el.appendChild(body);
+    } else {
+      // single-line row: [glyph] name………… meta
+      el.append(icon, nameEl, metaEl);
+    }
+
+    const track = document.createElement("div");
+    track.className = "wl-transfer-track";
+    const fill = document.createElement("div");
+    fill.className = "wl-transfer-fill";
+    track.appendChild(fill);
+    el.appendChild(track);
+
+    item.metaEl = metaEl;
+    item.nameEl = nameEl;
+  }
+
+  function setItemName(item: TransferItem, name: string): void {
     item.fileName = name;
     if (item.nameEl) item.nameEl.textContent = name;
+    const iconEl = item.el.querySelector<HTMLElement>(".wl-transfer-icon");
+    if (iconEl) iconEl.innerHTML = tileGlyphFor(name, item.fileType);
   }
 
   function markGroupItemActive(item: TransferItem): void {
-    if (item.state === "queued") { item.state = "active"; item.tileEl.dataset.state = "active"; }
+    if (item.state === "queued") { item.state = "active"; item.el.dataset.state = "active"; }
   }
 
   function updateGroupItemProgress(item: TransferItem): void {
     if (item.state === "done" || item.state === "cancelled") return;
     markGroupItemActive(item);
     const ratio = item.totalBytes > 0 ? Math.min(1, item.received / item.totalBytes) : 0;
-    item.tileEl.style.setProperty("--wl-transfer-ratio", String(ratio));
+    item.el.style.setProperty("--wl-transfer-ratio", String(ratio));
     if (item.metaEl) {
       item.metaEl.textContent = item.totalBytes > 0
         ? `${Math.round(ratio * 100)}%`
@@ -4794,65 +4842,55 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function collapseGroupItemCancelled(item: TransferItem): void {
     if (item.state === "done" || item.state === "cancelled") return;
     item.state = "cancelled";
-    item.tileEl.dataset.state = "cancelled";
-    item.fillEl?.parentElement?.remove();
-    item.fillEl = null;
+    item.el.dataset.state = "cancelled";
+    item.el.querySelector(".wl-transfer-track")?.remove();
     if (item.metaEl) item.metaEl.textContent = "cancelled";
     const group = groups.get(item.transferId >>> 8);
-    if (group) updateGroupHeader(group);
+    if (group) { relayoutMedia(group); updateGroupHeader(group); }
   }
 
-  /** Turn a finished tile into its final form — a media thumbnail (tap → group
-   *  lightbox) or a compact generic-file row with its own download — cross-fading
-   *  out of the skeleton so it settles in place rather than snapping. */
+  /** Settle a finished item into its final form — a collage thumbnail (tap → group
+   *  lightbox) or a list row with its own download. */
   function finalizeGroupItem(item: TransferItem, msg: LiveMessage): void {
     if (item.state === "cancelled" || item.state === "done") return;
     item.state = "done";
-    item.tileEl.dataset.state = "done";
     if (msg.fileBlob) item.blob = msg.fileBlob;
-    if (msg.fileName) setTileName(item, msg.fileName);
+    if (msg.fileName) { item.fileName = msg.fileName; }
     item.fileType = msg.fileType ?? item.fileType;
     if (item.totalBytes === 0 && msg.fileSize) item.totalBytes = msg.fileSize;
-
-    item.fillEl?.parentElement?.remove();
-    item.fillEl = null;
     item.metaEl = null;
     item.nameEl = null;
 
     const media = detectMedia(msg);
-    clearNode(item.tileEl);
+    const isMedia = !!media && (media.kind === "image" || media.kind === "video") && !!msg.fileBlob;
 
-    if (media && (media.kind === "image" || media.kind === "video") && msg.fileBlob) {
-      const displayUrl = URL.createObjectURL(msg.fileBlob.slice(0, msg.fileBlob.size, media.mime));
+    const group = groups.get(item.transferId >>> 8);
+    const wantSlot: "media" | "list" = isMedia ? "media" : "list";
+    if (item.slot !== wantSlot && group) {
+      item.slot = wantSlot;
+      placeItemNode(group, item);
+    }
+
+    if (isMedia && msg.fileBlob) {
+      const displayUrl = URL.createObjectURL(msg.fileBlob.slice(0, msg.fileBlob.size, media!.mime));
       const dlUrl = URL.createObjectURL(msg.fileBlob.slice(0, msg.fileBlob.size, "application/octet-stream"));
       objectUrls.add(displayUrl);
       objectUrls.add(dlUrl);
       item.displayUrl = displayUrl;
       item.dlUrl = dlUrl;
-      item.mediaKind = media.kind;
-      const thumb = createMediaThumbnail(media.kind, displayUrl, item.fileName, () => {
-        renderGenericTile(item);
-      }, signal);
-      thumb.classList.add("wl-transfer-tile-thumb");
-      thumb.addEventListener("click", () => openGroupLightbox(item), { signal });
-      item.tileEl.appendChild(thumb);
-      const cap = document.createElement("span");
-      cap.className = "wl-transfer-tile-cap";
-      cap.textContent = item.fileName;
-      item.tileEl.appendChild(cap);
+      item.mediaKind = media!.kind;
+      renderMediaTile(item);
     } else {
-      renderGenericTile(item);
+      renderFileRow(item);
     }
 
     if (!reduceMotion) {
-      item.tileEl.animate(
-        [{ opacity: 0.35 }, { opacity: 1 }],
-        { duration: 220, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
-      );
+      item.el.animate([{ opacity: 0.3 }, { opacity: 1 }],
+        { duration: 200, easing: "cubic-bezier(0.16, 1, 0.3, 1)" });
     }
 
-    const group = groups.get(item.transferId >>> 8);
     if (group) {
+      relayoutMedia(group);
       updateGroupHeader(group);
       maybeSettleGroup(group);
       if (item.blob && lastDirHandle && group.direction === "in") void writeItemToDir(item, lastDirHandle);
@@ -4860,34 +4898,103 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     }
   }
 
-  function renderGenericTile(item: TransferItem): void {
-    clearNode(item.tileEl);
-    item.tileEl.dataset.kind = "generic";
-    const inner = document.createElement("div");
-    inner.className = "wl-transfer-tile-inner";
+  function renderMediaTile(item: TransferItem): void {
+    const el = item.el;
+    el.className = "wl-transfer-tile";
+    el.dataset.state = "done";
+    el.dataset.kind = item.mediaKind ?? "image";
+    clearNode(el);
+    el.style.removeProperty("--wl-transfer-ratio");
+    const thumb = createMediaThumbnail(
+      item.mediaKind === "video" ? "video" : "image",
+      item.displayUrl!, item.fileName,
+      () => demoteMediaItemToRow(item), // browser couldn't decode it — fall back to a row
+      signal,
+    );
+    thumb.classList.add("wl-transfer-tile-thumb");
+    thumb.addEventListener("click", () => openGroupLightbox(item), { signal });
+    el.appendChild(thumb);
+  }
+
+  function demoteMediaItemToRow(item: TransferItem): void {
+    item.slot = "list";
+    item.mediaKind = undefined;
+    const g = groups.get(item.transferId >>> 8);
+    if (g) { placeItemNode(g, item); relayoutMedia(g); }
+    renderFileRow(item);
+  }
+
+  function renderFileRow(item: TransferItem): void {
+    const el = item.el;
+    el.className = "wl-transfer-row";
+    el.dataset.state = "done";
+    el.dataset.kind = "file";
+    clearNode(el);
+    el.style.removeProperty("--wl-transfer-ratio");
+
     const icon = document.createElement("span");
-    icon.className = "wl-transfer-tile-icon";
+    icon.className = "wl-transfer-icon";
     icon.innerHTML = tileGlyphFor(item.fileName, item.fileType);
+
     const nameEl = document.createElement("span");
-    nameEl.className = "wl-transfer-tile-name";
+    nameEl.className = "wl-transfer-name";
     nameEl.textContent = item.fileName;
     const metaEl = document.createElement("span");
-    metaEl.className = "wl-transfer-tile-meta";
+    metaEl.className = "wl-transfer-meta";
     metaEl.textContent = formatSize(item.totalBytes || 0);
-    inner.append(icon, nameEl, metaEl);
-    item.tileEl.appendChild(inner);
+    el.append(icon, nameEl, metaEl);
 
     const src = item.blob ?? item.file;
     if (src) {
       const dl = document.createElement("button");
       dl.type = "button";
-      dl.className = "wl-transfer-tile-dl";
+      dl.className = "wl-transfer-row-dl";
       dl.title = `Download ${item.fileName}`;
       dl.setAttribute("aria-label", `Download ${item.fileName}`);
       dl.innerHTML = `<svg viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 1v8M3.5 6l3.5 3.5L10.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
       dl.addEventListener("click", (e) => { e.stopPropagation(); downloadBlob(src, item.fileName); }, { signal });
-      item.tileEl.appendChild(dl);
+      el.appendChild(dl);
     }
+  }
+
+  /** Per-row tile count for a collage of n visible tiles — tuned so the last row
+   *  is never a single lonely tile. */
+  function collageCols(n: number): number {
+    return ([0, 1, 2, 3, 2, 3, 3, 4, 4, 3][n] ?? 4);
+  }
+
+  /** Size the collage and fold anything past MEDIA_TILE_CAP into a "+N" badge on the
+   *  last visible tile. Tiles flex-grow, so a partial last row fills its width with
+   *  no hole; the bubble never grows unbounded. */
+  function relayoutMedia(group: TransferGroup): void {
+    const el = group.mediaEl;
+    if (!el) return;
+    const tiles = [...group.items.values()]
+      .filter((it) => it.slot === "media" && it.state !== "cancelled")
+      .sort((a, b) => a.index - b.index);
+    if (!tiles.length) { el.remove(); group.mediaEl = null; syncGroupLayout(group); return; }
+
+    const shown = Math.min(tiles.length, MEDIA_TILE_CAP);
+    const cols = collageCols(shown);
+    el.style.setProperty("--wl-media-basis", `calc(${(100 / cols).toFixed(4)}% - 2px)`);
+    // fewer columns -> taller, more square tiles; more columns -> flatter. fixed per
+    // group so every row is the same height even when the last one is short.
+    el.style.setProperty("--wl-media-h",
+      cols <= 2 ? "clamp(5rem, 29vw, 7.25rem)"
+        : cols === 3 ? "clamp(4.25rem, 23vw, 5.75rem)"
+          : "clamp(3.6rem, 18vw, 4.75rem)");
+
+    const overflow = tiles.length - MEDIA_TILE_CAP;
+    tiles.forEach((it, i) => {
+      it.el.hidden = overflow > 0 && i >= MEDIA_TILE_CAP;
+      it.el.querySelector(".wl-transfer-more")?.remove();
+      if (overflow > 0 && i === MEDIA_TILE_CAP - 1) {
+        const more = document.createElement("span");
+        more.className = "wl-transfer-more";
+        more.textContent = `+${overflow + 1}`;
+        it.el.appendChild(more);
+      }
+    });
   }
 
   /** A small type-hint glyph for a tile: image / video / audio / pdf / archive / generic. */
@@ -4919,14 +5026,9 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
     const total = items.reduce((n, it) => n + (it.totalBytes || 0), 0);
     const parts: string[] = [];
     if (total > 0) parts.push(formatSize(total));
-    if (!group.settled) {
-      parts.push(`${done} of ${group.count}`);
-    } else if (cancelled) {
-      parts.push(done ? `${done} of ${group.count}` : "cancelled");
-    }
+    if (!group.settled) parts.push(`${done}/${group.count}`);
+    else if (cancelled) parts.push(done ? `${done}/${group.count}` : "cancelled");
     group.subEl.textContent = parts.join(" · ");
-    group.wrapEl.querySelector<HTMLElement>(".wl-transfer-group")
-      ?.style.setProperty("--wl-group-progress", String(group.count ? done / group.count : 0));
   }
 
   function maybeSettleGroup(group: TransferGroup): void {
@@ -5027,7 +5129,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       const w = await (fh as unknown as { createWritable: () => Promise<{ write: (b: Blob) => Promise<void>; close: () => Promise<void> }> }).createWritable();
       await w.write(blob);
       await w.close();
-      item.tileEl.dataset.saved = "true";
+      item.el.dataset.saved = "true";
     } catch (err) {
       appendLog(`save to folder failed for ${item.fileName}: ${errMsg(err)}`);
     }
@@ -6337,7 +6439,6 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
           const index = transferId & 0xff;
           const group = groups.get(nonce) ?? buildTransferGroup(nonce, "in", groupCount);
           const item = ensureGroupItem(group, index, fileName, totalBytes, "");
-          if (fileName && item.state === "queued") setTileName(item, fileName);
           if (totalBytes) item.totalBytes = totalBytes;
           item.received = receivedBytes;
           updateGroupItemProgress(item);
