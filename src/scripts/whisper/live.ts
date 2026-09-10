@@ -25,6 +25,7 @@ import {
   TE,
   TD,
   hkdf,
+  hmacSha1,
   aesGcmEncrypt,
   aesGcmDecrypt,
   kdfChainDirect,
@@ -237,8 +238,16 @@ export interface WhisperLiveSessionOptions {
    * When a sharedPhrase is provided and this array is non-empty,
    * both peers independently select the same TURN server via HKDF(phrase).
    * ICE still prefers direct P2P — TURN fires only as a silent fallback.
+   * Overrides the built-in Open Relay pool (see enableDefaultTurn).
    */
   turnPool?: RTCIceServer[];
+
+  /**
+   * Use the built-in best-effort public TURN pool (Open Relay) when no explicit
+   * turnPool is given. Rides the same opt-in as public STUN. Only takes effect
+   * for a phrase-based connection — in-person QR mode stays strictly local.
+   */
+  enableDefaultTurn?: boolean;
 }
 
 /* ── Visual Fingerprint ──── */
@@ -408,22 +417,74 @@ export const WHISPER_LIVE_RTC_LOCAL_ONLY: RTCConfiguration = {
  * Public STUN (opt-in). Each entry is contacted in parallel.
  * Diverse ports (80, 443, 3478, 10000, 19302) and providers maximise the
  * chance of punching through restrictive firewalls. All servers verified live.
+ *
+ * Every entry is a single URL: selectStunServers picks a phrase-seeded subset up
+ * to a URL budget and skips any entry that would overflow it, so a multi-URL
+ * entry (Google used to be one, five URLs) could never be selected at all.
  */
 export const WHISPER_LIVE_RTC_PUBLIC_STUN: RTCConfiguration = {
   iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },                         // :19302 — Google, the reference STUN, up for over a decade
+    { urls: "stun:stun1.l.google.com:19302" },                        // :19302 — Google, second endpoint
+    { urls: "stun:stun.cloudflare.com:3478" },                        // :3478  — Cloudflare, privacy-respecting
     { urls: "stun:stun.nextcloud.com:443" },                          // :443 — open source, privacy-focused
     { urls: "stun:meet-jit-si-turnrelay.jitsi.net:443" },             // :443 — WebRTC-native, 8x8-backed
     { urls: "stun:stun.relay.metered.ca:80" },                        // :80  — commercial, verified
     { urls: "stun:stun.sipgate.net:10000" },                          // :10000 — German telco, 20yr uptime
-    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302",
-             "stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302",
-             "stun:stun4.l.google.com:19302"] },                      // :19302 — Google, 5 endpoints
-    { urls: "stun:stun.cloudflare.com:3478" },                        // :3478  — Cloudflare, privacy-respecting
     { urls: "stun:global.stun.twilio.com:3478" },                     // :3478  — Twilio, major telecom
     { urls: "stun:turn.matrix.org:3478" },                            // :3478  — Matrix Foundation, nonprofit
   ],
   iceCandidatePoolSize: 1,
 };
+
+/**
+ * Best-effort public TURN relay, layered on top of STUN (opt-in, same toggle).
+ * ICE only reaches for a relay candidate when every direct path — host, then
+ * srflx — has failed, so a cone-NAT peer never touches it. The pair that needs
+ * it is one behind symmetric NAT or CGNAT (typical on cellular), where direct
+ * P2P is physically impossible and the alternative is no connection at all.
+ *
+ * Open Relay Project (metered.ca) `staticauth` endpoint — the one public TURN
+ * with a no-account path in 2026: the credential is a short-lived HMAC of a
+ * public shared secret (coturn's TURN REST scheme), computed fresh per
+ * connection here, no key to register. Best-effort: if it throttles or goes
+ * away, ICE simply cannot form the relay candidate and falls back to STUN-only,
+ * exactly the behaviour before this existed — never worse. The three transports
+ * are the escalation ladder: :80 for the common case, TCP then TLS on :443 to
+ * punch through UDP-blocking firewalls and deep packet inspection.
+ *
+ * A caller that wants a reliable relay passes its own `turnPool` (a coturn box,
+ * or Cloudflare Realtime credentials minted by a Worker) — that overrides this.
+ */
+const OPEN_RELAY_HOST = "staticauth.openrelay.metered.ca";
+const OPEN_RELAY_SECRET = TE.encode("openrelayprojectsecret");
+const TURN_CREDENTIAL_TTL_SECONDS = 24 * 60 * 60;
+
+function base64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+/** Compute a fresh TURN pool with time-limited credentials. Both peers derive
+ *  an equivalent (independently valid) credential — the server checks the HMAC,
+ *  not that the two sides match. */
+export async function buildDefaultTurnPool(): Promise<RTCIceServer[]> {
+  const username = String(Math.floor(Date.now() / 1000) + TURN_CREDENTIAL_TTL_SECONDS);
+  const mac = await hmacSha1(OPEN_RELAY_SECRET, TE.encode(username));
+  return [{
+    // two transports, not three: :80 for the common case, then TLS-on-443 for a
+    // UDP-blocking firewall or DPI (indistinguishable from HTTPS, so it strictly
+    // dominates plain TCP-on-443). keeping this at two URLs leaves room for STUN
+    // under the browser's 5-URL ICE slowdown threshold.
+    urls: [
+      `turn:${OPEN_RELAY_HOST}:80`,
+      `turns:${OPEN_RELAY_HOST}:443?transport=tcp`,
+    ],
+    username,
+    credential: base64(mac),
+  }];
+}
 
 /**
  * Relay-only. Forces all traffic through a TURN server; peer IPs are never exposed.
@@ -438,6 +499,14 @@ export const WHISPER_LIVE_RTC_STEALTH: RTCConfiguration = {
 const ICE_GATHER_TIMEOUT = 8_000;         // max wait for ICE candidate gathering
 const ICE_GATHER_SETTLE_MS = 1_500;       // stop once candidates have gone quiet long enough
 const ICE_GATHER_TIMEOUT_ASSIST = 15_000; // public STUN needs a wider ceiling than local-only
+// with external assist on, the settle loop holds briefly for a server-reflexive
+// /relay candidate rather than settling on host alone (which ships an SDP the
+// peer cannot route to across a NAT). kept short: any srflx/relay candidate that
+// lands after this ceiling still reaches the peer over the restored trickle path
+// (live-tracker relay signals), so this is a head-start optimisation, not a
+// correctness gate — a firewalled peer with dead STUN must not eat the full
+// ceiling on every connection. the outer ICE_GATHER_TIMEOUT_ASSIST is the hard stop.
+const ICE_ASSIST_SETTLE_CEILING = 3_000;
 const HEARTBEAT_INTERVAL = 15_000;        // send ping every 15s
 const HEARTBEAT_TIMEOUT = 45_000;         // drop peer after 45s silence
 
@@ -605,6 +674,20 @@ export class WhisperLiveSession {
   /** Ephemeral ECDH private key — exists only during handshake, then wiped */
   private ephPrivateKey: CryptoKey | null = null;
   private localEphPublicKey: Uint8Array | null = null;
+  /** Both halves of the handshake transcript, frozen at the exact bytes that
+   *  crossed the wire in the offer/answer codes. Neither can be read live at
+   *  handshake time: our localDescription keeps gathering candidates after we
+   *  seal (a TURN relay candidate lands late), and the browser APPENDS every
+   *  trickled candidate to remoteDescription.sdp — so both live descriptions grow
+   *  past what the peer canonicalizes from our code. See buildTranscriptHash. */
+  private localSdpForTranscript: string | null = null;
+  private remoteSdpForTranscript: string | null = null;
+  /** true once our offer/answer SDP is sealed. before this, every gathered
+   *  candidate is already baked into the SDP the peer receives via rendezvous, so
+   *  trickling it is pure redundancy — and pre-seal candidates buffer up and
+   *  flush as a burst of tracker announces right when the relay channel opens.
+   *  only post-seal candidates take the trickle path. */
+  private sdpSealed = false;
   private transcriptHash: Uint8Array | null = null;
   private kizunaWitness: Uint8Array | null = null;
   private confirmContextHash: Uint8Array | null = null;
@@ -715,6 +798,7 @@ export class WhisperLiveSession {
 
   private rtcConfig: RTCConfiguration;
   private turnPool: RTCIceServer[] = [];
+  private enableDefaultTurn = false;
   private turnInjected = false;
   private sessionGeneration = 0;
 
@@ -741,6 +825,7 @@ export class WhisperLiveSession {
     this.externalAssistPolicy = options.externalAssistPolicy ?? "drop-after-connect";
     this.autoConfirm = options.autoConfirmFingerprint ?? false;
     this.turnPool = options.turnPool ?? [];
+    this.enableDefaultTurn = options.enableDefaultTurn ?? false;
   }
 
   private hasExternalAssistConfigured(): boolean {
@@ -750,23 +835,38 @@ export class WhisperLiveSession {
   }
 
   private async buildRtcConfig(): Promise<RTCConfiguration> {
-    const hasTurn = this.turnPool.length > 0 && !!this.phraseRoot;
-    // browsers warn at ≥ 5 URLs; reserve 1 slot for TURN when applicable
-    const maxStunUrls = hasTurn ? 3 : 4;
+    // TURN only for a phrase-based connection; an explicit pool wins, otherwise
+    // the built-in Open Relay pool when the caller opted in.
+    let turnPool = this.turnPool;
+    if (turnPool.length === 0 && this.enableDefaultTurn && this.phraseRoot) {
+      try {
+        turnPool = await buildDefaultTurnPool();
+      } catch { /* crypto unavailable — proceed STUN-only */ }
+    }
+    const hasTurn = turnPool.length > 0 && !!this.phraseRoot;
+
+    // select the TURN entry first so the STUN trim knows how many URL slots it
+    // leaves free. browsers (Chrome, Firefox) warn and slow ICE discovery at ≥ 5
+    // configured STUN/TURN URLs, counted individually — so keep the grand total
+    // at 4. gathering contacts every server in parallel and the relay candidate
+    // is the one that matters once direct paths are exhausted, so STUN yields
+    // the slots. a phrase-seeded subset keeps both peers on the same servers.
+    const turn = hasTurn ? await selectTurnServer(this.phraseRoot!, turnPool) : null;
+    const turnUrlCount = turn ? (Array.isArray(turn.urls) ? turn.urls.length : 1) : 0;
+    const maxStunUrls = hasTurn ? Math.max(1, 4 - turnUrlCount) : 4;
 
     let iceServers = this.rtcConfig.iceServers ?? [];
     if (countIceUrls(iceServers) > maxStunUrls) {
       iceServers = await selectStunServers(this.phraseRoot, iceServers, maxStunUrls);
     }
 
-    if (!hasTurn) {
+    if (!turn) {
       return {
         ...this.rtcConfig,
         iceServers,
       };
     }
 
-    const turn = await selectTurnServer(this.phraseRoot!, this.turnPool);
     this.turnInjected = true;
     return {
       ...this.rtcConfig,
@@ -787,7 +887,14 @@ export class WhisperLiveSession {
       }
 
       const current = (typeof pc.getConfiguration === "function") ? pc.getConfiguration() : {};
-      pc.setConfiguration({ ...current, iceServers: [] });
+      // keep any TURN entry: a pair that connected THROUGH the relay is already
+      // using it for every packet, and a later ICE restart needs it to re-form
+      // the one path that works. STUN is what we drop — its job (one reflexive
+      // lookup at gather time) is done. a direct pair holds no relay allocation,
+      // so a retained-but-unused TURN server is inert.
+      const keptTurn = (current.iceServers ?? []).filter((s) =>
+        (Array.isArray(s.urls) ? s.urls : [s.urls]).some((u) => u.startsWith("turn:") || u.startsWith("turns:")));
+      pc.setConfiguration({ ...current, iceServers: keptTurn });
     } catch (err) {
       this.onLog(`external assist disable failed: ${errorMessage(err)}`);
     }
@@ -1076,6 +1183,9 @@ export class WhisperLiveSession {
   }
 
   private clearHandshakeArtifacts(): void {
+    this.localSdpForTranscript = null;
+    this.remoteSdpForTranscript = null;
+    this.sdpSealed = false;
     this.wipeBytes(this.transcriptHash);
     this.transcriptHash = null;
     this.wipeBytes(this.kizunaWitness);
@@ -1136,8 +1246,12 @@ export class WhisperLiveSession {
   }
 
   private async buildTranscriptHash(peerPubKeyRaw: Uint8Array): Promise<Uint8Array> {
-    let localSdp = this.pc?.localDescription?.sdp;
-    const remoteSdp = this.pc?.remoteDescription?.sdp;
+    // Both halves are the frozen wire bytes, never the live descriptions: ours
+    // grew extra gathered candidates after the seal, and the browser appended
+    // every trickled candidate to the remote one. The peer canonicalizes from
+    // our code, so we must too.
+    let localSdp = this.localSdpForTranscript ?? this.pc?.localDescription?.sdp;
+    const remoteSdp = this.remoteSdpForTranscript ?? this.pc?.remoteDescription?.sdp;
     if (!localSdp || !remoteSdp || !this.localEphPublicKey) {
       throw new Error("handshake transcript incomplete");
     }
@@ -1256,9 +1370,12 @@ export class WhisperLiveSession {
     this.onLog("gathering network candidates...");
     await this.waitForICE();
 
+    const sealedSdp = this.pc.localDescription!.sdp;
+    this.localSdpForTranscript = sealedSdp;
+    this.sdpSealed = true;
     const code = this.useLocalCodec
-      ? packLocalSdp(this.pc.localDescription!.sdp, true)
-      : await sdpToCode(this.pc.localDescription!.sdp, "offer", this.phraseRoot ?? undefined);
+      ? packLocalSdp(sealedSdp, true)
+      : await sdpToCode(sealedSdp, "offer", this.phraseRoot ?? undefined);
 
     this.onLog(`offer code ready${this.useLocalCodec ? " (local)" : this.phraseRoot ? " (sealed)" : ""}`);
     this.setState("waiting-for-answer");
@@ -1274,6 +1391,7 @@ export class WhisperLiveSession {
     const sdp = this.useLocalCodec
       ? unpackLocalSdp(answerCode).sdp
       : await codeToSdp(answerCode, "answer", this.phraseRoot ?? undefined);
+    this.remoteSdpForTranscript = sdp;
     await this.pc.setRemoteDescription({ type: "answer", sdp });
     await this.flushPendingRemoteIce();
     this.emitRelaySignal({ kind: "answer-ack" });
@@ -1290,6 +1408,7 @@ export class WhisperLiveSession {
     const offerSDP = this.useLocalCodec
       ? unpackLocalSdp(offerCode).sdp
       : await codeToSdp(offerCode, "offer", this.phraseRoot ?? undefined);
+    this.remoteSdpForTranscript = offerSDP;
 
     this.pc = new RTCPeerConnection(await this.buildRtcConfig());
     this.setupPeerConnection(this.pc);
@@ -1308,9 +1427,12 @@ export class WhisperLiveSession {
     this.onLog("gathering network candidates...");
     await this.waitForICE();
 
+    const sealedSdp = this.pc.localDescription!.sdp;
+    this.localSdpForTranscript = sealedSdp;
+    this.sdpSealed = true;
     const answerCode = this.useLocalCodec
-      ? packLocalSdp(this.pc.localDescription!.sdp, false)
-      : await sdpToCode(this.pc.localDescription!.sdp, "answer", this.phraseRoot ?? undefined);
+      ? packLocalSdp(sealedSdp, false)
+      : await sdpToCode(sealedSdp, "answer", this.phraseRoot ?? undefined);
 
     this.onLog(`answer code ready${this.useLocalCodec ? " (local)" : this.phraseRoot ? " (sealed)" : ""}`);
     this.setState("connecting");
@@ -1362,17 +1484,34 @@ export class WhisperLiveSession {
           this.onLog("no network paths found, connection may fail");
       };
 
-      const candidateCount = (): number => {
-        const sdp = pc.localDescription?.sdp ?? "";
-        return [...sdp.matchAll(/^a=candidate:/gm)].length;
-      };
+      // don't hold for a srflx/relay candidate if assist was already dropped
+      // (drop-after-connect + an ICE restart during recovery) — nothing is coming.
+      const assistConfigured = this.hasExternalAssistConfigured() && !this.externalAssistDropped;
+      const assistDeadline = performance.now() + ICE_ASSIST_SETTLE_CEILING;
 
-      const hasUsefulCandidates = (): boolean => {
+      // What "settled" means. Without assist, any usable candidate is enough.
+      // With assist, the point of assist is a srflx/relay candidate — settling on
+      // host alone hands the peer an SDP it cannot route to across a NAT. We do
+      // NOT hold for the (slower) relay candidate specifically: it trickles in a
+      // moment later over the relay channel, and holding for it would add the
+      // full ceiling to every connection whenever the TURN server is slow or
+      // down. Bounded by assistDeadline so a dead STUN path still proceeds on
+      // host. Chromium halts gathering the instant ICE connects locally (a
+      // same-LAN pair does this in ~1ms, before STUN answers), so this only
+      // bites cross-network, where gathering stays open long enough.
+      const settleReady = (): boolean => {
         const sdp = pc.localDescription?.sdp ?? "";
+        if (![...sdp.matchAll(/^a=candidate:/gm)].length) return false;
+        if (assistConfigured && performance.now() < assistDeadline) {
+          return / typ (srflx|relay)\b/.test(sdp);
+        }
         return / typ (host|srflx|relay)\b/.test(sdp);
       };
 
       if (pc.iceGatheringState === "complete") {
+        // gathering already reported done — either genuinely finished, or halted
+        // early because ICE connected. either way there is nothing more to wait
+        // for; proceeding fast is correct.
         logGatherResult();
         resolve();
         return;
@@ -1411,9 +1550,10 @@ export class WhisperLiveSession {
         if (settleTimer) clearTimeout(settleTimer);
         settleTimer = setTimeout(() => {
           if (settled) return;
-          // Quiet is necessary but not sufficient: silence with nothing usable
-          // gathered yet means keep waiting for the ceiling, not give up early.
-          if (!hasUsefulCandidates() || candidateCount() === 0) { armSettle(); return; }
+          // Quiet is necessary but not sufficient: silence with nothing worth
+          // shipping yet means keep waiting (for the assist candidate, or for the
+          // ceiling), not give up early.
+          if (!settleReady()) { armSettle(); return; }
           this.onLog("path discovery settled, proceeding with gathered candidates");
           done();
         }, ICE_GATHER_SETTLE_MS);
@@ -1483,6 +1623,8 @@ export class WhisperLiveSession {
 
   private setupPeerConnection(pc: RTCPeerConnection): void {
     pc.onicecandidate = (event) => {
+      // pre-seal candidates are already in the SDP the peer got via rendezvous
+      if (!this.sdpSealed) return;
       if (event.candidate) {
         this.emitRelaySignal({ kind: "ice", candidate: event.candidate.toJSON() });
       } else {
@@ -1586,7 +1728,9 @@ export class WhisperLiveSession {
         return;
       case "ice":
         if (!this.pc || !this.pc.remoteDescription) {
-          this.pendingRemoteIce.push(signal.candidate);
+          // a full ICE gathering is a few dozen candidates; anything past that is
+          // a peer (or a phrase-holding third party) pushing junk. drop the excess.
+          if (this.pendingRemoteIce.length < 64) this.pendingRemoteIce.push(signal.candidate);
           return;
         }
         await this.applyRemoteIceCandidate(signal.candidate);
@@ -1601,12 +1745,16 @@ export class WhisperLiveSession {
   }
 
   private emitRelaySignal(signal: TrackerRelaySignal): void {
-    const isRestartSignal = signal.kind === "restart-offer" || signal.kind === "restart-answer";
-    if (!this.isSetupState() && !isRestartSignal && this._state !== "live" && this._state !== "silent" && this._state !== "recovering") return;
-    if (!isRestartSignal && !this.isSetupState()) return;
+    // Trickle ICE and ICE-restart signalling both have to reach the peer for the
+    // whole life of the connection, not just the setup states. A candidate can be
+    // gathered after the SDP was sent (Chromium halts gathering the moment ICE
+    // connects, and the srflx/relay candidate then arrives late), and a path can
+    // break mid-session — a phone moving off wifi onto cellular — and need
+    // re-gathering. Only the terminal states have nothing left to say.
+    if (this._state === "idle" || this._state === "disconnected" || this._state === "error") return;
     if (this.relaySignalSender) {
       this.relaySignalSender(signal);
-    } else {
+    } else if (this.pendingRelaySignals.length < 64) {
       this.pendingRelaySignals.push(signal);
     }
   }
@@ -1657,10 +1805,33 @@ export class WhisperLiveSession {
     }
   }
 
+  /** The DTLS fingerprint from an SDP (`a=fingerprint:<hash> <value>`), lowercased. */
+  private sdpFingerprint(sdp: string): string | null {
+    const m = sdp.match(/^a=fingerprint:(\S+\s+\S+)/mi);
+    return m ? m[1].toLowerCase() : null;
+  }
+
+  /** An ICE restart re-gathers candidates but keeps the same DTLS certificate,
+   *  so the peer's fingerprint is invariant across a restart. A restart SDP that
+   *  carries a different one is an attempt to swap the authenticated DTLS
+   *  identity (a phrase-holding third party in a campfire room, or a relay that
+   *  learned the seal key) — reject it. No pin (older path) means the
+   *  transcript-bound handshake is the only authenticator, unchanged from before. */
+  private restartFingerprintOk(freshSdp: string): boolean {
+    const pinned = this.remoteSdpForTranscript ? this.sdpFingerprint(this.remoteSdpForTranscript) : null;
+    const fresh = this.sdpFingerprint(freshSdp);
+    if (!pinned || !fresh) return true;
+    return pinned === fresh;
+  }
+
   private async handleRemoteRestartOffer(code: string): Promise<void> {
     if (!this.pc || this.isOfferer) return;
-    this.onLog("recovery: applying fresh network paths");
     const sdp = await codeToSdp(code, "offer", this.phraseRoot ?? undefined);
+    if (!this.restartFingerprintOk(sdp)) {
+      this.onLog("recovery: ignored a restart offer with a changed DTLS fingerprint");
+      return;
+    }
+    this.onLog("recovery: applying fresh network paths");
     await this.pc.setRemoteDescription({ type: "offer", sdp });
     await this.flushPendingRemoteIce();
     const answer = await this.pc.createAnswer();
@@ -1674,8 +1845,12 @@ export class WhisperLiveSession {
 
   private async handleRemoteRestartAnswer(code: string): Promise<void> {
     if (!this.pc || !this.isOfferer) return;
-    this.onLog("recovery: applying fresh network paths");
     const sdp = await codeToSdp(code, "answer", this.phraseRoot ?? undefined);
+    if (!this.restartFingerprintOk(sdp)) {
+      this.onLog("recovery: ignored a restart answer with a changed DTLS fingerprint");
+      return;
+    }
+    this.onLog("recovery: applying fresh network paths");
     await this.pc.setRemoteDescription({ type: "answer", sdp });
     await this.flushPendingRemoteIce();
   }

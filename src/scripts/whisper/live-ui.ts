@@ -6804,6 +6804,10 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   function createSession(): WhisperLiveSession {
     const externalAssist = opts.externalAssistToggle.checked;
     const rtcConfig = externalAssist ? WHISPER_LIVE_RTC_PUBLIC_STUN : WHISPER_LIVE_RTC_LOCAL_ONLY;
+    // TURN rides the same toggle as STUN. The session forms a relay candidate
+    // only for a phrase-based connection (never in-person QR), and ICE keeps
+    // preferring direct — the relay is the last resort for a symmetric-NAT pair.
+    const enableDefaultTurn = externalAssist && !opts.turnPool;
     const externalAssistPolicy = (relayActive || flareActive) ? "keep-for-session" : "drop-after-connect";
 
     // Only log verbose network info in manual mode — relay/flare users don't need to see it
@@ -6941,6 +6945,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
       externalAssistPolicy,
       autoConfirmFingerprint: true,
       turnPool: opts.turnPool,
+      enableDefaultTurn,
     });
   }
 

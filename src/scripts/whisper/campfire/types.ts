@@ -98,7 +98,7 @@ export interface CampfireSessionLike {
 
 export type CampfireSessionFactory = (
   callbacks: WhisperLiveCallbacks,
-  opts: { rtcConfig: RTCConfiguration; autoConfirmFingerprint: boolean },
+  opts: { rtcConfig: RTCConfiguration; autoConfirmFingerprint: boolean; enableDefaultTurn?: boolean },
 ) => CampfireSessionLike;
 
 /* ═══════════════════════════════════════════════════════════════════

@@ -9,8 +9,8 @@
  * race trackers but kill the loser immediately, send `stopped` on exit.
  */
 
-import { randomBytes } from "./wasm";
-import { TE, TD, hkdf } from "./live-crypto";
+import { concatBytes, randomBytes } from "./wasm";
+import { TE, TD, hkdf, aesGcmEncrypt, aesGcmDecrypt } from "./live-crypto";
 import { derivePhraseRoot, derivePhraseScopedKey } from "./live-handshake";
 
 /* ── API ──────────────────────────────────────────────────── */
@@ -226,23 +226,66 @@ function b64urlDecode(s: string): Uint8Array {
   return out;
 }
 
-function encodeTrackerRelaySignal(signal: TrackerRelaySignal): string {
-  return b64url(TE.encode(JSON.stringify(signal)));
+const RELAY_SIGNAL_AAD_PREFIX = "whisper-relay-signal-aad-v1|";
+
+/** AAD binds every sealed signal to this specific rendezvous. A ciphertext
+ *  captured off the public tracker cannot be replayed into a later session on
+ *  the same phrase — the rendezvousId (derived from both peers' per-attempt ids)
+ *  differs, so AES-GCM verification fails. */
+function relaySignalAad(rendezvousId: string): Uint8Array {
+  return TE.encode(RELAY_SIGNAL_AAD_PREFIX + rendezvousId);
 }
 
-function decodeTrackerRelaySignal(encoded: string): TrackerRelaySignal | null {
+/** A phrase-derived key for sealing relay signals (trickle ICE, ICE restarts).
+ *  The offer/answer codes are already sealed with the phrase; the signals that
+ *  follow carry the same kind of secret — candidate IPs, restart SDP — over the
+ *  same public tracker, so they get the same treatment. Both peers derive the
+ *  identical key from the shared phrase. */
+async function deriveRelaySealKey(phrase: string): Promise<Uint8Array> {
+  const root = await derivePhraseRoot(phrase);
   try {
-    const parsed = JSON.parse(TD.decode(b64urlDecode(encoded))) as Partial<TrackerRelaySignal>;
-    if (!parsed || typeof parsed !== "object" || typeof parsed.kind !== "string") return null;
-    if (parsed.kind === "answer-ack") return { kind: "answer-ack" };
-    if (parsed.kind === "ice") {
-      if (!("candidate" in parsed)) return null;
-      return { kind: "ice", candidate: (parsed as { candidate: RTCIceCandidateInit | null }).candidate ?? null };
-    }
-    if ((parsed.kind === "restart-offer" || parsed.kind === "restart-answer") && typeof (parsed as { code?: unknown }).code === "string") {
-      return { kind: parsed.kind, code: (parsed as { code: string }).code };
-    }
-    return null;
+    return await derivePhraseScopedKey(root, "relay-signal-seal", 32);
+  } finally {
+    root.fill(0);
+  }
+}
+
+function parseRelaySignalBody(raw: unknown): TrackerRelaySignal | null {
+  if (!raw || typeof raw !== "object") return null;
+  const parsed = raw as Partial<TrackerRelaySignal>;
+  if (typeof parsed.kind !== "string") return null;
+  if (parsed.kind === "answer-ack") return { kind: "answer-ack" };
+  if (parsed.kind === "ice") {
+    if (!("candidate" in parsed)) return null;
+    return { kind: "ice", candidate: (parsed as { candidate: RTCIceCandidateInit | null }).candidate ?? null };
+  }
+  if ((parsed.kind === "restart-offer" || parsed.kind === "restart-answer")
+    && typeof (parsed as { code?: unknown }).code === "string") {
+    return { kind: parsed.kind, code: (parsed as { code: string }).code };
+  }
+  return null;
+}
+
+async function sealTrackerRelaySignal(
+  signal: TrackerRelaySignal, key: Uint8Array, rendezvousId: string,
+): Promise<string> {
+  const nonce = randomBytes(12);
+  const ct = await aesGcmEncrypt(
+    key, TE.encode(JSON.stringify(signal)), nonce, relaySignalAad(rendezvousId),
+  );
+  return b64url(concatBytes(nonce, ct));
+}
+
+async function openTrackerRelaySignal(
+  encoded: string, key: Uint8Array, rendezvousId: string,
+): Promise<TrackerRelaySignal | null> {
+  try {
+    const raw = b64urlDecode(unpadCode(encoded));
+    if (raw.length < 12 + 16) return null; // 12B nonce + 16B GCM tag minimum
+    const pt = await aesGcmDecrypt(
+      key, raw.subarray(12), raw.subarray(0, 12), relaySignalAad(rendezvousId),
+    );
+    return parseRelaySignalBody(JSON.parse(TD.decode(pt)));
   } catch {
     return null;
   }
@@ -829,11 +872,16 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
   if (opts.mode === "simultaneous" && !opts.createOfferCode) throw new Error("handshake-failed");
 
   const hashes = await deriveInfoHashes(opts.phrase);
+  const relaySealKey = await deriveRelaySealKey(opts.phrase);
   const peerId = randomBinId();
   const attemptId = randomBinId();
   const sessionTag = randomBinId();
   const intentOfferId = randomBinId();
   const seenMessages = new Set<string>();
+  // relay-signal dedup is its own set, recorded only AFTER decryption verifies:
+  // an attacker who knows the (tracker-visible) envelope fields must not be able
+  // to evict genuine rendezvous entries from seenMessages with junk ciphertext.
+  const seenRelaySignals = new Set<string>();
 
   opts.callbacks.onLog(opts.mode === "flare-listener" ? "flare room ready" : "relay room ready");
 
@@ -944,37 +992,37 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       },
       sendSignal: (signal) => {
         if (!pool || !role || !lockPeerId || !lockInfoHash || !rendezvousId || !realOfferId) return;
-        const encoded = encodeTrackerRelaySignal(signal);
-        if (role === "answerer") {
-          pool.sendAll([JSON.stringify({
+        const capturedRole = role;
+        const capturedRendezvousId = rendezvousId;
+        void sealTrackerRelaySignal(signal, relaySealKey, capturedRendezvousId).then((encoded) => {
+          if (!pool || rendezvousId !== capturedRendezvousId) return; // torn down / re-locked while sealing
+          // BOTH roles carry relay signals inside `offers[]` with `to_peer_id`:
+          // that is a targeted push the tracker delivers at announce time,
+          // independent of the offer/answer matching state. Routing a signal as
+          // an `answer` (keyed by offer_id) breaks after the first real answer
+          // consumes that offer — the tracker then rejects it with "could not
+          // find the offer". The tracker treats `offers[]` as REPLACING this
+          // peer's pending offers, so the offerer re-asserts its real offer in
+          // the same batch (signal first: it is pushed now and need not persist).
+          const signalAnnounce = JSON.stringify({
             action: "announce",
             info_hash: lockInfoHash,
             peer_id: peerId,
-            to_peer_id: lockPeerId,
-            answer: {
-              type: "answer",
-              sdp: whisperSdp(TRACKER_SIGNAL_TYPE, encoded),
-              whisper_session: rendezvousId,
-            },
-            offer_id: realOfferId,
-          })]);
-          return;
-        }
-        pool.sendAll([JSON.stringify({
-          action: "announce",
-          info_hash: lockInfoHash,
-          peer_id: peerId,
-          numwant: 1,
-          offers: [{
-            offer_id: randomBinId(),
-            offer: {
-              type: "offer",
-              sdp: whisperSdp(TRACKER_SIGNAL_TYPE, encoded),
-              whisper_session: rendezvousId,
-              to_peer_id: lockPeerId,
-            },
-          }],
-        })]);
+            numwant: 1,
+            offers: [{
+              offer_id: randomBinId(),
+              offer: {
+                type: "offer",
+                sdp: whisperSdp(TRACKER_SIGNAL_TYPE, encoded),
+                whisper_session: rendezvousId,
+                to_peer_id: lockPeerId,
+              },
+            }],
+          });
+          pool.sendAll(capturedRole === "offerer"
+            ? [signalAnnounce, ...buildAnnouncePayloads(pool.hashes)]
+            : [signalAnnounce]);
+        }).catch(() => { /* webcrypto unavailable mid-session — signal is dropped, ICE falls back to the sealed SDP */ });
       },
       setOnSignal: (cb) => {
         relaySignalCb = cb;
@@ -1208,41 +1256,55 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
       finish({ role: "offerer", peerAnswerCode: payload.code, relay: buildRelayHandle() });
     };
 
+    // Trickle-ICE / ICE-restart signals from the peer. Unlike the rendezvous
+    // handlers below, these flow for the WHOLE session, not just until the match
+    // settles — a candidate the peer gathers late, or a restart after a path
+    // break, arrives here long after `settled` is true. Returns true when the
+    // message IS a relay signal (so onMessage stops), whether or not it validated
+    // — a spoofed or stale one must not then be reprocessed as a rendezvous
+    // message. Decryption is async and fire-and-forget; the caller only needs the
+    // synchronous "was this a relay signal" answer.
     const handleRelaySignalMessage = (msg: Record<string, unknown>): boolean => {
-      if (msg.offer && typeof msg.offer === "object") {
-        const offer = msg.offer as Record<string, unknown>;
-        const offerParsed = parseWhisperSdp(offer.sdp);
-        if (offerParsed && offerParsed.whisperType === TRACKER_SIGNAL_TYPE) {
-          const encoded = offerParsed.payload;
-          const sessionId = String(offer.whisper_session ?? "");
-          const toPeerId = String(offer.to_peer_id ?? "");
-          const fromPeerId = String(msg.peer_id ?? "");
-          if (!encoded || sessionId !== rendezvousId || toPeerId !== peerId || fromPeerId !== lockPeerId) return true;
-          const signalPayload = decodeTrackerRelaySignal(encoded);
-          if (signalPayload) emitRelaySignal(signalPayload);
-          return true;
+      const fromOffer = msg.offer && typeof msg.offer === "object";
+      const container = fromOffer
+        ? msg.offer as Record<string, unknown>
+        : (msg.answer && typeof msg.answer === "object") ? msg.answer as Record<string, unknown> : null;
+      if (!container) return false;
+      const parsed = parseWhisperSdp(container.sdp);
+      if (!parsed || parsed.whisperType !== TRACKER_SIGNAL_TYPE) return false;
+
+      const encoded = parsed.payload;
+      const sessionId = String(container.whisper_session ?? "");
+      const fromPeerId = String(msg.peer_id ?? "");
+      // offer-carried signals come from the offerer and pin to_peer_id strictly;
+      // answer-carried signals come from the answerer and pin the live offer id.
+      const toPeerId = String((fromOffer ? container.to_peer_id : msg.to_peer_id) ?? "");
+      const offerIdOk = fromOffer || String(msg.offer_id ?? "") === realOfferId;
+      const addressedToUs = !!encoded
+        && sessionId === rendezvousId
+        && fromPeerId === lockPeerId
+        && (fromOffer ? toPeerId === peerId : (!toPeerId || toPeerId === peerId))
+        && offerIdOk;
+
+      // the same sealed signal arrives once per tracker in the pool (and the
+      // sender may re-emit). the 12B nonce is a stable per-signal id — dedup on
+      // it, but only once the ciphertext has verified, so a spoofed envelope
+      // cannot poison the set. forward each genuine signal exactly once.
+      if (addressedToUs) {
+        const nonceKey = encoded.slice(0, 16);
+        if (!seenRelaySignals.has(nonceKey)) {
+          void openTrackerRelaySignal(encoded, relaySealKey, rendezvousId).then((sig) => {
+            if (!sig || seenRelaySignals.has(nonceKey)) return;
+            if (seenRelaySignals.size >= 256) {
+              const oldest = seenRelaySignals.values().next().value;
+              if (oldest !== undefined) seenRelaySignals.delete(oldest);
+            }
+            seenRelaySignals.add(nonceKey);
+            emitRelaySignal(sig);
+          }).catch(() => { /* not for us / malformed */ });
         }
       }
-
-      if (msg.answer && typeof msg.answer === "object") {
-        const answer = msg.answer as Record<string, unknown>;
-        const answerParsed = parseWhisperSdp(answer.sdp);
-        if (answerParsed && answerParsed.whisperType === TRACKER_SIGNAL_TYPE) {
-          const encoded = answerParsed.payload;
-          const sessionId = String(answer.whisper_session ?? "");
-          const fromPeerId = String(msg.peer_id ?? "");
-          const toPeerId = String(msg.to_peer_id ?? "");
-          const incomingOfferId = String(msg.offer_id ?? "");
-          if (!encoded || sessionId !== rendezvousId || incomingOfferId !== realOfferId) return true;
-          if (fromPeerId !== lockPeerId) return true;
-          if (toPeerId && toPeerId !== peerId) return true;
-          const signalPayload = decodeTrackerRelaySignal(encoded);
-          if (signalPayload) emitRelaySignal(signalPayload);
-          return true;
-        }
-      }
-
-      return false;
+      return true;
     };
 
     if (opts.signal) opts.signal.addEventListener("abort", onExternalAbort, { once: true });
@@ -1260,12 +1322,15 @@ export async function runLiveRendezvous(opts: LiveRendezvousOptions): Promise<Li
         opts.callbacks.onStatus("reconnecting...");
       },
       onMessage: (msg) => {
-        if (settled) return;
         if (msg["failure reason"]) {
           opts.callbacks.onLog(`relay message: ${msg["failure reason"]}`);
           return;
         }
+        // relay signals (trickle ICE, ICE restart) run before AND after settle —
+        // the socket stays open for the whole session, and these are exactly the
+        // messages the pre-settle gate below used to drop.
         if (handleRelaySignalMessage(msg)) return;
+        if (settled) return;
         if (msg.offer && typeof msg.offer === "object") handleIntent(msg);
         if (msg.answer && typeof msg.answer === "object") handleMatchAck(msg);
         if (msg.offer && typeof msg.offer === "object") handleOfferCode(msg);

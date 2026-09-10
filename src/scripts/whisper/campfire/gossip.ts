@@ -494,6 +494,7 @@ export class CampfireNode {
     const session = this.sessionFactory(callbacks, {
       rtcConfig: this.rtcConfig,
       autoConfirmFingerprint: true,
+      enableDefaultTurn: this.useStun,
     });
 
     return session;
@@ -2227,6 +2228,7 @@ export class CampfireNode {
     const session = this.sessionFactory(callbacks, {
       rtcConfig: this.rtcConfig,
       autoConfirmFingerprint: true,
+      enableDefaultTurn: this.useStun,
     });
     sessionRef = session;
     return session;

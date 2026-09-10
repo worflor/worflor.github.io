@@ -105,6 +105,17 @@ export async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uin
   return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, toArrayBuffer(data)));
 }
 
+/** HMAC-SHA1 — used ONLY to derive time-limited TURN credentials from a public
+ *  shared secret (coturn's TURN REST API / static-auth-secret scheme). Not a
+ *  security primitive for anything in the protocol; SHA-1 is what that spec
+ *  mandates. */
+export async function hmacSha1(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw", toArrayBuffer(key), { name: "HMAC", hash: "SHA-1" }, false, ["sign"],
+  );
+  return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, toArrayBuffer(data)));
+}
+
 export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
