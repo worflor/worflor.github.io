@@ -1841,55 +1841,85 @@
 
   /* Mark composer's field — lives inside .wl-shelf-overlay--mark now, so it
      always fills that overlay's width; no width transition of its own,
-     the overlay's transform+opacity carries the whole reveal. */
+     the overlay's transform+opacity carries the whole reveal. corner radius
+     echoes the shelf's own (a full pill fought the near-square shelf edge);
+     it stretches to the row height so the drawer reads as one solid surface,
+     not a chip floating over message text. */
   :global(.wl-chat-messages) :global(.wl-react-custom-field) {
     display: flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.28rem;
     width: 100%;
-    border-radius: 9999px;
-    border: 1px solid rgb(var(--chromatic-cyan) / 0.3);
+    height: 100%;
+    border-radius: calc(var(--whisper-radius-medium) + 0.02rem);
+    border: 1px solid rgb(var(--chromatic-cyan) / 0.28);
     /* solid, not translucent: the drawer must never show fuzzy row buttons
        through its own input surface. */
-    background: rgb(10 10 10 / 0.94);
-    padding: 0.14rem 0.16rem;
+    background: rgb(10 10 10 / 0.96);
+    padding: 0.15rem 0.18rem;
+    transition:
+      border-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out);
   }
 
-  /* the explicit confirm inside the field: same circle language as the
-     preview glyph on the far side, centered on the shared axis. */
+  :global(.wl-chat-messages) :global(.wl-react-custom-field:focus-within) {
+    border-color: rgb(var(--chromatic-cyan) / 0.55);
+    box-shadow: 0 0 0 3px rgb(var(--chromatic-cyan) / 0.1);
+  }
+
+  /* the back-out control: a quiet ghost circle at rest — it is an exit, not
+     the primary action (a single glyph auto-commits), so it must not read as
+     a submit button. warms to cyan on press/hover. */
   :global(.wl-chat-messages) :global(.wl-react-custom-commit) {
-    width: 1.45rem;
-    height: 1.45rem;
+    width: 1.5rem;
+    height: 1.5rem;
     flex-shrink: 0;
     border-radius: 50%;
-    border: 1px solid rgb(var(--chromatic-cyan) / 0.34);
-    background: rgb(var(--chromatic-cyan) / 0.09);
-    color: rgb(var(--chromatic-cyan) / 0.85);
-    font-size: 0.72rem;
+    border: 1px solid rgb(var(--color-text-rgb) / 0.14);
+    background: rgb(var(--color-text-rgb) / 0.04);
+    color: rgb(var(--color-text-rgb) / 0.5);
     line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    transition: background var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-spring);
+    transition:
+      background var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out),
+      transform var(--duration-fast) var(--ease-spring);
+  }
+
+  :global(.wl-chat-messages) :global(.wl-react-custom-commit svg) {
+    width: 0.95rem;
+    height: 0.95rem;
   }
 
   :global(.wl-chat-messages) :global(.wl-react-custom-commit:hover) {
-    background: rgb(var(--chromatic-cyan) / 0.18);
-    transform: scale(var(--scale-hover-lg));
+    border-color: rgb(var(--chromatic-cyan) / 0.4);
+    background: rgb(var(--chromatic-cyan) / 0.12);
+    color: rgb(var(--chromatic-cyan) / 0.9);
   }
 
+  :global(.wl-chat-messages) :global(.wl-react-custom-commit:active) {
+    transform: scale(0.86);
+  }
+
+  /* live preview of the typed glyph — flat, no border, distinct in shape
+     (soft square) from the round back-out control so the two never read as
+     a matched pair of buttons. cyan-tinted: this is *your* mark taking shape,
+     the same colour language the sent reaction chip uses. */
   :global(.wl-chat-messages) :global(.wl-react-custom-preview) {
-    width: 1.45rem;
-    height: 1.45rem;
-    border-radius: 50%;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 0.32rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    font-size: var(--text-sm);
-    color: rgb(var(--color-text-rgb) / 0.78);
-    background: rgb(var(--color-text-rgb) / 0.06);
+    font-size: var(--text-ui-base);
+    color: rgb(var(--chromatic-cyan) / 0.7);
+    background: rgb(var(--chromatic-cyan) / 0.07);
   }
 
   :global(.wl-chat-messages) :global(.wl-react-custom-input) {
@@ -1898,16 +1928,16 @@
     border: 0;
     outline: 0;
     background: transparent;
-    color: rgb(var(--color-text-rgb) / 0.86);
+    color: rgb(var(--color-text-rgb) / 0.9);
     font: inherit;
-    font-size: var(--text-ui-sm);
-    line-height: 1;
-    padding: 0;
+    font-size: var(--text-ui-base);
+    line-height: 1.2;
+    padding: 0 0.1rem;
     box-shadow: none;
   }
 
   :global(.wl-chat-messages) :global(.wl-react-custom-input::placeholder) {
-    color: rgb(var(--color-text-rgb) / 0.38);
+    color: rgb(var(--color-text-rgb) / 0.36);
   }
 
   /* ── Status caption — always present while the shelf is open, part of

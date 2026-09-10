@@ -1023,7 +1023,7 @@ export function initWhisperLive(opts: WhisperLiveUIOptions): () => void {
   const markBackBtn = document.createElement("button");
   markBackBtn.type = "button";
   markBackBtn.className = "wl-react-custom-commit";
-  markBackBtn.textContent = "‹";
+  markBackBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 4l-4 4 4 4"/></svg>`;
   markBackBtn.setAttribute("aria-label", "close the mark editor");
   markBackBtn.addEventListener("click", (e) => { e.stopPropagation(); reactionComposer.reset(); }, { signal });
   reactionComposer.field.appendChild(markBackBtn);
