@@ -16,6 +16,7 @@ import { slugify } from "./helpers";
 import { repoIsPublic } from "./release";
 
 export const STATUS_LABEL: Record<ProjectStatus, string> = {
+  "in-development": "in development",
   "private-beta": "private beta",
   "closed-dev-alpha": "closed dev alpha",
   "coming-soon": "coming soon",
@@ -27,6 +28,7 @@ export const STATUS_LABEL: Record<ProjectStatus, string> = {
 // distinction "parked" exists to draw, so parked and concept never get one, and
 // a card without a dot is making a quieter claim on purpose.
 export const STATUS_IS_ACTIVE: Record<ProjectStatus, boolean> = {
+  "in-development": true,
   "private-beta": true,
   "closed-dev-alpha": true,
   "coming-soon": true,
@@ -40,6 +42,7 @@ export const STATUS_IS_ACTIVE: Record<ProjectStatus, boolean> = {
 // because it has a real page to visit, and a parked one falls back to the
 // concepts rail because nobody is currently at the wheel.
 export const DEFAULT_GROUP: Record<ProjectStatus, "shipped" | "private" | "concept"> = {
+  "in-development": "private",
   "private-beta": "private",
   "closed-dev-alpha": "private",
   "coming-soon": "shipped",

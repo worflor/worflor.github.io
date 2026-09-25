@@ -206,6 +206,8 @@ export const projectsPageContent: ProjectPageContent = {
       // private the card says "coming soon" on its own; the day it opens the
       // badge clears itself and this line can go.
       gate: "worflor/neuron",
+      github: "worflor/neuron",
+      trackRelease: true,
     },
     {
       title: "Manifold",
@@ -226,6 +228,15 @@ export const projectsPageContent: ProjectPageContent = {
       year: "2026",
       url: "/whisper?live",
       slug: "whisper",
+    },
+    {
+      title: "Lore",
+      description:
+        "A private-first place to explore who you are, show someone what feels true, and build a mythology together. Keep your own story; choose what you share. Tarot, astrology, and interactive play are instruments.",
+      year: "2026",
+      url: "/lore",
+      slug: "lore",
+      status: "in-development",
     },
     {
       title: "math scryer",
@@ -274,6 +285,24 @@ export const projectsPageContent: ProjectPageContent = {
       status: "concept",
     },
     {
+      title: "wick",
+      description:
+        "point it at a folder, ask, and back comes a focused packet of *your own* passages, each tagged with why it's there.<br>one SQLite file, no embedding server, no GPU, no model download. it trains the semantic space on your corpus and runs heat-kernel diffusion over the document graph (math from the 1800s), so it reads structure flat embeddings miss, and it'll even tell you what's *missing*. ~1ms warm.<br>real and running, paused at “works, not yet right” while i chase the piece it's still missing.",
+      year: "2026",
+      url: "/contact?project=wick",
+      slug: "wick",
+      status: "parked",
+    },
+    {
+      title: "séance",
+      description:
+        "run any LLM straight off cold SSD. no GPU, no framework, zero weights in RAM.<br>a 197KB rust binary memory-maps the weights and reads them one matmul at a time, so a 9B model (19GB on disk) runs in under 2MB of RAM, across 12 models and 10 architecture families. it's IO-bound today (~0.5–14 tok/s), but speed scales *linearly* with drive bandwidth: no diminishing returns, no cliff. a RAM runtime goes “fast → doesn't run” the moment a model outgrows memory; séance goes “fast → a bit slower.”<br>proof of concept, ahead of its hardware. taught me more about how weights behave than anything i've read.",
+      year: "2026",
+      url: "/contact?project=seance",
+      slug: "seance",
+      status: "parked",
+    },
+    {
       title: "Minecraft Server Maintainer",
       description: "A 67KB jar that lives next to your server folder. Double-click it and walk away.<br>It keeps Minecraft, mods, plugins, and datapacks current, and after every update it checks the server still boots, rolling back anything that doesn't. Crash, and it brings itself quietly back, rate-limited so it never thrashes.<br>No Docker, no web panel, no subscription.",
       image: "/images/mc-server-maintainer.webp",
@@ -320,33 +349,18 @@ export const projectsPageContent: ProjectPageContent = {
         "The complex exponential has a unique fixed point ϱ ≈ 0.318 + 1.337i, the solution of exp(z) = z in the strip 0 < Im z < π, and the geometry that unfolds once you take it seriously.",
     },
   ],
-  artifacts: [
+  threads: [
     {
-      title: "Wick & Séance",
-      subtitle: "two sides of the same coin.",
-      takeaway:
-        "wick is a corpusless corpus; séance reads a model's raw weights like one. two takes on the same heresy: cold weights, cold corpus; hot math, hot attention. and they raised each other.",
-      parts: [
-        {
-          name: "wick",
-          motion: "condense",
-          blurb:
-            "point it at a folder, ask, and back comes a focused packet of *your own* passages, each tagged with why it's there. one SQLite file, no embedding server, no GPU, no model download. it trains the semantic space on your corpus and runs heat-kernel diffusion over the document graph (math from the 1800s), so it reads structure flat embeddings miss, and it'll even tell you what's *missing*. ~1ms warm.",
-          status: "real and running, paused at “works, not yet right” while i chase the piece it's still missing",
-        },
-        {
-          name: "séance",
-          motion: "stream",
-          blurb:
-            "run any LLM straight off cold SSD. no GPU, no framework, zero weights in RAM. a 197KB rust binary memory-maps the weights and reads them one matmul at a time, so a 9B model (19GB on disk) runs in under 2MB of RAM, across 12 models and 10 architecture families. it's IO-bound today (~0.5–14 tok/s), but speed scales *linearly* with drive bandwidth: no diminishing returns, no cliff. a RAM runtime goes “fast → doesn't run” the moment a model outgrows memory; séance goes “fast → a bit slower.” push compute closer to storage and it laps the traditional runtimes.",
-          status: "proof of concept, ahead of its hardware. taught me more about how weights behave than anything i've read",
-        },
-      ],
-      duality:
-        "séance turns weights into a readable corpus, which is exactly the thing wick pretends to have. each one's question was the other's answer.",
-      noteLabel: "why even bother my human attention on this?",
-      note:
-        "catching it takes the same intuition a good player builds up in a live game: a new ability still runs on the same physics underneath it, and if you already know the mechanics, you can feel where it bends the system it landed in. when a result comes back and it doesn't sit right, that's the same muscle firing.\n\nif x works, i want to spend the confidence on something wilder than x actually earned. three steps at a time is comfortable, five is more fun, and five is only affordable because the real cost is the hour spent setting up the environment and deciding what's actually being tested, the model's own time barely counts. after that, sometimes it comes back wrong with a good reason attached, sometimes it just takes a few back-and-forths before the idea reshapes into what i actually meant.\n\nwick and séance are the two that kept reshaping long enough to earn names.",
+      motif: "i keep wandering into areas i don't know yet.",
+      line: "a framework i haven't touched, some system someone built like a cathedral. i take a piece home and play with it.",
+    },
+    {
+      motif: "i don't like math treated as rigid.",
+      line: "a system needs its rules to hold, but that's what makes it fun. the rules hold. so be loose everywhere else.",
+    },
+    {
+      motif: "i'm just a curious nerd with so many projects i ran out of disk space.",
+      line: "",
     },
   ],
 };

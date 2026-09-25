@@ -8,7 +8,7 @@ import { STATUS_LABEL, STATUS_IS_ACTIVE } from "../utils/projects";
 
 type Props = Project & { loading?: "eager" | "lazy"; variant?: "full" | "compact"; index?: number };
 
-const { title, description, image, month, year, url, github, status, loading = "lazy", variant = "full", index = 0 } = Astro.props;
+const { title, description, image, month, year, url, github, trackRelease = false, status, loading = "lazy", variant = "full", index = 0 } = Astro.props;
 const isCompact = variant === "compact";
 const isExternal = /^https?:\/\//.test(url);
 
@@ -103,6 +103,11 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
           · <svg class="w-3.5 h-3.5 inline" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> <span class="star-count"></span>
         </span>
       )}
+      {github && trackRelease && (
+        <span class="github-release opacity-60 tabular-nums shrink-0 whitespace-nowrap hidden" data-repo={github}>
+          · <span class="release-version"></span>
+        </span>
+      )}
     </div>
     <div class:list={["opacity-60 text-[length:var(--text-sm)]", { "[&>p]:line-clamp-2": isCompact }]}>
       <Fragment set:html={htmlDescription} />
@@ -165,6 +170,30 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
     }
   }
 
+  // GitHub's /releases/latest omits prereleases, so Neuron uses the published
+  // releases collection. Network failures are shown honestly, not silently hidden.
+  type ReleaseRecord = { tag: string; prerelease: boolean; ts: number };
+  var RELEASE_CACHE_KEY = 'github-release-cache-v1';
+  function readReleaseCache(): Record<string, ReleaseRecord> {
+    try {
+      var value = JSON.parse(localStorage.getItem(RELEASE_CACHE_KEY) || '{}');
+      return value && typeof value === 'object' ? value : {};
+    } catch { return {}; }
+  }
+  function setRelease(el: HTMLElement, record: ReleaseRecord) {
+    var label = el.querySelector('.release-version');
+    if (!label || !record.tag) return;
+    label.textContent = record.tag + (record.prerelease ? ' preview' : ' release');
+    el.title = 'Latest published ' + (record.prerelease ? 'preview ' : '') + 'release: ' + record.tag;
+    el.classList.remove('hidden');
+  }
+  function setReleaseStatus(el: HTMLElement, text: string, title: string) {
+    var label = el.querySelector('.release-version');
+    if (!label) return;
+    label.textContent = text;
+    el.title = title;
+    el.classList.remove('hidden');
+  }
   function bootProjectCards() {
     document.querySelectorAll<HTMLImageElement>('.project-rng').forEach(function (img) {
       var images = JSON.parse(img.getAttribute('data-images')!);
@@ -174,6 +203,50 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
     var inflight = new Map<string, Promise<any>>();
     var cache = readCache();
     var now = Date.now();
+
+    var releases = readReleaseCache();
+    var releaseInflight = new Map<string, Promise<ReleaseRecord | null>>();
+    document.querySelectorAll('.github-release').forEach(async function (el) {
+      if (!(el instanceof HTMLElement)) return;
+      var repo = el.getAttribute('data-repo');
+      if (!repo) return;
+      const repoName = repo;
+      var cached = releases[repo];
+      if (cached && typeof cached.tag === 'string' && typeof cached.ts === 'number' && now - cached.ts < CACHE_TTL_MS) {
+        setRelease(el, cached);
+        return;
+      }
+      try {
+        var request = releaseInflight.get(repo);
+        if (!request) {
+          request = fetch(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
+            headers: { Accept: 'application/vnd.github+json' },
+          }).then(async function (response): Promise<ReleaseRecord | null> {
+            if (!response.ok) throw new Error('GitHub release fetch failed');
+            var entries = await response.json();
+            if (!Array.isArray(entries)) return null;
+            var published = entries.filter(function (item) {
+              return item && item.draft !== true && typeof item.tag_name === 'string'
+                && item.tag_name.length > 0 && typeof item.published_at === 'string';
+            });
+            published.sort((a, b) => b.published_at.localeCompare(a.published_at));
+            var latest = published[0];
+            return latest ? { tag: latest.tag_name, prerelease: latest.prerelease === true, ts: Date.now() } : null;
+          }).finally(function () { releaseInflight.delete(repoName); });
+          releaseInflight.set(repo, request);
+        }
+        var result = await request;
+        if (result) {
+          releases[repo] = result;
+          try { localStorage.setItem(RELEASE_CACHE_KEY, JSON.stringify(releases)); } catch {}
+          setRelease(el, result);
+        } else {
+          setReleaseStatus(el, 'no release yet', 'No published GitHub releases');
+        }
+      } catch {
+        setReleaseStatus(el, 'release unavailable', 'GitHub release metadata is temporarily unavailable');
+      }
+    });
 
     document.querySelectorAll('.github-stars').forEach(async function (el) {
       if (!(el instanceof HTMLElement)) return;

@@ -2,14 +2,13 @@
 import Layout from "../layouts/Layout.astro";
 import { projectsPageContent } from "../config";
 import ProjectCard from "../components/ProjectCard.astro";
+import ScryerAccess from "../components/ScryerAccess.astro";
 import ConceptCard from "../components/ConceptCard.astro";
 import PublicationCard from "../components/PublicationCard.astro";
-import ArtifactCard from "../components/ArtifactCard.astro";
 import { getLoadingPriority } from "../utils/helpers";
 import { groupOf, resolveGates } from "../utils/projects";
 
 const publications = projectsPageContent.publications ?? [];
-const artifacts = projectsPageContent.artifacts ?? [];
 
 const allProjects = await resolveGates(projectsPageContent.projects);
 
@@ -20,11 +19,12 @@ const allProjects = await resolveGates(projectsPageContent.projects);
 const shippedProjects = allProjects.filter((p) => groupOf(p) === "shipped");
 const privateProjects = allProjects.filter((p) => groupOf(p) === "private");
 const conceptProjects = allProjects.filter((p) => groupOf(p) === "concept");
+const threads = projectsPageContent.threads ?? [];
 
-// the private tier reads as two unlabelled spatial clusters: the closed dev
-// instruments, then beta-stage products. split on status, the real line between
-// them, and let whitespace carry the distinction.
+// cluster the in-development lead, closed-dev instruments, and beta products;
+// whitespace carries the distinction without more section headings.
 const privateClusters = [
+  privateProjects.filter((p) => p.status === "in-development"),
   privateProjects.filter((p) => p.status === "closed-dev-alpha"),
   privateProjects.filter((p) => p.status === "private-beta"),
 ].filter((cluster) => cluster.length > 0);
@@ -65,37 +65,43 @@ const privateClusters = [
           </div>
         </section>
 
-        {artifacts.length > 0 && (
-          <section class="projects-artifacts" aria-labelledby="artifacts-heading">
-            <div class="section-header">
-              <h2 id="artifacts-heading" class="section-title">Artifacts</h2>
-              <p class="section-subtitle">built to the edge of an idea, then set down till the tea comes.</p>
-            </div>
-            <div class="artifacts-list">
-              {artifacts.map((artifact, index) => (
-                <ArtifactCard {...artifact} index={index} />
-              ))}
-            </div>
-          </section>
-        )}
-
         {privateProjects.length > 0 && (
           <section class="projects-private" aria-labelledby="private-heading">
             <div class="section-header">
-              <h2 id="private-heading" class="section-title">Behind the scenes</h2>
-              <p class="section-subtitle">working tools, not yet released.</p>
+              <h2 id="private-heading" class="section-title">In development</h2>
+              <p class="section-subtitle">taking shape; not released yet.</p>
             </div>
             <div class="private-tier">
               {privateClusters.map((cluster) => (
                 <div class="private-cluster group">
                   {cluster.map((project, index) => (
-                    <ProjectCard {...project} variant="compact" index={index} />
+                    <>
+                      <ProjectCard {...project} variant={project.slug === "lore" ? "full" : "compact"} index={index} />
+                      {project.slug === "alpha-math" && <ScryerAccess />}
+                    </>
                   ))}
                 </div>
               ))}
             </div>
           </section>
         )}
+        {threads.length > 0 && (
+          <section class="projects-threads" aria-labelledby="threads-heading">
+            <div class="section-header">
+              <h2 id="threads-heading" class="section-title">These</h2>
+              <p class="section-subtitle">three things i keep turning over.</p>
+            </div>
+            <ul class="threads-list">
+              {threads.map((thread) => (
+                <li class="thread">
+                  <span class="thread-motif">{thread.motif}</span>
+                  <span class="thread-line">{thread.line}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
       </div>
 
       {conceptProjects.length > 0 && (
@@ -132,7 +138,7 @@ const privateClusters = [
     gap: var(--space-xl);
   }
 
-  /* shipped cards then the behind-the-scenes tier, stacked with breathing room */
+  /* shipped work, then active development, then the threads that run through both */
   .projects-main {
     display: flex;
     flex-direction: column;
@@ -153,7 +159,7 @@ const privateClusters = [
     }
   }
 
-  /* quiet field-label header, shared by the behind-the-scenes and concepts tiers */
+  /* quiet field-label header, shared by in-development and concepts */
   .section-header {
     margin-bottom: var(--space-md);
     padding-bottom: var(--space-sm);
@@ -176,30 +182,73 @@ const privateClusters = [
     line-height: 1.45;
   }
 
-  /* behind-the-scenes: two clusters split only by whitespace. the larger gap sits
-     between sm (within a cluster) and xl (between tiers), so it reads as a subgroup,
-     not a new section. */
+  /* in-development clusters: whitespace separates the lead from research tools */
   .private-tier {
     display: flex;
     flex-direction: column;
     gap: var(--space-lg);
   }
 
-  /* auto-fit so a lone card (alpha-math) spans full width while a pair sits 2-up,
-     and the layout still adapts if either cluster grows */
+  /* auto-fit lets a lone development card span full width while pairs sit 2-up */
   .private-cluster {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
     gap: var(--space-sm);
   }
 
-  /* side quests + artifacts: stacked like the behind-the-scenes cards */
-  .publications-list,
-  .artifacts-list {
+  /* side quests: stacked like the behind-the-scenes cards */
+  .publications-list {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
   }
+
+  /* threads: quiet prose at the bottom of the page, not cards or labels. the
+     motif column is full sentences now, so the grid loosens to natural flow
+     and all-caps and letter-spacing come off. */
+  .threads-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .thread {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.15rem;
+    max-width: 44ch;
+  }
+
+  .thread-motif {
+    font-size: var(--text-sm);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    opacity: 0.72;
+    overflow-wrap: anywhere;
+  }
+
+  .thread-line {
+    font-size: var(--text-sm);
+    opacity: 0.5;
+    line-height: 1.55;
+    min-width: 0;
+  }
+
+  .thread:not(:has(.thread-line:empty)) .thread-motif {
+    margin-bottom: 0.1rem;
+  }
+
+  /* a thread with an empty line is a standalone sentence; it carries a bit
+     more weight so the last one doesn't feel like a dropped thought. */
+  .thread:has(.thread-line:empty) .thread-motif {
+    font-size: calc(var(--text-sm) * 1.05);
+    opacity: 0.75;
+  }
+
 
   /* concepts: a horizontal swipe rail on mobile (cards peek to invite the swipe),
      a vertical sticky sidebar on desktop. matches the action-bar scroll pattern. */
