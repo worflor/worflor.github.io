@@ -21,6 +21,7 @@ export type Identity = {
   logo: string;
   email: string;
   github: string;
+  x: string;
 };
 
 export type SEOInfo = {

@@ -32,6 +32,10 @@ if (image) {
   } catch {}
 }
 
+// a folder whose pictures are named for the time of day (day, dusk, night) is shown by the
+// visitor's local hour rather than at random: the same hours the lore doorstep keeps.
+const byHour = images !== null && images.every((src) => /\/(day|dusk|night)\.webp$/.test(src));
+
 // the behind-the-scenes tier stays dense: compact cards show only the opener
 // (the first beat, before the first <br>) so they don't tower over the page.
 const compactOpener = description.split(/<br\s*\/?>/i)[0].trim();
@@ -70,6 +74,7 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
           decoding="async"
           class="w-full h-auto rounded-[var(--radius-lg)] project-rng"
           data-images={JSON.stringify(images)}
+          data-by-hour={byHour ? "" : undefined}
         />
         <noscript><img width="1920" height="1080" src={images[0]} alt={title} class="w-full h-auto rounded-[var(--radius-lg)]" /></noscript>
       </>) : (
@@ -196,7 +201,14 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
   }
   function bootProjectCards() {
     document.querySelectorAll<HTMLImageElement>('.project-rng').forEach(function (img) {
-      var images = JSON.parse(img.getAttribute('data-images')!);
+      var images: string[] = JSON.parse(img.getAttribute('data-images')!);
+      if (img.hasAttribute('data-by-hour')) {
+        // asleep from eleven to seven, daylight from eight to six, dusk either side
+        var hour = new Date().getHours();
+        var part = hour >= 23 || hour < 7 ? 'night' : hour >= 8 && hour < 18 ? 'day' : 'dusk';
+        var chosen = images.find(function (src) { return src.endsWith('/' + part + '.webp'); });
+        if (chosen) { img.src = chosen; return; }
+      }
       img.src = images[Math.floor(Math.random() * images.length)];
     });
 

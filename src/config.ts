@@ -15,6 +15,7 @@ export const identity: Identity = {
   logo: "/images/logo.webp",
   email: "wofloemail@gmail.com",
   github: "https://github.com/worflor",
+  x: "https://x.com/altwof",
 };
 
 export const navBarLinks: NavBarLink[] = [
@@ -37,6 +38,12 @@ export const socialLinks: SocialLink[] = [
     title: "GitHub",
     url: identity.github,
     icon: "mdi:github",
+    external: true,
+  },
+  {
+    title: "X",
+    url: identity.x,
+    icon: "x:logo",
     external: true,
   },
   {
@@ -168,6 +175,12 @@ Oh, *knowledge*. <3`,
         external: true,
       },
       {
+        title: "X",
+        url: identity.x,
+        icon: "x:logo",
+        external: true,
+      },
+      {
         title: "LinkedIn",
         url: "https://www.linkedin.com/in/michael-bickford-0aa209211/",
         icon: "mdi:linkedin",
@@ -232,9 +245,11 @@ export const projectsPageContent: ProjectPageContent = {
     {
       title: "Lore",
       description:
-        "A private-first place to explore who you are, show someone what feels true, and build a mythology together. Keep your own story; choose what you share. Tarot, astrology, and interactive play are instruments.",
+        "A small world made of your cards.<br>A private-first place to explore who you are, show someone what feels true, and build a mythology together. Keep your own story; choose what you share. Tarot, astrology, and interactive play are instruments.<br>There's an owl. You can give it a card.",
       year: "2026",
       url: "/lore",
+      // day, dusk and night: the card shows the owl's step at the visitor's own hour, as /lore does
+      image: "/images/lore",
       slug: "lore",
       status: "in-development",
     },

@@ -74,8 +74,10 @@ const remainingConnectLinks = aboutPageContent.connect.links.slice(3);
           ))
         }
       </div>
+      {/* two across, and a lone last box takes the whole row, so an odd number of links
+          still ends on a full row rather than one box and a gap. */}
       {remainingConnectLinks.length > 0 && (
-        <div class="grid grid-cols-1 @xs:grid-cols-2 gap-[var(--space-xs)] group mt-[var(--space-xs)]">
+        <div class="grid grid-cols-1 @xs:grid-cols-2 gap-[var(--space-xs)] group mt-[var(--space-xs)] [&>*:last-child:nth-child(odd)]:@xs:col-span-2">
           {
             remainingConnectLinks.map((item) => (
               <SocialLink {...item} variant="box" />

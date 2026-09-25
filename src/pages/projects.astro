@@ -37,6 +37,22 @@ const privateClusters = [
 
     <div class:list={["projects-layout", { "projects-layout--has-concepts": conceptProjects.length > 0 }]}>
       <div class="projects-main">
+        {threads.length > 0 && (
+          <section class="projects-threads" aria-labelledby="threads-heading">
+            <div class="section-header">
+              <h2 id="threads-heading" class="section-title">Why</h2>
+              <p class="section-subtitle">three things i keep turning over.</p>
+            </div>
+            <ul class="threads-list">
+              {threads.map((thread) => (
+                <li class="thread">
+                  <span class="thread-motif">{thread.motif}</span>
+                  <span class="thread-line">{thread.line}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
         {publications.length > 0 && (
           <section class="projects-publications" aria-labelledby="sidequests-heading">
             <div class="section-header">
@@ -83,22 +99,6 @@ const privateClusters = [
                 </div>
               ))}
             </div>
-          </section>
-        )}
-        {threads.length > 0 && (
-          <section class="projects-threads" aria-labelledby="threads-heading">
-            <div class="section-header">
-              <h2 id="threads-heading" class="section-title">These</h2>
-              <p class="section-subtitle">three things i keep turning over.</p>
-            </div>
-            <ul class="threads-list">
-              {threads.map((thread) => (
-                <li class="thread">
-                  <span class="thread-motif">{thread.motif}</span>
-                  <span class="thread-line">{thread.line}</span>
-                </li>
-              ))}
-            </ul>
           </section>
         )}
 
