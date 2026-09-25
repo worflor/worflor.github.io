@@ -1,0 +1,46 @@
+---
+import LoreLayout from "../../layouts/LoreLayout.astro";
+
+// Lore's doorstep: the application's own surface, filling the page. It is served from beside
+// this page as a static build of Lore (`/lore/app/`), or from wherever PUBLIC_LORE_APP says
+// while it is being worked on - the Lore dev client, say, at http://localhost:5179/.
+// Its doors open the rest of the same app at the top of the window.
+const APP = import.meta.env.PUBLIC_LORE_APP ?? "/lore/app/index.html";
+const DOORSTEP = `${APP}#/doorstep`;
+
+const seo = {
+  title: "Lore / a small world made of your cards",
+  description:
+    "Draw a card, keep it, give it to a small owl. Lore is a place for your cards, the people you read them with, and the small world they make. In development.",
+  image: "/images/lore-og.png",
+};
+---
+
+<LoreLayout seo={seo}>
+  <iframe
+    class="lore-doorstep"
+    src={DOORSTEP}
+    title="Lore"
+    allow="web-share; clipboard-write"
+  ></iframe>
+  <noscript>
+    <p class="lore-quiet">Lore needs JavaScript to draw a card.</p>
+  </noscript>
+</LoreLayout>
+
+<style>
+  .lore-doorstep {
+    display: block;
+    width: 100%;
+    height: 100dvh;
+    border: 0;
+    background: #16110d;
+  }
+
+  .lore-quiet {
+    margin: 0;
+    padding: 24px 16px;
+    color: rgba(240, 230, 216, 0.6);
+    font: 14px/1.5 ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+</style>

@@ -1,6 +1,6 @@
 // woflo.dev Service Worker — zero dependencies, pure Web Standards
 // Bump this to bust all caches on deploy
-var CACHE = 'woflo-v2';
+var CACHE = 'woflo-v3';
 
 var SHELL = [
   '/offline',
@@ -43,6 +43,11 @@ sw.addEventListener('fetch', function (e) {
 
   // Skip cross-origin requests
   if (!req.url.startsWith(sw.location.origin)) return;
+
+  // Lore (/lore, /lore/app/) is an application with its own files and its own updates: left to
+  // the network, so a visitor never gets a stale scene or keeps every deck picture forever.
+  var path = new URL(req.url).pathname;
+  if (path === '/lore' || path.indexOf('/lore/') === 0) return;
 
   // Navigation (HTML pages) — network-first, fallback to cache, then offline page
   if (req.mode === 'navigate') {

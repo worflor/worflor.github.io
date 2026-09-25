@@ -1,0 +1,49 @@
+---
+// Standalone layout for the Lore subsite (/lore), the way NeuronLayout is for /neuron:
+// none of the portfolio's header, footer, ClientRouter or global.css, so the page is
+// Lore's own from edge to edge. What fills it is the application itself - its doorstep
+// surface, built as static files - rather than a picture of it, so everything a visitor
+// does there happens in Lore and stays in their own browser.
+import type { SEOInfo } from "../types/config";
+
+interface Props {
+  seo: SEOInfo;
+}
+
+const { seo } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#16110d" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{seo.title}</title>
+    <meta name="description" content={seo.description} />
+    <link rel="canonical" href={Astro.url.href} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={seo.title} />
+    <meta property="og:description" content={seo.description} />
+    {seo.image && <meta property="og:image" content={`${Astro.url.origin}${seo.image}`} />}
+    <meta property="og:url" content={Astro.url.href} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={seo.title} />
+    <meta name="twitter:description" content={seo.description} />
+    {seo.image && <meta name="twitter:image" content={`${Astro.url.origin}${seo.image}`} />}
+    <style is:global>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #16110d;
+      }
+    </style>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>
