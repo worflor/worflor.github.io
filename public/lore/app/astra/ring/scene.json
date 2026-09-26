@@ -1,0 +1,149 @@
+{
+  "width": 180,
+  "height": 111,
+  "layers": [
+    {
+      "name": "far",
+      "depth": 0.9,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "over",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": true
+    }
+  ],
+  "spots": {
+    "ring": {
+      "x": 94.0,
+      "y": 95.0
+    },
+    "ringedge": {
+      "x": 136.0,
+      "y": 95.0
+    },
+    "seat": {
+      "x": 22.0,
+      "y": 82.0
+    },
+    "stump": {
+      "x": 158.0,
+      "y": 85.8
+    }
+  },
+  "sprites": [],
+  "anchors": {
+    "ground": 93.0
+  },
+  "lights": [],
+  "smoke": [],
+  "live": [
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 135.5,
+      "y": 92.0,
+      "bottom": 96.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 127.5,
+      "y": 94.0,
+      "bottom": 98.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 113.5,
+      "y": 94.0,
+      "bottom": 99.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 95.5,
+      "y": 95.0,
+      "bottom": 100.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 77.5,
+      "y": 95.0,
+      "bottom": 100.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 62.5,
+      "y": 93.0,
+      "bottom": 98.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 53.5,
+      "y": 92.0,
+      "bottom": 96.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 53.5,
+      "y": 91.0,
+      "bottom": 94.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 61.5,
+      "y": 89.0,
+      "bottom": 92.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 75.5,
+      "y": 89.0,
+      "bottom": 91.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 93.5,
+      "y": 87.0,
+      "bottom": 90.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 111.5,
+      "y": 88.0,
+      "bottom": 90.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 126.5,
+      "y": 89.0,
+      "bottom": 92.0
+    },
+    {
+      "kind": "toadstool",
+      "depth": 1.0,
+      "x": 135.5,
+      "y": 90.0,
+      "bottom": 94.0
+    }
+  ],
+  "loops": false
+}

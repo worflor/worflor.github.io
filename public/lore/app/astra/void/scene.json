@@ -1,0 +1,42 @@
+{
+  "width": 180,
+  "height": 111,
+  "layers": [
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {
+    "candle": {
+      "x": 108.5,
+      "y": 70.0
+    },
+    "stand": {
+      "x": 72.0,
+      "y": 93.0
+    },
+    "row": {
+      "x": 90.0,
+      "y": 93.0
+    }
+  },
+  "sprites": [],
+  "anchors": {
+    "ground": 93.0
+  },
+  "lights": [
+    {
+      "x": 108.5,
+      "y": 70.0,
+      "radius": 10,
+      "depth": 1.0,
+      "flicker": true
+    }
+  ],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

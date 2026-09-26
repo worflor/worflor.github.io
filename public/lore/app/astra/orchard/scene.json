@@ -1,0 +1,185 @@
+{
+  "width": 400,
+  "height": 112,
+  "layers": [
+    {
+      "name": "distant",
+      "depth": 0.05,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "far",
+      "depth": 0.25,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "farleafy",
+      "depth": 0.25,
+      "drift": 0.0,
+      "over": false,
+      "months": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "name": "farturning",
+      "depth": 0.25,
+      "drift": 0.0,
+      "over": false,
+      "months": [
+        10
+      ]
+    },
+    {
+      "name": "farbare",
+      "depth": 0.25,
+      "drift": 0.0,
+      "over": false,
+      "months": [
+        0,
+        1,
+        11
+      ]
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "blossom",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false,
+      "months": [
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "name": "green",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false,
+      "months": [
+        5,
+        6
+      ]
+    },
+    {
+      "name": "fruit",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false,
+      "months": [
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "name": "turning",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false,
+      "months": [
+        10
+      ]
+    },
+    {
+      "name": "bare",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false,
+      "months": [
+        0,
+        1,
+        11
+      ]
+    }
+  ],
+  "spots": {},
+  "sprites": [],
+  "anchors": {
+    "ground": 93.9
+  },
+  "lights": [],
+  "smoke": [],
+  "live": [
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 25.4,
+      "y": 71.9,
+      "bottom": 92.2
+    },
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 64.4,
+      "y": 71.9,
+      "bottom": 92.2
+    },
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 112.6,
+      "y": 71.9,
+      "bottom": 92.2
+    },
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 151.6,
+      "y": 71.9,
+      "bottom": 92.2
+    },
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 199.7,
+      "y": 71.9,
+      "bottom": 92.2
+    },
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 247.9,
+      "y": 71.9,
+      "bottom": 92.2
+    },
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 286.9,
+      "y": 71.9,
+      "bottom": 92.2
+    },
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 335.0,
+      "y": 71.9,
+      "bottom": 92.2
+    },
+    {
+      "kind": "apple",
+      "depth": 1.0,
+      "x": 374.1,
+      "y": 71.9,
+      "bottom": 92.2
+    }
+  ],
+  "loops": true
+}

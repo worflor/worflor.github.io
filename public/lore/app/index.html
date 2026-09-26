@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#16110d" />
+    <title>Lore · a pre-alpha toy</title>
+    <script>
+      // The theme, before anything paints. The saved choice wins; otherwise
+      // the device's own setting, followed live while nothing is saved. The
+      // stylesheet reads `data-theme`, and state/theme.ts writes the same
+      // attribute when the choice changes in Settings. The three grounds are
+      // repeated here only because the stylesheet has not arrived yet.
+      (function () {
+        var grounds = { light: '#f2ece3', dark: '#16110d', black: '#000000' };
+        var light = matchMedia('(prefers-color-scheme: light)');
+        function saved() {
+          try {
+            var held = localStorage.getItem('lore-theme');
+            return held === 'light' || held === 'dark' || held === 'black' ? held : null;
+          } catch (error) {
+            return null;
+          }
+        }
+        function paint() {
+          var theme = saved() || (light.matches ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', grounds[theme]);
+        }
+        paint();
+        light.addEventListener('change', function () {
+          if (saved() === null) paint();
+        });
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/toy-CPR-9fcK.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/toy-BJegIQK1.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

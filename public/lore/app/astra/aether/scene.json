@@ -1,0 +1,82 @@
+{
+  "width": 400,
+  "height": 112,
+  "layers": [
+    {
+      "name": "distant",
+      "depth": 0.05,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "far",
+      "depth": 0.08,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "mid",
+      "depth": 0.4,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "front",
+      "depth": 1.25,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {},
+  "sprites": [],
+  "anchors": {
+    "ground": 93.9
+  },
+  "lights": [
+    {
+      "x": 92.0,
+      "y": 83.4,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 236.0,
+      "y": 83.4,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 362.0,
+      "y": 83.4,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    }
+  ],
+  "smoke": [],
+  "live": [
+    {
+      "kind": "axis",
+      "depth": 0.08,
+      "x": 227.0,
+      "y": 8.4,
+      "top": 0.5,
+      "bottom": 50.2
+    },
+    {
+      "kind": "numerals",
+      "depth": 0.3,
+      "top": 23.2,
+      "bottom": 64.5
+    }
+  ],
+  "loops": true
+}

@@ -1,0 +1,51 @@
+{
+  "width": 400,
+  "height": 112,
+  "layers": [
+    {
+      "name": "far",
+      "depth": 0.15,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "mid",
+      "depth": 0.5,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {},
+  "sprites": [
+    {
+      "name": "armchair",
+      "width": 16,
+      "height": 15,
+      "dx": -8,
+      "dy": -14,
+      "x": 200.0,
+      "y": 93.2
+    }
+  ],
+  "anchors": {
+    "ground": 93.9
+  },
+  "lights": [
+    {
+      "x": 315.2,
+      "y": 77.1,
+      "radius": 6,
+      "depth": 0.5,
+      "flicker": false
+    }
+  ],
+  "smoke": [],
+  "live": [],
+  "loops": true
+}

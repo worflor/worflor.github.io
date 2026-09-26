@@ -1,0 +1,288 @@
+{
+  "width": 150,
+  "height": 93,
+  "layers": [
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "over",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": true
+    }
+  ],
+  "spots": {
+    "stage": {
+      "x": 24.0,
+      "y": 66.0
+    },
+    "left": {
+      "x": 24.0,
+      "y": 76.1
+    },
+    "right": {
+      "x": 126.0,
+      "y": 76.1
+    },
+    "performer": {
+      "x": 93.5,
+      "y": 66.0
+    },
+    "perch": {
+      "x": 75.5,
+      "y": 14.0
+    },
+    "chain": {
+      "x": 75.5,
+      "y": 5.0
+    },
+    "ring": {
+      "x": 75.5,
+      "y": 28.5
+    },
+    "ringedge": {
+      "x": 91.5,
+      "y": 28.5
+    },
+    "spoutl": {
+      "x": 28.5,
+      "y": 57.0
+    },
+    "spoutr": {
+      "x": 121.5,
+      "y": 57.0
+    },
+    "sea": {
+      "x": 21.0,
+      "y": 40.0
+    },
+    "foot": {
+      "x": 129.0,
+      "y": 55.9
+    }
+  },
+  "sprites": [
+    {
+      "name": "curtainl",
+      "width": 15,
+      "height": 65,
+      "dx": 0,
+      "dy": 0,
+      "x": 9.0,
+      "y": 11.0
+    },
+    {
+      "name": "curtainr",
+      "width": 15,
+      "height": 65,
+      "dx": -15,
+      "dy": 0,
+      "x": 141.0,
+      "y": 11.0
+    },
+    {
+      "name": "chandelier",
+      "width": 13,
+      "height": 8,
+      "dx": -7,
+      "dy": -2,
+      "x": 75.5,
+      "y": 14.0
+    },
+    {
+      "name": "singer",
+      "width": 9,
+      "height": 20,
+      "dx": -5,
+      "dy": -19,
+      "x": 93.5,
+      "y": 66.0
+    },
+    {
+      "name": "singerup",
+      "width": 9,
+      "height": 20,
+      "dx": -5,
+      "dy": -19,
+      "x": 93.5,
+      "y": 66.0
+    },
+    {
+      "name": "head",
+      "width": 8,
+      "height": 8,
+      "dx": -4,
+      "dy": -2,
+      "x": 75.0,
+      "y": 60.0
+    },
+    {
+      "name": "headbig",
+      "width": 10,
+      "height": 11,
+      "dx": -5,
+      "dy": -3,
+      "x": 75.0,
+      "y": 60.0
+    }
+  ],
+  "anchors": {
+    "ground": 78.0
+  },
+  "lights": [
+    {
+      "x": 12.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 18.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 24.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 30.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 36.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 42.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 48.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 54.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 60.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 66.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 72.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 78.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 84.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 90.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 96.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 102.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 108.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 114.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 120.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 126.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 132.5,
+      "y": 71.5,
+      "radius": 4,
+      "depth": 1.0,
+      "flicker": true
+    }
+  ],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

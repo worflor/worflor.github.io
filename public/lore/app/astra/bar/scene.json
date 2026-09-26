@@ -1,0 +1,56 @@
+{
+  "width": 120,
+  "height": 74,
+  "layers": [
+    {
+      "name": "back",
+      "depth": 0.8,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {
+    "stoola": {
+      "x": 21.6,
+      "y": 50.9
+    },
+    "stoolb": {
+      "x": 45.6,
+      "y": 50.9
+    },
+    "stoolc": {
+      "x": 69.6,
+      "y": 50.9
+    },
+    "stoold": {
+      "x": 96.0,
+      "y": 50.9
+    },
+    "counter": {
+      "x": 60.0,
+      "y": 42.4
+    },
+    "mirror": {
+      "x": 7.2,
+      "y": 17.8
+    },
+    "right": {
+      "x": 112.8,
+      "y": 17.8
+    }
+  },
+  "sprites": [],
+  "anchors": {
+    "ground": 62.0
+  },
+  "lights": [],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

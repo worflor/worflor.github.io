@@ -1,0 +1,73 @@
+{
+  "width": 140,
+  "height": 111,
+  "layers": [
+    {
+      "name": "far",
+      "depth": 0.9,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "mid",
+      "depth": 0.95,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {
+    "hearth": {
+      "x": 26.9,
+      "y": 67.9
+    },
+    "bellows": {
+      "x": 48.2,
+      "y": 74.8
+    },
+    "anvil": {
+      "x": 100.2,
+      "y": 81.4
+    },
+    "trough": {
+      "x": 126.3,
+      "y": 88.2
+    },
+    "stand": {
+      "x": 74.0,
+      "y": 93.0
+    }
+  },
+  "sprites": [
+    {
+      "name": "bellows",
+      "width": 17,
+      "height": 10,
+      "dx": -5,
+      "dy": -5,
+      "x": 48.2,
+      "y": 74.8
+    },
+    {
+      "name": "bellowsshut",
+      "width": 17,
+      "height": 4,
+      "dx": -5,
+      "dy": -2,
+      "x": 48.2,
+      "y": 74.8
+    }
+  ],
+  "anchors": {
+    "ground": 93.0
+  },
+  "lights": [],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

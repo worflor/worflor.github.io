@@ -1,0 +1,58 @@
+{
+  "width": 120,
+  "height": 74,
+  "layers": [
+    {
+      "name": "back",
+      "depth": 0.9,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "over",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": true
+    }
+  ],
+  "spots": {
+    "head": {
+      "x": 19.0,
+      "y": 60.9
+    },
+    "foot": {
+      "x": 77.0,
+      "y": 60.9
+    },
+    "mattress": {
+      "x": 19.0,
+      "y": 53.0
+    },
+    "window": {
+      "x": 74.0,
+      "y": 18.0
+    },
+    "windowend": {
+      "x": 92.0,
+      "y": 36.0
+    },
+    "table": {
+      "x": 8.0,
+      "y": 57.5
+    }
+  },
+  "sprites": [],
+  "anchors": {
+    "ground": 62.0
+  },
+  "lights": [],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

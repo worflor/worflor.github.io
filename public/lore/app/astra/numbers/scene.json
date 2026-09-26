@@ -1,0 +1,130 @@
+{
+  "width": 400,
+  "height": 112,
+  "layers": [
+    {
+      "name": "distant",
+      "depth": 0.05,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "far",
+      "depth": 0.2,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "mid",
+      "depth": 0.45,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "front",
+      "depth": 1.25,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {},
+  "sprites": [],
+  "anchors": {
+    "ground": 93.9
+  },
+  "lights": [
+    {
+      "x": 214.5,
+      "y": 36.7,
+      "radius": 2,
+      "depth": 0.2,
+      "flicker": true
+    },
+    {
+      "x": 222.5,
+      "y": 35.8,
+      "radius": 2,
+      "depth": 0.2,
+      "flicker": true
+    },
+    {
+      "x": 235.7,
+      "y": 38.3,
+      "radius": 2,
+      "depth": 0.2,
+      "flicker": true
+    },
+    {
+      "x": 249.0,
+      "y": 41.8,
+      "radius": 2,
+      "depth": 0.2,
+      "flicker": true
+    },
+    {
+      "x": 257.3,
+      "y": 39.3,
+      "radius": 2,
+      "depth": 0.2,
+      "flicker": true
+    },
+    {
+      "x": 92.0,
+      "y": 77.5,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 128.0,
+      "y": 76.2,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 164.0,
+      "y": 78.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 200.0,
+      "y": 76.8,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 236.0,
+      "y": 75.5,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 272.0,
+      "y": 77.4,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 308.0,
+      "y": 76.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    }
+  ],
+  "smoke": [],
+  "live": [],
+  "loops": true
+}

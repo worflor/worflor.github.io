@@ -1,0 +1,82 @@
+{
+  "width": 124,
+  "height": 76,
+  "layers": [
+    {
+      "name": "back",
+      "depth": 0.9,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "over",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": true
+    }
+  ],
+  "spots": {
+    "mine": {
+      "x": 50.0,
+      "y": 64.0
+    },
+    "theirs": {
+      "x": 84.0,
+      "y": 64.0
+    },
+    "desk": {
+      "x": 50.0,
+      "y": 53.4
+    },
+    "seat": {
+      "x": 50.0,
+      "y": 56.7
+    },
+    "cooler": {
+      "x": 112.0,
+      "y": 55.8
+    },
+    "printer": {
+      "x": 25.0,
+      "y": 55.8
+    },
+    "plant": {
+      "x": 119.0,
+      "y": 64.0
+    },
+    "window": {
+      "x": 6.0,
+      "y": 16.0
+    },
+    "windowend": {
+      "x": 26.0,
+      "y": 16.0
+    },
+    "clock": {
+      "x": 67.0,
+      "y": 22.0
+    },
+    "tubea": {
+      "x": 27.0,
+      "y": 53.9
+    },
+    "tubeb": {
+      "x": 74.0,
+      "y": 53.9
+    }
+  },
+  "sprites": [],
+  "anchors": {
+    "ground": 64.0
+  },
+  "lights": [],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

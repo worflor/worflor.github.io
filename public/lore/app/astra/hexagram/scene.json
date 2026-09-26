@@ -1,0 +1,116 @@
+{
+  "width": 400,
+  "height": 112,
+  "layers": [
+    {
+      "name": "distant",
+      "depth": 0.05,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "far",
+      "depth": 0.25,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "mid",
+      "depth": 0.5,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "front",
+      "depth": 1.25,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {},
+  "sprites": [],
+  "anchors": {
+    "ground": 93.9
+  },
+  "lights": [
+    {
+      "x": 273.8,
+      "y": 55.2,
+      "radius": 3,
+      "depth": 0.25,
+      "flicker": true
+    },
+    {
+      "x": 168.9,
+      "y": 48.8,
+      "radius": 3,
+      "depth": 0.25,
+      "flicker": true
+    },
+    {
+      "x": 260.3,
+      "y": 42.3,
+      "radius": 3,
+      "depth": 0.25,
+      "flicker": true
+    },
+    {
+      "x": 182.4,
+      "y": 35.9,
+      "radius": 3,
+      "depth": 0.25,
+      "flicker": true
+    },
+    {
+      "x": 246.8,
+      "y": 29.5,
+      "radius": 3,
+      "depth": 0.25,
+      "flicker": true
+    },
+    {
+      "x": 195.9,
+      "y": 23.1,
+      "radius": 3,
+      "depth": 0.25,
+      "flicker": true
+    },
+    {
+      "x": 65.0,
+      "y": 83.7,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 173.0,
+      "y": 83.7,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 281.0,
+      "y": 83.7,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    },
+    {
+      "x": 380.0,
+      "y": 83.7,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": true
+    }
+  ],
+  "smoke": [],
+  "live": [],
+  "loops": true
+}

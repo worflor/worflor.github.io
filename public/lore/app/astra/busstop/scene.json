@@ -1,0 +1,92 @@
+{
+  "width": 140,
+  "height": 86,
+  "layers": [
+    {
+      "name": "far",
+      "depth": 0.5,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {
+    "from": {
+      "x": 36.0,
+      "y": 70.9
+    },
+    "to": {
+      "x": 84.0,
+      "y": 70.9
+    },
+    "seat": {
+      "x": 60.0,
+      "y": 63.3
+    },
+    "roof": {
+      "x": 60.0,
+      "y": 37.2
+    },
+    "pole": {
+      "x": 101.0,
+      "y": 71.3
+    },
+    "lamp": {
+      "x": 18.9,
+      "y": 33.2
+    },
+    "advert": {
+      "x": 72.3,
+      "y": 47.3
+    },
+    "road": {
+      "x": 70.0,
+      "y": 80.1
+    }
+  },
+  "sprites": [
+    {
+      "name": "bus",
+      "width": 58,
+      "height": 25,
+      "dx": 0,
+      "dy": -24,
+      "x": 40.7,
+      "y": 80.1
+    }
+  ],
+  "anchors": {
+    "ground": 72.0
+  },
+  "lights": [
+    {
+      "x": 7.5,
+      "y": 48.4,
+      "radius": 4,
+      "depth": 0.5,
+      "flicker": false
+    },
+    {
+      "x": 63.3,
+      "y": 48.4,
+      "radius": 4,
+      "depth": 0.5,
+      "flicker": false
+    },
+    {
+      "x": 91.2,
+      "y": 48.4,
+      "radius": 4,
+      "depth": 0.5,
+      "flicker": false
+    }
+  ],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

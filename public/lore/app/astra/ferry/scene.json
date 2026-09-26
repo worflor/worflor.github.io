@@ -1,0 +1,106 @@
+{
+  "width": 180,
+  "height": 111,
+  "layers": [
+    {
+      "name": "boat",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false,
+      "rock": [
+        1,
+        0.9
+      ]
+    },
+    {
+      "name": "rail",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": true,
+      "rock": [
+        1,
+        0.9
+      ]
+    }
+  ],
+  "spots": {
+    "deck": {
+      "x": 0.0,
+      "y": 93.0
+    },
+    "rail": {
+      "x": 79.0,
+      "y": 93.0
+    },
+    "bench": {
+      "x": 43.0,
+      "y": 88.0
+    },
+    "lantern": {
+      "x": 126.0,
+      "y": 65.0
+    },
+    "ferryman": {
+      "x": 155.5,
+      "y": 79.0
+    }
+  },
+  "sprites": [],
+  "anchors": {
+    "ground": 93.0
+  },
+  "lights": [
+    {
+      "x": 12.5,
+      "y": 101.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 38.5,
+      "y": 101.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 64.5,
+      "y": 101.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 90.5,
+      "y": 101.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 116.5,
+      "y": 101.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 142.5,
+      "y": 101.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 168.5,
+      "y": 101.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    }
+  ],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

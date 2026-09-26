@@ -1,0 +1,114 @@
+{
+  "width": 180,
+  "height": 111,
+  "layers": [
+    {
+      "name": "far",
+      "depth": 0.9,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "mid",
+      "depth": 0.95,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "over",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": true
+    }
+  ],
+  "spots": {
+    "blanket": {
+      "x": 68.0,
+      "y": 91.0
+    },
+    "telescope": {
+      "x": 122.0,
+      "y": 93.0
+    },
+    "pivot": {
+      "x": 122.0,
+      "y": 86.2
+    },
+    "left": {
+      "x": 0.0,
+      "y": 96.0
+    },
+    "right": {
+      "x": 180.0,
+      "y": 102.0
+    },
+    "mast": {
+      "x": 44.0,
+      "y": 51.0
+    }
+  },
+  "sprites": [
+    {
+      "name": "tube",
+      "width": 11,
+      "height": 8,
+      "dx": -4,
+      "dy": -5,
+      "x": 122.0,
+      "y": 86.2
+    },
+    {
+      "name": "tubemid",
+      "width": 10,
+      "height": 11,
+      "dx": -4,
+      "dy": -7,
+      "x": 122.0,
+      "y": 86.2
+    },
+    {
+      "name": "tubeup",
+      "width": 8,
+      "height": 12,
+      "dx": -3,
+      "dy": -8,
+      "x": 122.0,
+      "y": 86.2
+    }
+  ],
+  "anchors": {
+    "ground": 93.0
+  },
+  "lights": [
+    {
+      "x": 21.0,
+      "y": 59.8,
+      "radius": 4,
+      "depth": 0.9,
+      "flicker": false
+    },
+    {
+      "x": 119.0,
+      "y": 61.0,
+      "radius": 4,
+      "depth": 0.9,
+      "flicker": false
+    },
+    {
+      "x": 139.0,
+      "y": 60.3,
+      "radius": 4,
+      "depth": 0.9,
+      "flicker": false
+    }
+  ],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

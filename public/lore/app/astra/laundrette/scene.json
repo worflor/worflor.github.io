@@ -1,0 +1,68 @@
+{
+  "width": 124,
+  "height": 76,
+  "layers": [
+    {
+      "name": "back",
+      "depth": 0.9,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {
+    "washera": {
+      "x": 3.0,
+      "y": 58.0
+    },
+    "washerb": {
+      "x": 21.0,
+      "y": 58.0
+    },
+    "washerc": {
+      "x": 39.0,
+      "y": 58.0
+    },
+    "washerd": {
+      "x": 57.0,
+      "y": 58.0
+    },
+    "washere": {
+      "x": 75.0,
+      "y": 58.0
+    },
+    "bench": {
+      "x": 52.0,
+      "y": 60.0
+    },
+    "table": {
+      "x": 112.0,
+      "y": 61.4
+    },
+    "door": {
+      "x": 102.0,
+      "y": 20.0
+    },
+    "tubea": {
+      "x": 19.0,
+      "y": 53.9
+    },
+    "tubeb": {
+      "x": 68.0,
+      "y": 53.9
+    }
+  },
+  "sprites": [],
+  "anchors": {
+    "ground": 64.0
+  },
+  "lights": [],
+  "smoke": [],
+  "live": [],
+  "loops": false
+}

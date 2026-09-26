@@ -1,0 +1,89 @@
+{
+  "width": 180,
+  "height": 111,
+  "layers": [
+    {
+      "name": "distant",
+      "depth": 0.85,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "far",
+      "depth": 0.9,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {
+    "stand": {
+      "x": 72.0,
+      "y": 83.0
+    },
+    "left": {
+      "x": 0.0,
+      "y": 91.0
+    },
+    "right": {
+      "x": 180.0,
+      "y": 91.0
+    },
+    "stake": {
+      "x": 112.5,
+      "y": 77.8
+    },
+    "stakefar": {
+      "x": 47.5,
+      "y": 81.2
+    },
+    "kite": {
+      "x": 130.0,
+      "y": 16.0
+    },
+    "kitefar": {
+      "x": 60.0,
+      "y": 26.0
+    }
+  },
+  "sprites": [
+    {
+      "name": "kite",
+      "width": 6,
+      "height": 6,
+      "dx": -3,
+      "dy": -3,
+      "x": 130.0,
+      "y": 16.0
+    },
+    {
+      "name": "kitefar",
+      "width": 4,
+      "height": 4,
+      "dx": -2,
+      "dy": -2,
+      "x": 60.0,
+      "y": 26.0
+    }
+  ],
+  "anchors": {
+    "ground": 93.0
+  },
+  "lights": [],
+  "smoke": [],
+  "live": [
+    {
+      "kind": "falls",
+      "depth": 0.85,
+      "x": 26.8,
+      "y": 38.4,
+      "bottom": 60.4
+    }
+  ],
+  "loops": false
+}

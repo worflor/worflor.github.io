@@ -1,0 +1,136 @@
+{
+  "width": 400,
+  "height": 112,
+  "layers": [
+    {
+      "name": "distant",
+      "depth": 0.05,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "far",
+      "depth": 0.22,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "mid",
+      "depth": 0.5,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "near",
+      "depth": 1.0,
+      "drift": 0.0,
+      "over": false
+    },
+    {
+      "name": "front",
+      "depth": 1.25,
+      "drift": 0.0,
+      "over": false
+    }
+  ],
+  "spots": {},
+  "sprites": [],
+  "anchors": {
+    "ground": 93.9
+  },
+  "lights": [
+    {
+      "x": 206.3,
+      "y": 81.6,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 229.7,
+      "y": 81.6,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 206.3,
+      "y": 67.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 229.7,
+      "y": 67.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 218.0,
+      "y": 67.1,
+      "radius": 5,
+      "depth": 1.0,
+      "flicker": false
+    },
+    {
+      "x": 63.7,
+      "y": 39.9,
+      "radius": 2,
+      "depth": 0.22,
+      "flicker": false
+    },
+    {
+      "x": 79.4,
+      "y": 43.5,
+      "radius": 2,
+      "depth": 0.22,
+      "flicker": false
+    },
+    {
+      "x": 95.1,
+      "y": 42.8,
+      "radius": 2,
+      "depth": 0.22,
+      "flicker": false
+    },
+    {
+      "x": 279.6,
+      "y": 44.3,
+      "radius": 2,
+      "depth": 0.22,
+      "flicker": false
+    },
+    {
+      "x": 295.4,
+      "y": 43.5,
+      "radius": 2,
+      "depth": 0.22,
+      "flicker": false
+    },
+    {
+      "x": 311.2,
+      "y": 40.0,
+      "radius": 2,
+      "depth": 0.22,
+      "flicker": false
+    },
+    {
+      "x": 326.9,
+      "y": 44.8,
+      "radius": 2,
+      "depth": 0.22,
+      "flicker": false
+    }
+  ],
+  "smoke": [
+    {
+      "x": 230.6,
+      "y": 38.2,
+      "depth": 1.0
+    }
+  ],
+  "live": [],
+  "loops": true
+}
