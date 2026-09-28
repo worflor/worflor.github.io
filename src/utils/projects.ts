@@ -17,6 +17,7 @@ import { repoIsPublic } from "./release";
 
 export const STATUS_LABEL: Record<ProjectStatus, string> = {
   "in-development": "in development",
+  "active-research": "active research",
   "private-beta": "private beta",
   "closed-dev-alpha": "closed dev alpha",
   "coming-soon": "coming soon",
@@ -29,6 +30,7 @@ export const STATUS_LABEL: Record<ProjectStatus, string> = {
 // a card without a dot is making a quieter claim on purpose.
 export const STATUS_IS_ACTIVE: Record<ProjectStatus, boolean> = {
   "in-development": true,
+  "active-research": true,
   "private-beta": true,
   "closed-dev-alpha": true,
   "coming-soon": true,
@@ -43,6 +45,7 @@ export const STATUS_IS_ACTIVE: Record<ProjectStatus, boolean> = {
 // concepts rail because nobody is currently at the wheel.
 export const DEFAULT_GROUP: Record<ProjectStatus, "shipped" | "private" | "concept"> = {
   "in-development": "private",
+  "active-research": "private",
   "private-beta": "private",
   "closed-dev-alpha": "private",
   "coming-soon": "shipped",

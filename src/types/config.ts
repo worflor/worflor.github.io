@@ -95,6 +95,7 @@ export type AboutPageContent = {
 // idea and set down, which is a different claim from never having started.
 export type ProjectStatus =
   | "in-development"
+  | "active-research"
   | "private-beta"
   | "concept"
   | "closed-dev-alpha"

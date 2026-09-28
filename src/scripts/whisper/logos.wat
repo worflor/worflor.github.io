@@ -633,7 +633,7 @@
     ;; g_engPred = AR(2) Cramer fitted prediction for current byte (0-255).
     ;; K,G fitted from 5 running dot products (no decay); updated per byte after encoding/decoding.
     ;; same table shape as O2: 256×255 cells (engPred × bit tree ctx).
-    ;; alpha-math proof: the AR(2) oscillator (coefficient × state) is ℂ — fromBilinear recovers
+    ;; Scryer proof: the AR(2) oscillator (coefficient × state) is ℂ — fromBilinear recovers
     ;; commutative+associative, defect 0. this same complex oscillator is the shared heartbeat of
     ;; the Harmonic codec (Burg eigenvalues) and the Glyph codec (complex z=x+iy): one engine, three
     ;; rungs of the Hurwitz tower (ℂ here; the 4-dim associative rung ℍ at the wedge; Im𝕆 at Glyph).
@@ -706,8 +706,8 @@
       (f64.add (local.get $vC0) (f64.const 0.25))
       (f64.add (local.get $vT) (f64.const 0.5))))
 
-    ;; ═══ alpha-math proof: the whole blend is associative ═══
-    ;; every operation here is real arithmetic or a Cl(3) bivector (the wedge), and alpha-math
+    ;; ═══ Scryer proof: the whole blend is associative ═══
+    ;; every operation here is real arithmetic or a Cl(3) bivector (the wedge), and Scryer
     ;; certifies all of ℝ, ℂ, ℍ, Cl(3) associative (associator defect 0, exact). associator-free
     ;; means the blend interferes pairwise, never triadically: the codec is the exact associative
     ;; shadow of octonionic attention, and the triadic core (𝕆, a 7-dimensional associator) is a
@@ -723,7 +723,7 @@
     ;; sweep-derived over natural constants (ln2..φ grid).
     ;; branchless clamp via select: min(trunc_sat(total), 4095)
     ;;
-    ;; alpha-math proof: the old "octonionic associator proxy" popcount((p1^p2)^(p2^p3)) was
+    ;; Scryer proof: the old "octonionic associator proxy" popcount((p1^p2)^(p2^p3)) was
     ;; vacuous. bytes under XOR are commutative and associative ((Z/2)^8; exact decision procedure,
     ;; no witness), so that expression is bit-identical to popcount(p1⊕p3), a lag-2 bit-distance
     ;; carrying zero associator (the genuine associator lives only at 𝕆). ctxConsist computes p1⊕p3
@@ -737,7 +737,7 @@
     ;; the aux axis is gated by × wedge: suppressed when the base pair agrees (aux is then
     ;; redundant), kept when they disagree. true decorrelation. the sign flip (from the old
     ;; ×(1−wedge), suppress-on-disagreement) was worth ~0.15% on the stable corpus.
-    ;; alpha-math proof: these 3 wedges are exactly the bivector basis of Cl(3) ≅ M₂. Cl(3) is
+    ;; Scryer proof: these 3 wedges are exactly the bivector basis of Cl(3) ≅ M₂. Cl(3) is
     ;; associative, its even subalgebra is ℍ, and its first polynomial identity is the standard
     ;; identity s₄ at degree 4 (codim 2,6,23 vs free 2,6,24). so pairwise decorrelation is the
     ;; complete non-vacuous antisymmetric structure here, and a degree-4 (s₄) antisymmetric term
@@ -855,11 +855,11 @@
     ;; correlated axes naturally damped — double-counting costs quadratically.
     ;; replaces linear/logit mixing which assume independent sources.
     ;; f64.sqrt is a native WASM op (~1 cycle), no LUT needed.
-    ;; alpha-math proof: the amplitudes √p are real, the ℝ/ℂ rung of the normed division algebra
+    ;; Scryer proof: the amplitudes √p are real, the ℝ/ℂ rung of the normed division algebra
     ;; tower ℝ⊂ℂ⊂ℍ⊂𝕆. ℝ and ℂ carry trivial multilinear structure (codimension 1 at every degree),
     ;; and the associator first appears only at 𝕆 (image dimension exactly 7). so a real-amplitude
     ;; blend is associative and pairwise by construction: it interferes between pairs of axes, never
-    ;; triples. (verified exact by alpha-math, no witness below the octonion rung.)
+    ;; triples. (verified exact by Scryer, no witness below the octonion rung.)
     (if (f64.gt (local.get $wLX) (f64.const 0.0))
       (then
         ;; accumulate weighted amplitudes for bit=0 and bit=1
@@ -896,7 +896,7 @@
             (f64.mul (local.get $wV) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pV))))
             (f64.mul (local.get $wA) (f64.sqrt (f64.sub (f64.const 1.0) (local.get $pA)))))))
         ;; Born rule: p = a0² / (a0² + a1²)
-        ;; alpha-math proof: fed the amplitude product to fromBilinear (the op alone, no table),
+        ;; Scryer proof: fed the amplitude product to fromBilinear (the op alone, no table),
         ;; the engine recovers ℂ exactly (commutative, associative): the pairwise mix IS complex
         ;; multiplication. and fromBilinear refuses the very next step, this normalization: dividing
         ;; makes the structure constants irrational, so this f64.div is the exact seam where the
@@ -1643,7 +1643,7 @@
 
     (global.set $g_histPos (i32.add (local.get $pos) (i32.const 1)))
     (call $update_engram (local.get $byte))    ;; E-axis: fit AR(2) before p1/p2 shift
-    ;; alpha-math proof: context consistency = popcount(p1 ⊕ p3), a lag-2 bit-distance, NOT an
+    ;; Scryer proof: context consistency = popcount(p1 ⊕ p3), a lag-2 bit-distance, NOT an
     ;; associator. the old popcount((p1^p2)^(p2^p3)) is bit-identical (XOR is associative so the p2
     ;; terms cancel; (Z/2)^8 has no witness). dropped the dead XORs. (|p1-2p2+p3|, the real 2nd
     ;; difference, was tested here and is a wash, so the cheaper form is kept.)
@@ -1773,7 +1773,7 @@
 
     (global.set $g_histPos (i32.add (local.get $pos) (i32.const 1)))
     (call $update_engram (local.get $byte))
-    ;; alpha-math proof: popcount(p1 ⊕ p3), not an associator (same as encoder path; see encode).
+    ;; Scryer proof: popcount(p1 ⊕ p3), not an associator (same as encoder path; see encode).
     (global.set $g_ctxConsist (i32.popcnt
       (i32.xor (global.get $g_p1) (global.get $g_p3))))
     (global.set $g_p3 (global.get $g_p2))

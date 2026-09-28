@@ -1,0 +1,87 @@
+---
+import Layout from "../../layouts/Layout.astro";
+
+const seo = {
+  title: "Scryer | woflo",
+  description:
+    "An exact mathematical engine for agentic research: deterministic mathematical semantics underneath stochastic search.",
+  image: "/images/social-card.png",
+};
+---
+
+<Layout seo={seo}>
+  <article class="mt-8 content-section scryer-page">
+    <header class="mb-[var(--space-xl)]">
+      <h1 class="page-title">Scryer</h1>
+      <p class="scryer-tagline">exact mathematics for systems that guess.</p>
+    </header>
+
+    <div class="prose prose-invert prose-a:text-[var(--chromatic-cyan)] prose-a:underline-offset-4 prose-headings:mb-2 prose-p:opacity-85 scryer-note">
+      <p>Neural systems are useful because they guess well. Scryer exists so those guesses have somewhere less forgiving to go.</p>
+
+      <p>It's an exact symbolic/research engine I've been building and using alongside my own work. An agent can call it over MCP, but the model isn't trusted to turn plausibility into mathematics. Scryer works over exact mathematical objects, derives what it can, names what it cannot, and increasingly leaves behind evidence that can be replayed independently.</p>
+
+      <section aria-labelledby="why-heading">
+        <h2 id="why-heading">why</h2>
+        <p>The interesting part of mathematical reasoning is not always calculation. A lot of it is taste: noticing a structure, trying a representation, guessing that two things are related, choosing the next useful question.</p>
+        <p>Models are getting very good at that fuzzy side of research.</p>
+        <p>I don't want to make the neural network responsible for the exact side too.</p>
+        <p>The working idea behind Scryer is to give nondeterministic reasoning something deterministic to compile down to.</p>
+      </section>
+
+      <section aria-labelledby="exists-heading">
+        <h2 id="exists-heading">what exists now</h2>
+        <p>Underneath the MCP interface is an exact mathematical engine spanning rationals and algebraic numbers, fields, polynomial and matrix machinery, logic, graphs, optimisation, dynamics and a growing collection of other domains.</p>
+        <p>Some parts run in the ordinary direction: hand Scryer an object and ask what can be derived from it.</p>
+        <p>Some run backwards: state the laws and ask for the object, or the parameterized family of objects, that satisfies them.</p>
+        <p>A generic construction space treats exact mathematical objects as nodes connected by partial, costed operations. When two independently constructed paths land on the same canonical object, the collision is an identity rather than a floating-point near miss.</p>
+        <p>There are also early research-loop pieces: bounded families, candidate-relation mining, fresh counterexample search, persistent conjectures, and a frontier of things the engine still cannot settle.</p>
+      </section>
+
+      <section aria-labelledby="rule-heading">
+        <h2 id="rule-heading">the important rule</h2>
+        <p>Scryer is allowed to say no.</p>
+        <p>A boundary is information. If a derivation depends on machinery the engine doesn't have, a budget was exhausted, a representation is insufficient, or a claim simply hasn't been established, that should remain visible rather than being completed with something plausible.</p>
+        <p>Exact does not mean infallible. A perfectly exact computation can still begin from the wrong assumptions or formalize the wrong question. The point is to make those boundaries easier to see, not pretend they disappear.</p>
+      </section>
+
+      <section aria-labelledby="direction-heading">
+        <h2 id="direction-heading">where i'm pushing it</h2>
+        <p>Verification was the starting point. Discovery is the part I care about now.</p>
+        <p>The research question is: what happens if the deterministic half underneath an AI mathematician isn't merely a final-answer verifier, but an executable representation of the mathematics it's reasoning through?</p>
+        <p>I want the stochastic system to be able to search through grounded mathematical state: construct objects, collide representations, expose obstructions, generate counterexamples, leave behind checked intermediate results, and use those results as the ground for the next guess.</p>
+        <p>Basically: stochastic mathematical taste on top of deterministic mathematical semantics.</p>
+        <p>A small proof/search spine is already exploring that split. Speculative guidance and mathematical evidence are different things: an agent can suggest a reduction or choose where to search without being trusted. Only checked evidence gets to propagate as fact, and an unresolved goal can expose the obligations still standing instead of collapsing to "failed."</p>
+      </section>
+
+      <section aria-labelledby="example-heading">
+        <h2 id="example-heading">a tiny example of the idea</h2>
+        <p>One of Scryer's generic search spaces works over exact algebraic objects. It can reach the same object through two unrelated construction paths. With floating point, matching outputs would be a numerical coincidence worth investigating. Here canonical equality decides that they are the same mathematical object, so the collision itself gives an identity to inspect.</p>
+      </section>
+
+      <section id="use" aria-labelledby="use-heading">
+        <h2 id="use-heading">use it</h2>
+        <p>The public copy is served through Stithy as an MCP tool surface, so agents can use Scryer directly rather than translating its output through me.</p>
+        <p><a href="/projects/#scryer-access">Public research access details and bearer keys →</a></p>
+      </section>
+
+      <section aria-labelledby="underneath-heading">
+        <h2 id="underneath-heading">underneath</h2>
+        <p>The engine is deliberately built around exact objects and explicit epistemic states rather than one giant symbolic-expression type. Rationals, real algebraic numbers, field extensions and other structures feed generic arithmetic machinery; domain routines derive against those structures; certificates and proof DAGs provide a separate replay path where implemented.</p>
+        <p>The longer-term architecture is trying to keep "what seems worth trying" separate from "what has been established." Heuristics may rank or propose work. They do not get to become premises.</p>
+      </section>
+    </div>
+  </article>
+</Layout>
+
+<style>
+  .scryer-tagline {
+    margin: 0;
+    font-size: var(--text-lg);
+    opacity: 0.65;
+  }
+
+  .scryer-note {
+    max-width: 72ch;
+  }
+</style>

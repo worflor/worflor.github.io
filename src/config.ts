@@ -254,14 +254,14 @@ export const projectsPageContent: ProjectPageContent = {
       status: "in-development",
     },
     {
-      title: "math scryer",
+      title: "Scryer",
       description:
-        "AlphaFold's the inspiration, but aimed at algebra.<br>Hand it any algebra and it uncovers the laws it obeys, including ones nobody had written down, then proves each one exactly. MCP research preview",
+        "Exact mathematics for systems that guess.<br><br>I built Scryer as a deterministic mathematical substrate for agentic research. The model can roam, conjecture, notice structure and decide what to try; Scryer handles the part that shouldn't be vibes: exact objects, derivations, counterexamples, explicit refusals and replayable evidence.<br><br>The direction now is discovery rather than just verification: stochastic mathematical taste reasoning through deterministic mathematical semantics.",
       month: "May",
       year: "2026",
-      url: "/contact?project=alpha-math",
-      slug: "alpha-math",
-      status: "closed-dev-alpha",
+      url: "/scryer/",
+      slug: "scryer",
+      status: "active-research",
     },
     {
       title: "What Do You Mean?",

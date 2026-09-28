@@ -25,7 +25,7 @@ const threads = projectsPageContent.threads ?? [];
 // whitespace carries the distinction without more section headings.
 const privateClusters = [
   privateProjects.filter((p) => p.status === "in-development"),
-  privateProjects.filter((p) => p.status === "closed-dev-alpha"),
+  privateProjects.filter((p) => p.status === "closed-dev-alpha" || p.status === "active-research"),
   privateProjects.filter((p) => p.status === "private-beta"),
 ].filter((cluster) => cluster.length > 0);
 ---
@@ -92,8 +92,8 @@ const privateClusters = [
                 <div class="private-cluster group">
                   {cluster.map((project, index) => (
                     <>
-                      <ProjectCard {...project} variant={project.slug === "lore" ? "full" : "compact"} index={index} />
-                      {project.slug === "alpha-math" && <ScryerAccess />}
+                      <ProjectCard {...project} variant={project.slug === "lore" || project.slug === "scryer" ? "full" : "compact"} index={index} />
+                      {project.slug === "scryer" && <ScryerAccess />}
                     </>
                   ))}
                 </div>
