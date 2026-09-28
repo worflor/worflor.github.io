@@ -11,7 +11,7 @@ import { scryerPreview } from "../data/scryer-preview";
         <span class="access-title-note" aria-hidden="true">←&#xFE0E; press to learn more!</span>
       </div>
     </div>
-    <div class="version-status" aria-label="Live Scryer tool version" hidden>
+    <div class="version-status" aria-label="Live Scryer release metadata" hidden>
       <span class="version-dot" aria-hidden="true"></span>
       <span id="scryer-live-version" aria-live="polite"></span>
     </div>
@@ -53,7 +53,7 @@ import { scryerPreview } from "../data/scryer-preview";
   h3 a { color: inherit; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: .18em; transition: text-decoration-color var(--duration-fast) var(--ease-out); }
   h3 a:hover { text-decoration-color: rgb(var(--color-text-rgb) / .45); }
   .access-title-note { color: rgb(var(--chromatic-cyan) / .35); font-family: var(--font-casual); font-size: .75rem; font-weight: 400; letter-spacing: .02em; line-height: 1; transform: rotate(-2deg); pointer-events: none; user-select: none; }
-  .version-status { display: inline-flex; align-items: center; gap: .44rem; border: 1px solid rgb(var(--color-text-rgb) / .12); border-radius: 999px; padding: .3rem .65rem; font-size: .72rem; font-variant-numeric: tabular-nums; opacity: .8; white-space: nowrap; }
+  .version-status { display: inline-flex; max-width: 100%; align-items: center; gap: .44rem; border: 1px solid rgb(var(--color-text-rgb) / .12); border-radius: 999px; padding: .3rem .65rem; font-size: clamp(.62rem, 2.5vw, .72rem); font-variant-numeric: tabular-nums; opacity: .8; white-space: nowrap; }
   .version-status[hidden] { display: none; }
   .version-dot { width: .37rem; height: .37rem; border-radius: 50%; background: currentColor; opacity: .55; }
   .version-status[data-live] .version-dot { background: #57c8ad; opacity: 1; }
@@ -121,11 +121,13 @@ import { scryerPreview } from "../data/scryer-preview";
       const text = await response.text();
       const rows = [...text.matchAll(/^\|\s*\[`wolf\.scryer\.(?:ask|check|verify)`\]\([^)]+\)\s*\|\s*(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)\s*\|/gm)];
       const versions = new Set(rows.map(row => row[1]));
-      if (rows.length !== 3 || versions.size !== 1) throw new Error('Scryer release versions disagree');
-      version.textContent = `Scryer v${rows[0][1]}`;
+      const routeCount = text.match(/Exact mathematics and science across (\d+) routes\./)?.[1];
+      const snapshot = text.match(/Snapshot (\d+) of the Scryer engine/)?.[1];
+      if (rows.length !== 3 || versions.size !== 1 || !routeCount || !snapshot) throw new Error('Scryer release metadata incomplete');
+      version.textContent = `Scryer v${rows[0][1]} · snapshot ${snapshot} · ${routeCount} routes · ${rows.length} tools`;
       if (holder) holder.hidden = false;
       holder?.setAttribute('data-live', '');
-      holder?.setAttribute('title', 'Live version of ask, check and verify');
+      holder?.setAttribute('title', 'Live metadata for ask, check and verify');
     }).catch(() => { if (holder) holder.hidden = true; })
       .finally(() => window.clearTimeout(timeout));
 
