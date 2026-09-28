@@ -6,7 +6,10 @@ import { scryerPreview } from "../data/scryer-preview";
   <div class="access-header">
     <div>
       <p class="eyebrow">Scryer, served by Stithy · public research access</p>
-      <h3 id="scryer-access-title"><a href="/scryer/">Try Scryer</a></h3>
+      <div class="access-title-line">
+        <h3 id="scryer-access-title"><a href="/scryer/">Try Scryer</a></h3>
+        <span class="access-title-note" aria-hidden="true">←&#xFE0E; press to learn more!</span>
+      </div>
     </div>
     <div class="version-status" aria-label="Live Scryer tool version" hidden>
       <span class="version-dot" aria-hidden="true"></span>
@@ -45,9 +48,11 @@ import { scryerPreview } from "../data/scryer-preview";
   .scryer-access { grid-column: 1 / -1; min-width: 0; scroll-margin-top: 8rem; border: 1px solid rgb(var(--color-text-rgb) / .13); border-radius: var(--radius-md); padding: clamp(1rem, 2.4vw, 1.5rem); padding-bottom: clamp(1.4rem, 2.7vw, 1.7rem); background: rgb(var(--color-text-rgb) / .025); }
   .access-header { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem 1.2rem; flex-wrap: wrap; }
   .eyebrow { font-size: .65rem; letter-spacing: .14em; text-transform: uppercase; opacity: .55; font-weight: 700; margin: 0 0 .25rem; }
+  .access-title-line { display: flex; align-items: baseline; gap: .35rem .65rem; flex-wrap: wrap; }
   h3 { font-size: 1.06rem; font-weight: 650; line-height: 1.25; margin: 0; }
   h3 a { color: inherit; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: .18em; transition: text-decoration-color var(--duration-fast) var(--ease-out); }
   h3 a:hover { text-decoration-color: rgb(var(--color-text-rgb) / .45); }
+  .access-title-note { color: rgb(var(--chromatic-cyan) / .35); font-family: var(--font-casual); font-size: .75rem; font-weight: 400; letter-spacing: .02em; line-height: 1; transform: rotate(-2deg); pointer-events: none; user-select: none; }
   .version-status { display: inline-flex; align-items: center; gap: .44rem; border: 1px solid rgb(var(--color-text-rgb) / .12); border-radius: 999px; padding: .3rem .65rem; font-size: .72rem; font-variant-numeric: tabular-nums; opacity: .8; white-space: nowrap; }
   .version-status[hidden] { display: none; }
   .version-dot { width: .37rem; height: .37rem; border-radius: 50%; background: currentColor; opacity: .55; }
