@@ -13,13 +13,13 @@ import { scryerPreview } from "../data/scryer-preview";
       <span id="scryer-live-version" aria-live="polite"></span>
     </div>
   </div>
-  <p class="access-intro">Both keys can use every <code>wolf.scryer.*</code> tool. The choice is whether your input gets saved.</p>
+  <p class="access-intro">Both tokens can use every <code>wolf.scryer.*</code> tool. The choice is whether your input gets saved.</p>
   <div class="access-connection" aria-labelledby="scryer-connect-title">
     <div class="connection-heading">
       <h4 id="scryer-connect-title">Connect your MCP client</h4>
       <span class="connection-scratch" aria-hidden="true">client ─MCP→ S</span>
     </div>
-    <p>Add the URL below as a remote MCP server. For its request header, use <code>Authorization: Bearer &lt;one of the keys below&gt;</code>.</p>
+    <p>Add the URL below as a remote MCP server. For its request header, use <code>Authorization: Bearer &lt;one of the tokens below&gt;</code>.</p>
     <div class="connection-url"><code id="scryer-mcp-url">{scryerPreview.endpoint}</code><button type="button" class="copy-key" data-key="scryer-mcp-url" aria-label="Copy Scryer MCP server URL">Copy URL</button></div>
   </div>
   <div class="access-tiers">
@@ -36,8 +36,8 @@ import { scryerPreview } from "../data/scryer-preview";
       <div class="credential"><code id="scryer-contributor-key">{scryerPreview.contributorKey}</code><button type="button" class="copy-key" data-key="scryer-contributor-key" aria-label="Copy contributor research bearer token">Copy</button></div>
     </div>
   </div>
-  <p class="warning">The keys may be revoked if they're abused.</p>
-  <p class="key-request">want your own key? <a href="/contact?project=scryer">contact me</a></p>
+  <p class="warning">The tokens may be revoked if they're abused.</p>
+  <p class="key-request">want your own token? <a href="/contact?project=scryer">contact me</a></p>
   <p class="access-foot">Once connected, your MCP client can list Scryer's tools. Stithy logs the tool, timing and outcome of every call. It doesn't log IP addresses. Base discards the input. Contributor keeps it. Seeing where Scryer gets stuck helps guide the work.</p>
 </section>
 
@@ -77,8 +77,8 @@ import { scryerPreview } from "../data/scryer-preview";
   .copy-key:hover, .copy-key:focus-visible { background: rgb(var(--color-text-rgb) / .1); }
   .copy-key:focus-visible, a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
   .warning { display: inline-block; margin: 1.2rem 0 .7rem; color: #ead5d8; font-size: .79rem; font-weight: 650; line-height: 1.5; letter-spacing: .01em; text-shadow: -1px 0 rgba(255,70,102,.55), 1px 0 rgba(57,215,246,.55); }
-  .key-request { width: fit-content; margin: 0 0 .7rem; color: #e2d6ee; font-size: .79rem; font-weight: 650; line-height: 1.5; letter-spacing: .01em; text-shadow: -1px 0 rgba(192,132,252,.62), 1px 0 rgba(124,58,237,.58); }
-  .key-request a { color: inherit; text-decoration: underline; text-decoration-color: rgba(192,132,252,.55); text-underline-offset: .18em; }
+  .key-request { width: fit-content; margin: 0 0 .7rem; color: #dbcdea; font-size: .79rem; font-weight: 650; line-height: 1.5; letter-spacing: .01em; text-shadow: -1px 0 rgba(120,81,169,.82), 1px 0 rgba(155,114,207,.64); }
+  .key-request a { color: inherit; text-decoration: underline; text-decoration-color: rgba(120,81,169,.78); text-underline-offset: .18em; }
   .key-request a:hover { text-decoration-color: currentColor; }
   .access-foot { margin: 0; font-size: .78rem; line-height: 1.55; opacity: .72; }
   .access-foot a { text-decoration: underline; text-underline-offset: 2px; }
@@ -143,7 +143,7 @@ import { scryerPreview } from "../data/scryer-preview";
           }
           button.textContent = 'Copied';
         } catch {
-          button.textContent = button.dataset.key === 'scryer-mcp-url' ? 'Select URL' : 'Select key';
+          button.textContent = button.dataset.key === 'scryer-mcp-url' ? 'Select URL' : 'Select token';
           const range = document.createRange();
           const node = document.getElementById(button.dataset.key || '');
           if (node) { range.selectNodeContents(node); window.getSelection()?.removeAllRanges(); window.getSelection()?.addRange(range); }
