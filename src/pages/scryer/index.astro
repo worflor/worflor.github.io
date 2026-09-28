@@ -23,7 +23,7 @@ const seo = {
       <p>Models are good at guessing what might be true. Scryer gives those guesses somewhere exact to land. It's a symbolic engine for research: it works over exact mathematical objects, derives what it can, and says where it gets stuck. Some results come with evidence you can replay.</p>
 
       <section class="scryer-section" aria-labelledby="why-heading">
-        <span class="scryer-margin-note" aria-hidden="true">P(x) ? ≠ ⊢P(x)<br /><i>[not the same]</i> ↓</span>
+        <span class="scryer-margin-note" aria-hidden="true">P(x)? ⇏ Γ ⊢ P(x)<br /><i>[not the same]</i> ↓</span>
         <h2 id="why-heading">why</h2>
         <p>A model can notice a pattern or choose a useful next question. Its confidence shouldn't do the algebra.</p>
         <figure class="scryer-loop">
@@ -51,7 +51,7 @@ const seo = {
       </section>
 
       <div class="scryer-derivation scryer-number-train" aria-hidden="true">
-        <span><b>01</b> ? <em>[hunch]</em></span><i>···→</i><span><b>02</b> 𝒳</span><i>···→</i><span><b>03</b> ≡ <em>[same?]</em></span><i>···→</i><span><b>04</b> ⊢ <em>[checked]</em></span>
+        <span><b>01</b> φ? <em>[hunch]</em></span><i>···→</i><span><b>02</b> c∈𝒞</span><i>···→</i><span><b>03</b> c₁≡c₂ <em>[same?]</em></span><i>···→</i><span><b>04</b> Γ⊢φ <em>[checked]</em></span>
       </div>
 
       <section class="scryer-section" aria-labelledby="exists-heading">
@@ -89,13 +89,13 @@ const seo = {
       </section>
 
       <div class="scryer-derivation scryer-fork" aria-hidden="true">
-        <span class="scryer-fork-start">φ</span>
-        <span class="scryer-fork-line">── ? ──┬──→ ⊢ φ <em>[keep]</em></span>
-        <span class="scryer-fork-branch">└──→ ∃x : ¬φ(x) <em>[one bad x]</em></span>
+        <span class="scryer-fork-start">∀xP(x)?</span>
+        <span class="scryer-fork-line">──┬──→ Γ⊢∀xP(x) <em>[keep]</em></span>
+        <span class="scryer-fork-branch">└──→ ∃x¬P(x) <em>[one bad x]</em></span>
       </div>
 
       <section class="scryer-section" aria-labelledby="rule-heading">
-        <span class="scryer-margin-note scryer-margin-note-red" aria-hidden="true">⊬ φ<br /><i>[leave open]</i></span>
+        <span class="scryer-margin-note scryer-margin-note-red" aria-hidden="true">Γ ⊬ φ<br /><i>[leave open]</i></span>
         <h2 id="rule-heading">the important rule</h2>
         <p>Scryer can say no.</p>
         <p>If it runs out of search budget, lacks the right representation, or needs mathematics it doesn't have, the result should say so. An unproved claim stays unproved.</p>
@@ -109,8 +109,8 @@ const seo = {
       </section>
 
       <div class="scryer-derivation scryer-loop-note" aria-hidden="true">
-        <span>?</span><i>→</i><span>𝒳</span><i>→</i><span>⊢</span><i>↘</i><span>•</span>
-        <small>↖&#xFE0E; &nbsp; ?′ <em>[again]</em> &nbsp; ─────────┘</small>
+        <span>φ?</span><i>→</i><span>c∈𝒞</span><i>→</i><span>Γ⊢φ</span><i>→</i><span>∎</span>
+        <small>↖&#xFE0E; &nbsp; φ′? <em>[again]</em> &nbsp; ────────┘</small>
       </div>
 
       <section class="scryer-section" aria-labelledby="example-heading">
@@ -128,7 +128,7 @@ const seo = {
       </section>
 
       <section class="scryer-section" aria-labelledby="underneath-heading">
-        <span class="scryer-margin-note" aria-hidden="true">φ → n₁ → n₂<br />↺ <i>[replay]</i></span>
+        <span class="scryer-margin-note" aria-hidden="true">n₁ → n₂ → φ<br />↺ <i>[replay]</i></span>
         <h2 id="underneath-heading">underneath</h2>
         <p>The engine works with distinct mathematical structures that share arithmetic machinery. Each domain adds its own rules. Where implemented, certificates and proof DAGs make results replayable.</p>
         <p>When one of those results looks odd, there's a trail to follow.</p>
@@ -507,7 +507,8 @@ const seo = {
     }
 
     .scryer-number-train {
-      gap: 0.2rem;
+      gap: 0.1rem;
+      font-size: 0.68rem;
     }
 
     .scryer-fork,
