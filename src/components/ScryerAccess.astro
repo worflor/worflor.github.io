@@ -8,26 +8,31 @@ import { scryerPreview } from "../data/scryer-preview";
       <p class="eyebrow">Scryer, served by Stithy · public research access</p>
       <h3 id="scryer-access-title">Try Scryer</h3>
     </div>
-    <div class="version-status" aria-label="Released Scryer tool version">
+    <div class="version-status" aria-label="Live Scryer tool version" hidden>
       <span class="version-dot" aria-hidden="true"></span>
-      <span id="scryer-live-version" aria-live="polite">checking live version</span>
+      <span id="scryer-live-version" aria-live="polite"></span>
     </div>
   </div>
-  <p class="access-intro">One MCP endpoint, two scoped research keys. Both can call the full <code>wolf.scryer.*</code> tool family. Pick based on what you're willing to share, not on whether your question counts.</p>
+  <p class="access-intro">Both keys can use every <code>wolf.scryer.*</code> tool. The choice is whether your input gets saved.</p>
+  <div class="access-connection" aria-labelledby="scryer-connect-title">
+    <h4 id="scryer-connect-title">Connect your MCP client</h4>
+    <p>Add the URL below as a remote MCP server. For its request header, use <code>Authorization: Bearer &lt;one of the keys below&gt;</code>.</p>
+    <div class="connection-url"><code id="scryer-mcp-url">{scryerPreview.endpoint}</code><button type="button" class="copy-key" data-key="scryer-mcp-url" aria-label="Copy Scryer MCP server URL">Copy URL</button></div>
+  </div>
   <div class="access-tiers">
     <div class="access-tier">
       <div class="tier-heading"><h4>Base</h4><span class="tier-tag">question text not kept</span></div>
-      <p>Full maths surface. Calls are counted and timed, but your question is not stored. A 30-second deadline and shared compute budget.</p>
+      <p>Every Scryer tool, with a 30-second deadline and a shared compute budget. Stithy counts and times each call without storing your question.</p>
       <div class="credential"><code id="scryer-base-key">{scryerPreview.baseKey}</code><button type="button" class="copy-key" data-key="scryer-base-key" aria-label="Copy base research bearer token">Copy</button></div>
     </div>
     <div class="access-tier contributor">
       <div class="tier-heading"><h4>Contributor</h4><span class="tier-tag">question text kept</span></div>
-      <p>Your full input is recorded to help improve the engine. In exchange: a 120-second deadline, more memory, and a higher queue priority.</p>
+      <p>Your full input is saved to help improve Scryer. You get a 120-second deadline, more memory and higher queue priority.</p>
       <div class="credential"><code id="scryer-contributor-key">{scryerPreview.contributorKey}</code><button type="button" class="copy-key" data-key="scryer-contributor-key" aria-label="Copy contributor research bearer token">Copy</button></div>
     </div>
   </div>
-  <p class="warning">These keys may stop working at any time due to abuse.</p>
-  <p class="access-foot">Use <code>Authorization: Bearer &lt;key&gt;</code> with <a href={scryerPreview.endpoint} target="_blank" rel="noopener noreferrer">the MCP endpoint</a>. Read the <a href={scryerPreview.docs} target="_blank" rel="noopener noreferrer">live tool docs</a> with the same header. Neither tier logs IP addresses; both log call timing and tool/outcome metadata. The version above is fetched from the live docs, not baked into this page. Docs and MCP links require the bearer header; an anonymous browser visit returns 401.</p>
+  <p class="warning">The keys may be revoked if they're abused.</p>
+  <p class="access-foot">Once connected, your MCP client can list Scryer's tools. Stithy logs the tool, timing and outcome of every call. It doesn't log IP addresses. Base discards the input. Contributor keeps it. Seeing where Scryer gets stuck helps guide the work.</p>
 </section>
 
 <style>
@@ -36,9 +41,15 @@ import { scryerPreview } from "../data/scryer-preview";
   .eyebrow { font-size: .65rem; letter-spacing: .14em; text-transform: uppercase; opacity: .55; font-weight: 700; margin: 0 0 .25rem; }
   h3 { font-size: 1.06rem; font-weight: 650; line-height: 1.25; margin: 0; }
   .version-status { display: inline-flex; align-items: center; gap: .44rem; border: 1px solid rgb(var(--color-text-rgb) / .12); border-radius: 999px; padding: .3rem .65rem; font-size: .72rem; font-variant-numeric: tabular-nums; opacity: .8; white-space: nowrap; }
+  .version-status[hidden] { display: none; }
   .version-dot { width: .37rem; height: .37rem; border-radius: 50%; background: currentColor; opacity: .55; }
   .version-status[data-live] .version-dot { background: #57c8ad; opacity: 1; }
   .access-intro { font-size: .84rem; line-height: 1.55; opacity: .72; margin: .85rem 0 1.05rem; max-width: 70ch; }
+  .access-connection { margin-bottom: .8rem; padding: .85rem; border: 1px solid rgb(var(--color-text-rgb) / .11); border-radius: .7rem; }
+  .access-connection h4 { margin: 0 0 .3rem; }
+  .access-connection p { margin: 0 0 .65rem; font-size: .8rem; line-height: 1.55; opacity: .74; }
+  .connection-url { display: flex; align-items: stretch; gap: .4rem; min-width: 0; }
+  .connection-url code { min-width: 0; flex: 1; padding: .48rem .55rem; border: 1px solid rgb(var(--color-text-rgb) / .09); border-radius: .4rem; background: rgb(var(--color-text-rgb) / .04); font: .7rem/1.45 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; user-select: all; }
   .access-tiers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
   .access-tier { min-width: 0; display: flex; flex-direction: column; gap: .55rem; border: 1px solid rgb(var(--color-text-rgb) / .11); border-radius: .7rem; padding: .85rem; background: rgb(var(--color-text-rgb) / .025); }
   .access-tier.contributor { border-color: rgb(var(--color-text-rgb) / .18); }
@@ -55,7 +66,11 @@ import { scryerPreview } from "../data/scryer-preview";
   .access-foot { margin: 0; font-size: .78rem; line-height: 1.55; opacity: .72; }
   .access-foot a { text-decoration: underline; text-underline-offset: 2px; }
   code { font-family: ui-monospace, Consolas, monospace; }
-  @media (max-width: 620px) { .access-tiers { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 620px) {
+    .access-tiers { grid-template-columns: minmax(0, 1fr); }
+    .connection-url { flex-wrap: wrap; }
+    .connection-url code { flex-basis: 100%; }
+  }
 </style>
 
 <script>
@@ -65,7 +80,7 @@ import { scryerPreview } from "../data/scryer-preview";
     if (!version || !base) return;
     const holder = version.closest<HTMLElement>('.version-status');
     const token = base.textContent?.trim();
-    if (!token) { version.textContent = 'version unavailable'; return; }
+    if (!token) return;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 7000);
     fetch('https://mcp.woflo.dev/stithy/docs', {
@@ -79,12 +94,14 @@ import { scryerPreview } from "../data/scryer-preview";
       const versions = new Set(rows.map(row => row[1]));
       if (rows.length !== 3 || versions.size !== 1) throw new Error('Scryer release versions disagree');
       version.textContent = `Scryer v${rows[0][1]}`;
+      if (holder) holder.hidden = false;
       holder?.setAttribute('data-live', '');
-      holder?.setAttribute('title', 'Live released version of ask, check and verify');
-    }).catch(() => { version.textContent = 'version unavailable'; })
+      holder?.setAttribute('title', 'Live version of ask, check and verify');
+    }).catch(() => { if (holder) holder.hidden = true; })
       .finally(() => window.clearTimeout(timeout));
 
     document.querySelectorAll<HTMLButtonElement>('.copy-key').forEach(button => {
+      const defaultLabel = button.textContent || 'Copy';
       button.addEventListener('click', async () => {
         const key = document.getElementById(button.dataset.key || '')?.textContent?.trim();
         if (!key) return;
@@ -104,12 +121,12 @@ import { scryerPreview } from "../data/scryer-preview";
           }
           button.textContent = 'Copied';
         } catch {
-          button.textContent = 'Select key';
+          button.textContent = button.dataset.key === 'scryer-mcp-url' ? 'Select URL' : 'Select key';
           const range = document.createRange();
           const node = document.getElementById(button.dataset.key || '');
           if (node) { range.selectNodeContents(node); window.getSelection()?.removeAllRanges(); window.getSelection()?.addRange(range); }
         }
-        window.setTimeout(() => { button.textContent = 'Copy'; }, 2000);
+        window.setTimeout(() => { button.textContent = defaultLabel; }, 2000);
       });
     });
   }

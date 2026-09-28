@@ -17,58 +17,96 @@ const seo = {
     </header>
 
     <div class="prose prose-invert prose-a:text-[var(--chromatic-cyan)] prose-a:underline-offset-4 prose-headings:mb-2 prose-p:opacity-85 scryer-note">
-      <p>Neural systems are useful because they guess well. Scryer exists so those guesses have somewhere less forgiving to go.</p>
-
-      <p>It's an exact symbolic/research engine I've been building and using alongside my own work. An agent can call it over MCP, but the model isn't trusted to turn plausibility into mathematics. Scryer works over exact mathematical objects, derives what it can, names what it cannot, and increasingly leaves behind evidence that can be replayed independently.</p>
+      <p>Models are good at guessing what might be true. Scryer gives those guesses somewhere exact to land. It's a symbolic engine for research: it works over exact mathematical objects, derives what it can, and says where it gets stuck. Some results come with evidence you can replay.</p>
 
       <section aria-labelledby="why-heading">
         <h2 id="why-heading">why</h2>
-        <p>The interesting part of mathematical reasoning is not always calculation. A lot of it is taste: noticing a structure, trying a representation, guessing that two things are related, choosing the next useful question.</p>
-        <p>Models are getting very good at that fuzzy side of research.</p>
-        <p>I don't want to make the neural network responsible for the exact side too.</p>
-        <p>The working idea behind Scryer is to give nondeterministic reasoning something deterministic to compile down to.</p>
+        <p>A model can notice a pattern or choose a useful next question. Its confidence shouldn't do the algebra.</p>
+        <figure class="scryer-loop">
+          <div class="scryer-loop-track">
+            <div class="scryer-loop-node">
+              <span class="scryer-loop-index">01 / guess</span>
+              <strong>agent</strong>
+              <span>chooses what to try</span>
+            </div>
+            <svg class="scryer-loop-arrow" viewBox="0 0 56 22" aria-hidden="true" focusable="false"><path class="scryer-loop-flow" d="M2 11H49" /><path class="scryer-loop-tip" d="m43 5 6 6-6 6" /></svg>
+            <div class="scryer-loop-node scryer-loop-engine">
+              <span class="scryer-loop-index">02 / work</span>
+              <strong>Scryer</strong>
+              <span>exact objects &amp; operations</span>
+            </div>
+            <svg class="scryer-loop-arrow" viewBox="0 0 56 22" aria-hidden="true" focusable="false"><path class="scryer-loop-flow" d="M2 11H49" /><path class="scryer-loop-tip" d="m43 5 6 6-6 6" /></svg>
+            <div class="scryer-loop-node scryer-loop-result">
+              <span class="scryer-loop-index">03 / result</span>
+              <strong>established</strong>
+              <span>or still open, with a reason</span>
+            </div>
+          </div>
+          <figcaption>Both outcomes can inform the next guess, but only established results become facts.</figcaption>
+        </figure>
       </section>
 
       <section aria-labelledby="exists-heading">
         <h2 id="exists-heading">what exists now</h2>
-        <p>Underneath the MCP interface is an exact mathematical engine spanning rationals and algebraic numbers, fields, polynomial and matrix machinery, logic, graphs, optimisation, dynamics and a growing collection of other domains.</p>
-        <p>Some parts run in the ordinary direction: hand Scryer an object and ask what can be derived from it.</p>
-        <p>Some run backwards: state the laws and ask for the object, or the parameterized family of objects, that satisfies them.</p>
-        <p>A generic construction space treats exact mathematical objects as nodes connected by partial, costed operations. When two independently constructed paths land on the same canonical object, the collision is an identity rather than a floating-point near miss.</p>
-        <p>There are also early research-loop pieces: bounded families, candidate-relation mining, fresh counterexample search, persistent conjectures, and a frontier of things the engine still cannot settle.</p>
+        <p>It works with rationals and algebraic numbers, fields, polynomials, matrices, logic, graphs, optimisation, dynamics, and other domains.</p>
+        <p>Ask what follows from an object, or work backwards from laws to objects that satisfy them.</p>
+        <p>A generic construction space can reach the same mathematical object by different routes. That collision gives an identity to inspect.</p>
+        <p>Scryer can also search for candidate relations and counterexamples, and keep track of open conjectures.</p>
+      </section>
+
+      <section aria-labelledby="in-use-heading">
+        <h2 id="in-use-heading">a few outputs</h2>
+        <p>These screenshots come from an artifact made for this page. Scryer handles the calculations; the artifact reader draws the plots.</p>
+        <div class="scryer-gallery" role="region" aria-label="Scryer mathematical readings" tabindex="0">
+          <figure class="scryer-shot">
+            <a href="/images/scryer/octave-curve.webp" aria-label="Open the octave curve and value table at full size">
+              <img src="/images/scryer/octave-curve.webp" alt="Scryer reading f sub n = 440 times 2 to the n over 12: a plotted curve and a table with exact values 440, 880, and 1760 at n = 0, 12, and 24" width="864" height="2480" loading="lazy" decoding="async" />
+            </a>
+            <figcaption>frequency curve · 440, 880 and 1760 Hz at n = 0, 12 and 24.</figcaption>
+          </figure>
+          <figure class="scryer-shot">
+            <a href="/images/scryer/piecewise-curve.webp" aria-label="Open the piecewise curve screenshot at full size">
+              <img src="/images/scryer/piecewise-curve.webp" alt="Scryer reading a piecewise function: t squared for t at most one and two minus t above one, with both curves meeting at one" width="864" height="1168" loading="lazy" decoding="async" />
+            </a>
+            <figcaption>piecewise rule · the branches meet at t = 1.</figcaption>
+          </figure>
+          <figure class="scryer-shot">
+            <a href="/images/scryer/complex-roots.webp" aria-label="Open the complex roots screenshot at full size">
+              <img src="/images/scryer/complex-roots.webp" alt="Scryer returns the exact roots three plus or minus two i for x squared minus six x plus thirteen equals zero; the artifact reader plots the conjugate pair" width="864" height="1080" loading="lazy" decoding="async" />
+            </a>
+            <figcaption>complex roots · 3 ± 2i.</figcaption>
+          </figure>
+        </div>
       </section>
 
       <section aria-labelledby="rule-heading">
         <h2 id="rule-heading">the important rule</h2>
-        <p>Scryer is allowed to say no.</p>
-        <p>A boundary is information. If a derivation depends on machinery the engine doesn't have, a budget was exhausted, a representation is insufficient, or a claim simply hasn't been established, that should remain visible rather than being completed with something plausible.</p>
-        <p>Exact does not mean infallible. A perfectly exact computation can still begin from the wrong assumptions or formalize the wrong question. The point is to make those boundaries easier to see, not pretend they disappear.</p>
+        <p>Scryer can say no.</p>
+        <p>If it runs out of search budget, lacks the right representation, or needs mathematics it doesn't have, the result should say so. An unproved claim stays unproved.</p>
+        <p>An exact calculation can still start from faulty assumptions or answer the wrong question. Those limits should stay visible.</p>
       </section>
 
       <section aria-labelledby="direction-heading">
-        <h2 id="direction-heading">where i'm pushing it</h2>
-        <p>Verification was the starting point. Discovery is the part I care about now.</p>
-        <p>The research question is: what happens if the deterministic half underneath an AI mathematician isn't merely a final-answer verifier, but an executable representation of the mathematics it's reasoning through?</p>
-        <p>I want the stochastic system to be able to search through grounded mathematical state: construct objects, collide representations, expose obstructions, generate counterexamples, leave behind checked intermediate results, and use those results as the ground for the next guess.</p>
-        <p>Basically: stochastic mathematical taste on top of deterministic mathematical semantics.</p>
-        <p>A small proof/search spine is already exploring that split. Speculative guidance and mathematical evidence are different things: an agent can suggest a reduction or choose where to search without being trusted. Only checked evidence gets to propagate as fact, and an unresolved goal can expose the obligations still standing instead of collapsing to "failed."</p>
+        <h2 id="direction-heading">where it's headed</h2>
+        <p>Verification came first. The work now is to let an agent build exact objects, search through them, and use what it finds to choose its next question.</p>
+        <p>A small proof and search system is testing that idea. Suggestions can steer the search. Only checked results are treated as facts; an open goal still shows what needs proving.</p>
       </section>
 
       <section aria-labelledby="example-heading">
         <h2 id="example-heading">a tiny example of the idea</h2>
-        <p>One of Scryer's generic search spaces works over exact algebraic objects. It can reach the same object through two unrelated construction paths. With floating point, matching outputs would be a numerical coincidence worth investigating. Here canonical equality decides that they are the same mathematical object, so the collision itself gives an identity to inspect.</p>
+        <p>The search recovered the familiar identity √(3 + 2√2) = 1 + √2 when two constructions reached the same exact number.</p>
       </section>
 
       <section id="use" aria-labelledby="use-heading">
         <h2 id="use-heading">use it</h2>
-        <p>The public copy is served through Stithy as an MCP tool surface, so agents can use Scryer directly rather than translating its output through me.</p>
+        <p>Public research access runs through Stithy, which serves Scryer as MCP tools for agents.</p>
         <p><a href="/projects/#scryer-access">Public research access details and bearer keys →</a></p>
       </section>
 
       <section aria-labelledby="underneath-heading">
         <h2 id="underneath-heading">underneath</h2>
-        <p>The engine is deliberately built around exact objects and explicit epistemic states rather than one giant symbolic-expression type. Rationals, real algebraic numbers, field extensions and other structures feed generic arithmetic machinery; domain routines derive against those structures; certificates and proof DAGs provide a separate replay path where implemented.</p>
-        <p>The longer-term architecture is trying to keep "what seems worth trying" separate from "what has been established." Heuristics may rank or propose work. They do not get to become premises.</p>
+        <p>The engine works with distinct mathematical structures that share arithmetic machinery. Each domain adds its own rules. Where implemented, certificates and proof DAGs make results replayable.</p>
+        <p>When one of those results looks odd, there's a trail to follow.</p>
       </section>
     </div>
   </article>
@@ -83,5 +121,153 @@ const seo = {
 
   .scryer-note {
     max-width: 72ch;
+  }
+
+  .scryer-loop {
+    margin: var(--space-md) 0 var(--space-lg);
+    padding: var(--space-sm) 0;
+    border-block: 1px solid var(--color-border);
+  }
+
+  .scryer-loop-track {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 3rem minmax(0, 1.15fr) 3rem minmax(0, 1.15fr);
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .scryer-loop-node {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding-left: var(--space-xs);
+    border-left: 1px solid rgb(var(--color-text-rgb) / 0.45);
+  }
+
+  .scryer-loop-engine {
+    border-left-color: rgb(var(--chromatic-cyan) / 0.8);
+  }
+
+  .scryer-loop-index {
+    color: rgb(var(--color-text-rgb) / 0.7);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .scryer-loop-node strong {
+    color: var(--color-text);
+    font-size: var(--text-base);
+    line-height: 1.2;
+  }
+
+  .scryer-loop-node > span:last-child {
+    color: rgb(var(--color-text-rgb) / 0.78);
+    font-size: var(--text-sm);
+    line-height: 1.4;
+  }
+
+  .scryer-loop-arrow {
+    width: 100%;
+    overflow: visible;
+    fill: none;
+    stroke: rgb(var(--chromatic-cyan) / 0.65);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .scryer-loop-flow {
+    stroke-dasharray: 3 5;
+    animation: scryer-flow 1.8s linear infinite;
+  }
+
+  .scryer-loop figcaption {
+    margin-top: var(--space-sm);
+    color: rgb(var(--color-text-rgb) / 0.75);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+
+  @keyframes scryer-flow {
+    to { stroke-dashoffset: -8; }
+  }
+
+  .scryer-gallery {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-sm);
+    align-items: start;
+    padding: var(--space-xs) 0;
+  }
+
+  .scryer-gallery:focus-visible {
+    outline: 2px solid rgb(var(--color-text-rgb) / var(--opacity-focus));
+    outline-offset: 2px;
+  }
+
+  .scryer-shot {
+    min-width: 0;
+    margin: 0;
+  }
+
+  .scryer-shot:first-child {
+    grid-row: span 2;
+  }
+
+  .scryer-shot a {
+    display: block;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    cursor: zoom-in;
+  }
+
+  .scryer-shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin: 0;
+  }
+
+  .scryer-shot figcaption {
+    margin-top: var(--space-xs);
+    color: rgb(var(--color-text-rgb) / 0.75);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+
+  @media (max-width: 40rem) {
+    .scryer-loop-track {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+    }
+
+    .scryer-loop-arrow {
+      width: 3rem;
+      height: 1.5rem;
+      margin: 0.65rem 0 0.65rem 0.35rem;
+      transform: rotate(90deg);
+    }
+
+    .scryer-gallery {
+      display: flex;
+      overflow-x: auto;
+      overscroll-behavior-inline: contain;
+      scroll-snap-type: x mandatory;
+      padding-bottom: var(--space-sm);
+      scrollbar-color: var(--color-border) transparent;
+    }
+
+    .scryer-shot {
+      flex: 0 0 min(78vw, 18rem);
+      scroll-snap-align: start;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .scryer-loop-flow { animation: none; }
   }
 </style>

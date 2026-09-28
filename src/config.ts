@@ -256,7 +256,7 @@ export const projectsPageContent: ProjectPageContent = {
     {
       title: "Scryer",
       description:
-        "Exact mathematics for systems that guess.<br><br>I built Scryer as a deterministic mathematical substrate for agentic research. The model can roam, conjecture, notice structure and decide what to try; Scryer handles the part that shouldn't be vibes: exact objects, derivations, counterexamples, explicit refusals and replayable evidence.<br><br>The direction now is discovery rather than just verification: stochastic mathematical taste reasoning through deterministic mathematical semantics.",
+        "Exact mathematics for systems that guess.<br><br>Scryer gives a research agent exact mathematical objects to work with. The agent decides what to try; Scryer derives what it can, finds counterexamples, and sometimes leaves evidence you can replay.<br><br>The focus now is discovery: letting the agent use established results to choose its next question.",
       month: "May",
       year: "2026",
       url: "/scryer/",
