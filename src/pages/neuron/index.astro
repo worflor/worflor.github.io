@@ -39,6 +39,7 @@ const seo = {
       data-card
       style="width:100%;max-width:1440px;min-height:clamp(560px,92vh,900px);background:linear-gradient(180deg,#060705,#040503);box-shadow:inset 0 0 0 1px rgba(200,222,200,.06),0 24px 70px rgba(0,0,0,.6);position:relative;overflow:hidden;font-family:'JetBrains Mono',monospace;display:flex;flex-direction:column;box-sizing:border-box;container-type:inline-size;"
     >
+      <div class="neuron-ambient" data-neuron-ambient aria-hidden="true"><img alt="" width="1700" height="956" /></div>
       <canvas data-signal="transcribe" style="position:absolute;inset:0;pointer-events:none;width:100%;height:100%;"></canvas>
 
       <div data-topbar style="position:relative;z-index:1;display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 20px;padding:clamp(20px,4cqw,42px) clamp(20px,5.5cqw,56px) 0;">
@@ -90,6 +91,24 @@ const seo = {
       if (!canvas) return;
       if (canvas.__init) return;
       canvas.__init = true;
+
+      const ambient = document.querySelector("[data-neuron-ambient]");
+      const ambientImage = ambient?.querySelector("img");
+      if (ambient && ambientImage) {
+        const requested = new URLSearchParams(location.search).get("neuron-shot");
+        const shot = requested === "device" || requested === "input"
+          ? requested
+          : Math.random() < 0.5 ? "device" : "input";
+        ambientImage.decoding = "async";
+        ambientImage.onload = () => {
+          if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            ambient.classList.add("is-visible");
+          } else {
+            window.setTimeout(() => ambient.classList.add("is-visible"), 1200);
+          }
+        };
+        ambientImage.src = `/images/neuron-hero-${shot}-color.webp`;
+      }
 
       const card = canvas.closest("[data-card]") || canvas.parentElement;
       const ctx = canvas.getContext("2d");
@@ -541,5 +560,27 @@ const seo = {
     padding: clamp(16px, 3vw, 44px);
     box-sizing: border-box;
     background: #050604;
+  }
+
+  .neuron-ambient {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transition: opacity 2.4s ease;
+  }
+
+  .neuron-ambient.is-visible { opacity: 1; }
+
+  .neuron-ambient img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .neuron-ambient { transition: none; }
   }
 </style>

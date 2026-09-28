@@ -210,7 +210,7 @@ export const projectsPageContent: ProjectPageContent = {
       title: "Neuron",
       description:
         "An anti-synapse for your Razer gear. One small binary that replaces Razer Synapse, talking to your mouse and keyboard directly over raw HID: the same bytes, worked out from wire captures and a lot of live probing. No kernel driver, no vendor SDK, no account, no cloud.<br>Everything is one sentence, <em>when this, do that</em>: bind any trigger to any action. A composable lighting engine, gesture spellweaving by eigenmotion, real-python macros, and first-class hypershift fall out of that one pairing.<br>Windows-first, one developer, your config plain TOML you own.",
-      image: "/images/neuron-cover.svg",
+      image: "/images/neuron-portfolio-color.webp",
       month: "July",
       year: "2026",
       url: "/neuron",
