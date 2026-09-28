@@ -12,7 +12,6 @@ import { scryerPreview } from "../data/scryer-preview";
       </div>
     </div>
     <div class="version-status" aria-label="Live Scryer release metadata" hidden>
-      <span class="version-dot" aria-hidden="true"></span>
       <span id="scryer-live-version" aria-live="polite"></span>
     </div>
   </div>
@@ -53,10 +52,9 @@ import { scryerPreview } from "../data/scryer-preview";
   h3 a { color: inherit; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: .18em; transition: text-decoration-color var(--duration-fast) var(--ease-out); }
   h3 a:hover { text-decoration-color: rgb(var(--color-text-rgb) / .45); }
   .access-title-note { color: rgb(var(--chromatic-cyan) / .35); font-family: var(--font-casual); font-size: .75rem; font-weight: 400; letter-spacing: .02em; line-height: 1; transform: rotate(-2deg); pointer-events: none; user-select: none; }
-  .version-status { display: inline-flex; max-width: 100%; align-items: center; gap: .44rem; border: 1px solid rgb(var(--color-text-rgb) / .12); border-radius: 999px; padding: .3rem .65rem; font-size: clamp(.62rem, 2.5vw, .72rem); font-variant-numeric: tabular-nums; opacity: .8; white-space: nowrap; }
+  .version-status { position: relative; display: inline-block; max-width: 100%; overflow: hidden; border-block: 1px solid rgb(var(--color-text-rgb) / .1); border-left: 2px solid rgb(87 200 173 / .34); padding: .3rem .55rem .28rem .62rem; background: linear-gradient(90deg, rgb(87 200 173 / .045), transparent 68%); box-shadow: inset 0 1px rgb(255 255 255 / .018), inset 0 -1px rgb(0 0 0 / .28); color: rgb(var(--color-text-rgb) / .68); font-family: var(--font-mono); font-size: clamp(.6rem, 2.4vw, .68rem); font-variant-numeric: tabular-nums; letter-spacing: .025em; white-space: nowrap; }
   .version-status[hidden] { display: none; }
-  .version-dot { width: .37rem; height: .37rem; border-radius: 50%; background: currentColor; opacity: .55; }
-  .version-status[data-live] .version-dot { background: #57c8ad; opacity: 1; }
+  .version-status[data-live]::after { content: ""; position: absolute; inset: -35% auto -35% -42%; width: 26%; background: linear-gradient(90deg, transparent, rgb(87 200 173 / .2), transparent); transform: skewX(-18deg); animation: scryer-status-sheen 7.5s ease-in-out infinite; pointer-events: none; }
   .access-intro { font-size: .84rem; line-height: 1.55; opacity: .72; margin: .85rem 0 1.05rem; max-width: 70ch; }
   .access-connection { margin-bottom: .8rem; padding: .85rem; border: 1px solid rgb(var(--color-text-rgb) / .11); border-radius: .7rem; }
   .connection-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; flex-wrap: wrap; }
@@ -95,6 +93,15 @@ import { scryerPreview } from "../data/scryer-preview";
     .connection-url { flex-wrap: wrap; }
     .connection-url code { flex-basis: 100%; }
     .connection-scratch { margin-left: auto; }
+  }
+  @keyframes scryer-status-sheen {
+    0%, 68% { left: -42%; opacity: 0; }
+    72% { opacity: .78; }
+    88% { left: 116%; opacity: .28; }
+    100% { left: 116%; opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .version-status[data-live]::after { animation: none; opacity: 0; }
   }
 </style>
 
