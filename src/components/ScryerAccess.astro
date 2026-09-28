@@ -37,6 +37,7 @@ import { scryerPreview } from "../data/scryer-preview";
     </div>
   </div>
   <p class="warning">The keys may be revoked if they're abused.</p>
+  <p class="key-request">want your own key? <a href="/contact?project=scryer">contact me</a></p>
   <p class="access-foot">Once connected, your MCP client can list Scryer's tools. Stithy logs the tool, timing and outcome of every call. It doesn't log IP addresses. Base discards the input. Contributor keeps it. Seeing where Scryer gets stuck helps guide the work.</p>
 </section>
 
@@ -76,6 +77,9 @@ import { scryerPreview } from "../data/scryer-preview";
   .copy-key:hover, .copy-key:focus-visible { background: rgb(var(--color-text-rgb) / .1); }
   .copy-key:focus-visible, a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
   .warning { display: inline-block; margin: 1.2rem 0 .7rem; color: #ead5d8; font-size: .79rem; font-weight: 650; line-height: 1.5; letter-spacing: .01em; text-shadow: -1px 0 rgba(255,70,102,.55), 1px 0 rgba(57,215,246,.55); }
+  .key-request { width: fit-content; margin: 0 0 .7rem; color: #e2d6ee; font-size: .79rem; font-weight: 650; line-height: 1.5; letter-spacing: .01em; text-shadow: -1px 0 rgba(192,132,252,.62), 1px 0 rgba(124,58,237,.58); }
+  .key-request a { color: inherit; text-decoration: underline; text-decoration-color: rgba(192,132,252,.55); text-underline-offset: .18em; }
+  .key-request a:hover { text-decoration-color: currentColor; }
   .access-foot { margin: 0; font-size: .78rem; line-height: 1.55; opacity: .72; }
   .access-foot a { text-decoration: underline; text-underline-offset: 2px; }
   code { font-family: ui-monospace, Consolas, monospace; }
