@@ -11,15 +11,19 @@ const seo = {
 
 <Layout seo={seo}>
   <article class="mt-8 content-section scryer-page">
-    <header class="mb-[var(--space-xl)]">
-      <h1 class="page-title">Scryer</h1>
+    <header class="mb-[var(--space-xl)] scryer-header">
+      <div class="scryer-title-wrap">
+        <h1 class="page-title">Scryer</h1>
+        <span class="scryer-title-scratch" aria-hidden="true">f(x) = ? &nbsp;→&nbsp; exact</span>
+      </div>
       <p class="scryer-tagline">exact mathematics for systems that guess.</p>
     </header>
 
     <div class="prose prose-invert prose-a:text-[var(--chromatic-cyan)] prose-a:underline-offset-4 prose-headings:mb-2 prose-p:opacity-85 scryer-note">
       <p>Models are good at guessing what might be true. Scryer gives those guesses somewhere exact to land. It's a symbolic engine for research: it works over exact mathematical objects, derives what it can, and says where it gets stuck. Some results come with evidence you can replay.</p>
 
-      <section aria-labelledby="why-heading">
+      <section class="scryer-section" aria-labelledby="why-heading">
+        <span class="scryer-margin-note" aria-hidden="true">P(x) ? ≠ ⊢P(x)<br /><i>[not the same]</i> ↓</span>
         <h2 id="why-heading">why</h2>
         <p>A model can notice a pattern or choose a useful next question. Its confidence shouldn't do the algebra.</p>
         <figure class="scryer-loop">
@@ -46,7 +50,12 @@ const seo = {
         </figure>
       </section>
 
-      <section aria-labelledby="exists-heading">
+      <div class="scryer-derivation scryer-number-train" aria-hidden="true">
+        <span><b>01</b> ? <em>[hunch]</em></span><i>···→</i><span><b>02</b> 𝒳</span><i>···→</i><span><b>03</b> ≡ <em>[same?]</em></span><i>···→</i><span><b>04</b> ⊢ <em>[checked]</em></span>
+      </div>
+
+      <section class="scryer-section" aria-labelledby="exists-heading">
+        <span class="scryer-margin-note" aria-hidden="true">f(a) = g(b) ?<br /><i>[collision]</i></span>
         <h2 id="exists-heading">what exists now</h2>
         <p>It works with rationals and algebraic numbers, fields, polynomials, matrices, logic, graphs, optimisation, dynamics, and other domains.</p>
         <p>Ask what follows from an object, or work backwards from laws to objects that satisfy them.</p>
@@ -54,7 +63,7 @@ const seo = {
         <p>Scryer can also search for candidate relations and counterexamples, and keep track of open conjectures.</p>
       </section>
 
-      <section aria-labelledby="in-use-heading">
+      <section class="scryer-section" aria-labelledby="in-use-heading">
         <h2 id="in-use-heading">a few outputs</h2>
         <p>These screenshots come from an artifact made for this page. Scryer handles the calculations; the artifact reader draws the plots.</p>
         <div class="scryer-gallery" role="region" aria-label="Scryer mathematical readings" tabindex="0">
@@ -79,31 +88,47 @@ const seo = {
         </div>
       </section>
 
-      <section aria-labelledby="rule-heading">
+      <div class="scryer-derivation scryer-fork" aria-hidden="true">
+        <span class="scryer-fork-start">φ</span>
+        <span class="scryer-fork-line">── ? ──┬──→ ⊢ φ <em>[keep]</em></span>
+        <span class="scryer-fork-branch">└──→ ∃x : ¬φ(x) <em>[one bad x]</em></span>
+      </div>
+
+      <section class="scryer-section" aria-labelledby="rule-heading">
+        <span class="scryer-margin-note scryer-margin-note-red" aria-hidden="true">⊬ φ<br /><i>[leave open]</i></span>
         <h2 id="rule-heading">the important rule</h2>
         <p>Scryer can say no.</p>
         <p>If it runs out of search budget, lacks the right representation, or needs mathematics it doesn't have, the result should say so. An unproved claim stays unproved.</p>
         <p>An exact calculation can still start from faulty assumptions or answer the wrong question. Those limits should stay visible.</p>
       </section>
 
-      <section aria-labelledby="direction-heading">
+      <section class="scryer-section" aria-labelledby="direction-heading">
         <h2 id="direction-heading">where it's headed</h2>
         <p>Verification came first. The work now is to let an agent build exact objects, search through them, and use what it finds to choose its next question.</p>
         <p>A small proof and search system is testing that idea. Suggestions can steer the search. Only checked results are treated as facts; an open goal still shows what needs proving.</p>
       </section>
 
-      <section aria-labelledby="example-heading">
+      <div class="scryer-derivation scryer-loop-note" aria-hidden="true">
+        <span>?</span><i>→</i><span>𝒳</span><i>→</i><span>⊢</span><i>↘</i><span>•</span>
+        <small>↖ &nbsp; ?′ <em>[again]</em> &nbsp; ─────────┘</small>
+      </div>
+
+      <section class="scryer-section" aria-labelledby="example-heading">
         <h2 id="example-heading">a tiny example of the idea</h2>
-        <p>The search recovered the familiar identity √(3 + 2√2) = 1 + √2 when two constructions reached the same exact number.</p>
+        <p>The search recovered the familiar identity <span class="scryer-equation">√(3 + 2√2) = 1 + √2</span> when two constructions reached the same exact number.</p>
+        <div class="scryer-equation-chain" aria-hidden="true">
+          <span>1 + √2</span><i>(·)²</i><span>3 + 2√2</span><i>√·</i><span>1 + √2 <em>[same]</em></span>
+        </div>
       </section>
 
-      <section id="use" aria-labelledby="use-heading">
+      <section id="use" class="scryer-section" aria-labelledby="use-heading">
         <h2 id="use-heading">use it</h2>
         <p>Public research access runs through Stithy, which serves Scryer as MCP tools for agents.</p>
         <p><a href="/projects/#scryer-access">Public research access details and bearer keys →</a></p>
       </section>
 
-      <section aria-labelledby="underneath-heading">
+      <section class="scryer-section" aria-labelledby="underneath-heading">
+        <span class="scryer-margin-note" aria-hidden="true">φ → n₁ → n₂<br />↺ <i>[replay]</i></span>
         <h2 id="underneath-heading">underneath</h2>
         <p>The engine works with distinct mathematical structures that share arithmetic machinery. Each domain adds its own rules. Where implemented, certificates and proof DAGs make results replayable.</p>
         <p>When one of those results looks odd, there's a trail to follow.</p>
@@ -113,6 +138,38 @@ const seo = {
 </Layout>
 
 <style>
+  .scryer-page {
+    --scryer-ink: var(--chromatic-cyan);
+    overflow: visible;
+  }
+
+  .scryer-header {
+    position: relative;
+  }
+
+  .scryer-title-wrap {
+    position: relative;
+    display: inline-block;
+    isolation: isolate;
+  }
+
+  .scryer-title-scratch {
+    position: absolute;
+    z-index: -1;
+    top: 48%;
+    left: 72%;
+    width: max-content;
+    color: rgb(var(--scryer-ink) / 0.15);
+    font-family: var(--font-casual);
+    font-size: clamp(1rem, 4cqi, 1.45rem);
+    font-weight: 400;
+    letter-spacing: 0.025em;
+    line-height: 1;
+    transform: rotate(-4deg);
+    pointer-events: none;
+    user-select: none;
+  }
+
   .scryer-tagline {
     margin: 0;
     font-size: var(--text-lg);
@@ -121,6 +178,192 @@ const seo = {
 
   .scryer-note {
     max-width: 72ch;
+  }
+
+  .scryer-section {
+    position: relative;
+  }
+
+  .scryer-margin-note {
+    position: absolute;
+    top: 0.4rem;
+    right: clamp(-10.5rem, -13vw, -7rem);
+    width: 8.5rem;
+    color: rgb(var(--scryer-ink) / 0.16);
+    font-family: var(--font-casual);
+    font-size: 0.92rem;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    line-height: 1.15;
+    text-align: center;
+    transform: rotate(-4deg);
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .scryer-section:nth-of-type(even) .scryer-margin-note {
+    transform: rotate(3deg);
+  }
+
+  .scryer-margin-note i,
+  .scryer-derivation em,
+  .scryer-equation-chain em {
+    color: rgb(var(--color-text-rgb) / 0.3);
+    font-family: var(--font-casual);
+    font-size: 0.88em;
+    font-style: normal;
+    font-weight: 400;
+    letter-spacing: 0.015em;
+    white-space: nowrap;
+  }
+
+  .scryer-margin-note i {
+    color: inherit;
+    opacity: 0.72;
+  }
+
+  .scryer-equation {
+    position: relative;
+    padding-inline: 0.12em;
+    color: rgb(var(--color-text-rgb) / 0.94);
+    font-family: var(--font-mono);
+    font-size: 0.94em;
+    font-weight: 500;
+    box-shadow: inset 0 -1px rgb(var(--scryer-ink) / 0.26);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  .scryer-derivation,
+  .scryer-equation-chain {
+    color: rgb(var(--scryer-ink) / 0.44);
+    font-family: var(--font-casual);
+    font-weight: 400;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .scryer-derivation {
+    width: min(100%, 39rem);
+    margin: -0.2rem 0 2.35rem;
+    padding: 0.2rem 0.35rem 0.15rem;
+    border-bottom: 1px dashed rgb(var(--scryer-ink) / 0.1);
+    font-size: clamp(0.78rem, 2.1cqi, 0.9rem);
+    line-height: 1.35;
+    transform: rotate(-0.35deg);
+  }
+
+  .scryer-number-train {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.45rem;
+  }
+
+  .scryer-number-train span {
+    white-space: nowrap;
+  }
+
+  .scryer-number-train b {
+    margin-right: 0.18rem;
+    font-family: var(--font-mono);
+    font-size: 0.72em;
+    font-weight: 400;
+    opacity: 0.72;
+  }
+
+  .scryer-number-train i,
+  .scryer-loop-note i {
+    color: rgb(var(--scryer-ink) / 0.26);
+    font-family: var(--font-mono);
+    font-style: normal;
+  }
+
+  .scryer-fork {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0 0.55rem;
+    width: min(27rem, 88%);
+    margin-left: auto;
+    transform: rotate(0.7deg);
+  }
+
+  .scryer-fork-start {
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+
+  .scryer-fork-line,
+  .scryer-fork-branch {
+    font-family: var(--font-mono);
+    font-size: 0.8em;
+    white-space: nowrap;
+  }
+
+  .scryer-fork-branch {
+    color: rgb(var(--chromatic-red) / 0.34);
+  }
+
+  .scryer-loop-note {
+    display: grid;
+    grid-template-columns: repeat(7, max-content);
+    align-items: baseline;
+    justify-content: end;
+    gap: 0.45rem;
+    width: min(31rem, 92%);
+    margin-left: auto;
+    transform: rotate(-0.8deg);
+  }
+
+  .scryer-loop-note small {
+    grid-column: 2 / -1;
+    justify-self: center;
+    color: rgb(var(--scryer-ink) / 0.27);
+    font-size: 0.82em;
+    letter-spacing: 0.04em;
+  }
+
+  .scryer-equation-chain {
+    display: grid;
+    grid-template-columns: max-content minmax(2.8rem, 1fr) max-content minmax(2.8rem, 1fr) max-content;
+    align-items: center;
+    gap: 0.45rem;
+    margin: 1.15rem 0 1.75rem;
+    font-size: clamp(0.82rem, 2.25cqi, 0.96rem);
+    transform: rotate(-0.45deg);
+  }
+
+  .scryer-equation-chain span {
+    font-family: var(--font-mono);
+    color: rgb(var(--color-text-rgb) / 0.64);
+  }
+
+  .scryer-equation-chain i {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-style: normal;
+    white-space: nowrap;
+  }
+
+  .scryer-equation-chain i::before,
+  .scryer-equation-chain i::after {
+    content: "";
+    height: 1px;
+    flex: 1;
+    background: rgb(var(--scryer-ink) / 0.22);
+  }
+
+  .scryer-equation-chain i::after {
+    clip-path: polygon(0 0, 100% 50%, 0 100%);
+    width: 0.35rem;
+    flex: 0 0 0.35rem;
+    height: 0.35rem;
+    background: rgb(var(--scryer-ink) / 0.32);
+  }
+
+  .scryer-margin-note-red {
+    color: rgb(var(--chromatic-red) / 0.2);
   }
 
   .scryer-loop {
@@ -240,6 +483,11 @@ const seo = {
   }
 
   @media (max-width: 40rem) {
+    .scryer-title-scratch {
+      left: 58%;
+      opacity: 0.82;
+    }
+
     .scryer-loop-track {
       grid-template-columns: minmax(0, 1fr);
       gap: 0;
@@ -250,6 +498,32 @@ const seo = {
       height: 1.5rem;
       margin: 0.65rem 0 0.65rem 0.35rem;
       transform: rotate(90deg);
+    }
+
+    .scryer-derivation {
+      width: 100%;
+      margin-bottom: 2rem;
+      font-size: 0.74rem;
+    }
+
+    .scryer-number-train {
+      gap: 0.2rem;
+    }
+
+    .scryer-fork,
+    .scryer-loop-note {
+      width: 100%;
+      margin-left: 0;
+    }
+
+    .scryer-loop-note {
+      justify-content: start;
+      gap: 0.28rem;
+    }
+
+    .scryer-equation-chain {
+      gap: 0.25rem;
+      font-size: 0.72rem;
     }
 
     .scryer-gallery {
@@ -264,6 +538,12 @@ const seo = {
     .scryer-shot {
       flex: 0 0 min(78vw, 18rem);
       scroll-snap-align: start;
+    }
+  }
+
+  @media (max-width: 68rem) {
+    .scryer-margin-note {
+      display: none;
     }
   }
 

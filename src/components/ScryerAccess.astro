@@ -15,18 +15,23 @@ import { scryerPreview } from "../data/scryer-preview";
   </div>
   <p class="access-intro">Both keys can use every <code>wolf.scryer.*</code> tool. The choice is whether your input gets saved.</p>
   <div class="access-connection" aria-labelledby="scryer-connect-title">
-    <h4 id="scryer-connect-title">Connect your MCP client</h4>
+    <div class="connection-heading">
+      <h4 id="scryer-connect-title">Connect your MCP client</h4>
+      <span class="connection-scratch" aria-hidden="true">agent ─MCP→ 𝒳</span>
+    </div>
     <p>Add the URL below as a remote MCP server. For its request header, use <code>Authorization: Bearer &lt;one of the keys below&gt;</code>.</p>
     <div class="connection-url"><code id="scryer-mcp-url">{scryerPreview.endpoint}</code><button type="button" class="copy-key" data-key="scryer-mcp-url" aria-label="Copy Scryer MCP server URL">Copy URL</button></div>
   </div>
   <div class="access-tiers">
     <div class="access-tier">
       <div class="tier-heading"><h4>Base</h4><span class="tier-tag">question text not kept</span></div>
+      <div class="tier-scratch" aria-hidden="true"><span>q</span><i>→</i><span>∅</span><em>[discard]</em></div>
       <p>Every Scryer tool, with a 30-second deadline and a shared compute budget. Stithy counts and times each call without storing your question.</p>
       <div class="credential"><code id="scryer-base-key">{scryerPreview.baseKey}</code><button type="button" class="copy-key" data-key="scryer-base-key" aria-label="Copy base research bearer token">Copy</button></div>
     </div>
     <div class="access-tier contributor">
       <div class="tier-heading"><h4>Contributor</h4><span class="tier-tag">question text kept</span></div>
+      <div class="tier-scratch contributor-scratch" aria-hidden="true"><span>q</span><i>→</i><span>Σq</span><em>[kept]</em></div>
       <p>Your full input is saved to help improve Scryer. You get a 120-second deadline, more memory and higher queue priority.</p>
       <div class="credential"><code id="scryer-contributor-key">{scryerPreview.contributorKey}</code><button type="button" class="copy-key" data-key="scryer-contributor-key" aria-label="Copy contributor research bearer token">Copy</button></div>
     </div>
@@ -36,7 +41,7 @@ import { scryerPreview } from "../data/scryer-preview";
 </section>
 
 <style>
-  .scryer-access { grid-column: 1 / -1; min-width: 0; border: 1px solid rgb(var(--color-text-rgb) / .13); border-radius: var(--radius-md); padding: clamp(1rem, 2.4vw, 1.5rem); padding-bottom: clamp(1.4rem, 2.7vw, 1.7rem); background: rgb(var(--color-text-rgb) / .025); }
+  .scryer-access { grid-column: 1 / -1; min-width: 0; scroll-margin-top: 8rem; border: 1px solid rgb(var(--color-text-rgb) / .13); border-radius: var(--radius-md); padding: clamp(1rem, 2.4vw, 1.5rem); padding-bottom: clamp(1.4rem, 2.7vw, 1.7rem); background: rgb(var(--color-text-rgb) / .025); }
   .access-header { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem 1.2rem; flex-wrap: wrap; }
   .eyebrow { font-size: .65rem; letter-spacing: .14em; text-transform: uppercase; opacity: .55; font-weight: 700; margin: 0 0 .25rem; }
   h3 { font-size: 1.06rem; font-weight: 650; line-height: 1.25; margin: 0; }
@@ -46,7 +51,10 @@ import { scryerPreview } from "../data/scryer-preview";
   .version-status[data-live] .version-dot { background: #57c8ad; opacity: 1; }
   .access-intro { font-size: .84rem; line-height: 1.55; opacity: .72; margin: .85rem 0 1.05rem; max-width: 70ch; }
   .access-connection { margin-bottom: .8rem; padding: .85rem; border: 1px solid rgb(var(--color-text-rgb) / .11); border-radius: .7rem; }
+  .connection-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; flex-wrap: wrap; }
   .access-connection h4 { margin: 0 0 .3rem; }
+  .connection-scratch, .tier-scratch { color: rgb(var(--chromatic-cyan) / .34); font-family: var(--font-casual); font-weight: 400; pointer-events: none; user-select: none; }
+  .connection-scratch { margin-right: .25rem; font-size: .78rem; letter-spacing: .025em; transform: rotate(-2deg); }
   .access-connection p { margin: 0 0 .65rem; font-size: .8rem; line-height: 1.55; opacity: .74; }
   .connection-url { display: flex; align-items: stretch; gap: .4rem; min-width: 0; }
   .connection-url code { min-width: 0; flex: 1; padding: .48rem .55rem; border: 1px solid rgb(var(--color-text-rgb) / .09); border-radius: .4rem; background: rgb(var(--color-text-rgb) / .04); font: .7rem/1.45 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; user-select: all; }
@@ -54,6 +62,11 @@ import { scryerPreview } from "../data/scryer-preview";
   .access-tier { min-width: 0; display: flex; flex-direction: column; gap: .55rem; border: 1px solid rgb(var(--color-text-rgb) / .11); border-radius: .7rem; padding: .85rem; background: rgb(var(--color-text-rgb) / .025); }
   .access-tier.contributor { border-color: rgb(var(--color-text-rgb) / .18); }
   .tier-heading { display: flex; gap: .35rem .65rem; align-items: baseline; flex-wrap: wrap; }
+  .tier-scratch { display: flex; align-items: baseline; gap: .36rem; width: fit-content; margin: -.16rem 0 -.1rem auto; font-size: .76rem; transform: rotate(-2deg); }
+  .tier-scratch i { color: rgb(var(--chromatic-cyan) / .2); font-family: var(--font-mono); font-style: normal; }
+  .tier-scratch em { color: rgb(var(--color-text-rgb) / .28); font-size: .86em; font-style: normal; white-space: nowrap; }
+  .contributor-scratch { color: rgb(var(--chromatic-red) / .31); transform: rotate(1.5deg); }
+  .contributor-scratch i { color: rgb(var(--chromatic-red) / .19); }
   h4 { margin: 0; font-size: .88rem; font-weight: 650; }
   .tier-tag { font-size: .73rem; opacity: .72; }
   .access-tier p { font-size: .8rem; line-height: 1.55; opacity: .74; margin: 0; flex: 1; }
@@ -70,11 +83,16 @@ import { scryerPreview } from "../data/scryer-preview";
     .access-tiers { grid-template-columns: minmax(0, 1fr); }
     .connection-url { flex-wrap: wrap; }
     .connection-url code { flex-basis: 100%; }
+    .connection-scratch { margin-left: auto; }
   }
 </style>
 
 <script>
   function bootScryerAccess() {
+    const access = document.getElementById('scryer-access');
+    if (access && window.location.hash === '#scryer-access') {
+      window.requestAnimationFrame(() => access.scrollIntoView({ block: 'start' }));
+    }
     const version = document.getElementById('scryer-live-version');
     const base = document.getElementById('scryer-base-key');
     if (!version || !base) return;
