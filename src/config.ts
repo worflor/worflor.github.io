@@ -64,12 +64,12 @@ export const homePageContent: HomePageContent = {
   seo: {
     title: "woflo",
     description:
-      "Canadian game and technology enthusiast who likes building cool things. I fixate on little details and tinker with computers.",
+      "Software developer and independent researcher building tools, interactive systems, games, and mathematical experiments.",
     image: identity.logo,
   },
-  role: "Game & Software Developer",
+  role: "Software Developer & Independent Researcher",
   description:
-    "I'm Michael, a game and general technology enthusiast who fixates on little details. Tinkering with computers since I had access to my very first one, and I plan on continuing to do so. I love tech, it's cool as hell; even when it scares me.",
+    "I'm Michael, a software developer and independent researcher who fixates on little details. I build tools, interactive systems, and mathematical experiments, usually by following one question farther than I meant to. I love tech. It's cool as hell, even when it scares me.",
   socialLinks: socialLinks.filter(link => link.title !== "LinkedIn"),
   links: [
     {
@@ -88,15 +88,15 @@ export const aboutPageContent: AboutPageContent = {
   seo: {
     title: "About | woflo",
     description:
-      "Lifetime gamer and professional picky person from Canada. I like to do things ;]",
+      "Software developer and independent researcher from Canada, building tools, games, interactive systems, and mathematical experiments.",
     image: identity.logo,
   },
   subtitle: "hey, let's get to know each other.",
   about: {
     description: `
-I'm Michael, a game and general technology enthusiast from Canada and I like to do things ;]
+I'm Michael, a software developer and independent researcher from Canada. I like to do things ;]
 <br/><br/>
-Through the miracle of Osmosis, I've picked up a few things along my journey. From Theatre and Teaching (2019-2023), to Game Development (2023-present) with dabbles in general software development, game modding, networking, and more. 
+Through the miracle of osmosis, I came here through theatre and teaching, then game development, and kept wandering into software, game modding, networking, mathematics, and whatever else a project asked of me.
 <br/><br/>
 Every day I find I'm learning something new about the world, even if it's against my will.
 <br/>
@@ -140,7 +140,7 @@ Oh, *knowledge*. <3`,
           url: identity.github,
         },
         date: "2025 - Present",
-        summary: "Small software, dev tools, systems experiments, and utility projects that are fast, low-latency, and, in my biased opinion, annoyingly correct.",
+        summary: "Small software, developer tools, systems experiments, and utility projects, built with a bias toward low latency, explicit behavior, and testable claims.",
         tags: ["Java 21", "Dev Tools", "Systems", "Experiments", "Low Latency"],
       },
     ],
@@ -215,17 +215,13 @@ export const projectsPageContent: ProjectPageContent = {
       year: "2026",
       url: "/neuron",
       slug: "neuron",
-      // the badge answers to the repository, not to this file. while it is
-      // private the card says "coming soon" on its own; the day it opens the
-      // badge clears itself and this line can go.
-      gate: "worflor/neuron",
       github: "worflor/neuron",
       trackRelease: true,
     },
     {
       title: "Manifold",
       description:
-        "Git desktop client. Your codebase is a manifold.<br>Change one file and it shows you everything quietly bound to it, heat spreading outward through the file graph. The curvature of that graph even marks the bridges your architecture leans on.<br>Flutter, Dart, and a bit of spectral geometry.",
+        "Git desktop client. Your codebase is a manifold.<br>Change one file and it follows the nearby structure through a graph built from repository history. Heat spreads toward related files; curvature helps surface the bridges your architecture leans on.<br>Flutter, Dart, and a bit of spectral geometry.",
       image: "/images/manifold",
       month: "April",
       year: "2026",
@@ -235,7 +231,7 @@ export const projectsPageContent: ProjectPageContent = {
     },
     {
       title: "Whisper",
-      description: "Encrypted communication over Möbius geometry, entirely in the browser.<br>Tuck a message inside an ordinary file, or open a peer-to-peer channel through a 16D bond codec that hands both sides the same secret.<br>Mathematically private.",
+      description: "Encrypted communication over Möbius geometry, built in the browser.<br>Tuck an encrypted message inside an ordinary file, or open a peer-to-peer session protected with authenticated encryption.<br>Möbius-derived prediction shapes the codec; standard cryptography protects the message.",
       image: "/images/whisper.webp",
       month: "February",
       year: "2026",
@@ -274,7 +270,7 @@ export const projectsPageContent: ProjectPageContent = {
     },
     {
       title: "Project Pocket",
-      description: "Encryption that doesn't protect the file. Encryption that decides whether the file exists.<br>A public BitTorrent swarm holds the blobs; nothing in them is recognizable as data. A Kizuna 16D witness check decides whether your handshake's geometry matches, and if it does, the blob collapses into a file your machine can read.",
+      description: "A file scattered into unrecognizable pieces across a public BitTorrent swarm.<br>The concept uses a shared handshake to recover the structure needed to put those pieces back together. Without it, the swarm only sees unrelated blobs.",
       year: "2026",
       url: "/contact?project=pocket",
       // linked as "pocket" long before this field existed, and a slug derived
@@ -291,14 +287,15 @@ export const projectsPageContent: ProjectPageContent = {
     //   slug: "hindsight",
     //   status: "parked",
     // },
-    {
-      title: "Project Prisma",
-      description: "Footage in superposition. Every frame holds every possible cut.<br>Prisma is the measurement. The Whisper codecs already produce a surprise signal for every byte, every sample, every frame. Read those signals as attention, weight them, collapse the timeline. The edit was always in the recording; nobody had a way to find it.",
-      year: "2026",
-      url: "/contact?project=prisma",
-      slug: "prisma",
-      status: "concept",
-    },
+    // prisma is resting out of sight for now. uncomment to bring it back.
+    // {
+    //   title: "Project Prisma",
+    //   description: "Footage in superposition. Every frame holds every possible cut.<br>Prisma is the measurement. The Whisper codecs already produce a surprise signal for every byte, every sample, every frame. Read those signals as attention, weight them, collapse the timeline. The edit was always in the recording; nobody had a way to find it.",
+    //   year: "2026",
+    //   url: "/contact?project=prisma",
+    //   slug: "prisma",
+    //   status: "concept",
+    // },
     {
       title: "wick",
       description:
@@ -311,7 +308,7 @@ export const projectsPageContent: ProjectPageContent = {
     {
       title: "séance",
       description:
-        "run any LLM straight off cold SSD. no GPU, no framework, zero weights in RAM.<br>a 197KB rust binary memory-maps the weights and reads them one matmul at a time, so a 9B model (19GB on disk) runs in under 2MB of RAM, across 12 models and 10 architecture families. it's IO-bound today (~0.5–14 tok/s), but speed scales *linearly* with drive bandwidth: no diminishing returns, no cliff. a RAM runtime goes “fast → doesn't run” the moment a model outgrows memory; séance goes “fast → a bit slower.”<br>proof of concept, ahead of its hardware. taught me more about how weights behave than anything i've read.",
+        "run an LLM straight from cold SSD. no GPU, no inference framework, and no need to keep the model weights resident in RAM.<br>the roughly 197KB Rust binary memory-maps safetensors and reads each matrix as it is needed. it has been tested on 12 models across 10 architecture families, from 0.5B to 9B parameters. the 19GB Qwen3.5-9B run used under 2MB for its own runtime state and generated at about 0.5 tok/s on the test machine. faster storage helps because the runtime spends most of its time waiting on weight reads.<br>proof of concept, ahead of its hardware. taught me more about how weights behave than anything i've read.",
       year: "2026",
       url: "/contact?project=seance",
       slug: "seance",

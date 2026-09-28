@@ -1,18 +1,10 @@
 ---
 import NeuronLayout from "../../layouts/NeuronLayout.astro";
-import { projectsPageContent } from "../../config";
-import { repoIsPublic } from "../../utils/release";
 
-// See neuron/index.astro for why this is decided at build time and why it fails
-// closed. Both pages read the same `gate:` on the Neuron record in config.ts, so
-// they cannot drift apart, and removing that one line releases both at once.
 const REPO_SLUG = "worflor/neuron";
-const gate = projectsPageContent.projects.find((p) => p.slug === "neuron")?.gate;
-const released = gate ? await repoIsPublic(gate) : true;
-
 const REPO = `https://github.com/${REPO_SLUG}`;
-const CTA_HREF = released ? REPO : "/contact?project=neuron";
-const CTA_LABEL = released ? "GET NEURON" : "TELL ME WHEN";
+const CTA_HREF = REPO;
+const CTA_LABEL = "GET NEURON";
 
 const seo = {
   title: "Neuron / learn more",
@@ -36,9 +28,7 @@ const seo = {
         </a>
         <a href="/" style="font-size:10px;letter-spacing:.16em;color:rgba(198,214,198,.42);text-decoration:none;transition:color .15s,text-shadow .18s ease-out;" style-hover="color:#eef3ec;text-shadow:-1px 0 0 rgb(0 255 255 / 0.5),1px 0 0 rgb(255 0 0 / 0.5);">/ woflo</a>
       </div>
-      {released && (
-        <a href={REPO} style="font-size:10px;letter-spacing:.2em;color:rgba(198,214,198,.42);text-decoration:none;border-bottom:1px solid rgba(198,214,198,.13);padding-bottom:3px;transition:color .15s,border-color .15s;" style-hover="color:#eef3ec;border-color:rgba(198,214,198,.4);">SOURCE ↗</a>
-      )}
+      <a href={REPO} style="font-size:10px;letter-spacing:.2em;color:rgba(198,214,198,.42);text-decoration:none;border-bottom:1px solid rgba(198,214,198,.13);padding-bottom:3px;transition:color .15s,border-color .15s;" style-hover="color:#eef3ec;border-color:rgba(198,214,198,.4);">SOURCE ↗</a>
     </div>
 
     <div data-grid style="display:grid;grid-template-columns:230px minmax(0,1fr);max-width:1160px;margin:0 auto;padding:0 clamp(24px,6vw,72px);align-items:start;">
@@ -123,7 +113,7 @@ const seo = {
         <section id="sec-3" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">03 / LIGHTING</div>
           <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">lighting that means something.</h2>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">You get everything Synapse's lighting does (the native static, breathing, spectrum, wave, reactive and starlight effects, invoked by their real firmware ids), and then the actual point: an open theme engine sitting on top. An effect is two halves that compose, a <em style="font-style: normal; color: rgb(217, 255, 228);">pattern</em> that decides where light lands and how bright, and a <em style="font-style: normal; color: rgb(217, 255, 228);">spectrum</em> that decides what colour and when. Since a frame is just data, a live readout (battery, cpu, your mic peak) drops in as its own layer over a running effect, and painting the fire sim with an ocean gradient gives you cold fire with zero code. Changes apply live.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">Neuron invokes the firmware's static, breathing, spectrum, wave, reactive, and starlight effects by their native IDs. Its own theme engine sits above them. An effect is two halves that compose, a <em style="font-style: normal; color: rgb(217, 255, 228);">pattern</em> that decides where light lands and how bright, and a <em style="font-style: normal; color: rgb(217, 255, 228);">spectrum</em> that decides what colour and when. Since a frame is just data, a live readout (battery, cpu, your mic peak) drops in as its own layer over a running effect, and painting the fire sim with an ocean gradient gives you cold fire with zero code. Changes apply live.</p>
           <p style="font-size:13.5px;line-height:1.7;color:rgba(198,214,198,.5);margin:0 0 18px;">Three I built for the fun of it, so you can see what the engine gives you past the stock set:</p>
           <div style="display:grid;gap:0;border-top:1px solid rgba(198,214,198,.1);">
             <div style="display:grid;grid-template-columns:120px 1fr;gap:16px;padding:16px 4px;border-bottom:1px solid rgba(198,214,198,.1);align-items:baseline;">
@@ -218,9 +208,9 @@ const seo = {
 
         <section id="sec-7" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">07 / WON'T SURPRISE YOU</div>
-          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">it changes what you ask, and nothing else.</h2>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">This is a tool whose whole job is injecting input and writing to your hardware, so the safety has to be real. Every synthesised keystroke runs through one switch that starts disarmed, and only the running app ever flips it on. Every write backs the device up first, takes effect in volatile memory before anything gets flashed, then reads itself back to confirm the bytes actually landed. A mismatch is a hard error, never a silent success, and where there's no opcode Neuron trusts, it simply refuses.</p>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">Nothing changes quietly, either. Every committed change pops a small card on screen after it lands, and you drag a little mock-monitor to say where those cards appear. Think of it as the OSD Synapse throws at you, minus the part where you can't turn it off.</p>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">it checks its work.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">Neuron begins with synthesised input disarmed. Live dispatch arms it; safe mode leaves it off. Hardware writes stay volatile where the device allows it, and Neuron reads each value back before calling the change successful. If the device disagrees, the write fails. Commands it does not know are left alone.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">Once a change lands, Neuron shows a confirmation card. You can move them, batch them, or turn them off.</p>
         </section>
 
         <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">

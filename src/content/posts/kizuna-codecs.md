@@ -10,7 +10,9 @@ images:
 
 ## sorry, i don't "trust you bro"
 
-i wanted encrypted live messaging. *real* encryption, not "we pinky promise the server doesn't look at it" encryption. peer-to-peer, end-to-end, with nothing in between. and proper encryption built INTO the thing itself. fun fact, most audio, video, or images are only encrypted as a package, not the data itself. i just wanted to solve THAT. nothing else...
+**september 2026:** this post follows the idea as i understood it in march. the code has moved since then. live Whisper now uses ephemeral P-256 ECDH, HKDF-derived ratchets, and AES-GCM. the codec's running model feeds the message-key schedule, while the 16D witness helps confirm the handshake.
+
+i wanted encrypted live messaging. browser to browser, no account, with the content sealed before it touched the network. then i started wondering how much of the codec's own state could participate in the session. that was supposed to be the small question.
 
 building that meant building a codec :(
 
@@ -26,7 +28,7 @@ turns out the answer is **8**. and then **16**. and the thing waiting at 16 is w
 
 ## the tower, briefly
 
-the [Möbius predictor formula](https://doi.org/10.2307/2319793) works in any dimension. to predict a value, you look at every corner of the surrounding neighborhood ($2^n - 1$ of them) and combine them with alternating signs: nearest corners add, pairs subtract, triples add back, all the way out, until every contribution has landed *exactly once* and the weights total to 1. the prediction is exact for any signal without a coupling woven through all $n$ dimensions simultaneously. most smooth data qualifies. no particular algebraic structure required. just a *pattern*... working quietly in whatever dimension you hand it...
+the [Möbius predictor formula](https://doi.org/10.2307/2319793) works in any dimension. in $n$ dimensions, it combines $2^n - 1$ neighboring corners with alternating signs. the residual is the mixed finite difference across all $n$ axes. when there is no $n$-way interaction at that scale, the residual is zero. otherwise, it is the part those lower-dimensional neighbors leave behind.
 
 the dimensions follow the Hurwitz sequence of normed division algebras:
 
@@ -76,9 +78,9 @@ $$
 P = \sum (-1)^{|S|+1} \cdot f(\text{neighbor}_S)
 $$
 
-255 terms, grouped by binomial coefficient: +8, -28, +56, -70, +56, -28, +8, -1. add the 8 direct neighbors, subtract the 28 pairs, add the 56 triples, on and on through all 255 groups. they sum to exactly 1. the predictor is unbiased, and it's exact for any signal without a coupling running through all eight dimensions at once. *most data, most of the time.* if your friend's train of thought takes up to seven sharp turns, Loup still knows exactly how the sentence ends. *no guess needed.*
+in eight dimensions, that inclusion-exclusion step uses 255 neighboring terms. Loup stores the resulting mixed difference as its residual. its size reflects the high-order interaction in the block; when that interaction vanishes, so does the residual.
 
-Loup uses an anti-causal variant that looks forward instead of backward, and this unlocks the **boundary theorem**. when any coordinate of a voxel sits at the block edge, the sum telescopes to the value itself. prediction is exact. residual is zero. *always*. regardless of the data. like a jigsaw piece at the edge of the puzzle: the flat sides constrain it so completely that its identity is mathematical inevitability.
+its anti-causal path uses a reversible boundary convention that sets edge residuals to zero by construction.
 
 at block size 4, the free-zero fraction is $1 - (3/4)^8 = \mathbf{89.99\%}$. almost 90% of every block is edge pieces. only 6,561 interior voxels out of 65,536 need actual computation.
 
@@ -132,16 +134,9 @@ and this is where things get **really** interesting.
 
 the entropy coder is stateful. every frame it encodes reshapes its internal probability tables. frame 1 alters the model, which changes how frame 2 gets encoded, which reshapes the model again for frame 3. the codec traces a trajectory through probability space, and that trajectory depends on two things: where it started (the handshake) and every frame that came before.
 
-this is exactly how two people develop their own language over months of talking. every conversation builds on the last one. the shorthand gets denser. the references get more obscure. someone overhearing sentence 47 can't make perfect sense of the topic because they missed sentences 1 through 46. there's no catching up without *starting over*.
+the useful part of the analogy is shared history. both sides carry a running model of the session, and Whisper Loop folds a digest of that model into each message-key derivation. the ratchet can hold a bounded set of skipped keys for delayed messages. if the models diverge, so do the keys; AES-GCM rejects the frame.
 
-for an attacker this means you can't just intercept frame 47 and decode it. you would need:
-
-1. the shared secret from the ECDH handshake (to derive the initial Logos seed and 8D context)
-2. every single frame from 0 through 46 (to ratchet the model forward through the same trajectory)
-
-miss ***one frame*** and the model state diverges. the probability tables are wrong. the arithmetic decoder produces *garbage*. the trajectory has forked and there's no recovering without going all the way back to the start.
-
-this is frame ratcheting. the "key" is the evolving state of the codec itself, shaped by the handshake and every moment of the conversation. each frame is encrypted by the trajectory of everything before it. the conversation **encrypts itself**, and the bond deepens with every frame.
+ECDH, HKDF, and AES-GCM provide the cryptographic security. the codec history adds a desync tripwire.
 
 that's where the name comes from. 絆 (*kizuna*) means 'bond' in Japanese; the kind that strengthens over time.
 
@@ -163,23 +158,25 @@ ECDH shared secret
                                frame 1 ──→ updates model
                                frame 2 ──→ updates model
                                   ...
-                               frame N ──→ only decodable with
-                                           handshake + frames 0..N-1
+                               frame N ──→ key from ratchet
+                                           + codec-state digest
 ```
 
-three layers. one block. no extra round trips.
+three layers, one shared starting block, no extra handshake round trips.
 
-the 0D entropy coder provides adaptive compression. the 8D predictor exploits spatial correlations. the 16D bond ties the cryptographic state into both, creating a trajectory that ratchets forward with every frame.
+Logos provides adaptive compression. Loup handles spatial prediction. the 16D witness contributes to handshake confirmation. during live messaging, the running codec model feeds Whisper Loop's message-key derivation.
 
 the duality connects it all. 255 contexts mirror 255 neighbors. 65,535 contexts mirror 65,535 neighbors. the Boolean lattice says the same thing twice in two different languages, and the codec speaks both.
 
 ## closing thoughts
 
-i started with a problem (encrypt stuff *properly*, peer-to-peer, no servers) and ended up building a codec stack where the encryption grows out of the same math that powers the compression. that wasn't the plan. the plan was just good audio over WebRTC. but once the 1D predictor worked, and the tower was there... the only honest thing to do was climb it.
+i started with encrypted browser messaging and ended up building a codec stack around the same family of inclusion-exclusion transforms. that wasn't the plan. the plan was good audio over WebRTC. once the 1D predictor worked, i kept following it upward.
 
-the scary algebra turned out to be the kindest part. 65,535 terms sounds absurd until you realize 99.998% of them collapse to zero and the single survivor is a wax seal of everything in the block. the Möbius formula does the heavy lifting. you just have to trust the math and let it work.
+the algebra looks larger than the job it does. Kizuna reduces a shared block to a witness used during confirmation. the live session then proceeds with the ratchet and authenticated encryption.
 
-all of this runs in the browser. no servers, no intermediaries, no trust required. your messages are encoded in a language that only exists between the two of you. one that started from a secret handshake and gets deeper with every single frame.
+the codecs and cryptography run in the browser. a public tracker helps phrase-matched peers find each other; STUN and TURN help when the network gets in the way. they carry connection metadata and encrypted traffic, never message plaintext.
+
+the private language is still the part i love. the cryptography keeps it private. the evolving codec gives it history.
 
 anyway. that's what's behind the [scenes](/whisper)
 

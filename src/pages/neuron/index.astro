@@ -1,28 +1,11 @@
 ---
 import NeuronLayout from "../../layouts/NeuronLayout.astro";
-import { projectsPageContent } from "../../config";
-import { repoIsPublic } from "../../utils/release";
 
-// Whether this page may promise a download, decided once at build time.
-//
-// The gate is declared on the Neuron project record in config.ts, so the card
-// on /projects and this page can never disagree about it. Delete that one
-// `gate:` line the day the repository opens and everything here unlocks
-// together. Until then GitHub answers 404 to a stranger, the probe fails
-// closed, and the page asks for patience instead of sending someone nowhere.
-//
-// Resolved at build time on purpose: the HTML ships already decided, so there
-// is no flash of the wrong state while a fetch settles.
 const REPO_SLUG = "worflor/neuron";
-const gate = projectsPageContent.projects.find((p) => p.slug === "neuron")?.gate;
-const released = gate ? await repoIsPublic(gate) : true;
-
 const REPO = `https://github.com/${REPO_SLUG}`;
-// Not a dead end while it waits: the contact form knows this project by slug
-// and will name it in the subject line and the inquiry banner.
-const CTA_HREF = released ? REPO : "/contact?project=neuron";
-const CTA_LABEL = released ? "GET NEURON" : "TELL ME WHEN";
-const RELEASE_CHIP = released ? "PUBLIC&nbsp;BETA · MK1" : "COMING&nbsp;SOON · MK1";
+const CTA_HREF = REPO;
+const CTA_LABEL = "GET NEURON";
+const RELEASE_CHIP = "PUBLIC&nbsp;BETA · MK1";
 
 const seo = {
   title: "Neuron / an anti-synapse for your Razer gear",

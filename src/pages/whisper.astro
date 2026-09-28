@@ -10,7 +10,7 @@ import ActionBar from "../components/ActionBar.astro";
 const seo = {
   title: "Whisper | woflo",
   description:
-    "Hide data inside files, send private sealed messages, and talk peer-to-peer. Everything encrypted, everything local. Nothing leaves your browser.",
+    "Hide encrypted data inside files, send sealed messages, and open end-to-end encrypted peer-to-peer sessions. Encoding and cryptography run in your browser.",
   image: "/images/social-card.png",
 };
 ---
@@ -877,7 +877,7 @@ const seo = {
             </div>
           </div>
           <p class="wl-head-subtitle">
-            encrypted peer-to-peer chat, no accounts, no servers
+            end-to-end encrypted peer-to-peer chat · no accounts
           </p>
           <div class="wl-head-right">
             <div
@@ -987,20 +987,20 @@ const seo = {
       <div class="whisper-insights">
         <h2 class="insights-title">what is this?</h2>
         <p class="insights-text">
-          whisper is the idea that communication shouldn’t require permission.
-          not from a company. not from a government. not even because a lack of
-          bandwidth. <strong>nothing</strong>. a passphrase becomes your
-          gateway. the browser becomes your identity. messages, drawings, calls, video --
-          ALL encrypted, bonded, efficient, and direct.
+          whisper is an experiment in browser-native communication: sealed
+          messages, peer sessions, and codecs with evolving state. a shared
+          phrase can bring two browsers to the same rendezvous; ephemeral keys
+          establish the session. messages, files, drawings, and voice stay
+          encrypted in transit.
         </p>
         <p class="insights-text">
-          audio and video powered by Whisper Harmonic and Whisper Lumen media
-          codecs, all encrypted with a Whisper Kizuna bond. what is that? it's
-          encryption at a level that makes it impossible to decrypt without
-          <strong><a href="/blog/kizuna-codecs">preventing the handshake itself</a></strong>. a Kizuna bond, once
-          sealed, is structurally exclusive. two seats, between two people. it's
-          the best way to keep secrets safe in a world that wants to know
-          everything.
+          Whisper includes Harmonic audio and Lumen video codecs. in a live
+          session, chat messages and files pass through Whisper Loop, which
+          folds the adaptive codec state into each message-key derivation.
+          drawings and Harmonic voice frames use a separate sealed channel.
+          AES-GCM provides confidentiality and integrity; the 16D Kizuna witness
+          participates in <strong><a href="/blog/kizuna-codecs">handshake confirmation</a></strong>
+          rather than acting as a standalone cipher.
         </p>
         <p class="insights-text">
           hide a secret inside an ordinary file if the situations arise;
@@ -1008,9 +1008,10 @@ const seo = {
           the secret dies with it.
         </p>
         <p class="insights-text">
-          no servers. no logs. no middleman to worry about. <em
-            >whisper to a friend across the open net</em
-          >.
+          connection services may help peers find or reach each other. they can
+          see connection metadata, but message plaintext is encrypted before it
+          reaches them. no account required. <em>whisper to a friend across the
+          open net</em>.
         </p>
       </div>
     </section>

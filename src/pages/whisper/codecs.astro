@@ -4,7 +4,7 @@ import Layout from "../../layouts/Layout.astro";
 const seo = {
   title: "The Descent | woflo",
   description:
-    "an immersive journey through the dimensional tower of codecs. compression, encryption, and communication as one operation.",
+    "an immersive journey through Whisper's dimensional codec tower, from prediction and compression to the state carried into its message ratchet.",
   image: "/images/social-card.png",
 };
 ---
@@ -133,7 +133,7 @@ const seo = {
           <span class="act-dim">16D</span>
           <h2 class="act-name">Kizuna</h2>
           <p class="quote">
-            the secrets become geometry.<br />the geometry becomes the cipher.
+            the histories meet in geometry.<br />the witness confirms their shape.
           </p>
           <div class="counter" aria-hidden="true">
             <span class="counter-value">0</span>
@@ -180,21 +180,21 @@ const seo = {
         </div>
         <div class="copy copy--lower">
           <p class="loop-final">
-            compression. encryption. forward secrecy.<br />one operation.
+            codec state enters the ratchet.<br />each message moves it forward.
           </p>
         </div>
       </div>
       <span class="sr-only"
-        >Messages fall through a vertical tower of codec layers — Logos
-        compresses, Loup predicts, Kizuna seals. Each completed message
-        advances the ratchet. The key changes. The loop resets.</span
+        >Messages fall through a vertical tower of codec layers. Logos
+        compresses and Loup predicts. The running codec state joins the next
+        message-key derivation, and each completed message advances the ratchet.</span
       >
     </section>
 
     <!-- ═══ Coda — The Apple ═══ -->
     <section class="act act--coda" id="act-coda" aria-label="The apple">
       <div class="pin">
-        <p class="coda-hint">the only attack surface is the handshake.</p>
+        <p class="coda-hint">the handshake sets the session in motion.</p>
         <button class="apple" aria-label="reveal the handshake">
           <div class="apple-dot"></div>
           <div class="apple-interior">
@@ -224,16 +224,15 @@ const seo = {
               <text x="140" y="23" text-anchor="middle" font-family="'Cascadia Code','Fira Code',monospace" font-size="7.5" fill="rgb(255,0,0)" opacity="0.55">a · b · G</text>
 
               <!-- protocol -->
-              <text x="140" y="90" text-anchor="middle" font-family="'Cascadia Code','Fira Code',monospace" font-size="6" fill="rgb(245,245,245)" opacity="0.18">X25519 + Double Ratchet</text>
+              <text x="140" y="90" text-anchor="middle" font-family="'Cascadia Code','Fira Code',monospace" font-size="6" fill="rgb(245,245,245)" opacity="0.18">P-256 ECDH · HKDF · AES-GCM</text>
             </svg>
-            <p class="coda-quote">everything else is geometry.</p>
+            <p class="coda-quote">the geometry bears witness.</p>
           </div>
         </button>
       </div>
       <span class="sr-only"
-        >A single red dot represents the only vulnerability: the handshake.
-        Clicking reveals the ECDH key exchange. Everything else is protected
-        by geometry.</span
+        >An ephemeral ECDH handshake establishes the session. A geometric
+        witness helps confirm it; standard cryptography protects the messages.</span
       >
     </section>
   </section>
