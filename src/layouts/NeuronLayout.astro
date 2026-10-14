@@ -29,7 +29,10 @@ const { seo } = Astro.props;
     <meta property="og:description" content={seo.description} />
     {seo.image && <>
       <meta property="og:image" content={`${Astro.url.origin}${seo.image}`} />
-      <meta property="og:image:alt" content="Neuron's neon-green wordmark on a dark background" />
+      <meta property="og:image:type" content="image/png" />
+      <meta property="og:image:width" content="1200" />
+      <meta property="og:image:height" content="630" />
+      <meta property="og:image:alt" content="Neuron's lighting editor beside an illustrated keyboard and lighting-layer visualization" />
     </>}
     <meta property="og:url" content={Astro.url.href} />
     <meta name="twitter:card" content="summary_large_image" />
@@ -37,7 +40,7 @@ const { seo } = Astro.props;
     <meta name="twitter:description" content={seo.description} />
     {seo.image && <>
       <meta name="twitter:image" content={`${Astro.url.origin}${seo.image}`} />
-      <meta name="twitter:image:alt" content="Neuron's neon-green wordmark on a dark background" />
+      <meta name="twitter:image:alt" content="Neuron's lighting editor beside an illustrated keyboard and lighting-layer visualization" />
     </>}
 
     {/* Self-hosted, the way the rest of the site already does it.
