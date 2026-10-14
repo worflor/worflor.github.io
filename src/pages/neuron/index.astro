@@ -3,14 +3,14 @@ import NeuronLayout from "../../layouts/NeuronLayout.astro";
 
 const REPO_SLUG = "worflor/neuron";
 const REPO = `https://github.com/${REPO_SLUG}`;
-const CTA_HREF = REPO;
-const CTA_LABEL = "GET NEURON";
-const RELEASE_CHIP = "PUBLIC&nbsp;BETA · MK1";
+const CTA_HREF = `${REPO}/releases/latest`;
+const CTA_LABEL = "Download for Windows";
+const RELEASE_CHIP = "WINDOWS&nbsp;10/11 · BETA";
 
 const seo = {
-  title: "Neuron / an anti-synapse for your Razer gear",
+  title: "Neuron / your Razer hardware. your rules.",
   description:
-    "One small binary that replaces Razer Synapse. Talks to your mouse and keyboard directly over raw HID. No driver, no account, no cloud, no telemetry.",
+    "A Rust alternative to Razer Synapse: device controls, reactive lighting, button remapping, Python macros and gestures. Free Windows 10/11 beta. No account or telemetry.",
   image: "/images/neuron-og.png",
 };
 ---
@@ -28,28 +28,36 @@ const seo = {
       <div data-topbar style="position:relative;z-index:1;display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 20px;padding:clamp(20px,4cqw,42px) clamp(20px,5.5cqw,56px) 0;">
         <div style="display:flex;align-items:baseline;gap:clamp(8px,1.4cqw,14px);flex-wrap:wrap;">
           <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:clamp(15px,1.9cqw,19px);letter-spacing:.32em;color:#eef3ec;view-transition-name:neuron-wordmark;">NEURON</span>
-          <span style="font-size:clamp(9px,1.1cqw,11px);letter-spacing:.16em;color:rgba(198,214,198,.42);white-space:nowrap;">/ AN&nbsp;ANTI-SYNAPSE</span>
+          <span style="font-size:clamp(9px,1.1cqw,11px);letter-spacing:.16em;color:rgba(198,214,198,.42);white-space:nowrap;">/ A&nbsp;SYNAPSE&nbsp;ALTERNATIVE</span>
         </div>
         <div style="font-size:clamp(9px,1.1cqw,11px);letter-spacing:.14em;color:rgba(198,214,198,.42);white-space:nowrap;" set:html={RELEASE_CHIP} />
       </div>
 
       <div style="position:relative;z-index:1;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:clamp(30px,6vh,68px);padding:clamp(24px,4vh,0px) clamp(20px,5.5cqw,56px) clamp(24px,4vh,0px);text-align:center;">
-        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(30px,6.2cqw,60px);line-height:1.15;letter-spacing:-0.01em;color:#eef3ec;max-width:960px;text-wrap:balance;">your <span data-domain style="color:#39ff6a;">mouse</span><span data-caret style="display:inline-block;width:3px;height:0.92em;margin:0 1px;transform:translateY(0.08em);background:#39ff6a;"></span>, your way.</div>
+        <div style="max-width:960px;">
+          <h1 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(30px,6.2cqw,60px);line-height:1.15;letter-spacing:-0.01em;color:#eef3ec;margin:0;text-wrap:balance;">your razer hardware.<br />your rules.</h1>
+          <p style="max-width:660px;margin:22px auto 0;font-size:clamp(12px,1.5cqw,15px);line-height:1.7;color:rgba(220,228,218,.75);text-wrap:balance;">A Synapse replacement for Windows. Reactive lighting, button remapping, Python macros and gestures. No account, cloud or telemetry.</p>
+        </div>
 
         <div data-row style="width:100%;max-width:1200px;display:grid;grid-template-columns:minmax(120px,1fr) auto minmax(120px,1fr);align-items:center;gap:clamp(14px,2.4vh,22px) clamp(22px,4cqw,40px);">
           <div data-trigger-cell style="grid-column:1;justify-self:start;text-align:left;min-width:0;max-width:100%;">
-            <div style="font-size:clamp(9.5px,1.15cqw,10.5px);letter-spacing:.2em;color:rgba(198,214,198,.45);white-space:nowrap;">TRIGGER</div>
+            <div style="font-size:clamp(9.5px,1.15cqw,10.5px);letter-spacing:.2em;color:rgba(198,214,198,.45);white-space:nowrap;">TRIGGER / <span data-domain style="color:#39ff6a;">mouse</span><span data-caret style="display:inline-block;width:2px;height:.92em;margin:0 1px;transform:translateY(.08em);background:#39ff6a;"></span></div>
             <div data-trigger-list style="font-size:clamp(9px,1cqw,9.5px);letter-spacing:.06em;color:rgba(198,214,198,.28);white-space:nowrap;overflow:hidden;text-overflow:clip;">button · gesture · flick · app · mic · hold</div>
           </div>
 
-          <a data-cta href={CTA_HREF} style="grid-column:2;justify-self:center;display:inline-flex;align-items:center;gap:clamp(10px,1.6cqw,16px);padding:clamp(13px,1.8cqw,16px) clamp(24px,3.6cqw,34px);background:#070a07;border:1px solid rgba(57,255,106,.6);color:#eef3ec;text-decoration:none;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:clamp(16px,2cqw,20px);letter-spacing:.05em;box-shadow:5px 5px 0 rgba(57,255,106,.15);transition:background .12s,color .12s,border-color .12s,box-shadow .12s,transform .12s;white-space:nowrap;flex-shrink:0;" style-hover="background:#0a120b;border-color:#39ff6a;color:#f4fff7;" style-active="box-shadow:2px 2px 0 rgba(57,255,106,.34);transform:translate(3px,3px);">{CTA_LABEL}<canvas data-therefore width="40" height="40" style="width:40px;height:40px;display:block;flex-shrink:0;margin:-6px calc(-1 * clamp(2px,0.6cqw,4px));"></canvas></a>
+          <a data-cta href={CTA_HREF} style="grid-column:2;justify-self:center;display:inline-flex;align-items:center;gap:8px;padding:clamp(13px,1.8cqw,16px) clamp(12px,2.5cqw,28px);background:#070a07;border:1px solid rgba(57,255,106,.6);color:#eef3ec;text-decoration:none;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:clamp(13px,2cqw,18px);letter-spacing:.01em;box-shadow:5px 5px 0 rgba(57,255,106,.15);transition:background .12s,color .12s,border-color .12s,box-shadow .12s,transform .12s;white-space:nowrap;flex-shrink:0;" style-hover="background:#0a120b;border-color:#39ff6a;color:#f4fff7;" style-active="box-shadow:2px 2px 0 rgba(57,255,106,.34);transform:translate(3px,3px);">{CTA_LABEL}<canvas data-therefore width="40" height="40" style="width:32px;height:32px;display:block;flex-shrink:0;margin:-6px calc(-1 * clamp(2px,0.6cqw,4px));"></canvas></a>
 
           <div data-action-cell style="grid-column:3;justify-self:end;text-align:right;min-width:0;max-width:100%;">
             <div style="font-size:clamp(9.5px,1.15cqw,10.5px);letter-spacing:.2em;color:rgba(57,255,106,.7);white-space:nowrap;">ACTION</div>
             <div data-transcript style="font-family:'JetBrains Mono',monospace;font-weight:500;font-size:clamp(14px,1.7cqw,16px);line-height:1.3;min-height:1.3em;letter-spacing:.02em;color:#d9ffe4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;">dpi 1600</div>
           </div>
         </div>
-        <a data-learn href="/neuron/about" style="display:inline-flex;align-items:center;gap:clamp(8px,1.2cqw,11px);margin-top:clamp(-40px,-4vh,-18px);font-family:'JetBrains Mono',monospace;font-size:clamp(10px,1.15cqw,11px);font-weight:500;letter-spacing:.34em;text-transform:uppercase;color:rgba(198,214,198,.48);text-decoration:none;padding:7px 3px 5px;border-bottom:1px solid rgba(198,214,198,.13);transition:color .16s,border-color .16s,letter-spacing .16s;" style-hover="color:#eef3ec;border-color:rgba(198,214,198,.4);letter-spacing:.42em;">learn more</a>
+        <nav class="neuron-links" aria-label="Neuron information">
+          <a data-learn href="/neuron/about">learn more</a>
+          <a href={REPO}>GitHub source ↗</a>
+          <a href={`${REPO}/blob/main/docs/FAQ.md`}>FAQ &amp; help</a>
+          <a href={`${REPO}/blob/main/docs/STATUS.md`}>device support</a>
+        </nav>
       </div>
 
       <div style="position:relative;z-index:1;text-align:center;padding:clamp(20px,4vh,52px) clamp(16px,5cqw,40px);font-size:clamp(8.5px,1.4cqw,11px);letter-spacing:.1em;color:rgba(198,214,198,.38);">no cloud, account, telemetry &nbsp;·&nbsp; one install &nbsp;·&nbsp; <a href="/" style="color:inherit;text-decoration:none;border-bottom:1px solid rgba(198,214,198,.16);padding-bottom:2px;transition:color .15s,border-color .15s,text-shadow .18s ease-out;" style-hover="color:#eef3ec;border-color:rgba(198,214,198,.42);text-shadow:-1px 0 0 rgb(0 255 255 / 0.5),1px 0 0 rgb(255 0 0 / 0.5);">woflo</a></div>
@@ -543,6 +551,30 @@ const seo = {
     padding: clamp(16px, 3vw, 44px);
     box-sizing: border-box;
     background: #050604;
+  }
+
+  .neuron-links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px 22px;
+    margin-top: clamp(-28px, -3vh, -12px);
+    font-size: 11px;
+    color: rgba(198,214,198,.7);
+  }
+
+  .neuron-links a {
+    color: inherit;
+    text-decoration: none;
+    padding: 7px 0;
+    border-bottom: 1px solid rgba(198,214,198,.2);
+    transition: color .16s, border-color .16s;
+  }
+
+  .neuron-links a:hover,
+  .neuron-links a:focus-visible {
+    color: #eef3ec;
+    border-color: #39ff6a;
   }
 
   .neuron-ambient {

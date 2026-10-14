@@ -27,12 +27,18 @@ const { seo } = Astro.props;
     <meta property="og:type" content="website" />
     <meta property="og:title" content={seo.title} />
     <meta property="og:description" content={seo.description} />
-    {seo.image && <meta property="og:image" content={`${Astro.url.origin}${seo.image}`} />}
+    {seo.image && <>
+      <meta property="og:image" content={`${Astro.url.origin}${seo.image}`} />
+      <meta property="og:image:alt" content="Neuron's neon-green wordmark on a dark background" />
+    </>}
     <meta property="og:url" content={Astro.url.href} />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={seo.title} />
     <meta name="twitter:description" content={seo.description} />
-    {seo.image && <meta name="twitter:image" content={`${Astro.url.origin}${seo.image}`} />}
+    {seo.image && <>
+      <meta name="twitter:image" content={`${Astro.url.origin}${seo.image}`} />
+      <meta name="twitter:image:alt" content="Neuron's neon-green wordmark on a dark background" />
+    </>}
 
     {/* Self-hosted, the way the rest of the site already does it.
         These pages used to pull both families from fonts.googleapis.com, which

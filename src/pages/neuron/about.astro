@@ -3,13 +3,13 @@ import NeuronLayout from "../../layouts/NeuronLayout.astro";
 
 const REPO_SLUG = "worflor/neuron";
 const REPO = `https://github.com/${REPO_SLUG}`;
-const CTA_HREF = REPO;
-const CTA_LABEL = "GET NEURON";
+const CTA_HREF = `${REPO}/releases/latest`;
+const CTA_LABEL = "Download for Windows";
 
 const seo = {
-  title: "Neuron / learn more",
+  title: "Neuron / more than a Synapse replacement",
   description:
-    "How Neuron works: trigger → action, raw HID with no driver, a composable lighting engine, gesture spellweaving, real-python macros, first-class hypershift, and a clean exit from Synapse.",
+    "How Neuron replaces Synapse on my Razer setup, with reactive lighting, profiles, remapping, Python macros and gestures. Windows beta, device support and manual help.",
   image: "/images/neuron-og.png",
 };
 ---
@@ -56,9 +56,9 @@ const seo = {
 
         <section id="sec-0" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">00 / WHY IT EXISTS</div>
-          <h1 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(30px,4.6vw,44px);line-height:1.14;letter-spacing:-0.01em;color:#eef3ec;margin:0 0 26px;text-wrap:balance;">an anti-synapse for your razer gear.</h1>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">Neuron is one lightweight app that replaces Razer Synapse. It talks to your mouse and keyboard directly over raw HID, sending the same bytes Synapse does, worked out from wire captures and a lot of live probing. Doesn't require a kernel driver, vendor SDK, account, or cloud-anything. Neuron does what you tell it then gets out of your way.</p>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">Synapse grew into a two-gigabyte, account-gated, cloud-synced install that re-enables features you turned off and bolts a login screen onto your mouse dpi. Neuron is the opposite design on purpose: one tray process sitting at a few megabytes, your config as plain TOML on your own disk, and nothing running in the background that you didn't ask for.</p>
+          <h1 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(30px,4.6vw,44px);line-height:1.14;letter-spacing:-0.01em;color:#eef3ec;margin:0 0 26px;text-wrap:balance;">your razer hardware. your rules.</h1>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">Neuron is my replacement for Razer Synapse. I don't run Synapse anymore: Neuron handles my Naga V2 Pro and BlackWidow Chroma V2 every day. DPI, polling, lighting, profiles and button remapping, without an account, cloud sync or telemetry. If I need something it doesn't do, I build it.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">I like my Razer hardware. I just got tired of what came with controlling it. So I built a Windows app and CLI in Rust, with settings in plain TOML on my own disk. It works on my desk; <a class="neuron-help-link" href={`${REPO}/blob/main/docs/STATUS.md`}>check the evidence for yours</a>.</p>
         </section>
 
         <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
@@ -70,8 +70,8 @@ const seo = {
 
         <section id="sec-1" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">01 / TRIGGER → ACTION</div>
-          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">everything is one sentence: when this, do that.</h2>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 34px;">The whole app runs on a single idea. Something happens, so it does something. A button press, a drawn glyph, a radial flick, the foreground app changing, a tap on your mic mute, a held hypershift layer: those are all triggers. A keystroke, a macro, a dpi cycle, a profile switch, a raw python script: those are all actions. Bind any trigger to any action and everything further down this page is built out of that one pairing.</p>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">more than a replacement.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 34px;">Reactive lighting, layers, app-aware profiles, button remapping, Python macros, radial menus, spellweaving and audio control. Underneath it all: <em style="font-style:normal;color:#d9ffe4;">when this, do that</em>. A button, glyph or held layer triggers an action; the same engine connects them. Gamepads already feed it too. A control layer built to grow beyond Razer, not a promise that every vendor works today.</p>
 
           <div style="border:1px solid rgba(198,214,198,.12);padding:26px 28px;background:rgba(255,255,255,.015);">
             <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px;">
@@ -98,9 +98,9 @@ const seo = {
 
         <section id="sec-2" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">02 / NO DRIVERS</div>
-          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">no driver. no sdk. just hid.</h2>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">Razer's control interface answers HID feature reports, and those don't need read or write access to the device, so Neuron opens your mouse with zero desired access and speaks the exact bytes Synapse sends. That one detail is the whole foundation. There's no kernel driver to sign allowing Neuron to sidestep the "vulnerable driver" quarantines that bricked OpenRGB and SignalRGB in 2025.</p>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">On top of that sits the everyday stuff: dpi and the full stage cycle, polling up to 8000&nbsp;Hz where the hardware exposes it, brightness, lift-off distance, scroll stages, battery and charge. Reads decode the device's own bytes and match Synapse to the byte. Press the onboard dpi button or snap a side-plate onto a Naga and Neuron hears the mouse announce it live, on a separate channel, without polling for it.</p>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">your hardware, without another driver.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 22px;">I reverse-engineered how Synapse communicates with my Razer hardware, using wire captures, existing protocol research and live investigation. Neuron sends the supported HID feature reports directly through Windows, without an extra kernel driver or vendor SDK.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">On supported devices that means DPI and stage cycles, polling, brightness, lift-off, scroll stages and battery readings. Settings with getters are read back to check what the device accepted; live lighting checks protocol replies. Device detection isn't proof every control works. The <a class="neuron-help-link" href={`${REPO}/blob/main/docs/STATUS.md`}>status page</a> keeps tested, partial and unverified support separate.</p>
         </section>
 
         <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
@@ -142,7 +142,7 @@ const seo = {
         <section id="sec-4" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">04 / SPELLWEAVING</div>
           <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">hold, draw, cast.</h2>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">Hold a trigger, weave a stroke, release, and it fires an action live as a<i> real keybind</i>. Glyphs aren't matched pixel against pixel. Each stroke is fit to a small dynamical model and identified by its <em style="font-style: normal; color: rgb(217, 255, 228);">eigenmotion</em>, its natural frequency and decay, which is what makes it hold up no matter where on the screen you drew it, how big, or how fast, and lets clockwise and counter-clockwise fall out as genuinely different shapes. There's a fair amount of signal-processing work under that; the method is written up <a href="#" style="color: rgb(57, 255, 106); text-decoration: none; border-bottom: 1px solid rgba(57, 255, 106, 0.35); transition: border-color 0.15s;" style-hover="border-color:rgba(57,255,106,.7);">in a short paper</a> (coming soon after release).</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">Hold a trigger, weave a stroke, release, and it fires an action live as a<i> real keybind</i>. Glyphs aren't matched pixel against pixel. Each stroke is fit to a small dynamical model and identified by its <em style="font-style: normal; color: rgb(217, 255, 228);">eigenmotion</em>, its natural frequency and decay, which is what makes it hold up no matter where on the screen you drew it, how big, or how fast, and lets clockwise and counter-clockwise fall out as genuinely different shapes.</p>
           <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">Because a resolved gesture is just another trigger, one capture drives a whole family of instruments: <em style="font-style:normal;color:#d9ffe4;">teleport</em> pops a live minimap of your monitors you fling the cursor across, <em style="font-style:normal;color:#d9ffe4;">glance</em> pulls every matching window into a magnetic collage, a <em style="font-style:normal;color:#d9ffe4;">dial</em> turns the next hold into an analog slide where speed is sensitivity, and <em style="font-style:normal;color:#d9ffe4;">knockback</em> is a little rhythm game your mouse plays back at you while you wait in queue.</p>
         </section>
 
@@ -155,17 +155,11 @@ const seo = {
 
         <section id="sec-5" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">05 / MACROS</div>
-          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">macros are real python.</h2><p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 30px;">A macro is a python file with a <code style="color: rgb(217, 255, 228);">def macro(ctx)</code>. Neuron runs it in a bundled interpreter that stays warm in the background, so firing one is basically a function call, comfortably under a frame. Neuron hands a macro two kinds of tools: <em style="font-style:normal;color:#d9ffe4;">bound</em> and <em style="font-style:normal;color:#d9ffe4;">raw</em>. Bound is anything Neuron provides, the same interface the app itself uses. Raw is raw unsandboxed python: ctypes, subprocess, sockets, files, anything a program can do your macro can do. In its own process, so no macro can take Neuron down... unless it explicitly takes Neuron down.</p>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">macros are real python.</h2><p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 30px;">A macro is a Python file with <code style="color:#d9ffe4;">def macro(ctx)</code>. Neuron starts its bundled interpreter when needed and keeps it warm for later runs. New macros use BOUND helpers for Neuron actions; choose RAW when you want full Python, including files, subprocesses and sockets. RAW is unsandboxed: treat it like any other program you run.</p>
 
-          <pre style="margin:0;padding:24px 26px;background:#070a07;border:1px solid rgba(198,214,198,.12);font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.8;color:rgba(220,228,218,.8);overflow-x:auto;white-space:pre;"><div><span style="color:rgba(198,214,198,.35);"># lift.py — double-tap ctrl to boost mic gain while you talk</span></div>
-<div><span style="color:#39ff6a;">from</span> neuron <span style="color:#39ff6a;">import</span> on, mic, keys</div>
-<div>&nbsp;</div>
-<div><span style="color:rgba(198,214,198,.55);">@on(keys.double_tap(</span><span style="color:#d9ffe4;">"ctrl"</span><span style="color:rgba(198,214,198,.55);">))</span></div>
-<div><span style="color:#39ff6a;">def</span> lift(ctx):</div>
-<div>    <span style="color:#39ff6a;">with</span> mic.gain(+4):</div>
-<div>        keys.wait_release(<span style="color:#d9ffe4;">"ctrl"</span>)</div>
-</pre>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:22px 0 0;">Every run gets a snapshot of where you were when you fired it, frozen at trigger time, so the whole thing reasons about one consistent moment. There are three ways to write one. The easy way: describe what you want in natural language and <em style="font-style:normal;color:#d9ffe4;">an agent with the Neuron macro skill and the Neuron CLI writes it for you</em>, and you just keep what it made. Or use the GUI block builder, which writes the source for you, losslessly both ways :) Or write the python yourself; it's plain python all the way down.</p>
+          <pre style="margin:0;padding:24px 26px;background:#070a07;border:1px solid rgba(198,214,198,.12);font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.8;color:rgba(220,228,218,.8);overflow-x:auto;white-space:pre;"># PowerShell, in your Neuron install folder
+.\neuron.exe macro prelude</pre>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:22px 0 0;">Start with the GUI block builder: it edits the same Python source, so you can move between blocks and code. Or write Python yourself; the CLI command above shows the helper reference for your installed build. Each run gets a snapshot of the moment that triggered it. Coding-agent skills are an optional shortcut, not something you need to install.</p>
         </section>
 
         <div data-reveal style="padding:7vh 0;display:flex;justify-content:center;overflow:hidden;">
@@ -209,7 +203,7 @@ const seo = {
         <section id="sec-7" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">07 / WON'T SURPRISE YOU</div>
           <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">it checks its work.</h2>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">Neuron begins with synthesised input disarmed. Live dispatch arms it; safe mode leaves it off. Hardware writes stay volatile where the device allows it, and Neuron reads each value back before calling the change successful. If the device disagrees, the write fails. Commands it does not know are left alone.</p>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">A normal Windows launch arms live binds when the input engine starts; safe mode keeps input disarmed and device writes paused. Supported settings are checked against their getters, lighting checks protocol replies, and unverified writes stay gated. A mismatch fails loudly instead of becoming a fake success.</p>
           <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">Once a change lands, Neuron shows a confirmation card. You can move them, batch them, or turn them off.</p>
         </section>
 
@@ -222,8 +216,8 @@ const seo = {
 
         <section id="sec-8" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">08 / LIFE AFTER SYNAPSE</div>
-          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">bring your settings, then purge synapse.</h2>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">Synapse's export files are just zips of plaintext xml, so Neuron reads one directly, keeps only the binds you actually changed, and throws away the hundred keys still sitting on their defaults. Run it dry and it shows you exactly what it would import and what it dropped, before anything is committed.</p>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">bring your settings. leave synapse when you're ready.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 18px;">Neuron imports supported plaintext Synapse exports, keeping changed binds and showing what it can't import. A dry run previews the result before you apply it. Encrypted cloud-only profiles aren't supported. Check your device and the features you use before removing your existing setup.</p>
           <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0;">When you're ready to be rid of it, Neuron can figure out which services are Razer's by asking <i>who installed them</i>, stops them respawning, and ends the whole tree.&nbsp;</p>
         </section>
 
@@ -236,12 +230,20 @@ const seo = {
 
         <section id="sec-9" data-reveal style="scroll-margin-top:80px;">
           <div style="font-size:10px;letter-spacing:.25em;color:rgba(57,255,106,.7);margin-bottom:18px;">09 / GET IT</div>
-          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">run and done.</h2>
-          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 30px;">A few megabytes, source-available, windows today + linux (soonish) + mac (eventually; i own no mac)<sup style="font-size: 0.6em; vertical-align: top; letter-spacing: 0.04em; color: rgba(198, 214, 198, 0.5);">TM</sup>. Your config is plain TOML you own, and deleting the binary leaves nothing running and nothing behind. Fair warning: this is public beta mk1, from one dev on one desk. It runs on mine every day, but it honestly hasn't been tested on yours... <i>yet ;)</i></p>
+          <h2 style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:clamp(24px,3.4vw,32px);line-height:1.2;color:#eef3ec;margin:0 0 22px;text-wrap:balance;">download it. make it yours.</h2>
+          <p style="font-size:15px;line-height:1.8;color:rgba(220,228,218,.75);margin:0 0 30px;">Free Windows 10/11 beta, with an installer or portable ZIP. Both include the app and CLI; launch Neuron from Start, or run <code>neuron-app.exe</code> from the ZIP. Windows may warn because the build is unsigned. Linux builds from source but has no published download or verified native Razer hardware control yet. macOS has no backend.</p>
           <div style="display:flex;flex-wrap:wrap;align-items:center;gap:24px;">
-            <a data-cta href={CTA_HREF} style="display:inline-flex;align-items:center;gap:14px;padding:15px 32px;background:#070a07;border:1px solid rgba(57,255,106,.6);color:#eef3ec;text-decoration:none;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:18px;letter-spacing:.05em;box-shadow:5px 5px 0 rgba(57,255,106,.15);transition:background .12s,border-color .12s,box-shadow .12s,transform .12s;white-space:nowrap;" style-hover="background:#0a120b;border-color:#39ff6a;color:#f4fff7;" style-active="box-shadow:2px 2px 0 rgba(57,255,106,.34);transform:translate(3px,3px);">{CTA_LABEL}<canvas data-therefore width="40" height="40" style="width:40px;height:40px;display:block;flex-shrink:0;margin:-6px -6px;"></canvas></a>
-            <span style="font-size:10px;letter-spacing:.12em;color:rgba(198,214,198,.38);">no cloud, account, telemetry · just one install</span>
+            <a data-cta href={CTA_HREF} style="display:inline-flex;align-items:center;gap:8px;padding:15px 16px;background:#070a07;border:1px solid rgba(57,255,106,.6);color:#eef3ec;text-decoration:none;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;letter-spacing:.01em;box-shadow:5px 5px 0 rgba(57,255,106,.15);transition:background .12s,border-color .12s,box-shadow .12s,transform .12s;white-space:nowrap;" style-hover="background:#0a120b;border-color:#39ff6a;color:#f4fff7;" style-active="box-shadow:2px 2px 0 rgba(57,255,106,.34);transform:translate(3px,3px);">{CTA_LABEL}<canvas data-therefore width="40" height="40" style="width:32px;height:32px;display:block;flex-shrink:0;margin:-6px -6px;"></canvas></a>
+            <span style="font-size:10px;letter-spacing:.12em;color:rgba(198,214,198,.6);">no cloud, account or telemetry</span>
           </div>
+          <p style="font-size:13.5px;line-height:1.8;color:rgba(220,228,218,.75);margin:28px 0 16px;">No terminal needed: DEVICE handles settings, LIGHTING builds effects, INPUT connects buttons and gestures, and SYSTEM has diagnostics. <a class="neuron-help-link" href={`${REPO}/blob/main/docs/FAQ.md`}>FAQ &amp; manual help</a> · <a class="neuron-help-link" href={`${REPO}/blob/main/docs/reference/CLI.md`}>CLI reference</a>.</p>
+          <nav class="neuron-help-links" aria-label="Downloads, support and source">
+            <a href={`${REPO}/blob/main/docs/STATUS.md`}>check device support</a>
+            <a href={`${REPO}/issues/new?template=device_report.yml`}>report your device</a>
+            <a href={`${REPO}/blob/main/docs/reference/COMPATIBILITY-LAB.md#try-it-yourself`}>manual compatibility tools</a>
+            <a href={`${REPO}/issues/new?template=bug_report.md`}>report a bug</a>
+            <a href={REPO}>GitHub source ↗</a>
+          </nav>
         </section>
 
       </main>
@@ -698,3 +700,25 @@ const seo = {
     })();
   </script>
 </NeuronLayout>
+
+<style>
+  .neuron-help-link,
+  .neuron-help-links a {
+    color: #d9ffe4;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(57,255,106,.35);
+  }
+
+  .neuron-help-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+
+  .neuron-help-links a { padding: 6px 0; }
+
+  .neuron-help-link:hover,
+  .neuron-help-links a:hover { color: #39ff6a; }
+</style>
