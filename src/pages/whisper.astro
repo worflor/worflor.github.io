@@ -8,7 +8,7 @@ import WhisperSealPanel from "../components/whisper/WhisperSealPanel.astro";
 import ActionBar from "../components/ActionBar.astro";
 
 const seo = {
-  title: "Whisper | woflo",
+  title: "Whisper Playground | woflo",
   description:
     "Hide encrypted data inside files, send sealed messages, and open end-to-end encrypted peer-to-peer sessions. Encoding and cryptography run in your browser.",
   image: "/images/social-card.png",
@@ -27,7 +27,7 @@ const seo = {
     <section class="mt-8 content-section whisper-intro wl-stage-fade">
       <div class="whisper-title-row">
         <h1 class="page-title whisper-title" id="whisper-title">Whisper</h1>
-        <span class="whisper-alpha-badge" id="whisper-alpha-badge">ALPHA</span>
+        <span class="whisper-playground-badge" id="whisper-playground-badge">PLAYGROUND</span>
       </div>
       <p class="whisper-tagline">
         carrier-bound encryption and sealed messaging
@@ -845,7 +845,7 @@ const seo = {
                       r="4.1"></circle></svg
                 ></span>
                 <span class="wl-e2e-tip" role="tooltip"
-                  >sealed end-to-end with a Kizuna bond<span
+                  >sealed end-to-end<span
                     class="wl-e2e-tip-stats"
                     aria-hidden="true"></span></span
                 >
@@ -987,7 +987,7 @@ const seo = {
       <div class="whisper-insights">
         <h2 class="insights-title">what is this?</h2>
         <p class="insights-text">
-          whisper is an experiment in browser-native communication: sealed
+          whisper is a playground for browser-native communication: sealed
           messages, peer sessions, and codecs with evolving state. a shared
           phrase can bring two browsers to the same rendezvous; ephemeral keys
           establish the session. messages, files, drawings, and voice stay
@@ -998,8 +998,8 @@ const seo = {
           session, chat messages and files pass through Whisper Loop, which
           folds the adaptive codec state into each message-key derivation.
           drawings and Harmonic voice frames use a separate sealed channel.
-          AES-GCM provides confidentiality and integrity; the 16D Kizuna witness
-          participates in <strong><a href="/blog/kizuna-codecs">handshake confirmation</a></strong>
+          AES-GCM provides confidentiality and integrity; the 16D witness
+          participates in <strong>handshake confirmation</strong>
           rather than acting as a standalone cipher.
         </p>
         <p class="insights-text">
@@ -1560,7 +1560,7 @@ const seo = {
     letter-spacing: -0.018em;
   }
 
-  .whisper-alpha-badge {
+  .whisper-playground-badge {
     display: inline-flex;
     align-items: center;
     justify-content: center;

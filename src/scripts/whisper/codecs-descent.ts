@@ -1525,7 +1525,7 @@ function initRatchet(act: HTMLElement) {
       membranes: [
         { y: top + towerH * 0.25, label: "logos" },
         { y: top + towerH * 0.50, label: "loup" },
-        { y: top + towerH * 0.75, label: "kizuna" },
+        { y: top + towerH * 0.75, label: "witness" },
       ],
       ratchetY: rY,
       ratchetR: rR,

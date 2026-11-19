@@ -2092,7 +2092,7 @@ export class WhisperLiveSession {
 
       if (this.dc && this.dc.readyState === "open") {
         this.send(LIVE_MSG.RATCHET_INIT, this.ratchetState.dhSelf.publicKey);
-        this.onLog("kizuna membrane sealed");
+        this.onLog("ratchet initialized");
       }
 
       await this.updateConfirmContext();
@@ -2107,7 +2107,7 @@ export class WhisperLiveSession {
 
         // both chain keys are now set after the DH step — init both loop states.
         await this.loopReinitFromChainKeys();
-        this.onLog("kizuna membrane sealed");
+        this.onLog("ratchet initialized");
         await this.updateConfirmContext();
         // Confirm only after dhRatchetStep — chainKeySend is now initialized.
         if (this.autoConfirm && this._state === "verifying") {

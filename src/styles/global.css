@@ -1122,7 +1122,7 @@ body.pride {
    text-wrap: balance — headings that run to two lines split evenly instead of
    dumping one orphan word underneath. Applied only to headings because the
    spec caps balancing at a few lines, and it is where the ragged split shows
-   most: the h1 on the kizuna post wraps at a different word in every engine.
+   most: a long blog title can wrap at a different word in every engine.
 
    overflow-wrap: anywhere — this blog is full of identifiers, hashes and long
    unspaced strings, and any one of them is otherwise an unbreakable box that

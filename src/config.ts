@@ -237,6 +237,7 @@ export const projectsPageContent: ProjectPageContent = {
       year: "2026",
       url: "/whisper?live",
       slug: "whisper",
+      status: "playground",
     },
     {
       title: "Lore",

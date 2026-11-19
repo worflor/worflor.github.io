@@ -94,6 +94,7 @@ export type AboutPageContent = {
 // and the door is not open yet; "parked" means it was built to the edge of an
 // idea and set down, which is a different claim from never having started.
 export type ProjectStatus =
+  | "playground"
   | "in-development"
   | "active-research"
   | "private-beta"
