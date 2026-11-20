@@ -1,10 +1,11 @@
 ---
 import Layout from "../../layouts/Layout.astro";
+import ScryerAccess from "../../components/ScryerAccess.astro";
 
 const seo = {
   title: "Scryer | woflo",
   description:
-    "An exact mathematical engine for agentic research: deterministic mathematical semantics underneath stochastic search.",
+    "A tool I made to poke at math questions, test conjectures, and find exact answers.",
   image: "/images/social-card.png",
 };
 ---
@@ -16,16 +17,19 @@ const seo = {
         <h1 class="page-title">Scryer</h1>
         <span class="scryer-title-scratch" aria-hidden="true">f(x) = ? &nbsp;→&nbsp; exact</span>
       </div>
-      <p class="scryer-tagline">exact mathematics for systems that guess.</p>
+      <p class="scryer-tagline">exact math for testing hunches.</p>
     </header>
 
     <div class="prose prose-invert prose-a:text-[var(--chromatic-cyan)] prose-a:underline-offset-4 prose-headings:mb-2 prose-p:opacity-85 scryer-note">
-      <p>Models are good at guessing what might be true. Scryer gives those guesses somewhere exact to land. It's a symbolic engine for research: it works over exact mathematical objects, derives what it can, and says where it gets stuck. Some results come with evidence you can replay.</p>
+      <p>I made Scryer so the agents I work with could poke at math more reliably. An agent can build an exact mathematical object and check what follows from its rules. It can use what it finds to decide what to try next. I kept using it, so I put it online.</p>
 
       <section class="scryer-section" aria-labelledby="why-heading">
         <span class="scryer-margin-note" aria-hidden="true">P(x)? ⇏ Γ ⊢ P(x)<br /><i>[not the same]</i> ↓</span>
         <h2 id="why-heading">why</h2>
-        <p>A model can notice a pattern or choose a useful next question. Its confidence shouldn't do the algebra.</p>
+        <p id="example-heading">The search recovered the familiar identity <span class="scryer-equation">√(3 + 2√2) = 1 + √2</span> when two constructions reached the same exact number.</p>
+        <div class="scryer-equation-chain" aria-hidden="true">
+          <span>1 + √2</span><i>(·)²</i><span>3 + 2√2</span><i>√·</i><span>1 + √2 <em>[same]</em></span>
+        </div>
         <figure class="scryer-loop">
           <div class="scryer-loop-track">
             <div class="scryer-loop-node">
@@ -46,7 +50,7 @@ const seo = {
               <span>or still open, with a reason</span>
             </div>
           </div>
-          <figcaption>Both outcomes can inform the next guess, but only established results become facts.</figcaption>
+          <figcaption>An open result tells the agent where it got stuck, so it can try something else.</figcaption>
         </figure>
       </section>
 
@@ -59,13 +63,13 @@ const seo = {
         <h2 id="exists-heading">what exists now</h2>
         <p>It works with rationals and algebraic numbers, fields, polynomials, matrices, logic, graphs, optimisation, dynamics, and other domains.</p>
         <p>Ask what follows from an object, or work backwards from laws to objects that satisfy them.</p>
-        <p>A generic construction space can reach the same mathematical object by different routes. That collision gives an identity to inspect.</p>
+        <p>Sometimes two different constructions land on the same exact object. That's a way to find identities, like the square-root example above.</p>
         <p>Scryer can also search for candidate relations and counterexamples, and keep track of open conjectures.</p>
       </section>
 
       <section class="scryer-section" aria-labelledby="in-use-heading">
         <h2 id="in-use-heading">a few outputs</h2>
-        <p>These screenshots come from an artifacting tool built on Scryer. The document supplied the equations; Scryer derived the details.</p>
+        <p>These are from a tool I built on top of Scryer. I gave it a document with equations, and it used Scryer to work out the details.</p>
         <div class="scryer-gallery" role="region" aria-label="Scryer mathematical readings" tabindex="0">
           <figure class="scryer-shot">
             <a href="/images/scryer/octave-curve.webp" aria-label="Open the octave curve and value table at full size">
@@ -96,16 +100,13 @@ const seo = {
 
       <section class="scryer-section" aria-labelledby="rule-heading">
         <span class="scryer-margin-note scryer-margin-note-red" aria-hidden="true">Γ ⊬ φ<br /><i>[leave open]</i></span>
-        <h2 id="rule-heading">the important rule</h2>
-        <p>Scryer can say no.</p>
-        <p>If it runs out of search budget, lacks the right representation, or needs mathematics it doesn't have, the result should say so. An unproved claim stays unproved.</p>
-        <p>An exact calculation can still start from faulty assumptions or answer the wrong question. Those limits should stay visible.</p>
+        <h2 id="rule-heading">where it gets stuck</h2>
+        <p>If Scryer runs out of search budget or can't represent part of a problem, it leaves the question open and tells you why.</p>
       </section>
 
       <section class="scryer-section" aria-labelledby="direction-heading">
         <h2 id="direction-heading">where it's headed</h2>
-        <p>Verification came first. The work now is to let an agent build exact objects, search through them, and use what it finds to choose its next question.</p>
-        <p>A small proof and search system is testing that idea. Suggestions can steer the search. Only checked results are treated as facts; an open goal still shows what needs proving.</p>
+        <p>I'm also trying to see whether an agent can use what Scryer finds to figure out what to ask next. I've been testing that with a small proof and search system that keeps track of what still needs proving.</p>
       </section>
 
       <div class="scryer-derivation scryer-loop-note" aria-hidden="true">
@@ -113,25 +114,17 @@ const seo = {
         <small>↖&#xFE0E; &nbsp; φ′? <em>[again]</em> &nbsp; ────────┘</small>
       </div>
 
-      <section class="scryer-section" aria-labelledby="example-heading">
-        <h2 id="example-heading">a tiny example of the idea</h2>
-        <p>The search recovered the familiar identity <span class="scryer-equation">√(3 + 2√2) = 1 + √2</span> when two constructions reached the same exact number.</p>
-        <div class="scryer-equation-chain" aria-hidden="true">
-          <span>1 + √2</span><i>(·)²</i><span>3 + 2√2</span><i>√·</i><span>1 + √2 <em>[same]</em></span>
-        </div>
-      </section>
-
       <section id="use" class="scryer-section" aria-labelledby="use-heading">
-        <h2 id="use-heading">use it</h2>
-        <p>Public research access lets agents use Scryer through MCP tools.</p>
-        <p><a href="/projects/#scryer-access">Public research access details and bearer tokens →</a></p>
+        <h2 id="use-heading">MCP setup</h2>
+        <div class="not-prose">
+          <ScryerAccess />
+        </div>
       </section>
 
       <section class="scryer-section" aria-labelledby="underneath-heading">
         <span class="scryer-margin-note" aria-hidden="true">n₁ → n₂ → φ<br />↺ <i>[replay]</i></span>
         <h2 id="underneath-heading">underneath</h2>
-        <p>The engine works with distinct mathematical structures that share arithmetic machinery. Each domain adds its own rules. Where implemented, certificates and proof DAGs make results replayable.</p>
-        <p>When one of those results looks odd, there's a trail to follow.</p>
+        <p>The different domains share some arithmetic code and each adds its own rules. Some results come with a certificate or a graph of proof steps you can replay.</p>
       </section>
     </div>
   </article>
@@ -175,6 +168,8 @@ const seo = {
     font-size: var(--text-lg);
     opacity: 0.65;
   }
+
+  #use { scroll-margin-top: 8rem; }
 
   .scryer-note {
     max-width: 72ch;

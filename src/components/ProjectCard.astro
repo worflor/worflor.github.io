@@ -8,7 +8,7 @@ import { STATUS_LABEL, STATUS_IS_ACTIVE } from "../utils/projects";
 
 type Props = Project & { loading?: "eager" | "lazy"; variant?: "full" | "compact"; index?: number };
 
-const { title, description, image, month, year, url, github, trackRelease = false, status, slug, loading = "lazy", variant = "full", index = 0 } = Astro.props;
+const { title, description, image, month, year, url, github, modrinth, trackRelease = false, status, slug, loading = "lazy", variant = "full", index = 0 } = Astro.props;
 const isCompact = variant === "compact";
 const isExternal = /^https?:\/\//.test(url);
 const isScryer = slug === "scryer";
@@ -109,6 +109,11 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
           data-repo={github}
         >
           · <svg class="w-3.5 h-3.5 inline" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg> <span class="star-count"></span>
+        </span>
+      )}
+      {modrinth && (
+        <span class="modrinth-downloads opacity-60 tabular-nums shrink-0 whitespace-nowrap hidden" data-project={modrinth}>
+          · <span class="download-count"></span>
         </span>
       )}
       {github && trackRelease && (
@@ -253,7 +258,61 @@ const htmlDescription = parseMarkdown(isCompact ? compactOpener : description);
     el.title = title;
     el.classList.remove('hidden');
   }
+  const DOWNLOAD_CACHE_KEY = 'modrinth-download-cache-v1';
+  type DownloadRecord = { downloads: number; ts: number };
+  function readDownloadCache(): Record<string, DownloadRecord> {
+    try {
+      const cached = JSON.parse(localStorage.getItem(DOWNLOAD_CACHE_KEY) ?? '{}');
+      return cached && typeof cached === 'object' && !Array.isArray(cached) ? cached : {};
+    } catch { return {}; }
+  }
+
+  function setDownloads(el: HTMLElement, downloads: number) {
+    const label = el.querySelector('.download-count');
+    if (!label) return;
+    label.textContent = downloads.toLocaleString() + (downloads === 1 ? ' download' : ' downloads');
+    el.classList.remove('hidden');
+  }
+
+  function bootDownloadCounts() {
+    const cache = readDownloadCache();
+    const inflight = new Map<string, Promise<DownloadRecord>>();
+    document.querySelectorAll<HTMLElement>('.modrinth-downloads').forEach(async (el) => {
+      const project = el.dataset.project;
+      if (!project) return;
+      const cached = cache[project];
+      if (cached && Number.isSafeInteger(cached.downloads) && cached.downloads >= 0
+        && typeof cached.ts === 'number' && Date.now() - cached.ts < CACHE_TTL_MS) {
+        setDownloads(el, cached.downloads);
+        return;
+      }
+      try {
+        let request = inflight.get(project);
+        if (!request) {
+          request = fetch('https://api.modrinth.com/v2/project/' + encodeURIComponent(project), {
+            signal: AbortSignal.timeout(5000),
+          }).then(async (response) => {
+            if (!response.ok) throw new Error('Modrinth project fetch failed');
+            const data = await response.json();
+            if (!Number.isSafeInteger(data?.downloads) || data.downloads < 0) {
+              throw new Error('Modrinth download count is unavailable');
+            }
+            return { downloads: data.downloads, ts: Date.now() };
+          });
+          inflight.set(project, request);
+        }
+        const result = await request;
+        cache[project] = result;
+        try { localStorage.setItem(DOWNLOAD_CACHE_KEY, JSON.stringify(cache)); } catch {}
+        setDownloads(el, result.downloads);
+      } catch {
+        // Optional metadata: the project card and Modrinth link still work.
+      }
+    });
+  }
+
   function bootProjectCards() {
+    bootDownloadCounts();
     document.querySelectorAll<HTMLImageElement>('.project-rng').forEach(function (img) {
       var images: string[] = JSON.parse(img.getAttribute('data-images')!);
       if (img.hasAttribute('data-by-hour')) {

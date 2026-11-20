@@ -112,11 +112,13 @@ export type Project = {
   year: string;
   url: string;
   github?: string;
+  // Public Modrinth project slug for an optional downloads count.
+  modrinth?: string;
   // opt into a live GitHub release badge, including published prereleases.
   trackRelease?: boolean;
   // stable id for this project, used by /contact?project= and by any surface
   // that needs to name another. defaults to a slug of the title, so it only
-  // needs setting where the two differ ("Project Pocket" is linked as "pocket").
+  // needs setting where the two differ.
   slug?: string;
   // the dev-status badge shown on the card
   status?: ProjectStatus;
@@ -169,22 +171,12 @@ export type ResearchArtifact = {
   note?: string; // personal aside, deliberately human register (markdown, blank-line paragraphs allowed)
 };
 
-// one line of connective tissue between projects: a motif that keeps showing up
-// across shipped work, and the prose that names where it shows up. rendered as a
-// quiet strip, so curiosity reads as method observed across real work rather
-// than a shelf of one-off vibe projects.
-export type Thread = {
-  motif: string;
-  line: string; // lowercase prose, names real projects inline
-};
-
 export type ProjectPageContent = {
   seo: SEOInfo;
   subtitle: string;
   projects: Project[];
   publications?: Publication[];
   artifacts?: ResearchArtifact[];
-  threads?: Thread[];
 };
 
 export type BlogPageContent = {
@@ -218,7 +210,6 @@ export type FreelanceBriefContent = {
   // like "booked until march".
   status: string;
   heading: string;
-  subtitle: string;
   placeholder: string;
   submitLabel: string;
 };

@@ -64,12 +64,12 @@ export const homePageContent: HomePageContent = {
   seo: {
     title: "woflo",
     description:
-      "Software developer and independent researcher building tools, interactive systems, games, and mathematical experiments.",
+      "Michael Bickford makes software, games, and Minecraft projects, and tinkers with math in his spare time.",
     image: identity.logo,
   },
-  role: "Software Developer & Independent Researcher",
+  role: "Software developer & game maker",
   description:
-    "I'm Michael, a software developer and independent researcher who fixates on little details. I build tools, interactive systems, and mathematical experiments, usually by following one question farther than I meant to. I love tech. It's cool as hell, even when it scares me.",
+    "I make software, games, and the occasional Minecraft datapack. I do research in my spare time, usually because a small question refused to stay small.",
   socialLinks: socialLinks.filter(link => link.title !== "LinkedIn"),
   links: [
     {
@@ -88,19 +88,15 @@ export const aboutPageContent: AboutPageContent = {
   seo: {
     title: "About | woflo",
     description:
-      "Software developer and independent researcher from Canada, building tools, games, interactive systems, and mathematical experiments.",
+      "About Michael Bickford, a Canadian software developer and game maker.",
     image: identity.logo,
   },
   subtitle: "hey, let's get to know each other.",
   about: {
     description: `
-I'm Michael, a software developer and independent researcher from Canada. I like to do things ;]
+I'm Michael, a software developer and game maker from Canada. I came to game development through theatre and teaching, then wandered into modding, developer tools, and math.
 <br/><br/>
-Through the miracle of osmosis, I came here through theatre and teaching, then game development, and kept wandering into software, game modding, networking, mathematics, and whatever else a project asked of me.
-<br/><br/>
-Every day I find I'm learning something new about the world, even if it's against my will.
-<br/>
-Oh, *knowledge*. <3`,
+I like making small things feel right: a brushstroke that moves like it's thinking, or a Minecraft card that feels like something you could actually pick up.`,
     images: [
       {
         src: "/images/raccoon.webp",
@@ -117,9 +113,7 @@ Oh, *knowledge*. <3`,
     ],
   },
   work: {
-    description: `To me, programming languages are tools, and I'm always picking up new ones for random purposes. I started with **C++** and shader languages like **GLSL**, then branched into **Java (21+)**, **Python**, **TypeScript**, **Dart**, and **Rust**, choosing whichever language best fit the research or system I wanted to explore.
-    <br/>
-    Why? Check out my Projects and/or Blog page!`,
+    description: `I started with **C++** and shaders. These days I use whatever fits: **Rust** for Neuron, **Java** for Minecraft, and a bit of everything else as needed.`,
     items: [
       {
         title: "Game Developer",
@@ -201,15 +195,15 @@ export const projectsPageContent: ProjectPageContent = {
   seo: {
     title: "Endeavours | woflo",
     description:
-      "Things I've built: an anti-Synapse for Razer gear, a git client that reads your codebase as a manifold, browser-native encrypted messaging, and the research underneath them.",
+      "Tools, games, and Minecraft projects you can try, plus a few things I'm still working on.",
     image: identity.logo,
   },
-  subtitle: "some endeavours.",
+  subtitle: "Things I’ve made, and a few I’m still figuring out.",
   projects: [
     {
       title: "Neuron",
       description:
-        "Your Razer hardware. Your rules.<br>My Rust replacement for Synapse, daily-driven on a Naga V2 Pro and BlackWidow Chroma V2. Device controls, reactive lighting, layers, profiles, button remapping, Python macros, radial menus and gestures. No account, cloud or telemetry.<br>A control layer built to grow beyond Razer. Free Windows 10/11 beta; other devices need their own testing.",
+        "My Rust alternative to Razer Synapse for Windows, with reactive lighting, button remapping, and macros. I use it daily on my Naga V2 Pro and BlackWidow Chroma V2. No account or cloud.",
       image: "/images/neuron-portfolio-color.webp",
       month: "July",
       year: "2026",
@@ -219,9 +213,28 @@ export const projectsPageContent: ProjectPageContent = {
       trackRelease: true,
     },
     {
+      title: "all you mean to me",
+      description: "A short, wordless museum game. You’re a wet brushstroke that can step into paintings and hold parts of them still. Play in your browser on itch.io.",
+      image: "/images/all-you-mean-to-me.webp",
+      month: "November",
+      year: "2026",
+      url: "https://woflo.itch.io/all-you-mean-to-me",
+      slug: "all-you-mean-to-me",
+    },
+    {
+      title: "Tabletop Tarot",
+      description: "A vanilla Minecraft datapack with illustrated cards you can shuffle, deal, and lay out on a table in your world.",
+      image: "/images/tabletop-tarot.webp",
+      month: "November",
+      year: "2026",
+      url: "https://modrinth.com/datapack/tarot-packs",
+      slug: "tabletop-tarot",
+      modrinth: "tarot-packs",
+    },
+    {
       title: "Manifold",
       description:
-        "Git desktop client. Your codebase is a manifold.<br>Change one file and it follows the nearby structure through a graph built from repository history. Heat spreads toward related files; curvature helps surface the bridges your architecture leans on.<br>Flutter, Dart, and a bit of spectral geometry.",
+        "A desktop Git client that uses commit history to show which files tend to change together. Built with Flutter and a bit of spectral geometry.",
       image: "/images/manifold",
       month: "April",
       year: "2026",
@@ -231,7 +244,7 @@ export const projectsPageContent: ProjectPageContent = {
     },
     {
       title: "Whisper",
-      description: "Encrypted communication over Möbius geometry, built in the browser.<br>Tuck an encrypted message inside an ordinary file, or open a peer-to-peer session protected with authenticated encryption.<br>Möbius-derived prediction shapes the codec; standard cryptography protects the message.",
+      description: "A browser playground for encrypted messages and peer-to-peer chat. Standard cryptography protects the message; the experimental geometry is in the codec.",
       image: "/images/whisper.webp",
       month: "February",
       year: "2026",
@@ -242,7 +255,7 @@ export const projectsPageContent: ProjectPageContent = {
     {
       title: "Lore",
       description:
-        "A small world made of your cards.<br>A private-first place to explore who you are, show someone what feels true, and build a mythology together. Keep your own story; choose what you share. Tarot, astrology, and interactive play are instruments.<br>There's an owl. You can give it a card.",
+        "A private-first space for exploring tarot, astrology, and the stories you make with them. There’s an owl. You can give it a card.",
       year: "2026",
       url: "/lore",
       // day, dusk and night: the card shows the owl's step at the visitor's own hour, as /lore does
@@ -253,7 +266,7 @@ export const projectsPageContent: ProjectPageContent = {
     {
       title: "Scryer",
       description:
-        "Exact mathematics for systems that guess.<br><br>Scryer gives a research agent exact mathematical objects to work with. The agent decides what to try; Scryer derives what it can, finds counterexamples, and sometimes leaves evidence you can replay.<br><br>The focus now is discovery: letting the agent use established results to choose its next question.",
+        "A tool I made for poking at math questions. It can work out exact values and look for counterexamples.",
       month: "May",
       year: "2026",
       url: "/scryer/",
@@ -261,8 +274,18 @@ export const projectsPageContent: ProjectPageContent = {
       status: "active-research",
     },
     {
+      title: "Engram",
+      description: "A mathematical experiment in motion and memory. It predicts the brushstroke’s movement in all you mean to me and helps shape how the character reacts.",
+      month: "October",
+      year: "2026",
+      url: "https://github.com/worflor/engram",
+      github: "worflor/engram",
+      slug: "engram",
+      status: "active-research",
+    },
+    {
       title: "What Do You Mean?",
-      description: "In-game agentic debugger for Minecraft, split between two agents.<br>The Doctor reaches into a running mod and rewrites its bytecode on the fly, setting soft breakpoints through a Condition Compiler wherever you need them. The Watchdog never touches a thing; it just keeps a quiet eye on the server's tick rate, waiting for the moment something slips.<br>A college capstone on Fabric 1.21, built test-first.",
+      description: "My college capstone: a Minecraft debugger that sets soft breakpoints in a running mod while a separate watcher keeps an eye on server tick rate. The write-up shows how the two fit together.",
       image: "/images/wdym-cover.webp",
       month: "April",
       year: "2026",
@@ -270,54 +293,8 @@ export const projectsPageContent: ProjectPageContent = {
       slug: "wdym",
     },
     {
-      title: "Project Pocket",
-      description: "A file scattered into unrecognizable pieces across a public BitTorrent swarm.<br>The concept uses a shared handshake to recover the structure needed to put those pieces back together. Without it, the swarm only sees unrelated blobs.",
-      year: "2026",
-      url: "/contact?project=pocket",
-      // linked as "pocket" long before this field existed, and a slug derived
-      // from the title would silently become "project-pocket" and break it.
-      slug: "pocket",
-      status: "concept",
-    },
-    // hindsight is resting out of sight for now. uncomment to bring it back.
-    // {
-    //   title: "hindsight",
-    //   description: "hindsight is 20/20, and your gameplay just got clipped in 4K.<br>Vulkan lifts each frame off the swapchain and Lumen folds them into one continuous light field. All the while, Glyph is reading your hands as 7D kinetic strokes, so the way you played is baked into the recording as an eigenidentity.",
-    //   year: "2026",
-    //   url: "/contact?project=hindsight",
-    //   slug: "hindsight",
-    //   status: "parked",
-    // },
-    // prisma is resting out of sight for now. uncomment to bring it back.
-    // {
-    //   title: "Project Prisma",
-    //   description: "Footage in superposition. Every frame holds every possible cut.<br>Prisma is the measurement. The Whisper codecs already produce a surprise signal for every byte, every sample, every frame. Read those signals as attention, weight them, collapse the timeline. The edit was always in the recording; nobody had a way to find it.",
-    //   year: "2026",
-    //   url: "/contact?project=prisma",
-    //   slug: "prisma",
-    //   status: "concept",
-    // },
-    {
-      title: "wick",
-      description:
-        "point it at a folder, ask, and back comes a focused packet of *your own* passages, each tagged with why it's there.<br>one SQLite file, no embedding server, no GPU, no model download. it trains the semantic space on your corpus and runs heat-kernel diffusion over the document graph (math from the 1800s), so it reads structure flat embeddings miss, and it'll even tell you what's *missing*. ~1ms warm.<br>real and running, paused at “works, not yet right” while i chase the piece it's still missing.",
-      year: "2026",
-      url: "/contact?project=wick",
-      slug: "wick",
-      status: "parked",
-    },
-    {
-      title: "séance",
-      description:
-        "run an LLM straight from cold SSD. no GPU, no inference framework, and no need to keep the model weights resident in RAM.<br>the roughly 197KB Rust binary memory-maps safetensors and reads each matrix as it is needed. it has been tested on 12 models across 10 architecture families, from 0.5B to 9B parameters. the 19GB Qwen3.5-9B run used under 2MB for its own runtime state and generated at about 0.5 tok/s on the test machine. faster storage helps because the runtime spends most of its time waiting on weight reads.<br>proof of concept, ahead of its hardware. taught me more about how weights behave than anything i've read.",
-      year: "2026",
-      url: "/contact?project=seance",
-      slug: "seance",
-      status: "parked",
-    },
-    {
       title: "Minecraft Server Maintainer",
-      description: "A 67KB jar that lives next to your server folder. Double-click it and walk away.<br>It keeps Minecraft, mods, plugins, and datapacks current, and after every update it checks the server still boots, rolling back anything that doesn't. Crash, and it brings itself quietly back, rate-limited so it never thrashes.<br>No Docker, no web panel, no subscription.",
+      description: "A small Java tool that updates a Minecraft server, checks that it still boots, and rolls back failed updates. No Docker or web panel.",
       image: "/images/mc-server-maintainer.webp",
       month: "January",
       year: "2026",
@@ -344,7 +321,7 @@ export const projectsPageContent: ProjectPageContent = {
     */
     {
       title: "Morithon",
-      description: "Unreal Engine 5 death-run. 45 students, one semester.<br>Can you beat your friends?",
+      description: "An Unreal Engine 5 death-run made by 45 students in one semester.",
       image: "/images/morithon.webp",
       year: "2024",
       url: "https://dhafo.itch.io/morithon",
@@ -359,21 +336,7 @@ export const projectsPageContent: ProjectPageContent = {
       category: "math.CV",
       date: "June 2026",
       teaser:
-        "The complex exponential has a unique fixed point ϱ ≈ 0.318 + 1.337i, the solution of exp(z) = z in the strip 0 < Im z < π, and the geometry that unfolds once you take it seriously.",
-    },
-  ],
-  threads: [
-    {
-      motif: "i keep wandering into areas i don't know yet.",
-      line: "a framework i haven't touched, some system someone built like a cathedral. i take a piece home and play with it.",
-    },
-    {
-      motif: "i don't like math treated as rigid.",
-      line: "a system needs its rules to hold, but that's what makes it fun. the rules hold. so be loose everywhere else.",
-    },
-    {
-      motif: "i'm just a curious nerd with so many projects i ran out of disk space.",
-      line: "",
+        "A paper on the solution of exp(z) = z in the strip 0 < Im z < π and the geometry around it.",
     },
   ],
 };
@@ -419,9 +382,6 @@ export const freelanceBriefContent: FreelanceBriefContent = {
   kicker: "freelance workbench",
   status: "open",
   heading: "Have a strange idea, a broken workflow, or a system that ought to exist?",
-  // the leader rule above already states availability, so the sentence no
-  // longer has to.
-  subtitle: "I build useful things from unclear beginnings.",
   placeholder: "explain away",
   submitLabel: "send the brief",
 };

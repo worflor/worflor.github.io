@@ -89,10 +89,7 @@ export const groupOf = (project: Project): "shipped" | "private" | "concept" =>
 /**
  * every id the contact form will answer to, mapped to the name it should show.
  *
- * artifact parts are in here too. wick and séance are halves of one research
- * artifact rather than projects, but they are linked as inquiries exactly the
- * same way, and leaving them out is how the hand-written map drifted in the
- * first place.
+ * Research artifact parts can use inquiry links just like projects.
  */
 export function inquiryLabels(
   projects: Project[],

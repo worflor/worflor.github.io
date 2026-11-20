@@ -14,15 +14,8 @@ import { groupOf, resolveGates } from "../utils/projects";
 const posts = await getCollection("posts");
 const recentPosts = await preparePosts(posts, 2);
 
-// the front door never named a single thing he had built: a visitor met an
-// avatar, a paragraph and two links, with the actual work one click away and
-// invisible. these are the first cards off the endeavours page, in the order
-// they are curated there rather than by date, so the pick stays deliberate.
-//
-// gates resolve here too. the home page and /projects disagreeing about whether
-// neuron is out would read worse than either being wrong alone.
 const featuredProjects = (await resolveGates(projectsPageContent.projects))
-  .filter((project) => groupOf(project) === "shipped")
+  .filter((project) => groupOf(project) === "shipped" && project.status !== "coming-soon")
   .slice(0, 2);
 ---
 

@@ -2,8 +2,6 @@
 import Layout from "../layouts/Layout.astro";
 import { projectsPageContent } from "../config";
 import ProjectCard from "../components/ProjectCard.astro";
-import ScryerAccess from "../components/ScryerAccess.astro";
-import ConceptCard from "../components/ConceptCard.astro";
 import PublicationCard from "../components/PublicationCard.astro";
 import { getLoadingPriority } from "../utils/helpers";
 import { groupOf, resolveGates } from "../utils/projects";
@@ -12,22 +10,11 @@ const publications = projectsPageContent.publications ?? [];
 
 const allProjects = await resolveGates(projectsPageContent.projects);
 
-// three tiers, ordered most-real to most-speculative so the page reads top-down
-// on mobile and keeps the sticky concepts sidebar on desktop. the section is its
-// own axis: status drives the badge, group decides placement, and the mapping
-// between them lives in utils/projects.ts so every surface agrees.
-const shippedProjects = allProjects.filter((p) => groupOf(p) === "shipped");
-const privateProjects = allProjects.filter((p) => groupOf(p) === "private");
-const conceptProjects = allProjects.filter((p) => groupOf(p) === "concept");
-const threads = projectsPageContent.threads ?? [];
-
-// cluster the in-development lead, closed-dev instruments, and beta products;
-// whitespace carries the distinction without more section headings.
-const privateClusters = [
-  privateProjects.filter((p) => p.status === "in-development"),
-  privateProjects.filter((p) => p.status === "closed-dev-alpha" || p.status === "active-research"),
-  privateProjects.filter((p) => p.status === "private-beta"),
-].filter((cluster) => cluster.length > 0);
+const shippedProjects = allProjects.filter((p) => groupOf(p) === "shipped" && p.status !== "coming-soon");
+const developmentProjects = allProjects.filter((p) =>
+  (groupOf(p) === "private" || p.status === "coming-soon") && p.status !== "active-research"
+);
+const researchProjects = allProjects.filter((p) => p.status === "active-research");
 ---
 
 <Layout seo={projectsPageContent.seo}>
@@ -35,87 +22,59 @@ const privateClusters = [
     <h1 class="page-title">Endeavours</h1>
     <p class="opacity-60 mb-10">{projectsPageContent.subtitle}</p>
 
-    <div class:list={["projects-layout", { "projects-layout--has-concepts": conceptProjects.length > 0 }]}>
-      <div class="projects-main">
-        {threads.length > 0 && (
-          <section class="projects-threads" aria-labelledby="threads-heading">
-            <div class="section-header">
-              <h2 id="threads-heading" class="section-title">Why</h2>
-              <p class="section-subtitle">three things i keep turning over.</p>
-            </div>
-            <ul class="threads-list">
-              {threads.map((thread) => (
-                <li class="thread">
-                  <span class="thread-motif">{thread.motif}</span>
-                  <span class="thread-line">{thread.line}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-        {publications.length > 0 && (
-          <section class="projects-publications" aria-labelledby="sidequests-heading">
-            <div class="section-header">
-              <h2 id="sidequests-heading" class="section-title">Side Quests</h2>
-              <p class="section-subtitle">papers and other detours.</p>
-            </div>
-            <div class="publications-list">
-              {publications.map((pub, index) => (
-                <PublicationCard {...pub} index={index} />
-              ))}
-            </div>
-          </section>
-        )}
+    <div class="projects-main">
+      <section aria-labelledby="shipped-heading">
+        <div class="section-header">
+          <h2 id="shipped-heading" class="section-title">Public work</h2>
+        </div>
+        <div class="grid grid-cols-1 group">
+          {shippedProjects.map((project, index) => (
+            <ProjectCard
+              {...project}
+              description={project.slug === "neuron"
+                ? project.description + " The colour picker previews palette suggestions from Luma-T, a small model I trained."
+                : project.description}
+              loading={getLoadingPriority(index)}
+              index={index}
+            />
+          ))}
+        </div>
+      </section>
 
-        <section class="projects-shipped-section" aria-labelledby="shipped-heading">
+      {developmentProjects.length > 0 && (
+        <section aria-labelledby="development-heading">
           <div class="section-header">
-            <h2 id="shipped-heading" class="section-title">Shipped</h2>
-            <p class="section-subtitle">out in the open.</p>
+            <h2 id="development-heading" class="section-title">In development</h2>
           </div>
-          <div class="projects-shipped grid grid-cols-1 group">
-            {
-              shippedProjects.map((project, index) => (
-                <ProjectCard {...project} loading={getLoadingPriority(index)} index={index} />
-              ))
-            }
-          </div>
-        </section>
-
-        {privateProjects.length > 0 && (
-          <section class="projects-private" aria-labelledby="private-heading">
-            <div class="section-header">
-              <h2 id="private-heading" class="section-title">In development</h2>
-              <p class="section-subtitle">taking shape; not released yet.</p>
-            </div>
-            <div class="private-tier">
-              {privateClusters.map((cluster) => (
-                <div class="private-cluster group">
-                  {cluster.map((project, index) => (
-                    <>
-                      <ProjectCard {...project} variant={project.slug === "lore" || project.slug === "scryer" ? "full" : "compact"} index={index} />
-                      {project.slug === "scryer" && <ScryerAccess />}
-                    </>
-                  ))}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-      </div>
-
-      {conceptProjects.length > 0 && (
-        <aside class="projects-concepts" aria-labelledby="concepts-heading">
-          <div class="section-header">
-            <h2 id="concepts-heading" class="section-title">Concepts</h2>
-            <p class="section-subtitle">research stage. design first, code later.</p>
-          </div>
-          <div class="concepts-track group">
-            {conceptProjects.map((project, index) => (
-              <ConceptCard {...project} index={index} />
+          <div class="grid grid-cols-1 group">
+            {developmentProjects.map((project, index) => (
+              <ProjectCard {...project} index={index} />
             ))}
           </div>
-        </aside>
+        </section>
+      )}
+
+      {(researchProjects.length > 0 || publications.length > 0) && (
+        <section aria-labelledby="research-heading">
+          <div class="section-header">
+            <h2 id="research-heading" class="section-title">Research</h2>
+            <p class="section-subtitle">A few things I made to see what would happen.</p>
+          </div>
+          <div class="grid grid-cols-1 gap-[var(--space-sm)]">
+            {publications.map((pub, index) => <PublicationCard {...pub} index={index} />)}
+            {researchProjects.map((project, index) => (
+              <div>
+                <ProjectCard {...project} variant="compact" index={publications.length + index} />
+                {project.slug === "engram" && (
+                  <a class="research-link" href="https://woflo.itch.io/all-you-mean-to-me">Play <em>all you mean to me</em> on itch.io</a>
+                )}
+                {project.slug === "scryer" && (
+                  <a id="scryer-access" class="research-link" href="/scryer/#use">Scryer MCP setup and access tokens</a>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
       )}
     </div>
   </section>
@@ -130,36 +89,12 @@ const privateClusters = [
     container-type: inline-size;
   }
 
-  .projects-layout {
-    display: grid;
-    /* minmax(0, 1fr) (not bare 1fr) so the horizontal concepts rail can't force
-       the column wider than the viewport on narrow screens */
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-xl);
-  }
-
-  /* shipped work, then active development, then the threads that run through both */
   .projects-main {
     display: flex;
     flex-direction: column;
     gap: var(--space-xl);
-    min-width: 0;
   }
 
-  @container (min-width: 52rem) {
-    .projects-layout--has-concepts {
-      grid-template-columns: minmax(0, 1fr) 16rem;
-      gap: calc(var(--space-xl) * 1.25);
-    }
-
-    .projects-layout--has-concepts .projects-concepts {
-      position: sticky;
-      top: 5rem;
-      align-self: start;
-    }
-  }
-
-  /* quiet field-label header, shared by in-development and concepts */
   .section-header {
     margin-bottom: var(--space-md);
     padding-bottom: var(--space-sm);
@@ -175,120 +110,19 @@ const privateClusters = [
     margin: 0;
   }
 
+  .research-link {
+    display: inline-block;
+    margin: 0.35rem 0.9rem;
+    font-size: var(--text-sm);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+    scroll-margin-top: 8rem;
+  }
+
   .section-subtitle {
     margin-top: 0.4rem;
     font-size: var(--text-sm);
     opacity: 0.4;
     line-height: 1.45;
-  }
-
-  /* in-development clusters: whitespace separates the lead from research tools */
-  .private-tier {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-  }
-
-  /* auto-fit lets a lone development card span full width while pairs sit 2-up */
-  .private-cluster {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
-    gap: var(--space-sm);
-  }
-
-  /* side quests: stacked like the behind-the-scenes cards */
-  .publications-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-
-  /* threads: quiet prose at the bottom of the page, not cards or labels. the
-     motif column is full sentences now, so the grid loosens to natural flow
-     and all-caps and letter-spacing come off. */
-  .threads-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .thread {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0.15rem;
-    max-width: 44ch;
-  }
-
-  .thread-motif {
-    font-size: var(--text-sm);
-    font-weight: 400;
-    letter-spacing: 0;
-    text-transform: none;
-    opacity: 0.72;
-    overflow-wrap: anywhere;
-  }
-
-  .thread-line {
-    font-size: var(--text-sm);
-    opacity: 0.5;
-    line-height: 1.55;
-    min-width: 0;
-  }
-
-  .thread:not(:has(.thread-line:empty)) .thread-motif {
-    margin-bottom: 0.1rem;
-  }
-
-  /* a thread with an empty line is a standalone sentence; it carries a bit
-     more weight so the last one doesn't feel like a dropped thought. */
-  .thread:has(.thread-line:empty) .thread-motif {
-    font-size: calc(var(--text-sm) * 1.05);
-    opacity: 0.75;
-  }
-
-
-  /* concepts: a horizontal swipe rail on mobile (cards peek to invite the swipe),
-     a vertical sticky sidebar on desktop. matches the action-bar scroll pattern. */
-  .concepts-track {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-sm);
-    overflow-x: auto;
-    /* proximity, not mandatory: a card growing on expand won't yank the scroll */
-    scroll-snap-type: x proximity;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    padding-bottom: var(--space-xs);
-  }
-
-  .concepts-track::-webkit-scrollbar {
-    display: none;
-  }
-
-  .concepts-track > :global(*) {
-    flex: 0 0 min(78%, 15rem);
-    scroll-snap-align: start;
-  }
-
-  @container (min-width: 52rem) {
-    .concepts-track {
-      display: grid;
-      grid-template-columns: 1fr;
-      overflow: visible;
-      padding-bottom: 0;
-    }
-
-    .concepts-track > :global(*) {
-      flex: initial;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .projects-concepts {
-      position: static;
-    }
   }
 </style>

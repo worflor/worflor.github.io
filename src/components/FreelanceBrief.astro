@@ -11,7 +11,7 @@ type Props = {
 };
 
 const { source } = Astro.props;
-const { enabled, kicker, status, heading, subtitle, placeholder, submitLabel } = freelanceBriefContent;
+const { enabled, kicker, status, heading, placeholder, submitLabel } = freelanceBriefContent;
 
 // an id derived from the source, since two pages could one day render this at
 // once and a duplicate id would silently break the label association.
@@ -34,7 +34,6 @@ const fieldId = `brief-${source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replac
       <span class="brief-status">{status}</span>
     </p>
     <h2 id="freelance-brief-title">{heading}</h2>
-    <p class="brief-sub">{subtitle}</p>
   </div>
 
   {/* no method and no named field: with javascript off this is just a link to
@@ -170,7 +169,6 @@ const fieldId = `brief-${source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replac
     line-height: 1.24;
     letter-spacing: -0.01em;
   }
-  .brief-sub { margin: var(--space-sm) 0 0; opacity: 0.55; max-width: 30rem; }
 
   /* the composer holds the same measure as the paragraph above it. left to fill
      its container it went full-bleed on tablet and wider, which stranded the
